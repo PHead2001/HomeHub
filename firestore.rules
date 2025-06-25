@@ -1,0 +1,60 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Because the user document ID is their email address
+    function isOwner(userEmail) {
+      return signedIn() && request.auth.token.email == userEmail;
+    }
+
+    // Checks if two users belong to the same household
+    function sameHousehold(senderEmail, targetEmail) {
+      // Use exists() to prevent errors if a user document doesn't exist yet.
+      return signedIn() &&
+             exists(/databases/$(database)/documents/users/$(senderEmail)) &&
+             exists(/databases/$(database)/documents/users/$(targetEmail)) &&
+             get(/databases/$(database)/documents/users/$(senderEmail)).data.householdId ==
+             get(/databases/$(database)/documents/users/$(targetEmail)).data.householdId;
+    }
+
+    // Household data:
+    // - Members can read the household document.
+    // - Only the owner can update household details or delete it.
+    match /households/{householdId} {
+      allow read: if signedIn() && request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails;
+      allow write: if signedIn() && request.auth.token.email == get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail;
+
+      // All members of a household can read/write to its subcollections (pets, chores, etc.)
+      match /{subcollection}/{docId=**} {
+        allow read, write: if signedIn() && request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails;
+      }
+    }
+
+    // User profiles:
+    match /users/{userEmail} {
+      // Users can get profiles of others in their household, but can only write to their own.
+      // Listing all users is forbidden to prevent data leakage.
+      allow get: if isOwner(userEmail) || sameHousehold(request.auth.token.email, userEmail);
+      allow list: if false;
+      allow create: if isOwner(userEmail); // A user can only create their own profile.
+      allow update, delete: if isOwner(userEmail);
+
+      // Rules for the notifications subcollection
+      match /notifications/{notificationId} {
+         // This rule covers both get (single doc) and list (collection query)
+         allow read: if isOwner(userEmail);
+         
+         // A user can update or delete their own notifications.
+         allow update, delete: if isOwner(userEmail);
+         
+         // Another user can create a notification for this user IF they are in the same household.
+         allow create: if sameHousehold(request.auth.token.email, userEmail);
+      }
+    }
+  }
+}

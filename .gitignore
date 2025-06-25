@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+
+# build output
+.next/
+out/
+dist/
+build/
+
+# Firebase local/cache/debug stuff
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+
+# local env/secrets
+.env
+.env.local
+.env.*.local
+
+# service account keys / private creds
+serviceAccountKey.json
+*service-account*.json
+*.private.json
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+
+# Firebase Studio / IDX / AI workspace artifacts
+.agents/
+.idx/
+.modified
+metadata.json
+studio.json
