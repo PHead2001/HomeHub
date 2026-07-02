@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PlusCircle, Trash2, Edit, Home, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter } from 'lucide-react';
+import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
 import type { LucideIcon, LucideProps } from 'lucide-react';
 import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence } from '@/lib/types';
 import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday } from 'date-fns';
@@ -31,17 +31,33 @@ import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group';
 import { Switch } from './ui/switch';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu';
-import * as LucideIcons from 'lucide-react';
 
 const roomIcons = ["Home", "BedDouble", "Bath", "Sofa", "Utensils", "Microwave", "Refrigerator", "WashingMachine", "Car", "Bike", "TreeDeciduous", "Warehouse", "Armchair", "Tv", "Gamepad2", "Baby", "Dog", "Cat", "Hammer", "Paintbrush" ];
-
-type LucideExport = typeof LucideIcons[keyof typeof LucideIcons];
-
-const isLucideIcon = (icon: LucideExport): icon is LucideIcon => typeof icon === 'function';
+const lucideIconRegistry: Partial<Record<string, LucideIcon>> = {
+    Armchair,
+    Baby,
+    Bath,
+    BedDouble,
+    Bike,
+    Car,
+    Cat,
+    Dog,
+    Gamepad2,
+    Hammer,
+    Home,
+    Microwave,
+    Paintbrush,
+    Refrigerator,
+    Sofa,
+    TreeDeciduous,
+    Tv,
+    Utensils,
+    Warehouse,
+    WashingMachine,
+};
 
 const getLucideIcon = (name: string, fallback: LucideIcon): LucideIcon => {
-    const icon = LucideIcons[name as keyof typeof LucideIcons];
-    return isLucideIcon(icon) ? icon : fallback;
+    return lucideIconRegistry[name] ?? fallback;
 };
 
 const renderIcon = (name: string, props: LucideProps = {}) => {

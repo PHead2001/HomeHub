@@ -2,17 +2,18 @@
 import { EventEmitter } from 'events';
 import type { FirestorePermissionError } from './errors';
 
-interface ErrorEvents {
+type ErrorEvents = {
   'permission-error': (error: FirestorePermissionError) => void;
-}
+};
 
-declare interface ErrorEventEmitter {
-  on<U extends keyof ErrorEvents>(event: U, listener: ErrorEvents[U]): this;
-  emit<U extends keyof ErrorEvents>(event: U, ...args: Parameters<ErrorEvents[U]>): boolean;
-}
+class ErrorEventEmitter extends EventEmitter {
+  on<U extends keyof ErrorEvents>(event: U, listener: ErrorEvents[U]): this {
+    return super.on(event, listener);
+  }
 
-class ErrorEventEmitter extends EventEmitter {}
+  emit<U extends keyof ErrorEvents>(event: U, ...args: Parameters<ErrorEvents[U]>): boolean {
+    return super.emit(event, ...args);
+  }
+}
 
 export const errorEmitter = new ErrorEventEmitter();
-
-    
