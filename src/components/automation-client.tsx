@@ -22,11 +22,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Server, Settings, List, Unplug } from 'lucide-react';
-import type { HomeAssistantEntity, HomeAssistantCredentials } from '@/lib/types';
+import { Loader2, Settings, List, Unplug } from 'lucide-react';
+import type { HomeAssistantEntity } from '@/lib/types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { buttonVariants } from './ui/button';
 
 const credentialsSchema = z.object({
@@ -145,7 +145,7 @@ export function AutomationClient() {
           } else if (result.data) {
               setEntities(result.data);
           }
-      } catch (error) {
+      } catch {
           toast({ variant: 'destructive', title: 'Error', description: 'An unexpected error occurred.' });
       } finally {
           setIsLoading(false);

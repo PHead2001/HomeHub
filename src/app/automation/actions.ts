@@ -3,7 +3,7 @@
 
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import type { User, HomeAssistantEntity, HomeAssistantCredentials } from '@/lib/types';
+import type { HomeAssistantEntity, HomeAssistantCredentials } from '@/lib/types';
 
 type ActionResult = {
   error?: string;

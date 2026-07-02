@@ -2,18 +2,18 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PlusCircle, Trash2, Edit, Loader2, Home, MoreVertical, X, Calendar as CalendarIcon, Check, Settings, BookUser, Repeat, User as UserIcon, ChevronDown, ChevronRight, ChevronLeft, Filter } from 'lucide-react';
+import { PlusCircle, Trash2, Edit, Home, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter } from 'lucide-react';
 import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence } from '@/lib/types';
-import { format, addDays, startOfWeek, startOfMonth, setDate, nextDay, isSameDay, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, isFuture, endOfToday } from 'date-fns';
+import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, addDoc, getDoc } from 'firebase/firestore';
+import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { stableSlugify, cn } from '@/lib/utils';
@@ -837,7 +837,7 @@ function ManageRecurringTasksDialog({
                     <AlertDialogHeader>
                         <AlertDialogTitle>Delete this recurring task?</AlertDialogTitle>
                         <AlertDialogDescription>
-                            This will delete all future instances of "{choreToDelete?.task}" and stop it from being assigned. This cannot be undone.
+                            This will delete all future instances of &quot;{choreToDelete?.task}&quot; and stop it from being assigned. This cannot be undone.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -899,7 +899,7 @@ function ManageRecurringTasksDialog({
     )
 }
 
-function ChoreCalendar({ chores, users }: { chores: Chore[], users: HomeHubUser[] }) {
+function ChoreCalendar({ chores }: { chores: Chore[] }) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const choresByDate = useMemo(() => {
@@ -914,7 +914,7 @@ function ChoreCalendar({ chores, users }: { chores: Chore[], users: HomeHubUser[
     return grouped;
   }, [chores]);
 
-  const DayWithChores = ({ date, ...props }: { date: Date, displayMonth: Date }) => {
+  const DayWithChores = ({ date }: { date: Date, displayMonth: Date }) => {
     const dayKey = format(date, 'yyyy-MM-dd');
     const choresForDay = choresByDate.get(dayKey);
 
@@ -958,7 +958,7 @@ function ChoreCalendar({ chores, users }: { chores: Chore[], users: HomeHubUser[
         <DialogHeader>
           <DialogTitle>Chore Calendar</DialogTitle>
           <DialogDescription>
-            An overview of your household's scheduled chores.
+            An overview of your household&apos;s scheduled chores.
           </DialogDescription>
         </DialogHeader>
         <Calendar
@@ -1410,7 +1410,7 @@ export function ChoreChartClient() {
         await setDoc(doc(roomsCollection, roomId), roomData);
         toast({ title: id ? 'Room Updated' : 'Room Added' });
         await fetchAllData();
-    } catch (error) {
+    } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not save room.' });
     }
   }
@@ -1431,7 +1431,7 @@ export function ChoreChartClient() {
         });
         toast({ title: 'Room Deleted', description: "The room was deleted and unassigned from chores."});
         await fetchAllData();
-    } catch (error) {
+    } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not delete room.' });
     }
   }
@@ -1503,7 +1503,7 @@ export function ChoreChartClient() {
                 : c
             )
         );
-    } catch (error: any) {
+    } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not update chore.' });
     }
   }
@@ -1552,7 +1552,7 @@ export function ChoreChartClient() {
 
     try {
         await updateDoc(choreRef, { completedSubTasks: newCompletedSubTasks });
-    } catch (error) {
+    } catch {
       toast({
         variant: 'destructive',
         title: 'Error',
@@ -1576,7 +1576,7 @@ export function ChoreChartClient() {
         await deleteDoc(choreRef);
         toast({ title: 'Chore Removed' });
         await fetchAllData();
-    } catch(error: any) {
+    } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not delete chore.' });
     }
   };
@@ -1596,7 +1596,7 @@ export function ChoreChartClient() {
     try {
       await updateDoc(choreRef, updates);
       toast({ title: 'Chore Reassigned' });
-    } catch (error: any) {
+    } catch {
       toast({ variant: 'destructive', title: 'Reassignment Failed' });
       fetchAllData();
     }
@@ -1875,7 +1875,7 @@ export function ChoreChartClient() {
                         </DropdownMenuRadioGroup>
                     </DropdownMenuContent>
                 </DropdownMenu>
-                <ChoreCalendar chores={assignedChores} users={householdUsers} />
+                <ChoreCalendar chores={assignedChores} />
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <Button size="default" className="h-8 px-2 md:h-11 md:px-8 text-[10px] md:text-sm"><MoreVertical className="mr-1 h-3 w-3 md:mr-2 md:h-4 md:w-4" /> Chore Manager</Button>

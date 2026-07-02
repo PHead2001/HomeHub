@@ -13,7 +13,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Home, UserPlus, Copy, LogOut } from 'lucide-react';
+import { Loader2, Home, Copy, LogOut } from 'lucide-react';
 import {
   Card,
   CardContent,
@@ -102,7 +102,6 @@ function JoinHouseholdForm({
 
 export function HouseholdManager({ children }: HouseholdManagerProps) {
   const { currentUser, household, createHousehold, joinHousehold, logout } = useAuth();
-  const { toast } = useToast();
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
 

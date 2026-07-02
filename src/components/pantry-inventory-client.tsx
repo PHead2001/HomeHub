@@ -7,11 +7,11 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format, parseISO } from 'date-fns';
-import type { PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList, ShoppingListType } from '@/lib/types';
+import type { PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
-import { collection, doc, getDocs, updateDoc, deleteDoc, writeBatch, query, orderBy, getDoc, setDoc, collectionGroup } from 'firebase/firestore';
+import { collection, doc, getDocs, deleteDoc, writeBatch, query, orderBy, getDoc, setDoc } from 'firebase/firestore';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
@@ -46,7 +46,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { cn } from '@/lib/utils';
-import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ShoppingCart, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check } from 'lucide-react';
+import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check } from 'lucide-react';
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
@@ -391,7 +391,7 @@ function RecipeGeneratorDialog({
                         AI Recipe Idea
                     </DialogTitle>
                     <DialogDescription>
-                        Here's a recipe idea based on your current pantry.
+                        Here&apos;s a recipe idea based on your current pantry.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -529,7 +529,7 @@ function AddToListDialog({
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add "{itemName}" to a shopping list</DialogTitle>
+          <DialogTitle>Add &quot;{itemName}&quot; to a shopping list</DialogTitle>
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">

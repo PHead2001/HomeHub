@@ -31,19 +31,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from './ui/form';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from './ui/form';
 import { Input } from './ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, doc, getDocs, updateDoc, deleteDoc, runTransaction, getDoc, writeBatch, setDoc, query } from 'firebase/firestore';
+import { collection, doc, getDocs, updateDoc, deleteDoc, getDoc, writeBatch, setDoc, query } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
 import * as LucideIcons from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
-import { Label } from './ui/label';
 import Image from 'next/image';
 
 
@@ -155,7 +154,7 @@ function ListDialog({
                     <FormField
                     control={form.control}
                     name="icon"
-                    render={({ field }) => (
+                    render={() => (
                         <FormItem className="flex-1">
                         <FormLabel>Icon</FormLabel>
                         <div className="grid grid-cols-5 gap-2 border p-2 rounded-lg">
@@ -285,7 +284,7 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="font-headline">Manage Categories</DialogTitle>
-          <DialogDescription>Add or remove shopping list categories. 'Other' cannot be removed.</DialogDescription>
+          <DialogDescription>Add or remove shopping list categories. &apos;Other&apos; cannot be removed.</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="flex gap-2">
@@ -358,7 +357,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       const snapshot = await getDocs(query(listsCollection));
       const listsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingList));
       setLists(listsData);
-    } catch (e) {
+    } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch shopping lists.' });
     } finally {
       setLoading(false);
@@ -386,7 +385,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
         // Reset to default if no specific categories are set for this list
         setCategories(['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other']);
       }
-    } catch (e) {
+    } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch list items.' });
     } finally {
       setLoadingItems(false);
@@ -417,7 +416,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       await setDoc(doc(listsCollection, listId), data, { merge: true });
       toast({ title: id ? 'List Updated!' : 'List Created!' });
       fetchLists();
-    } catch (e) {
+    } catch {
        toast({ variant: 'destructive', title: 'Error', description: 'Could not save list.' });
     }
   }
@@ -443,7 +442,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
         // Refetch the list of lists
         await fetchLists();
 
-    } catch (e) {
+    } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not delete list.' });
     }
   };
@@ -477,7 +476,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
         form.reset({ name: '', quantity: 1 });
         setIsAddItemDialogOpen(false);
         await fetchItemsAndCategories(selectedList.id);
-    } catch (error) {
+    } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not categorize item. Please try again.' });
     }
   };
@@ -523,7 +522,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
         }
         await fetchItemsAndCategories(selectedList.id);
 
-      } catch (error) {
+      } catch {
           toast({ variant: 'destructive', title: 'Error', description: 'Could not update item status.' });
       }
   };
@@ -560,7 +559,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       } else {
         await fetchItemsAndCategories(selectedList.id);
       }
-    } catch (error) {
+    } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not clear purchased items.' });
     }
   };
@@ -824,7 +823,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
        {lists.length === 0 && !loading && (
          <div className="text-center py-16 border-2 border-dashed rounded-lg col-span-full">
           <h2 className="text-xl font-semibold">No Shopping Lists Yet</h2>
-          <p className="text-muted-foreground mt-2">Click "Create New List" to get started!</p>
+          <p className="text-muted-foreground mt-2">Click &quot;Create New List&quot; to get started!</p>
         </div>
       )}
     </>

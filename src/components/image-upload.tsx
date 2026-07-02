@@ -64,7 +64,7 @@ export function ImageUpload({ onFileChange, existingImageUrl }: ImageUploadProps
           {isDragActive ? (
             <p>Drop the image here...</p>
           ) : (
-            <p className="text-sm">Drag 'n' drop an image, or click to select</p>
+            <p className="text-sm">Drag &apos;n&apos; drop an image, or click to select</p>
           )}
         </div>
       )}

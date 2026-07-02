@@ -18,7 +18,7 @@ export default function Home() {
     <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
         <h1 className="font-headline text-3xl font-bold tracking-tight">Welcome Home</h1>
-        <p className="text-muted-foreground">Here's what's happening in your hub today.</p>
+        <p className="text-muted-foreground">Here&apos;s what&apos;s happening in your hub today.</p>
       </div>
       
       <section className="mb-10">

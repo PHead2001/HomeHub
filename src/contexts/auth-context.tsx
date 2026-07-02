@@ -17,7 +17,7 @@ import {
   GoogleAuthProvider,
 } from 'firebase/auth';
 import { useToast } from '@/hooks/use-toast';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, where, writeBatch, getDocs, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, writeBatch, getDocs, deleteDoc } from 'firebase/firestore';
 import type { User, HomeAssistantCredentials, Household } from '@/lib/types';
 import { auth, db } from '@/lib/firebase';
 import { slugify } from '@/lib/utils';
