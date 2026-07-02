@@ -10,8 +10,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
 import type { LucideIcon, LucideProps } from 'lucide-react';
-import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence } from '@/lib/types';
-import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday } from 'date-fns';
+import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
+import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, differenceInCalendarDays } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
@@ -64,6 +64,61 @@ const renderIcon = (name: string, props: LucideProps = {}) => {
     const Icon = getLucideIcon(name, Home);
     return <Icon {...props} />;
 }
+
+const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const fullDayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const ordinalLabels: Record<MonthlyNthWeekday['week'], string> = {
+    1: '1st',
+    2: '2nd',
+    3: '3rd',
+    4: '4th',
+};
+
+const getDefaultAnchorDate = () => format(startOfToday(), 'yyyy-MM-dd');
+
+const getMonthlyMode = (recurrence: Recurrence): MonthlyRecurrenceMode => {
+    return recurrence.monthlyOptions?.mode ?? 'dayOfMonth';
+};
+
+const getWeekOfMonth = (date: Date) => Math.floor((date.getDate() - 1) / 7) + 1;
+
+const isNthWeekday = (date: Date, nthWeekday: MonthlyNthWeekday) => {
+    return getWeekOfMonth(date) === nthWeekday.week && getDay(date) === nthWeekday.dayOfWeek;
+};
+
+const isValidRecurringDate = (date: Date, recurrence: Recurrence) => {
+    if (recurrence.frequency === 'daily') {
+        if (recurrence.dailyOptions?.excludeWeekends) {
+            const day = getDay(date);
+            return day > 0 && day < 6;
+        }
+        return true;
+    }
+
+    if ((recurrence.frequency === 'weekly' || recurrence.frequency === 'biweekly') && recurrence.weeklyOptions) {
+        const day = getDay(date);
+        if (!recurrence.weeklyOptions.daysOfWeek.includes(day)) {
+            return false;
+        }
+
+        if (recurrence.frequency === 'biweekly') {
+            const anchorDate = parseISO(recurrence.startDate || getDefaultAnchorDate());
+            const daysSinceAnchor = differenceInCalendarDays(date, anchorDate);
+            return daysSinceAnchor >= 0 && Math.floor(daysSinceAnchor / 7) % 2 === 0;
+        }
+
+        return true;
+    }
+
+    if (recurrence.frequency === 'monthly' && recurrence.monthlyOptions) {
+        if (getMonthlyMode(recurrence) === 'nthWeekday') {
+            return recurrence.monthlyOptions.nthWeekday ? isNthWeekday(date, recurrence.monthlyOptions.nthWeekday) : false;
+        }
+        return date.getDate() === (recurrence.monthlyOptions.dayOfMonth || 1);
+    }
+
+    return false;
+};
 
 function ManageRoomsDialog({
     isOpen,
@@ -344,10 +399,14 @@ function AssignChoresDialog({
     const [isRecurring, setIsRecurring] = useState(false);
     const [assignedToEmail, setAssignedToEmail] = useState('');
     const [dueDate, setDueDate] = useState<Date | undefined>(new Date());
-    const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
+    const [frequency, setFrequency] = useState<RecurrenceFrequency>('weekly');
     const [excludeWeekends, setExcludeWeekends] = useState(false);
     const [daysOfWeek, setDaysOfWeek] = useState<string[]>([]);
+    const [biweeklyStartDate, setBiweeklyStartDate] = useState<Date | undefined>(new Date());
+    const [monthlyMode, setMonthlyMode] = useState<MonthlyRecurrenceMode>('dayOfMonth');
     const [dayOfMonth, setDayOfMonth] = useState<number>(1);
+    const [nthWeek, setNthWeek] = useState<MonthlyNthWeekday['week']>(1);
+    const [nthWeekday, setNthWeekday] = useState<number>(1);
     const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
 
     const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
@@ -375,7 +434,11 @@ function AssignChoresDialog({
             setFrequency('weekly');
             setExcludeWeekends(false);
             setDaysOfWeek([]);
+            setBiweeklyStartDate(new Date());
+            setMonthlyMode('dayOfMonth');
             setDayOfMonth(1);
+            setNthWeek(1);
+            setNthWeekday(1);
             setSelectedRoomIds(availableRoomsForTemplates.map(r => r.id));
         }
     }, [isOpen, availableRoomsForTemplates]);
@@ -404,15 +467,25 @@ function AssignChoresDialog({
             if (frequency === 'daily') {
                 recurrence.dailyOptions = { excludeWeekends };
             }
-            if (frequency === 'weekly') {
+            if (frequency === 'weekly' || frequency === 'biweekly') {
                 if (daysOfWeek.length === 0) {
-                    toast({ variant: 'destructive', title: 'Missing day', description: 'Please select at least one day for weekly recurrence.' });
+                    toast({ variant: 'destructive', title: 'Missing day', description: `Please select at least one day for ${frequency} recurrence.` });
                     return;
                 }
                 recurrence.weeklyOptions = { daysOfWeek: daysOfWeek.map(Number) };
             }
+            if (frequency === 'biweekly') {
+                if (!biweeklyStartDate) {
+                    toast({ variant: 'destructive', title: 'Missing start date', description: 'Please select a start date for biweekly recurrence.' });
+                    return;
+                }
+                recurrence.interval = 2;
+                recurrence.startDate = format(biweeklyStartDate, 'yyyy-MM-dd');
+            }
             if (frequency === 'monthly') {
-                recurrence.monthlyOptions = { dayOfMonth };
+                recurrence.monthlyOptions = monthlyMode === 'dayOfMonth'
+                    ? { mode: 'dayOfMonth', dayOfMonth }
+                    : { mode: 'nthWeekday', nthWeekday: { week: nthWeek, dayOfWeek: nthWeekday } };
             }
             schedule = { type: 'recurring' as const, recurrence };
         } else {
@@ -492,9 +565,10 @@ function AssignChoresDialog({
                         
                         <div className={cn("space-y-4 p-4 border rounded-lg", isRecurring ? 'opacity-100' : 'opacity-50 pointer-events-none')}>
                              <h4 className="font-medium">Recurring Schedule</h4>
-                             <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as Recurrence['frequency'])} className="flex gap-2">
+                             <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as RecurrenceFrequency)} className="flex flex-wrap gap-2">
                                  <Label htmlFor="daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="daily" className="mr-1"/> Daily </Label>
                                  <Label htmlFor="weekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekly" id="weekly" className="mr-1"/> Weekly </Label>
+                                 <Label htmlFor="biweekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="biweekly" id="biweekly" className="mr-1"/> Biweekly </Label>
                                  <Label htmlFor="monthly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="monthly" id="monthly" className="mr-1"/> Monthly </Label>
                              </RadioGroup>
 
@@ -504,18 +578,68 @@ function AssignChoresDialog({
                                     <Label htmlFor="weekdays-only" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekdays" id="weekdays-only" className="mr-1"/> Weekdays Only </Label>
                                 </RadioGroup>
                             )}
-                            {frequency === 'weekly' && (
-                                <ToggleGroup type="multiple" value={daysOfWeek} onValueChange={setDaysOfWeek} className="flex flex-wrap gap-1">
-                                    {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => <ToggleGroupItem key={day} value={String(i)} className="rounded-full">{day}</ToggleGroupItem>)}
-                                </ToggleGroup>
+                            {(frequency === 'weekly' || frequency === 'biweekly') && (
+                                <div className="space-y-3">
+                                    <div>
+                                        <Label>{frequency === 'biweekly' ? 'Repeat every other week on' : 'Repeat weekly on'}</Label>
+                                        <ToggleGroup type="multiple" value={daysOfWeek} onValueChange={setDaysOfWeek} className="flex flex-wrap justify-start gap-1 pt-2">
+                                            {dayNames.map((day, i) => <ToggleGroupItem key={day} value={String(i)} className="rounded-full">{day}</ToggleGroupItem>)}
+                                        </ToggleGroup>
+                                    </div>
+                                    {frequency === 'biweekly' && (
+                                        <div>
+                                            <Label>Anchor Week Start</Label>
+                                            <Popover>
+                                                <PopoverTrigger asChild>
+                                                    <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !biweeklyStartDate && "text-muted-foreground")}>
+                                                        <CalendarIcon className="mr-2 h-4 w-4" />
+                                                        {biweeklyStartDate ? format(biweeklyStartDate, "PPP") : <span>Pick a start date</span>}
+                                                    </Button>
+                                                </PopoverTrigger>
+                                                <PopoverContent className="w-auto p-0" align="start">
+                                                    <Calendar mode="single" selected={biweeklyStartDate} onSelect={setBiweeklyStartDate} initialFocus />
+                                                </PopoverContent>
+                                            </Popover>
+                                        </div>
+                                    )}
+                                </div>
                             )}
                             {frequency === 'monthly' && (
-                                <div>
-                                    <Label>Day of Month</Label>
-                                    <Select onValueChange={(v) => setDayOfMonth(Number(v))} value={String(dayOfMonth)}>
-                                        <SelectTrigger><SelectValue/></SelectTrigger>
-                                        <SelectContent>{Array.from({length: 28}, (_, i) => i + 1).map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent>
-                                    </Select>
+                                <div className="space-y-3">
+                                    <RadioGroup value={monthlyMode} onValueChange={(v) => setMonthlyMode(v as MonthlyRecurrenceMode)} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <Label htmlFor="monthly-day-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
+                                            <RadioGroupItem value="dayOfMonth" id="monthly-day-mode" className="mr-1"/> Day of month
+                                        </Label>
+                                        <Label htmlFor="monthly-nth-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
+                                            <RadioGroupItem value="nthWeekday" id="monthly-nth-mode" className="mr-1"/> Nth weekday
+                                        </Label>
+                                    </RadioGroup>
+                                    {monthlyMode === 'dayOfMonth' ? (
+                                        <div>
+                                            <Label>Day of Month</Label>
+                                            <Select onValueChange={(v) => setDayOfMonth(Number(v))} value={String(dayOfMonth)}>
+                                                <SelectTrigger><SelectValue/></SelectTrigger>
+                                                <SelectContent>{Array.from({length: 28}, (_, i) => i + 1).map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                            <div>
+                                                <Label>Week</Label>
+                                                <Select onValueChange={(v) => setNthWeek(Number(v) as MonthlyNthWeekday['week'])} value={String(nthWeek)}>
+                                                    <SelectTrigger><SelectValue/></SelectTrigger>
+                                                    <SelectContent>{([1, 2, 3, 4] as const).map(week => <SelectItem key={week} value={String(week)}>{ordinalLabels[week]}</SelectItem>)}</SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div>
+                                                <Label>Weekday</Label>
+                                                <Select onValueChange={(v) => setNthWeekday(Number(v))} value={String(nthWeekday)}>
+                                                    <SelectTrigger><SelectValue/></SelectTrigger>
+                                                    <SelectContent>{fullDayNames.map((day, i) => <SelectItem key={day} value={String(i)}>{day}</SelectItem>)}</SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -713,10 +837,14 @@ function EditRecurringTaskDialog({
 }) {
     const { toast } = useToast();
     const [assignedToEmail, setAssignedToEmail] = useState('');
-    const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
+    const [frequency, setFrequency] = useState<RecurrenceFrequency>('weekly');
     const [excludeWeekends, setExcludeWeekends] = useState(false);
     const [daysOfWeek, setDaysOfWeek] = useState<string[]>([]);
+    const [biweeklyStartDate, setBiweeklyStartDate] = useState<Date | undefined>(new Date());
+    const [monthlyMode, setMonthlyMode] = useState<MonthlyRecurrenceMode>('dayOfMonth');
     const [dayOfMonth, setDayOfMonth] = useState<number>(1);
+    const [nthWeek, setNthWeek] = useState<MonthlyNthWeekday['week']>(1);
+    const [nthWeekday, setNthWeekday] = useState<number>(1);
     
     useEffect(() => {
         if (chore?.recurrence) {
@@ -725,7 +853,11 @@ function EditRecurringTaskDialog({
             setFrequency(recurrence.frequency);
             setExcludeWeekends(recurrence.dailyOptions?.excludeWeekends || false);
             setDaysOfWeek(recurrence.weeklyOptions?.daysOfWeek.map(String) || []);
+            setBiweeklyStartDate(recurrence.startDate ? parseISO(recurrence.startDate) : new Date());
+            setMonthlyMode(getMonthlyMode(recurrence));
             setDayOfMonth(recurrence.monthlyOptions?.dayOfMonth || 1);
+            setNthWeek(recurrence.monthlyOptions?.nthWeekday?.week || 1);
+            setNthWeekday(recurrence.monthlyOptions?.nthWeekday?.dayOfWeek || 1);
         }
     }, [chore]);
 
@@ -744,15 +876,25 @@ function EditRecurringTaskDialog({
         if (frequency === 'daily') {
             recurrence.dailyOptions = { excludeWeekends };
         }
-        if (frequency === 'weekly') {
+        if (frequency === 'weekly' || frequency === 'biweekly') {
              if (daysOfWeek.length === 0) {
-                toast({ variant: 'destructive', title: 'Missing day', description: 'Please select at least one day for weekly recurrence.' });
+                toast({ variant: 'destructive', title: 'Missing day', description: `Please select at least one day for ${frequency} recurrence.` });
                 return;
             }
             recurrence.weeklyOptions = { daysOfWeek: daysOfWeek.map(Number) };
         }
+        if (frequency === 'biweekly') {
+            if (!biweeklyStartDate) {
+                toast({ variant: 'destructive', title: 'Missing start date', description: 'Please select a start date for biweekly recurrence.' });
+                return;
+            }
+            recurrence.interval = 2;
+            recurrence.startDate = format(biweeklyStartDate, 'yyyy-MM-dd');
+        }
         if (frequency === 'monthly') {
-            recurrence.monthlyOptions = { dayOfMonth };
+            recurrence.monthlyOptions = monthlyMode === 'dayOfMonth'
+                ? { mode: 'dayOfMonth', dayOfMonth }
+                : { mode: 'nthWeekday', nthWeekday: { week: nthWeek, dayOfWeek: nthWeekday } };
         }
 
         onSave(chore.id, assignedToEmail, recurrence);
@@ -777,9 +919,10 @@ function EditRecurringTaskDialog({
 
                     <div className={cn("space-y-4 p-4 border rounded-lg")}>
                          <h4 className="font-medium">Recurring Schedule</h4>
-                         <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as Recurrence['frequency'])} className="flex gap-2">
+                         <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as RecurrenceFrequency)} className="flex flex-wrap gap-2">
                              <Label htmlFor="edit-daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="edit-daily" className="mr-1"/> Daily </Label>
                              <Label htmlFor="edit-weekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekly" id="edit-weekly" className="mr-1"/> Weekly </Label>
+                             <Label htmlFor="edit-biweekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="biweekly" id="edit-biweekly" className="mr-1"/> Biweekly </Label>
                              <Label htmlFor="edit-monthly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="monthly" id="edit-monthly" className="mr-1"/> Monthly </Label>
                          </RadioGroup>
 
@@ -789,18 +932,68 @@ function EditRecurringTaskDialog({
                                 <Label htmlFor="edit-weekdays-only" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekdays" id="edit-weekdays-only" className="mr-1"/> Weekdays Only </Label>
                             </RadioGroup>
                         )}
-                        {frequency === 'weekly' && (
-                            <ToggleGroup type="multiple" value={daysOfWeek} onValueChange={setDaysOfWeek} className="flex flex-wrap gap-1">
-                                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => <ToggleGroupItem key={day} value={String(i)} className="rounded-full">{day}</ToggleGroupItem>)}
-                            </ToggleGroup>
+                        {(frequency === 'weekly' || frequency === 'biweekly') && (
+                            <div className="space-y-3">
+                                <div>
+                                    <Label>{frequency === 'biweekly' ? 'Repeat every other week on' : 'Repeat weekly on'}</Label>
+                                    <ToggleGroup type="multiple" value={daysOfWeek} onValueChange={setDaysOfWeek} className="flex flex-wrap justify-start gap-1 pt-2">
+                                        {dayNames.map((day, i) => <ToggleGroupItem key={day} value={String(i)} className="rounded-full">{day}</ToggleGroupItem>)}
+                                    </ToggleGroup>
+                                </div>
+                                {frequency === 'biweekly' && (
+                                    <div>
+                                        <Label>Anchor Week Start</Label>
+                                        <Popover>
+                                            <PopoverTrigger asChild>
+                                                <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !biweeklyStartDate && "text-muted-foreground")}>
+                                                    <CalendarIcon className="mr-2 h-4 w-4" />
+                                                    {biweeklyStartDate ? format(biweeklyStartDate, "PPP") : <span>Pick a start date</span>}
+                                                </Button>
+                                            </PopoverTrigger>
+                                            <PopoverContent className="w-auto p-0" align="start">
+                                                <Calendar mode="single" selected={biweeklyStartDate} onSelect={setBiweeklyStartDate} initialFocus />
+                                            </PopoverContent>
+                                        </Popover>
+                                    </div>
+                                )}
+                            </div>
                         )}
                         {frequency === 'monthly' && (
-                            <div>
-                                <Label>Day of Month</Label>
-                                <Select onValueChange={(v) => setDayOfMonth(Number(v))} value={String(dayOfMonth)}>
-                                    <SelectTrigger><SelectValue/></SelectTrigger>
-                                    <SelectContent>{Array.from({length: 28}, (_, i) => i + 1).map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent>
-                                </Select>
+                            <div className="space-y-3">
+                                <RadioGroup value={monthlyMode} onValueChange={(v) => setMonthlyMode(v as MonthlyRecurrenceMode)} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    <Label htmlFor="edit-monthly-day-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
+                                        <RadioGroupItem value="dayOfMonth" id="edit-monthly-day-mode" className="mr-1"/> Day of month
+                                    </Label>
+                                    <Label htmlFor="edit-monthly-nth-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
+                                        <RadioGroupItem value="nthWeekday" id="edit-monthly-nth-mode" className="mr-1"/> Nth weekday
+                                    </Label>
+                                </RadioGroup>
+                                {monthlyMode === 'dayOfMonth' ? (
+                                    <div>
+                                        <Label>Day of Month</Label>
+                                        <Select onValueChange={(v) => setDayOfMonth(Number(v))} value={String(dayOfMonth)}>
+                                            <SelectTrigger><SelectValue/></SelectTrigger>
+                                            <SelectContent>{Array.from({length: 28}, (_, i) => i + 1).map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent>
+                                        </Select>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <div>
+                                            <Label>Week</Label>
+                                            <Select onValueChange={(v) => setNthWeek(Number(v) as MonthlyNthWeekday['week'])} value={String(nthWeek)}>
+                                                <SelectTrigger><SelectValue/></SelectTrigger>
+                                                <SelectContent>{([1, 2, 3, 4] as const).map(week => <SelectItem key={week} value={String(week)}>{ordinalLabels[week]}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div>
+                                            <Label>Weekday</Label>
+                                            <Select onValueChange={(v) => setNthWeekday(Number(v))} value={String(nthWeekday)}>
+                                                <SelectTrigger><SelectValue/></SelectTrigger>
+                                                <SelectContent>{fullDayNames.map((day, i) => <SelectItem key={day} value={String(i)}>{day}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -834,7 +1027,6 @@ function ManageRecurringTasksDialog({
     const [choreToDelete, setChoreToDelete] = useState<ChoreTemplate | null>(null);
 
     const usersByEmail = useMemo(() => new Map(users.map(u => [u.email, u])), [users]);
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
     const getScheduleText = (recurrence: Recurrence) => {
         if (!recurrence) return 'One-time';
@@ -842,10 +1034,18 @@ function ManageRecurringTasksDialog({
             case 'daily':
                 return `Daily ${recurrence.dailyOptions?.excludeWeekends ? '(Weekdays only)' : ''}`;
             case 'weekly':
-                const days = recurrence.weeklyOptions?.daysOfWeek.sort().map(d => dayNames[d]).join(', ') || '';
+                const days = [...(recurrence.weeklyOptions?.daysOfWeek || [])].sort().map(d => dayNames[d]).join(', ');
                 return `Weekly on ${days}`;
+            case 'biweekly':
+                const biweeklyDays = [...(recurrence.weeklyOptions?.daysOfWeek || [])].sort().map(d => dayNames[d]).join(', ');
+                const anchor = recurrence.startDate ? ` from ${format(parseISO(recurrence.startDate), 'MMM d, yyyy')}` : '';
+                return `Every 2 weeks on ${biweeklyDays}${anchor}`;
             case 'monthly':
-                return `Monthly on day ${recurrence.monthlyOptions?.dayOfMonth}`;
+                if (getMonthlyMode(recurrence) === 'nthWeekday' && recurrence.monthlyOptions?.nthWeekday) {
+                    const { week, dayOfWeek } = recurrence.monthlyOptions.nthWeekday;
+                    return `Monthly on the ${ordinalLabels[week]} ${fullDayNames[dayOfWeek]}`;
+                }
+                return `Monthly on day ${recurrence.monthlyOptions?.dayOfMonth || 1}`;
             default:
                 return 'Invalid schedule';
         }
@@ -1022,7 +1222,8 @@ export function ChoreChartClient() {
   const [isRecurringTasksOpen, setIsRecurringTasksOpen] = useState(false);
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
   const [templatesToAssign, setTemplatesToAssign] = useState<ChoreTemplate[]>([]);
-  const [choreToConfirm, setChoreToConfirm] = useState<Chore | null>(null);
+  const [selectedChoreIds, setSelectedChoreIds] = useState<string[]>([]);
+  const [choresPendingCompletion, setChoresPendingCompletion] = useState<Chore[] | null>(null);
   
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -1117,25 +1318,7 @@ export function ChoreChartClient() {
             let generatedCount = 0;
 
             while (generatedCount < generationLimit) {
-                let isValidDate = false;
-                
-                if (recurrence.frequency === 'daily') {
-                    if (recurrence.dailyOptions?.excludeWeekends) {
-                        const day = getDay(nextDueDate);
-                        if (day > 0 && day < 6) isValidDate = true;
-                    } else {
-                        isValidDate = true;
-                    }
-                } else if (recurrence.frequency === 'weekly' && recurrence.weeklyOptions) {
-                    const day = getDay(nextDueDate);
-                    if (recurrence.weeklyOptions.daysOfWeek.includes(day)) {
-                        isValidDate = true;
-                    }
-                } else if (recurrence.frequency === 'monthly' && recurrence.monthlyOptions) {
-                    if (nextDueDate.getDate() === recurrence.monthlyOptions.dayOfMonth) {
-                        isValidDate = true;
-                    }
-                }
+                const isValidDate = isValidRecurringDate(nextDueDate, recurrence);
 
                 if (isValidDate) {
                     const originalDueDate = format(nextDueDate, 'yyyy-MM-dd');
@@ -1514,7 +1697,7 @@ export function ChoreChartClient() {
 
   const completeChore = async (chore: Chore, completeAllSubtasks = false) => {
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection) return;
+    if (!choresCollection) return false;
 
     const choreRef = doc(choresCollection, chore.id);
     const updates: Partial<Chore> = { isCompleted: true, completedAt: new Date().toISOString() };
@@ -1531,33 +1714,57 @@ export function ChoreChartClient() {
                 : c
             )
         );
+        return true;
     } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not update chore.' });
+        return false;
     }
   }
 
-  const handleToggleChore = (chore: Chore) => {
-    if (chore.isCompleted) {
-        const choreRef = doc(getCollectionRef('chores')!, chore.id);
-        const updates = { isCompleted: false, completedSubTasks: [], completedAt: null };
-        updateDoc(choreRef, updates).then(() => {
-             setAssignedChores(prevChores => 
-                prevChores.map(c => 
-                    c.id === chore.id 
-                    ? { ...c, ...updates }
-                    : c
-                )
-            );
-        });
-    } else {
-        const allSubTasksCompleted = (chore.subTasks?.length || 0) === (chore.completedSubTasks?.length || 0);
-        if (allSubTasksCompleted) {
-            completeChore(chore);
-        } else {
-            setChoreToConfirm(chore);
-        }
-    }
+  const getIncompleteSubtaskCount = (chore: Chore) => {
+    return (chore.subTasks || []).filter(subTask => !(chore.completedSubTasks || []).includes(subTask)).length;
+  };
+
+  const hasIncompleteSubtasks = (chore: Chore) => getIncompleteSubtaskCount(chore) > 0;
+
+  const handleChoreSelection = (chore: Chore) => {
+    if (chore.isCompleted) return;
+    setSelectedChoreIds(prev => prev.includes(chore.id) ? prev.filter(id => id !== chore.id) : [...prev, chore.id]);
   }
+
+  const selectedChores = assignedChores.filter(chore => selectedChoreIds.includes(chore.id) && !chore.isCompleted);
+
+  const completeSelectedChores = async (chores: Chore[], completeUnfinishedSubtasks: boolean) => {
+    const results = await Promise.all(chores.map(chore => completeChore(chore, completeUnfinishedSubtasks && hasIncompleteSubtasks(chore))));
+    const completedIds = chores.filter((_, index) => results[index]).map(chore => chore.id);
+
+    setSelectedChoreIds(prev => prev.filter(id => !completedIds.includes(id)));
+    setChoresPendingCompletion(null);
+
+    if (completedIds.length > 0) {
+        toast({ title: 'Chores Completed', description: `${completedIds.length} selected chore(s) marked complete.` });
+    }
+  };
+
+  const handleCompleteSelectedChores = () => {
+    const activeSelections = selectedChores;
+    if (activeSelections.length === 0) {
+        setSelectedChoreIds([]);
+        return;
+    }
+
+    const choresWithOpenSubtasks = activeSelections.filter(hasIncompleteSubtasks);
+    if (choresWithOpenSubtasks.length > 0) {
+        setChoresPendingCompletion(choresWithOpenSubtasks);
+        return;
+    }
+
+    void completeSelectedChores(activeSelections, false);
+  };
+
+  useEffect(() => {
+    setSelectedChoreIds(prev => prev.filter(id => assignedChores.some(chore => chore.id === id && !chore.isCompleted)));
+  }, [assignedChores]);
 
   const handleSubTaskToggle = async (chore: Chore, subTask: string) => {
     const choresCollection = getCollectionRef('chores');
@@ -1727,8 +1934,10 @@ export function ChoreChartClient() {
                         <div className="flex items-center gap-2 px-2 py-1 md:px-4 md:py-3">
                              <Checkbox 
                                 id={`chore-${chore.id}`} 
-                                checked={isCompleted} 
-                                onCheckedChange={() => handleToggleChore(chore)} 
+                                checked={isCompleted || selectedChoreIds.includes(chore.id)}
+                                onCheckedChange={() => handleChoreSelection(chore)}
+                                disabled={isCompleted}
+                                aria-label={isCompleted ? `${chore.task} is completed` : `Select ${chore.task}`}
                                 className="h-4 w-4 md:h-5 md:w-5 shrink-0 ml-1"
                              />
                              
@@ -1812,23 +2021,28 @@ export function ChoreChartClient() {
 
   return (
     <>
-        <AlertDialog open={!!choreToConfirm} onOpenChange={(open) => !open && setChoreToConfirm(null)}>
-            <AlertDialogContent>
+        <AlertDialog open={!!choresPendingCompletion} onOpenChange={(open) => !open && setChoresPendingCompletion(null)}>
+            <AlertDialogContent className="max-h-[90vh] max-w-lg">
                 <AlertDialogHeader>
-                    <AlertDialogTitle>Complete All Sub-Tasks?</AlertDialogTitle>
+                    <AlertDialogTitle>Complete chores with unfinished subtasks?</AlertDialogTitle>
                     <AlertDialogDescription>
-                        There are still open sub-tasks. Tapping confirm will mark all sub-tasks as done and complete this chore.
+                        {choresPendingCompletion?.length || 0} selected chore(s) still have open subtasks. Completing them will mark those subtasks done too.
                     </AlertDialogDescription>
                 </AlertDialogHeader>
+                <ScrollArea className="max-h-[42vh] rounded-md border">
+                    <div className="space-y-2 p-3">
+                        {choresPendingCompletion?.map(chore => (
+                            <div key={chore.id} className="rounded-md bg-muted/50 p-2">
+                                <p className="text-sm font-medium leading-tight">{chore.task}</p>
+                                <p className="text-xs text-muted-foreground">{getIncompleteSubtaskCount(chore)} unfinished subtask(s)</p>
+                            </div>
+                        ))}
+                    </div>
+                </ScrollArea>
                 <AlertDialogFooter>
-                    <AlertDialogCancel>Go Back</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => {
-                        if (choreToConfirm) {
-                            completeChore(choreToConfirm, true);
-                            setChoreToConfirm(null);
-                        }
-                    }}>
-                        Confirm & Complete All
+                    <AlertDialogCancel>Review Selection</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => void completeSelectedChores(selectedChores, true)}>
+                        Complete Anyway
                     </AlertDialogAction>
                 </AlertDialogFooter>
             </AlertDialogContent>
@@ -1922,6 +2136,21 @@ export function ChoreChartClient() {
                 </DropdownMenu>
             </div>
         </div>
+
+        {selectedChores.length > 0 && (
+            <div className="sticky top-2 z-10 mb-3 rounded-lg border bg-background/95 p-3 shadow-sm backdrop-blur">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <p className="text-sm font-medium">{selectedChores.length} chore(s) selected</p>
+                        <p className="text-xs text-muted-foreground">Selected checkboxes are ready for a bulk action.</p>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                        <Button variant="outline" size="sm" onClick={() => setSelectedChoreIds([])}>Clear</Button>
+                        <Button size="sm" onClick={handleCompleteSelectedChores}>Complete selected</Button>
+                    </div>
+                </div>
+            </div>
+        )}
 
         <div className="space-y-3 md:space-y-4">
              <Accordion type="multiple" defaultValue={['todo']} className="w-full space-y-3 md:space-y-4">
