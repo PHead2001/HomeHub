@@ -17,6 +17,8 @@ ui-debug.log*
 .env
 .env.local
 .env.*.local
+.env.codex.local
+!.env.example
 
 # service account keys / private creds
 serviceAccountKey.json
@@ -35,3 +37,7 @@ Thumbs.db
 .modified
 metadata.json
 studio.json
+
+#Codex/Local Artifacts
+.codex/
+tsconfig.tsbuildinfo
