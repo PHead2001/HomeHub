@@ -348,6 +348,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (householdData.memberEmails.includes(currentUser.email)) {
             toast({ title: 'Already a Member', description: 'You are already a member of this household.' });
+            setCurrentUser(prev => prev ? { ...prev, householdId: householdDoc.id } : null);
+            return;
         }
 
         const householdDocRef = doc(db, 'households', householdDoc.id);

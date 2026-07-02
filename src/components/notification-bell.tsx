@@ -18,7 +18,7 @@ import { formatDistanceToNow } from "date-fns";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { db, auth } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
 import { collection, query, orderBy, onSnapshot, doc, writeBatch, deleteDoc } from "firebase/firestore";
 import { errorEmitter } from '@/lib/error-emitter';
 import { FirestorePermissionError } from '@/lib/errors';
@@ -146,31 +146,6 @@ export function NotificationBell() {
 
     useEffect(() => {
         if (!currentUser?.email) return;
-
-        // --- START: Auth Debugging Log ---
-        const logAuthInfo = async () => {
-            if (auth.currentUser) {
-                console.log("--- AUTH DEBUG INFO ---");
-                console.log("currentUser.uid from useAuth hook:", currentUser.uid);
-                console.log("currentUser.email from useAuth hook:", currentUser.email);
-                
-                try {
-                    const idTokenResult = await auth.currentUser.getIdTokenResult();
-                    console.log("Firebase Auth Token Claims:", idTokenResult.claims);
-                    console.log("Sign-in provider:", idTokenResult.signInProvider);
-                    console.log("Token email from claims:", idTokenResult.claims.email);
-                } catch (error) {
-                    console.error("Error getting ID token result:", error);
-                }
-                console.log("-------------------------");
-            } else {
-                console.log("--- AUTH DEBUG INFO ---");
-                console.log("auth.currentUser is null. No user is authenticated in the core Firebase Auth SDK context.");
-                console.log("-------------------------");
-            }
-        };
-        logAuthInfo();
-        // --- END: Auth Debugging Log ---
 
         const q = query(
             collection(db, 'users', currentUser.email, 'notifications'),

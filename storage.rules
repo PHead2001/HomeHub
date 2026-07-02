@@ -1,8 +1,22 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    match /{allPaths=**} {
-      allow read, write: if request.auth != null;
+    function signedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function householdMember(householdId) {
+      return signedIn() &&
+        request.auth.token.email in
+          firestore.get(/databases/(default)/documents/households/$(householdId)).data.memberEmails;
+    }
+
+    match /households/{householdId}/{allPaths=**} {
+      allow read, write: if householdMember(householdId);
+    }
+
+    match /users/{userEmail}/avatars/{allPaths=**} {
+      allow read, write: if signedIn() && request.auth.token.email == userEmail;
     }
   }
 }

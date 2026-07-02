@@ -84,8 +84,8 @@ function ThemeCustomizer() {
 
     const handleSaveTheme = async () => {
         const theme = {
-            background: hexToHslString(background),
-            accent: hexToHslString(accent),
+            background: hexToHslString(background) ?? undefined,
+            accent: hexToHslString(accent) ?? undefined,
             backgroundHex: background,
             accentHex: accent
         }
@@ -263,7 +263,7 @@ export function ProfileClient() {
                             <div className="col-span-3">
                                 <ImageUpload 
                                     onFileChange={setPhotoFile} 
-                                    existingImageUrl={currentUser?.avatarUrl} 
+                                    existingImageUrl={currentUser?.avatarUrl ?? undefined} 
                                 />
                             </div>
                         </div>

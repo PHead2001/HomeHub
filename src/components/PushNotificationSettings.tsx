@@ -20,7 +20,6 @@ async function registerServiceWorker() {
     const registration = await navigator.serviceWorker.register('/api/sw', {
         scope: '/',
     });
-    console.log('Service Worker registered successfully:', registration);
     return registration;
 }
 
@@ -74,7 +73,6 @@ export function PushNotificationSettings() {
             });
             
             if (currentToken) {
-                console.log('FCM Token received:', currentToken);
                 const newTokens = Array.from(new Set([...(currentUser.fcmTokens || []), currentToken]));
                 await updateUser({ fcmTokens: newTokens });
                 toast({ title: 'Subscription Successful!', description: 'Push notifications are now active on this device.' });

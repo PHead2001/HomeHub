@@ -100,7 +100,7 @@ GEMINI_API_KEY=...
 ```
 
 ### Firebase Functions
-The push notification system requires the Cloud Function in `src/functions` to be deployed:
+The push notification system requires the Cloud Function in `functions` to be deployed:
 ```bash
 cd functions
 npm install

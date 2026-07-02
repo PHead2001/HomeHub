@@ -8,8 +8,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PlusCircle, Trash2, Edit, Loader2, Home, MoreVertical, X, Calendar as CalendarIcon, Check, Settings, BookUser, Repeat, User, ChevronDown, ChevronRight, ChevronLeft, Filter } from 'lucide-react';
-import type { Chore, User, ChoreTemplate, Room, Recurrence } from '@/lib/types';
+import { PlusCircle, Trash2, Edit, Loader2, Home, MoreVertical, X, Calendar as CalendarIcon, Check, Settings, BookUser, Repeat, User as UserIcon, ChevronDown, ChevronRight, ChevronLeft, Filter } from 'lucide-react';
+import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence } from '@/lib/types';
 import { format, addDays, startOfWeek, startOfMonth, setDate, nextDay, isSameDay, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, isFuture, endOfToday } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
@@ -304,7 +304,7 @@ function AssignChoresDialog({
 }: {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    users: User[];
+    users: HomeHubUser[];
     rooms: Room[];
     templatesToAssign: ChoreTemplate[];
     onAssign: (
@@ -365,7 +365,9 @@ function AssignChoresDialog({
         }
 
         const assignment = { assignedToEmail, roomIds: selectedRoomIds };
-        let schedule;
+        let schedule:
+          | { type: 'onetime'; dueDate: Date }
+          | { type: 'recurring'; recurrence: Omit<Recurrence, 'assignedToEmail'> };
 
         if (isRecurring) {
              const recurrence: Omit<Recurrence, 'assignedToEmail'> = {
@@ -385,7 +387,7 @@ function AssignChoresDialog({
             if (frequency === 'monthly') {
                 recurrence.monthlyOptions = { dayOfMonth };
             }
-            schedule = { type: 'recurring', recurrence };
+            schedule = { type: 'recurring' as const, recurrence };
         } else {
              if (!dueDate) {
                 alert('Please select a due date for the one-time task.');
@@ -679,7 +681,7 @@ function EditRecurringTaskDialog({
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   chore: ChoreTemplate | null;
-  users: User[];
+  users: HomeHubUser[];
   onSave: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => void;
 }) {
     const [assignedToEmail, setAssignedToEmail] = useState('');
@@ -796,7 +798,7 @@ function ManageRecurringTasksDialog({
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   recurringChores: ChoreTemplate[];
-  users: User[];
+  users: HomeHubUser[];
   onUpdate: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => void;
   onDelete: (choreId: string) => void;
 }) {
@@ -897,7 +899,7 @@ function ManageRecurringTasksDialog({
     )
 }
 
-function ChoreCalendar({ chores, users }: { chores: Chore[], users: User[] }) {
+function ChoreCalendar({ chores, users }: { chores: Chore[], users: HomeHubUser[] }) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const choresByDate = useMemo(() => {
@@ -981,7 +983,7 @@ export function ChoreChartClient() {
   
   const [assignedChores, setAssignedChores] = useState<Chore[]>([]);
   const [choreTemplates, setChoreTemplates] = useState<ChoreTemplate[]>([]);
-  const [householdUsers, setHouseholdUsers] = useState<User[]>([]);
+  const [householdUsers, setHouseholdUsers] = useState<HomeHubUser[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
@@ -1025,9 +1027,9 @@ export function ChoreChartClient() {
         const memberEmails = householdDocSnap.data().memberEmails || [];
         const userPromises = memberEmails.map((email: string) => getDoc(doc(db, 'users', email)));
         const userDocsSnap = await Promise.all(userPromises);
-        const usersData: User[] = userDocsSnap
+        const usersData: HomeHubUser[] = userDocsSnap
             .filter(snap => snap.exists())
-            .map(snap => ({ ...(snap.data() as User) }));
+            .map(snap => ({ ...(snap.data() as HomeHubUser) }));
         setHouseholdUsers(usersData);
 
         const choresCollection = getCollectionRef('chores');
@@ -1721,7 +1723,7 @@ export function ChoreChartClient() {
                              <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <button className={cn("flex items-center justify-start text-[9px] md:text-xs h-auto p-1 text-muted-foreground hover:bg-accent rounded-md min-w-[80px] shrink-0", isCompleted && "line-through")}>
-                                        <User className="mr-1 h-2.5 w-2.5 md:h-3 md:w-3" /> {chore.assignedToDisplayName} <ChevronDown className="ml-0.5 h-2.5 w-2.5 md:h-3 md:w-3" />
+                                        <UserIcon className="mr-1 h-2.5 w-2.5 md:h-3 md:w-3" /> {chore.assignedToDisplayName} <ChevronDown className="ml-0.5 h-2.5 w-2.5 md:h-3 md:w-3" />
                                     </button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end" className="w-[180px]">

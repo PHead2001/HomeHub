@@ -54,7 +54,11 @@ import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Checkbox } from './ui/checkbox';
 
-const allPantryUnits = (Object.values(pantryItemUnitCategories) as any).flat() as PantryItemUnit[];
+const allPantryUnits = [
+  ...pantryItemUnitCategories.Weight,
+  ...pantryItemUnitCategories.Volume,
+  ...pantryItemUnitCategories.Count,
+] as [PantryItemUnit, ...PantryItemUnit[]];
 
 const pantryItemSchema = z.object({
   name: z.string().min(1, 'Item name is required.'),
@@ -83,6 +87,7 @@ function PantryItemDialog({
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const { toast } = useToast();
+  const { currentUser } = useAuth();
   
   const form = useForm<PantryItemFormValues>({
     resolver: zodResolver(pantryItemSchema),
@@ -95,7 +100,7 @@ function PantryItemDialog({
     },
   });
   
-  const { isSubmitting, watch, setValue, getValues, reset } = form;
+  const { watch, setValue, getValues, reset } = form;
   const currentUnit = watch('unit');
   const currentQuantity = watch('quantity');
 
@@ -136,7 +141,7 @@ function PantryItemDialog({
   // Effect to update the unit when the category changes
   useEffect(() => {
     const unitsInCurrentCategory = pantryItemUnitCategories[unitCategory];
-    if (!unitsInCurrentCategory.includes(currentUnit as any)) {
+    if (!(unitsInCurrentCategory as readonly PantryItemUnit[]).includes(currentUnit)) {
       setValue('unit', unitsInCurrentCategory[0] as PantryItemUnit);
     }
   }, [unitCategory, currentUnit, setValue]);
@@ -153,7 +158,10 @@ function PantryItemDialog({
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
     try {
-        const { productName } = await lookupBarcode({ barcode });
+        if (!currentUser?.householdId) {
+            throw new Error('No household found for barcode lookup.');
+        }
+        const { productName } = await lookupBarcode({ barcode, householdId: currentUser.householdId });
         if (productName) {
             form.setValue('name', productName);
             toast({ title: "Product Found!", description: `${productName} has been filled in.`});
@@ -327,8 +335,8 @@ function PantryItemDialog({
               <Button type="button" variant="outline" onClick={() => setIsScannerOpen(true)}>
                 <ScanBarcode className="mr-2"/> Scan Barcode
               </Button>
-              <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Save Item'}
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Save Item'}
               </Button>
             </DialogFooter>
           </form>
@@ -781,7 +789,7 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
     setItemToDelete(null); // Close the delete confirmation
 
     // Then handle adding to a list
-    const allLists = await fetchShoppingLists();
+    const allLists = await fetchShoppingLists() ?? [];
     const groceryLists = allLists.filter(list => list.type === 'Grocery');
 
     if (groceryLists.length === 0) {
