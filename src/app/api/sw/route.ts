@@ -22,8 +22,6 @@ export async function GET() {
     const messaging = firebase.messaging();
 
     messaging.onBackgroundMessage((payload) => {
-      console.log('[firebase-messaging-sw.js] Received background message ', payload);
-      
       const notificationTitle = payload.notification?.title || 'New Notification';
       const notificationOptions = {
         body: payload.notification?.body || '',
@@ -37,8 +35,6 @@ export async function GET() {
     });
 
     self.addEventListener('notificationclick', (event) => {
-        console.log('[Service Worker] Notification click Received.');
-
         event.notification.close();
 
         const targetUrl = event.notification.data?.link || '/';

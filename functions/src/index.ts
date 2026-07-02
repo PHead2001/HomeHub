@@ -25,17 +25,14 @@ export const sendPushOnNewNotification = onDocumentCreated(
       return;
     }
 
-    logger.log(
-      `New notification for ${userEmail}, attempting to send push.`,
-      notificationData,
-    );
+    logger.log("New notification created; attempting to send push.");
 
     const userDocRef = db.collection("users").doc(userEmail);
     const userDoc = await userDocRef.get();
     const userData = userDoc.data();
 
     if (!userData || !userData.fcmTokens || userData.fcmTokens.length === 0) {
-      logger.log(`No FCM tokens found for user ${userEmail}.`);
+      logger.log("No FCM tokens found for notification recipient.");
       return;
     }
 
@@ -59,7 +56,10 @@ export const sendPushOnNewNotification = onDocumentCreated(
 
     const response = await messaging.sendEachForMulticast(payload);
 
-    logger.log("Push notification sent:", response);
+    logger.log("Push notification send completed.", {
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+    });
 
     const tokensToRemove: Promise<admin.firestore.WriteResult>[] = [];
     response.responses.forEach((result, index) => {
@@ -67,9 +67,8 @@ export const sendPushOnNewNotification = onDocumentCreated(
         const error = result.error;
         if (error) {
           logger.error(
-            "Failure sending notification to",
-            tokens[index],
-            error,
+            "Failure sending notification.",
+            {code: error.code},
           );
           if (
             error.code === "messaging/invalid-registration-token" ||

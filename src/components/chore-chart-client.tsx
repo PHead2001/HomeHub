@@ -340,6 +340,7 @@ function AssignChoresDialog({
         | { type: 'recurring'; recurrence: Omit<Recurrence, 'assignedToEmail'> }
     ) => void;
 }) {
+    const { toast } = useToast();
     const [isRecurring, setIsRecurring] = useState(false);
     const [assignedToEmail, setAssignedToEmail] = useState('');
     const [dueDate, setDueDate] = useState<Date | undefined>(new Date());
@@ -381,12 +382,12 @@ function AssignChoresDialog({
 
     const handleAssign = () => {
         if (!assignedToEmail) {
-            alert('Please assign a user.');
+            toast({ variant: 'destructive', title: 'Missing assignee', description: 'Please assign a user.' });
             return;
         }
 
         if (availableRoomsForTemplates.length > 0 && selectedRoomIds.length === 0) {
-            alert('Please select at least one room for this assignment.');
+            toast({ variant: 'destructive', title: 'Missing room', description: 'Please select at least one room for this assignment.' });
             return;
         }
 
@@ -405,7 +406,7 @@ function AssignChoresDialog({
             }
             if (frequency === 'weekly') {
                 if (daysOfWeek.length === 0) {
-                    alert('Please select at least one day for weekly recurrence.');
+                    toast({ variant: 'destructive', title: 'Missing day', description: 'Please select at least one day for weekly recurrence.' });
                     return;
                 }
                 recurrence.weeklyOptions = { daysOfWeek: daysOfWeek.map(Number) };
@@ -416,7 +417,7 @@ function AssignChoresDialog({
             schedule = { type: 'recurring' as const, recurrence };
         } else {
              if (!dueDate) {
-                alert('Please select a due date for the one-time task.');
+                toast({ variant: 'destructive', title: 'Missing due date', description: 'Please select a due date for the one-time task.' });
                 return;
             }
             schedule = { type: 'onetime' as const, dueDate };
@@ -710,6 +711,7 @@ function EditRecurringTaskDialog({
   users: HomeHubUser[];
   onSave: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => void;
 }) {
+    const { toast } = useToast();
     const [assignedToEmail, setAssignedToEmail] = useState('');
     const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
     const [excludeWeekends, setExcludeWeekends] = useState(false);
@@ -729,7 +731,7 @@ function EditRecurringTaskDialog({
 
     const handleSave = () => {
         if (!chore || !assignedToEmail) {
-            alert("Please select a user.");
+            toast({ variant: 'destructive', title: 'Missing assignee', description: 'Please select a user.' });
             return;
         }
 
@@ -744,7 +746,7 @@ function EditRecurringTaskDialog({
         }
         if (frequency === 'weekly') {
              if (daysOfWeek.length === 0) {
-                alert('Please select at least one day for weekly recurrence.');
+                toast({ variant: 'destructive', title: 'Missing day', description: 'Please select at least one day for weekly recurrence.' });
                 return;
             }
             recurrence.weeklyOptions = { daysOfWeek: daysOfWeek.map(Number) };

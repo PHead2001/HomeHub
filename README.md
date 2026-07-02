@@ -1,124 +1,158 @@
-# 🏠 HomeHub: All-in-One Home Management
+# HomeHub
 
-HomeHub is a sophisticated, family-oriented web application designed to centralize and streamline household management. It combines task delegation, inventory tracking, pet care, maintenance records, and smart home control into a single, cohesive dashboard.
+HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance notes, notifications, and Home Assistant control into one Firebase-backed Next.js app.
 
-Built with a focus on ease of use and mobile accessibility, HomeHub leverages Generative AI to automate tedious tasks like categorizing groceries or summarizing maintenance logs.
+The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/Gemini powers grocery categorization, recipe ideas, barcode lookup assistance, and maintenance-log summaries.
 
----
+## Main Modules
 
-## 🚀 Key Modules
+### Dashboard
+- Household overview with quick access to core modules.
+- Responsive layout intended for phones, tablets, and desktop screens.
 
-### 📋 Chore Chart & Household Tasks
-A robust system for managing recurring and one-time tasks.
-- **Smart Scheduling**: Support for daily (including weekday-only), weekly, and monthly recurrence.
-- **Room-Based Organization**: Group chores by room (Kitchen, Bathroom, Yard, etc.) with custom icons.
-- **Sub-Tasks**: Break down complex chores into manageable steps.
-- **Overdue Alerts**: Automatic checks at 12:01 AM every day to notify users of pending tasks.
-- **Calendar View**: A visual overview of the entire household's schedule.
-- **Reminders**: Personalized daily reminder times configurable per user.
+### Chores
+- One-time and recurring chores.
+- Room-based organization with selectable icons.
+- Subtasks, completion history, calendar view, and reminder notifications.
 
-### 🛒 Shopping Center & Pantry Inventory
-Never lose track of what you need or what you have.
-- **Multiple Lists**: Create specific lists for Groceries, Hardware, Auto, etc.
-- **AI Categorization**: Uses Gemini AI to automatically sort added items into logical aisles (Produce, Dairy, etc.).
-- **Barcode Scanning**: Built-in scanner to look up products via local library or the Open Food Facts API.
-- **Inventory Integration**: Move items from your "Purchased" list directly into your Pantry/Fridge/Freezer inventory.
-- **AI Recipe Generator**: A "Chef AI" that suggests creative recipes based solely on your current pantry items.
+### Shopping and Pantry
+- Multiple shopping lists by type.
+- Grocery categorization with AI assistance.
+- Barcode lookup using the household library first, then public product data.
+- Pantry, fridge, and freezer inventory with expiry dates.
+- Recipe ideas based on current pantry contents.
 
-### 🐾 Pet Care Dashboard
-A dedicated space for the furry members of the family.
-- **Pet Profiles**: Track info, food schedules, and photos.
-- **Detailed Logs**: Independent logs for Feeding (with amount/type tracking), Medication, and General Care (vet visits, grooming).
-- **History Tracking**: Complete historical records of care activities.
+### Pets
+- Pet profiles with photos and care details.
+- Feeding, medication, and general care logs.
 
-### 🛠️ Home Maintenance Log
-A permanent record of home health.
-- **Log Management**: Track repairs and maintenance for appliances and structural items.
-- **AI Summarization**: Long, technical notes can be summarized into concise bullet points using AI for quick review.
+### Maintenance
+- Household maintenance records.
+- AI summaries for longer notes.
 
-### 🤖 Smart Home Automation
-Control your home directly from the hub.
-- **Home Assistant Integration**: Securely connect to a local Home Assistant instance using Long-Lived Access Tokens.
-- **Device Control**: View and manage the state of all your entities (lights, switches, sensors) from within the HomeHub UI.
+### Automation
+- Home Assistant connection using a household-scoped URL and long-lived access token.
+- Entity state viewing from the HomeHub UI.
 
----
+## Tech Stack
 
-## 🧠 AI Features (Powered by Google Genkit)
+- Next.js 15 App Router
+- React 18 and TypeScript
+- Tailwind CSS and shadcn-style UI components
+- Firebase Auth, Firestore, Storage, Cloud Functions, Cloud Messaging, and App Hosting
+- Genkit with Google AI
 
-HomeHub integrates the **Gemini 2.0 Flash** model to provide intelligent assistance:
-- **`categorizeGroceryItem`**: Intelligently assigns categories to food items based on household-specific lists.
-- **`generateRecipe`**: Analyzes pantry inventory to provide coherent, delicious meal ideas.
-- **`summarizeMaintenanceLog`**: Condenses complex maintenance notes.
-- **`lookupBarcode`**: An agentic flow that checks a private household database before querying public APIs.
-
----
-
-## 🛠️ Technical Stack
-
-- **Framework**: [Next.js 15](https://nextjs.org/) (App Router)
-- **Language**: TypeScript
-- **Styling**: [Tailwind CSS](https://tailwindcss.com/) with [Shadcn UI](https://ui.shadcn.com/)
-- **Backend/Database**: [Firebase](https://firebase.google.com/) (Firestore, Auth, Storage)
-- **AI Toolkit**: [Genkit](https://github.com/firebase/genkit)
-- **Real-time**: Firestore Snapshots for live updates across all devices.
-- **Push Notifications**: Firebase Cloud Messaging (FCM) with a custom Service Worker API.
-
----
-
-## 📂 Project Structure
+## Project Structure
 
 ```text
 src/
-├── ai/                # Genkit AI flows and configurations
-├── app/               # Next.js App Router (Pages and API routes)
-│   ├── api/sw/        # Dynamic Service Worker for Push Notifications
-│   └── (modules)/     # Shopping, Pets, Chores, etc.
-├── components/        # Reusable UI components
-│   ├── ui/            # Shadcn base components
-│   └── (features)/    # Feature-specific client components
-├── contexts/          # Auth and Household state management
-├── hooks/             # Custom React hooks (useAuth, useToast)
-├── lib/               # Shared utilities, types, and Firebase config
-└── functions/         # Firebase Cloud Functions (Node.js/TypeScript)
+  ai/                 Genkit flows and AI configuration
+  app/                Next.js App Router pages and API routes
+  components/         Shared UI and feature components
+  contexts/           Auth and household state
+  hooks/              React hooks
+  lib/                Firebase config, shared types, utilities
+
+functions/            Firebase Cloud Functions source
+firestore.rules       Firestore security rules
+storage.rules         Firebase Storage security rules
+firebase.json         Firebase project configuration
 ```
 
----
+## Local Setup
 
-## ⚙️ Setup & Configuration
+Install dependencies:
 
-### Environment Variables
-Create a `.env` file in the root with the following keys:
+```bash
+npm ci
+```
+
+Create a local environment file from the example:
+
+```bash
+cp .env.example .env.local
+```
+
+On PowerShell:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+Fill in:
+
 ```env
-NEXT_PUBLIC_FIREBASE_API_KEY=...
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=...
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
-NEXT_PUBLIC_FIREBASE_APP_ID=...
-NEXT_PUBLIC_FIREBASE_VAPID_KEY=...
-GEMINI_API_KEY=...
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+NEXT_PUBLIC_FIREBASE_APP_ID=
+NEXT_PUBLIC_FIREBASE_VAPID_KEY=
+GEMINI_API_KEY=
 ```
 
-### Firebase Functions
-The push notification system requires the Cloud Function in `functions` to be deployed:
+Run the app locally:
+
+```bash
+npm run dev
+```
+
+The dev server uses port `9002`.
+
+## Validation
+
+Run lint:
+
+```bash
+npm run lint
+```
+
+Run a production build:
+
+```bash
+npm run build
+```
+
+TypeScript-only checking is also available:
+
+```bash
+npm run typecheck
+```
+
+## Firebase
+
+Deploy the app with Firebase App Hosting from this repo. The Firebase config also points at:
+
+- `firestore.rules` for Firestore access control.
+- `storage.rules` for Storage access control.
+- `functions/` for Cloud Functions.
+
+The push notification function lives in `functions/src/index.ts`. To work on functions locally:
+
 ```bash
 cd functions
-npm install
+npm ci
+npm run lint
+npm run build
+```
+
+To deploy functions:
+
+```bash
+cd functions
 npm run deploy
 ```
 
-### Service Worker
-The service worker is served via a Next.js API route (`/api/sw`) to allow environment variables to be injected into the worker at runtime, ensuring seamless FCM integration across different deployment environments.
+The service worker is served from `/api/sw` so Firebase public config can be injected at runtime.
 
----
+## Data Isolation Notes
 
-## 🎨 Personalization
-HomeHub supports high levels of customization:
-- **Theming**: Users can choose custom HSL-based background and accent colors.
-- **Household System**: A robust multi-user system using 6-digit invite codes to link family members together.
-- **Avatar System**: Firebase Storage integration for user and pet profile pictures.
+- Most household data is stored under `households/{householdId}` and is scoped by household membership in Firestore and Storage rules.
+- Per-user notifications are stored under `users/{email}/notifications`.
+- Home Assistant credentials are stored under the household document tree and should be treated as household-private data.
+- Local `.env*` files are ignored by Git. Keep production secrets out of committed files.
 
----
+## License
 
-## 📝 License
-This project is for private household management use. All rights reserved.
+Private household management project. All rights reserved.
