@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { PlusCircle, Trash2, Loader2, Settings, X, ArchiveX, Edit, MoreVertical, ScanBarcode, HelpCircle, ArrowLeft, Plus, Minus } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, PantryItem, ShoppingListType, BarcodeLibraryItem } from '@/lib/types';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
@@ -63,6 +64,14 @@ const defaultLists: {name: string, icon: string, type: ShoppingListType}[] = [
 
 const presetIcons = [ "ShoppingCart", "Car", "Wrench", "PawPrint", "Home", "Gift", "Beer", "Shirt", "Drama", "Popcorn", "Dumbbell", "Plane", "HeartPulse", "Stethoscope", "School", "Dog", "Cat", "TreePalm", "Coffee", "Pizza" ];
 
+type LucideExport = typeof LucideIcons[keyof typeof LucideIcons];
+
+const isLucideIcon = (icon: LucideExport): icon is LucideIcon => typeof icon === 'function';
+
+const getLucideIcon = (name: string, fallback: LucideIcon): LucideIcon => {
+  const icon = LucideIcons[name as keyof typeof LucideIcons];
+  return isLucideIcon(icon) ? icon : fallback;
+};
 
 function ListDialog({
   isOpen,
@@ -114,7 +123,7 @@ function ListDialog({
   const selectedColor = watch('color');
 
   const renderIcon = (name: string) => {
-    const Icon = (LucideIcons as any)[name] || HelpCircle;
+    const Icon = getLucideIcon(name, HelpCircle);
     return <Icon className="h-8 w-8" />;
   }
 
@@ -159,7 +168,7 @@ function ListDialog({
                         <FormLabel>Icon</FormLabel>
                         <div className="grid grid-cols-5 gap-2 border p-2 rounded-lg">
                             {presetIcons.slice(0,10).map(iconName => { // First row
-                                const Icon = (LucideIcons as any)[iconName];
+                                const Icon = getLucideIcon(iconName, HelpCircle);
                                 return (
                                     <Button key={iconName} type="button" variant="outline" className={cn("h-12", selectedIconName === iconName && "ring-2 ring-primary")} onClick={() => setValue('icon', iconName, { shouldValidate: true })}>
                                         <Icon />
@@ -169,7 +178,7 @@ function ListDialog({
                         </div>
                         <div className="grid grid-cols-5 gap-2 border p-2 rounded-lg">
                             {presetIcons.slice(10,20).map(iconName => { // Second row
-                                const Icon = (LucideIcons as any)[iconName];
+                                const Icon = getLucideIcon(iconName, HelpCircle);
                                 return (
                                     <Button key={iconName} type="button" variant="outline" className={cn("h-12", selectedIconName === iconName && "ring-2 ring-primary")} onClick={() => setValue('icon', iconName, { shouldValidate: true })}>
                                         <Icon />
@@ -215,7 +224,7 @@ function ListDialog({
 }
 
 function ListCard({ list, onSelect, onEdit, onDelete }: { list: ShoppingList, onSelect: () => void, onEdit: () => void, onDelete: () => void }) {
-  const Icon = (LucideIcons as any)[list.icon] || HelpCircle;
+  const Icon = getLucideIcon(list.icon, HelpCircle);
   const cardColor = list.color;
   return (
     <Card className="flex flex-col justify-between hover:shadow-lg transition-shadow">

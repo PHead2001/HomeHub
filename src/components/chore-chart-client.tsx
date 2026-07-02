@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PlusCircle, Trash2, Edit, Home, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter } from 'lucide-react';
+import type { LucideIcon, LucideProps } from 'lucide-react';
 import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence } from '@/lib/types';
 import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
@@ -34,8 +35,17 @@ import * as LucideIcons from 'lucide-react';
 
 const roomIcons = ["Home", "BedDouble", "Bath", "Sofa", "Utensils", "Microwave", "Refrigerator", "WashingMachine", "Car", "Bike", "TreeDeciduous", "Warehouse", "Armchair", "Tv", "Gamepad2", "Baby", "Dog", "Cat", "Hammer", "Paintbrush" ];
 
-const renderIcon = (name: string, props: any = {}) => {
-    const Icon = (LucideIcons as any)[name] || Home;
+type LucideExport = typeof LucideIcons[keyof typeof LucideIcons];
+
+const isLucideIcon = (icon: LucideExport): icon is LucideIcon => typeof icon === 'function';
+
+const getLucideIcon = (name: string, fallback: LucideIcon): LucideIcon => {
+    const icon = LucideIcons[name as keyof typeof LucideIcons];
+    return isLucideIcon(icon) ? icon : fallback;
+};
+
+const renderIcon = (name: string, props: LucideProps = {}) => {
+    const Icon = getLucideIcon(name, Home);
     return <Icon {...props} />;
 }
 
@@ -465,7 +475,7 @@ function AssignChoresDialog({
                         
                         <div className={cn("space-y-4 p-4 border rounded-lg", isRecurring ? 'opacity-100' : 'opacity-50 pointer-events-none')}>
                              <h4 className="font-medium">Recurring Schedule</h4>
-                             <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as any)} className="flex gap-2">
+                             <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as Recurrence['frequency'])} className="flex gap-2">
                                  <Label htmlFor="daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="daily" className="mr-1"/> Daily </Label>
                                  <Label htmlFor="weekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekly" id="weekly" className="mr-1"/> Weekly </Label>
                                  <Label htmlFor="monthly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="monthly" id="monthly" className="mr-1"/> Monthly </Label>
@@ -749,7 +759,7 @@ function EditRecurringTaskDialog({
 
                     <div className={cn("space-y-4 p-4 border rounded-lg")}>
                          <h4 className="font-medium">Recurring Schedule</h4>
-                         <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as any)} className="flex gap-2">
+                         <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as Recurrence['frequency'])} className="flex gap-2">
                              <Label htmlFor="edit-daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="edit-daily" className="mr-1"/> Daily </Label>
                              <Label htmlFor="edit-weekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekly" id="edit-weekly" className="mr-1"/> Weekly </Label>
                              <Label htmlFor="edit-monthly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="monthly" id="edit-monthly" className="mr-1"/> Monthly </Label>
@@ -1163,8 +1173,8 @@ export function ChoreChartClient() {
             }));
         }
 
-    } catch (error: any) {
-        console.error("Error fetching data:", error);
+    } catch (error) {
+        console.error("Error fetching data:", error instanceof Error ? error : String(error));
         toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch household data.' });
     } finally {
         setLoading(false);
