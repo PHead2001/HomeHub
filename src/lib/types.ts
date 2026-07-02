@@ -15,10 +15,20 @@ export type JsonValue =
     | JsonValue[]
     | { [key: string]: JsonValue };
 
+export type RecurrenceFrequency = 'daily' | 'weekly' | 'biweekly' | 'monthly';
+
+export type MonthlyRecurrenceMode = 'dayOfMonth' | 'nthWeekday';
+
+export type MonthlyNthWeekday = {
+  week: 1 | 2 | 3 | 4;
+  dayOfWeek: number; // 0 for Sunday, 1 for Monday, etc.
+};
+
 export type Recurrence = {
-  frequency: 'daily' | 'weekly' | 'monthly';
+  frequency: RecurrenceFrequency;
   interval: number; // e.g., every 1 week, every 2 weeks
   assignedToEmail: string; // The email of the user this recurrence is assigned to
+  startDate?: string; // yyyy-MM-dd anchor date for interval-based schedules
   dailyOptions?: {
     excludeWeekends: boolean;
   };
@@ -26,7 +36,9 @@ export type Recurrence = {
     daysOfWeek: number[]; // 0 for Sunday, 1 for Monday, etc.
   };
   monthlyOptions?: {
-    dayOfMonth: number; // 1-28
+    mode?: MonthlyRecurrenceMode;
+    dayOfMonth?: number; // 1-28
+    nthWeekday?: MonthlyNthWeekday;
   };
 };
 
