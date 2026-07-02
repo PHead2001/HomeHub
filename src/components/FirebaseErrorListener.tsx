@@ -11,15 +11,16 @@ export function FirebaseErrorListener() {
 
   useEffect(() => {
     const handlePermissionError = (error: FirestorePermissionError) => {
-      console.error(error); // Log the full contextual error to the console for debugging
+      console.error('Firestore permission denied:', {
+        path: error.context.path,
+        operation: error.context.operation,
+      });
       toast({
         variant: 'destructive',
         title: 'Permission Denied',
-        description: 'You do not have permission to perform this action. Check the console for details.',
+        description: 'You do not have permission to perform this action.',
         duration: 10000,
       });
-
-      // In a real app, you might also send this to a logging service
     };
 
     errorEmitter.on('permission-error', handlePermissionError);
@@ -31,5 +32,3 @@ export function FirebaseErrorListener() {
 
   return null; // This component does not render anything
 }
-
-    

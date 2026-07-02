@@ -26,8 +26,11 @@ service cloud.firestore {
     // - Members can read the household document.
     // - Only the owner can update household details or delete it.
     match /households/{householdId} {
-      allow read: if signedIn() && request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails;
-      allow write: if signedIn() && request.auth.token.email == get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail;
+      allow read: if signedIn() && request.auth.token.email in resource.data.memberEmails;
+      allow create: if signedIn() &&
+        request.auth.token.email == request.resource.data.ownerEmail &&
+        request.auth.token.email in request.resource.data.memberEmails;
+      allow update, delete: if signedIn() && request.auth.token.email == resource.data.ownerEmail;
 
       // All members of a household can read/write to its subcollections (pets, chores, etc.)
       match /{subcollection}/{docId=**} {

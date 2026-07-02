@@ -29,7 +29,7 @@ export async function getHomeAssistantEntities(userEmail: string | undefined, ho
     }
     haConfig = haConfigDoc.data() as HomeAssistantCredentials;
   } catch (dbError) {
-    console.error('Firestore error:', dbError);
+    console.error('Failed to retrieve Home Assistant configuration:', dbError);
     return { error: 'Failed to retrieve Home Assistant configuration from database.' };
   }
   
@@ -50,7 +50,7 @@ export async function getHomeAssistantEntities(userEmail: string | undefined, ho
     });
 
     if (!response.ok) {
-      console.error('Home Assistant API error:', response.status, await response.text());
+      console.error('Home Assistant API error:', response.status);
       return { error: `Home Assistant API returned an error: ${response.status}. Check your URL and token.` };
     }
 

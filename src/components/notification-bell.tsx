@@ -160,8 +160,7 @@ export function NotificationBell() {
             } as Notification));
             setNotifications(notifs);
         },
-        async (error) => {
-            console.error(error); // Keep original console error
+        async () => {
             const permissionError = new FirestorePermissionError({
                 path: `users/${currentUser.email}/notifications`,
                 operation: 'list',

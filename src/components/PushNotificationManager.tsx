@@ -17,7 +17,6 @@ export function PushNotificationManager() {
 
             if (messaging) {
                 onMessage(messaging, (payload) => {
-                    console.log('Foreground message received. ', payload);
                     toast({
                         title: payload.notification?.title,
                         description: payload.notification?.body,
@@ -29,7 +28,6 @@ export function PushNotificationManager() {
         if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
             // We wait for the service worker to be ready before setting up the listener.
             navigator.serviceWorker.ready.then(() => {
-                console.log('Service worker ready for foreground messages.');
                 setupForegroundListener();
             });
         }
