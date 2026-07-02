@@ -11,7 +11,7 @@ import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { PlusCircle, Trash2, Loader2, Settings, X, ArchiveX, Edit, MoreVertical, ScanBarcode, HelpCircle, ArrowLeft, Plus, Minus } from 'lucide-react';
+import { Beer, Car, Cat, Coffee, Dog, Drama, Dumbbell, Gift, HeartPulse, HelpCircle, Home, PawPrint, Pizza, Plane, PlusCircle, Popcorn, School, Shirt, ShoppingCart, Stethoscope, TreePalm, Trash2, Loader2, Settings, X, ArchiveX, Edit, MoreVertical, ScanBarcode, ArrowLeft, Plus, Minus, Wrench } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, PantryItem, ShoppingListType, BarcodeLibraryItem } from '@/lib/types';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
@@ -41,7 +41,6 @@ import { collection, doc, getDocs, updateDoc, deleteDoc, getDoc, writeBatch, set
 import { db } from '@/lib/firebase';
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
-import * as LucideIcons from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
 import Image from 'next/image';
@@ -63,14 +62,32 @@ const defaultLists: {name: string, icon: string, type: ShoppingListType}[] = [
 ];
 
 const presetIcons = [ "ShoppingCart", "Car", "Wrench", "PawPrint", "Home", "Gift", "Beer", "Shirt", "Drama", "Popcorn", "Dumbbell", "Plane", "HeartPulse", "Stethoscope", "School", "Dog", "Cat", "TreePalm", "Coffee", "Pizza" ];
-
-type LucideExport = typeof LucideIcons[keyof typeof LucideIcons];
-
-const isLucideIcon = (icon: LucideExport): icon is LucideIcon => typeof icon === 'function';
+const lucideIconRegistry: Partial<Record<string, LucideIcon>> = {
+  Beer,
+  Car,
+  Cat,
+  Coffee,
+  Dog,
+  Drama,
+  Dumbbell,
+  Gift,
+  HeartPulse,
+  HelpCircle,
+  Home,
+  PawPrint,
+  Pizza,
+  Plane,
+  Popcorn,
+  School,
+  Shirt,
+  ShoppingCart,
+  Stethoscope,
+  TreePalm,
+  Wrench,
+};
 
 const getLucideIcon = (name: string, fallback: LucideIcon): LucideIcon => {
-  const icon = LucideIcons[name as keyof typeof LucideIcons];
-  return isLucideIcon(icon) ? icon : fallback;
+  return lucideIconRegistry[name] ?? fallback;
 };
 
 function ListDialog({
