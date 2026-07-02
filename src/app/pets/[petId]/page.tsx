@@ -30,7 +30,7 @@ import { DeletePetAlert } from '@/components/delete-pet-alert';
 import { useToast } from '@/hooks/use-toast';
 
 
-export default function PetDetailPage({ params }: { params: { petId: string } }) {
+export default function PetDetailPage({ params }: { params: Promise<{ petId: string }> }) {
   const resolvedParams = use(params);
   const { petId } = resolvedParams;
   const router = useRouter();

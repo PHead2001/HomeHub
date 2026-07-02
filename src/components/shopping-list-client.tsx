@@ -455,7 +455,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     resolver: zodResolver(itemSchema),
     defaultValues: { name: '', quantity: 1 },
   });
-  const { isSubmitting, watch, setValue, getValues } = form;
+  const { watch, setValue, getValues } = form;
   const currentQuantity = watch('quantity');
 
   const onAddItemSubmit = async (values: z.infer<typeof itemSchema>, libraryItem?: BarcodeLibraryItem | null, barcode?: string) => {
@@ -536,6 +536,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
 
   const clearPurchasedItems = async () => {
     if (!currentUser?.householdId || !selectedList) return;
+    const householdId = currentUser.householdId;
     const purchased = listItems.filter(i => i.status === 'purchased');
     if (purchased.length === 0) {
       toast({ title: "Nothing to clear!" });
@@ -544,7 +545,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     }
     const batch = writeBatch(db);
     purchased.forEach(item => {
-      batch.delete(doc(db, 'households', currentUser.householdId, 'shopping-lists', selectedList.id, 'items', item.id));
+      batch.delete(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', item.id));
     });
     try {
       await batch.commit();
@@ -692,8 +693,8 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                             <BarcodeScanner onScan={handleBarcodeScan} />
                                         </DialogContent>
                                       </Dialog>
-                                    <Button type="submit" disabled={isSubmitting}>
-                                        {isSubmitting ? ( <Loader2 className="mr-2 h-4 w-4 animate-spin" /> ) : ( "Add to List" )}
+                                    <Button type="submit" disabled={form.formState.isSubmitting}>
+                                        {form.formState.isSubmitting ? ( <Loader2 className="mr-2 h-4 w-4 animate-spin" /> ) : ( "Add to List" )}
                                     </Button>
                                 </DialogFooter>
                                 </form>

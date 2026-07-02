@@ -8,7 +8,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, doc, getDocs, setDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { v4 as uuidv4 } from 'uuid';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -235,12 +235,14 @@ export function BarcodeLibraryClient() {
     }
   };
 
-  const handleDelete = async (itemId: string) => {
+  const handleDelete = async (item: BarcodeLibraryItem) => {
     const collectionRef = getLibraryCollectionRef();
     if (!collectionRef) return;
     try {
-        // TODO: Delete image from storage
-        await deleteDoc(doc(collectionRef, itemId));
+        await deleteObject(ref(getStorage(), item.imageUrl)).catch((error) => {
+          console.warn('Could not delete barcode image from storage:', error);
+        });
+        await deleteDoc(doc(collectionRef, item.id));
         toast({title: "Item Deleted"});
         fetchItems();
     } catch (error) {
@@ -300,7 +302,7 @@ export function BarcodeLibraryClient() {
                             <TableCell>{format(new Date(item.createdAt), 'PPP')}</TableCell>
                             <TableCell className="text-right">
                                 <Button variant="ghost" size="icon" onClick={() => openDialogToEdit(item)}><Edit/></Button>
-                                <Button variant="ghost" size="icon" onClick={() => handleDelete(item.id)}><Trash2/></Button>
+                                <Button variant="ghost" size="icon" onClick={() => handleDelete(item)}><Trash2/></Button>
                             </TableCell>
                         </TableRow>
                     )) : (

@@ -13,35 +13,14 @@ export const firebaseConfig: FirebaseOptions = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
 };
 
-// Initialize Firebase
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Export instances
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 
-// Must be conditional to avoid SSR errors
 export const getFirebaseMessaging = async () => {
-    if (typeof window !== 'undefined' && await isSupported()) {
-        return getMessaging(app);
-    }
-    return null;
-}
-
-
-// --- START: Firebase Project ID Verification ---
-console.log("--- FIREBASE PROJECT VERIFICATION ---");
-if (auth.app.options.projectId && db.app.options.projectId) {
-    console.log(`Auth Service Project ID: ${auth.app.options.projectId}`);
-    console.log(`Firestore Service Project ID: ${db.app.options.projectId}`);
-    if (auth.app.options.projectId === db.app.options.projectId) {
-        console.log("✅ Auth and Firestore are using the same project.");
-    } else {
-        console.error("❌ MISMATCH: Auth and Firestore are using DIFFERENT projects!");
-    }
-} else {
-    console.error("❌ Could not verify Firebase Project ID. The app might not be initialized correctly.");
-}
-console.log("Please compare the Project ID above with the project you are editing in the Firebase Console.");
-console.log("-------------------------------------");
-// --- END: Firebase Project ID Verification ---
+  if (typeof window !== "undefined" && await isSupported()) {
+    return getMessaging(app);
+  }
+  return null;
+};

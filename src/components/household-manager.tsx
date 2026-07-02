@@ -125,13 +125,6 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
     setIsJoining(false);
   };
 
-  const copyInviteCode = () => {
-    if (household?.inviteCode) {
-      navigator.clipboard.writeText(household.inviteCode);
-      toast({ title: "Copied!", description: "Invite code copied to clipboard." });
-    }
-  }
-
   // Display this overlay if user is logged in but has no household
   return (
     <>

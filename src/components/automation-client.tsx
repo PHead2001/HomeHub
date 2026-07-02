@@ -137,7 +137,7 @@ export function AutomationClient() {
       setIsLoading(true);
       setEntities([]);
       try {
-          const result = await getHomeAssistantEntities(currentUser?.email, currentUser?.householdId);
+          const result = await getHomeAssistantEntities(currentUser?.email, currentUser?.householdId ?? undefined);
           if (result.error) {
               toast({ variant: 'destructive', title: 'Connection Failed', description: result.error });
               // If fetching fails, maybe the token is bad. Ask user to reconnect.
