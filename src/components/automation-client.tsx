@@ -109,6 +109,25 @@ export function AutomationClient() {
   const [isConfigured, setIsConfigured] = useState(false);
   const [isDisconnectAlertOpen, setIsDisconnectAlertOpen] = useState(false);
   
+  const handleFetchEntities = useCallback(async () => {
+      setIsLoading(true);
+      setEntities([]);
+      try {
+          const result = await getHomeAssistantEntities(currentUser?.email, currentUser?.householdId ?? undefined);
+          if (result.error) {
+              toast({ variant: 'destructive', title: 'Connection Failed', description: result.error });
+              // If fetching fails, maybe the token is bad. Ask user to reconnect.
+              setIsConfigured(false);
+          } else if (result.data) {
+              setEntities(result.data);
+          }
+      } catch {
+          toast({ variant: 'destructive', title: 'Error', description: 'An unexpected error occurred.' });
+      } finally {
+          setIsLoading(false);
+      }
+  }, [currentUser?.email, currentUser?.householdId, toast]);
+
   const checkConfiguration = useCallback(async () => {
     if (!currentUser?.householdId) {
         setIsLoading(false);
@@ -130,27 +149,7 @@ export function AutomationClient() {
     } finally {
         setIsLoading(false);
     }
-  }, [currentUser?.householdId, toast]);
-
-
-  const handleFetchEntities = useCallback(async () => {
-      setIsLoading(true);
-      setEntities([]);
-      try {
-          const result = await getHomeAssistantEntities(currentUser?.email, currentUser?.householdId ?? undefined);
-          if (result.error) {
-              toast({ variant: 'destructive', title: 'Connection Failed', description: result.error });
-              // If fetching fails, maybe the token is bad. Ask user to reconnect.
-              setIsConfigured(false);
-          } else if (result.data) {
-              setEntities(result.data);
-          }
-      } catch {
-          toast({ variant: 'destructive', title: 'Error', description: 'An unexpected error occurred.' });
-      } finally {
-          setIsLoading(false);
-      }
-  }, [currentUser, toast]);
+  }, [currentUser?.householdId, handleFetchEntities, toast]);
 
   const handleSaveCredentials = async (values: z.infer<typeof credentialsSchema>) => {
     setIsSubmitting(true);
