@@ -1,8 +1,10 @@
 
+import type { JsonValue } from './types';
+
 export type SecurityRuleContext = {
   path: string;
   operation: 'get' | 'list' | 'create' | 'update' | 'delete';
-  requestResourceData?: any;
+  requestResourceData?: JsonValue;
 };
 
 export class FirestorePermissionError extends Error {
@@ -18,7 +20,7 @@ export class FirestorePermissionError extends Error {
     if (Object.setPrototypeOf) {
       Object.setPrototypeOf(this, new.target.prototype);
     } else {
-      (this as any).__proto__ = new.target.prototype;
+      Object.assign(this, { ['__proto__']: new.target.prototype });
     }
   }
 }

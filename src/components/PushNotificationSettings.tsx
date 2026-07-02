@@ -22,6 +22,8 @@ async function registerServiceWorker() {
     return registration;
 }
 
+const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
+
 export function PushNotificationSettings() {
     const { currentUser, updateUser } = useAuth();
     const { toast } = useToast();
@@ -79,9 +81,9 @@ export function PushNotificationSettings() {
                  throw new Error('Failed to retrieve FCM token.');
             }
 
-        } catch (err: any) {
-            console.error('An error occurred while subscribing to notifications. ', err);
-            toast({ variant: 'destructive', title: 'Subscription Failed', description: err.message || 'An unexpected error occurred.' });
+        } catch (err) {
+            console.error('An error occurred while subscribing to notifications. ', err instanceof Error ? err : String(err));
+            toast({ variant: 'destructive', title: 'Subscription Failed', description: getErrorMessage(err) || 'An unexpected error occurred.' });
         } finally {
             setIsSubscribing(false);
         }

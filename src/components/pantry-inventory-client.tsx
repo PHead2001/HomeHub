@@ -54,6 +54,8 @@ import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Checkbox } from './ui/checkbox';
 
+const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
+
 const allPantryUnits = [
   ...pantryItemUnitCategories.Weight,
   ...pantryItemUnitCategories.Volume,
@@ -366,9 +368,9 @@ function RecipeGeneratorDialog({
         try {
             const result = await generateRecipe({ items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) });
             setRecipe(result);
-        } catch (error: any) {
-            console.error("Error generating recipe: ", error);
-            toast({ variant: 'destructive', title: "Generation Failed", description: error.message || "Could not generate a recipe." });
+        } catch (error) {
+            console.error("Error generating recipe: ", error instanceof Error ? error : String(error));
+            toast({ variant: 'destructive', title: "Generation Failed", description: getErrorMessage(error) || "Could not generate a recipe." });
             onOpenChange(false); // Close dialog on error
         } finally {
             setIsLoading(false);

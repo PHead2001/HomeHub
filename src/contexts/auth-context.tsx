@@ -49,6 +49,35 @@ const generateInviteCode = () => {
   return result;
 }
 
+type GoogleProfileData = {
+  names?: Array<{
+    displayName?: string;
+    givenName?: string;
+    familyName?: string;
+  }>;
+  birthdays?: Array<{
+    date?: {
+      month?: number;
+      day?: number;
+    };
+  }>;
+  genders?: Array<{
+    value?: string;
+  }>;
+  photos?: Array<{
+    url?: string;
+  }>;
+};
+
+const hasErrorCode = (error: unknown): error is Error & { code: string } => {
+  if (!(error instanceof Error) || !('code' in error)) {
+    return false;
+  }
+  return typeof (error as Error & { code?: unknown }).code === 'string';
+};
+
+const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
+
 // --- Provider Component ---
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -56,7 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
-  const fetchOrCreateUserProfile = useCallback(async (firebaseUser: FirebaseAuthUser, googleProfileData?: any): Promise<User | null> => {
+  const fetchOrCreateUserProfile = useCallback(async (firebaseUser: FirebaseAuthUser, googleProfileData?: GoogleProfileData): Promise<User | null> => {
     if (!firebaseUser.email) {
       toast({ variant: 'destructive', title: "Sign-in error", description: "No email address found for user."});
       return null;
@@ -91,8 +120,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const birthdays = googleProfileData.birthdays?.[0]?.date || {};
     const genders = googleProfileData.genders?.[0]?.value;
 
-    const newUserProfile: Omit<User, 'uid'> = {
-      email: firebaseUser.email as string,
+    const newUserProfile: Partial<Omit<User, 'uid'>> = {
+      email: firebaseUser.email,
       displayName: names.displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0],
       firstName: names.givenName,
       lastName: names.familyName,
@@ -104,12 +133,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       gender: genders,
     };
     
-    const dataToSave: Record<string, any> = {};
-    for (const [key, value] of Object.entries(newUserProfile)) {
-      if (value !== undefined && value !== null) {
-        dataToSave[key] = value;
-      }
-    }
+    const dataToSave = Object.fromEntries(
+      Object.entries(newUserProfile).filter(([, value]) => value !== undefined && value !== null)
+    ) as Partial<Omit<User, 'uid'>>;
 
     await setDoc(userDocRef, dataToSave);
     toast({ title: "Welcome!", description: "Your new account has been created." });
@@ -196,7 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!peopleRes.ok) throw new Error(`Google People API failed with status: ${peopleRes.status}`);
       
-      const googleProfileData = await peopleRes.json();
+      const googleProfileData = await peopleRes.json() as GoogleProfileData;
       
       // The user profile is created or fetched immediately after sign-in with the full data.
       const userProfile = await fetchOrCreateUserProfile(firebaseUser, googleProfileData);
@@ -206,10 +232,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         toast({ title: 'Login Successful', description: 'Welcome!' });
       }
 
-    } catch (error: any) {
-        console.error("Google Sign-In Error:", error);
+    } catch (error) {
+        console.error("Google Sign-In Error:", error instanceof Error ? error : String(error));
         let message = 'An unknown error occurred during login.';
-        if (error.code === 'auth/popup-closed-by-user') {
+        if (hasErrorCode(error) && error.code === 'auth/popup-closed-by-user') {
             message = 'Sign-in window was closed before completing.'
         }
         toast({ variant: 'destructive', title: 'Login Failed', description: message });
@@ -244,13 +270,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCurrentUser(prev => prev ? { ...prev, ...data } : null);
       toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
     
-    } catch (error: any) {
-      console.error("Update User Error:", error);
+    } catch (error) {
+      console.error("Update User Error:", error instanceof Error ? error : String(error));
       let description = "An unknown error occurred.";
-      if (error.code === 'auth/requires-recent-login') {
+      if (hasErrorCode(error) && error.code === 'auth/requires-recent-login') {
           description = "This action requires you to have recently logged in. Please log out and log back in to continue.";
       } else {
-          description = error.message;
+          description = getErrorMessage(error) || description;
       }
       toast({ variant: 'destructive', title: 'Update Failed', description });
     } finally {

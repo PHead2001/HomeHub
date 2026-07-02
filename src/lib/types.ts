@@ -7,6 +7,14 @@
 
 
 
+export type JsonValue =
+    | string
+    | number
+    | boolean
+    | null
+    | JsonValue[]
+    | { [key: string]: JsonValue };
+
 export type Recurrence = {
   frequency: 'daily' | 'weekly' | 'monthly';
   interval: number; // e.g., every 1 week, every 2 weeks
@@ -207,6 +215,6 @@ export type HomeAssistantEntity = {
     state: string;
     attributes: {
         friendly_name?: string;
-        [key: string]: any;
+        [key: string]: JsonValue | undefined;
     }
 }
