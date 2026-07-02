@@ -18,7 +18,7 @@ import { Loader2, Sparkles, PlusCircle } from 'lucide-react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, getDocs, addDoc, doc, orderBy, query, setDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, orderBy, query, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { slugify } from '@/lib/utils';
 
@@ -89,7 +89,7 @@ export function MaintenanceLogClient() {
         form.reset();
         toast({ title: "Log added", description: `${values.item} has been logged.` });
         await fetchLogs();
-    } catch (error) {
+    } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Failed to add log.' });
     }
   };

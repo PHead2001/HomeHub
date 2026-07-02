@@ -16,9 +16,8 @@ import { useToast } from '@/hooks/use-toast';
 import { PlusCircle, Trash2 } from 'lucide-react';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, getDocs, addDoc, deleteDoc, doc, orderBy, query, setDoc } from 'firebase/firestore';
+import { collection, getDocs, deleteDoc, doc, orderBy, query, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { slugify } from '@/lib/utils';
 
 const logSchema = z.object({
   activity: z.string().min(3, 'Activity is required.'),
@@ -86,7 +85,7 @@ export function CareLogClient({ petId }: CareLogProps) {
       form.reset();
       toast({ title: "Log added", description: "Care activity has been logged." });
       await fetchLogs();
-    } catch (error) {
+    } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to add log.' });
     }
   };
@@ -98,7 +97,7 @@ export function CareLogClient({ petId }: CareLogProps) {
         await deleteDoc(doc(logsCollection, logId));
         toast({ title: 'Log removed'});
         await fetchLogs();
-     } catch(e) {
+     } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Failed to remove log.' });
      }
   }

@@ -308,7 +308,7 @@ export function PetsClient() {
       ) : (
         <div className="text-center py-16 border-2 border-dashed rounded-lg">
           <h2 className="text-xl font-semibold">No Pets Yet</h2>
-          <p className="text-muted-foreground mt-2">Click "Add Pet" to get started!</p>
+          <p className="text-muted-foreground mt-2">Click &quot;Add Pet&quot; to get started!</p>
         </div>
       )}
     </div>

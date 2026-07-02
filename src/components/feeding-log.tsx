@@ -15,7 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import { PlusCircle, Trash2, CalendarIcon } from 'lucide-react';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, getDocs, addDoc, deleteDoc, doc, orderBy, query, Timestamp, setDoc } from 'firebase/firestore';
+import { collection, getDocs, deleteDoc, doc, orderBy, query, Timestamp, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
@@ -159,7 +159,7 @@ export function FeedingLogClient({ petId }: FeedingLogProps) {
       setUseCurrentTime(true);
       toast({ title: "Log added", description: "Feeding has been logged." });
       await fetchLogs();
-    } catch (error) {
+    } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Failed to add log.' });
     }
   };
@@ -171,7 +171,7 @@ export function FeedingLogClient({ petId }: FeedingLogProps) {
         await deleteDoc(doc(logsCollection, logId));
         toast({ title: 'Log removed'});
         await fetchLogs();
-     } catch(e) {
+     } catch {
         toast({ variant: 'destructive', title: 'Error', description: 'Failed to remove log.' });
      }
   }

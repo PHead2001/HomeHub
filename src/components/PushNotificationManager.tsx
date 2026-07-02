@@ -28,7 +28,7 @@ export function PushNotificationManager() {
 
         if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
             // We wait for the service worker to be ready before setting up the listener.
-            navigator.serviceWorker.ready.then(registration => {
+            navigator.serviceWorker.ready.then(() => {
                 console.log('Service worker ready for foreground messages.');
                 setupForegroundListener();
             });
