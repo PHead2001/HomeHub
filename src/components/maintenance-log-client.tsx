@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as React from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -40,7 +41,6 @@ import {
 } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -313,6 +313,40 @@ function DetailRow({ label, value }: { label: string; value?: string | number })
     </div>
   );
 }
+
+const AutoResizeTextarea = React.forwardRef<
+  HTMLTextAreaElement,
+  React.ComponentPropsWithoutRef<typeof Textarea>
+>(({ className, onInput, value, ...props }, forwardedRef) => {
+  const localRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const resizeTextarea = useCallback((textarea: HTMLTextAreaElement) => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, []);
+
+  React.useImperativeHandle(forwardedRef, () => localRef.current as HTMLTextAreaElement);
+
+  useEffect(() => {
+    if (localRef.current) {
+      resizeTextarea(localRef.current);
+    }
+  }, [resizeTextarea, value]);
+
+  return (
+    <Textarea
+      {...props}
+      ref={localRef}
+      value={value}
+      className={cn('min-h-24 resize-none overflow-hidden', className)}
+      onInput={(event) => {
+        resizeTextarea(event.currentTarget);
+        onInput?.(event);
+      }}
+    />
+  );
+});
+AutoResizeTextarea.displayName = 'AutoResizeTextarea';
 
 function LogList({
   logs,
@@ -1035,14 +1069,14 @@ export function MaintenanceLogClient() {
       </div>
 
       <Dialog open={assetDialogOpen} onOpenChange={setAssetDialogOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] max-w-3xl flex-col overflow-hidden p-0">
+          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingAsset ? 'Edit Home Asset' : 'Add Home Asset'}</DialogTitle>
             <DialogDescription>Track core asset details. Uploads and manuals are intentionally deferred.</DialogDescription>
           </DialogHeader>
           <Form {...assetForm}>
-            <form onSubmit={assetForm.handleSubmit(saveAsset)} className="space-y-4">
-              <ScrollArea className="max-h-[65vh] pr-4">
+            <form onSubmit={assetForm.handleSubmit(saveAsset)} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
                 <div className="grid gap-4 pb-2 sm:grid-cols-2">
                   <FormField control={assetForm.control} name="name" render={({ field }) => (
                     <FormItem><FormLabel>Name</FormLabel><FormControl><Input placeholder="Dishwasher" {...field} /></FormControl><FormMessage /></FormItem>
@@ -1078,7 +1112,7 @@ export function MaintenanceLogClient() {
                     <FormItem className="sm:col-span-2"><FormLabel>Warranty Provider</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
                   )} />
                   <FormField control={assetForm.control} name="notes" render={({ field }) => (
-                    <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><Textarea rows={3} placeholder="Install details, filters, shutoff location, or service context." {...field} /></FormControl><FormMessage /></FormItem>
+                    <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={3} placeholder="Install details, filters, shutoff location, or service context." {...field} /></FormControl><FormMessage /></FormItem>
                   )} />
                 </div>
                 <div className="mt-3 rounded-lg border p-3">
@@ -1104,8 +1138,8 @@ export function MaintenanceLogClient() {
                     )} />
                   </div>
                 </div>
-              </ScrollArea>
-              <DialogFooter>
+              </div>
+              <DialogFooter className="border-t px-6 py-4">
                 <Button type="button" variant="secondary" onClick={() => setAssetDialogOpen(false)}>Cancel</Button>
                 <Button type="submit">Save Asset</Button>
               </DialogFooter>
@@ -1115,14 +1149,14 @@ export function MaintenanceLogClient() {
       </Dialog>
 
       <Dialog open={vehicleDialogOpen} onOpenChange={setVehicleDialogOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] max-w-3xl flex-col overflow-hidden p-0">
+          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}</DialogTitle>
             <DialogDescription>Track vehicle details and schedule-ready service metadata.</DialogDescription>
           </DialogHeader>
           <Form {...vehicleForm}>
-            <form onSubmit={vehicleForm.handleSubmit(saveVehicle)} className="space-y-4">
-              <ScrollArea className="max-h-[65vh] pr-4">
+            <form onSubmit={vehicleForm.handleSubmit(saveVehicle)} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
                 <div className="grid gap-4 pb-2 sm:grid-cols-2">
                   <FormField control={vehicleForm.control} name="nickname" render={({ field }) => (
                     <FormItem><FormLabel>Nickname</FormLabel><FormControl><Input placeholder="Family SUV" {...field} /></FormControl><FormMessage /></FormItem>
@@ -1167,7 +1201,7 @@ export function MaintenanceLogClient() {
                     <FormItem><FormLabel>Inspection Expiration</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
                   )} />
                   <FormField control={vehicleForm.control} name="notes" render={({ field }) => (
-                    <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><Textarea rows={3} placeholder="Service preferences, tire size, warranty notes, or ownership context." {...field} /></FormControl><FormMessage /></FormItem>
+                    <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={3} placeholder="Service preferences, tire size, warranty notes, or ownership context." {...field} /></FormControl><FormMessage /></FormItem>
                   )} />
                 </div>
                 <div className="mt-3 rounded-lg border p-3">
@@ -1199,8 +1233,8 @@ export function MaintenanceLogClient() {
                     )} />
                   </div>
                 </div>
-              </ScrollArea>
-              <DialogFooter>
+              </div>
+              <DialogFooter className="border-t px-6 py-4">
                 <Button type="button" variant="secondary" onClick={() => setVehicleDialogOpen(false)}>Cancel</Button>
                 <Button type="submit">Save Vehicle</Button>
               </DialogFooter>
@@ -1210,14 +1244,15 @@ export function MaintenanceLogClient() {
       </Dialog>
 
       <Dialog open={logDialogOpen} onOpenChange={setLogDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col overflow-hidden p-0">
+          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>Add Maintenance Log</DialogTitle>
             <DialogDescription>Link a log to a home asset, vehicle, or keep it general.</DialogDescription>
           </DialogHeader>
           <Form {...logForm}>
-            <form onSubmit={logForm.handleSubmit(saveLog)} className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
+            <form onSubmit={logForm.handleSubmit(saveLog)} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
+                <div className="grid gap-4 sm:grid-cols-2">
                 <FormField control={logForm.control} name="targetType" render={({ field }) => (
                   <FormItem><FormLabel>Log For</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="general">General</SelectItem><SelectItem value="home_asset">Home Asset</SelectItem><SelectItem value="vehicle">Vehicle</SelectItem></SelectContent></Select><FormMessage /></FormItem>
                 )} />
@@ -1255,10 +1290,11 @@ export function MaintenanceLogClient() {
                   )} />
                 )}
                 <FormField control={logForm.control} name="notes" render={({ field }) => (
-                  <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><Textarea rows={4} placeholder="Describe what happened, what was done, and any follow-up needed." {...field} /></FormControl><FormMessage /></FormItem>
+                  <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={4} placeholder="Describe what happened, what was done, and any follow-up needed." {...field} /></FormControl><FormMessage /></FormItem>
                 )} />
+                </div>
               </div>
-              <DialogFooter>
+              <DialogFooter className="border-t px-6 py-4">
                 <Button type="button" variant="secondary" onClick={() => setLogDialogOpen(false)}>Cancel</Button>
                 <Button type="submit">Save Log</Button>
               </DialogFooter>
