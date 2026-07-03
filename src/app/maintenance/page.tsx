@@ -8,11 +8,6 @@ export default function MaintenancePage() {
     const { currentUser } = useAuth();
     return (
         <div className="container mx-auto px-4 py-8">
-            <div className="mb-8">
-                <h1 className="font-headline text-3xl font-bold tracking-tight">Maintenance Logs</h1>
-                <p className="text-muted-foreground">Keep track of home maintenance and repairs.</p>
-            </div>
-            
             {!currentUser && <p className="text-center py-8">Please log in to manage maintenance logs.</p>}
 
              {currentUser && (
