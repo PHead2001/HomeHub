@@ -1,6 +1,6 @@
 # HomeHub
 
-HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance notes, notifications, and Home Assistant control into one Firebase-backed Next.js app.
+HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance records, notifications, and Home Assistant control into one Firebase-backed Next.js app.
 
 The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/Gemini powers grocery categorization, recipe ideas, barcode lookup assistance, and maintenance-log summaries.
 
@@ -27,8 +27,9 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 - Feeding, medication, and general care logs.
 
 ### Maintenance
-- Household maintenance records.
-- AI summaries for longer notes.
+- Maintenance Center with home asset and vehicle registries.
+- General, asset-linked, and vehicle-linked maintenance logs.
+- AI summaries for longer maintenance notes.
 
 ### Automation
 - Home Assistant connection using a household-scoped URL and long-lived access token.

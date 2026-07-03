@@ -124,11 +124,110 @@ export type PantryItem = {
   expiryDate?: string | null; // ISO string
 };
 
+export type HomeAssetCategory =
+  | 'HVAC'
+  | 'Appliance'
+  | 'Plumbing'
+  | 'Electrical'
+  | 'Network'
+  | 'Smart Home'
+  | 'Lawn / Outdoor'
+  | 'Tool'
+  | 'Other';
+
+export type HomeAssetStatus = 'active' | 'needs_attention' | 'retired';
+
+export type HomeAssetSchedule = {
+  scheduleName?: string;
+  frequencyType?: 'days' | 'weeks' | 'months' | 'years';
+  intervalValue?: number;
+  lastCompletedDate?: string;
+  nextDueDate?: string;
+};
+
+export type HomeAsset = {
+  id: string;
+  householdId: string;
+  name: string;
+  category: HomeAssetCategory;
+  location?: string;
+  brand?: string;
+  model?: string;
+  serialNumber?: string;
+  purchaseDate?: string;
+  purchasePrice?: number;
+  warrantyExpiration?: string;
+  warrantyProvider?: string;
+  status: HomeAssetStatus;
+  notes?: string;
+  schedules?: HomeAssetSchedule[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type VehicleStatus = 'active' | 'needs_attention' | 'retired' | 'sold';
+
+export type VehicleServiceSchedule = {
+  serviceName?: string;
+  intervalMiles?: number;
+  intervalMonths?: number;
+  lastCompletedMileage?: number;
+  lastCompletedDate?: string;
+  nextDueMileage?: number;
+  nextDueDate?: string;
+};
+
+export type Vehicle = {
+  id: string;
+  householdId: string;
+  nickname: string;
+  year?: number;
+  make?: string;
+  model?: string;
+  trim?: string;
+  vin?: string;
+  licensePlate?: string;
+  currentMileage?: number;
+  purchaseDate?: string;
+  purchasePrice?: number;
+  insuranceProvider?: string;
+  registrationExpiration?: string;
+  inspectionExpiration?: string;
+  status: VehicleStatus;
+  notes?: string;
+  serviceSchedules?: VehicleServiceSchedule[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MaintenanceTargetType = 'home_asset' | 'vehicle' | 'general';
+
+export type MaintenanceLogType =
+  | 'repair'
+  | 'routine'
+  | 'inspection'
+  | 'cleaning'
+  | 'replacement'
+  | 'issue'
+  | 'other';
+
 export type MaintenanceLog = {
   id: string;
-  item: string;
+  householdId?: string;
+  targetType?: MaintenanceTargetType;
+  assetId?: string;
+  vehicleId?: string;
+  title?: string;
+  item?: string; // Legacy maintenance logs used item instead of title.
   date: string;
-  notes: string;
+  type?: MaintenanceLogType;
+  notes?: string;
+  cost?: number;
+  partsUsed?: string;
+  serviceProvider?: string;
+  mileage?: number;
+  createdAt?: string;
+  updatedAt?: string;
   summary?: string;
   receiptUrl?: string;
 };
