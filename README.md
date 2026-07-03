@@ -149,9 +149,13 @@ The service worker is served from `/api/sw` so Firebase public config can be inj
 ## Data Isolation Notes
 
 - Most household data is stored under `households/{householdId}` and is scoped by household membership in Firestore and Storage rules.
-- Per-user notifications are stored under `users/{email}/notifications`.
+- In-app notifications are stored under `households/{householdId}/notifications` with per-user `readBy` and `dismissedBy` maps keyed by Firebase Auth UID.
 - Home Assistant credentials are stored under the household document tree and should be treated as household-private data.
 - Local `.env*` files are ignored by Git. Keep production secrets out of committed files.
+
+## Notification Retention
+
+Notification documents include an `expiresAt` field set to 7 days after `createdAt`. The UI filters expired notifications client-side. To physically remove expired documents, enable Firestore TTL on the `expiresAt` field for the `notifications` collection group in Firebase/GCP.
 
 ## License
 

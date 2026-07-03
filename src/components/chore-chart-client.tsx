@@ -17,6 +17,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
+import { buildNotificationDocument } from '@/lib/notifications';
 import { stableSlugify, cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { ScrollArea } from './ui/scroll-area';
@@ -1391,9 +1392,11 @@ export function ChoreChartClient() {
   }, [currentUser, fetchAllData]);
   
     useEffect(() => {
-        if (!householdUsers.length || !assignedChores.length || !currentUser?.email) {
+        if (!householdUsers.length || !assignedChores.length || !currentUser?.email || !currentUser.householdId) {
             return;
         }
+
+        const householdId = currentUser.householdId;
 
         const intervalId = setInterval(async () => {
             const now = new Date();
@@ -1414,18 +1417,22 @@ export function ChoreChartClient() {
             // We check if it's past 12:01 AM
             if (overdueChores.length > 0) {
                 const overdueNotifId = `overdue-${dateStr}`;
-                const notifRef = doc(db, 'users', user.email, 'notifications', overdueNotifId);
+                const notifRef = doc(db, 'households', householdId, 'notifications', `${user.uid}-${overdueNotifId}`);
                 
                 // Use a simple check to see if we've already notified for this deterministic ID today
                 const snap = await getDoc(notifRef);
                 if (!snap.exists()) {
                     const message = `Alert: You have ${overdueChores.length} overdue chore${overdueChores.length > 1 ? 's' : ''}!`;
-                    setDoc(notifRef, { 
-                        message, 
-                        href: '/chores', 
-                        createdAt: new Date(), 
-                        isRead: false 
-                    });
+                    setDoc(notifRef, buildNotificationDocument({
+                        householdId,
+                        category: 'chores',
+                        title: 'Overdue chores',
+                        message,
+                        deepLink: '/chores',
+                        sourceType: 'chore-reminder',
+                        sourceId: overdueNotifId,
+                        targetUser: user,
+                    }));
                 }
             }
 
@@ -1443,16 +1450,20 @@ export function ChoreChartClient() {
                     const totalPending = overdueChores.length + todayChores.length;
                     if (totalPending > 0) {
                         const customNotifId = `reminder-${dateStr}`;
-                        const customNotifRef = doc(db, 'users', user.email, 'notifications', customNotifId);
+                        const customNotifRef = doc(db, 'households', householdId, 'notifications', `${user.uid}-${customNotifId}`);
                         const snap = await getDoc(customNotifRef);
                         if (!snap.exists()) {
                             const message = `Daily Reminder: You have ${totalPending} chore${totalPending > 1 ? 's' : ''} pending.`;
-                            setDoc(customNotifRef, { 
-                                message, 
-                                href: '/chores', 
-                                createdAt: new Date(), 
-                                isRead: false 
-                            });
+                            setDoc(customNotifRef, buildNotificationDocument({
+                                householdId,
+                                category: 'chores',
+                                title: 'Daily chore reminder',
+                                message,
+                                deepLink: '/chores',
+                                sourceType: 'chore-reminder',
+                                sourceId: customNotifId,
+                                targetUser: user,
+                            }));
                         }
                     }
                 }
@@ -1553,20 +1564,27 @@ export function ChoreChartClient() {
 
     const batch = writeBatch(db);
     const user = householdUsers.find(u => u.email === assignment.assignedToEmail);
-    const assignedToDisplayName = user?.displayName || assignment.assignedToEmail;
+    if (!user) {
+        toast({ variant: 'destructive', title: 'Missing assignee', description: 'Could not find the selected household member.' });
+        return;
+    }
+    const assignedToDisplayName = user.displayName || assignment.assignedToEmail;
 
-    const notificationsCollectionRef = collection(db, 'users', assignment.assignedToEmail, 'notifications');
     const notificationMessage = templatesToAssign.length > 1
         ? `You have been assigned ${templatesToAssign.length} new chores.`
         : `You have a new chore: ${templatesToAssign[0].task}.`;
 
-    const newNotification = {
+    const newNotification = buildNotificationDocument({
+        householdId: currentUser.householdId,
+        category: 'chores',
+        title: templatesToAssign.length > 1 ? 'New chores assigned' : 'New chore assigned',
         message: notificationMessage,
-        href: '/chores',
-        createdAt: new Date(),
-        isRead: false,
-    };
-    batch.set(doc(notificationsCollectionRef), newNotification);
+        deepLink: '/chores',
+        sourceType: 'chore-assignment',
+        sourceId: templatesToAssign.map(template => template.id).join(','),
+        targetUser: user,
+    });
+    batch.set(doc(collection(db, 'households', currentUser.householdId, 'notifications')), newNotification);
 
 
     if (schedule.type === 'recurring') {
