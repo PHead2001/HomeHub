@@ -17,6 +17,7 @@ import {
   Loader2,
   Plus,
   Sparkles,
+  Trash2,
   Wrench,
 } from 'lucide-react';
 import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
@@ -27,8 +28,19 @@ import type {
   MaintenanceLogType,
   MaintenanceTargetType,
   Vehicle,
+  VehicleServiceSchedule,
 } from '@/lib/types';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -49,7 +61,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { cn, slugify } from '@/lib/utils';
-import { collection, doc, getDocs, orderBy, query, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, orderBy, query, setDoc } from 'firebase/firestore';
 
 const assetCategories = [
   'HVAC',
@@ -138,6 +150,17 @@ type LogPreset = {
   vehicleId?: string;
 };
 
+type VehicleScheduleForm = {
+  id: string;
+  serviceName: string;
+  intervalMiles: string;
+  intervalMonths: string;
+  lastCompletedMileage: string;
+  lastCompletedDate: string;
+  nextDueMileage: string;
+  nextDueDate: string;
+};
+
 const todayInputValue = () => format(new Date(), 'yyyy-MM-dd');
 
 const emptyAssetForm: AssetFormValues = {
@@ -199,6 +222,19 @@ const emptyLogForm = (preset?: LogPreset): LogFormValues => ({
   mileage: '',
 });
 
+const createLocalId = () => Math.random().toString(36).slice(2, 10);
+
+const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule): VehicleScheduleForm => ({
+  id: createLocalId(),
+  serviceName: schedule?.serviceName || '',
+  intervalMiles: schedule?.intervalMiles?.toString() || '',
+  intervalMonths: schedule?.intervalMonths?.toString() || '',
+  lastCompletedMileage: schedule?.lastCompletedMileage?.toString() || '',
+  lastCompletedDate: schedule?.lastCompletedDate || '',
+  nextDueMileage: schedule?.nextDueMileage?.toString() || '',
+  nextDueDate: schedule?.nextDueDate || '',
+});
+
 const toNumber = (value?: string) => {
   if (!value || !value.trim()) return undefined;
   const parsed = Number(value);
@@ -240,6 +276,11 @@ const parseLogDate = (date: string) => {
   if (isValid(parsed)) return parsed;
   const fallback = new Date(date);
   return isValid(fallback) ? fallback : new Date();
+};
+
+const dateInputValue = (date?: string) => {
+  if (!date) return todayInputValue();
+  return format(parseLogDate(date), 'yyyy-MM-dd');
 };
 
 const formatDate = (date?: string) => {
@@ -355,6 +396,8 @@ function LogList({
   summaries,
   loadingSummaries,
   onSummarize,
+  onEdit,
+  onDelete,
 }: {
   logs: MaintenanceLog[];
   assets: HomeAsset[];
@@ -362,6 +405,8 @@ function LogList({
   summaries: Record<string, string>;
   loadingSummaries: Record<string, boolean>;
   onSummarize: (log: MaintenanceLog) => void;
+  onEdit: (log: MaintenanceLog) => void;
+  onDelete: (log: MaintenanceLog) => void;
 }) {
   if (logs.length === 0) {
     return <EmptyState title="No logs yet" description="Maintenance records will appear here after they are added." />;
@@ -381,9 +426,19 @@ function LogList({
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{formatDate(log.date)}</p>
               </div>
-              {typeof log.cost === 'number' && (
-                <Badge variant="outline" className="w-fit">{formatCurrency(log.cost)}</Badge>
-              )}
+              <div className="flex items-center gap-2 self-start">
+                {typeof log.cost === 'number' && (
+                  <Badge variant="outline" className="w-fit">{formatCurrency(log.cost)}</Badge>
+                )}
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(log)}>
+                  <Edit className="h-4 w-4" />
+                  <span className="sr-only">Edit log</span>
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(log)}>
+                  <Trash2 className="h-4 w-4" />
+                  <span className="sr-only">Delete log</span>
+                </Button>
+              </div>
             </div>
 
             {log.notes && <p className="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{log.notes}</p>}
@@ -441,6 +496,11 @@ export function MaintenanceLogClient() {
   const [logDialogOpen, setLogDialogOpen] = useState(false);
   const [editingAsset, setEditingAsset] = useState<HomeAsset | null>(null);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [editingLog, setEditingLog] = useState<MaintenanceLog | null>(null);
+  const [logToDelete, setLogToDelete] = useState<MaintenanceLog | null>(null);
+  const [vehicleToDelete, setVehicleToDelete] = useState<Vehicle | null>(null);
+  const [vehicleScheduleForms, setVehicleScheduleForms] = useState<VehicleScheduleForm[]>([]);
+  const [showInactiveVehicles, setShowInactiveVehicles] = useState(false);
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [loadingSummaries, setLoadingSummaries] = useState<Record<string, boolean>>({});
 
@@ -511,9 +571,17 @@ export function MaintenanceLogClient() {
     return assets.find((asset) => asset.id === selectedAssetId) || assets[0] || null;
   }, [assets, selectedAssetId]);
 
+  const activeVehicles = useMemo(() => {
+    return vehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold');
+  }, [vehicles]);
+
+  const inactiveVehicles = useMemo(() => {
+    return vehicles.filter((vehicle) => vehicle.status === 'retired' || vehicle.status === 'sold');
+  }, [vehicles]);
+
   const selectedVehicle = useMemo(() => {
-    return vehicles.find((vehicle) => vehicle.id === selectedVehicleId) || vehicles[0] || null;
-  }, [vehicles, selectedVehicleId]);
+    return vehicles.find((vehicle) => vehicle.id === selectedVehicleId) || activeVehicles[0] || null;
+  }, [activeVehicles, vehicles, selectedVehicleId]);
 
   const assetLogs = useMemo(() => {
     if (!selectedAsset) return [];
@@ -581,20 +649,48 @@ export function MaintenanceLogClient() {
       inspectionExpiration: vehicle.inspectionExpiration || '',
       status: vehicle.status,
       notes: vehicle.notes || '',
-      serviceName: vehicle.serviceSchedules?.[0]?.serviceName || '',
-      intervalMiles: vehicle.serviceSchedules?.[0]?.intervalMiles?.toString() || '',
-      intervalMonths: vehicle.serviceSchedules?.[0]?.intervalMonths?.toString() || '',
-      lastCompletedMileage: vehicle.serviceSchedules?.[0]?.lastCompletedMileage?.toString() || '',
-      lastCompletedDate: vehicle.serviceSchedules?.[0]?.lastCompletedDate || '',
-      nextDueMileage: vehicle.serviceSchedules?.[0]?.nextDueMileage?.toString() || '',
-      nextDueDate: vehicle.serviceSchedules?.[0]?.nextDueDate || '',
+      serviceName: '',
+      intervalMiles: '',
+      intervalMonths: '',
+      lastCompletedMileage: '',
+      lastCompletedDate: '',
+      nextDueMileage: '',
+      nextDueDate: '',
     } : emptyVehicleForm);
+    setVehicleScheduleForms(vehicle?.serviceSchedules?.map(vehicleScheduleToForm) || []);
     setVehicleDialogOpen(true);
   };
 
-  const openLogDialog = (preset?: LogPreset) => {
-    logForm.reset(emptyLogForm(preset));
+  const openLogDialog = (preset?: LogPreset, log?: MaintenanceLog) => {
+    setEditingLog(log || null);
+    logForm.reset(log ? {
+      targetType: getLogTargetType(log),
+      assetId: log.assetId || '',
+      vehicleId: log.vehicleId || '',
+      title: getLogTitle(log),
+      date: dateInputValue(log.date),
+      type: getLogType(log),
+      notes: log.notes || '',
+      cost: log.cost?.toString() || '',
+      partsUsed: log.partsUsed || '',
+      serviceProvider: log.serviceProvider || '',
+      mileage: log.mileage?.toString() || '',
+    } : emptyLogForm(preset));
     setLogDialogOpen(true);
+  };
+
+  const addVehicleSchedule = () => {
+    setVehicleScheduleForms(prev => [...prev, vehicleScheduleToForm()]);
+  };
+
+  const updateVehicleSchedule = (id: string, field: keyof Omit<VehicleScheduleForm, 'id'>, value: string) => {
+    setVehicleScheduleForms(prev => prev.map(schedule => (
+      schedule.id === id ? { ...schedule, [field]: value } : schedule
+    )));
+  };
+
+  const removeVehicleSchedule = (id: string) => {
+    setVehicleScheduleForms(prev => prev.filter(schedule => schedule.id !== id));
   };
 
   const saveAsset = async (values: AssetFormValues) => {
@@ -649,7 +745,21 @@ export function MaintenanceLogClient() {
 
     const now = new Date().toISOString();
     const vehicleId = editingVehicle?.id || slugify(values.nickname);
-    const serviceName = trimOptional(values.serviceName);
+    const serviceSchedules = vehicleScheduleForms.reduce<VehicleServiceSchedule[]>((schedules, schedule) => {
+      const serviceName = trimOptional(schedule.serviceName);
+      if (!serviceName) return schedules;
+
+      schedules.push({
+        serviceName,
+        intervalMiles: toNumber(schedule.intervalMiles),
+        intervalMonths: toNumber(schedule.intervalMonths),
+        lastCompletedMileage: toNumber(schedule.lastCompletedMileage),
+        lastCompletedDate: trimOptional(schedule.lastCompletedDate),
+        nextDueMileage: toNumber(schedule.nextDueMileage),
+        nextDueDate: trimOptional(schedule.nextDueDate),
+      });
+      return schedules;
+    }, []);
     const vehicleData: Omit<Vehicle, 'id'> = {
       householdId: currentUser.householdId,
       nickname: values.nickname.trim(),
@@ -667,15 +777,7 @@ export function MaintenanceLogClient() {
       inspectionExpiration: trimOptional(values.inspectionExpiration),
       status: values.status,
       notes: trimOptional(values.notes),
-      serviceSchedules: serviceName ? [{
-        serviceName,
-        intervalMiles: toNumber(values.intervalMiles),
-        intervalMonths: toNumber(values.intervalMonths),
-        lastCompletedMileage: toNumber(values.lastCompletedMileage),
-        lastCompletedDate: trimOptional(values.lastCompletedDate),
-        nextDueMileage: toNumber(values.nextDueMileage),
-        nextDueDate: trimOptional(values.nextDueDate),
-      }] : [],
+      serviceSchedules,
       createdAt: editingVehicle?.createdAt || now,
       updatedAt: now,
     };
@@ -708,7 +810,7 @@ export function MaintenanceLogClient() {
     }
 
     const now = new Date().toISOString();
-    const logId = slugify(values.title);
+    const logId = editingLog?.id || slugify(values.title);
     const logData: Omit<MaintenanceLog, 'id'> = {
       householdId: currentUser.householdId,
       targetType: values.targetType,
@@ -723,18 +825,59 @@ export function MaintenanceLogClient() {
       partsUsed: trimOptional(values.partsUsed),
       serviceProvider: trimOptional(values.serviceProvider),
       mileage: values.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
-      createdAt: now,
+      createdAt: editingLog?.createdAt || now,
       updatedAt: now,
+      summary: editingLog?.summary,
+      receiptUrl: editingLog?.receiptUrl,
     };
 
     try {
       await setDoc(doc(logsCollection, logId), cleanForFirestore(logData));
       setLogDialogOpen(false);
-      toast({ title: 'Maintenance log added' });
+      setEditingLog(null);
+      toast({ title: editingLog ? 'Maintenance log updated' : 'Maintenance log added' });
       await fetchMaintenanceData();
     } catch (saveError) {
       console.error('Error saving maintenance log:', saveError);
       toast({ variant: 'destructive', title: 'Error', description: 'Could not save maintenance log.' });
+    }
+  };
+
+  const deleteLog = async () => {
+    if (!logToDelete) return;
+    const logsCollection = getCollectionRef('maintenance');
+    if (!logsCollection) return;
+
+    try {
+      await deleteDoc(doc(logsCollection, logToDelete.id));
+      setSummaries(prev => {
+        const next = { ...prev };
+        delete next[logToDelete.id];
+        return next;
+      });
+      setLogToDelete(null);
+      toast({ title: 'Maintenance log deleted' });
+      await fetchMaintenanceData();
+    } catch (deleteError) {
+      console.error('Error deleting maintenance log:', deleteError);
+      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete maintenance log.' });
+    }
+  };
+
+  const deleteVehicle = async () => {
+    if (!vehicleToDelete) return;
+    const vehiclesCollection = getCollectionRef('vehicles');
+    if (!vehiclesCollection) return;
+
+    try {
+      await deleteDoc(doc(vehiclesCollection, vehicleToDelete.id));
+      setSelectedVehicleId(prev => prev === vehicleToDelete.id ? null : prev);
+      setVehicleToDelete(null);
+      toast({ title: 'Vehicle deleted' });
+      await fetchMaintenanceData();
+    } catch (deleteError) {
+      console.error('Error deleting vehicle:', deleteError);
+      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete vehicle.' });
     }
   };
 
@@ -836,6 +979,8 @@ export function MaintenanceLogClient() {
                     summaries={summaries}
                     loadingSummaries={loadingSummaries}
                     onSummarize={handleSummarize}
+                    onEdit={(log) => openLogDialog(undefined, log)}
+                    onDelete={setLogToDelete}
                   />
                 </CardContent>
               </Card>
@@ -950,6 +1095,8 @@ export function MaintenanceLogClient() {
                         summaries={summaries}
                         loadingSummaries={loadingSummaries}
                         onSummarize={handleSummarize}
+                        onEdit={(log) => openLogDialog(undefined, log)}
+                        onDelete={setLogToDelete}
                       />
                     </CardContent>
                   </Card>
@@ -970,29 +1117,72 @@ export function MaintenanceLogClient() {
               <EmptyState title="No vehicles yet" description="Add household vehicles to track mileage, key dates, and service logs." />
             ) : (
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {vehicles.map((vehicle) => (
-                    <button
-                      key={vehicle.id}
-                      type="button"
-                      onClick={() => setSelectedVehicleId(vehicle.id)}
-                      className={cn(
-                        'rounded-lg border bg-card p-4 text-left transition-colors hover:bg-accent',
-                        selectedVehicle?.id === vehicle.id && 'border-primary'
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="font-headline font-semibold">{vehicle.nickname}</p>
-                          <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+                <div className="space-y-4">
+                  {activeVehicles.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {activeVehicles.map((vehicle) => (
+                        <button
+                          key={vehicle.id}
+                          type="button"
+                          onClick={() => setSelectedVehicleId(vehicle.id)}
+                          className={cn(
+                            'rounded-lg border bg-card p-4 text-left transition-colors hover:bg-accent',
+                            selectedVehicle?.id === vehicle.id && 'border-primary'
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-headline font-semibold">{vehicle.nickname}</p>
+                              <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+                            </div>
+                            <Badge variant={vehicle.status === 'needs_attention' ? 'destructive' : 'outline'}>{humanizeLabel(vehicle.status)}</Badge>
+                          </div>
+                          <p className="mt-3 text-sm text-muted-foreground">
+                            {typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString()} miles` : 'Mileage not recorded'}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptyState title="No active vehicles" description="Sold and retired vehicles are kept out of the main vehicle list." />
+                  )}
+
+                  {inactiveVehicles.length > 0 && (
+                    <div className="rounded-lg border p-3">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="w-full justify-between px-2"
+                        onClick={() => setShowInactiveVehicles(prev => !prev)}
+                      >
+                        <span>Sold / retired vehicles ({inactiveVehicles.length})</span>
+                        <span className="text-xs text-muted-foreground">{showInactiveVehicles ? 'Hide' : 'Show'}</span>
+                      </Button>
+                      {showInactiveVehicles && (
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          {inactiveVehicles.map((vehicle) => (
+                            <button
+                              key={vehicle.id}
+                              type="button"
+                              onClick={() => setSelectedVehicleId(vehicle.id)}
+                              className={cn(
+                                'rounded-lg border bg-muted/30 p-4 text-left transition-colors hover:bg-accent',
+                                selectedVehicle?.id === vehicle.id && 'border-primary'
+                              )}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="font-headline font-semibold">{vehicle.nickname}</p>
+                                  <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+                                </div>
+                                <Badge variant="outline">{humanizeLabel(vehicle.status)}</Badge>
+                              </div>
+                            </button>
+                          ))}
                         </div>
-                        <Badge variant={vehicle.status === 'needs_attention' ? 'destructive' : 'outline'}>{humanizeLabel(vehicle.status)}</Badge>
-                      </div>
-                      <p className="mt-3 text-sm text-muted-foreground">
-                        {typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString()} miles` : 'Mileage not recorded'}
-                      </p>
-                    </button>
-                  ))}
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {selectedVehicle && (
@@ -1002,10 +1192,16 @@ export function MaintenanceLogClient() {
                         <CardTitle className="font-headline">{selectedVehicle.nickname}</CardTitle>
                         <CardDescription>{[selectedVehicle.year, selectedVehicle.make, selectedVehicle.model, selectedVehicle.trim].filter(Boolean).join(' ') || 'Vehicle details'}</CardDescription>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => openVehicleDialog(selectedVehicle)}>
-                        <Edit className="mr-2 h-4 w-4" />
-                        Edit
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" onClick={() => openVehicleDialog(selectedVehicle)}>
+                          <Edit className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                        <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setVehicleToDelete(selectedVehicle)}>
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
                     </CardHeader>
                     <CardContent className="space-y-5">
                       <div className="grid gap-3 sm:grid-cols-2">
@@ -1019,13 +1215,18 @@ export function MaintenanceLogClient() {
                         <DetailRow label="Inspection Expires" value={formatDate(selectedVehicle.inspectionExpiration)} />
                       </div>
                       {selectedVehicle.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedVehicle.notes}</p>}
-                      {selectedVehicle.serviceSchedules?.[0]?.serviceName && (
-                        <div className="rounded-lg border p-3">
-                          <p className="text-sm font-medium">{selectedVehicle.serviceSchedules[0].serviceName}</p>
-                          <p className="text-sm text-muted-foreground">
-                            Next due {formatDate(selectedVehicle.serviceSchedules[0].nextDueDate)}
-                            {typeof selectedVehicle.serviceSchedules[0].nextDueMileage === 'number' ? ` or ${selectedVehicle.serviceSchedules[0].nextDueMileage.toLocaleString()} miles` : ''}
-                          </p>
+                      {selectedVehicle.serviceSchedules && selectedVehicle.serviceSchedules.length > 0 && (
+                        <div className="space-y-2">
+                          <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
+                          {selectedVehicle.serviceSchedules.map((schedule, index) => (
+                            <div key={`${schedule.serviceName}-${index}`} className="rounded-lg border p-3">
+                              <p className="text-sm font-medium">{schedule.serviceName}</p>
+                              <p className="text-sm text-muted-foreground">
+                                Next due {formatDate(schedule.nextDueDate)}
+                                {typeof schedule.nextDueMileage === 'number' ? ` or ${schedule.nextDueMileage.toLocaleString()} miles` : ''}
+                              </p>
+                            </div>
+                          ))}
                         </div>
                       )}
                       <div className="flex justify-between gap-2">
@@ -1041,6 +1242,8 @@ export function MaintenanceLogClient() {
                         summaries={summaries}
                         loadingSummaries={loadingSummaries}
                         onSummarize={handleSummarize}
+                        onEdit={(log) => openLogDialog(undefined, log)}
+                        onDelete={setLogToDelete}
                       />
                     </CardContent>
                   </Card>
@@ -1063,6 +1266,8 @@ export function MaintenanceLogClient() {
               summaries={summaries}
               loadingSummaries={loadingSummaries}
               onSummarize={handleSummarize}
+              onEdit={(log) => openLogDialog(undefined, log)}
+              onDelete={setLogToDelete}
             />
           </TabsContent>
         </Tabs>
@@ -1148,7 +1353,10 @@ export function MaintenanceLogClient() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={vehicleDialogOpen} onOpenChange={setVehicleDialogOpen}>
+      <Dialog open={vehicleDialogOpen} onOpenChange={(open) => {
+        setVehicleDialogOpen(open);
+        if (!open) setVehicleScheduleForms([]);
+      }}>
         <DialogContent className="flex max-h-[90dvh] max-w-3xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}</DialogTitle>
@@ -1205,33 +1413,110 @@ export function MaintenanceLogClient() {
                   )} />
                 </div>
                 <div className="mt-3 rounded-lg border p-3">
-                  <div className="mb-3 flex items-center gap-2 text-sm font-medium">
-                    <Wrench className="h-4 w-4" />
-                    Future service schedule fields
+                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Wrench className="h-4 w-4" />
+                      Scheduled maintenance
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={addVehicleSchedule}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add scheduled maintenance
+                    </Button>
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField control={vehicleForm.control} name="serviceName" render={({ field }) => (
-                      <FormItem><FormLabel>Service Name</FormLabel><FormControl><Input placeholder="Oil change" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                    <FormField control={vehicleForm.control} name="intervalMiles" render={({ field }) => (
-                      <FormItem><FormLabel>Interval Miles</FormLabel><FormControl><Input type="number" min="0" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                    <FormField control={vehicleForm.control} name="intervalMonths" render={({ field }) => (
-                      <FormItem><FormLabel>Interval Months</FormLabel><FormControl><Input type="number" min="0" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                    <FormField control={vehicleForm.control} name="lastCompletedMileage" render={({ field }) => (
-                      <FormItem><FormLabel>Last Completed Mileage</FormLabel><FormControl><Input type="number" min="0" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                    <FormField control={vehicleForm.control} name="lastCompletedDate" render={({ field }) => (
-                      <FormItem><FormLabel>Last Completed Date</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                    <FormField control={vehicleForm.control} name="nextDueMileage" render={({ field }) => (
-                      <FormItem><FormLabel>Next Due Mileage</FormLabel><FormControl><Input type="number" min="0" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                    <FormField control={vehicleForm.control} name="nextDueDate" render={({ field }) => (
-                      <FormItem><FormLabel>Next Due Date</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                    )} />
-                  </div>
+                  {vehicleScheduleForms.length === 0 ? (
+                    <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                      No scheduled maintenance yet.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {vehicleScheduleForms.map((schedule, index) => (
+                        <div key={schedule.id} className="rounded-md border p-3">
+                          <div className="mb-3 flex items-center justify-between gap-2">
+                            <p className="text-sm font-medium">Scheduled maintenance #{index + 1}</p>
+                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeVehicleSchedule(schedule.id)}>
+                              Remove
+                            </Button>
+                          </div>
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <FormItem>
+                              <FormLabel>Service Name</FormLabel>
+                              <FormControl>
+                                <Input
+                                  placeholder="Brake fluid flush"
+                                  value={schedule.serviceName}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'serviceName', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                            <FormItem>
+                              <FormLabel>Interval Miles</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={schedule.intervalMiles}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'intervalMiles', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                            <FormItem>
+                              <FormLabel>Interval Months</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={schedule.intervalMonths}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'intervalMonths', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                            <FormItem>
+                              <FormLabel>Last Completed Mileage</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={schedule.lastCompletedMileage}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'lastCompletedMileage', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                            <FormItem>
+                              <FormLabel>Last Completed Date</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="date"
+                                  value={schedule.lastCompletedDate}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'lastCompletedDate', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                            <FormItem>
+                              <FormLabel>Next Due Mileage</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  value={schedule.nextDueMileage}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'nextDueMileage', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                            <FormItem>
+                              <FormLabel>Next Due Date</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="date"
+                                  value={schedule.nextDueDate}
+                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'nextDueDate', event.target.value)}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               <DialogFooter className="border-t px-6 py-4">
@@ -1243,10 +1528,13 @@ export function MaintenanceLogClient() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={logDialogOpen} onOpenChange={setLogDialogOpen}>
+      <Dialog open={logDialogOpen} onOpenChange={(open) => {
+        setLogDialogOpen(open);
+        if (!open) setEditingLog(null);
+      }}>
         <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-            <DialogTitle>Add Maintenance Log</DialogTitle>
+            <DialogTitle>{editingLog ? 'Edit Maintenance Log' : 'Add Maintenance Log'}</DialogTitle>
             <DialogDescription>Link a log to a home asset, vehicle, or keep it general.</DialogDescription>
           </DialogHeader>
           <Form {...logForm}>
@@ -1296,12 +1584,52 @@ export function MaintenanceLogClient() {
               </div>
               <DialogFooter className="border-t px-6 py-4">
                 <Button type="button" variant="secondary" onClick={() => setLogDialogOpen(false)}>Cancel</Button>
-                <Button type="submit">Save Log</Button>
+                <Button type="submit">{editingLog ? 'Update Log' : 'Save Log'}</Button>
               </DialogFooter>
             </form>
           </Form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!logToDelete} onOpenChange={(open) => !open && setLogToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete maintenance log?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete &quot;{logToDelete ? getLogTitle(logToDelete) : 'this log'}&quot;. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={deleteLog}
+            >
+              Delete Log
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!vehicleToDelete} onOpenChange={(open) => !open && setVehicleToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete vehicle?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove &quot;{vehicleToDelete?.nickname || 'this vehicle'}&quot; from the vehicle registry. Existing service logs will remain in maintenance history as unlinked vehicle logs.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={deleteVehicle}
+            >
+              Delete Vehicle
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
