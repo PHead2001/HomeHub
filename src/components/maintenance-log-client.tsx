@@ -17,6 +17,7 @@ import {
   Loader2,
   Plus,
   Sparkles,
+  Trash2,
   Wrench,
 } from 'lucide-react';
 import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
@@ -29,6 +30,16 @@ import type {
   Vehicle,
 } from '@/lib/types';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -49,7 +60,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { cn, slugify } from '@/lib/utils';
-import { collection, doc, getDocs, orderBy, query, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, orderBy, query, setDoc } from 'firebase/firestore';
 
 const assetCategories = [
   'HVAC',
@@ -242,6 +253,11 @@ const parseLogDate = (date: string) => {
   return isValid(fallback) ? fallback : new Date();
 };
 
+const dateInputValue = (date?: string) => {
+  if (!date) return todayInputValue();
+  return format(parseLogDate(date), 'yyyy-MM-dd');
+};
+
 const formatDate = (date?: string) => {
   if (!date) return 'Not recorded';
   return format(parseLogDate(date), 'MMM d, yyyy');
@@ -355,6 +371,8 @@ function LogList({
   summaries,
   loadingSummaries,
   onSummarize,
+  onEdit,
+  onDelete,
 }: {
   logs: MaintenanceLog[];
   assets: HomeAsset[];
@@ -362,6 +380,8 @@ function LogList({
   summaries: Record<string, string>;
   loadingSummaries: Record<string, boolean>;
   onSummarize: (log: MaintenanceLog) => void;
+  onEdit: (log: MaintenanceLog) => void;
+  onDelete: (log: MaintenanceLog) => void;
 }) {
   if (logs.length === 0) {
     return <EmptyState title="No logs yet" description="Maintenance records will appear here after they are added." />;
@@ -381,9 +401,19 @@ function LogList({
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{formatDate(log.date)}</p>
               </div>
-              {typeof log.cost === 'number' && (
-                <Badge variant="outline" className="w-fit">{formatCurrency(log.cost)}</Badge>
-              )}
+              <div className="flex items-center gap-2 self-start">
+                {typeof log.cost === 'number' && (
+                  <Badge variant="outline" className="w-fit">{formatCurrency(log.cost)}</Badge>
+                )}
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(log)}>
+                  <Edit className="h-4 w-4" />
+                  <span className="sr-only">Edit log</span>
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(log)}>
+                  <Trash2 className="h-4 w-4" />
+                  <span className="sr-only">Delete log</span>
+                </Button>
+              </div>
             </div>
 
             {log.notes && <p className="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{log.notes}</p>}
@@ -441,6 +471,8 @@ export function MaintenanceLogClient() {
   const [logDialogOpen, setLogDialogOpen] = useState(false);
   const [editingAsset, setEditingAsset] = useState<HomeAsset | null>(null);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [editingLog, setEditingLog] = useState<MaintenanceLog | null>(null);
+  const [logToDelete, setLogToDelete] = useState<MaintenanceLog | null>(null);
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [loadingSummaries, setLoadingSummaries] = useState<Record<string, boolean>>({});
 
@@ -592,8 +624,21 @@ export function MaintenanceLogClient() {
     setVehicleDialogOpen(true);
   };
 
-  const openLogDialog = (preset?: LogPreset) => {
-    logForm.reset(emptyLogForm(preset));
+  const openLogDialog = (preset?: LogPreset, log?: MaintenanceLog) => {
+    setEditingLog(log || null);
+    logForm.reset(log ? {
+      targetType: getLogTargetType(log),
+      assetId: log.assetId || '',
+      vehicleId: log.vehicleId || '',
+      title: getLogTitle(log),
+      date: dateInputValue(log.date),
+      type: getLogType(log),
+      notes: log.notes || '',
+      cost: log.cost?.toString() || '',
+      partsUsed: log.partsUsed || '',
+      serviceProvider: log.serviceProvider || '',
+      mileage: log.mileage?.toString() || '',
+    } : emptyLogForm(preset));
     setLogDialogOpen(true);
   };
 
@@ -708,7 +753,7 @@ export function MaintenanceLogClient() {
     }
 
     const now = new Date().toISOString();
-    const logId = slugify(values.title);
+    const logId = editingLog?.id || slugify(values.title);
     const logData: Omit<MaintenanceLog, 'id'> = {
       householdId: currentUser.householdId,
       targetType: values.targetType,
@@ -723,18 +768,42 @@ export function MaintenanceLogClient() {
       partsUsed: trimOptional(values.partsUsed),
       serviceProvider: trimOptional(values.serviceProvider),
       mileage: values.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
-      createdAt: now,
+      createdAt: editingLog?.createdAt || now,
       updatedAt: now,
+      summary: editingLog?.summary,
+      receiptUrl: editingLog?.receiptUrl,
     };
 
     try {
       await setDoc(doc(logsCollection, logId), cleanForFirestore(logData));
       setLogDialogOpen(false);
-      toast({ title: 'Maintenance log added' });
+      setEditingLog(null);
+      toast({ title: editingLog ? 'Maintenance log updated' : 'Maintenance log added' });
       await fetchMaintenanceData();
     } catch (saveError) {
       console.error('Error saving maintenance log:', saveError);
       toast({ variant: 'destructive', title: 'Error', description: 'Could not save maintenance log.' });
+    }
+  };
+
+  const deleteLog = async () => {
+    if (!logToDelete) return;
+    const logsCollection = getCollectionRef('maintenance');
+    if (!logsCollection) return;
+
+    try {
+      await deleteDoc(doc(logsCollection, logToDelete.id));
+      setSummaries(prev => {
+        const next = { ...prev };
+        delete next[logToDelete.id];
+        return next;
+      });
+      setLogToDelete(null);
+      toast({ title: 'Maintenance log deleted' });
+      await fetchMaintenanceData();
+    } catch (deleteError) {
+      console.error('Error deleting maintenance log:', deleteError);
+      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete maintenance log.' });
     }
   };
 
@@ -836,6 +905,8 @@ export function MaintenanceLogClient() {
                     summaries={summaries}
                     loadingSummaries={loadingSummaries}
                     onSummarize={handleSummarize}
+                    onEdit={(log) => openLogDialog(undefined, log)}
+                    onDelete={setLogToDelete}
                   />
                 </CardContent>
               </Card>
@@ -950,6 +1021,8 @@ export function MaintenanceLogClient() {
                         summaries={summaries}
                         loadingSummaries={loadingSummaries}
                         onSummarize={handleSummarize}
+                        onEdit={(log) => openLogDialog(undefined, log)}
+                        onDelete={setLogToDelete}
                       />
                     </CardContent>
                   </Card>
@@ -1041,6 +1114,8 @@ export function MaintenanceLogClient() {
                         summaries={summaries}
                         loadingSummaries={loadingSummaries}
                         onSummarize={handleSummarize}
+                        onEdit={(log) => openLogDialog(undefined, log)}
+                        onDelete={setLogToDelete}
                       />
                     </CardContent>
                   </Card>
@@ -1063,6 +1138,8 @@ export function MaintenanceLogClient() {
               summaries={summaries}
               loadingSummaries={loadingSummaries}
               onSummarize={handleSummarize}
+              onEdit={(log) => openLogDialog(undefined, log)}
+              onDelete={setLogToDelete}
             />
           </TabsContent>
         </Tabs>
@@ -1243,10 +1320,13 @@ export function MaintenanceLogClient() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={logDialogOpen} onOpenChange={setLogDialogOpen}>
+      <Dialog open={logDialogOpen} onOpenChange={(open) => {
+        setLogDialogOpen(open);
+        if (!open) setEditingLog(null);
+      }}>
         <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-            <DialogTitle>Add Maintenance Log</DialogTitle>
+            <DialogTitle>{editingLog ? 'Edit Maintenance Log' : 'Add Maintenance Log'}</DialogTitle>
             <DialogDescription>Link a log to a home asset, vehicle, or keep it general.</DialogDescription>
           </DialogHeader>
           <Form {...logForm}>
@@ -1296,12 +1376,32 @@ export function MaintenanceLogClient() {
               </div>
               <DialogFooter className="border-t px-6 py-4">
                 <Button type="button" variant="secondary" onClick={() => setLogDialogOpen(false)}>Cancel</Button>
-                <Button type="submit">Save Log</Button>
+                <Button type="submit">{editingLog ? 'Update Log' : 'Save Log'}</Button>
               </DialogFooter>
             </form>
           </Form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!logToDelete} onOpenChange={(open) => !open && setLogToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete maintenance log?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete &quot;{logToDelete ? getLogTitle(logToDelete) : 'this log'}&quot;. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={deleteLog}
+            >
+              Delete Log
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
