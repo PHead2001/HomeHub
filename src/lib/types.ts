@@ -214,12 +214,42 @@ export type Household = {
     inviteCode: string;
 }
 
+export type NotificationCategory =
+  | 'chores'
+  | 'pets'
+  | 'shopping'
+  | 'maintenance'
+  | 'automation'
+  | 'general';
+
+export type NotificationUserAction = {
+  at: Date;
+  uid?: string;
+  email?: string;
+  displayName?: string;
+};
+
+export type NotificationUserActionMap = Record<string, NotificationUserAction>;
+
 export type Notification = {
-    id: string;
-    message: string;
-    createdAt: Date;
-    isRead: boolean;
-    href?: string;
+  id: string;
+  householdId: string;
+  category: NotificationCategory;
+  title?: string;
+  message: string;
+  createdAt: Date;
+  expiresAt: Date;
+  deepLink?: string;
+  href?: string;
+  sourceType?: string;
+  sourceId?: string;
+  targetUserUid?: string;
+  targetUserEmail?: string;
+  readBy: NotificationUserActionMap;
+  dismissedBy: NotificationUserActionMap;
+  resolvedAt?: Date;
+  resolvedBy?: NotificationUserAction;
+  isRead?: boolean;
 };
 
 export type HomeAssistantEntity = {

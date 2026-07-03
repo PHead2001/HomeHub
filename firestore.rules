@@ -22,6 +22,33 @@ service cloud.firestore {
              get(/databases/$(database)/documents/users/$(targetEmail)).data.householdId;
     }
 
+    function isHouseholdMember(householdId) {
+      return signedIn() &&
+             request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails;
+    }
+
+    function validNewNotification(householdId) {
+      return isHouseholdMember(householdId) &&
+             request.resource.data.householdId == householdId &&
+             request.resource.data.keys().hasAll([
+               'householdId',
+               'category',
+               'message',
+               'createdAt',
+               'expiresAt',
+               'readBy',
+               'dismissedBy'
+             ]) &&
+             request.resource.data.readBy == {} &&
+             request.resource.data.dismissedBy == {};
+    }
+
+    function updatesOnlyOwnNotificationState() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy', 'dismissedBy']) &&
+             request.resource.data.readBy.diff(resource.data.readBy).affectedKeys().hasOnly([request.auth.uid]) &&
+             request.resource.data.dismissedBy.diff(resource.data.dismissedBy).affectedKeys().hasOnly([request.auth.uid]);
+    }
+
     // Household data:
     // - Members can read the household document.
     // - Only the owner can update household details or delete it.
@@ -32,9 +59,16 @@ service cloud.firestore {
         request.auth.token.email in request.resource.data.memberEmails;
       allow update, delete: if signedIn() && request.auth.token.email == resource.data.ownerEmail;
 
+      match /notifications/{notificationId} {
+        allow read: if isHouseholdMember(householdId);
+        allow create: if validNewNotification(householdId);
+        allow update: if isHouseholdMember(householdId) && updatesOnlyOwnNotificationState();
+        allow delete: if false;
+      }
+
       // All members of a household can read/write to its subcollections (pets, chores, etc.)
       match /{subcollection}/{docId=**} {
-        allow read, write: if signedIn() && request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails;
+        allow read, write: if subcollection != 'notifications' && isHouseholdMember(householdId);
       }
     }
 
