@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
 import type { LucideIcon, LucideProps } from 'lucide-react';
 import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
-import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, differenceInCalendarDays } from 'date-fns';
+import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, differenceInCalendarDays, isValid } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
@@ -81,13 +81,60 @@ const getMonthlyMode = (recurrence: Recurrence): MonthlyRecurrenceMode => {
     return recurrence.monthlyOptions?.mode ?? 'dayOfMonth';
 };
 
+const isRecurrenceFrequency = (frequency: string): frequency is RecurrenceFrequency => {
+    return ['daily', 'weekly', 'biweekly', 'monthly'].includes(frequency);
+};
+
 const getWeekOfMonth = (date: Date) => Math.floor((date.getDate() - 1) / 7) + 1;
 
 const isNthWeekday = (date: Date, nthWeekday: MonthlyNthWeekday) => {
     return getWeekOfMonth(date) === nthWeekday.week && getDay(date) === nthWeekday.dayOfWeek;
 };
 
+const getRecurringWeekdays = (recurrence: Recurrence) => {
+    const days = recurrence.weeklyOptions?.daysOfWeek?.filter(day => Number.isInteger(day) && day >= 0 && day <= 6) || [];
+    if (days.length > 0) return days;
+
+    const anchorDate = recurrence.startDate ? parseISO(recurrence.startDate) : startOfToday();
+    return [isValid(anchorDate) ? getDay(anchorDate) : getDay(startOfToday())];
+};
+
+const normalizeRecurrence = (recurrence?: Recurrence | null): Recurrence | null => {
+    if (!recurrence || !isRecurrenceFrequency(recurrence.frequency)) return null;
+
+    const normalized: Recurrence = {
+        ...recurrence,
+        interval: recurrence.frequency === 'biweekly' ? 2 : (recurrence.interval || 1),
+    };
+
+    if (normalized.frequency === 'daily') {
+        normalized.dailyOptions = { excludeWeekends: Boolean(recurrence.dailyOptions?.excludeWeekends) };
+    }
+
+    if (normalized.frequency === 'weekly' || normalized.frequency === 'biweekly') {
+        normalized.weeklyOptions = { daysOfWeek: getRecurringWeekdays(normalized) };
+    }
+
+    if (normalized.frequency === 'biweekly') {
+        normalized.startDate = recurrence.startDate || getDefaultAnchorDate();
+    }
+
+    if (normalized.frequency === 'monthly') {
+        const mode = getMonthlyMode(normalized);
+        normalized.monthlyOptions = mode === 'nthWeekday' && recurrence.monthlyOptions?.nthWeekday
+            ? { mode: 'nthWeekday', nthWeekday: recurrence.monthlyOptions.nthWeekday }
+            : { mode: 'dayOfMonth', dayOfMonth: recurrence.monthlyOptions?.dayOfMonth || 1 };
+    }
+
+    return normalized;
+};
+
 const isValidRecurringDate = (date: Date, recurrence: Recurrence) => {
+    const normalizedRecurrence = normalizeRecurrence(recurrence);
+    if (!normalizedRecurrence) return false;
+
+    recurrence = normalizedRecurrence;
+
     if (recurrence.frequency === 'daily') {
         if (recurrence.dailyOptions?.excludeWeekends) {
             const day = getDay(date);
@@ -96,9 +143,9 @@ const isValidRecurringDate = (date: Date, recurrence: Recurrence) => {
         return true;
     }
 
-    if ((recurrence.frequency === 'weekly' || recurrence.frequency === 'biweekly') && recurrence.weeklyOptions) {
+    if (recurrence.frequency === 'weekly' || recurrence.frequency === 'biweekly') {
         const day = getDay(date);
-        if (!recurrence.weeklyOptions.daysOfWeek.includes(day)) {
+        if (!getRecurringWeekdays(recurrence).includes(day)) {
             return false;
         }
 
@@ -111,11 +158,13 @@ const isValidRecurringDate = (date: Date, recurrence: Recurrence) => {
         return true;
     }
 
-    if (recurrence.frequency === 'monthly' && recurrence.monthlyOptions) {
+    if (recurrence.frequency === 'monthly') {
+        const monthlyOptions = recurrence.monthlyOptions;
+        if (!monthlyOptions) return false;
         if (getMonthlyMode(recurrence) === 'nthWeekday') {
-            return recurrence.monthlyOptions.nthWeekday ? isNthWeekday(date, recurrence.monthlyOptions.nthWeekday) : false;
+            return monthlyOptions.nthWeekday ? isNthWeekday(date, monthlyOptions.nthWeekday) : false;
         }
-        return date.getDate() === (recurrence.monthlyOptions.dayOfMonth || 1);
+        return date.getDate() === (monthlyOptions.dayOfMonth || 1);
     }
 
     return false;
@@ -848,12 +897,12 @@ function EditRecurringTaskDialog({
     const [nthWeekday, setNthWeekday] = useState<number>(1);
     
     useEffect(() => {
-        if (chore?.recurrence) {
-            setAssignedToEmail(chore.assignedToEmail || '');
-            const { recurrence } = chore;
+        const recurrence = normalizeRecurrence(chore?.recurrence);
+        if (chore && recurrence) {
+            setAssignedToEmail(chore.assignedToEmail || recurrence.assignedToEmail || '');
             setFrequency(recurrence.frequency);
             setExcludeWeekends(recurrence.dailyOptions?.excludeWeekends || false);
-            setDaysOfWeek(recurrence.weeklyOptions?.daysOfWeek.map(String) || []);
+            setDaysOfWeek(getRecurringWeekdays(recurrence).map(String));
             setBiweeklyStartDate(recurrence.startDate ? parseISO(recurrence.startDate) : new Date());
             setMonthlyMode(getMonthlyMode(recurrence));
             setDayOfMonth(recurrence.monthlyOptions?.dayOfMonth || 1);
@@ -1030,23 +1079,24 @@ function ManageRecurringTasksDialog({
     const usersByEmail = useMemo(() => new Map(users.map(u => [u.email, u])), [users]);
 
     const getScheduleText = (recurrence: Recurrence) => {
-        if (!recurrence) return 'One-time';
-        switch (recurrence.frequency) {
+        const normalizedRecurrence = normalizeRecurrence(recurrence);
+        if (!normalizedRecurrence) return 'One-time';
+        switch (normalizedRecurrence.frequency) {
             case 'daily':
-                return `Daily ${recurrence.dailyOptions?.excludeWeekends ? '(Weekdays only)' : ''}`;
+                return `Daily ${normalizedRecurrence.dailyOptions?.excludeWeekends ? '(Weekdays only)' : ''}`;
             case 'weekly':
-                const days = [...(recurrence.weeklyOptions?.daysOfWeek || [])].sort().map(d => dayNames[d]).join(', ');
+                const days = [...getRecurringWeekdays(normalizedRecurrence)].sort().map(d => dayNames[d]).join(', ');
                 return `Weekly on ${days}`;
             case 'biweekly':
-                const biweeklyDays = [...(recurrence.weeklyOptions?.daysOfWeek || [])].sort().map(d => dayNames[d]).join(', ');
-                const anchor = recurrence.startDate ? ` from ${format(parseISO(recurrence.startDate), 'MMM d, yyyy')}` : '';
+                const biweeklyDays = [...getRecurringWeekdays(normalizedRecurrence)].sort().map(d => dayNames[d]).join(', ');
+                const anchor = normalizedRecurrence.startDate ? ` from ${format(parseISO(normalizedRecurrence.startDate), 'MMM d, yyyy')}` : '';
                 return `Every 2 weeks on ${biweeklyDays}${anchor}`;
             case 'monthly':
-                if (getMonthlyMode(recurrence) === 'nthWeekday' && recurrence.monthlyOptions?.nthWeekday) {
-                    const { week, dayOfWeek } = recurrence.monthlyOptions.nthWeekday;
+                if (getMonthlyMode(normalizedRecurrence) === 'nthWeekday' && normalizedRecurrence.monthlyOptions?.nthWeekday) {
+                    const { week, dayOfWeek } = normalizedRecurrence.monthlyOptions.nthWeekday;
                     return `Monthly on the ${ordinalLabels[week]} ${fullDayNames[dayOfWeek]}`;
                 }
-                return `Monthly on day ${recurrence.monthlyOptions?.dayOfMonth || 1}`;
+                return `Monthly on day ${normalizedRecurrence.monthlyOptions?.dayOfMonth || 1}`;
             default:
                 return 'Invalid schedule';
         }
@@ -1305,11 +1355,13 @@ export function ChoreChartClient() {
         
         const generationBatch = writeBatch(db);
         const generationLimit = 30;
-        const recurringTemplates = templatesData.filter(t => t.recurrence && t.assignedToEmail);
+        const recurringTemplates = templatesData.filter(t => normalizeRecurrence(t.recurrence) && (t.assignedToEmail || t.recurrence?.assignedToEmail));
         let generatedInThisPass = 0;
         
         for (const template of recurringTemplates) {
-            const { recurrence, assignedToEmail, task } = template;
+            const recurrence = normalizeRecurrence(template.recurrence);
+            const assignedToEmail = template.assignedToEmail || recurrence?.assignedToEmail;
+            const { task } = template;
             if (!recurrence || !assignedToEmail) continue;
 
             const user = usersData.find(u => u.email === assignedToEmail);
@@ -1584,16 +1636,13 @@ export function ChoreChartClient() {
         sourceId: templatesToAssign.map(template => template.id).join(','),
         targetUser: user,
     });
-    batch.set(doc(collection(db, 'households', currentUser.householdId, 'notifications')), newNotification);
-
 
     if (schedule.type === 'recurring') {
         for (const template of templatesToAssign) {
             const templateRef = doc(templatesCollection, template.id);
             const recurrenceData: Recurrence = { ...schedule.recurrence, assignedToEmail: assignment.assignedToEmail };
-            batch.update(templateRef, { recurrence: recurrenceData, assignedToEmail: assignment.assignedToEmail });
+            batch.set(templateRef, { recurrence: recurrenceData, assignedToEmail: assignment.assignedToEmail }, { merge: true });
         }
-        toast({ title: 'Recurring Chores Set!', description: `These chores will now be assigned automatically.` });
     } else {
         for (const template of templatesToAssign) {
             const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
@@ -1617,11 +1666,20 @@ export function ChoreChartClient() {
                 batch.set(doc(choresCollection, choreId), newChore);
             })
         }
-        toast({ title: 'Chores Assigned!', description: `${templatesToAssign.length} chore(s) have been added to the chart.` });
     }
     
     try {
         await batch.commit();
+        try {
+            await setDoc(doc(collection(db, 'households', currentUser.householdId, 'notifications')), newNotification);
+        } catch (notificationError) {
+            console.warn('Chore assignment saved, but notification creation failed:', notificationError instanceof Error ? notificationError.message : String(notificationError));
+        }
+        if (schedule.type === 'recurring') {
+            toast({ title: 'Recurring Chores Set!', description: `These chores will now be assigned automatically.` });
+        } else {
+            toast({ title: 'Chores Assigned!', description: `${templatesToAssign.length} chore(s) have been added to the chart.` });
+        }
         await fetchAllData();
     } catch(error) {
         console.error("Error assigning chores:", error);
@@ -1908,7 +1966,7 @@ export function ChoreChartClient() {
     ? futureChores
     : futureChores.filter(c => !isAfter(parseISO(c.dueDate), sevenDaysFromNow));
     
-  const recurringChores = choreTemplates.filter(t => !!t.recurrence);
+  const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
 
 
   const groupChoresByRoom = (chores: Chore[]) => {

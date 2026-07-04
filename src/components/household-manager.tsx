@@ -112,16 +112,20 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
 
   const handleCreate = async (name: string) => {
     setIsCreating(true);
-    await createHousehold(name);
-    // onAuthStateChanged will handle updating the state, no need to do it here
-    setIsCreating(false);
+    try {
+      await createHousehold(name);
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const handleJoin = async (code: string) => {
     setIsJoining(true);
-    await joinHousehold(code);
-    // onAuthStateChanged will handle updating the state
-    setIsJoining(false);
+    try {
+      await joinHousehold(code);
+    } finally {
+      setIsJoining(false);
+    }
   };
 
   // Display this overlay if user is logged in but has no household

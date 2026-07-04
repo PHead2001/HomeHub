@@ -20,7 +20,6 @@ import { useToast } from '@/hooks/use-toast';
 import { doc, getDoc, setDoc, collection, query, where, writeBatch, getDocs, deleteDoc } from 'firebase/firestore';
 import type { User, HomeAssistantCredentials, Household } from '@/lib/types';
 import { auth, db } from '@/lib/firebase';
-import { slugify } from '@/lib/utils';
 
 
 // --- Types ---
@@ -320,19 +319,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
     }
 
-    const newHouseholdId = slugify(name);
-    const householdDocRef = doc(db, 'households', newHouseholdId);
-    
-    const householdSnap = await getDoc(householdDocRef);
-    if (householdSnap.exists()) {
-        toast({ variant: 'destructive', title: 'Household Exists', description: 'A household with a very similar name already exists. Please choose a different name.' });
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+        toast({ variant: 'destructive', title: 'Missing Household Name', description: 'Please enter a household name.' });
         return;
     }
 
+    const householdDocRef = doc(collection(db, 'households'));
+    const newHouseholdId = householdDocRef.id;
     const userDocRef = doc(db, 'users', currentUser.email);
 
     const newHouseholdData: Omit<Household, 'id'> = {
-        name,
+        name: trimmedName,
         ownerEmail: currentUser.email,
         memberEmails: [currentUser.email],
         createdAt: new Date().toISOString(),
@@ -346,8 +344,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await batch.commit();
 
         setCurrentUser(prev => prev ? { ...prev, householdId: newHouseholdId } : null);
+        setHousehold({ id: newHouseholdId, ...newHouseholdData });
 
-        toast({ title: 'Household Created!', description: `Welcome to ${name}!` });
+        toast({ title: 'Household Created!', description: `Welcome to ${trimmedName}!` });
     } catch (error) {
         console.error('Failed to create household', error);
         toast({ variant: 'destructive', title: 'Creation Failed', description: 'Could not create the new household.' });
