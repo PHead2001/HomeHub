@@ -5,14 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { add, format, isAfter, isValid, parseISO, subDays } from 'date-fns';
+import { add, differenceInCalendarDays, format, isAfter, isBefore, isSameDay, isValid, parseISO, startOfToday, subDays } from 'date-fns';
 import {
   AlertCircle,
   CalendarDays,
   Car,
   ClipboardList,
+  Download,
   DollarSign,
   Edit,
+  FileText,
   Home,
   Loader2,
   Plus,
@@ -25,12 +27,17 @@ import type {
   HomeAsset,
   HomeAssetCategory,
   HomeAssetSchedule,
+  MaintenanceAttachment,
+  MaintenanceAttachmentCategory,
+  MaintenanceAttachmentTargetType,
   MaintenanceLog,
   MaintenanceLogType,
   MaintenanceTargetType,
+  Notification,
   Vehicle,
   VehicleServiceSchedule,
 } from '@/lib/types';
+import { buildNotificationDocument, createNotificationAction, isNotificationExpired, parseNotificationDoc } from '@/lib/notifications';
 import { Badge } from '@/components/ui/badge';
 import {
   AlertDialog,
@@ -62,7 +69,8 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { cn, slugify } from '@/lib/utils';
-import { collection, deleteDoc, doc, getDocs, orderBy, query, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 
 const assetCategories = [
   'HVAC',
@@ -81,6 +89,9 @@ const vehicleStatuses = ['active', 'needs_attention', 'retired', 'sold'] as cons
 const logTargetTypes = ['general', 'home_asset', 'vehicle'] as const;
 const logTypes = ['repair', 'routine', 'inspection', 'cleaning', 'replacement', 'issue', 'other'] as const;
 const frequencyTypes = ['days', 'weeks', 'months', 'years'] as const;
+const attachmentCategories = ['photo', 'receipt', 'manual', 'warranty_document', 'invoice', 'other'] as const;
+const REMINDER_DUE_SOON_DAYS = 14;
+const MILEAGE_DUE_SOON_THRESHOLD = 500;
 
 const assetSchema = z.object({
   name: z.string().min(1, 'Asset name is required.'),
@@ -193,6 +204,26 @@ type ScheduleCompletionTarget =
       scheduleIndex: number;
       schedule: VehicleServiceSchedule;
     };
+
+type MaintenanceReminderStatus = 'upcoming' | 'due_soon' | 'due_today' | 'overdue';
+type MaintenanceReminderGroup = 'scheduled' | 'warranty' | 'vehicle_service' | 'vehicle_document';
+
+type MaintenanceReminder = {
+  id: string;
+  group: MaintenanceReminderGroup;
+  status: MaintenanceReminderStatus;
+  title: string;
+  relatedName: string;
+  targetType: 'home_asset' | 'vehicle';
+  targetId: string;
+  sourceType: string;
+  sourceId: string;
+  dueDate?: string;
+  dueMileage?: number;
+  currentMileage?: number;
+  message: string;
+  deepLink: string;
+};
 
 const todayInputValue = () => format(new Date(), 'yyyy-MM-dd');
 
@@ -387,6 +418,168 @@ const getTargetName = (log: MaintenanceLog, assets: HomeAsset[], vehicles: Vehic
   return 'General';
 };
 
+const sanitizeFileName = (fileName: string) => {
+  return fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
+};
+
+const formatFileSize = (size?: number) => {
+  if (typeof size !== 'number') return 'Unknown size';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const getAttachmentsForTarget = (
+  attachments: MaintenanceAttachment[],
+  targetType: MaintenanceAttachmentTargetType,
+  targetId: string
+) => {
+  return attachments.filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId);
+};
+
+const parseDueDate = (date?: string) => {
+  if (!date) return null;
+  const parsed = parseISO(date);
+  return isValid(parsed) ? parsed : null;
+};
+
+const getDateReminderStatus = (date?: string): MaintenanceReminderStatus | null => {
+  const dueDate = parseDueDate(date);
+  if (!dueDate) return null;
+
+  const today = startOfToday();
+  if (isBefore(dueDate, today)) return 'overdue';
+  if (isSameDay(dueDate, today)) return 'due_today';
+  const daysUntilDue = differenceInCalendarDays(dueDate, today);
+  if (daysUntilDue <= REMINDER_DUE_SOON_DAYS) return 'due_soon';
+  return 'upcoming';
+};
+
+const getMileageReminderStatus = (nextDueMileage?: number, currentMileage?: number): MaintenanceReminderStatus | null => {
+  if (typeof nextDueMileage !== 'number' || typeof currentMileage !== 'number') return null;
+  if (currentMileage >= nextDueMileage) return 'overdue';
+  if (nextDueMileage - currentMileage <= MILEAGE_DUE_SOON_THRESHOLD) return 'due_soon';
+  return 'upcoming';
+};
+
+const getReminderBadgeVariant = (status: MaintenanceReminderStatus) => {
+  if (status === 'overdue') return 'destructive';
+  if (status === 'due_today') return 'default';
+  return 'secondary';
+};
+
+const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): MaintenanceReminder[] => {
+  const reminders: MaintenanceReminder[] = [];
+
+  assets.forEach((asset) => {
+    asset.schedules?.forEach((schedule, index) => {
+      const status = getDateReminderStatus(schedule.nextDueDate);
+      if (!status) return;
+      const title = schedule.scheduleName || 'Scheduled maintenance';
+      reminders.push({
+        id: `asset-schedule-${asset.id}-${index}-${status}`,
+        group: 'scheduled',
+        status,
+        title,
+        relatedName: asset.name,
+        targetType: 'home_asset',
+        targetId: asset.id,
+        sourceType: 'maintenance_asset_schedule',
+        sourceId: `${asset.id}-${index}`,
+        dueDate: schedule.nextDueDate,
+        message: `${title} for ${asset.name} is ${humanizeLabel(status).toLowerCase()}.`,
+        deepLink: `/maintenance?targetType=home_asset&targetId=${asset.id}`,
+      });
+    });
+
+    const warrantyStatus = getDateReminderStatus(asset.warrantyExpiration);
+    if (warrantyStatus && warrantyStatus !== 'upcoming') {
+      reminders.push({
+        id: `asset-warranty-${asset.id}-${warrantyStatus}`,
+        group: 'warranty',
+        status: warrantyStatus,
+        title: 'Warranty expiration',
+        relatedName: asset.name,
+        targetType: 'home_asset',
+        targetId: asset.id,
+        sourceType: 'maintenance_asset_warranty',
+        sourceId: asset.id,
+        dueDate: asset.warrantyExpiration,
+        message: `${asset.name} warranty is ${humanizeLabel(warrantyStatus).toLowerCase()}.`,
+        deepLink: `/maintenance?targetType=home_asset&targetId=${asset.id}`,
+      });
+    }
+  });
+
+  vehicles.forEach((vehicle) => {
+    vehicle.serviceSchedules?.forEach((schedule, index) => {
+      const dateStatus = getDateReminderStatus(schedule.nextDueDate);
+      const mileageStatus = getMileageReminderStatus(schedule.nextDueMileage, vehicle.currentMileage);
+      const status = dateStatus === 'overdue' || mileageStatus === 'overdue'
+        ? 'overdue'
+        : dateStatus === 'due_today'
+          ? 'due_today'
+          : dateStatus === 'due_soon' || mileageStatus === 'due_soon'
+            ? 'due_soon'
+            : dateStatus || mileageStatus;
+
+      if (!status) return;
+      const title = schedule.serviceName || 'Scheduled service';
+      reminders.push({
+        id: `vehicle-service-${vehicle.id}-${index}-${status}`,
+        group: 'vehicle_service',
+        status,
+        title,
+        relatedName: vehicle.nickname,
+        targetType: 'vehicle',
+        targetId: vehicle.id,
+        sourceType: 'maintenance_vehicle_service',
+        sourceId: `${vehicle.id}-${index}`,
+        dueDate: schedule.nextDueDate,
+        dueMileage: schedule.nextDueMileage,
+        currentMileage: vehicle.currentMileage,
+        message: `${title} for ${vehicle.nickname} is ${humanizeLabel(status).toLowerCase()}.`,
+        deepLink: `/maintenance?targetType=vehicle&targetId=${vehicle.id}`,
+      });
+    });
+
+    ([
+      ['Vehicle registration', vehicle.registrationExpiration, 'maintenance_vehicle_registration'],
+      ['Vehicle inspection', vehicle.inspectionExpiration, 'maintenance_vehicle_inspection'],
+    ] as const).forEach(([title, dueDate, sourceType]) => {
+      const status = getDateReminderStatus(dueDate);
+      if (!status || status === 'upcoming') return;
+      reminders.push({
+        id: `${sourceType}-${vehicle.id}-${status}`,
+        group: 'vehicle_document',
+        status,
+        title,
+        relatedName: vehicle.nickname,
+        targetType: 'vehicle',
+        targetId: vehicle.id,
+        sourceType,
+        sourceId: vehicle.id,
+        dueDate,
+        message: `${title} for ${vehicle.nickname} is ${humanizeLabel(status).toLowerCase()}.`,
+        deepLink: `/maintenance?targetType=vehicle&targetId=${vehicle.id}`,
+      });
+    });
+  });
+
+  return reminders.sort((a, b) => {
+    const statusWeight: Record<MaintenanceReminderStatus, number> = {
+      overdue: 0,
+      due_today: 1,
+      due_soon: 2,
+      upcoming: 3,
+    };
+    if (statusWeight[a.status] !== statusWeight[b.status]) {
+      return statusWeight[a.status] - statusWeight[b.status];
+    }
+    return parseLogDate(a.dueDate || '2999-12-31').getTime() - parseLogDate(b.dueDate || '2999-12-31').getTime();
+  });
+};
+
 function SummaryCard({
   title,
   value,
@@ -430,6 +623,153 @@ function DetailRow({ label, value }: { label: string; value?: string | number })
   );
 }
 
+function AttachmentPanel({
+  title = 'Attachments',
+  attachments,
+  targetType,
+  targetId,
+  uploading,
+  deletingId,
+  onUpload,
+  onDelete,
+}: {
+  title?: string;
+  attachments: MaintenanceAttachment[];
+  targetType: MaintenanceAttachmentTargetType;
+  targetId: string;
+  uploading: boolean;
+  deletingId?: string | null;
+  onUpload: (targetType: MaintenanceAttachmentTargetType, targetId: string, category: MaintenanceAttachmentCategory, file: File) => void;
+  onDelete: (attachment: MaintenanceAttachment) => void;
+}) {
+  const [category, setCategory] = useState<MaintenanceAttachmentCategory>('photo');
+
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 text-muted-foreground" />
+          <h3 className="font-headline font-semibold">{title}</h3>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Select value={category} onValueChange={(value) => setCategory(value as MaintenanceAttachmentCategory)}>
+            <SelectTrigger className="w-full sm:w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {attachmentCategories.map((option) => (
+                <SelectItem key={option} value={option}>{humanizeLabel(option)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button asChild variant="outline" size="sm" disabled={uploading}>
+            <label className="cursor-pointer">
+              {uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Upload
+              <Input
+                type="file"
+                className="sr-only"
+                disabled={uploading}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) onUpload(targetType, targetId, category, file);
+                  event.target.value = '';
+                }}
+              />
+            </label>
+          </Button>
+        </div>
+      </div>
+
+      {attachments.length === 0 ? (
+        <p className="mt-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+          No attachments yet.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {attachments.map((attachment) => (
+            <div key={attachment.id} className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="truncate text-sm font-medium">{attachment.fileName}</p>
+                  <Badge variant="secondary">{humanizeLabel(attachment.category)}</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {formatDate(attachment.createdAt)} - {formatFileSize(attachment.size)}
+                  {attachment.uploadedByName ? ` - ${attachment.uploadedByName}` : ''}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 self-start sm:self-center">
+                {attachment.downloadUrl && (
+                  <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                    <a href={attachment.downloadUrl} target="_blank" rel="noreferrer">
+                      <Download className="h-4 w-4" />
+                      <span className="sr-only">Open attachment</span>
+                    </a>
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-destructive hover:text-destructive"
+                  disabled={deletingId === attachment.id}
+                  onClick={() => onDelete(attachment)}
+                >
+                  {deletingId === attachment.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  <span className="sr-only">Delete attachment</span>
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReminderList({
+  reminders,
+  emptyTitle,
+  emptyDescription,
+  onOpen,
+}: {
+  reminders: MaintenanceReminder[];
+  emptyTitle: string;
+  emptyDescription: string;
+  onOpen: (reminder: MaintenanceReminder) => void;
+}) {
+  if (reminders.length === 0) {
+    return <EmptyState title={emptyTitle} description={emptyDescription} />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {reminders.map((reminder) => (
+        <Card key={reminder.id}>
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-headline text-base font-semibold">{reminder.title}</h3>
+                <Badge variant={getReminderBadgeVariant(reminder.status)}>{humanizeLabel(reminder.status)}</Badge>
+                <Badge variant="outline">{reminder.relatedName}</Badge>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">{reminder.message}</p>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                {reminder.dueDate && <span>Due date: {formatDate(reminder.dueDate)}</span>}
+                {typeof reminder.dueMileage === 'number' && <span>Due mileage: {reminder.dueMileage.toLocaleString()}</span>}
+                {typeof reminder.currentMileage === 'number' && <span>Current mileage: {reminder.currentMileage.toLocaleString()}</span>}
+              </div>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => onOpen(reminder)}>
+              Open Related
+            </Button>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 const AutoResizeTextarea = React.forwardRef<
   HTMLTextAreaElement,
   React.ComponentPropsWithoutRef<typeof Textarea>
@@ -468,20 +808,30 @@ function LogList({
   logs,
   assets,
   vehicles,
+  attachments,
   summaries,
   loadingSummaries,
+  uploadingAttachmentTarget,
+  deletingAttachmentId,
   onSummarize,
   onEdit,
   onDelete,
+  onUploadAttachment,
+  onDeleteAttachment,
 }: {
   logs: MaintenanceLog[];
   assets: HomeAsset[];
   vehicles: Vehicle[];
+  attachments: MaintenanceAttachment[];
   summaries: Record<string, string>;
   loadingSummaries: Record<string, boolean>;
+  uploadingAttachmentTarget?: string | null;
+  deletingAttachmentId?: string | null;
   onSummarize: (log: MaintenanceLog) => void;
   onEdit: (log: MaintenanceLog) => void;
   onDelete: (log: MaintenanceLog) => void;
+  onUploadAttachment: (targetType: MaintenanceAttachmentTargetType, targetId: string, category: MaintenanceAttachmentCategory, file: File) => void;
+  onDeleteAttachment: (attachment: MaintenanceAttachment) => void;
 }) {
   if (logs.length === 0) {
     return <EmptyState title="No logs yet" description="Maintenance records will appear here after they are added." />;
@@ -549,6 +899,19 @@ function LogList({
                 )}
               </Button>
             )}
+
+            <div className="mt-4">
+              <AttachmentPanel
+                title="Log Attachments"
+                attachments={getAttachmentsForTarget(attachments, 'maintenance_log', log.id)}
+                targetType="maintenance_log"
+                targetId={log.id}
+                uploading={uploadingAttachmentTarget === `maintenance_log:${log.id}`}
+                deletingId={deletingAttachmentId}
+                onUpload={onUploadAttachment}
+                onDelete={onDeleteAttachment}
+              />
+            </div>
           </CardContent>
         </Card>
       ))}
@@ -562,8 +925,11 @@ export function MaintenanceLogClient() {
   const [assets, setAssets] = useState<HomeAsset[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [logs, setLogs] = useState<MaintenanceLog[]>([]);
+  const [attachments, setAttachments] = useState<MaintenanceAttachment[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState('overview');
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [assetDialogOpen, setAssetDialogOpen] = useState(false);
@@ -578,6 +944,8 @@ export function MaintenanceLogClient() {
   const [assetScheduleForms, setAssetScheduleForms] = useState<AssetScheduleForm[]>([]);
   const [vehicleScheduleForms, setVehicleScheduleForms] = useState<VehicleScheduleForm[]>([]);
   const [showInactiveVehicles, setShowInactiveVehicles] = useState(false);
+  const [uploadingAttachmentTarget, setUploadingAttachmentTarget] = useState<string | null>(null);
+  const [deletingAttachmentId, setDeletingAttachmentId] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [loadingSummaries, setLoadingSummaries] = useState<Record<string, boolean>>({});
 
@@ -601,7 +969,7 @@ export function MaintenanceLogClient() {
     defaultValues: emptyScheduleCompletionForm(),
   });
 
-  const getCollectionRef = useCallback((collectionName: 'home-assets' | 'vehicles' | 'maintenance') => {
+  const getCollectionRef = useCallback((collectionName: 'home-assets' | 'vehicles' | 'maintenance' | 'maintenance-attachments' | 'notifications') => {
     if (!currentUser?.householdId) return null;
     return collection(db, 'households', currentUser.householdId, collectionName);
   }, [currentUser?.householdId]);
@@ -610,11 +978,15 @@ export function MaintenanceLogClient() {
     const assetsCollection = getCollectionRef('home-assets');
     const vehiclesCollection = getCollectionRef('vehicles');
     const logsCollection = getCollectionRef('maintenance');
+    const attachmentsCollection = getCollectionRef('maintenance-attachments');
+    const notificationsCollection = getCollectionRef('notifications');
 
-    if (!assetsCollection || !vehiclesCollection || !logsCollection) {
+    if (!assetsCollection || !vehiclesCollection || !logsCollection || !attachmentsCollection || !notificationsCollection) {
       setAssets([]);
       setVehicles([]);
       setLogs([]);
+      setAttachments([]);
+      setNotifications([]);
       setLoading(false);
       return;
     }
@@ -623,15 +995,19 @@ export function MaintenanceLogClient() {
     setError(null);
 
     try {
-      const [assetSnap, vehicleSnap, logSnap] = await Promise.all([
+      const [assetSnap, vehicleSnap, logSnap, attachmentSnap, notificationSnap] = await Promise.all([
         getDocs(query(assetsCollection, orderBy('name', 'asc'))),
         getDocs(query(vehiclesCollection, orderBy('nickname', 'asc'))),
         getDocs(query(logsCollection, orderBy('date', 'desc'))),
+        getDocs(query(attachmentsCollection, orderBy('createdAt', 'desc'))),
+        getDocs(query(notificationsCollection, orderBy('createdAt', 'desc'))),
       ]);
 
       setAssets(assetSnap.docs.map((assetDoc) => ({ id: assetDoc.id, ...assetDoc.data() } as HomeAsset)));
       setVehicles(vehicleSnap.docs.map((vehicleDoc) => ({ id: vehicleDoc.id, ...vehicleDoc.data() } as Vehicle)));
       setLogs(logSnap.docs.map((logDoc) => ({ id: logDoc.id, ...logDoc.data() } as MaintenanceLog)));
+      setAttachments(attachmentSnap.docs.map((attachmentDoc) => ({ id: attachmentDoc.id, ...attachmentDoc.data() } as MaintenanceAttachment)));
+      setNotifications(notificationSnap.docs.map(parseNotificationDoc));
     } catch (fetchError) {
       console.error('Error fetching maintenance data:', fetchError);
       setError('Could not load maintenance data.');
@@ -645,9 +1021,52 @@ export function MaintenanceLogClient() {
     if (currentUser?.householdId) {
       void fetchMaintenanceData();
     } else {
+      setAssets([]);
+      setVehicles([]);
+      setLogs([]);
+      setAttachments([]);
+      setNotifications([]);
       setLoading(false);
     }
   }, [currentUser?.householdId, fetchMaintenanceData]);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const targetType = searchParams.get('targetType');
+    const targetId = searchParams.get('targetId');
+    if (!targetType || !targetId) return;
+
+    if (targetType === 'home_asset') {
+      setSelectedAssetId(targetId);
+      setActiveTab('assets');
+    }
+    if (targetType === 'vehicle') {
+      setSelectedVehicleId(targetId);
+      setActiveTab('vehicles');
+    }
+  }, []);
+
+  const reminders = useMemo(() => buildMaintenanceReminders(assets, vehicles), [assets, vehicles]);
+
+  const actionableReminders = useMemo(() => {
+    return reminders.filter((reminder) => reminder.status !== 'upcoming');
+  }, [reminders]);
+
+  const dueSoonReminders = useMemo(() => {
+    return reminders.filter((reminder) => reminder.status === 'due_soon' || reminder.status === 'due_today');
+  }, [reminders]);
+
+  const overdueReminders = useMemo(() => {
+    return reminders.filter((reminder) => reminder.status === 'overdue');
+  }, [reminders]);
+
+  const warrantyReminders = useMemo(() => {
+    return reminders.filter((reminder) => reminder.group === 'warranty');
+  }, [reminders]);
+
+  const vehicleServiceReminders = useMemo(() => {
+    return reminders.filter((reminder) => reminder.group === 'vehicle_service' || reminder.group === 'vehicle_document');
+  }, [reminders]);
 
   const selectedAsset = useMemo(() => {
     return assets.find((asset) => asset.id === selectedAssetId) || assets[0] || null;
@@ -674,6 +1093,148 @@ export function MaintenanceLogClient() {
     if (!selectedVehicle) return [];
     return logs.filter((log) => getLogTargetType(log) === 'vehicle' && log.vehicleId === selectedVehicle.id);
   }, [logs, selectedVehicle]);
+
+  const openReminderTarget = (reminder: MaintenanceReminder) => {
+    if (reminder.targetType === 'home_asset') {
+      setSelectedAssetId(reminder.targetId);
+      setActiveTab('assets');
+    } else {
+      setSelectedVehicleId(reminder.targetId);
+      setActiveTab('vehicles');
+    }
+  };
+
+  const notificationSyncKey = useMemo(() => {
+    return actionableReminders.map((reminder) => `${reminder.sourceType}:${reminder.sourceId}:${reminder.status}`).join('|');
+  }, [actionableReminders]);
+
+  useEffect(() => {
+    if (!currentUser?.householdId || actionableReminders.length === 0) return;
+
+    const syncMaintenanceNotifications = async () => {
+      const notificationsCollection = getCollectionRef('notifications');
+      if (!notificationsCollection) return;
+
+      await Promise.all(actionableReminders.map(async (reminder) => {
+        const notificationId = slugify(`${reminder.sourceType}-${reminder.sourceId}-${reminder.status}`);
+        const existingNotification = notifications.find((notification) => notification.id === notificationId);
+        if (existingNotification && !isNotificationExpired(existingNotification)) return;
+
+        const notificationRef = doc(notificationsCollection, notificationId);
+        const notificationSnap = await getDoc(notificationRef);
+        if (notificationSnap.exists()) return;
+
+        await setDoc(notificationRef, buildNotificationDocument({
+          householdId: currentUser.householdId!,
+          category: 'maintenance',
+          title: reminder.title,
+          message: reminder.message,
+          deepLink: reminder.deepLink,
+          sourceType: reminder.sourceType,
+          sourceId: `${reminder.sourceId}:${reminder.status}`,
+        }));
+      }));
+    };
+
+    void syncMaintenanceNotifications().catch((notificationError) => {
+      console.error('Error syncing maintenance notifications:', notificationError);
+    });
+  }, [actionableReminders, currentUser?.householdId, getCollectionRef, notificationSyncKey, notifications]);
+
+  const uploadAttachment = async (
+    targetType: MaintenanceAttachmentTargetType,
+    targetId: string,
+    category: MaintenanceAttachmentCategory,
+    file: File
+  ) => {
+    if (!currentUser?.householdId) return;
+    const attachmentsCollection = getCollectionRef('maintenance-attachments');
+    if (!attachmentsCollection) return;
+
+    const attachmentId = `${Date.now()}-${createLocalId()}`;
+    const safeFileName = sanitizeFileName(file.name);
+    const filePath = `households/${currentUser.householdId}/maintenance/${targetType}/${targetId}/${attachmentId}-${safeFileName}`;
+    const uploadTarget = `${targetType}:${targetId}`;
+
+    setUploadingAttachmentTarget(uploadTarget);
+
+    try {
+      const storageRef = ref(getStorage(), filePath);
+      await uploadBytes(storageRef, file, { contentType: file.type || undefined });
+      const downloadUrl = await getDownloadURL(storageRef);
+      const attachmentData: Omit<MaintenanceAttachment, 'id'> = {
+        householdId: currentUser.householdId,
+        targetType,
+        targetId,
+        category,
+        fileName: file.name,
+        filePath,
+        downloadUrl,
+        contentType: file.type || undefined,
+        size: file.size,
+        uploadedByUid: currentUser.uid,
+        uploadedByName: currentUser.displayName || currentUser.email,
+        createdAt: new Date().toISOString(),
+      };
+
+      await setDoc(doc(attachmentsCollection, attachmentId), cleanForFirestore(attachmentData));
+      toast({ title: 'Attachment uploaded' });
+      await fetchMaintenanceData();
+    } catch (uploadError) {
+      console.error('Error uploading maintenance attachment:', uploadError);
+      toast({ variant: 'destructive', title: 'Upload failed', description: 'Could not upload the attachment.' });
+    } finally {
+      setUploadingAttachmentTarget(null);
+    }
+  };
+
+  const deleteAttachment = async (attachment: MaintenanceAttachment) => {
+    if (!currentUser?.householdId) return;
+    const attachmentsCollection = getCollectionRef('maintenance-attachments');
+    if (!attachmentsCollection) return;
+
+    setDeletingAttachmentId(attachment.id);
+
+    try {
+      try {
+        await deleteObject(ref(getStorage(), attachment.filePath));
+      } catch (storageError) {
+        const code = typeof storageError === 'object' && storageError && 'code' in storageError
+          ? String((storageError as { code?: unknown }).code)
+          : '';
+        if (code !== 'storage/object-not-found') {
+          throw storageError;
+        }
+      }
+
+      await deleteDoc(doc(attachmentsCollection, attachment.id));
+      toast({ title: 'Attachment deleted' });
+      await fetchMaintenanceData();
+    } catch (deleteError) {
+      console.error('Error deleting maintenance attachment:', deleteError);
+      toast({ variant: 'destructive', title: 'Delete failed', description: 'The attachment could not be fully deleted.' });
+    } finally {
+      setDeletingAttachmentId(null);
+    }
+  };
+
+  const resolveMaintenanceNotifications = async (sourceType: string, sourceId: string) => {
+    if (!currentUser?.householdId) return;
+    const notificationsCollection = getCollectionRef('notifications');
+    if (!notificationsCollection) return;
+
+    const action = createNotificationAction(currentUser);
+    await Promise.all((['due_soon', 'due_today', 'overdue'] as const).map(async (status) => {
+      const notificationRef = doc(notificationsCollection, slugify(`${sourceType}-${sourceId}-${status}`));
+      const notificationSnap = await getDoc(notificationRef);
+      if (!notificationSnap.exists() || notificationSnap.data().resolvedAt) return;
+
+      await updateDoc(notificationRef, {
+        resolvedAt: new Date(),
+        resolvedBy: action,
+      });
+    }));
+  };
 
   const summary = useMemo(() => {
     const recentCutoff = subDays(new Date(), 30);
@@ -1019,6 +1580,7 @@ export function MaintenanceLogClient() {
             schedules,
             updatedAt: now,
           })),
+          resolveMaintenanceNotifications('maintenance_asset_schedule', `${id}-${scheduleIndex}`),
         ]);
         setSelectedAssetId(id);
       } else {
@@ -1042,6 +1604,7 @@ export function MaintenanceLogClient() {
             serviceSchedules: schedules,
             updatedAt: now,
           })),
+          resolveMaintenanceNotifications('maintenance_vehicle_service', `${id}-${scheduleIndex}`),
         ]);
         setSelectedVehicleId(id);
       }
@@ -1060,6 +1623,15 @@ export function MaintenanceLogClient() {
     if (!logToDelete) return;
     const logsCollection = getCollectionRef('maintenance');
     if (!logsCollection) return;
+
+    if (getAttachmentsForTarget(attachments, 'maintenance_log', logToDelete.id).length > 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Remove attachments first',
+        description: 'Delete attachments for this log before deleting it.',
+      });
+      return;
+    }
 
     try {
       await deleteDoc(doc(logsCollection, logToDelete.id));
@@ -1081,6 +1653,15 @@ export function MaintenanceLogClient() {
     if (!vehicleToDelete) return;
     const vehiclesCollection = getCollectionRef('vehicles');
     if (!vehiclesCollection) return;
+
+    if (getAttachmentsForTarget(attachments, 'vehicle', vehicleToDelete.id).length > 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Remove attachments first',
+        description: 'Delete attachments for this vehicle before deleting it.',
+      });
+      return;
+    }
 
     try {
       await deleteDoc(doc(vehiclesCollection, vehicleToDelete.id));
@@ -1161,11 +1742,12 @@ export function MaintenanceLogClient() {
           </Button>
         </div>
 
-        <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-4">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-5">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="assets">Home Assets</TabsTrigger>
             <TabsTrigger value="vehicles">Vehicles</TabsTrigger>
+            <TabsTrigger value="reminders">Reminders</TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
           </TabsList>
 
@@ -1189,11 +1771,16 @@ export function MaintenanceLogClient() {
                     logs={logs.slice(0, 5)}
                     assets={assets}
                     vehicles={vehicles}
+                    attachments={attachments}
                     summaries={summaries}
                     loadingSummaries={loadingSummaries}
+                    uploadingAttachmentTarget={uploadingAttachmentTarget}
+                    deletingAttachmentId={deletingAttachmentId}
                     onSummarize={handleSummarize}
                     onEdit={(log) => openLogDialog(undefined, log)}
                     onDelete={setLogToDelete}
+                    onUploadAttachment={uploadAttachment}
+                    onDeleteAttachment={deleteAttachment}
                   />
                 </CardContent>
               </Card>
@@ -1287,6 +1874,15 @@ export function MaintenanceLogClient() {
                         <DetailRow label="Warranty Provider" value={selectedAsset.warrantyProvider} />
                       </div>
                       {selectedAsset.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedAsset.notes}</p>}
+                      <AttachmentPanel
+                        attachments={getAttachmentsForTarget(attachments, 'home_asset', selectedAsset.id)}
+                        targetType="home_asset"
+                        targetId={selectedAsset.id}
+                        uploading={uploadingAttachmentTarget === `home_asset:${selectedAsset.id}`}
+                        deletingId={deletingAttachmentId}
+                        onUpload={uploadAttachment}
+                        onDelete={deleteAttachment}
+                      />
                       {selectedAsset.schedules && selectedAsset.schedules.length > 0 && (
                         <div className="space-y-2">
                           <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
@@ -1332,11 +1928,16 @@ export function MaintenanceLogClient() {
                         logs={assetLogs}
                         assets={assets}
                         vehicles={vehicles}
+                        attachments={attachments}
                         summaries={summaries}
                         loadingSummaries={loadingSummaries}
+                        uploadingAttachmentTarget={uploadingAttachmentTarget}
+                        deletingAttachmentId={deletingAttachmentId}
                         onSummarize={handleSummarize}
                         onEdit={(log) => openLogDialog(undefined, log)}
                         onDelete={setLogToDelete}
+                        onUploadAttachment={uploadAttachment}
+                        onDeleteAttachment={deleteAttachment}
                       />
                     </CardContent>
                   </Card>
@@ -1455,6 +2056,15 @@ export function MaintenanceLogClient() {
                         <DetailRow label="Inspection Expires" value={formatDate(selectedVehicle.inspectionExpiration)} />
                       </div>
                       {selectedVehicle.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedVehicle.notes}</p>}
+                      <AttachmentPanel
+                        attachments={getAttachmentsForTarget(attachments, 'vehicle', selectedVehicle.id)}
+                        targetType="vehicle"
+                        targetId={selectedVehicle.id}
+                        uploading={uploadingAttachmentTarget === `vehicle:${selectedVehicle.id}`}
+                        deletingId={deletingAttachmentId}
+                        onUpload={uploadAttachment}
+                        onDelete={deleteAttachment}
+                      />
                       {selectedVehicle.serviceSchedules && selectedVehicle.serviceSchedules.length > 0 && (
                         <div className="space-y-2">
                           <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
@@ -1501,17 +2111,93 @@ export function MaintenanceLogClient() {
                         logs={vehicleLogs}
                         assets={assets}
                         vehicles={vehicles}
+                        attachments={attachments}
                         summaries={summaries}
                         loadingSummaries={loadingSummaries}
+                        uploadingAttachmentTarget={uploadingAttachmentTarget}
+                        deletingAttachmentId={deletingAttachmentId}
                         onSummarize={handleSummarize}
                         onEdit={(log) => openLogDialog(undefined, log)}
                         onDelete={setLogToDelete}
+                        onUploadAttachment={uploadAttachment}
+                        onDeleteAttachment={deleteAttachment}
                       />
                     </CardContent>
                   </Card>
                 )}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="reminders" className="space-y-4 pt-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <SummaryCard title="Due Soon" value={dueSoonReminders.length.toString()} detail={`Within ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles`} icon={CalendarDays} />
+              <SummaryCard title="Overdue" value={overdueReminders.length.toString()} detail="Past due date or mileage" icon={AlertCircle} />
+              <SummaryCard title="Warranty Watch" value={warrantyReminders.length.toString()} detail="Expiring warranties" icon={FileText} />
+              <SummaryCard title="Vehicle Service" value={vehicleServiceReminders.length.toString()} detail="Service, registration, and inspection" icon={Car} />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-headline">Due Soon</CardTitle>
+                  <CardDescription>Maintenance due today or within the default reminder window.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ReminderList
+                    reminders={dueSoonReminders}
+                    emptyTitle="Nothing due soon"
+                    emptyDescription="Date and mileage reminders will appear here when they are close."
+                    onOpen={openReminderTarget}
+                  />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-headline">Overdue</CardTitle>
+                  <CardDescription>Items past their date or mileage threshold.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ReminderList
+                    reminders={overdueReminders}
+                    emptyTitle="Nothing overdue"
+                    emptyDescription="Overdue scheduled maintenance and vehicle requirements will appear here."
+                    onOpen={openReminderTarget}
+                  />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-headline">Warranty Watch</CardTitle>
+                  <CardDescription>Home asset warranties expiring within the reminder window.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ReminderList
+                    reminders={warrantyReminders}
+                    emptyTitle="No warranty reminders"
+                    emptyDescription="Warranty expirations within the reminder window will appear here."
+                    onOpen={openReminderTarget}
+                  />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-headline">Vehicle Service Due</CardTitle>
+                  <CardDescription>Vehicle service, registration, and inspection reminders.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ReminderList
+                    reminders={vehicleServiceReminders}
+                    emptyTitle="No vehicle reminders"
+                    emptyDescription="Mileage and date-based vehicle reminders will appear here."
+                    onOpen={openReminderTarget}
+                  />
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
 
           <TabsContent value="logs" className="space-y-4 pt-4">
@@ -1525,11 +2211,16 @@ export function MaintenanceLogClient() {
               logs={logs}
               assets={assets}
               vehicles={vehicles}
+              attachments={attachments}
               summaries={summaries}
               loadingSummaries={loadingSummaries}
+              uploadingAttachmentTarget={uploadingAttachmentTarget}
+              deletingAttachmentId={deletingAttachmentId}
               onSummarize={handleSummarize}
               onEdit={(log) => openLogDialog(undefined, log)}
               onDelete={setLogToDelete}
+              onUploadAttachment={uploadAttachment}
+              onDeleteAttachment={deleteAttachment}
             />
           </TabsContent>
         </Tabs>
@@ -1542,7 +2233,7 @@ export function MaintenanceLogClient() {
         <DialogContent className="flex max-h-[90dvh] max-w-3xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingAsset ? 'Edit Home Asset' : 'Add Home Asset'}</DialogTitle>
-            <DialogDescription>Track core asset details. Uploads and manuals are intentionally deferred.</DialogDescription>
+            <DialogDescription>Track core asset details and schedule-ready maintenance metadata.</DialogDescription>
           </DialogHeader>
           <Form {...assetForm}>
             <form onSubmit={assetForm.handleSubmit(saveAsset)} className="flex min-h-0 flex-1 flex-col">

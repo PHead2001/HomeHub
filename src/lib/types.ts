@@ -232,6 +232,32 @@ export type MaintenanceLog = {
   receiptUrl?: string;
 };
 
+export type MaintenanceAttachmentTargetType = 'home_asset' | 'vehicle' | 'maintenance_log';
+
+export type MaintenanceAttachmentCategory =
+  | 'photo'
+  | 'receipt'
+  | 'manual'
+  | 'warranty_document'
+  | 'invoice'
+  | 'other';
+
+export type MaintenanceAttachment = {
+  id: string;
+  householdId: string;
+  targetType: MaintenanceAttachmentTargetType;
+  targetId: string;
+  category: MaintenanceAttachmentCategory;
+  fileName: string;
+  filePath: string;
+  downloadUrl?: string;
+  contentType?: string;
+  size?: number;
+  uploadedByUid?: string;
+  uploadedByName?: string;
+  createdAt: string;
+};
+
 export type Room = {
     id: string;
     name: string;

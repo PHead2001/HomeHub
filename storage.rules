@@ -11,7 +11,25 @@ service firebase.storage {
           firestore.get(/databases/(default)/documents/households/$(householdId)).data.memberEmails;
     }
 
-    match /households/{householdId}/{allPaths=**} {
+    function validMaintenanceFile() {
+      return request.resource != null &&
+        request.resource.size < 15 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*|application/pdf|text/plain|application/msword|application/vnd.openxmlformats-officedocument.*');
+    }
+
+    match /households/{householdId}/maintenance/{targetType}/{targetId}/{fileName} {
+      allow read: if householdMember(householdId);
+      allow create, update: if householdMember(householdId) &&
+        targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
+        validMaintenanceFile();
+      allow delete: if householdMember(householdId);
+    }
+
+    match /households/{householdId}/barcode-library/{allPaths=**} {
+      allow read, write: if householdMember(householdId);
+    }
+
+    match /households/{householdId}/pets/{allPaths=**} {
       allow read, write: if householdMember(householdId);
     }
 

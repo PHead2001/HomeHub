@@ -49,6 +49,31 @@ service cloud.firestore {
              request.resource.data.dismissedBy.diff(resource.data.dismissedBy).affectedKeys().hasOnly([request.auth.uid]);
     }
 
+    function resolvesMaintenanceNotification() {
+      return resource.data.category == 'maintenance' &&
+             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolvedAt', 'resolvedBy']) &&
+             request.resource.data.resolvedBy.uid == request.auth.uid;
+    }
+
+    function validNewMaintenanceAttachment(householdId) {
+      return isHouseholdMember(householdId) &&
+             request.resource.data.householdId == householdId &&
+             request.resource.data.uploadedByUid == request.auth.uid &&
+             request.resource.data.targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
+             request.resource.data.category in ['photo', 'receipt', 'manual', 'warranty_document', 'invoice', 'other'] &&
+             request.resource.data.filePath.matches('households/' + householdId + '/maintenance/.*') &&
+             request.resource.data.keys().hasAll([
+               'householdId',
+               'targetType',
+               'targetId',
+               'category',
+               'fileName',
+               'filePath',
+               'uploadedByUid',
+               'createdAt'
+             ]);
+    }
+
     // Household data:
     // - Members can read the household document.
     // - Only the owner can update household details or delete it.
@@ -62,13 +87,21 @@ service cloud.firestore {
       match /notifications/{notificationId} {
         allow read: if isHouseholdMember(householdId);
         allow create: if validNewNotification(householdId);
-        allow update: if isHouseholdMember(householdId) && updatesOnlyOwnNotificationState();
+        allow update: if isHouseholdMember(householdId) &&
+          (updatesOnlyOwnNotificationState() || resolvesMaintenanceNotification());
         allow delete: if false;
+      }
+
+      match /maintenance-attachments/{attachmentId} {
+        allow read: if isHouseholdMember(householdId);
+        allow create: if validNewMaintenanceAttachment(householdId);
+        allow update: if false;
+        allow delete: if isHouseholdMember(householdId);
       }
 
       // All members of a household can read/write to its subcollections (pets, chores, etc.)
       match /{subcollection}/{docId=**} {
-        allow read, write: if subcollection != 'notifications' && isHouseholdMember(householdId);
+        allow read, write: if !(subcollection in ['notifications', 'maintenance-attachments']) && isHouseholdMember(householdId);
       }
     }
 
