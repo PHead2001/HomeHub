@@ -210,6 +210,7 @@ export function NotificationBell() {
     return notifications
       .filter((notification) => !isNotificationExpired(notification))
       .filter((notification) => isNotificationVisibleToUser(notification, currentUser))
+      .filter((notification) => !notification.resolvedAt)
       .filter((notification) => !isNotificationDismissedBy(notification, currentUser.uid))
       .slice(0, 10);
   }, [currentUser, notifications]);
