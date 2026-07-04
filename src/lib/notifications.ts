@@ -137,7 +137,7 @@ export const buildNotificationDocument = ({
 }) => {
   const createdAt = new Date();
 
-  return {
+  const document = {
     householdId,
     category,
     title: title || notificationCategoryLabels[category],
@@ -152,4 +152,8 @@ export const buildNotificationDocument = ({
     readBy: {},
     dismissedBy: {},
   };
+
+  return Object.fromEntries(
+    Object.entries(document).filter(([, value]) => value !== undefined)
+  );
 };
