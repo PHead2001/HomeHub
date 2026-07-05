@@ -16,16 +16,39 @@ import {
   type User as FirebaseAuthUser,
   GoogleAuthProvider,
 } from 'firebase/auth';
+import {
+  arrayRemove,
+  arrayUnion,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  runTransaction,
+  setDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
-import { doc, getDoc, setDoc, collection, query, where, writeBatch, getDocs, deleteDoc } from 'firebase/firestore';
-import type { User, HomeAssistantCredentials, Household } from '@/lib/types';
 import { auth, db } from '@/lib/firebase';
+import { buildNotificationDocument } from '@/lib/notifications';
+import { getEffectivePermissions, normalizeRole } from '@/lib/permissions';
+import type {
+  HomeAssistantCredentials,
+  Household,
+  HouseholdMember,
+  HouseholdPermission,
+  User,
+} from '@/lib/types';
 
+type PermissionMap = Record<HouseholdPermission, boolean>;
 
-// --- Types ---
 interface AuthContextType {
   currentUser: User | null;
   household: Household | null;
+  currentMember: HouseholdMember | null;
+  permissions: PermissionMap;
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
@@ -34,19 +57,41 @@ interface AuthContextType {
   disconnectHomeAssistant: () => Promise<void>;
   createHousehold: (name: string) => Promise<void>;
   joinHousehold: (code: string) => Promise<void>;
-};
+  leaveHousehold: () => Promise<void>;
+}
 
-// --- Context Definition ---
 export const AuthContext = createContext<AuthContextType | null>(null);
 
-const generateInviteCode = () => {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const INVITE_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+const generateShortCode = (length: number) => {
   let result = '';
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  for (let i = 0; i < length; i++) {
+    result += INVITE_CODE_CHARS.charAt(Math.floor(Math.random() * INVITE_CODE_CHARS.length));
   }
   return result;
-}
+};
+
+const generateLegacyInviteCode = () => generateShortCode(6);
+
+const slugifyHouseholdName = (name: string) => {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || 'household';
+};
+
+const generateHouseholdId = (name: string) => `${slugifyHouseholdName(name)}-${generateShortCode(4).toLowerCase()}`;
+
+const cleanInviteCode = (code: string) => code.trim().toUpperCase().replace(/\s+/g, '');
+
+const getInviteErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  return 'Could not join the household.';
+};
 
 type GoogleProfileData = {
   names?: Array<{
@@ -81,6 +126,7 @@ const getErrorMessage = (error: unknown) => error instanceof Error ? error.messa
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
+  const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
@@ -107,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
       const dataToSave = {
         ...newUserProfile,
-        role: 'admin',
+        role: 'member',
         forcePasswordChange: false,
         householdId: null,
       }
@@ -125,7 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       firstName: names.givenName,
       lastName: names.familyName,
       avatarUrl: googleProfileData.photos?.[0]?.url || firebaseUser.photoURL,
-      role: 'admin',
+      role: 'member',
       forcePasswordChange: false,
       householdId: null,
       birthday: birthdays?.month && birthdays?.day ? `${birthdays.month}/${birthdays.day}` : undefined,
@@ -143,7 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [toast]);
   
 
-  // This effect runs when the householdId on the currentUser changes
+  // This effect runs when the householdId on the currentUser changes.
   useEffect(() => {
     const fetchHousehold = async () => {
       if (currentUser?.householdId) {
@@ -151,27 +197,79 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           const docSnap = await getDoc(householdDocRef);
           if (docSnap.exists()) {
-            setHousehold({ id: docSnap.id, ...docSnap.data() } as Household);
+            const householdData = { id: docSnap.id, ...docSnap.data() } as Household;
+            setHousehold(householdData);
+
+            const memberDocRef = doc(db, 'households', currentUser.householdId, 'members', currentUser.uid);
+            const memberSnap = await getDoc(memberDocRef);
+            if (memberSnap.exists()) {
+              const memberData = memberSnap.data() as HouseholdMember;
+              const normalizedMember = {
+                ...memberData,
+                uid: currentUser.uid,
+                role: normalizeRole(memberData.role),
+                status: memberData.status || (memberData.role === 'newuser' ? 'pending' : 'active'),
+              };
+              setCurrentMember(normalizedMember);
+              const currentOverrides = JSON.stringify(currentUser.permissions || {});
+              const memberOverrides = JSON.stringify(normalizedMember.permissions || {});
+              if (currentUser.role !== normalizedMember.role || currentOverrides !== memberOverrides) {
+                setCurrentUser(prev => prev ? {
+                  ...prev,
+                  role: normalizedMember.role,
+                  permissions: normalizedMember.permissions,
+                } : prev);
+              }
+            } else if (currentUser.email && householdData.memberEmails?.includes(currentUser.email)) {
+              const role = householdData.ownerEmail === currentUser.email || householdData.ownerUid === currentUser.uid
+                ? 'owner'
+                : normalizeRole(currentUser.role);
+              const legacyMember: HouseholdMember = {
+                uid: currentUser.uid,
+                email: currentUser.email,
+                displayName: currentUser.displayName,
+                avatarUrl: currentUser.avatarUrl,
+                role,
+                status: role === 'newuser' ? 'pending' : 'active',
+                permissions: currentUser.permissions,
+                joinedAt: householdData.createdAt || new Date().toISOString(),
+              };
+              await setDoc(memberDocRef, legacyMember, { merge: true });
+              setCurrentMember(legacyMember);
+            } else {
+              setCurrentMember(null);
+            }
           } else {
             console.warn("Household not found, resetting for user.");
             setHousehold(null);
+            setCurrentMember(null);
             // This could happen if a household is deleted. Reset the user's householdId.
             if (currentUser.email) {
               const userDocRef = doc(db, 'users', currentUser.email);
-              setDoc(userDocRef, { householdId: null }, { merge: true });
+              setDoc(userDocRef, { householdId: null, role: 'member' }, { merge: true });
             }
           }
         } catch (error) {
           console.error("Error fetching household document:", error);
           setHousehold(null);
+          setCurrentMember(null);
         }
       } else {
         setHousehold(null);
+        setCurrentMember(null);
       }
     };
 
     fetchHousehold();
-  }, [currentUser?.householdId, currentUser?.email]);
+  }, [
+    currentUser?.avatarUrl,
+    currentUser?.displayName,
+    currentUser?.email,
+    currentUser?.householdId,
+    currentUser?.permissions,
+    currentUser?.role,
+    currentUser?.uid,
+  ]);
 
   // This is for session management ONLY (on page refresh)
   useEffect(() => {
@@ -190,6 +288,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // User is not logged in
         setCurrentUser(null);
         setHousehold(null);
+        setCurrentMember(null);
       }
       setLoading(false);
     });
@@ -235,7 +334,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error("Google Sign-In Error:", error instanceof Error ? error : String(error));
         let message = 'An unknown error occurred during login.';
         if (hasErrorCode(error) && error.code === 'auth/popup-closed-by-user') {
-            message = 'Sign-in window was closed before completing.'
+            message = 'Login canceled.'
         }
         toast({ variant: 'destructive', title: 'Login Failed', description: message });
     } finally {
@@ -247,6 +346,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signOut(auth);
     setCurrentUser(null);
     setHousehold(null);
+    setCurrentMember(null);
     toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
   
@@ -314,7 +414,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [currentUser?.householdId, toast]);
 
   const createHousehold = useCallback(async (name: string) => {
-    if (!currentUser?.email) {
+    if (!currentUser?.email || !currentUser.uid) {
         toast({ variant: 'destructive', title: 'Not Authenticated' });
         return;
     }
@@ -325,77 +425,305 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
     }
 
-    const householdDocRef = doc(collection(db, 'households'));
-    const newHouseholdId = householdDocRef.id;
     const userDocRef = doc(db, 'users', currentUser.email);
-
-    const newHouseholdData: Omit<Household, 'id'> = {
-        name: trimmedName,
-        ownerEmail: currentUser.email,
-        memberEmails: [currentUser.email],
-        createdAt: new Date().toISOString(),
-        inviteCode: generateInviteCode()
-    }
     
+    let createdHousehold: Household | null = null;
+    let createdMember: HouseholdMember | null = null;
+
     try {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const newHouseholdId = generateHouseholdId(trimmedName);
+        const householdDocRef = doc(db, 'households', newHouseholdId);
+        const memberDocRef = doc(db, 'households', newHouseholdId, 'members', currentUser.uid);
+        const auditDocRef = doc(collection(db, 'households', newHouseholdId, 'auditLogs'));
+        const now = new Date().toISOString();
+        const newHouseholdData: Omit<Household, 'id'> = {
+          name: trimmedName,
+          ownerEmail: currentUser.email,
+          ownerUid: currentUser.uid,
+          memberEmails: [currentUser.email],
+          createdAt: now,
+          updatedAt: now,
+          inviteCode: generateLegacyInviteCode(),
+        };
+        const ownerMember: HouseholdMember = {
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+          avatarUrl: currentUser.avatarUrl,
+          role: 'owner',
+          status: 'active',
+          joinedAt: now,
+          approvedAt: now,
+          approvedByUid: currentUser.uid,
+        };
         const batch = writeBatch(db);
         batch.set(householdDocRef, newHouseholdData);
-        batch.update(userDocRef, { householdId: newHouseholdId });
-        await batch.commit();
+        batch.set(memberDocRef, ownerMember);
+        batch.set(userDocRef, { householdId: newHouseholdId, role: 'owner', permissions: {} }, { merge: true });
+        batch.set(auditDocRef, {
+          actorUid: currentUser.uid,
+          actorEmail: currentUser.email,
+          actorName: currentUser.displayName,
+          action: 'household.created',
+          createdAt: now,
+          details: { householdName: trimmedName },
+        });
 
-        setCurrentUser(prev => prev ? { ...prev, householdId: newHouseholdId } : null);
-        setHousehold({ id: newHouseholdId, ...newHouseholdData });
+        try {
+          await batch.commit();
+          createdHousehold = { id: newHouseholdId, ...newHouseholdData };
+          createdMember = ownerMember;
+          break;
+        } catch (error) {
+          if (attempt === 7) throw error;
+        }
+      }
 
-        toast({ title: 'Household Created!', description: `Welcome to ${trimmedName}!` });
+      const createdHouseholdResult = createdHousehold;
+      const createdMemberResult = createdMember;
+      if (!createdHouseholdResult || !createdMemberResult) {
+        throw new Error('Could not reserve a unique household ID.');
+      }
+
+      setCurrentUser(prev => prev ? { ...prev, householdId: createdHouseholdResult.id, role: 'owner', permissions: {} } : null);
+      setHousehold(createdHouseholdResult);
+      setCurrentMember(createdMemberResult);
+
+      toast({ title: 'Household Created!', description: `Welcome to ${trimmedName}!` });
     } catch (error) {
         console.error('Failed to create household', error);
-        toast({ variant: 'destructive', title: 'Creation Failed', description: 'Could not create the new household.' });
+        toast({
+          variant: 'destructive',
+          title: 'Creation Failed',
+          description: getErrorMessage(error) || 'Could not create the new household.',
+        });
     }
   }, [currentUser, toast]);
 
   const joinHousehold = useCallback(async (code: string) => {
-    if (!currentUser?.email) {
+    if (!currentUser?.email || !currentUser.uid) {
         toast({ variant: 'destructive', title: 'Not Authenticated' });
         return;
     }
-    const householdsRef = collection(db, 'households');
-    const q = query(householdsRef, where('inviteCode', '==', code.toUpperCase()));
+    const inviteCode = cleanInviteCode(code);
+    if (!inviteCode) {
+      toast({ variant: 'destructive', title: 'Missing Code', description: 'Enter an invite code.' });
+      return;
+    }
     
     try {
-        const querySnapshot = await getDocs(q);
-        if (querySnapshot.empty) {
-            toast({ variant: 'destructive', title: 'Invalid Code', description: 'No household found with that invite code.' });
-            return;
+      const now = new Date();
+
+      const joinResult = await runTransaction(db, async (transaction): Promise<{
+        household: Household;
+        member: HouseholdMember;
+      }> => {
+        const inviteRef = doc(db, 'inviteCodes', inviteCode);
+        const inviteSnap = await transaction.get(inviteRef);
+        if (!inviteSnap.exists()) {
+          throw new Error('Invalid invite code.');
         }
 
-        const householdDoc = querySnapshot.docs[0];
-        const householdData = householdDoc.data() as Household;
-
-        if (householdData.memberEmails.includes(currentUser.email)) {
-            toast({ title: 'Already a Member', description: 'You are already a member of this household.' });
-            setCurrentUser(prev => prev ? { ...prev, householdId: householdDoc.id } : null);
-            return;
+        const invite = inviteSnap.data();
+        const expiresAt = new Date(String(invite.expiresAt || ''));
+        if (Number.isNaN(expiresAt.getTime()) || expiresAt <= now) {
+          throw new Error('This invite code has expired.');
+        }
+        if (invite.revokedAt) {
+          throw new Error('This invite code has been revoked.');
         }
 
-        const householdDocRef = doc(db, 'households', householdDoc.id);
-        const userDocRef = doc(db, 'users', currentUser.email);
+        const maxUses = typeof invite.maxUses === 'number' ? invite.maxUses : 1;
+        const useCount = typeof invite.useCount === 'number' ? invite.useCount : 0;
+        if (useCount >= maxUses) {
+          throw new Error('This invite code has already been used.');
+        }
 
-        const batch = writeBatch(db);
-        batch.update(householdDocRef, { memberEmails: [...householdData.memberEmails, currentUser.email] });
-        batch.update(userDocRef, { householdId: householdDoc.id });
-        await batch.commit();
+        const householdId = typeof invite.householdId === 'string' ? invite.householdId : '';
+        if (!householdId) {
+          throw new Error('Invite code is missing household information.');
+        }
+
+        const householdRef = doc(db, 'households', householdId);
+        const householdSnap = await transaction.get(householdRef);
+        if (!householdSnap.exists()) {
+          throw new Error('The household for this invite no longer exists.');
+        }
+
+        const memberRef = doc(db, 'households', householdId, 'members', currentUser.uid);
+        const memberSnap = await transaction.get(memberRef);
+        if (memberSnap.exists()) {
+          throw new Error('You are already a member of this household.');
+        }
+
+        const createdAt = now.toISOString();
+        const pendingMember: HouseholdMember = {
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+          avatarUrl: currentUser.avatarUrl,
+          role: 'newuser',
+          status: 'pending',
+          inviteCode,
+          joinedAt: createdAt,
+        };
+        const householdData = { id: householdSnap.id, ...householdSnap.data() } as Household;
+
+        transaction.set(memberRef, pendingMember);
+        transaction.update(householdRef, {
+          memberEmails: arrayUnion(currentUser.email),
+          updatedAt: createdAt,
+        });
+        transaction.set(doc(db, 'users', currentUser.email), {
+          householdId,
+          role: 'newuser',
+          permissions: {},
+        }, { merge: true });
+        transaction.update(inviteRef, {
+          useCount: useCount + 1,
+          usedByUid: currentUser.uid,
+          usedAt: createdAt,
+        });
+        transaction.set(doc(collection(db, 'households', householdId, 'auditLogs')), {
+          actorUid: currentUser.uid,
+          actorEmail: currentUser.email,
+          actorName: currentUser.displayName,
+          action: 'member.joined_pending',
+          targetUid: currentUser.uid,
+          targetEmail: currentUser.email,
+          targetName: currentUser.displayName,
+          createdAt,
+          details: { inviteCode },
+        });
+        transaction.set(doc(collection(db, 'households', householdId, 'notifications')), buildNotificationDocument({
+          householdId,
+          category: 'system',
+          title: 'New member needs approval',
+          message: `${currentUser.displayName || currentUser.email} joined and needs a role assignment.`,
+          deepLink: '/household?tab=members',
+          sourceType: 'household-newuser',
+          sourceId: currentUser.uid,
+        }));
+
+        return {
+          household: householdData,
+          member: pendingMember,
+        };
+      });
         
-        setCurrentUser(prev => prev ? { ...prev, householdId: householdDoc.id } : null);
+      setCurrentUser(prev => prev ? { ...prev, householdId: joinResult.household.id, role: 'newuser', permissions: {} } : null);
+      setHousehold(joinResult.household);
+      setCurrentMember(joinResult.member);
 
-        toast({ title: 'Welcome!', description: `You've joined ${householdData.name}!` });
+      toast({ title: 'Joined Household', description: 'An owner or admin needs to approve your role before you can access household data.' });
 
     } catch (error) {
         console.error('Failed to join household', error);
-        toast({ variant: 'destructive', title: 'Join Failed', description: 'Could not join the household.' });
+        toast({ variant: 'destructive', title: 'Join Failed', description: getInviteErrorMessage(error) });
     }
   }, [currentUser, toast]);
 
-  const value = { currentUser, household, loading, signInWithGoogle, logout, updateUser, saveHomeAssistantCredentials, disconnectHomeAssistant, createHousehold, joinHousehold };
+  const leaveHousehold = useCallback(async () => {
+    if (!currentUser?.email || !currentUser.householdId || !household || !currentMember) {
+      toast({ variant: 'destructive', title: 'No Household', description: 'There is no household to leave.' });
+      return;
+    }
+    if (currentMember.role === 'owner') {
+      toast({
+        variant: 'destructive',
+        title: 'Owner Cannot Leave',
+        description: 'Transfer ownership or delete the household before leaving.',
+      });
+      return;
+    }
+
+    try {
+      const householdId = currentUser.householdId;
+      const batch = writeBatch(db);
+      const now = new Date().toISOString();
+      batch.delete(doc(db, 'households', householdId, 'members', currentUser.uid));
+      batch.update(doc(db, 'households', householdId), {
+        memberEmails: arrayRemove(currentUser.email),
+        updatedAt: now,
+      });
+      batch.set(doc(db, 'users', currentUser.email), {
+        householdId: null,
+        role: 'member',
+        permissions: {},
+      }, { merge: true });
+      batch.set(doc(collection(db, 'households', householdId, 'auditLogs')), {
+        actorUid: currentUser.uid,
+        actorEmail: currentUser.email,
+        actorName: currentUser.displayName,
+        action: 'member.left',
+        targetUid: currentUser.uid,
+        targetEmail: currentUser.email,
+        targetName: currentUser.displayName,
+        createdAt: now,
+      });
+      batch.set(doc(collection(db, 'households', householdId, 'notifications')), buildNotificationDocument({
+        householdId,
+        category: 'system',
+        title: 'Member left household',
+        message: `${currentUser.displayName || currentUser.email} left the household.`,
+        deepLink: '/household?tab=members',
+        sourceType: 'household-member-left',
+        sourceId: currentUser.uid,
+      }));
+
+      const choresSnap = await getDocs(query(
+        collection(db, 'households', householdId, 'chores'),
+        where('assignedToEmail', '==', currentUser.email)
+      ));
+      choresSnap.forEach((choreDoc) => {
+        batch.update(choreDoc.ref, {
+          assignedToEmail: '',
+          assignedToDisplayName: 'Unassigned',
+        });
+      });
+
+      const templatesSnap = await getDocs(query(
+        collection(db, 'households', householdId, 'chore-templates'),
+        where('assignedToEmail', '==', currentUser.email)
+      ));
+      templatesSnap.forEach((templateDoc) => {
+        batch.update(templateDoc.ref, {
+          assignedToEmail: null,
+        });
+      });
+
+      await batch.commit();
+      setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : null);
+      setHousehold(null);
+      setCurrentMember(null);
+      toast({ title: 'Left Household', description: `You left ${household.name}.` });
+    } catch (error) {
+      console.error('Failed to leave household', error);
+      toast({ variant: 'destructive', title: 'Leave Failed', description: getErrorMessage(error) || 'Could not leave the household.' });
+    }
+  }, [currentMember, currentUser, household, toast]);
+
+  const permissions = getEffectivePermissions(
+    currentMember?.role ?? currentUser?.role,
+    currentMember?.permissions ?? currentUser?.permissions
+  );
+
+  const value = {
+    currentUser,
+    household,
+    currentMember,
+    permissions,
+    loading,
+    signInWithGoogle,
+    logout,
+    updateUser,
+    saveHomeAssistantCredentials,
+    disconnectHomeAssistant,
+    createHousehold,
+    joinHousehold,
+    leaveHousehold,
+  };
 
   return (
     <AuthContext.Provider value={value}>

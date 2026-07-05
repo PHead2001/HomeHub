@@ -10,6 +10,10 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 - Household overview with quick access to core modules.
 - Responsive layout intended for phones, tablets, and desktop screens.
 
+### Household Manager
+- Household overview, member management, role presets, per-user permission overrides, temporary invite codes, and basic audit/system activity.
+- New invite-code joiners enter a pending `newuser` approval state until an owner or admin assigns a household role.
+
 ### Chores
 - One-time and recurring chores.
 - Room-based organization with selectable icons.
@@ -150,6 +154,8 @@ The service worker is served from `/api/sw` so Firebase public config can be inj
 ## Data Isolation Notes
 
 - Most household data is stored under `households/{householdId}` and is scoped by household membership in Firestore and Storage rules.
+- Household membership is being formalized under `households/{householdId}/members/{uid}` while preserving legacy `users/{email}.householdId`, `users/{email}.role`, `households.memberEmails`, and `households.ownerEmail` fields for compatibility.
+- Temporary invite codes are stored under `inviteCodes/{code}` and expire after 30 minutes. Joiners are added as pending `newuser` members until approved.
 - In-app notifications are stored under `households/{householdId}/notifications` with per-user `readBy` and `dismissedBy` maps keyed by Firebase Auth UID.
 - Home Assistant credentials are stored under the household document tree and should be treated as household-private data.
 - Local `.env*` files are ignored by Git. Keep production secrets out of committed files.

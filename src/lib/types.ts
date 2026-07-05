@@ -290,7 +290,59 @@ export type Chore = {
   roomIds?: string[];
 };
 
-export type UserRole = 'super-admin' | 'admin' | 'user';
+export type UserRole = 'owner' | 'admin' | 'member' | 'child' | 'guest' | 'newuser' | 'super-admin' | 'user';
+
+export type HouseholdRole = 'owner' | 'admin' | 'member' | 'child' | 'guest' | 'newuser';
+
+export type HouseholdPermission =
+  | 'household.view'
+  | 'household.manageMembers'
+  | 'household.manageInvites'
+  | 'household.manageRoles'
+  | 'household.delete'
+  | 'household.transferOwnership'
+  | 'chores.view'
+  | 'chores.complete'
+  | 'chores.create'
+  | 'chores.edit'
+  | 'chores.delete'
+  | 'chores.assign'
+  | 'shopping.view'
+  | 'shopping.edit'
+  | 'shopping.delete'
+  | 'pets.view'
+  | 'pets.addLogs'
+  | 'pets.editProfiles'
+  | 'pets.deleteLogs'
+  | 'maintenance.view'
+  | 'maintenance.createLogs'
+  | 'maintenance.edit'
+  | 'maintenance.delete'
+  | 'automation.view'
+  | 'automation.control'
+  | 'automation.manage'
+  | 'notifications.view'
+  | 'notifications.dismiss';
+
+export type PermissionOverrides = Partial<Record<HouseholdPermission, boolean>>;
+
+export type HouseholdMemberStatus = 'active' | 'pending';
+
+export type HouseholdMember = {
+  uid: string;
+  email: string;
+  displayName?: string;
+  avatarUrl?: string | null;
+  role: HouseholdRole;
+  status: HouseholdMemberStatus;
+  inviteCode?: string;
+  permissions?: PermissionOverrides;
+  joinedAt: string;
+  lastActiveAt?: string;
+  lastNewUserReminderAt?: string;
+  approvedAt?: string;
+  approvedByUid?: string;
+};
 
 export type HomeAssistantCredentials = {
     url: string;
@@ -313,6 +365,7 @@ export type User = {
   displayName: string;
   avatarUrl: string | null;
   role: UserRole;
+  permissions?: PermissionOverrides;
   forcePasswordChange?: boolean;
   householdId: string | null;
   gender?: string;
@@ -334,10 +387,41 @@ export type Household = {
     id: string;
     name: string;
     ownerEmail: string;
+    ownerUid?: string;
     memberEmails: string[];
     createdAt: string; // ISO string
-    inviteCode: string;
+    inviteCode?: string;
+    updatedAt?: string;
 }
+
+export type InviteCode = {
+  id: string;
+  code: string;
+  householdId: string;
+  householdName: string;
+  createdByUid: string;
+  createdByEmail: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+  usedByUid?: string;
+  usedAt?: string;
+  maxUses?: number;
+  useCount?: number;
+};
+
+export type AuditLog = {
+  id: string;
+  actorUid?: string;
+  actorEmail?: string;
+  actorName?: string;
+  action: string;
+  targetUid?: string;
+  targetEmail?: string;
+  targetName?: string;
+  createdAt: string;
+  details?: Record<string, string | number | boolean | null>;
+};
 
 export type NotificationCategory =
   | 'chores'
@@ -345,6 +429,7 @@ export type NotificationCategory =
   | 'shopping'
   | 'maintenance'
   | 'automation'
+  | 'system'
   | 'general';
 
 export type NotificationUserAction = {
