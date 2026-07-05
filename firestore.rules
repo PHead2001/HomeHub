@@ -83,6 +83,33 @@ service cloud.firestore {
         request.auth.token.email in request.resource.data.memberEmails;
     }
 
+    function legacySelfMemberBackfill(householdId, memberUid) {
+      return signedIn() &&
+        memberUid == request.auth.uid &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.status == 'active' &&
+        request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails &&
+        (
+          (
+            get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail == request.auth.token.email &&
+            request.resource.data.role == 'owner'
+          ) ||
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin' &&
+            request.resource.data.role == 'admin'
+          ) ||
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'super-admin' &&
+            request.resource.data.role == 'owner'
+          ) ||
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role in ['user', 'member', 'child', 'guest'] &&
+            request.resource.data.role in ['member', 'child', 'guest']
+          )
+        );
+    }
+
     function updatesOwnProfileOnly(userEmail) {
       return isOwner(userEmail) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -196,6 +223,7 @@ service cloud.firestore {
         allow get: if isApprovedHouseholdMember(householdId) || request.auth.uid == memberUid;
         allow list: if isOwnerOrAdmin(householdId);
         allow create: if createsOwnPendingMember(householdId, memberUid) ||
+          legacySelfMemberBackfill(householdId, memberUid) ||
           (isOwnerOrAdmin(householdId) &&
             request.resource.data.uid == memberUid &&
             request.resource.data.role != 'owner' &&

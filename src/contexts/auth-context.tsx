@@ -191,6 +191,73 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // This effect runs when the householdId on the currentUser changes.
   useEffect(() => {
+    const backfillCurrentMember = async (householdData: Household) => {
+      if (!currentUser?.email || !currentUser.uid) return null;
+
+      const memberDocRef = doc(db, 'households', householdData.id, 'members', currentUser.uid);
+      const memberSnap = await getDoc(memberDocRef);
+      if (memberSnap.exists()) {
+        const memberData = memberSnap.data() as HouseholdMember;
+        const normalizedMember = {
+          ...memberData,
+          uid: currentUser.uid,
+          role: normalizeRole(memberData.role),
+          status: memberData.status || (memberData.role === 'newuser' ? 'pending' : 'active'),
+        };
+        setCurrentMember(normalizedMember);
+        const currentOverrides = JSON.stringify(currentUser.permissions || {});
+        const memberOverrides = JSON.stringify(normalizedMember.permissions || {});
+        if (
+          currentUser.householdId !== householdData.id ||
+          currentUser.role !== normalizedMember.role ||
+          currentOverrides !== memberOverrides
+        ) {
+          setCurrentUser(prev => prev ? {
+            ...prev,
+            householdId: householdData.id,
+            role: normalizedMember.role,
+            permissions: normalizedMember.permissions,
+          } : prev);
+        }
+        return normalizedMember;
+      }
+
+      if (householdData.memberEmails?.includes(currentUser.email)) {
+        const role = householdData.ownerEmail === currentUser.email || householdData.ownerUid === currentUser.uid
+          ? 'owner'
+          : normalizeRole(currentUser.role);
+        const legacyMember: HouseholdMember = {
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+          avatarUrl: currentUser.avatarUrl,
+          role,
+          status: role === 'newuser' ? 'pending' : 'active',
+          permissions: currentUser.permissions,
+          joinedAt: householdData.createdAt || new Date().toISOString(),
+        };
+        const batch = writeBatch(db);
+        batch.set(memberDocRef, legacyMember, { merge: true });
+        batch.set(doc(db, 'users', currentUser.email), {
+          householdId: householdData.id,
+          role,
+          permissions: currentUser.permissions || {},
+        }, { merge: true });
+        await batch.commit();
+        setCurrentMember(legacyMember);
+        setCurrentUser(prev => prev ? {
+          ...prev,
+          householdId: householdData.id,
+          role,
+          permissions: currentUser.permissions,
+        } : prev);
+        return legacyMember;
+      }
+
+      setCurrentMember(null);
+      return null;
+    };
+
     const fetchHousehold = async () => {
       if (currentUser?.householdId) {
         const householdDocRef = doc(db, 'households', currentUser.householdId);
@@ -199,46 +266,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (docSnap.exists()) {
             const householdData = { id: docSnap.id, ...docSnap.data() } as Household;
             setHousehold(householdData);
-
-            const memberDocRef = doc(db, 'households', currentUser.householdId, 'members', currentUser.uid);
-            const memberSnap = await getDoc(memberDocRef);
-            if (memberSnap.exists()) {
-              const memberData = memberSnap.data() as HouseholdMember;
-              const normalizedMember = {
-                ...memberData,
-                uid: currentUser.uid,
-                role: normalizeRole(memberData.role),
-                status: memberData.status || (memberData.role === 'newuser' ? 'pending' : 'active'),
-              };
-              setCurrentMember(normalizedMember);
-              const currentOverrides = JSON.stringify(currentUser.permissions || {});
-              const memberOverrides = JSON.stringify(normalizedMember.permissions || {});
-              if (currentUser.role !== normalizedMember.role || currentOverrides !== memberOverrides) {
-                setCurrentUser(prev => prev ? {
-                  ...prev,
-                  role: normalizedMember.role,
-                  permissions: normalizedMember.permissions,
-                } : prev);
-              }
-            } else if (currentUser.email && householdData.memberEmails?.includes(currentUser.email)) {
-              const role = householdData.ownerEmail === currentUser.email || householdData.ownerUid === currentUser.uid
-                ? 'owner'
-                : normalizeRole(currentUser.role);
-              const legacyMember: HouseholdMember = {
-                uid: currentUser.uid,
-                email: currentUser.email,
-                displayName: currentUser.displayName,
-                avatarUrl: currentUser.avatarUrl,
-                role,
-                status: role === 'newuser' ? 'pending' : 'active',
-                permissions: currentUser.permissions,
-                joinedAt: householdData.createdAt || new Date().toISOString(),
-              };
-              await setDoc(memberDocRef, legacyMember, { merge: true });
-              setCurrentMember(legacyMember);
-            } else {
-              setCurrentMember(null);
-            }
+            await backfillCurrentMember(householdData);
           } else {
             console.warn("Household not found, resetting for user.");
             setHousehold(null);
@@ -251,6 +279,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         } catch (error) {
           console.error("Error fetching household document:", error);
+          setHousehold(null);
+          setCurrentMember(null);
+        }
+      } else if (currentUser?.email) {
+        try {
+          const legacyHouseholdsSnap = await getDocs(query(
+            collection(db, 'households'),
+            where('memberEmails', 'array-contains', currentUser.email)
+          ));
+          const legacyHouseholdDoc = legacyHouseholdsSnap.docs[0];
+          if (legacyHouseholdDoc) {
+            const householdData = { id: legacyHouseholdDoc.id, ...legacyHouseholdDoc.data() } as Household;
+            setHousehold(householdData);
+            await backfillCurrentMember(householdData);
+          } else {
+            setHousehold(null);
+            setCurrentMember(null);
+          }
+        } catch (error) {
+          console.error("Error recovering legacy household membership:", error);
           setHousehold(null);
           setCurrentMember(null);
         }
