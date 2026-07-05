@@ -6,9 +6,17 @@ service firebase.storage {
     }
 
     function householdMember(householdId) {
-      return signedIn() &&
-        request.auth.token.email in
-          firestore.get(/databases/(default)/documents/households/$(householdId)).data.memberEmails;
+      return signedIn() && (
+        (
+          firestore.exists(/databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid)) &&
+          firestore.get(/databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid)).data.role != 'newuser'
+        ) ||
+        (
+          !firestore.exists(/databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid)) &&
+          request.auth.token.email in
+            firestore.get(/databases/(default)/documents/households/$(householdId)).data.memberEmails
+        )
+      );
     }
 
     function validMaintenanceFile() {

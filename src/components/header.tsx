@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Boxes, User, LogOut, ScanBarcode } from 'lucide-react';
+import { Boxes, User, LogOut, ScanBarcode, Home } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from './ui/button';
 import { useAuth } from '@/hooks/use-auth';
@@ -19,7 +19,8 @@ import { NotificationBell } from './notification-bell';
 
 
 export function Header() {
-  const { currentUser, logout } = useAuth();
+  const { currentUser, currentMember, permissions, logout } = useAuth();
+  const isPendingNewUser = currentMember?.role === 'newuser';
   
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -29,16 +30,16 @@ export function Header() {
           <span className="font-headline text-xl font-bold">HomeHub</span>
         </Link>
         <nav className="hidden md:flex items-center gap-4 text-sm">
-           <Link href="/shopping" className="text-muted-foreground transition-colors hover:text-foreground">Shopping</Link>
-           <Link href="/pets" className="text-muted-foreground transition-colors hover:text-foreground">Pets</Link>
-           <Link href="/maintenance" className="text-muted-foreground transition-colors hover:text-foreground">Maintenance</Link>
-           <Link href="/chores" className="text-muted-foreground transition-colors hover:text-foreground">Chores</Link>
-           <Link href="/automation" className="text-muted-foreground transition-colors hover:text-foreground">Automation</Link>
+           {permissions['shopping.view'] && <Link href="/shopping" className="text-muted-foreground transition-colors hover:text-foreground">Shopping</Link>}
+           {permissions['pets.view'] && <Link href="/pets" className="text-muted-foreground transition-colors hover:text-foreground">Pets</Link>}
+           {permissions['maintenance.view'] && <Link href="/maintenance" className="text-muted-foreground transition-colors hover:text-foreground">Maintenance</Link>}
+           {permissions['chores.view'] && <Link href="/chores" className="text-muted-foreground transition-colors hover:text-foreground">Chores</Link>}
+           {permissions['automation.view'] && <Link href="/automation" className="text-muted-foreground transition-colors hover:text-foreground">Automation</Link>}
         </nav>
         <div className="flex flex-1 items-center justify-end gap-2">
             {currentUser ? (
               <>
-                 <NotificationBell />
+                 {permissions['notifications.view'] && !isPendingNewUser && <NotificationBell />}
                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" className="relative h-8 w-8 rounded-full">
@@ -58,18 +59,28 @@ export function Header() {
                       </div>
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                     <DropdownMenuItem asChild>
+                    <DropdownMenuItem asChild>
                        <Link href="/profile">
                           <User className="mr-2" />
                           <span>Profile</span>
                        </Link>
                     </DropdownMenuItem>
+                    {!isPendingNewUser && permissions['household.view'] && (
+                      <DropdownMenuItem asChild>
+                        <Link href="/household">
+                          <Home className="mr-2" />
+                          <span>Manage Household</span>
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
+                    {!isPendingNewUser && (
                     <DropdownMenuItem asChild>
                        <Link href="/library">
                           <ScanBarcode className="mr-2" />
                           <span>Barcode Library</span>
                        </Link>
                     </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem onClick={logout}>
                       <LogOut className="mr-2" />
                       <span>Log out</span>

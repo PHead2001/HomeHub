@@ -17,7 +17,6 @@ import { ImageUpload } from './image-upload';
 import { Loader2, Palette, RotateCcw, BellRing } from 'lucide-react';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { v4 as uuidv4 } from 'uuid';
-import { HouseholdInfo } from './household-manager';
 import { cn } from '@/lib/utils';
 import { Switch } from './ui/switch';
 import { PushNotificationSettings } from './PushNotificationSettings';
@@ -297,7 +296,6 @@ export function ProfileClient() {
             </Card>
         </div>
         <div className="md:col-span-1 space-y-8">
-            <HouseholdInfo />
             <ThemeCustomizer />
             <ChoreReminderSettings />
             <PushNotificationSettings />

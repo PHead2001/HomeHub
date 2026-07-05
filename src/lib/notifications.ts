@@ -11,6 +11,7 @@ export const notificationCategories: NotificationCategory[] = [
   'shopping',
   'maintenance',
   'automation',
+  'system',
   'general',
 ];
 
@@ -20,6 +21,7 @@ export const notificationCategoryLabels: Record<NotificationCategory, string> = 
   shopping: 'Shopping',
   maintenance: 'Maintenance',
   automation: 'Automation',
+  system: 'System',
   general: 'General',
 };
 

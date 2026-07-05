@@ -23,12 +23,114 @@ service cloud.firestore {
     }
 
     function isHouseholdMember(householdId) {
+      return signedIn() && (
+             exists(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid)) ||
+             request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails
+      );
+    }
+
+    function memberDoc(householdId, uid) {
+      return get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data;
+    }
+
+    function hasMemberDoc(householdId, uid) {
+      return exists(/databases/$(database)/documents/households/$(householdId)/members/$(uid));
+    }
+
+    function memberRole(householdId, uid) {
+      return memberDoc(householdId, uid).role;
+    }
+
+    function isApprovedHouseholdMember(householdId) {
+      return signedIn() && (
+        (hasMemberDoc(householdId, request.auth.uid) && memberRole(householdId, request.auth.uid) != 'newuser') ||
+        (!hasMemberDoc(householdId, request.auth.uid) &&
+          request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails)
+      );
+    }
+
+    function isOwnerRole(householdId) {
+      return signedIn() && (
+        (hasMemberDoc(householdId, request.auth.uid) && memberRole(householdId, request.auth.uid) == 'owner') ||
+        get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail == request.auth.token.email
+      );
+    }
+
+    function isAdminRole(householdId) {
+      return signedIn() && hasMemberDoc(householdId, request.auth.uid) && memberRole(householdId, request.auth.uid) == 'admin';
+    }
+
+    function isOwnerOrAdmin(householdId) {
+      return isOwnerRole(householdId) || isAdminRole(householdId);
+    }
+
+    function createsOwnPendingMember(householdId, memberUid) {
       return signedIn() &&
-             request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails;
+        memberUid == request.auth.uid &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.role == 'newuser' &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.inviteCode is string &&
+        getAfter(/databases/$(database)/documents/inviteCodes/$(request.resource.data.inviteCode)).data.householdId == householdId &&
+        getAfter(/databases/$(database)/documents/inviteCodes/$(request.resource.data.inviteCode)).data.usedByUid == request.auth.uid;
+    }
+
+    function ownerCreatesHousehold() {
+      return signedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerEmail == request.auth.token.email &&
+        request.auth.token.email in request.resource.data.memberEmails;
+    }
+
+    function updatesOwnProfileOnly(userEmail) {
+      return isOwner(userEmail) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName',
+          'firstName',
+          'lastName',
+          'avatarUrl',
+          'theme',
+          'choreSettings',
+          'fcmTokens',
+          'birthday',
+          'gender',
+          'forcePasswordChange'
+        ]);
+    }
+
+    function updatesOwnMembershipFromHouseholdAction(userEmail) {
+      return isOwner(userEmail) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['householdId', 'role', 'permissions']) &&
+        (
+          (
+            request.resource.data.householdId is string &&
+            getAfter(/databases/$(database)/documents/households/$(request.resource.data.householdId)/members/$(request.auth.uid)).data.uid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/households/$(request.resource.data.householdId)/members/$(request.auth.uid)).data.role == request.resource.data.role
+          ) ||
+          (
+            request.resource.data.householdId == null &&
+            request.resource.data.role == 'member'
+          )
+        );
+    }
+
+    function managerUpdatesUserCompatibilityFields() {
+      return signedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['householdId', 'role', 'permissions']) &&
+        (
+          (resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId)) ||
+          (request.resource.data.householdId is string && isOwnerOrAdmin(request.resource.data.householdId))
+        );
+    }
+
+    function requestUserHasAfterMember(householdId) {
+      return signedIn() &&
+        getAfter(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid)).data.uid == request.auth.uid;
     }
 
     function validNewNotification(householdId) {
-      return isHouseholdMember(householdId) &&
+      return isApprovedHouseholdMember(householdId) &&
              request.resource.data.householdId == householdId &&
              request.resource.data.keys().hasAll([
                'householdId',
@@ -56,7 +158,7 @@ service cloud.firestore {
     }
 
     function validNewMaintenanceAttachment(householdId) {
-      return isHouseholdMember(householdId) &&
+      return isApprovedHouseholdMember(householdId) &&
              request.resource.data.householdId == householdId &&
              request.resource.data.uploadedByUid == request.auth.uid &&
              request.resource.data.targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
@@ -75,34 +177,89 @@ service cloud.firestore {
     }
 
     // Household data:
-    // - Members can read the household document.
-    // - Only the owner can update household details or delete it.
+    // - Approved members can read/write household modules.
+    // - Pending newuser members can only read their own membership/waiting state.
+    // - Legacy memberEmails remains supported for older households.
     match /households/{householdId} {
-      allow read: if signedIn() && request.auth.token.email in resource.data.memberEmails;
-      allow create: if signedIn() &&
-        request.auth.token.email == request.resource.data.ownerEmail &&
-        request.auth.token.email in request.resource.data.memberEmails;
-      allow update, delete: if signedIn() && request.auth.token.email == resource.data.ownerEmail;
+      allow read: if isHouseholdMember(householdId);
+      allow create: if ownerCreatesHousehold();
+      allow update: if isOwnerRole(householdId) ||
+        (isAdminRole(householdId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'memberEmails', 'updatedAt'])) ||
+        (signedIn() &&
+          getAfter(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid)).data.role == 'newuser' &&
+          request.auth.token.email in request.resource.data.memberEmails &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberEmails', 'updatedAt']));
+      allow delete: if isOwnerRole(householdId);
+
+      match /members/{memberUid} {
+        allow get: if isApprovedHouseholdMember(householdId) || request.auth.uid == memberUid;
+        allow list: if isOwnerOrAdmin(householdId);
+        allow create: if createsOwnPendingMember(householdId, memberUid) ||
+          (isOwnerOrAdmin(householdId) &&
+            request.resource.data.uid == memberUid &&
+            request.resource.data.role != 'owner' &&
+            request.resource.data.role != 'newuser') ||
+          (signedIn() &&
+            memberUid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/households/$(householdId)).data.ownerUid == request.auth.uid &&
+            request.resource.data.role == 'owner');
+        allow update: if isOwnerRole(householdId) ||
+          (isAdminRole(householdId) &&
+            resource.data.role != 'owner' &&
+            request.resource.data.role != 'owner' &&
+            request.resource.data.role != 'newuser');
+        allow delete: if isOwnerRole(householdId) ||
+          (isAdminRole(householdId) && resource.data.role != 'owner') ||
+          (request.auth.uid == memberUid && resource.data.role != 'owner');
+      }
 
       match /notifications/{notificationId} {
-        allow read: if isHouseholdMember(householdId);
-        allow create: if validNewNotification(householdId);
-        allow update: if isHouseholdMember(householdId) &&
+        allow read: if isApprovedHouseholdMember(householdId);
+        allow create: if validNewNotification(householdId) ||
+          ((isHouseholdMember(householdId) || requestUserHasAfterMember(householdId)) &&
+            request.resource.data.householdId == householdId &&
+            request.resource.data.category == 'system' &&
+            request.resource.data.sourceId == request.auth.uid);
+        allow update: if isApprovedHouseholdMember(householdId) &&
           (updatesOnlyOwnNotificationState() || resolvesMaintenanceNotification());
         allow delete: if false;
       }
 
       match /maintenance-attachments/{attachmentId} {
-        allow read: if isHouseholdMember(householdId);
+        allow read: if isApprovedHouseholdMember(householdId);
         allow create: if validNewMaintenanceAttachment(householdId);
         allow update: if false;
-        allow delete: if isHouseholdMember(householdId);
+        allow delete: if isApprovedHouseholdMember(householdId);
       }
 
-      // All members of a household can read/write to its subcollections (pets, chores, etc.)
-      match /{subcollection}/{docId=**} {
-        allow read, write: if !(subcollection in ['notifications', 'maintenance-attachments']) && isHouseholdMember(householdId);
+      match /auditLogs/{auditId} {
+        allow read: if isOwnerOrAdmin(householdId);
+        allow create: if isOwnerOrAdmin(householdId) || isHouseholdMember(householdId) || requestUserHasAfterMember(householdId);
+        allow update, delete: if false;
       }
+
+      // Approved members of a household can read/write to its subcollections (pets, chores, etc.).
+      match /{subcollection}/{docId=**} {
+        allow read, write: if !(subcollection in ['members', 'notifications', 'maintenance-attachments', 'auditLogs']) &&
+          isApprovedHouseholdMember(householdId);
+      }
+    }
+
+    match /inviteCodes/{code} {
+      allow get: if signedIn();
+      allow list: if isOwnerOrAdmin(resource.data.householdId);
+      allow create: if isOwnerOrAdmin(request.resource.data.householdId) &&
+        request.resource.data.code == code &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        request.resource.data.createdByEmail == request.auth.token.email;
+      allow update: if isOwnerOrAdmin(resource.data.householdId) ||
+        (signedIn() &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['useCount', 'usedByUid', 'usedAt']) &&
+          (!('revokedAt' in resource.data) || resource.data.revokedAt == null) &&
+          resource.data.useCount < resource.data.maxUses &&
+          request.resource.data.usedByUid == request.auth.uid);
+      allow delete: if false;
     }
 
     // User profiles:
@@ -111,8 +268,14 @@ service cloud.firestore {
       // Listing all users is forbidden to prevent data leakage.
       allow get: if isOwner(userEmail) || sameHousehold(request.auth.token.email, userEmail);
       allow list: if false;
-      allow create: if isOwner(userEmail); // A user can only create their own profile.
-      allow update, delete: if isOwner(userEmail);
+      allow create: if isOwner(userEmail) &&
+        request.resource.data.email == userEmail &&
+        request.resource.data.householdId == null &&
+        request.resource.data.role in ['member', 'user'];
+      allow update: if updatesOwnProfileOnly(userEmail) ||
+        updatesOwnMembershipFromHouseholdAction(userEmail) ||
+        managerUpdatesUserCompatibilityFields();
+      allow delete: if isOwner(userEmail);
 
       // Rules for the notifications subcollection
       match /notifications/{notificationId} {
