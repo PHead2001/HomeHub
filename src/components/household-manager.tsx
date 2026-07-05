@@ -102,7 +102,7 @@ function JoinHouseholdForm({
 }
 
 export function HouseholdManager({ children }: HouseholdManagerProps) {
-  const { currentUser, household, currentMember, createHousehold, joinHousehold, logout } = useAuth();
+  const { currentUser, household, currentMember, householdLoading, createHousehold, joinHousehold, logout } = useAuth();
   const pathname = usePathname();
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
@@ -139,8 +139,8 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
     );
   }
 
-  // If user is not logged in, or has a household, show the main app.
-  if (!currentUser || household !== null) {
+  // If user is not logged in, is still resolving household state, or has a household, show the main app.
+  if (!currentUser || householdLoading || household !== null) {
     return <>{children}</>;
   }
 

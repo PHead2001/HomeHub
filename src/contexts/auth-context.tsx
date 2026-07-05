@@ -50,6 +50,7 @@ interface AuthContextType {
   currentMember: HouseholdMember | null;
   permissions: PermissionMap;
   loading: boolean;
+  householdLoading: boolean;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
   updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string) => Promise<void>;
@@ -128,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [household, setHousehold] = useState<Household | null>(null);
   const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
   const [loading, setLoading] = useState(true);
+  const [householdLoading, setHouseholdLoading] = useState(true);
   const { toast } = useToast();
 
   const fetchOrCreateUserProfile = useCallback(async (firebaseUser: FirebaseAuthUser, googleProfileData?: GoogleProfileData): Promise<User | null> => {
@@ -195,8 +197,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!currentUser?.email || !currentUser.uid) return null;
 
       const memberDocRef = doc(db, 'households', householdData.id, 'members', currentUser.uid);
-      const memberSnap = await getDoc(memberDocRef);
-      if (memberSnap.exists()) {
+      let memberSnap: Awaited<ReturnType<typeof getDoc>> | null = null;
+      try {
+        memberSnap = await getDoc(memberDocRef);
+      } catch (error) {
+        console.warn("Could not read household member document, falling back to legacy membership.", error);
+      }
+      if (memberSnap?.exists()) {
         const memberData = memberSnap.data() as HouseholdMember;
         const normalizedMember = {
           ...memberData,
@@ -236,14 +243,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           permissions: currentUser.permissions,
           joinedAt: householdData.createdAt || new Date().toISOString(),
         };
-        const batch = writeBatch(db);
-        batch.set(memberDocRef, legacyMember, { merge: true });
-        batch.set(doc(db, 'users', currentUser.email), {
-          householdId: householdData.id,
-          role,
-          permissions: currentUser.permissions || {},
-        }, { merge: true });
-        await batch.commit();
         setCurrentMember(legacyMember);
         setCurrentUser(prev => prev ? {
           ...prev,
@@ -251,6 +250,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role,
           permissions: currentUser.permissions,
         } : prev);
+
+        try {
+          const batch = writeBatch(db);
+          batch.set(memberDocRef, legacyMember, { merge: true });
+          batch.set(doc(db, 'users', currentUser.email), {
+            householdId: householdData.id,
+            role,
+            permissions: currentUser.permissions || {},
+          }, { merge: true });
+          await batch.commit();
+        } catch (error) {
+          console.warn("Loaded legacy household membership, but could not backfill member metadata.", error);
+        }
+
         return legacyMember;
       }
 
@@ -283,53 +296,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     const fetchHousehold = async () => {
-      if (currentUser?.householdId) {
-        const householdDocRef = doc(db, 'households', currentUser.householdId);
-        try {
-          const docSnap = await getDoc(householdDocRef);
-          if (docSnap.exists()) {
-            const householdData = { id: docSnap.id, ...docSnap.data() } as Household;
-            setHousehold(householdData);
-            await backfillCurrentMember(householdData);
-          } else {
-            console.warn("Household not found, resetting for user.");
-            setHousehold(null);
-            setCurrentMember(null);
-            // This could happen if a household is deleted. Reset the user's householdId.
-            if (currentUser.email) {
-              const userDocRef = doc(db, 'users', currentUser.email);
-              setDoc(userDocRef, { householdId: null, role: 'member' }, { merge: true });
+      setHouseholdLoading(true);
+      try {
+        if (currentUser?.householdId) {
+          const householdDocRef = doc(db, 'households', currentUser.householdId);
+          try {
+            const docSnap = await getDoc(householdDocRef);
+            if (docSnap.exists()) {
+              const householdData = { id: docSnap.id, ...docSnap.data() } as Household;
+              setHousehold(householdData);
+              await backfillCurrentMember(householdData);
+            } else {
+              console.warn("Household not found, resetting for user.");
+              setHousehold(null);
+              setCurrentMember(null);
+              // This could happen if a household is deleted. Reset the user's householdId.
+              if (currentUser.email) {
+                const userDocRef = doc(db, 'users', currentUser.email);
+                setDoc(userDocRef, { householdId: null, role: 'member' }, { merge: true });
+              }
+            }
+          } catch (error) {
+            console.error("Error fetching household document:", error);
+            try {
+              const recovered = await recoverLegacyHousehold();
+              if (!recovered) {
+                setHousehold(null);
+                setCurrentMember(null);
+              }
+            } catch (recoveryError) {
+              console.error("Error recovering legacy household membership:", recoveryError);
+              setHousehold(null);
+              setCurrentMember(null);
             }
           }
-        } catch (error) {
-          console.error("Error fetching household document:", error);
+        } else if (currentUser?.email) {
           try {
             const recovered = await recoverLegacyHousehold();
             if (!recovered) {
               setHousehold(null);
               setCurrentMember(null);
             }
-          } catch (recoveryError) {
-            console.error("Error recovering legacy household membership:", recoveryError);
+          } catch (error) {
+            console.error("Error recovering legacy household membership:", error);
             setHousehold(null);
             setCurrentMember(null);
           }
-        }
-      } else if (currentUser?.email) {
-        try {
-          const recovered = await recoverLegacyHousehold();
-          if (!recovered) {
-            setHousehold(null);
-            setCurrentMember(null);
-          }
-        } catch (error) {
-          console.error("Error recovering legacy household membership:", error);
+        } else {
           setHousehold(null);
           setCurrentMember(null);
         }
-      } else {
-        setHousehold(null);
-        setCurrentMember(null);
+      } finally {
+        setHouseholdLoading(false);
       }
     };
 
@@ -352,16 +370,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // On refresh, we only fetch the existing profile. Creation happens at sign-in.
         const userProfile = await fetchOrCreateUserProfile(firebaseUser);
         if (userProfile) {
+            setHouseholdLoading(true);
             setCurrentUser(userProfile);
         } else {
-            setCurrentUser(null);
-            setHousehold(null);
-        }
+        setCurrentUser(null);
+        setHousehold(null);
+        setCurrentMember(null);
+        setHouseholdLoading(false);
+      }
       } else {
         // User is not logged in
         setCurrentUser(null);
         setHousehold(null);
         setCurrentMember(null);
+        setHouseholdLoading(false);
       }
       setLoading(false);
     });
@@ -399,6 +421,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const userProfile = await fetchOrCreateUserProfile(firebaseUser, googleProfileData);
 
       if (userProfile) {
+        setHouseholdLoading(true);
         setCurrentUser(userProfile);
         toast({ title: 'Login Successful', description: 'Welcome!' });
       }
@@ -420,6 +443,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCurrentUser(null);
     setHousehold(null);
     setCurrentMember(null);
+    setHouseholdLoading(false);
     toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
   
@@ -788,6 +812,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     currentMember,
     permissions,
     loading,
+    householdLoading,
     signInWithGoogle,
     logout,
     updateUser,
