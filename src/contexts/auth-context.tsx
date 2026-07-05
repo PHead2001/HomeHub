@@ -258,6 +258,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null;
     };
 
+    const recoverLegacyHousehold = async () => {
+      if (!currentUser?.email) {
+        setHousehold(null);
+        setCurrentMember(null);
+        return false;
+      }
+
+      const legacyHouseholdsSnap = await getDocs(query(
+        collection(db, 'households'),
+        where('memberEmails', 'array-contains', currentUser.email)
+      ));
+      const legacyHouseholdDoc = legacyHouseholdsSnap.docs[0];
+      if (!legacyHouseholdDoc) {
+        setHousehold(null);
+        setCurrentMember(null);
+        return false;
+      }
+
+      const householdData = { id: legacyHouseholdDoc.id, ...legacyHouseholdDoc.data() } as Household;
+      setHousehold(householdData);
+      await backfillCurrentMember(householdData);
+      return true;
+    };
+
     const fetchHousehold = async () => {
       if (currentUser?.householdId) {
         const householdDocRef = doc(db, 'households', currentUser.householdId);
@@ -279,21 +303,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         } catch (error) {
           console.error("Error fetching household document:", error);
-          setHousehold(null);
-          setCurrentMember(null);
+          try {
+            const recovered = await recoverLegacyHousehold();
+            if (!recovered) {
+              setHousehold(null);
+              setCurrentMember(null);
+            }
+          } catch (recoveryError) {
+            console.error("Error recovering legacy household membership:", recoveryError);
+            setHousehold(null);
+            setCurrentMember(null);
+          }
         }
       } else if (currentUser?.email) {
         try {
-          const legacyHouseholdsSnap = await getDocs(query(
-            collection(db, 'households'),
-            where('memberEmails', 'array-contains', currentUser.email)
-          ));
-          const legacyHouseholdDoc = legacyHouseholdsSnap.docs[0];
-          if (legacyHouseholdDoc) {
-            const householdData = { id: legacyHouseholdDoc.id, ...legacyHouseholdDoc.data() } as Household;
-            setHousehold(householdData);
-            await backfillCurrentMember(householdData);
-          } else {
+          const recovered = await recoverLegacyHousehold();
+          if (!recovered) {
             setHousehold(null);
             setCurrentMember(null);
           }
