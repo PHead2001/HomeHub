@@ -29,6 +29,23 @@ service cloud.firestore {
       );
     }
 
+    function isHouseholdDocumentMember(householdId) {
+      return signedIn() && (
+        exists(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid)) ||
+        request.auth.token.email in resource.data.memberEmails
+      );
+    }
+
+    function isHouseholdDocumentOwner(householdId) {
+      return signedIn() && (
+        (
+          exists(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid)).data.role == 'owner'
+        ) ||
+        resource.data.ownerEmail == request.auth.token.email
+      );
+    }
+
     function memberDoc(householdId, uid) {
       return get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data;
     }
@@ -208,9 +225,9 @@ service cloud.firestore {
     // - Pending newuser members can only read their own membership/waiting state.
     // - Legacy memberEmails remains supported for older households.
     match /households/{householdId} {
-      allow read: if isHouseholdMember(householdId);
+      allow read: if isHouseholdDocumentMember(householdId);
       allow create: if ownerCreatesHousehold();
-      allow update: if isOwnerRole(householdId) ||
+      allow update: if isHouseholdDocumentOwner(householdId) ||
         (isAdminRole(householdId) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'memberEmails', 'updatedAt'])) ||
         (signedIn() &&
