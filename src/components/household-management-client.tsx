@@ -126,36 +126,57 @@ export function HouseholdManagementClient() {
     if (!household?.id) return;
     setIsLoading(true);
     try {
-      const [membersSnap, invitesSnap, auditSnap] = await Promise.all([
+      const [membersResult, invitesResult, auditResult] = await Promise.allSettled([
         getDocs(collection(db, 'households', household.id, 'members')),
         getDocs(query(collection(db, 'inviteCodes'), where('householdId', '==', household.id))),
         getDocs(collection(db, 'households', household.id, 'auditLogs')),
       ]);
 
-      const nextMembers = membersSnap.docs
-        .map(snapshot => ({ uid: snapshot.id, ...snapshot.data() }) as HouseholdMember)
-        .sort((a, b) => {
-          const roleOrder = ['owner', 'admin', 'member', 'child', 'guest', 'newuser'];
-          return roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role) || a.email.localeCompare(b.email);
-        });
-      const nextInvites = invitesSnap.docs
-        .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }) as InviteCode)
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      const nextAudit = auditSnap.docs
-        .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }) as AuditLog)
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      if (membersResult.status === 'rejected') {
+        console.error('Failed to load household members', membersResult.reason);
+      }
+      if (invitesResult.status === 'rejected') {
+        console.error('Failed to load invite codes', invitesResult.reason);
+      }
+      if (auditResult.status === 'rejected') {
+        console.error('Failed to load audit logs', auditResult.reason);
+      }
+
+      const roleOrder = ['owner', 'admin', 'member', 'child', 'guest', 'newuser'];
+      const nextMembers = membersResult.status === 'fulfilled'
+        ? membersResult.value.docs.map(snapshot => ({ uid: snapshot.id, ...snapshot.data() }) as HouseholdMember)
+        : currentMember ? [currentMember] : [];
+      if (currentMember && !nextMembers.some(member => member.uid === currentMember.uid)) {
+        nextMembers.push(currentMember);
+      }
+      nextMembers.sort((a, b) => roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role) || a.email.localeCompare(b.email));
+
+      const nextInvites = invitesResult.status === 'fulfilled'
+        ? invitesResult.value.docs
+          .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }) as InviteCode)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        : [];
+      const nextAudit = auditResult.status === 'fulfilled'
+        ? auditResult.value.docs
+          .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }) as AuditLog)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        : [];
 
       setMembers(nextMembers);
       setInvites(nextInvites);
       setAuditLogs(nextAudit);
       setHouseholdName(household.name);
+
+      if (membersResult.status === 'rejected' && invitesResult.status === 'rejected' && auditResult.status === 'rejected') {
+        toast({ variant: 'destructive', title: 'Load Failed', description: 'Could not load household manager data.' });
+      }
     } catch (error) {
       console.error('Failed to load household manager data', error);
       toast({ variant: 'destructive', title: 'Load Failed', description: 'Could not load household manager data.' });
     } finally {
       setIsLoading(false);
     }
-  }, [household?.id, household?.name, toast]);
+  }, [currentMember, household?.id, household?.name, toast]);
 
   useEffect(() => {
     fetchHouseholdData();

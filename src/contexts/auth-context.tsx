@@ -21,12 +21,14 @@ import {
   arrayUnion,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
   query,
   runTransaction,
   setDoc,
+  updateDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
@@ -72,8 +74,6 @@ const generateShortCode = (length: number) => {
   }
   return result;
 };
-
-const generateLegacyInviteCode = () => generateShortCode(6);
 
 const slugifyHouseholdName = (name: string) => {
   const slug = name
@@ -122,6 +122,10 @@ const hasErrorCode = (error: unknown): error is Error & { code: string } => {
 };
 
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
+
+const removeUndefinedFields = <T extends Record<string, unknown>>(data: T) => (
+  Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)) as T
+);
 
 // --- Provider Component ---
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -193,6 +197,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // This effect runs when the householdId on the currentUser changes.
   useEffect(() => {
+    const cleanupLegacyInviteCode = async (householdData: Household, role: HouseholdMember['role']) => {
+      if (role !== 'owner' || !householdData.inviteCode) return;
+      try {
+        await updateDoc(doc(db, 'households', householdData.id), {
+          inviteCode: deleteField(),
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.warn("Legacy permanent invite code could not be removed automatically.", error);
+      }
+    };
+
     const backfillCurrentMember = async (householdData: Household) => {
       if (!currentUser?.email || !currentUser.uid) return null;
 
@@ -226,6 +242,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             permissions: normalizedMember.permissions,
           } : prev);
         }
+        await cleanupLegacyInviteCode(householdData, normalizedMember.role);
         return normalizedMember;
       }
 
@@ -233,22 +250,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const role = householdData.ownerEmail === currentUser.email || householdData.ownerUid === currentUser.uid
           ? 'owner'
           : normalizeRole(currentUser.role);
-        const legacyMember: HouseholdMember = {
+        const legacyMember = removeUndefinedFields({
           uid: currentUser.uid,
           email: currentUser.email,
           displayName: currentUser.displayName,
           avatarUrl: currentUser.avatarUrl,
           role,
           status: role === 'newuser' ? 'pending' : 'active',
-          permissions: currentUser.permissions,
+          permissions: currentUser.permissions || {},
           joinedAt: householdData.createdAt || new Date().toISOString(),
-        };
+        }) as HouseholdMember;
         setCurrentMember(legacyMember);
         setCurrentUser(prev => prev ? {
           ...prev,
           householdId: householdData.id,
           role,
-          permissions: currentUser.permissions,
+          permissions: currentUser.permissions || {},
         } : prev);
 
         try {
@@ -264,6 +281,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           console.warn("Loaded legacy household membership, but could not backfill member metadata.", error);
         }
 
+        await cleanupLegacyInviteCode(householdData, role);
         return legacyMember;
       }
 
@@ -541,7 +559,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           memberEmails: [currentUser.email],
           createdAt: now,
           updatedAt: now,
-          inviteCode: generateLegacyInviteCode(),
         };
         const ownerMember: HouseholdMember = {
           uid: currentUser.uid,
