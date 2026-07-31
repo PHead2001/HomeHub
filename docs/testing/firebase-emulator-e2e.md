@@ -101,6 +101,7 @@ Playwright starts and stops the Next.js development server on port `9002`. Do no
 - `npm.cmd run test:visual:update`: replace baselines against running emulators.
 - `npm.cmd run test:e2e:all`: seed and run all Playwright projects against running emulators.
 - `npm.cmd run test:e2e:local`: manage emulators and run the complete suite.
+- `npm.cmd run test:e2e:ci`: manage emulators and run only authenticated desktop/mobile smoke tests, matching GitHub Actions.
 
 ## Covered Routes
 
@@ -115,4 +116,10 @@ Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.j
 - The E2E login route reports token/sign-in failures and remains disabled outside explicit emulator mode.
 - The local wrapper propagates seed, Firebase CLI, and Playwright exit codes.
 
-The harness is local-only for now. No GitHub Actions workflow existed when it was added, so CI installation/caching of Java, Firebase emulators, Playwright Chromium, and visual artifacts remains a follow-up.
+## GitHub Actions Smoke CI
+
+`.github/workflows/e2e-smoke.yml` runs on pull requests targeting `main` and on manual dispatch. The Linux job uses Node 20, Temurin Java 21, npm's cache through `actions/setup-node`, and `npx playwright install --with-deps chromium`. It loads only fake values from `.env.e2e.example`, runs lint, type-checking, module-documentation validation, and a production build, then invokes `npm run test:e2e:ci`.
+
+The CI command starts owned Auth and Firestore emulator processes, seeds the fixed fake household, and runs the authenticated route smoke spec in desktop and mobile Chromium. Smoke failures retain Playwright traces, screenshots, and videos through `test-results/`; the HTML report and Firebase emulator logs are also uploaded for 10 days. `playwright/.auth/` is deliberately excluded from artifacts.
+
+Strict visual snapshot comparison is intentionally local-only. The committed baselines are Windows Chromium images, while GitHub Actions runs Linux Chromium; CI does not run `test:visual`, update snapshots, or treat cross-platform pixel differences as application regressions. Linux visual baselines can be evaluated in a separate follow-up.

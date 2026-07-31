@@ -18,6 +18,7 @@
     "test:visual:update": "playwright test tests/e2e/visual.spec.ts --update-snapshots",
     "test:e2e:all": "node scripts/e2e/run-suite.mjs",
     "test:e2e:local": "node scripts/e2e/run-local.mjs",
+    "test:e2e:ci": "node scripts/e2e/run-local.mjs --smoke-only",
     "test:visual:update:local": "node scripts/e2e/run-local.mjs --visual-update"
   },
   "dependencies": {
