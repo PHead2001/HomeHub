@@ -122,6 +122,8 @@ npm.cmd run test:e2e:local
 
 The runner starts Auth and Firestore emulators, seeds deterministic household data, starts Next.js on port `9002`, authenticates through the emulator-only custom-token route, and runs desktop/mobile smoke and visual tests. See [Authenticated Firebase Emulator E2E and Visual Testing](docs/testing/firebase-emulator-e2e.md) for split-terminal commands, snapshot updates, generated artifacts, and safety details.
 
+Pull requests targeting `main` also run the `Authenticated E2E Smoke` GitHub Actions workflow. It validates lint, types, module docs, and the production build before running the same authenticated desktop/mobile smoke routes with `npm run test:e2e:ci`. Strict visual comparisons remain local-only because the committed baselines were generated on Windows and are not enforced against Linux rendering yet.
+
 ## Validation
 
 Run lint:

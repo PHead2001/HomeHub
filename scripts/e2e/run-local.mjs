@@ -9,6 +9,12 @@ import {
 } from "./environment.mjs";
 
 const updateSnapshots = process.argv.includes("--visual-update");
+const smokeOnly = process.argv.includes("--smoke-only");
+
+if (updateSnapshots && smokeOnly) {
+  throw new Error("Choose either --visual-update or --smoke-only, not both.");
+}
+
 const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
 const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
@@ -131,7 +137,15 @@ try {
     emulatorSpawnError,
   ]);
 
-  if (updateSnapshots) {
+  if (smokeOnly) {
+    await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
+    await runChild(
+      process.execPath,
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts"],
+      "Playwright smoke suite",
+      suiteTimeoutMs
+    );
+  } else if (updateSnapshots) {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,

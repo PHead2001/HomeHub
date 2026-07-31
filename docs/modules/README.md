@@ -22,7 +22,7 @@ Executable code, types, Firebase rules, configuration, and Cloud Functions remai
 | [Home Automation](./home-automation/README.md) | `/automation`, Home Assistant state lookup | `src/components/automation-client.tsx`, `src/app/automation/actions.ts` |
 | [Notifications, Reminders, and Push Delivery](./notifications/README.md) | Bell, `/notifications`, `/api/sw`, FCM trigger | `src/components/notification-*.tsx`, `src/lib/notifications.ts`, `functions/src/index.ts` |
 | [AI and Genkit](./ai-genkit/README.md) | Server flow actions, Genkit developer UI | `src/ai/genkit.ts`, `src/ai/flows/*` |
-| [Firebase Platform, Persistence, and Security](./firebase-platform/README.md) | Firebase bootstrap, rules, hosting, Functions, emulator E2E harness | `src/lib/firebase.ts`, `firestore.rules`, `storage.rules`, `firebase.json`, `functions/`, `scripts/e2e/`, `tests/e2e/` |
+| [Firebase Platform, Persistence, and Security](./firebase-platform/README.md) | Firebase bootstrap, rules, hosting, Functions, emulator E2E/CI harness | `src/lib/firebase.ts`, `firestore.rules`, `storage.rules`, `firebase.json`, `functions/`, `scripts/e2e/`, `tests/e2e/`, `.github/workflows/` |
 
 ## Adding a Module
 
