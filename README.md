@@ -109,6 +109,19 @@ npm run dev
 
 The dev server uses port `9002`.
 
+## Authenticated Emulator Testing
+
+HomeHub includes a Firebase Emulator + Playwright harness for authenticated smoke and visual testing without Google sign-in or production data. It uses the fixed demo project `demo-homehub-e2e`, seeds `alex.e2e@example.test`, and hard-refuses non-loopback emulator hosts or non-demo project IDs.
+
+Install the Chromium test browser once, then run the complete local suite:
+
+```powershell
+npx.cmd playwright install chromium
+npm.cmd run test:e2e:local
+```
+
+The runner starts Auth and Firestore emulators, seeds deterministic household data, starts Next.js on port `9002`, authenticates through the emulator-only custom-token route, and runs desktop/mobile smoke and visual tests. See [Authenticated Firebase Emulator E2E and Visual Testing](docs/testing/firebase-emulator-e2e.md) for split-terminal commands, snapshot updates, generated artifacts, and safety details.
+
 ## Validation
 
 Run lint:

@@ -24,12 +24,15 @@ This module owns household creation and recovery, membership, roles, permission 
 - `src/lib/permissions.ts`
 - Household/member/invite/audit types in `src/lib/types.ts`
 - `firestore.rules`
+- `scripts/e2e/seed.mjs`
 
 ## Architecture and Data Flow
 
 `AuthProvider` creates, joins, leaves, and recovers household membership. `HouseholdManager` chooses the onboarding or pending-approval overlay. `HouseholdManagementClient` performs management operations with Firestore batches/transactions and writes audit/system notification records.
 
 Legacy users are resolved through `users/{email}.householdId` and `households.memberEmails`; missing UID member documents are backfilled best-effort.
+
+The emulator E2E seed creates matching email profile, household, and UID member documents for a fake owner, plus admin, member, and pending `newuser` membership fixtures. This validates the primary membership path without relying on legacy recovery.
 
 ## Data Model and Persistence
 
@@ -76,9 +79,10 @@ Exactly-one-owner is enforced by current UI helpers and workflows, not comprehen
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after governance changes.
+- Run `npm.cmd run test:e2e:local` for authenticated owner loading and Household Manager fixture coverage.
 - Manually test household creation collisions, legacy recovery/backfill, invite creation/expiry/revocation/use, pending approval, each role preset, overrides, admin-vs-owner protections, removal, leave, ownership transfer, audit records, and chore reassignment.
 - Use Firestore Emulator rules tests when available; no automated rules suite currently exists.
 
 ## When This Document Must Be Updated
 
-Update this README when household/member/invite/audit paths or fields, role presets, permission helpers, approval/reminder behavior, ownership/leave/delete workflows, legacy compatibility, system notifications, or governance security rules change.
+Update this README when household/member/invite/audit paths or fields, role presets, permission helpers, approval/reminder behavior, ownership/leave/delete workflows, legacy compatibility, system notifications, emulator seed membership, or governance security rules change.

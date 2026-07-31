@@ -79,6 +79,7 @@ Creation rules do not verify that optional target UID/email belongs to the house
 ## Validation
 
 - Run `npm.cmd run lint`, `npm.cmd run typecheck`, and relevant functions lint/build after implementation changes.
+- Run `npm.cmd run test:e2e:local` for deterministic read, unread, dismissed, system, shopping, and maintenance notification fixtures in desktop/mobile views.
 - Manually test own-UID read/dismiss updates, dismiss-all scope, seven-day filtering, deep links, foreground/background delivery, denied permission, invalid-token cleanup, and target/broadcast recipients.
 - Verify expired records with and without TTL and test cross-household access/targeting.
 
