@@ -23,6 +23,8 @@ This module owns the root layout, global providers and overlays, primary navigat
 - `src/components/theme-injector.tsx`
 - `src/components/FirebaseErrorListener.tsx`
 - `src/components/password-change-handler.tsx`
+- `src/app/e2e-login/page.tsx`
+- `src/components/e2e-login-client.tsx`
 - `src/components/ui/*`
 
 ## Architecture and Data Flow
@@ -50,6 +52,8 @@ The overlays visually cover child routes but do not unmount them, so child effec
 
 The shell mounts foreground Firebase Cloud Messaging handling and links to the notification bell. Fonts use `next/font`. No shell-owned Cloud Function, external API, or scheduled job exists.
 
+Authenticated emulator tests enter through `/e2e-login`; that route is rendered only for an explicit demo-project emulator configuration and delegates custom-token sign-in to the identity module.
+
 ## Cross-Module Dependencies
 
 - [Identity and Profile](../identity-profile/README.md) supplies session/profile state and theme.
@@ -67,10 +71,11 @@ The shell mounts foreground Firebase Cloud Messaging handling and links to the n
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after shell changes.
+- Run `npm.cmd run test:e2e:local` for seeded desktop/mobile shell and route coverage.
 - Manually test desktop/mobile navigation for logged-out, no-household, approved, and pending users.
 - Check each role's header visibility and verify dashboard destinations remain secured.
 - Verify theme injection, global toasts, notification bell, and password-change overlay placement.
 
 ## When This Document Must Be Updated
 
-Update this README when root providers, global overlays, navigation, dashboard entry points, permission-based visibility, theme injection, error handling, or route-shell ownership changes.
+Update this README when root providers, global overlays, navigation, dashboard entry points, permission-based visibility, theme injection, error handling, emulator-only test entry, or route-shell ownership changes.

@@ -9,6 +9,9 @@ build/
 
 # Firebase local/cache/debug stuff
 .firebase/
+playwright/.auth/
+playwright-report/
+test-results/
 firebase-debug.log*
 firestore-debug.log*
 ui-debug.log*

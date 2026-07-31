@@ -1,0 +1,3 @@
+HomeHub E2E fixture
+
+This local-only document is referenced by seeded attachment metadata.
