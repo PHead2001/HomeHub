@@ -1,5 +1,7 @@
 # **App Name**: HomeHub
 
+> **Status:** This is the original product and visual blueprint, not a current architecture reference. For implemented module boundaries, routes, data paths, and maintenance guidance, use the [module documentation registry](modules/README.md). Current executable code and configuration are the source of truth where they differ from this historical plan.
+
 ## Core Features:
 
 - Dashboard UI: Modern tablet dashboard with modules for each feature.

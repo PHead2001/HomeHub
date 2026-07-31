@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "docs:check": "node scripts/check-module-docs.mjs"
   },
   "dependencies": {
     "@genkit-ai/googleai": "^1.13.0",
