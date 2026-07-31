@@ -9,7 +9,7 @@ This module owns pet profiles, pet photos, pet detail pages, and feeding, medica
 - List and add pets at `/pets`.
 - View, edit, or delete a pet at `/pets/[petId]`.
 - Store pet type, photo, food schedule, and display metadata.
-- Add and delete feeding, medication, and general care log entries.
+- Add feeding, medication, and general care log entries; confirm permanent deletion for each log type.
 - View each log type in its own pet-detail tab.
 
 ## Entry Points
@@ -61,6 +61,7 @@ Firebase Storage holds pet photos. No pet-specific Cloud Function, Genkit flow, 
 ## Invariants and Failure Behavior
 
 - Log entries can be created and deleted but not edited.
+- Feeding, medication, and care history deletions share a target-specific confirmation dialog with cancel and confirm paths.
 - Log IDs are based on the current entry count plus one; deleting a non-final entry can allow a later write to reuse an existing ID.
 - Deleting a pet document does not recursively delete nested logs or Storage photos.
 - Replacing or removing a photo does not delete the previous Storage object.
@@ -71,7 +72,7 @@ Firebase Storage holds pet photos. No pet-specific Cloud Function, Genkit flow, 
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
 - Manually test pet CRUD, duplicate names, image upload/replacement/removal, and a missing pet route.
-- Test create/delete behavior for all three log types, including deletion followed by creation.
+- Test create/delete behavior for all three log types, including deletion cancel/confirm and deletion followed by creation.
 - Verify another household cannot read pet documents, logs, or images.
 
 ## When This Document Must Be Updated

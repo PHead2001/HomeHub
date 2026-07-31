@@ -9,6 +9,7 @@ if (
   || !projectId?.startsWith("demo-")
   || !loopbackHost.test(process.env.FIREBASE_AUTH_EMULATOR_HOST || "")
   || !loopbackHost.test(process.env.FIRESTORE_EMULATOR_HOST || "")
+  || !loopbackHost.test(process.env.FIREBASE_STORAGE_EMULATOR_HOST || "")
 ) {
   throw new Error(
     "Playwright requires explicit Firebase emulator mode, a demo- project, and loopback Auth/Firestore emulator hosts."
@@ -63,6 +64,9 @@ export default defineConfig({
       NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST:
         process.env.NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST
         || process.env.FIRESTORE_EMULATOR_HOST!,
+      NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST:
+        process.env.NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST
+        || process.env.FIREBASE_STORAGE_EMULATOR_HOST!,
     },
   },
   projects: [

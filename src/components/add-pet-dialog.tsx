@@ -88,7 +88,7 @@ export function AddPetDialog({ onAddPet }: AddPetDialogProps) {
               Photo
             </Label>
             <div className="col-span-3">
-                <ImageUpload onFileChange={setPhotoFile} />
+                <ImageUpload onFileChange={setPhotoFile} previewAlt={name ? `Photo preview for ${name}` : 'New pet photo preview'} />
             </div>
            </div>
           <div className="grid grid-cols-4 items-center gap-4">

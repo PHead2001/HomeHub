@@ -56,7 +56,7 @@ Exactly-one-owner is enforced by current UI helpers and workflows, not comprehen
 ## Integrations and Background Processing
 
 - Governance events create system notifications and therefore can trigger FCM delivery.
-- Pending-member reminder checks run client-side when an authorized user opens Household Manager; no daily scheduled function exists.
+- Pending-member reminder checks run client-side when an authorized user opens Household Manager; each daily pending state uses a deterministic notification identity so overlapping visits do not create duplicates. No daily scheduled function exists.
 - There is no server-side recursive household deletion function.
 
 ## Cross-Module Dependencies

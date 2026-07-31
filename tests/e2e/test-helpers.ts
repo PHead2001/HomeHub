@@ -19,6 +19,7 @@ export async function expectAuthenticatedRoute(
   page: Page,
   route: { path: string; heading: string; content: string }
 ) {
+  await page.clock.setFixedTime(fixedNow);
   await page.goto(route.path);
   await expect(page).toHaveURL(new RegExp(`${route.path === "/" ? "/?$" : `${route.path}/?$`}`));
   await expect(page.getByRole("heading", { name: route.heading, exact: true })).toBeVisible();

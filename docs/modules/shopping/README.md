@@ -25,7 +25,7 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 
 ## Architecture and Data Flow
 
-`ShoppingCenterClient` coordinates Shopping Lists and Inventory tabs plus the purchased-item handoff. `ShoppingListClient` fetches list metadata/items explicitly, writes Firestore records, and calls the grocery categorization server action for new items.
+`ShoppingCenterClient` coordinates Shopping Lists and Inventory tabs plus the purchased-item handoff. `ShoppingListClient` fetches list metadata/items explicitly, writes Firestore records, and treats the grocery categorization server action as optional enrichment for new items.
 
 Checking a Grocery item marks it purchased before opening the pantry form. Canceling that form leaves the shopping item purchased. Reverting an item to needed does not subtract pantry inventory.
 
@@ -46,7 +46,7 @@ The `shopping.edit` and `shopping.delete` permissions exist, but the feature and
 
 ## Integrations and Background Processing
 
-- Grocery categorization calls the shared Genkit/Gemini flow with the configured category list.
+- Grocery categorization calls the shared Genkit/Gemini flow only when the user leaves category selection on Automatic.
 - Barcode lookup checks the household library, then Open Food Facts; camera capture uses `react-zxing`.
 - There are no shopping Cloud Functions, scheduled jobs, or real-time snapshot listeners.
 
@@ -59,7 +59,9 @@ The `shopping.edit` and `shopping.delete` permissions exist, but the feature and
 
 ## Invariants and Failure Behavior
 
-- AI categorization is required for normal item creation; there is no manual-category fallback when the flow fails.
+- A manually selected category bypasses AI. Automatic categorization errors, invalid responses, or a five-second timeout save exactly one item under `Other` and show a non-blocking fallback toast.
+- Loaded custom category sets always include `Other`, so fallback items remain visible even when older category configuration omitted it.
+- Optional `imageUrl` and `barcode` fields are omitted from Firestore writes when absent; undefined values are never sent.
 - List/item refreshes use `getDocs`, not live listeners.
 - Deleting a list removes only the parent document; nested items/config can remain orphaned despite destructive dialog wording.
 - Purchase-to-pantry is not transactional.

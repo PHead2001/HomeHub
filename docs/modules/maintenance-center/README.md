@@ -24,7 +24,7 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 
 ## Architecture and Data Flow
 
-`MaintenanceLogClient` loads assets, vehicles, logs, attachment metadata, and notifications together. Assets and vehicles embed schedule arrays. Reminder cards are projected client-side from dates, mileage, and schedules; stable-status notification documents are created when the center is opened.
+`MaintenanceLogClient` loads assets, vehicles, logs, attachment metadata, and notifications together. Assets and vehicles embed schedule arrays. Reminder cards are projected client-side from dates, mileage, and schedules; deterministic state notification documents are transactionally created when the center is opened.
 
 Completing a schedule creates a routine log and writes the updated embedded schedule. Vehicle completion can also update current mileage.
 
@@ -37,7 +37,9 @@ Completing a schedule creates a routine log and writes the updated embedded sche
 - Reminder notifications: `households/{householdId}/notifications/{notificationId}`.
 - Attachment objects: `households/{householdId}/maintenance/{targetType}/{targetId}/{attachmentId}-{sanitizedFileName}`.
 
-Shared types include `HomeAsset`, `HomeAssetSchedule`, `Vehicle`, `VehicleServiceSchedule`, `MaintenanceLog`, and `MaintenanceAttachment`. Legacy logs fall back from missing `title` to `item`, infer target type from IDs, and default missing log type to `other`.
+Shared types include `HomeAsset`, `HomeAssetSchedule`, `MaintenanceScheduleMode`, `Vehicle`, `VehicleServiceSchedule`, `MaintenanceLog`, and `MaintenanceAttachment`. Schedules carry a stable optional `id` and `mode` of `scheduled` or `checklist`. Legacy name-only schedules normalize to checklist presentation without a destructive migration. Legacy logs fall back from missing `title` to `item`, infer target type from IDs, and default missing log type to `other`.
+
+Deep links use `/maintenance?asset={id}`, `?vehicle={id}`, or `?log={id}`. Schedule reminders add a URL-encoded `schedule={ownerId}:{scheduleId}`. Valid links select the matching tab/detail and highlight schedules/logs; missing IDs select the relevant list tab and show a non-destructive status message. Legacy `targetType`/`targetId` links remain accepted.
 
 ## Authentication, Roles, and Security
 
@@ -66,19 +68,21 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 ## Invariants and Failure Behavior
 
 - Invalid/missing dates are ignored; mileage reminders require current and next-due mileage.
-- Notification IDs combine source, source ID, and status to reduce duplicates.
+- Scheduled entries require a date/frequency or mileage due mechanism appropriate to their owner. Explicit checklist entries may contain only a name and never show a Complete action.
+- Notification IDs hash stable source type, persisted owner/schedule identity, and a `stateKey` containing due status plus meaningful due date/mileage. Transactions make overlapping synchronization idempotent.
+- Read/dismiss history remains on an existing reminder document. A changed due status/date/mileage produces a new identity; completing a schedule resolves the current cycle and advances the embedded schedule.
 - Vehicle/log deletion is blocked while direct attachments exist; home assets currently have no delete action.
 - Storage is deleted before metadata; a missing object is tolerated.
 - Loading uses one `Promise.all`; one denied/failed collection query moves the entire center to its error state.
 - Schedule completion uses independent parallel writes rather than a transaction, so partial completion is possible.
 - Slug-derived asset, vehicle, and ordinary log IDs can collide.
-- Deleting a vehicle leaves linked logs. Schedule notification source IDs depend on array indexes.
+- Deleting a vehicle leaves linked logs. New schedule notification source IDs use persisted schedule IDs; legacy schedules receive a deterministic compatibility key.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes; run a production build for broad UI/data-flow changes.
 - Run functions and rules validation when notification delivery or security changes.
-- Manually test legacy logs, duplicate names/titles, multiple schedules, date/mileage completion, reminders, partial failures, attachment allow/deny/delete behavior, inactive vehicles, and cross-household denial.
+- Manually test canonical/invalid deep links, legacy logs/name-only schedules, checklist and date/mileage/combined scheduled entries, ten repeated/overlapping reminder syncs, dismissal persistence, completion advancement, partial failures, attachment allow/deny/delete behavior, inactive vehicles, and cross-household denial.
 
 ## When This Document Must Be Updated
 

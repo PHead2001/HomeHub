@@ -3,6 +3,7 @@ import { initializeApp, getApps, getApp, type FirebaseOptions } from "firebase/a
 import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { getMessaging, isSupported } from "firebase/messaging";
+import { connectStorageEmulator, getStorage } from "firebase/storage";
 
 export const firebaseConfig: FirebaseOptions = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -17,6 +18,7 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+export const storage = getStorage(app);
 
 export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
 
@@ -54,11 +56,16 @@ if (firebaseEmulatorMode) {
       || process.env.FIRESTORE_EMULATOR_HOST
       || "127.0.0.1:8080";
     const firestore = parseEmulatorHost(firestoreHost, 8080);
+    const storageHost = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST
+      || process.env.FIREBASE_STORAGE_EMULATOR_HOST
+      || "127.0.0.1:9199";
+    const storageEmulator = parseEmulatorHost(storageHost, 9199);
 
     connectAuthEmulator(auth, `http://${authHost.replace(/^https?:\/\//, "")}`, {
       disableWarnings: true,
     });
     connectFirestoreEmulator(db, firestore.host, firestore.port);
+    connectStorageEmulator(storage, storageEmulator.host, storageEmulator.port);
     emulatorState.__homeHubFirebaseEmulatorsConnected = true;
   }
 }

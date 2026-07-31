@@ -91,7 +91,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
               Photo
             </Label>
             <div className="col-span-3">
-                <ImageUpload onFileChange={handlePhotoChange} existingImageUrl={existingPhotoUrl} />
+                <ImageUpload onFileChange={handlePhotoChange} existingImageUrl={existingPhotoUrl} previewAlt={`Photo preview for ${name || 'pet'}`} />
             </div>
            </div>
           <div className="grid grid-cols-4 items-center gap-4">

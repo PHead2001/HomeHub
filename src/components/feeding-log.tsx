@@ -24,6 +24,7 @@ import { Calendar } from './ui/calendar';
 import { cn } from '@/lib/utils';
 import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
+import { PetLogDeleteAlert } from './pet-log-delete-alert';
 
 const logSchema = z.object({
   date: z.date(),
@@ -45,6 +46,7 @@ export function FeedingLogClient({ petId }: FeedingLogProps) {
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
   const [useCurrentTime, setUseCurrentTime] = useState(true);
+  const [logToDelete, setLogToDelete] = useState<string | null>(null);
 
   const getLogsCollectionRef = useCallback(() => {
     if (!currentUser?.householdId) return null;
@@ -177,6 +179,17 @@ export function FeedingLogClient({ petId }: FeedingLogProps) {
   }
   
   return (
+    <>
+    <PetLogDeleteAlert
+      open={!!logToDelete}
+      logType="feeding"
+      onCancel={() => setLogToDelete(null)}
+      onConfirm={() => {
+        if (!logToDelete) return;
+        void deleteLog(logToDelete);
+        setLogToDelete(null);
+      }}
+    />
     <Card>
       <CardHeader>
         <CardTitle className="font-headline">Feeding Log</CardTitle>
@@ -401,7 +414,7 @@ export function FeedingLogClient({ petId }: FeedingLogProps) {
                         <p className="font-semibold text-foreground">{log.cups} {log.foodAmountType} of {log.foodType} food</p>
                         {log.comments && <p className="text-muted-foreground mt-1">{log.comments}</p>}
                     </div>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => deleteLog(log.id)}>
+                    <Button variant="ghost" size="icon" aria-label={`Delete feeding log from ${format(new Date(log.date), 'PPP p')}`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
                         <Trash2 className="h-4 w-4" />
                     </Button>
                 </div>
@@ -409,5 +422,6 @@ export function FeedingLogClient({ petId }: FeedingLogProps) {
         </div>
       </CardContent>
     </Card>
+    </>
   );
 }

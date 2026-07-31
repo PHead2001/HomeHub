@@ -17,6 +17,7 @@ const assertSafeEmulatorEnvironment = () => {
   const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
   const authHost = process.env.FIREBASE_AUTH_EMULATOR_HOST;
   const firestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
+  const storageHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
 
   if (process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS !== "true") {
     throw new Error("Refusing to seed: NEXT_PUBLIC_USE_FIREBASE_EMULATORS must be true.");
@@ -30,9 +31,22 @@ const assertSafeEmulatorEnvironment = () => {
   if (!firestoreHost || !LOOPBACK_HOST.test(firestoreHost)) {
     throw new Error("Refusing to seed: FIRESTORE_EMULATOR_HOST must be a loopback host.");
   }
+  if (!storageHost || !LOOPBACK_HOST.test(storageHost)) {
+    throw new Error("Refusing to seed: FIREBASE_STORAGE_EMULATOR_HOST must be a loopback host.");
+  }
 };
 
 const timestamp = (iso) => Timestamp.fromDate(new Date(iso));
+
+const notificationId = (sourceType, sourceId, stateKey) => {
+  const identity = `${sourceType}|${sourceId}|${stateKey}`;
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= identity.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${sourceType.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${(hash >>> 0).toString(36)}`;
+};
 
 assertSafeEmulatorEnvironment();
 
@@ -57,8 +71,10 @@ try {
   });
 }
 
-const batch = db.batch();
 const household = db.collection("households").doc(HOUSEHOLD_ID);
+await db.recursiveDelete(household);
+
+const batch = db.batch();
 const set = (path, data) => batch.set(db.doc(path), data);
 
 set(`users/${OWNER.email}`, {
@@ -341,6 +357,8 @@ const assets = [
     status: "needs_attention",
     notes: "Use 16 x 25 filters.",
     schedules: [{
+      id: "asset-filter-e2e",
+      mode: "scheduled",
       scheduleName: "Replace air filter",
       frequencyType: "months",
       intervalValue: 3,
@@ -360,6 +378,8 @@ const assets = [
     status: "active",
     notes: "Clean filter monthly.",
     schedules: [{
+      id: "dishwasher-filter-e2e",
+      mode: "scheduled",
       scheduleName: "Clean filter",
       frequencyType: "months",
       intervalValue: 1,
@@ -392,6 +412,8 @@ batch.set(household.collection("vehicles").doc("family-suv"), {
   notes: "Primary household vehicle.",
   serviceSchedules: [
     {
+      id: "tire-rotation-e2e",
+      mode: "scheduled",
       serviceName: "Tire rotation",
       intervalMiles: 6000,
       lastCompletedMileage: 43000,
@@ -400,6 +422,8 @@ batch.set(household.collection("vehicles").doc("family-suv"), {
       nextDueDate: "2026-08-15",
     },
     {
+      id: "brake-fluid-e2e",
+      mode: "scheduled",
       serviceName: "Brake fluid inspection",
       intervalMonths: 24,
       lastCompletedDate: "2024-08-20",
@@ -470,16 +494,17 @@ batch.set(household.collection("maintenance-attachments").doc("hvac-report"), {
 });
 
 const notifications = [
-  ["maintenance-due", {
+  [notificationId("maintenance_asset_schedule", "hvac-main:asset-filter-e2e", "due_today|2026-08-01"), {
     householdId: HOUSEHOLD_ID,
     category: "maintenance",
     title: "HVAC filter due today",
     message: "Replace the Main HVAC System air filter.",
     createdAt: timestamp("2026-08-01T08:00:00.000Z"),
     expiresAt: timestamp("2026-08-08T08:00:00.000Z"),
-    deepLink: "/maintenance?asset=hvac-main",
-    sourceType: "home_asset_schedule",
-    sourceId: "hvac-main:Replace air filter:due_today",
+    deepLink: "/maintenance?asset=hvac-main&schedule=hvac-main%3Aasset-filter-e2e",
+    sourceType: "maintenance_asset_schedule",
+    sourceId: "hvac-main:asset-filter-e2e",
+    stateKey: "due_today|2026-08-01",
     readBy: {},
     dismissedBy: {},
   }],

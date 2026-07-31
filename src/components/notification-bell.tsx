@@ -24,6 +24,7 @@ import { FirestorePermissionError } from '@/lib/errors';
 import { useToast } from "@/hooks/use-toast";
 import {
   createNotificationAction,
+  deduplicateNotifications,
   getNotificationLink,
   isNotificationDismissedBy,
   isNotificationExpired,
@@ -157,7 +158,7 @@ function NotificationItem({
           }}
         >
           <X className="h-4 w-4" />
-          <span className="sr-only">Dismiss notification</span>
+          <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
         </Button>
       </div>
     </div>
@@ -189,7 +190,7 @@ export function NotificationBell() {
     );
 
     const unsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
-      setNotifications(snapshot.docs.map(parseNotificationDoc));
+      setNotifications(deduplicateNotifications(snapshot.docs.map(parseNotificationDoc)));
       setIsLoading(false);
     },
     () => {

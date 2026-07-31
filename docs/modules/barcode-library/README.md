@@ -31,10 +31,10 @@ The lookup flow is implemented as a Genkit flow/server action but does not invok
 
 - Firestore: `households/{householdId}/barcode-library/{barcode}`.
 - Storage: `households/{householdId}/barcode-library/{uuid}.{extension}`.
-- `BarcodeLibraryItem` contains barcode `id`, `name`, `imageUrl`, and ISO `createdAt`.
+- `BarcodeLibraryItem` contains barcode `id`, `name`, `imageUrl`, optional managed `imagePath`, and ISO `createdAt`.
 - The barcode value is the Firestore document ID.
 
-Deleting a mapping attempts to remove the referenced Storage object, but metadata deletion continues when the object is already missing or Storage deletion fails.
+Deleting a mapping removes Firestore metadata first. Storage cleanup runs only for a recognized household barcode path and is best effort; external URLs and empty image values are not passed to Firebase Storage.
 
 ## Authentication, Roles, and Security
 
@@ -66,13 +66,14 @@ Storage rules scope paths by household but do not impose barcode-image size or c
 - Unknown products and public API failures return no product rather than inventing data.
 - Camera permission/decode failures produce an error toast.
 - Replacing an image does not delete the prior Storage object.
-- Deleting metadata can succeed after Storage cleanup fails, leaving an orphaned object.
+- Missing Storage objects are treated as already cleaned. Other Storage failures can leave an orphaned object and produce a cleanup-specific toast without claiming metadata deletion failed.
+- Stored external image URLs render without requiring a Next.js remote-host allowlist and are never treated as managed objects.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
 - Manually test camera denial, manual entry, local-library precedence, public fallback, unknown barcodes, and mapping CRUD.
-- Verify image upload/delete behavior and cross-household denial.
+- Verify image upload/delete behavior for an existing object, missing object, external URL, no image, and unavailable Storage; metadata deletion must remain prompt.
 - Runtime-test the server action while authenticated before claiming the private library lookup always succeeds.
 
 ## When This Document Must Be Updated

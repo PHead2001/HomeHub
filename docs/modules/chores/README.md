@@ -12,7 +12,7 @@ This module owns rooms, chore templates, one-time and recurring assignments, gen
 - Use daily, weekdays-only, weekly, biweekly, monthly day-of-month, and monthly first-through-fourth weekday recurrence.
 - View current, recurring, history, and calendar-oriented task views.
 - Complete one or many chores, including subtask confirmation.
-- Edit/delete tasks, change assignments, and manage recurring definitions.
+- Edit tasks, confirm permanent active/completed instance deletion, change assignments, and manage recurring definitions.
 
 ## Entry Points
 
@@ -67,12 +67,14 @@ Navigation uses `chores.view`. Firestore's broad approved-member rule does not e
 - Room deletion updates templates but not existing chore instances; unresolved room IDs can disappear from grouped views.
 - Client-only generation means recurring instances and reminders are not advanced while nobody opens the chore page.
 - Best-effort notification failures do not roll back chore writes.
+- Assignment forms show one-time date controls or recurring controls, never both; switching modes retains the unsaved recurrence state for that dialog session.
+- Active and completed chore instances use the same confirmation contract before permanent deletion.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
 - Manually test one-time tasks and every recurrence mode across refresh, including old records.
-- Test bulk completion with unfinished subtasks, reassignment, recurrence edit/cancel, room deletion, 90-day history cleanup, and guest/child direct-route behavior.
+- Test bulk completion with unfinished subtasks, one-time/each recurrence-mode control set, active/completed deletion cancel and confirm, reassignment, recurrence edit/cancel, room deletion, 90-day history cleanup, and guest/child direct-route behavior.
 
 ## When This Document Must Be Updated
 

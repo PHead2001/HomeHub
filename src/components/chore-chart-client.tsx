@@ -228,7 +228,7 @@ function ManageRoomsDialog({
                                     <Label>Icon</Label>
                                     <div className="grid grid-cols-7 gap-2">
                                         {roomIcons.map(iconName => (
-                                            <Button key={iconName} type="button" variant="outline" size="icon"
+                                            <Button key={iconName} type="button" variant="outline" size="icon" aria-label={`Use ${iconName} room icon`}
                                                 className={cn("h-12 w-12", editingRoom.icon === iconName && "ring-2 ring-primary")}
                                                 onClick={() => setEditingRoom({...editingRoom, icon: iconName})}
                                             >
@@ -260,8 +260,8 @@ function ManageRoomsDialog({
                                                     {room.name}
                                                 </TableCell>
                                                 <TableCell className="text-right">
-                                                    <Button variant="ghost" size="icon" onClick={() => openEditForm(room)}><Edit className="h-4 w-4"/></Button>
-                                                    <Button variant="ghost" size="icon" onClick={() => onRoomDelete(room.id)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
+                                                    <Button variant="ghost" size="icon" aria-label={`Edit ${room.name}`} onClick={() => openEditForm(room)}><Edit className="h-4 w-4"/></Button>
+                                                    <Button variant="ghost" size="icon" aria-label={`Delete ${room.name}`} onClick={() => onRoomDelete(room.id)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
                                                 </TableCell>
                                             </TableRow>
                                         ))}
@@ -354,6 +354,7 @@ function ChoreTemplateEditDialog({
             <DialogContent className="max-w-2xl">
                 <DialogHeader>
                     <DialogTitle>{isNew ? 'Create Chore' : 'Edit Chore'}</DialogTitle>
+                    <DialogDescription>{isNew ? 'Create a reusable chore template.' : `Update ${chore?.task || 'this chore template'}.`}</DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4 py-4 max-h-[70vh] overflow-y-auto pr-4">
                     <div className="space-y-4">
@@ -398,7 +399,7 @@ function ChoreTemplateEditDialog({
                                         onChange={(e) => handleSubTaskChange(index, e.target.value)}
                                         placeholder={`Sub-task #${index + 1}`}
                                     />
-                                    <Button variant="ghost" size="icon" onClick={() => removeSubTask(index)}>
+                                    <Button variant="ghost" size="icon" aria-label={`Remove subtask ${subTask || index + 1}`} onClick={() => removeSubTask(index)}>
                                         <X className="h-4 w-4"/>
                                     </Button>
                                 </div>
@@ -559,6 +560,7 @@ function AssignChoresDialog({
             <DialogContent>
                 <DialogHeader>
                     <DialogTitle>Assign {templatesToAssign.length} Chore(s)</DialogTitle>
+                    <DialogDescription>Choose an assignee, rooms, and either a one-time date or recurring schedule.</DialogDescription>
                 </DialogHeader>
                  <div className="grid gap-4 py-4 max-h-[70vh] overflow-y-auto pr-4">
                      <div>
@@ -598,7 +600,7 @@ function AssignChoresDialog({
                             </Label>
                         </RadioGroup>
                         
-                        <div className={cn("space-y-4 p-4 border rounded-lg", !isRecurring ? 'opacity-100' : 'opacity-50 pointer-events-none')}>
+                        {!isRecurring && <div className="space-y-4 rounded-lg border p-4">
                             <h4 className="font-medium">One-time Due Date</h4>
                              <Popover>
                                 <PopoverTrigger asChild>
@@ -611,9 +613,9 @@ function AssignChoresDialog({
                                     <Calendar mode="single" selected={dueDate} onSelect={setDueDate} initialFocus />
                                 </PopoverContent>
                              </Popover>
-                        </div>
+                        </div>}
                         
-                        <div className={cn("space-y-4 p-4 border rounded-lg", isRecurring ? 'opacity-100' : 'opacity-50 pointer-events-none')}>
+                        {isRecurring && <div className="space-y-4 rounded-lg border p-4">
                              <h4 className="font-medium">Recurring Schedule</h4>
                              <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as RecurrenceFrequency)} className="flex flex-wrap gap-2">
                                  <Label htmlFor="daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="daily" className="mr-1"/> Daily </Label>
@@ -692,7 +694,7 @@ function AssignChoresDialog({
                                     )}
                                 </div>
                             )}
-                        </div>
+                        </div>}
                     </div>
                  </div>
                  <DialogFooter>
@@ -846,7 +848,7 @@ function ManageChoresDialog({
                                             </div>
                                         </TableCell>
                                         <TableCell className="text-right">
-                                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(template)}><Edit className="h-3.5 w-3.5"/></Button>
+                                            <Button variant="ghost" size="icon" aria-label={`Edit ${template.task}`} className="h-8 w-8" onClick={() => openEditDialog(template)}><Edit className="h-3.5 w-3.5"/></Button>
                                         </TableCell>
                                     </TableRow>
                                 )) : (
@@ -1156,8 +1158,8 @@ function ManageRecurringTasksDialog({
                                             <TableCell>{usersByEmail.get(chore.assignedToEmail || '')?.displayName || chore.assignedToEmail}</TableCell>
                                             <TableCell>{getScheduleText(chore.recurrence!)}</TableCell>
                                             <TableCell className="text-right">
-                                                <Button variant="ghost" size="icon" onClick={() => setChoreToEdit(chore)}><Edit className="h-4 w-4"/></Button>
-                                                <Button variant="ghost" size="icon" onClick={() => setChoreToDelete(chore)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
+                                                <Button variant="ghost" size="icon" aria-label={`Edit recurring task ${chore.task}`} onClick={() => setChoreToEdit(chore)}><Edit className="h-4 w-4"/></Button>
+                                                <Button variant="ghost" size="icon" aria-label={`Cancel recurring task ${chore.task}`} onClick={() => setChoreToDelete(chore)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
                                             </TableCell>
                                         </TableRow>
                                     ))
@@ -1275,6 +1277,7 @@ export function ChoreChartClient() {
   const [templatesToAssign, setTemplatesToAssign] = useState<ChoreTemplate[]>([]);
   const [selectedChoreIds, setSelectedChoreIds] = useState<string[]>([]);
   const [choresPendingCompletion, setChoresPendingCompletion] = useState<Chore[] | null>(null);
+  const [choreToDelete, setChoreToDelete] = useState<Chore | null>(null);
   
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -2059,7 +2062,11 @@ export function ChoreChartClient() {
                                         </button>
                                     </AccordionPrimitive.Trigger>
                                 )}
-                                <button className="flex items-center justify-center h-7 w-7 md:h-8 md:w-8 rounded-md hover:bg-accent" onClick={() => deleteAssignedChore(chore.id)}>
+                                <button
+                                  className="flex items-center justify-center h-7 w-7 md:h-8 md:w-8 rounded-md hover:bg-accent"
+                                  aria-label={`Delete ${chore.task}`}
+                                  onClick={() => setChoreToDelete(chore)}
+                                >
                                     <Trash2 className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
                                     <span className="sr-only">Delete Chore</span>
                                 </button>
@@ -2097,6 +2104,29 @@ export function ChoreChartClient() {
 
   return (
     <>
+        <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
+            <AlertDialogContent>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Delete {choreToDelete?.task}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                        This permanently removes this {choreToDelete?.isCompleted ? 'completed' : 'active'} chore. This action cannot be undone.
+                    </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className={buttonVariants({ variant: 'destructive' })}
+                      onClick={() => {
+                        if (!choreToDelete) return;
+                        void deleteAssignedChore(choreToDelete.id);
+                        setChoreToDelete(null);
+                      }}
+                    >
+                      Delete Chore
+                    </AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
         <AlertDialog open={!!choresPendingCompletion} onOpenChange={(open) => !open && setChoresPendingCompletion(null)}>
             <AlertDialogContent className="max-h-[90vh] max-w-lg">
                 <AlertDialogHeader>

@@ -5,6 +5,7 @@ import {
   E2E_AUTH_HOST,
   E2E_FIRESTORE_HOST,
   E2E_PROJECT_ID,
+  E2E_STORAGE_HOST,
   e2eEnvironment,
 } from "./environment.mjs";
 
@@ -19,7 +20,7 @@ const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
 const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
 const emulatorTimeoutMs = 60_000;
-const suiteTimeoutMs = 240_000;
+const suiteTimeoutMs = 360_000;
 
 const parseHost = (value) => {
   const separator = value.lastIndexOf(":");
@@ -115,7 +116,7 @@ try {
       "--project",
       E2E_PROJECT_ID,
       "--only",
-      "auth,firestore",
+      "auth,firestore,storage",
     ],
     {
       cwd: process.cwd(),
@@ -133,15 +134,22 @@ try {
     Promise.all([
       waitForPort(parseHost(E2E_AUTH_HOST), emulatorTimeoutMs),
       waitForPort(parseHost(E2E_FIRESTORE_HOST), emulatorTimeoutMs),
+      waitForPort(parseHost(E2E_STORAGE_HOST), emulatorTimeoutMs),
     ]),
     emulatorSpawnError,
+  ]);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
+  await Promise.all([
+    waitForPort(parseHost(E2E_AUTH_HOST), emulatorTimeoutMs),
+    waitForPort(parseHost(E2E_FIRESTORE_HOST), emulatorTimeoutMs),
+    waitForPort(parseHost(E2E_STORAGE_HOST), emulatorTimeoutMs),
   ]);
 
   if (smokeOnly) {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
@@ -164,7 +172,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator reseed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );

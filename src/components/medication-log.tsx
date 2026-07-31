@@ -18,6 +18,7 @@ import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
 import { collection, getDocs, deleteDoc, doc, orderBy, query, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { PetLogDeleteAlert } from './pet-log-delete-alert';
 
 const logSchema = z.object({
   medication: z.string().min(2, 'Medication name is required.'),
@@ -33,6 +34,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   const { currentUser } = useAuth();
   const [logs, setLogs] = useState<MedicationLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const { toast } = useToast();
 
   const getLogsCollectionRef = useCallback(() => {
@@ -105,6 +107,17 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   }
 
   return (
+    <>
+    <PetLogDeleteAlert
+      open={!!logToDelete}
+      logType="medication"
+      onCancel={() => setLogToDelete(null)}
+      onConfirm={() => {
+        if (!logToDelete) return;
+        void deleteLog(logToDelete);
+        setLogToDelete(null);
+      }}
+    />
     <Card>
       <CardHeader>
         <CardTitle className="font-headline">Medication Log</CardTitle>
@@ -176,7 +189,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
                         <p className="text-foreground"><span className="font-semibold">{log.medication}</span> - {log.dosage}</p>
                         {log.notes && <p className="text-muted-foreground mt-1">{log.notes}</p>}
                     </div>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => deleteLog(log.id)}>
+                    <Button variant="ghost" size="icon" aria-label={`Delete ${log.medication} medication log`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
                         <Trash2 className="h-4 w-4" />
                     </Button>
                 </div>
@@ -184,5 +197,6 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
         </div>
       </CardContent>
     </Card>
+    </>
   );
 }

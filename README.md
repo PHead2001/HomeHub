@@ -21,7 +21,7 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 
 ### Shopping and Pantry
 - Multiple shopping lists by type.
-- Grocery categorization with AI assistance.
+- Grocery categorization with optional AI assistance and a manual/`Other` fallback.
 - Barcode lookup using the household library first, then public product data.
 - Pantry, fridge, and freezer inventory with expiry dates.
 - Recipe ideas based on current pantry contents.
@@ -120,9 +120,9 @@ npx.cmd playwright install chromium
 npm.cmd run test:e2e:local
 ```
 
-The runner starts Auth and Firestore emulators, seeds deterministic household data, starts Next.js on port `9002`, authenticates through the emulator-only custom-token route, and runs desktop/mobile smoke and visual tests. See [Authenticated Firebase Emulator E2E and Visual Testing](docs/testing/firebase-emulator-e2e.md) for split-terminal commands, snapshot updates, generated artifacts, and safety details.
+The runner starts Auth, Firestore, and Storage emulators, seeds deterministic household data, starts Next.js on port `9002`, authenticates through the emulator-only custom-token route, and runs desktop/mobile smoke, regression, and visual tests. See [Authenticated Firebase Emulator E2E and Visual Testing](docs/testing/firebase-emulator-e2e.md) for split-terminal commands, snapshot updates, generated artifacts, and safety details.
 
-Pull requests targeting `main` also run the `Authenticated E2E Smoke` GitHub Actions workflow. It validates lint, types, module docs, and the production build before running the same authenticated desktop/mobile smoke routes with `npm run test:e2e:ci`. Strict visual comparisons remain local-only because the committed baselines were generated on Windows and are not enforced against Linux rendering yet.
+Pull requests targeting `main` also run the `Authenticated E2E Smoke` GitHub Actions workflow. It validates lint, types, module docs, and the production build before running authenticated desktop/mobile route smoke coverage plus focused regression checks with `npm run test:e2e:ci`. Strict visual comparisons remain local-only because the committed baselines were generated on Windows and are not enforced against Linux rendering yet.
 
 ## Validation
 

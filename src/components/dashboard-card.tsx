@@ -14,7 +14,7 @@ interface DashboardCardProps {
 export function DashboardCard({ title, description, icon: Icon, href }: DashboardCardProps) {
   return (
     <Card className="flex flex-col justify-between hover:shadow-md transition-shadow duration-200">
-      <CardHeader>
+      <CardHeader className="px-14 sm:px-6">
         <div className="mb-4 bg-primary/10 p-3 rounded-full w-fit">
           <Icon className="h-6 w-6 text-primary" />
         </div>

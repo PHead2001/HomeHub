@@ -6,14 +6,14 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAuth } from '@/hooks/use-auth';
-import { db } from '@/lib/firebase';
+import { db, storage } from '@/lib/firebase';
 import { collection, doc, getDocs, setDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { v4 as uuidv4 } from 'uuid';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -24,6 +24,7 @@ import { BarcodeScanner } from './barcode-scanner';
 import { ImageUpload } from './image-upload';
 import Image from 'next/image';
 import { format } from 'date-fns';
+import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 
 const libraryItemSchema = z.object({
   id: z.string().min(1, 'Barcode is required.'),
@@ -86,7 +87,10 @@ function LibraryItemDialog({
     <>
       <Dialog open={isScannerOpen} onOpenChange={setIsScannerOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Scan Barcode</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Scan Barcode</DialogTitle>
+            <DialogDescription>Use your camera to fill the barcode field for this library item.</DialogDescription>
+          </DialogHeader>
           <BarcodeScanner onScan={handleBarcodeScan} />
         </DialogContent>
       </Dialog>
@@ -94,6 +98,7 @@ function LibraryItemDialog({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="font-headline">{itemToEdit ? 'Edit Library Item' : 'Add New Library Item'}</DialogTitle>
+            <DialogDescription>{itemToEdit ? `Update ${itemToEdit.name}.` : 'Save a barcode, product name, and reusable product image.'}</DialogDescription>
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4 py-4">
@@ -108,7 +113,7 @@ function LibraryItemDialog({
                         <Input placeholder="Scan or type barcode" {...field} disabled={!!itemToEdit} />
                       </FormControl>
                       {!itemToEdit && (
-                        <Button type="button" variant="outline" size="icon" onClick={() => setIsScannerOpen(true)}>
+                        <Button type="button" variant="outline" size="icon" aria-label="Scan product barcode" onClick={() => setIsScannerOpen(true)}>
                           <ScanBarcode />
                         </Button>
                       )}
@@ -133,7 +138,7 @@ function LibraryItemDialog({
               <FormItem>
                 <FormLabel>Product Image</FormLabel>
                 <FormControl>
-                  <ImageUpload onFileChange={setPhotoFile} existingImageUrl={itemToEdit?.imageUrl} />
+                  <ImageUpload onFileChange={setPhotoFile} existingImageUrl={itemToEdit?.imageUrl} previewAlt="Product image preview" />
                 </FormControl>
                  {!photoFile && !itemToEdit?.imageUrl && <FormMessage>An image is required.</FormMessage>}
               </FormItem>
@@ -188,14 +193,13 @@ export function BarcodeLibraryClient() {
     fetchItems();
   }, [fetchItems]);
 
-  const uploadPhoto = async (photoFile: File): Promise<string> => {
+  const uploadPhoto = async (photoFile: File): Promise<{ imageUrl: string; imagePath: string }> => {
     if (!currentUser?.householdId) throw new Error("User not in a household");
-    const storage = getStorage();
     const fileExtension = photoFile.name.split('.').pop();
     const fileName = `${uuidv4()}.${fileExtension}`;
     const storageRef = ref(storage, `households/${currentUser.householdId}/barcode-library/${fileName}`);
     await uploadBytes(storageRef, photoFile);
-    return await getDownloadURL(storageRef);
+    return { imageUrl: await getDownloadURL(storageRef), imagePath: storageRef.fullPath };
   };
 
 
@@ -208,9 +212,12 @@ export function BarcodeLibraryClient() {
 
     try {
         let finalImageUrl = itemToEdit?.imageUrl;
+        let finalImagePath = itemToEdit?.imagePath;
 
         if (photoFile) {
-            finalImageUrl = await uploadPhoto(photoFile);
+            const uploadedImage = await uploadPhoto(photoFile);
+            finalImageUrl = uploadedImage.imageUrl;
+            finalImagePath = uploadedImage.imagePath;
         }
 
         if (!finalImageUrl) {
@@ -221,6 +228,7 @@ export function BarcodeLibraryClient() {
         const itemData: Omit<BarcodeLibraryItem, 'id'> = {
             name: data.name,
             imageUrl: finalImageUrl,
+            ...(finalImagePath ? { imagePath: finalImagePath } : {}),
             createdAt: itemToEdit?.createdAt || new Date().toISOString(),
         };
 
@@ -239,12 +247,21 @@ export function BarcodeLibraryClient() {
     const collectionRef = getLibraryCollectionRef();
     if (!collectionRef) return;
     try {
-        await deleteObject(ref(getStorage(), item.imageUrl)).catch((error) => {
-          console.warn('Could not delete barcode image from storage:', error);
-        });
         await deleteDoc(doc(collectionRef, item.id));
-        toast({title: "Item Deleted"});
-        fetchItems();
+        setItems(prev => prev.filter(existingItem => existingItem.id !== item.id));
+        toast({ title: "Item Deleted", description: `${item.name} was removed from the library.` });
+
+        const managedImagePath = currentUser?.householdId
+          ? getManagedBarcodeImagePath({ householdId: currentUser.householdId, imagePath: item.imagePath, imageUrl: item.imageUrl })
+          : null;
+        if (managedImagePath) {
+          void deleteObject(ref(storage, managedImagePath)).catch((error: unknown) => {
+            const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : '';
+            if (code === 'storage/object-not-found') return;
+            console.warn('Barcode metadata was deleted, but image cleanup failed:', error);
+            toast({ title: 'Item deleted; image cleanup pending', description: 'The library record is gone, but its managed image could not be removed.' });
+          });
+        }
     } catch {
         toast({ variant: 'destructive', title: 'Delete Failed' });
     }
@@ -295,14 +312,18 @@ export function BarcodeLibraryClient() {
                     {items.length > 0 ? items.map(item => (
                         <TableRow key={item.id}>
                             <TableCell>
-                                <Image src={item.imageUrl} alt={item.name} width={40} height={40} className="rounded-md object-cover h-10 w-10" />
+                                {item.imageUrl ? (
+                                  <Image unoptimized src={item.imageUrl} alt={`Product image for ${item.name}`} width={40} height={40} sizes="40px" className="rounded-md object-cover h-10 w-10" />
+                                ) : (
+                                  <div role="img" className="h-10 w-10 rounded-md bg-muted" aria-label={`No product image for ${item.name}`} />
+                                )}
                             </TableCell>
                             <TableCell className="font-medium">{item.name}</TableCell>
                             <TableCell className="font-mono text-xs">{item.id}</TableCell>
                             <TableCell>{format(new Date(item.createdAt), 'PPP')}</TableCell>
                             <TableCell className="text-right">
-                                <Button variant="ghost" size="icon" onClick={() => openDialogToEdit(item)}><Edit/></Button>
-                                <Button variant="ghost" size="icon" onClick={() => handleDelete(item)}><Trash2/></Button>
+                                <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} onClick={() => openDialogToEdit(item)}><Edit/></Button>
+                                <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => handleDelete(item)}><Trash2/></Button>
                             </TableCell>
                         </TableRow>
                     )) : (
