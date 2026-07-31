@@ -1,8 +1,8 @@
 # HomeHub
 
-HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance records, notifications, and Home Assistant control into one Firebase-backed Next.js app.
+HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance records, notifications, and Home Assistant entity-state viewing into one Firebase-backed Next.js app.
 
-The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/Gemini powers grocery categorization, recipe ideas, barcode lookup assistance, and maintenance-log summaries.
+The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/Gemini powers grocery categorization, recipe ideas, and maintenance-log summaries; a Genkit server flow coordinates household and public barcode lookup without invoking a model.
 
 ## Main Modules
 
@@ -37,7 +37,7 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 
 ### Automation
 - Home Assistant connection using a household-scoped URL and long-lived access token.
-- Entity state viewing from the HomeHub UI.
+- Read-only entity state viewing from the HomeHub UI; device-control service calls are not implemented.
 
 ## Tech Stack
 
@@ -63,6 +63,10 @@ firestore.rules       Firestore security rules
 storage.rules         Firebase Storage security rules
 firebase.json         Firebase project configuration
 ```
+
+## Module Documentation
+
+The [module documentation registry](docs/modules/README.md) maps HomeHub's implemented capabilities to their routes, source files, data paths, security boundaries, integrations, and maintenance guidance. Use it as the first navigation point for feature work; executable code and configuration remain the source of truth.
 
 ## Local Setup
 
@@ -123,6 +127,12 @@ TypeScript-only checking is also available:
 
 ```bash
 npm run typecheck
+```
+
+Validate the module documentation registry, links, and required headings:
+
+```bash
+npm run docs:check
 ```
 
 ## Firebase
