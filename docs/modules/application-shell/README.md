@@ -6,7 +6,7 @@ This module owns the root layout, global providers and overlays, primary navigat
 
 ## User-Facing Capabilities
 
-- View Quick Actions and module cards at `/`.
+- View dashboard module cards at `/`.
 - Navigate through permission-filtered desktop header links and avatar actions.
 - Open profile, household management, barcode library, notifications, and logout controls.
 - Receive create/join-household and pending-approval overlays.
@@ -31,9 +31,9 @@ This module owns the root layout, global providers and overlays, primary navigat
 
 The root layout installs `AuthProvider`, foreground push handling, Firebase error reporting, theme injection, password-change handling, household-state overlays, the header, and global toasts around every route. The dashboard is a static set of links into implemented feature routes.
 
-Dashboard card carousels contain their own horizontal movement. Their navigation controls move inside the viewport on small screens so the document itself does not gain horizontal overflow.
+Dashboard card carousels contain their own horizontal movement. Their navigation controls remain inset from the carousel edge at every viewport so neither the carousel nor the document gains horizontal overflow.
 
-Header navigation derives visibility from effective permissions. Dashboard cards and Quick Actions are not permission-filtered.
+Header navigation derives visibility from effective permissions. Dashboard cards are not permission-filtered.
 
 ## Data Model and Persistence
 

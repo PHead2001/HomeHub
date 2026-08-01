@@ -223,6 +223,8 @@ export type MaintenanceLog = {
   targetType?: MaintenanceTargetType;
   assetId?: string;
   vehicleId?: string;
+  formerTargetType?: Exclude<MaintenanceTargetType, 'general'>;
+  formerTargetName?: string;
   title?: string;
   item?: string; // Legacy maintenance logs used item instead of title.
   date: string;
@@ -291,7 +293,8 @@ export type Chore = {
   notes?: string;
   subTasks?: string[];
   completedSubTasks?: string[];
-  templateId: string; // To link back to the template
+  templateId?: string; // Present for chores created from reusable templates.
+  sourceType?: 'template' | 'temporary';
   originalDueDate: string; // To identify which instance of a recurring chore this is
   roomIds?: string[];
 };

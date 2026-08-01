@@ -912,24 +912,24 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
         </AlertDialogContent>
       </AlertDialog>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      <Card className="min-w-0">
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="font-headline">Pantry Inventory</CardTitle>
-            <div className="flex items-center gap-2">
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
                  {selectedItems.length > 0 && (
-                    <Button variant="destructive" onClick={() => setIsBulkDeleteAlertOpen(true)}>
-                        <Trash2 className="mr-2" /> Delete Selected ({selectedItems.length})
+                    <Button className="col-span-2 sm:order-last" variant="destructive" onClick={() => setIsBulkDeleteAlertOpen(true)}>
+                        <Trash2 className="mr-2 h-4 w-4" /> Delete Selected ({selectedItems.length})
                     </Button>
                 )}
-                <Button variant="outline" onClick={() => setIsRecipeGenOpen(true)} disabled={items.length === 0}>
-                    <Sparkles className="mr-2" /> Generate Recipe
+                <Button className="min-w-0 px-2 text-xs sm:px-4 sm:text-sm" variant="outline" onClick={() => setIsRecipeGenOpen(true)} disabled={items.length === 0}>
+                    <Sparkles className="mr-1 h-4 w-4 shrink-0 sm:mr-2" /> Generate Recipe
                 </Button>
-                <Button onClick={openAddDialog}>
-                    <PlusCircle className="mr-2" /> Add Item
+                <Button className="min-w-0 px-2 text-xs sm:px-4 sm:text-sm" onClick={openAddDialog}>
+                    <PlusCircle className="mr-1 h-4 w-4 shrink-0 sm:mr-2" /> Add Item
                 </Button>
             </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0 px-3 sm:px-6">
             <Accordion type="multiple" defaultValue={['Pantry', 'Fridge', 'Freezer']} className="w-full space-y-2">
                 {locations.map(loc => {
                     const itemsInLocation = groupedItems[loc];
@@ -938,11 +938,39 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
                     const someInLocationSelected = selectedInLocation > 0 && selectedInLocation < itemsInLocation.length;
 
                     return (
-                        <AccordionItem value={loc} key={loc} className="border rounded-lg px-4 bg-background">
+                        <AccordionItem value={loc} key={loc} className="min-w-0 rounded-lg border bg-background px-3 sm:px-4">
                             <AccordionTrigger className="hover:no-underline font-headline text-lg">
                                 {loc} ({itemsInLocation.length})
                             </AccordionTrigger>
                             <AccordionContent>
+                                <div className="divide-y sm:hidden" data-testid={`mobile-inventory-${loc.toLowerCase()}`}>
+                                    {itemsInLocation.length > 0 ? itemsInLocation.map(item => (
+                                        <div key={item.id} className="flex min-w-0 items-start gap-3 py-3" data-state={selectedItems.includes(item.id) && "selected"}>
+                                            <Checkbox
+                                                checked={selectedItems.includes(item.id)}
+                                                onCheckedChange={(checked) => handleItemSelect(item.id, !!checked)}
+                                                aria-label={`Select ${item.name}`}
+                                                className="mt-1 shrink-0"
+                                            />
+                                            <div className="min-w-0 flex-1">
+                                                <p className="break-words text-sm font-medium">{item.name}</p>
+                                                <p className="mt-1 text-xs text-muted-foreground">{item.quantity} {item.unit}</p>
+                                                <p className="text-xs text-muted-foreground">Expires: {item.expiryDate ? format(parseISO(item.expiryDate), 'PPP') : 'N/A'}</p>
+                                            </div>
+                                            <div className="flex shrink-0 items-center">
+                                                <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} onClick={() => openEditDialog(item)}>
+                                                    <Edit className="h-4 w-4" />
+                                                </Button>
+                                                <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => setItemToDelete(item)}>
+                                                    <Trash2 className="h-4 w-4" />
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    )) : (
+                                        <p className="py-8 text-center text-sm text-muted-foreground">No items in {loc}.</p>
+                                    )}
+                                </div>
+                                <div className="hidden sm:block">
                                 <Table>
                                     <TableHeader>
                                         <TableRow>
@@ -993,6 +1021,7 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
                                         )}
                                     </TableBody>
                                 </Table>
+                                </div>
                             </AccordionContent>
                         </AccordionItem>
                     );

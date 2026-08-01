@@ -11,14 +11,14 @@ export default function ShoppingPage() {
     const { currentUser } = useAuth();
     return (
         <div className="container mx-auto px-4 py-8">
-            <div className="flex justify-between items-start mb-8">
-                <div>
-                    <h1 className="font-headline text-3xl font-bold tracking-tight">Shopping Center</h1>
+            <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="w-full min-w-0">
+                    <h1 className="w-full font-headline text-3xl font-bold tracking-tight">Shopping Center</h1>
                     <p className="text-muted-foreground">Manage your shopping lists and household inventory.</p>
                 </div>
-                <Button asChild variant="outline">
+                <Button asChild variant="outline" className="w-full sm:w-auto">
                     <Link href="/library">
-                        <ScanBarcode className="mr-2"/> Manage Barcode Library
+                        <ScanBarcode className="mr-2"/> Barcode Library
                     </Link>
                 </Button>
             </div>

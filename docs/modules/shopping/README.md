@@ -13,6 +13,7 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 - Clear purchased items and optionally remove an emptied list.
 - Scan a barcode while adding an item.
 - Move a purchased Grocery item into a prefilled pantry form.
+- Open the household barcode catalog from the `Barcode Library` inventory action.
 
 ## Entry Points
 
@@ -66,11 +67,12 @@ The `shopping.edit` and `shopping.delete` permissions exist, but the feature and
 - Deleting a list removes only the parent document; nested items/config can remain orphaned despite destructive dialog wording.
 - Purchase-to-pantry is not transactional.
 - Barcode lookup failure does not invent product data.
+- The `/shopping` header action stacks on narrow screens so its label and controls stay inside the viewport.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
-- Manually test list/category/item CRUD, each list type, clear-purchased behavior, barcode local/public fallback, AI failure, and purchase-to-pantry cancellation.
+- Manually test list/category/item CRUD, each list type, clear-purchased behavior, barcode local/public fallback, AI failure, purchase-to-pantry cancellation, and the mobile `Barcode Library` action at 360/390/412 px.
 - Inspect nested documents after deleting a list and verify cross-household denial.
 
 ## When This Document Must Be Updated

@@ -1,5 +1,5 @@
 export const authenticatedRoutes = [
-  { path: "/", heading: "Welcome Home", content: "Quick Actions" },
+  { path: "/", heading: "Welcome Home", content: "Your Dashboard" },
   { path: "/household", heading: "Manage Household", content: "The Foxy Residence E2E" },
   { path: "/chores", heading: "Chore Chart", content: "Reset the kitchen" },
   { path: "/shopping", heading: "Shopping Center", content: "Weekly Groceries" },

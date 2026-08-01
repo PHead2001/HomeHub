@@ -1,10 +1,8 @@
 
 'use client';
 
-import Link from 'next/link';
 import { DashboardCard } from '@/components/dashboard-card';
-import { Button } from '@/components/ui/button';
-import { PawPrint, Wrench, PlusCircle, ListTodo, Bot, ShoppingCart } from 'lucide-react';
+import { PawPrint, Wrench, ListTodo, Bot, ShoppingCart } from 'lucide-react';
 import {
   Carousel,
   CarouselContent,
@@ -21,16 +19,6 @@ export default function Home() {
         <p className="text-muted-foreground">Here&apos;s what&apos;s happening in your hub today.</p>
       </div>
       
-      <section className="mb-10">
-        <h2 className="font-headline text-xl font-semibold mb-4 border-b pb-2">Quick Actions</h2>
-        <div className="flex flex-wrap gap-3">
-          <Button variant="outline" asChild><Link href="/shopping"><ShoppingCart className="mr-2" /> Add Shopping Item</Link></Button>
-          <Button variant="outline" asChild><Link href="/maintenance"><Wrench className="mr-2" /> Log Maintenance</Link></Button>
-          <Button variant="outline" asChild><Link href="/chores"><ListTodo className="mr-2" /> New Chore</Link></Button>
-          <Button variant="outline" asChild><Link href="/pets"><PlusCircle className="mr-2" /> Add Pet</Link></Button>
-        </div>
-      </section>
-
       <section>
         <h2 className="font-headline text-xl font-semibold mb-4 border-b pb-2">Your Dashboard</h2>
         <Carousel
@@ -81,8 +69,8 @@ export default function Home() {
               />
             </CarouselItem>
           </CarouselContent>
-          <CarouselPrevious className="left-2 md:-left-12" />
-          <CarouselNext className="right-2 md:-right-12" />
+          <CarouselPrevious className="left-2" />
+          <CarouselNext className="right-2" />
         </Carousel>
       </section>
     </div>

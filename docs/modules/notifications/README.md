@@ -53,7 +53,7 @@ Creation rules do not verify that optional target UID/email belongs to the house
 - FCM web config uses `NEXT_PUBLIC_FIREBASE_*` and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - Cloud Function `sendPushOnNewNotification` runs on notification creation.
 - Recipient order is target email, then target UID query, otherwise legacy `households.memberEmails`.
-- Chore checks run every minute while Chores is mounted.
+- Chore checks run every minute while Chores is mounted. Direct Temporary Task creation writes one deterministic targeted assignment notification in the same batch as its chore.
 - Maintenance synchronization runs when Maintenance opens.
 - Pending-member reminders are client-triggered after 24 hours.
 - No scheduled reminder or cleanup function exists.
@@ -72,6 +72,7 @@ Creation rules do not verify that optional target UID/email belongs to the house
 - Center hides expired records and supports system/general records under broad filters, but has no dedicated system/general category filter.
 - Dismissal is per user and does not delete the record.
 - Deterministic maintenance identity is `(sourceType, sourceId, stateKey)`; `stateKey` changes only for a meaningful due-state/date/mileage cycle change.
+- Deleting a maintenance asset or vehicle resolves its active schedule and expiration reminders from a fresh notification snapshot; unrelated notification history remains intact.
 - Bell and center presentation deduplicate legacy documents with the same semantic source while merging read, dismiss, and resolution history.
 - Reminders are absent until a relevant client page runs its generator.
 - UID-only push targeting queries `users.uid`, while current profile creation does not consistently persist a `uid` field.

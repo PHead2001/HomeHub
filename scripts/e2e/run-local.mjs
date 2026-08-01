@@ -11,9 +11,10 @@ import {
 
 const updateSnapshots = process.argv.includes("--visual-update");
 const smokeOnly = process.argv.includes("--smoke-only");
+const featureOnly = process.argv.includes("--feature-only");
 
-if (updateSnapshots && smokeOnly) {
-  throw new Error("Choose either --visual-update or --smoke-only, not both.");
+if ([updateSnapshots, smokeOnly, featureOnly].filter(Boolean).length > 1) {
+  throw new Error("Choose only one focused E2E run mode.");
 }
 
 const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
@@ -145,11 +146,19 @@ try {
     waitForPort(parseHost(E2E_STORAGE_HOST), emulatorTimeoutMs),
   ]);
 
-  if (smokeOnly) {
+  if (featureOnly) {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/temporary-chores-maintenance-ui.spec.ts"],
+      "Playwright feature regression suite",
+      suiteTimeoutMs
+    );
+  } else if (smokeOnly) {
+    await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
+    await runChild(
+      process.execPath,
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
@@ -172,7 +181,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator reseed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );

@@ -5,7 +5,7 @@
 ## Core Features:
 
 - Dashboard UI: Modern tablet dashboard with modules for each feature.
-- Quick Actions: Quick-add buttons on the home dashboard for common actions (e.g., 'Add grocery,' 'Log maintenance').
+- Current dashboard scope: module cards only; the original Quick Actions concept is not rendered.
 - Maintenance Log AI Summaries: Use tool to summarize logs. Maintenance log summary dashboard element using LLM.
 - Shared Grocery List: Grocery list with shared real-time editing capabilities.
 - Pet Management Module: Track pet info (name, photo, vet records, food schedule), set reminders for pet care, chore tracking for pet care (walks, feedings, litter boxes, grooming)

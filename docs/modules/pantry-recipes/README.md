@@ -26,6 +26,8 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 `ShoppingCenterClient` hosts the inventory tab and passes shopping-list context into `PantryInventoryClient`. The inventory client reads and writes household-scoped Firestore documents. Recipe generation sends the loaded items as `{name, quantity, unit}` to the Genkit server action and keeps the result only in component state.
 
+Inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
+
 Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins.
 
 ## Data Model and Persistence
@@ -65,11 +67,12 @@ The `shopping.view`, `shopping.edit`, and `shopping.delete` permissions exist in
 - A failed recipe request leaves inventory unchanged and reports an error toast.
 - Delete-and-return-to-shopping is not atomic; a shopping failure can occur after inventory deletion.
 - Slug-derived IDs can collide for names that normalize to the same slug.
+- Pantry, fridge, and freezer mobile lists must keep item actions and long names within the document bounds at 360 px and wider supported viewports.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
-- Manually test inventory CRUD, bulk deletion, expiration display, units and locations, barcode intake, purchased-item intake, and return-to-list behavior.
+- Manually test inventory CRUD, bulk deletion, expiration display, units and locations, barcode intake, purchased-item intake, return-to-list behavior, and Pantry/Fridge/Freezer layouts at 360/390/412 px with long item names.
 - Test recipe generation with zero, one, two, and many items plus an AI/network failure.
 - Verify a user cannot read another household's inventory.
 

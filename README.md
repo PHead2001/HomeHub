@@ -16,6 +16,7 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 
 ### Chores
 - One-time and recurring chores.
+- Direct Temporary Tasks that create one assigned chore without a reusable template.
 - Room-based organization with selectable icons.
 - Subtasks, completion history, calendar view, and reminder notifications.
 
@@ -33,6 +34,7 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 ### Maintenance
 - Maintenance Center with home asset and vehicle registries.
 - General, asset-linked, and vehicle-linked maintenance logs.
+- Confirmed asset/vehicle deletion that preserves linked logs as general history.
 - AI summaries for longer maintenance notes.
 
 ### Automation

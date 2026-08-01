@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
+import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Loader2, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
 import type { LucideIcon, LucideProps } from 'lucide-react';
 import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
 import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, differenceInCalendarDays, isValid } from 'date-fns';
@@ -17,7 +17,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { buildNotificationDocument } from '@/lib/notifications';
+import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { stableSlugify, cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { ScrollArea } from './ui/scroll-area';
@@ -706,6 +706,161 @@ function AssignChoresDialog({
     )
 }
 
+type TemporaryTaskInput = {
+    task: string;
+    notes: string;
+    roomId: string;
+    dueDate: string;
+    assignedToEmail: string;
+};
+
+function TemporaryTaskDialog({
+    isOpen,
+    onOpenChange,
+    users,
+    rooms,
+    onCreate,
+}: {
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    users: HomeHubUser[];
+    rooms: Room[];
+    onCreate: (input: TemporaryTaskInput) => Promise<boolean>;
+}) {
+    const [task, setTask] = useState('');
+    const [notes, setNotes] = useState('');
+    const [roomId, setRoomId] = useState('');
+    const [dueDate, setDueDate] = useState('');
+    const [assignedToEmail, setAssignedToEmail] = useState('');
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const submittingRef = useRef(false);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        setTask('');
+        setNotes('');
+        setRoomId('');
+        setDueDate('');
+        setAssignedToEmail('');
+        setErrors({});
+        setIsSubmitting(false);
+        submittingRef.current = false;
+    }, [isOpen]);
+
+    const updateField = (field: string, update: () => void) => {
+        update();
+        setErrors(previous => ({ ...previous, [field]: '' }));
+    };
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (submittingRef.current) return;
+
+        const nextErrors: Record<string, string> = {};
+        if (!task.trim()) nextErrors.task = 'Task name is required.';
+        if (!roomId) nextErrors.roomId = 'Room assignment is required.';
+        if (!dueDate) nextErrors.dueDate = 'Due date is required.';
+        if (!assignedToEmail) nextErrors.assignedToEmail = 'Assignee is required.';
+        if (Object.keys(nextErrors).length > 0) {
+            setErrors(nextErrors);
+            return;
+        }
+
+        submittingRef.current = true;
+        setIsSubmitting(true);
+        const created = await onCreate({
+            task: task.trim(),
+            notes: notes.trim(),
+            roomId,
+            dueDate,
+            assignedToEmail,
+        });
+        submittingRef.current = false;
+        setIsSubmitting(false);
+        if (created) onOpenChange(false);
+    };
+
+    return (
+        <Dialog open={isOpen} onOpenChange={(open) => !isSubmitting && onOpenChange(open)}>
+            <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col overflow-hidden p-0">
+                <DialogHeader className="px-6 pb-0 pr-10 pt-6">
+                    <DialogTitle>Temporary Task</DialogTitle>
+                    <DialogDescription>Create one household task without adding it to the reusable chore library.</DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+                    <div className="min-h-0 flex-1 touch-pan-y space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="temporary-task-name">Task name</Label>
+                            <Input
+                                id="temporary-task-name"
+                                value={task}
+                                onChange={(event) => updateField('task', () => setTask(event.target.value))}
+                                aria-invalid={Boolean(errors.task)}
+                            />
+                            {errors.task && <p role="alert" className="text-sm text-destructive">{errors.task}</p>}
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="temporary-task-notes">Notes <span className="text-muted-foreground">(optional)</span></Label>
+                            <Textarea
+                                id="temporary-task-notes"
+                                value={notes}
+                                onChange={(event) => setNotes(event.target.value)}
+                                className="min-h-24 resize-none"
+                            />
+                        </div>
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                                <Label htmlFor="temporary-task-room">Room</Label>
+                                <Select value={roomId} onValueChange={(value) => updateField('roomId', () => setRoomId(value))}>
+                                    <SelectTrigger id="temporary-task-room" aria-invalid={Boolean(errors.roomId)}>
+                                        <SelectValue placeholder="Choose a room" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="general">General</SelectItem>
+                                        {rooms.map(room => <SelectItem key={room.id} value={room.id}>{room.name}</SelectItem>)}
+                                    </SelectContent>
+                                </Select>
+                                {errors.roomId && <p role="alert" className="text-sm text-destructive">{errors.roomId}</p>}
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="temporary-task-assignee">Assignee</Label>
+                                <Select value={assignedToEmail} onValueChange={(value) => updateField('assignedToEmail', () => setAssignedToEmail(value))}>
+                                    <SelectTrigger id="temporary-task-assignee" aria-invalid={Boolean(errors.assignedToEmail)}>
+                                        <SelectValue placeholder="Choose a member" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {users.map(user => <SelectItem key={user.email} value={user.email}>{user.displayName || user.email}</SelectItem>)}
+                                    </SelectContent>
+                                </Select>
+                                {errors.assignedToEmail && <p role="alert" className="text-sm text-destructive">{errors.assignedToEmail}</p>}
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="temporary-task-due-date">Due date</Label>
+                            <Input
+                                id="temporary-task-due-date"
+                                type="date"
+                                value={dueDate}
+                                onChange={(event) => updateField('dueDate', () => setDueDate(event.target.value))}
+                                aria-invalid={Boolean(errors.dueDate)}
+                            />
+                            {errors.dueDate && <p role="alert" className="text-sm text-destructive">{errors.dueDate}</p>}
+                        </div>
+                    </div>
+                    <DialogFooter className="border-t px-6 py-4">
+                        <Button type="button" variant="secondary" disabled={isSubmitting} onClick={() => onOpenChange(false)}>Cancel</Button>
+                        <Button type="submit" disabled={isSubmitting}>
+                            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            Create Temporary Task
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
 function ManageChoresDialog({
     isOpen,
     onOpenChange,
@@ -1274,6 +1429,7 @@ export function ChoreChartClient() {
   const [isManageRoomsOpen, setIsManageRoomsOpen] = useState(false);
   const [isRecurringTasksOpen, setIsRecurringTasksOpen] = useState(false);
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
+  const [isTemporaryTaskOpen, setIsTemporaryTaskOpen] = useState(false);
   const [templatesToAssign, setTemplatesToAssign] = useState<ChoreTemplate[]>([]);
   const [selectedChoreIds, setSelectedChoreIds] = useState<string[]>([]);
   const [choresPendingCompletion, setChoresPendingCompletion] = useState<Chore[] | null>(null);
@@ -1606,6 +1762,66 @@ export function ChoreChartClient() {
       setIsAssignDialogOpen(true);
       setIsChoreTemplatesOpen(false);
   }
+
+  const handleCreateTemporaryTask = useCallback(async (input: TemporaryTaskInput) => {
+    if (!currentUser?.householdId) return false;
+    const choresCollection = getCollectionRef('chores');
+    const notificationsCollection = getCollectionRef('notifications');
+    if (!choresCollection || !notificationsCollection) return false;
+
+    const assignee = householdUsers.find(user => user.email === input.assignedToEmail);
+    if (!assignee) {
+        toast({ variant: 'destructive', title: 'Missing assignee', description: 'Could not find the selected household member.' });
+        return false;
+    }
+
+    const choreRef = doc(choresCollection);
+    const originalDueDate = input.dueDate;
+    const dueDate = new Date(`${input.dueDate}T12:00:00`).toISOString();
+    const stateKey = `assigned|${originalDueDate}|${input.assignedToEmail}`;
+    const notificationId = getDeterministicNotificationId({
+        sourceType: 'chore-assignment',
+        sourceId: choreRef.id,
+        stateKey,
+    });
+    const batch = writeBatch(db);
+    const newChore: Omit<Chore, 'id'> = {
+        task: input.task,
+        notes: input.notes,
+        assignedToEmail: input.assignedToEmail,
+        assignedToDisplayName: assignee.displayName || assignee.email,
+        dueDate,
+        originalDueDate,
+        roomIds: input.roomId === 'general' ? [] : [input.roomId],
+        isCompleted: false,
+        completedSubTasks: [],
+        sourceType: 'temporary',
+    };
+    const notification = buildNotificationDocument({
+        householdId: currentUser.householdId,
+        category: 'chores',
+        title: 'New chore assigned',
+        message: `You have a new chore: ${input.task}. Due ${format(parseISO(input.dueDate), 'MMM d, yyyy')}.`,
+        deepLink: '/chores',
+        sourceType: 'chore-assignment',
+        sourceId: choreRef.id,
+        stateKey,
+        targetUser: assignee,
+    });
+    batch.set(choreRef, newChore);
+    batch.set(doc(notificationsCollection, notificationId), notification);
+
+    try {
+        await batch.commit();
+        toast({ title: 'Temporary task created', description: `${input.task} was assigned to ${assignee.displayName || assignee.email}.` });
+        await fetchAllData();
+        return true;
+    } catch (error) {
+        console.error('Error creating temporary task:', error instanceof Error ? error.message : String(error));
+        toast({ variant: 'destructive', title: 'Could not create task', description: 'The temporary task was not saved.' });
+        return false;
+    }
+  }, [currentUser?.householdId, fetchAllData, getCollectionRef, householdUsers, toast]);
 
   const handleAssignChores = useCallback(async (
       assignment: { assignedToEmail: string, roomIds: string[] },
@@ -2174,6 +2390,14 @@ export function ChoreChartClient() {
             onAssign={handleAssignChores}
         />
 
+        <TemporaryTaskDialog
+            isOpen={isTemporaryTaskOpen}
+            onOpenChange={setIsTemporaryTaskOpen}
+            users={householdUsers}
+            rooms={rooms}
+            onCreate={handleCreateTemporaryTask}
+        />
+
         <ManageRoomsDialog 
             isOpen={isManageRoomsOpen}
             onOpenChange={setIsManageRoomsOpen}
@@ -2231,6 +2455,9 @@ export function ChoreChartClient() {
                     <DropdownMenuContent align="end" className="w-56">
                          <DropdownMenuItem onSelect={() => setIsChoreTemplatesOpen(true)}>
                             <BookUser className="mr-2 h-4 w-4"/> Chores
+                         </DropdownMenuItem>
+                         <DropdownMenuItem onSelect={() => setIsTemporaryTaskOpen(true)}>
+                            <PlusCircle className="mr-2 h-4 w-4"/> Temporary Task
                          </DropdownMenuItem>
                          <DropdownMenuItem onSelect={() => setIsManageRoomsOpen(true)}>
                             <Home className="mr-2 h-4 w-4"/> Manage Rooms
@@ -2295,7 +2522,7 @@ export function ChoreChartClient() {
                             </AccordionPrimitive.Trigger>
                         </AccordionPrimitive.Header>
                         <div className="flex items-center space-x-2 ml-4 mr-2 md:mr-4 shrink-0">
-                            <Switch id="show-full-future" checked={showFullFuture} onCheckedChange={setShowFullFuture} className="h-4 w-7 md:h-5 md:w-9"/>
+                            <Switch id="show-full-future" checked={showFullFuture} onCheckedChange={setShowFullFuture}/>
                             <Label htmlFor="show-full-future" className="text-[9px] md:text-sm cursor-pointer">Show All</Label>
                         </div>
                      </div>
@@ -2332,7 +2559,7 @@ export function ChoreChartClient() {
                             </AccordionPrimitive.Trigger>
                         </AccordionPrimitive.Header>
                         <div className="flex items-center space-x-2 ml-4 mr-2 md:mr-4 shrink-0">
-                            <Switch id="show-full-history" checked={showFullHistory} onCheckedChange={setShowFullHistory} className="h-4 w-7 md:h-5 md:w-9"/>
+                            <Switch id="show-full-history" checked={showFullHistory} onCheckedChange={setShowFullHistory}/>
                             <Label htmlFor="show-full-history" className="text-[9px] md:text-sm cursor-pointer">History</Label>
                         </div>
                      </div>

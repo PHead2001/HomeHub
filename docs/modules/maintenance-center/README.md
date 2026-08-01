@@ -7,7 +7,7 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 ## User-Facing Capabilities
 
 - Use Overview, Home Assets, Vehicles, Reminders, and Logs tabs at `/maintenance`.
-- Create, view, and edit assets; manage multiple schedules and linked logs.
+- Create, view, edit, and delete assets; manage multiple schedules and linked logs.
 - Create, view, edit, and delete vehicles; separate sold/retired vehicles; manage multiple service schedules.
 - Create general, asset, or vehicle logs; view, edit, delete, attach files, and request an AI summary.
 - Complete an asset/vehicle schedule by creating a routine log and advancing due values.
@@ -38,6 +38,8 @@ Completing a schedule creates a routine log and writes the updated embedded sche
 - Attachment objects: `households/{householdId}/maintenance/{targetType}/{targetId}/{attachmentId}-{sanitizedFileName}`.
 
 Shared types include `HomeAsset`, `HomeAssetSchedule`, `MaintenanceScheduleMode`, `Vehicle`, `VehicleServiceSchedule`, `MaintenanceLog`, and `MaintenanceAttachment`. Schedules carry a stable optional `id` and `mode` of `scheduled` or `checklist`. Legacy name-only schedules normalize to checklist presentation without a destructive migration. Legacy logs fall back from missing `title` to `item`, infer target type from IDs, and default missing log type to `other`.
+
+When an asset or vehicle is deleted, linked historical logs are preserved as general maintenance records. The original relationship is retained in optional `formerTargetType` and `formerTargetName` fields while the live `assetId` or `vehicleId` is removed.
 
 Deep links use `/maintenance?asset={id}`, `?vehicle={id}`, or `?log={id}`. Schedule reminders add a URL-encoded `schedule={ownerId}:{scheduleId}`. Valid links select the matching tab/detail and highlight schedules/logs; missing IDs select the relevant list tab and show a non-destructive status message. Legacy `targetType`/`targetId` links remain accepted.
 
@@ -71,18 +73,21 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 - Scheduled entries require a date/frequency or mileage due mechanism appropriate to their owner. Explicit checklist entries may contain only a name and never show a Complete action.
 - Notification IDs hash stable source type, persisted owner/schedule identity, and a `stateKey` containing due status plus meaningful due date/mileage. Transactions make overlapping synchronization idempotent.
 - Read/dismiss history remains on an existing reminder document. A changed due status/date/mileage produces a new identity; completing a schedule resolves the current cycle and advances the embedded schedule.
-- Vehicle/log deletion is blocked while direct attachments exist; home assets currently have no delete action.
+- Asset and vehicle deletion require confirmation and are blocked while direct attachments exist. Embedded schedules/checklists are deleted with the owning registry document.
+- Registry deletion reads current logs and notifications immediately before committing one batch. Linked logs become general history, and active schedule/warranty/registration/inspection notifications for the deleted record are resolved. Unrelated records are unchanged.
+- Log, attachment, and embedded schedule/checklist removal use target-specific confirmation dialogs; attachment Storage cleanup remains best effort under the existing metadata workflow.
 - Storage is deleted before metadata; a missing object is tolerated.
 - Loading uses one `Promise.all`; one denied/failed collection query moves the entire center to its error state.
 - Schedule completion uses independent parallel writes rather than a transaction, so partial completion is possible.
 - Slug-derived asset, vehicle, and ordinary log IDs can collide.
-- Deleting a vehicle leaves linked logs. New schedule notification source IDs use persisted schedule IDs; legacy schedules receive a deterministic compatibility key.
+- Deleted asset/vehicle deep links remain on the relevant list tab and report that the requested record is unavailable. New schedule notification source IDs use persisted schedule IDs; legacy schedules receive a deterministic compatibility key.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes; run a production build for broad UI/data-flow changes.
 - Run functions and rules validation when notification delivery or security changes.
-- Manually test canonical/invalid deep links, legacy logs/name-only schedules, checklist and date/mileage/combined scheduled entries, ten repeated/overlapping reminder syncs, dismissal persistence, completion advancement, partial failures, attachment allow/deny/delete behavior, inactive vehicles, and cross-household denial.
+- Manually test canonical/invalid/deleted-record deep links, legacy logs/name-only schedules, checklist and date/mileage/combined scheduled entries, ten repeated/overlapping reminder syncs, dismissal persistence, completion advancement, partial failures, attachment allow/deny/delete behavior, inactive vehicles, and cross-household denial.
+- For asset/vehicle/log/schedule/checklist/attachment deletion, test cancel and confirm, attachment blocking, persistence after reload, historical-log preservation, related reminder resolution, and unrelated-record survival.
 
 ## When This Document Must Be Updated
 
