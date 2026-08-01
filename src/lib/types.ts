@@ -137,7 +137,11 @@ export type HomeAssetCategory =
 
 export type HomeAssetStatus = 'active' | 'needs_attention' | 'retired';
 
+export type MaintenanceScheduleMode = 'scheduled' | 'checklist';
+
 export type HomeAssetSchedule = {
+  id?: string;
+  mode?: MaintenanceScheduleMode;
   scheduleName?: string;
   frequencyType?: 'days' | 'weeks' | 'months' | 'years';
   intervalValue?: number;
@@ -168,6 +172,8 @@ export type HomeAsset = {
 export type VehicleStatus = 'active' | 'needs_attention' | 'retired' | 'sold';
 
 export type VehicleServiceSchedule = {
+  id?: string;
+  mode?: MaintenanceScheduleMode;
   serviceName?: string;
   intervalMiles?: number;
   intervalMonths?: number;
@@ -353,6 +359,7 @@ export type BarcodeLibraryItem = {
   id: string; // barcode number
   name: string;
   imageUrl: string;
+  imagePath?: string;
   createdAt: string; // ISO String
 };
 
@@ -453,6 +460,7 @@ export type Notification = {
   href?: string;
   sourceType?: string;
   sourceId?: string;
+  stateKey?: string;
   targetUserUid?: string;
   targetUserEmail?: string;
   readBy: NotificationUserActionMap;

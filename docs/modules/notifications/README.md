@@ -28,7 +28,7 @@ This module owns household notification records, bell/history presentation, per-
 
 ## Architecture and Data Flow
 
-Feature code creates household notification documents with `buildNotificationDocument`. Bell and center queries parse legacy/current shapes, filter per-user target/read/dismiss state, and write only the current UID's map entries.
+Feature code creates household notification documents with `buildNotificationDocument`. Bell and center queries parse legacy/current shapes, merge duplicate semantic identities for presentation, filter per-user target/read/dismiss state, and write only the current UID's map entries. Mobile cards reserve horizontal pointer movement while preserving vertical pan, and track drag position synchronously so a fast swipe can dismiss reliably. Gesture capture ignores the desktop dismiss button so pointer capture cannot swallow its click.
 
 A Firestore create trigger resolves recipients, sends FCM, and removes invalid registration tokens. Foreground messages become toasts. `/api/sw` serves a Firebase Messaging service worker for background display and deep-link clicks.
 
@@ -38,7 +38,7 @@ A Firestore create trigger resolves recipients, sends FCM, and removes invalid r
 - Push tokens: `users/{email}.fcmTokens`.
 - Legacy rules remain for `users/{email}/notifications/{notificationId}`, but no current writer was found.
 
-`Notification`, `NotificationCategory`, `NotificationUserAction`, and `NotificationUserActionMap` define categories, source/deep-link fields, optional targeting, UID-keyed `readBy`/`dismissedBy`, and optional resolution metadata. `expiresAt` defaults to seven days after `createdAt`; parsing supplies that fallback for older records.
+`Notification`, `NotificationCategory`, `NotificationUserAction`, and `NotificationUserActionMap` define categories, source/deep-link fields, optional `stateKey`, targeting, UID-keyed `readBy`/`dismissedBy`, and optional resolution metadata. `expiresAt` defaults to seven days after `createdAt`; parsing supplies that fallback for older records.
 
 ## Authentication, Roles, and Security
 
@@ -71,9 +71,10 @@ Creation rules do not verify that optional target UID/email belongs to the house
 - Bell queries the last seven days, reads at most 30 records, and displays up to 10 active unresolved/undismissed items.
 - Center hides expired records and supports system/general records under broad filters, but has no dedicated system/general category filter.
 - Dismissal is per user and does not delete the record.
+- Deterministic maintenance identity is `(sourceType, sourceId, stateKey)`; `stateKey` changes only for a meaningful due-state/date/mileage cycle change.
+- Bell and center presentation deduplicate legacy documents with the same semantic source while merging read, dismiss, and resolution history.
 - Reminders are absent until a relevant client page runs its generator.
 - UID-only push targeting queries `users.uid`, while current profile creation does not consistently persist a `uid` field.
-- Expired deterministic maintenance documents can block same-ID recreation until TTL removes them.
 - Untargeted governance notifications broadcast through legacy member emails.
 
 ## Validation

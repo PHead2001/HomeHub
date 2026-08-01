@@ -207,7 +207,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                     <div className="absolute top-2 right-2 z-10">
                         <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                            <Button variant="secondary" size="icon" className="h-8 w-8 rounded-full bg-background/70 hover:bg-background/90" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                            <Button variant="secondary" size="icon" aria-label={`Open actions for ${pet.name}`} className="h-8 w-8 rounded-full bg-background/70 hover:bg-background/90" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                             <MoreVertical className="h-4 w-4" />
                             </Button>
                         </DropdownMenuTrigger>
@@ -227,6 +227,8 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                         src={pet.photoUrl}
                         alt={`Photo of ${pet.name}`}
                         fill
+                        sizes="(max-width: 768px) 100vw, 33vw"
+                        priority
                         className="object-cover rounded-t-lg"
                     />
                 </div>

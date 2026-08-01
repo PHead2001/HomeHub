@@ -188,6 +188,7 @@ function PantryItemDialog({
         <DialogContent>
             <DialogHeader>
                 <DialogTitle>Scan Barcode</DialogTitle>
+                <DialogDescription>Scan a product barcode to prefill this inventory item.</DialogDescription>
             </DialogHeader>
             <BarcodeScanner onScan={handleBarcodeScan} />
         </DialogContent>
@@ -221,13 +222,13 @@ function PantryItemDialog({
                 <FormItem>
                   <FormLabel>Quantity</FormLabel>
                    <div className="flex items-center gap-2">
-                        <Button type="button" variant="outline" size="icon" className="h-10 w-10" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 0}>
+                        <Button type="button" variant="outline" size="icon" aria-label="Decrease inventory quantity" className="h-10 w-10" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 0}>
                             <Minus className="h-4 w-4" />
                         </Button>
                         <FormControl>
                             <Input type="number" className="text-center" {...field} />
                         </FormControl>
-                         <Button type="button" variant="outline" size="icon" className="h-10 w-10" onClick={() => adjustQuantity(1)}>
+                         <Button type="button" variant="outline" size="icon" aria-label="Increase inventory quantity" className="h-10 w-10" onClick={() => adjustQuantity(1)}>
                             <Plus className="h-4 w-4" />
                         </Button>
                     </div>
@@ -532,6 +533,7 @@ function AddToListDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add &quot;{itemName}&quot; to a shopping list</DialogTitle>
+          <DialogDescription>Choose the destination list and quantity for this inventory item.</DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
@@ -975,10 +977,10 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
                                                         {item.expiryDate ? format(parseISO(item.expiryDate), 'PPP') : 'N/A'}
                                                     </TableCell>
                                                     <TableCell className="text-right p-2">
-                                                        <Button variant="ghost" size="icon" onClick={() => openEditDialog(item)}>
+                                                        <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} onClick={() => openEditDialog(item)}>
                                                             <Edit className="h-4 w-4" />
                                                         </Button>
-                                                        <Button variant="ghost" size="icon" onClick={() => setItemToDelete(item)}>
+                                                        <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => setItemToDelete(item)}>
                                                             <Trash2 className="h-4 w-4" />
                                                         </Button>
                                                     </TableCell>

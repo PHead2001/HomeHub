@@ -32,12 +32,20 @@ import type {
   MaintenanceAttachmentTargetType,
   MaintenanceLog,
   MaintenanceLogType,
+  MaintenanceScheduleMode,
   MaintenanceTargetType,
   Notification,
   Vehicle,
   VehicleServiceSchedule,
 } from '@/lib/types';
-import { buildNotificationDocument, createNotificationAction, isNotificationExpired, parseNotificationDoc } from '@/lib/notifications';
+import {
+  buildNotificationDocument,
+  createNotificationAction,
+  deduplicateNotifications,
+  getDeterministicNotificationId,
+  isNotificationExpired,
+  parseNotificationDoc,
+} from '@/lib/notifications';
 import { Badge } from '@/components/ui/badge';
 import {
   AlertDialog,
@@ -68,8 +76,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { cn, slugify } from '@/lib/utils';
-import { collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, setDoc, updateDoc } from 'firebase/firestore';
+import { cn, slugify, stableSlugify } from '@/lib/utils';
+import { collection, deleteDoc, doc, getDocs, orderBy, query, runTransaction, setDoc, updateDoc } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 
 const assetCategories = [
@@ -173,6 +181,7 @@ type LogPreset = {
 
 type AssetScheduleForm = {
   id: string;
+  mode: MaintenanceScheduleMode;
   scheduleName: string;
   frequencyType: HomeAssetSchedule['frequencyType'] | '';
   intervalValue: string;
@@ -182,6 +191,7 @@ type AssetScheduleForm = {
 
 type VehicleScheduleForm = {
   id: string;
+  mode: MaintenanceScheduleMode;
   serviceName: string;
   intervalMiles: string;
   intervalMonths: string;
@@ -218,6 +228,9 @@ type MaintenanceReminder = {
   targetId: string;
   sourceType: string;
   sourceId: string;
+  stateKey: string;
+  scheduleKey?: string;
+  legacySourceId?: string;
   dueDate?: string;
   dueMileage?: number;
   currentMileage?: number;
@@ -296,8 +309,25 @@ const emptyScheduleCompletionForm = (): ScheduleCompletionFormValues => ({
 
 const createLocalId = () => Math.random().toString(36).slice(2, 10);
 
+const isActionableAssetSchedule = (schedule: Pick<HomeAssetSchedule, 'frequencyType' | 'intervalValue' | 'nextDueDate'>) => {
+  return Boolean((schedule.frequencyType && schedule.intervalValue) || schedule.nextDueDate);
+};
+
+const isActionableVehicleSchedule = (schedule: Pick<VehicleServiceSchedule, 'intervalMiles' | 'intervalMonths' | 'nextDueMileage' | 'nextDueDate'>) => {
+  return Boolean(schedule.intervalMiles || schedule.intervalMonths || schedule.nextDueMileage || schedule.nextDueDate);
+};
+
+const getAssetScheduleMode = (schedule: HomeAssetSchedule): MaintenanceScheduleMode => {
+  return schedule.mode || (isActionableAssetSchedule(schedule) ? 'scheduled' : 'checklist');
+};
+
+const getVehicleScheduleMode = (schedule: VehicleServiceSchedule): MaintenanceScheduleMode => {
+  return schedule.mode || (isActionableVehicleSchedule(schedule) ? 'scheduled' : 'checklist');
+};
+
 const assetScheduleToForm = (schedule?: HomeAssetSchedule): AssetScheduleForm => ({
-  id: createLocalId(),
+  id: schedule?.id || createLocalId(),
+  mode: schedule ? getAssetScheduleMode(schedule) : 'scheduled',
   scheduleName: schedule?.scheduleName || '',
   frequencyType: schedule?.frequencyType || '',
   intervalValue: schedule?.intervalValue?.toString() || '',
@@ -306,7 +336,8 @@ const assetScheduleToForm = (schedule?: HomeAssetSchedule): AssetScheduleForm =>
 });
 
 const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule): VehicleScheduleForm => ({
-  id: createLocalId(),
+  id: schedule?.id || createLocalId(),
+  mode: schedule ? getVehicleScheduleMode(schedule) : 'scheduled',
   serviceName: schedule?.serviceName || '',
   intervalMiles: schedule?.intervalMiles?.toString() || '',
   intervalMonths: schedule?.intervalMonths?.toString() || '',
@@ -473,9 +504,12 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
 
   assets.forEach((asset) => {
     asset.schedules?.forEach((schedule, index) => {
+      if (getAssetScheduleMode(schedule) === 'checklist') return;
       const status = getDateReminderStatus(schedule.nextDueDate);
       if (!status) return;
       const title = schedule.scheduleName || 'Scheduled maintenance';
+      const sourceId = `${asset.id}:${schedule.id || `legacy-${index}-${stableSlugify(title)}`}`;
+      const stateKey = `${status}|${schedule.nextDueDate || 'no-date'}`;
       reminders.push({
         id: `asset-schedule-${asset.id}-${index}-${status}`,
         group: 'scheduled',
@@ -485,15 +519,19 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
         targetType: 'home_asset',
         targetId: asset.id,
         sourceType: 'maintenance_asset_schedule',
-        sourceId: `${asset.id}-${index}`,
+        sourceId,
+        stateKey,
+        scheduleKey: sourceId,
+        legacySourceId: `${asset.id}-${index}`,
         dueDate: schedule.nextDueDate,
         message: `${title} for ${asset.name} is ${humanizeLabel(status).toLowerCase()}.`,
-        deepLink: `/maintenance?targetType=home_asset&targetId=${asset.id}`,
+        deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}&schedule=${encodeURIComponent(sourceId)}`,
       });
     });
 
     const warrantyStatus = getDateReminderStatus(asset.warrantyExpiration);
     if (warrantyStatus && warrantyStatus !== 'upcoming') {
+      const stateKey = `${warrantyStatus}|${asset.warrantyExpiration || 'no-date'}`;
       reminders.push({
         id: `asset-warranty-${asset.id}-${warrantyStatus}`,
         group: 'warranty',
@@ -504,15 +542,17 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
         targetId: asset.id,
         sourceType: 'maintenance_asset_warranty',
         sourceId: asset.id,
+        stateKey,
         dueDate: asset.warrantyExpiration,
         message: `${asset.name} warranty is ${humanizeLabel(warrantyStatus).toLowerCase()}.`,
-        deepLink: `/maintenance?targetType=home_asset&targetId=${asset.id}`,
+        deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}`,
       });
     }
   });
 
   vehicles.forEach((vehicle) => {
     vehicle.serviceSchedules?.forEach((schedule, index) => {
+      if (getVehicleScheduleMode(schedule) === 'checklist') return;
       const dateStatus = getDateReminderStatus(schedule.nextDueDate);
       const mileageStatus = getMileageReminderStatus(schedule.nextDueMileage, vehicle.currentMileage);
       const status = dateStatus === 'overdue' || mileageStatus === 'overdue'
@@ -525,6 +565,8 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
 
       if (!status) return;
       const title = schedule.serviceName || 'Scheduled service';
+      const sourceId = `${vehicle.id}:${schedule.id || `legacy-${index}-${stableSlugify(title)}`}`;
+      const stateKey = `${status}|${schedule.nextDueDate || 'no-date'}|${schedule.nextDueMileage ?? 'no-mileage'}`;
       reminders.push({
         id: `vehicle-service-${vehicle.id}-${index}-${status}`,
         group: 'vehicle_service',
@@ -534,12 +576,15 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
         targetType: 'vehicle',
         targetId: vehicle.id,
         sourceType: 'maintenance_vehicle_service',
-        sourceId: `${vehicle.id}-${index}`,
+        sourceId,
+        stateKey,
+        scheduleKey: sourceId,
+        legacySourceId: `${vehicle.id}-${index}`,
         dueDate: schedule.nextDueDate,
         dueMileage: schedule.nextDueMileage,
         currentMileage: vehicle.currentMileage,
         message: `${title} for ${vehicle.nickname} is ${humanizeLabel(status).toLowerCase()}.`,
-        deepLink: `/maintenance?targetType=vehicle&targetId=${vehicle.id}`,
+        deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}&schedule=${encodeURIComponent(sourceId)}`,
       });
     });
 
@@ -549,6 +594,7 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
     ] as const).forEach(([title, dueDate, sourceType]) => {
       const status = getDateReminderStatus(dueDate);
       if (!status || status === 'upcoming') return;
+      const stateKey = `${status}|${dueDate || 'no-date'}`;
       reminders.push({
         id: `${sourceType}-${vehicle.id}-${status}`,
         group: 'vehicle_document',
@@ -559,9 +605,10 @@ const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): Ma
         targetId: vehicle.id,
         sourceType,
         sourceId: vehicle.id,
+        stateKey,
         dueDate,
         message: `${title} for ${vehicle.nickname} is ${humanizeLabel(status).toLowerCase()}.`,
-        deepLink: `/maintenance?targetType=vehicle&targetId=${vehicle.id}`,
+        deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`,
       });
     });
   });
@@ -704,7 +751,7 @@ function AttachmentPanel({
                   <Button asChild variant="ghost" size="icon" className="h-8 w-8">
                     <a href={attachment.downloadUrl} target="_blank" rel="noreferrer">
                       <Download className="h-4 w-4" />
-                      <span className="sr-only">Open attachment</span>
+                      <span className="sr-only">Open attachment {attachment.fileName}</span>
                     </a>
                   </Button>
                 )}
@@ -714,6 +761,7 @@ function AttachmentPanel({
                   className="h-8 w-8 text-destructive hover:text-destructive"
                   disabled={deletingId === attachment.id}
                   onClick={() => onDelete(attachment)}
+                  aria-label={`Delete attachment ${attachment.fileName}`}
                 >
                   {deletingId === attachment.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                   <span className="sr-only">Delete attachment</span>
@@ -818,6 +866,7 @@ function LogList({
   onDelete,
   onUploadAttachment,
   onDeleteAttachment,
+  highlightedLogId,
 }: {
   logs: MaintenanceLog[];
   assets: HomeAsset[];
@@ -832,6 +881,7 @@ function LogList({
   onDelete: (log: MaintenanceLog) => void;
   onUploadAttachment: (targetType: MaintenanceAttachmentTargetType, targetId: string, category: MaintenanceAttachmentCategory, file: File) => void;
   onDeleteAttachment: (attachment: MaintenanceAttachment) => void;
+  highlightedLogId?: string | null;
 }) {
   if (logs.length === 0) {
     return <EmptyState title="No logs yet" description="Maintenance records will appear here after they are added." />;
@@ -840,7 +890,12 @@ function LogList({
   return (
     <div className="space-y-3">
       {logs.map((log) => (
-        <Card key={log.id}>
+        <Card
+          key={log.id}
+          id={`maintenance-log-${log.id}`}
+          data-testid={`maintenance-log-${log.id}`}
+          className={cn(highlightedLogId === log.id && 'ring-2 ring-primary')}
+        >
           <CardContent className="p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
@@ -855,13 +910,11 @@ function LogList({
                 {typeof log.cost === 'number' && (
                   <Badge variant="outline" className="w-fit">{formatCurrency(log.cost)}</Badge>
                 )}
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(log)}>
+                <Button variant="ghost" size="icon" aria-label={`Edit maintenance log ${log.title}`} className="h-8 w-8" onClick={() => onEdit(log)}>
                   <Edit className="h-4 w-4" />
-                  <span className="sr-only">Edit log</span>
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(log)}>
+                <Button variant="ghost" size="icon" aria-label={`Delete maintenance log ${log.title}`} className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(log)}>
                   <Trash2 className="h-4 w-4" />
-                  <span className="sr-only">Delete log</span>
                 </Button>
               </div>
             </div>
@@ -932,6 +985,10 @@ export function MaintenanceLogClient() {
   const [activeTab, setActiveTab] = useState('overview');
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
+  const [highlightedScheduleKey, setHighlightedScheduleKey] = useState<string | null>(null);
+  const [deepLinkNotice, setDeepLinkNotice] = useState<string | null>(null);
+  const [locationSearch, setLocationSearch] = useState('');
   const [assetDialogOpen, setAssetDialogOpen] = useState(false);
   const [vehicleDialogOpen, setVehicleDialogOpen] = useState(false);
   const [logDialogOpen, setLogDialogOpen] = useState(false);
@@ -943,6 +1000,8 @@ export function MaintenanceLogClient() {
   const [scheduleCompletionTarget, setScheduleCompletionTarget] = useState<ScheduleCompletionTarget | null>(null);
   const [assetScheduleForms, setAssetScheduleForms] = useState<AssetScheduleForm[]>([]);
   const [vehicleScheduleForms, setVehicleScheduleForms] = useState<VehicleScheduleForm[]>([]);
+  const [assetScheduleErrors, setAssetScheduleErrors] = useState<Record<string, string>>({});
+  const [vehicleScheduleErrors, setVehicleScheduleErrors] = useState<Record<string, string>>({});
   const [showInactiveVehicles, setShowInactiveVehicles] = useState(false);
   const [uploadingAttachmentTarget, setUploadingAttachmentTarget] = useState<string | null>(null);
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string | null>(null);
@@ -1007,7 +1066,7 @@ export function MaintenanceLogClient() {
       setVehicles(vehicleSnap.docs.map((vehicleDoc) => ({ id: vehicleDoc.id, ...vehicleDoc.data() } as Vehicle)));
       setLogs(logSnap.docs.map((logDoc) => ({ id: logDoc.id, ...logDoc.data() } as MaintenanceLog)));
       setAttachments(attachmentSnap.docs.map((attachmentDoc) => ({ id: attachmentDoc.id, ...attachmentDoc.data() } as MaintenanceAttachment)));
-      setNotifications(notificationSnap.docs.map(parseNotificationDoc));
+      setNotifications(deduplicateNotifications(notificationSnap.docs.map(parseNotificationDoc)));
     } catch (fetchError) {
       console.error('Error fetching maintenance data:', fetchError);
       setError('Could not load maintenance data.');
@@ -1031,20 +1090,62 @@ export function MaintenanceLogClient() {
   }, [currentUser?.householdId, fetchMaintenanceData]);
 
   useEffect(() => {
-    const searchParams = new URLSearchParams(window.location.search);
-    const targetType = searchParams.get('targetType');
-    const targetId = searchParams.get('targetId');
-    if (!targetType || !targetId) return;
-
-    if (targetType === 'home_asset') {
-      setSelectedAssetId(targetId);
-      setActiveTab('assets');
-    }
-    if (targetType === 'vehicle') {
-      setSelectedVehicleId(targetId);
-      setActiveTab('vehicles');
-    }
+    const syncLocation = () => setLocationSearch(window.location.search);
+    syncLocation();
+    window.addEventListener('popstate', syncLocation);
+    return () => window.removeEventListener('popstate', syncLocation);
   }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    if (!locationSearch) {
+      setDeepLinkNotice(null);
+      setHighlightedLogId(null);
+      setHighlightedScheduleKey(null);
+      return;
+    }
+    const searchParams = new URLSearchParams(locationSearch);
+    const assetId = searchParams.get('asset') || (searchParams.get('targetType') === 'home_asset' ? searchParams.get('targetId') : null);
+    const vehicleId = searchParams.get('vehicle') || (searchParams.get('targetType') === 'vehicle' ? searchParams.get('targetId') : null);
+    const logId = searchParams.get('log');
+    const scheduleKey = searchParams.get('schedule');
+
+    setDeepLinkNotice(null);
+    setHighlightedLogId(null);
+    setHighlightedScheduleKey(scheduleKey);
+
+    if (assetId) {
+      setActiveTab('assets');
+      if (assets.some((asset) => asset.id === assetId)) {
+        setSelectedAssetId(assetId);
+        if (scheduleKey) requestAnimationFrame(() => document.getElementById(`maintenance-schedule-${stableSlugify(scheduleKey)}`)?.scrollIntoView({ block: 'center' }));
+      } else {
+        setDeepLinkNotice('The requested home asset is no longer available.');
+      }
+      return;
+    }
+
+    if (vehicleId) {
+      setActiveTab('vehicles');
+      if (vehicles.some((vehicle) => vehicle.id === vehicleId)) {
+        setSelectedVehicleId(vehicleId);
+        if (scheduleKey) requestAnimationFrame(() => document.getElementById(`maintenance-schedule-${stableSlugify(scheduleKey)}`)?.scrollIntoView({ block: 'center' }));
+      } else {
+        setDeepLinkNotice('The requested vehicle is no longer available.');
+      }
+      return;
+    }
+
+    if (logId) {
+      setActiveTab('logs');
+      if (logs.some((log) => log.id === logId)) {
+        setHighlightedLogId(logId);
+        requestAnimationFrame(() => document.getElementById(`maintenance-log-${logId}`)?.scrollIntoView({ block: 'center' }));
+      } else {
+        setDeepLinkNotice('The requested maintenance log is no longer available.');
+      }
+    }
+  }, [assets, loading, locationSearch, logs, vehicles]);
 
   const reminders = useMemo(() => buildMaintenanceReminders(assets, vehicles), [assets, vehicles]);
 
@@ -1095,6 +1196,9 @@ export function MaintenanceLogClient() {
   }, [logs, selectedVehicle]);
 
   const openReminderTarget = (reminder: MaintenanceReminder) => {
+    window.history.pushState({}, '', reminder.deepLink);
+    setLocationSearch(new URL(reminder.deepLink, window.location.origin).search);
+    setHighlightedScheduleKey(reminder.scheduleKey || null);
     if (reminder.targetType === 'home_asset') {
       setSelectedAssetId(reminder.targetId);
       setActiveTab('assets');
@@ -1116,23 +1220,35 @@ export function MaintenanceLogClient() {
       if (!notificationsCollection) return;
 
       await Promise.all(actionableReminders.map(async (reminder) => {
-        const notificationId = slugify(`${reminder.sourceType}-${reminder.sourceId}-${reminder.status}`);
+        const notificationId = getDeterministicNotificationId({
+          sourceType: reminder.sourceType,
+          sourceId: reminder.sourceId,
+          stateKey: reminder.stateKey,
+        });
         const existingNotification = notifications.find((notification) => notification.id === notificationId);
-        if (existingNotification && !isNotificationExpired(existingNotification)) return;
+        const legacyNotification = notifications.find((notification) => (
+          notification.sourceType === reminder.sourceType
+          && notification.sourceId === `${reminder.legacySourceId || reminder.sourceId}:${reminder.status}`
+          && !notification.stateKey
+          && !isNotificationExpired(notification)
+        ));
+        if ((existingNotification && !isNotificationExpired(existingNotification)) || legacyNotification) return;
 
         const notificationRef = doc(notificationsCollection, notificationId);
-        const notificationSnap = await getDoc(notificationRef);
-        if (notificationSnap.exists()) return;
-
-        await setDoc(notificationRef, buildNotificationDocument({
-          householdId: currentUser.householdId!,
-          category: 'maintenance',
-          title: reminder.title,
-          message: reminder.message,
-          deepLink: reminder.deepLink,
-          sourceType: reminder.sourceType,
-          sourceId: `${reminder.sourceId}:${reminder.status}`,
-        }));
+        await runTransaction(db, async (transaction) => {
+          const notificationSnap = await transaction.get(notificationRef);
+          if (notificationSnap.exists()) return;
+          transaction.set(notificationRef, buildNotificationDocument({
+            householdId: currentUser.householdId!,
+            category: 'maintenance',
+            title: reminder.title,
+            message: reminder.message,
+            deepLink: reminder.deepLink,
+            sourceType: reminder.sourceType,
+            sourceId: reminder.sourceId,
+            stateKey: reminder.stateKey,
+          }));
+        });
       }));
     };
 
@@ -1218,18 +1334,24 @@ export function MaintenanceLogClient() {
     }
   };
 
-  const resolveMaintenanceNotifications = async (sourceType: string, sourceId: string) => {
+  const resolveMaintenanceNotifications = async (sourceType: string, sourceId: string, legacySourceId?: string) => {
     if (!currentUser?.householdId) return;
     const notificationsCollection = getCollectionRef('notifications');
     if (!notificationsCollection) return;
 
     const action = createNotificationAction(currentUser);
-    await Promise.all((['due_soon', 'due_today', 'overdue'] as const).map(async (status) => {
-      const notificationRef = doc(notificationsCollection, slugify(`${sourceType}-${sourceId}-${status}`));
-      const notificationSnap = await getDoc(notificationRef);
-      if (!notificationSnap.exists() || notificationSnap.data().resolvedAt) return;
+    const notificationSnap = await getDocs(notificationsCollection);
+    const matchingNotifications = notificationSnap.docs.filter((notificationDoc) => {
+      const data = notificationDoc.data();
+      if (data.sourceType !== sourceType || data.resolvedAt) return false;
+      if (data.sourceId === sourceId) return true;
+      return legacySourceId
+        ? (['due_soon', 'due_today', 'overdue'] as const).some((status) => data.sourceId === `${legacySourceId}:${status}`)
+        : false;
+    });
 
-      await updateDoc(notificationRef, {
+    await Promise.all(matchingNotifications.map(async (notificationDoc) => {
+      await updateDoc(notificationDoc.ref, {
         resolvedAt: new Date(),
         resolvedBy: action,
       });
@@ -1272,6 +1394,7 @@ export function MaintenanceLogClient() {
       nextDueDate: '',
     } : emptyAssetForm);
     setAssetScheduleForms(asset?.schedules?.map(assetScheduleToForm) || []);
+    setAssetScheduleErrors({});
     setAssetDialogOpen(true);
   };
 
@@ -1302,6 +1425,7 @@ export function MaintenanceLogClient() {
       nextDueDate: '',
     } : emptyVehicleForm);
     setVehicleScheduleForms(vehicle?.serviceSchedules?.map(vehicleScheduleToForm) || []);
+    setVehicleScheduleErrors({});
     setVehicleDialogOpen(true);
   };
 
@@ -1331,10 +1455,16 @@ export function MaintenanceLogClient() {
     setAssetScheduleForms(prev => prev.map(schedule => (
       schedule.id === id ? { ...schedule, [field]: value } : schedule
     )));
+    setAssetScheduleErrors(prev => ({ ...prev, [id]: '' }));
   };
 
   const removeAssetSchedule = (id: string) => {
     setAssetScheduleForms(prev => prev.filter(schedule => schedule.id !== id));
+    setAssetScheduleErrors(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const addVehicleSchedule = () => {
@@ -1345,10 +1475,16 @@ export function MaintenanceLogClient() {
     setVehicleScheduleForms(prev => prev.map(schedule => (
       schedule.id === id ? { ...schedule, [field]: value } : schedule
     )));
+    setVehicleScheduleErrors(prev => ({ ...prev, [id]: '' }));
   };
 
   const removeVehicleSchedule = (id: string) => {
     setVehicleScheduleForms(prev => prev.filter(schedule => schedule.id !== id));
+    setVehicleScheduleErrors(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const getScheduleCompletionName = (target: ScheduleCompletionTarget) => {
@@ -1384,11 +1520,26 @@ export function MaintenanceLogClient() {
 
     const now = new Date().toISOString();
     const assetId = editingAsset?.id || slugify(values.name);
+    const nextAssetScheduleErrors = Object.fromEntries(assetScheduleForms.flatMap((schedule) => {
+      if (!schedule.scheduleName.trim()) return [[schedule.id, 'Enter a name for this maintenance item.']];
+      if (schedule.mode === 'checklist') return [];
+      if (!(schedule.frequencyType && toNumber(schedule.intervalValue)) && !schedule.nextDueDate) {
+        return [[schedule.id, 'Scheduled maintenance needs a frequency interval or next due date.']];
+      }
+      return [];
+    }));
+    if (Object.keys(nextAssetScheduleErrors).length > 0) {
+      setAssetScheduleErrors(nextAssetScheduleErrors);
+      toast({ variant: 'destructive', title: 'Check maintenance schedules', description: 'Complete the highlighted schedule fields before saving.' });
+      return;
+    }
     const schedules = assetScheduleForms.reduce<HomeAssetSchedule[]>((nextSchedules, schedule) => {
       const scheduleName = trimOptional(schedule.scheduleName);
       if (!scheduleName) return nextSchedules;
 
       nextSchedules.push({
+        id: schedule.id,
+        mode: schedule.mode,
         scheduleName,
         frequencyType: schedule.frequencyType || undefined,
         intervalValue: toNumber(schedule.intervalValue),
@@ -1435,11 +1586,30 @@ export function MaintenanceLogClient() {
 
     const now = new Date().toISOString();
     const vehicleId = editingVehicle?.id || slugify(values.nickname);
+    const nextVehicleScheduleErrors = Object.fromEntries(vehicleScheduleForms.flatMap((schedule) => {
+      if (!schedule.serviceName.trim()) return [[schedule.id, 'Enter a name for this service item.']];
+      if (schedule.mode === 'checklist') return [];
+      const hasDueMechanism = Boolean(
+        toNumber(schedule.intervalMiles)
+        || toNumber(schedule.intervalMonths)
+        || toNumber(schedule.nextDueMileage)
+        || schedule.nextDueDate
+      );
+      if (!hasDueMechanism) return [[schedule.id, 'Scheduled service needs a date, mileage, or interval.']];
+      return [];
+    }));
+    if (Object.keys(nextVehicleScheduleErrors).length > 0) {
+      setVehicleScheduleErrors(nextVehicleScheduleErrors);
+      toast({ variant: 'destructive', title: 'Check service schedules', description: 'Complete the highlighted schedule fields before saving.' });
+      return;
+    }
     const serviceSchedules = vehicleScheduleForms.reduce<VehicleServiceSchedule[]>((schedules, schedule) => {
       const serviceName = trimOptional(schedule.serviceName);
       if (!serviceName) return schedules;
 
       schedules.push({
+        id: schedule.id,
+        mode: schedule.mode,
         serviceName,
         intervalMiles: toNumber(schedule.intervalMiles),
         intervalMonths: toNumber(schedule.intervalMonths),
@@ -1580,7 +1750,11 @@ export function MaintenanceLogClient() {
             schedules,
             updatedAt: now,
           })),
-          resolveMaintenanceNotifications('maintenance_asset_schedule', `${id}-${scheduleIndex}`),
+          resolveMaintenanceNotifications(
+            'maintenance_asset_schedule',
+            `${id}:${schedule.id || `legacy-${scheduleIndex}-${stableSlugify(schedule.scheduleName || 'scheduled-maintenance')}`}`,
+            `${id}-${scheduleIndex}`
+          ),
         ]);
         setSelectedAssetId(id);
       } else {
@@ -1604,7 +1778,11 @@ export function MaintenanceLogClient() {
             serviceSchedules: schedules,
             updatedAt: now,
           })),
-          resolveMaintenanceNotifications('maintenance_vehicle_service', `${id}-${scheduleIndex}`),
+          resolveMaintenanceNotifications(
+            'maintenance_vehicle_service',
+            `${id}:${schedule.id || `legacy-${scheduleIndex}-${stableSlugify(schedule.serviceName || 'scheduled-service')}`}`,
+            `${id}-${scheduleIndex}`
+          ),
         ]);
         setSelectedVehicleId(id);
       }
@@ -1751,6 +1929,13 @@ export function MaintenanceLogClient() {
             <TabsTrigger value="logs">Logs</TabsTrigger>
           </TabsList>
 
+          {deepLinkNotice && (
+            <div role="status" className="mt-4 flex items-center gap-2 rounded-md border border-border bg-muted/40 p-3 text-sm">
+              <AlertCircle className="h-4 w-4 text-muted-foreground" />
+              {deepLinkNotice}
+            </div>
+          )}
+
           <TabsContent value="overview" className="space-y-6 pt-4">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <SummaryCard title="Home Assets" value={assets.length.toString()} detail="Registered household assets" icon={Home} />
@@ -1887,20 +2072,34 @@ export function MaintenanceLogClient() {
                         <div className="space-y-2">
                           <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
                           {selectedAsset.schedules.map((schedule, index) => (
-                            <div key={`${schedule.scheduleName}-${index}`} className="rounded-lg border p-3">
+                            <div
+                              key={`${schedule.scheduleName}-${index}`}
+                              id={`maintenance-schedule-${stableSlugify(`${selectedAsset.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.scheduleName || 'scheduled-maintenance')}`}`)}`}
+                              data-testid={`asset-schedule-${schedule.id || index}`}
+                              className={cn(
+                                'rounded-lg border p-3',
+                                highlightedScheduleKey === `${selectedAsset.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.scheduleName || 'scheduled-maintenance')}`}` && 'ring-2 ring-primary'
+                              )}
+                            >
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div>
                                   <p className="text-sm font-medium">{schedule.scheduleName || 'Scheduled maintenance'}</p>
-                                  <p className="text-sm text-muted-foreground">
-                                    Next due {formatDate(schedule.nextDueDate)}
-                                  </p>
-                                  {schedule.frequencyType && schedule.intervalValue && (
-                                    <p className="text-xs text-muted-foreground">
-                                      Every {schedule.intervalValue} {schedule.frequencyType}
-                                    </p>
+                                  {getAssetScheduleMode(schedule) === 'checklist' ? (
+                                    <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
+                                  ) : (
+                                    <>
+                                      <p className="text-sm text-muted-foreground">
+                                        {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'Next date will be set when completed'}
+                                      </p>
+                                      {schedule.frequencyType && schedule.intervalValue && (
+                                        <p className="text-xs text-muted-foreground">
+                                          Every {schedule.intervalValue} {schedule.frequencyType}
+                                        </p>
+                                      )}
+                                    </>
                                   )}
                                 </div>
-                                <Button
+                                {getAssetScheduleMode(schedule) === 'scheduled' && <Button
                                   type="button"
                                   variant="outline"
                                   size="sm"
@@ -1912,7 +2111,7 @@ export function MaintenanceLogClient() {
                                   })}
                                 >
                                   Complete
-                                </Button>
+                                </Button>}
                               </div>
                             </div>
                           ))}
@@ -2069,21 +2268,35 @@ export function MaintenanceLogClient() {
                         <div className="space-y-2">
                           <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
                           {selectedVehicle.serviceSchedules.map((schedule, index) => (
-                            <div key={`${schedule.serviceName}-${index}`} className="rounded-lg border p-3">
+                            <div
+                              key={`${schedule.serviceName}-${index}`}
+                              id={`maintenance-schedule-${stableSlugify(`${selectedVehicle.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.serviceName || 'scheduled-service')}`}`)}`}
+                              data-testid={`vehicle-schedule-${schedule.id || index}`}
+                              className={cn(
+                                'rounded-lg border p-3',
+                                highlightedScheduleKey === `${selectedVehicle.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.serviceName || 'scheduled-service')}`}` && 'ring-2 ring-primary'
+                              )}
+                            >
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div>
                                   <p className="text-sm font-medium">{schedule.serviceName || 'Scheduled maintenance'}</p>
-                                  <p className="text-sm text-muted-foreground">
-                                    Next due {formatDate(schedule.nextDueDate)}
-                                    {typeof schedule.nextDueMileage === 'number' ? ` or ${schedule.nextDueMileage.toLocaleString()} miles` : ''}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    {schedule.intervalMiles ? `Every ${schedule.intervalMiles.toLocaleString()} miles` : ''}
-                                    {schedule.intervalMiles && schedule.intervalMonths ? ' / ' : ''}
-                                    {schedule.intervalMonths ? `Every ${schedule.intervalMonths} months` : ''}
-                                  </p>
+                                  {getVehicleScheduleMode(schedule) === 'checklist' ? (
+                                    <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
+                                  ) : (
+                                    <>
+                                      <p className="text-sm text-muted-foreground">
+                                        {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'No next date set'}
+                                        {typeof schedule.nextDueMileage === 'number' ? `${schedule.nextDueDate ? ' or ' : 'Next due '}${schedule.nextDueMileage.toLocaleString()} miles` : ''}
+                                      </p>
+                                      <p className="text-xs text-muted-foreground">
+                                        {schedule.intervalMiles ? `Every ${schedule.intervalMiles.toLocaleString()} miles` : ''}
+                                        {schedule.intervalMiles && schedule.intervalMonths ? ' / ' : ''}
+                                        {schedule.intervalMonths ? `Every ${schedule.intervalMonths} months` : ''}
+                                      </p>
+                                    </>
+                                  )}
                                 </div>
-                                <Button
+                                {getVehicleScheduleMode(schedule) === 'scheduled' && <Button
                                   type="button"
                                   variant="outline"
                                   size="sm"
@@ -2095,7 +2308,7 @@ export function MaintenanceLogClient() {
                                   })}
                                 >
                                   Complete
-                                </Button>
+                                </Button>}
                               </div>
                             </div>
                           ))}
@@ -2221,6 +2434,7 @@ export function MaintenanceLogClient() {
               onDelete={setLogToDelete}
               onUploadAttachment={uploadAttachment}
               onDeleteAttachment={deleteAttachment}
+              highlightedLogId={highlightedLogId}
             />
           </TabsContent>
         </Tabs>
@@ -2296,7 +2510,7 @@ export function MaintenanceLogClient() {
                       {assetScheduleForms.map((schedule, index) => (
                         <div key={schedule.id} className="rounded-md border p-3">
                           <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium">Scheduled maintenance #{index + 1}</p>
+                            <p className="text-sm font-medium">Maintenance item #{index + 1}</p>
                             <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeAssetSchedule(schedule.id)}>
                               Remove
                             </Button>
@@ -2312,6 +2526,21 @@ export function MaintenanceLogClient() {
                                 />
                               </FormControl>
                             </FormItem>
+                            <FormItem>
+                              <FormLabel>Maintenance Type</FormLabel>
+                              <Select
+                                onValueChange={(value) => updateAssetSchedule(schedule.id, 'mode', value)}
+                                value={schedule.mode}
+                              >
+                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                                <SelectContent>
+                                  <SelectItem value="scheduled">Scheduled maintenance</SelectItem>
+                                  <SelectItem value="checklist">Unscheduled checklist</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </FormItem>
+                            {schedule.mode === 'scheduled' && (
+                              <>
                             <FormItem>
                               <FormLabel>Frequency Type</FormLabel>
                               <Select
@@ -2357,7 +2586,12 @@ export function MaintenanceLogClient() {
                                 />
                               </FormControl>
                             </FormItem>
+                              </>
+                            )}
                           </div>
+                          {assetScheduleErrors[schedule.id] && (
+                            <p role="alert" className="mt-3 text-sm font-medium text-destructive">{assetScheduleErrors[schedule.id]}</p>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2452,7 +2686,7 @@ export function MaintenanceLogClient() {
                       {vehicleScheduleForms.map((schedule, index) => (
                         <div key={schedule.id} className="rounded-md border p-3">
                           <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium">Scheduled maintenance #{index + 1}</p>
+                            <p className="text-sm font-medium">Service item #{index + 1}</p>
                             <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeVehicleSchedule(schedule.id)}>
                               Remove
                             </Button>
@@ -2468,6 +2702,21 @@ export function MaintenanceLogClient() {
                                 />
                               </FormControl>
                             </FormItem>
+                            <FormItem>
+                              <FormLabel>Maintenance Type</FormLabel>
+                              <Select
+                                onValueChange={(value) => updateVehicleSchedule(schedule.id, 'mode', value)}
+                                value={schedule.mode}
+                              >
+                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                                <SelectContent>
+                                  <SelectItem value="scheduled">Scheduled maintenance</SelectItem>
+                                  <SelectItem value="checklist">Unscheduled checklist</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </FormItem>
+                            {schedule.mode === 'scheduled' && (
+                              <>
                             <FormItem>
                               <FormLabel>Interval Miles</FormLabel>
                               <FormControl>
@@ -2532,7 +2781,12 @@ export function MaintenanceLogClient() {
                                 />
                               </FormControl>
                             </FormItem>
+                              </>
+                            )}
                           </div>
+                          {vehicleScheduleErrors[schedule.id] && (
+                            <p role="alert" className="mt-3 text-sm font-medium text-destructive">{vehicleScheduleErrors[schedule.id]}</p>
+                          )}
                         </div>
                       ))}
                     </div>

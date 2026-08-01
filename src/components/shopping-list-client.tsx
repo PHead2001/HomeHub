@@ -7,6 +7,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
+import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -34,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from './ui/form';
 import { Input } from './ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
@@ -149,7 +151,7 @@ function ListDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="font-headline">{listToEdit ? 'Edit List' : 'Create New List'}</DialogTitle>
-           {!listToEdit && <DialogDescription>Choose a template or create a custom list.</DialogDescription>}
+           <DialogDescription>{listToEdit ? `Update ${listToEdit.name}.` : 'Choose a template or create a custom list.'}</DialogDescription>
         </DialogHeader>
         
         {!showCustomForm && !listToEdit ? (
@@ -187,7 +189,7 @@ function ListDialog({
                             {presetIcons.slice(0,10).map(iconName => { // First row
                                 const Icon = getLucideIcon(iconName, HelpCircle);
                                 return (
-                                    <Button key={iconName} type="button" variant="outline" className={cn("h-12", selectedIconName === iconName && "ring-2 ring-primary")} onClick={() => setValue('icon', iconName, { shouldValidate: true })}>
+                                    <Button key={iconName} type="button" variant="outline" aria-label={`Use ${iconName} list icon`} className={cn("h-12", selectedIconName === iconName && "ring-2 ring-primary")} onClick={() => setValue('icon', iconName, { shouldValidate: true })}>
                                         <Icon />
                                     </Button>
                                 )
@@ -197,7 +199,7 @@ function ListDialog({
                             {presetIcons.slice(10,20).map(iconName => { // Second row
                                 const Icon = getLucideIcon(iconName, HelpCircle);
                                 return (
-                                    <Button key={iconName} type="button" variant="outline" className={cn("h-12", selectedIconName === iconName && "ring-2 ring-primary")} onClick={() => setValue('icon', iconName, { shouldValidate: true })}>
+                                    <Button key={iconName} type="button" variant="outline" aria-label={`Use ${iconName} list icon`} className={cn("h-12", selectedIconName === iconName && "ring-2 ring-primary")} onClick={() => setValue('icon', iconName, { shouldValidate: true })}>
                                         <Icon />
                                     </Button>
                                 )
@@ -256,7 +258,7 @@ function ListCard({ list, onSelect, onEdit, onDelete }: { list: ShoppingList, on
                 </div>
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical /></Button>
+                        <Button variant="ghost" size="icon" aria-label={`Open actions for ${list.name}`} className="h-8 w-8"><MoreVertical /></Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent>
                         <DropdownMenuItem onClick={onEdit}><Edit className="mr-2" /> Edit</DropdownMenuItem>
@@ -266,7 +268,7 @@ function ListCard({ list, onSelect, onEdit, onDelete }: { list: ShoppingList, on
             </div>
         </CardHeader>
         <CardContent>
-             <Button className="w-full" onClick={onSelect} style={{ backgroundColor: cardColor }}>Open List</Button>
+             <Button className="w-full" aria-label={`Open ${list.name}`} onClick={onSelect} style={{ backgroundColor: cardColor }}>Open List</Button>
         </CardContent>
     </Card>
   )
@@ -276,6 +278,7 @@ function ListCard({ list, onSelect, onEdit, onDelete }: { list: ShoppingList, on
 const itemSchema = z.object({
   name: z.string().min(1, 'Item name is required.'),
   quantity: z.coerce.number().min(1, 'Quantity must be at least 1.'),
+  category: z.string().optional(),
 });
 
 function ManageCategoriesDialog({ categories, setCategories, householdId, listId, onUpdate }: { categories: ShoppingListCategory[], setCategories: React.Dispatch<React.SetStateAction<ShoppingListCategory[]>>, householdId: string, listId: string, onUpdate: () => void }) {
@@ -305,7 +308,7 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
   return (
     <Dialog open={isCategoryDialogOpen} onOpenChange={setIsCategoryDialogOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline"><Settings className="mr-2 h-4 w-4" /> Manage Categories</Button>
+        <Button variant="outline" className="w-full sm:w-auto"><Settings className="mr-2 h-4 w-4" /> Manage Categories</Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
@@ -329,7 +332,7 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
                 <div key={category} className="flex items-center gap-1 rounded-full bg-secondary px-3 py-1 text-sm text-secondary-foreground">
                   {category}
                   {category !== 'Other' && (
-                    <button onClick={() => removeCategory(category)} className="ml-1 rounded-full hover:bg-muted p-0.5">
+                    <button aria-label={`Remove ${category} category`} onClick={() => removeCategory(category)} className="ml-1 rounded-full hover:bg-muted p-0.5">
                       <X className="h-3 w-3" />
                     </button>
                   )}
@@ -406,7 +409,10 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       setListItems(itemsData);
 
       if (categoriesSnapshot.exists()) {
-        setCategories(categoriesSnapshot.data().list);
+        const storedCategories = Array.isArray(categoriesSnapshot.data().list)
+          ? categoriesSnapshot.data().list.filter((category: unknown): category is string => typeof category === 'string')
+          : [];
+        setCategories(storedCategories.includes('Other') ? storedCategories : [...storedCategories, 'Other']);
       } else {
         // Reset to default if no specific categories are set for this list
         setCategories(['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other']);
@@ -478,7 +484,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
 
   const form = useForm<z.infer<typeof itemSchema>>({
     resolver: zodResolver(itemSchema),
-    defaultValues: { name: '', quantity: 1 },
+    defaultValues: { name: '', quantity: 1, category: '' },
   });
   const { watch, setValue, getValues } = form;
   const currentQuantity = watch('quantity');
@@ -486,24 +492,32 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
   const onAddItemSubmit = async (values: z.infer<typeof itemSchema>, libraryItem?: BarcodeLibraryItem | null, barcode?: string) => {
     if (!currentUser?.householdId || !selectedList) return;
     try {
-        toast({ title: "Categorizing item..." });
-        const { category } = await categorizeGroceryItem({ itemName: values.name, categories });
+        const categoryResult = await resolveShoppingCategory({
+          itemName: values.name,
+          categories,
+          selectedCategory: values.category,
+          categorize: categorizeGroceryItem,
+        });
+        const { category } = categoryResult;
         const newItem: Omit<ShoppingListItem, 'id' | 'status'> = {
             name: values.name,
             quantity: values.quantity,
             category: category,
             createdAt: new Date(),
-            imageUrl: libraryItem?.imageUrl,
-            barcode: barcode,
+            ...(libraryItem?.imageUrl ? { imageUrl: libraryItem.imageUrl } : {}),
+            ...(barcode ? { barcode } : {}),
         };
         const itemId = slugify(values.name);
         await setDoc(doc(db, 'households', currentUser.householdId, 'shopping-lists', selectedList.id, 'items', itemId), { ...newItem, status: 'needed' });
         toast({ title: "Item Added", description: `${values.name} was added to the ${category} category.` });
-        form.reset({ name: '', quantity: 1 });
+        if (categoryResult.usedFallback) {
+          toast({ title: 'Automatic categorization unavailable', description: `${values.name} was saved to Other. You can update its category later.` });
+        }
+        form.reset({ name: '', quantity: 1, category: '' });
         setIsAddItemDialogOpen(false);
         await fetchItemsAndCategories(selectedList.id);
     } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not categorize item. Please try again.' });
+      toast({ variant: 'destructive', title: 'Error', description: 'Could not add the item. Please try again.' });
     }
   };
 
@@ -652,18 +666,18 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                 </AlertDialogContent>
             </AlertDialog>
             <Card>
-                <CardHeader className="flex flex-row items-center justify-between">
-                    <div>
+                <CardHeader className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
                         <Button variant="ghost" onClick={() => onSelectList(null)} className="mb-4 pl-1">
                            <ArrowLeft className="mr-2"/> Back to all lists
                         </Button>
-                        <CardTitle className="font-headline" style={{color: selectedList.color}}>{selectedList.name}</CardTitle>
+                        <CardTitle className="break-words font-headline" style={{color: selectedList.color}}>{selectedList.name}</CardTitle>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
                         {currentUser?.householdId && <ManageCategoriesDialog categories={categories} setCategories={setCategories} householdId={currentUser.householdId} listId={selectedList.id} onUpdate={() => fetchItemsAndCategories(selectedList.id)}/>}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <DialogTrigger asChild>
-                            <Button><PlusCircle className="mr-2" /> Add Item</Button>
+                            <Button className="w-full sm:w-auto"><PlusCircle className="mr-2" /> Add Item</Button>
                         </DialogTrigger>
                         <DialogContent>
                             <DialogHeader>
@@ -687,18 +701,42 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                 />
                                 <FormField
                                   control={form.control}
+                                  name="category"
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>Category</FormLabel>
+                                      <Select
+                                        value={field.value || 'automatic'}
+                                        onValueChange={(value) => field.onChange(value === 'automatic' ? '' : value)}
+                                      >
+                                        <FormControl>
+                                          <SelectTrigger><SelectValue /></SelectTrigger>
+                                        </FormControl>
+                                        <SelectContent>
+                                          <SelectItem value="automatic">Automatic</SelectItem>
+                                          {categories.map((category) => (
+                                            <SelectItem key={category} value={category}>{category}</SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                                <FormField
+                                  control={form.control}
                                   name="quantity"
                                   render={({ field }) => (
                                     <FormItem>
                                       <FormLabel>Quantity</FormLabel>
                                       <div className="flex items-center gap-2">
-                                            <Button type="button" variant="outline" size="icon" className="h-10 w-10" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 1}>
+                                            <Button type="button" variant="outline" size="icon" aria-label="Decrease item quantity" className="h-10 w-10" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 1}>
                                                 <Minus className="h-4 w-4" />
                                             </Button>
                                             <FormControl>
                                                 <Input type="number" className="text-center" {...field} />
                                             </FormControl>
-                                            <Button type="button" variant="outline" size="icon" className="h-10 w-10" onClick={() => adjustQuantity(1)}>
+                                            <Button type="button" variant="outline" size="icon" aria-label="Increase item quantity" className="h-10 w-10" onClick={() => adjustQuantity(1)}>
                                                 <Plus className="h-4 w-4" />
                                             </Button>
                                         </div>
@@ -714,6 +752,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                         <DialogContent>
                                             <DialogHeader>
                                                 <DialogTitle>Scan Barcode</DialogTitle>
+                                                <DialogDescription>Scan a product barcode to add it to this shopping list.</DialogDescription>
                                             </DialogHeader>
                                             <BarcodeScanner onScan={handleBarcodeScan} />
                                         </DialogContent>
@@ -747,11 +786,11 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                                 <div className="flex items-center gap-3">
                                                     <Checkbox id={`item-needed-${item.id}`} onCheckedChange={() => toggleItemStatus(item)} />
                                                     {item.imageUrl && (
-                                                        <Image src={item.imageUrl} alt={item.name} width={40} height={40} className="rounded-md object-cover h-10 w-10"/>
+                                                        <Image src={item.imageUrl} alt={`Product image for ${item.name}`} width={40} height={40} sizes="40px" className="rounded-md object-cover h-10 w-10"/>
                                                     )}
                                                     <label htmlFor={`item-needed-${item.id}`} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">{item.name} <span className="text-muted-foreground">(x{item.quantity})</span></label>
                                                 </div>
-                                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => deleteItem(item.id)}>
+                                                <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} className="h-8 w-8" onClick={() => deleteItem(item.id)}>
                                                     <Trash2 className="h-4 w-4 text-muted-foreground" />
                                                 </Button>
                                                 </div>
@@ -780,11 +819,11 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                         <div className="flex items-center gap-3">
                                         <Checkbox id={`item-purchased-${item.id}`} checked={true} onCheckedChange={() => toggleItemStatus(item)} />
                                         {item.imageUrl && (
-                                            <Image src={item.imageUrl} alt={item.name} width={40} height={40} className="rounded-md object-cover h-10 w-10 opacity-50"/>
+                                            <Image src={item.imageUrl} alt={`Product image for ${item.name}`} width={40} height={40} sizes="40px" className="rounded-md object-cover h-10 w-10 opacity-50"/>
                                         )}
                                         <label htmlFor={`item-purchased-${item.id}`} className="text-sm font-medium leading-none text-muted-foreground line-through">{item.name} <span className="text-muted-foreground">(x{item.quantity})</span></label>
                                         </div>
-                                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => deleteItem(item.id)}>
+                                        <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} className="h-8 w-8" onClick={() => deleteItem(item.id)}>
                                             <Trash2 className="h-4 w-4 text-muted-foreground" />
                                         </Button>
                                     </div>

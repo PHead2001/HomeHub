@@ -10,9 +10,10 @@ import { cn } from '@/lib/utils';
 interface ImageUploadProps {
   onFileChange: (file: File | null) => void;
   existingImageUrl?: string;
+  previewAlt?: string;
 }
 
-export function ImageUpload({ onFileChange, existingImageUrl }: ImageUploadProps) {
+export function ImageUpload({ onFileChange, existingImageUrl, previewAlt = 'Selected image preview' }: ImageUploadProps) {
   const [preview, setPreview] = useState<string | null>(existingImageUrl || null);
 
   useEffect(() => {
@@ -53,8 +54,8 @@ export function ImageUpload({ onFileChange, existingImageUrl }: ImageUploadProps
       <input {...getInputProps()} />
       {preview ? (
         <div className="relative w-full h-32">
-          <Image src={preview} alt="Pet preview" layout="fill" objectFit="contain" className="rounded-md" />
-           <Button variant="destructive" size="icon" className="absolute top-1 right-1 h-6 w-6 z-10" onClick={handleRemove}>
+          <Image src={preview} alt={previewAlt} fill sizes="(max-width: 640px) 80vw, 400px" className="rounded-md object-contain" />
+           <Button variant="destructive" size="icon" aria-label={`Remove ${previewAlt.toLowerCase()}`} className="absolute top-1 right-1 h-6 w-6 z-10" onClick={handleRemove}>
             <X className="h-4 w-4" />
           </Button>
         </div>

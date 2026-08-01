@@ -16,6 +16,7 @@ import type { Notification, NotificationCategory, NotificationUserAction } from 
 import { cn } from "@/lib/utils";
 import {
   createNotificationAction,
+  deduplicateNotifications,
   getNotificationLink,
   isNotificationDismissedBy,
   isNotificationExpired,
@@ -63,15 +64,22 @@ function NotificationCenterItem({
   const [isDragging, setIsDragging] = useState(false);
   const itemRef = useRef<HTMLDivElement>(null);
   const startXRef = useRef(0);
+  const dragXRef = useRef(0);
   const wasDraggedRef = useRef(false);
   const SWIPE_THRESHOLD = -70;
 
+  const updateDragX = (nextDragX: number) => {
+    dragXRef.current = nextDragX;
+    setDragX(nextDragX);
+  };
+
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!event.isPrimary || isDismissed) return;
+    if (!event.isPrimary || isDismissed || (event.target as HTMLElement).closest('button')) return;
 
     wasDraggedRef.current = false;
     setIsDragging(true);
     startXRef.current = event.clientX;
+    dragXRef.current = 0;
     itemRef.current?.setPointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = "none";
   };
@@ -82,7 +90,7 @@ function NotificationCenterItem({
     const deltaX = event.clientX - startXRef.current;
     if (Math.abs(deltaX) > 5) wasDraggedRef.current = true;
     if (wasDraggedRef.current) event.preventDefault();
-    if (deltaX < 50) setDragX(deltaX < 0 ? deltaX : deltaX / 5);
+    if (deltaX < 50) updateDragX(deltaX < 0 ? deltaX : deltaX / 5);
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -92,11 +100,11 @@ function NotificationCenterItem({
     itemRef.current?.releasePointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = "transform 0.2s ease-out";
 
-    if (wasDraggedRef.current && dragX < SWIPE_THRESHOLD) {
-      setDragX(-itemRef.current!.offsetWidth);
+    if (wasDraggedRef.current && dragXRef.current < SWIPE_THRESHOLD) {
+      updateDragX(-itemRef.current!.offsetWidth);
       setTimeout(() => onDismiss(notification.id), 200);
     } else {
-      setDragX(0);
+      updateDragX(0);
     }
   };
 
@@ -106,7 +114,7 @@ function NotificationCenterItem({
     wasDraggedRef.current = false;
     itemRef.current?.releasePointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = "transform 0.2s ease-out";
-    setDragX(0);
+    updateDragX(0);
   };
 
   const dismissedAction = Object.values(notification.dismissedBy)[0];
@@ -129,7 +137,7 @@ function NotificationCenterItem({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
-        className={cn("relative bg-background transition-opacity", isDismissed && "opacity-70")}
+        className={cn("relative touch-pan-y bg-background transition-opacity", isDismissed && "opacity-70")}
         style={{ transform: `translateX(${dragX}px)`, cursor: isDismissed ? "default" : (isDragging ? "grabbing" : "grab") }}
       >
         <Link
@@ -177,7 +185,7 @@ function NotificationCenterItem({
             }}
           >
             <X className="h-4 w-4" />
-            <span className="sr-only">Dismiss notification</span>
+            <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
           </Button>
         )}
       </div>
@@ -212,7 +220,7 @@ export function NotificationCenterClient() {
     const unsubscribe = onSnapshot(
       notificationsQuery,
       (snapshot) => {
-        setNotifications(snapshot.docs.map(parseNotificationDoc));
+        setNotifications(deduplicateNotifications(snapshot.docs.map(parseNotificationDoc)));
         setIsLoading(false);
       },
       () => {

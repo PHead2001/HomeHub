@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This harness exercises the implemented HomeHub routes as an authenticated household owner while keeping Auth and Firestore traffic on local emulators. It does not automate Google, use a real account, or load production Firebase data.
+This harness exercises the implemented HomeHub routes as an authenticated household owner while keeping Auth, Firestore, and Storage traffic on local emulators. It does not automate Google, use a real account, or load production Firebase data.
 
 ## Fixed Test Identity
 
@@ -79,7 +79,7 @@ $env:FIREBASE_CLI_DISABLE_UPDATE_CHECK='true'
 Terminal 1:
 
 ```powershell
-npx.cmd firebase emulators:start --project demo-homehub-e2e --only auth,firestore
+npx.cmd firebase emulators:start --project demo-homehub-e2e --only auth,firestore,storage
 ```
 
 Terminal 2:
@@ -94,18 +94,18 @@ Playwright starts and stops the Next.js development server on port `9002`. Do no
 
 ## Scripts
 
-- `npm.cmd run test:e2e:seed`: seed Auth and Firestore; emulators must already be running.
+- `npm.cmd run test:e2e:seed`: cleanly reseed deterministic Auth and Firestore data; Auth, Firestore, and Storage emulators must already be running.
 - `npm.cmd run test:e2e`: run authenticated route smoke tests.
 - `npm.cmd run test:e2e:ui`: open Playwright UI; seed and emulators must already be ready.
 - `npm.cmd run test:visual`: compare desktop/mobile screenshots.
 - `npm.cmd run test:visual:update`: replace baselines against running emulators.
 - `npm.cmd run test:e2e:all`: seed and run all Playwright projects against running emulators.
 - `npm.cmd run test:e2e:local`: manage emulators and run the complete suite.
-- `npm.cmd run test:e2e:ci`: manage emulators and run only authenticated desktop/mobile smoke tests, matching GitHub Actions.
+- `npm.cmd run test:e2e:ci`: manage emulators and run authenticated desktop/mobile route smoke plus focused verification-finding regressions, matching GitHub Actions without visual comparison.
 
 ## Covered Routes
 
-The desktop and mobile Chromium projects cover `/`, `/household`, `/chores`, `/shopping`, `/pets`, `/maintenance`, `/automation`, `/notifications`, `/profile`, and `/library`. Each test verifies a route heading and seeded content, rejects login/onboarding UI, and captures a full-page visual baseline.
+The desktop and mobile Chromium projects cover `/`, `/household`, `/chores`, `/shopping`, `/pets`, `/maintenance`, `/automation`, `/notifications`, `/profile`, and `/library`. Route tests verify seeded authenticated content and reject login/onboarding UI. Focused regressions cover notification idempotency/dismissal, Maintenance deep links and schedule modes, shopping enrichment failures, barcode cleanup, destructive confirmations, recurrence relevance, and dashboard overflow. The visual spec captures full-page baselines separately.
 
 Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.json`, including IndexedDB. Auth state, reports, traces, videos, and failure screenshots are ignored by Git.
 
@@ -120,6 +120,8 @@ Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.j
 
 `.github/workflows/e2e-smoke.yml` runs on pull requests targeting `main` and on manual dispatch. The Linux job uses Node 20, Temurin Java 21, npm's cache through `actions/setup-node`, and `npx playwright install --with-deps chromium`. It loads only fake values from `.env.e2e.example`, runs lint, type-checking, module-documentation validation, and a production build, then invokes `npm run test:e2e:ci`.
 
-The CI command starts owned Auth and Firestore emulator processes, seeds the fixed fake household, and runs the authenticated route smoke spec in desktop and mobile Chromium. Smoke failures retain Playwright traces, screenshots, and videos through `test-results/`; the HTML report and Firebase emulator logs are also uploaded for 10 days. `playwright/.auth/` is deliberately excluded from artifacts.
+The CI command starts owned Auth, Firestore, and Storage emulator processes, seeds the fixed fake household, and runs authenticated route smoke plus focused regression coverage in desktop and mobile Chromium. Failures retain Playwright traces, screenshots, and videos through `test-results/`; the HTML report and Firebase emulator logs are also uploaded for 10 days. `playwright/.auth/` is deliberately excluded from artifacts.
+
+On Windows, `scripts/e2e/environment.mjs` uses `java` from `PATH` or discovers an installed JDK under common `Program Files` locations. Every owned runner still has hard timeouts and terminates its emulator process tree on completion or failure.
 
 Strict visual snapshot comparison is intentionally local-only. The committed baselines are Windows Chromium images, while GitHub Actions runs Linux Chromium; CI does not run `test:visual`, update snapshots, or treat cross-platform pixel differences as application regressions. Linux visual baselines can be evaluated in a separate follow-up.

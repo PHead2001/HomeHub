@@ -29,7 +29,7 @@ import {
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { buildNotificationDocument } from '@/lib/notifications';
+import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import {
   assignableRoles,
   canChangeRole,
@@ -197,10 +197,16 @@ export function HouseholdManagementClient() {
         if (reminderAgeHours < NEW_USER_REMINDER_HOURS) return;
 
         const nowIso = now.toISOString();
+        const reminderStateKey = `pending|${nowIso.slice(0, 10)}`;
+        const reminderNotificationId = getDeterministicNotificationId({
+          sourceType: 'household-newuser-reminder',
+          sourceId: member.uid,
+          stateKey: reminderStateKey,
+        });
         batch.update(doc(db, 'households', household.id, 'members', member.uid), {
           lastNewUserReminderAt: nowIso,
         });
-        batch.set(doc(collection(db, 'households', household.id, 'notifications')), buildNotificationDocument({
+        batch.set(doc(db, 'households', household.id, 'notifications', reminderNotificationId), buildNotificationDocument({
           householdId: household.id,
           category: 'system',
           title: 'Pending member approval',
@@ -208,6 +214,7 @@ export function HouseholdManagementClient() {
           deepLink: '/household?tab=members',
           sourceType: 'household-newuser-reminder',
           sourceId: member.uid,
+          stateKey: reminderStateKey,
         }));
         reminderCount++;
       });
@@ -649,7 +656,7 @@ export function HouseholdManagementClient() {
                           </p>
                         </div>
                         <div className="flex gap-2">
-                          <Button variant="outline" size="icon" onClick={() => navigator.clipboard.writeText(invite.code)}>
+                          <Button variant="outline" size="icon" aria-label={`Copy invite code ${invite.code}`} onClick={() => navigator.clipboard.writeText(invite.code)}>
                             <Copy className="h-4 w-4" />
                           </Button>
                           <Button variant="outline" onClick={() => revokeInvite(invite)} disabled={!canManageInvites || !isActiveInvite(invite)}>

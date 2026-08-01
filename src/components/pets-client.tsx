@@ -28,7 +28,7 @@ import Link from 'next/link';
 import { slugify } from '@/lib/utils';
 
 
-function PetCard({ pet, onEdit, onDelete }: { pet: Pet, onEdit: (pet: Pet) => void, onDelete: (petId: string) => void }) {
+function PetCard({ pet, onEdit, onDelete, priority = false }: { pet: Pet, onEdit: (pet: Pet) => void, onDelete: (petId: string) => void, priority?: boolean }) {
   const handleEditClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -48,7 +48,7 @@ function PetCard({ pet, onEdit, onDelete }: { pet: Pet, onEdit: (pet: Pet) => vo
           <div className="absolute top-2 right-2 z-10">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="secondary" size="icon" className="h-8 w-8 rounded-full bg-background/70 hover:bg-background/90" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                <Button variant="secondary" size="icon" aria-label={`Open actions for ${pet.name}`} className="h-8 w-8 rounded-full bg-background/70 hover:bg-background/90" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -69,6 +69,8 @@ function PetCard({ pet, onEdit, onDelete }: { pet: Pet, onEdit: (pet: Pet) => vo
                   src={pet.photoUrl || 'https://placehold.co/300x300.png'}
                   alt={`Photo of ${pet.name}`}
                   fill
+                  sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
+                  priority={priority}
                   className="object-cover rounded-t-lg"
                   data-ai-hint={pet.dataAiHint}
               />
@@ -301,8 +303,8 @@ export function PetsClient() {
 
       {pets.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-          {pets.map(pet => (
-            <PetCard key={pet.id} pet={pet} onEdit={setPetToEdit} onDelete={setPetToDelete} />
+          {pets.map((pet, index) => (
+            <PetCard key={pet.id} pet={pet} onEdit={setPetToEdit} onDelete={setPetToDelete} priority={index === 0} />
           ))}
         </div>
       ) : (

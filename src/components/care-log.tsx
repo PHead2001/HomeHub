@@ -18,6 +18,7 @@ import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
 import { collection, getDocs, deleteDoc, doc, orderBy, query, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { PetLogDeleteAlert } from './pet-log-delete-alert';
 
 const logSchema = z.object({
   activity: z.string().min(3, 'Activity is required.'),
@@ -32,6 +33,7 @@ export function CareLogClient({ petId }: CareLogProps) {
   const { currentUser } = useAuth();
   const [logs, setLogs] = useState<CareLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const { toast } = useToast();
 
   const getLogsCollectionRef = useCallback(() => {
@@ -103,6 +105,17 @@ export function CareLogClient({ petId }: CareLogProps) {
   }
 
   return (
+    <>
+    <PetLogDeleteAlert
+      open={!!logToDelete}
+      logType="care"
+      onCancel={() => setLogToDelete(null)}
+      onConfirm={() => {
+        if (!logToDelete) return;
+        void deleteLog(logToDelete);
+        setLogToDelete(null);
+      }}
+    />
     <Card>
       <CardHeader>
         <CardTitle className="font-headline">General Care Log</CardTitle>
@@ -159,7 +172,7 @@ export function CareLogClient({ petId }: CareLogProps) {
                         <p className="text-foreground font-semibold">{log.activity}</p>
                         {log.notes && <p className="text-muted-foreground mt-1">{log.notes}</p>}
                     </div>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={() => deleteLog(log.id)}>
+                    <Button variant="ghost" size="icon" aria-label={`Delete ${log.activity} care log`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
                         <Trash2 className="h-4 w-4" />
                     </Button>
                 </div>
@@ -167,5 +180,6 @@ export function CareLogClient({ petId }: CareLogProps) {
         </div>
       </CardContent>
     </Card>
+    </>
   );
 }

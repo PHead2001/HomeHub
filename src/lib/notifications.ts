@@ -2,6 +2,7 @@ import { addDays, isAfter } from 'date-fns';
 import type { DocumentData, QueryDocumentSnapshot, Timestamp } from 'firebase/firestore';
 import type { Notification, NotificationCategory, NotificationUserAction } from '@/lib/types';
 import type { User as HomeHubUser } from '@/lib/types';
+import { stableSlugify } from '@/lib/utils';
 
 const NOTIFICATION_TTL_DAYS = 7;
 
@@ -85,6 +86,7 @@ export const parseNotificationDoc = (snapshot: QueryDocumentSnapshot<DocumentDat
     href: typeof data.href === 'string' ? data.href : undefined,
     sourceType: typeof data.sourceType === 'string' ? data.sourceType : undefined,
     sourceId: typeof data.sourceId === 'string' ? data.sourceId : undefined,
+    stateKey: typeof data.stateKey === 'string' ? data.stateKey : undefined,
     targetUserUid: typeof data.targetUserUid === 'string' ? data.targetUserUid : undefined,
     targetUserEmail: typeof data.targetUserEmail === 'string' ? data.targetUserEmail : undefined,
     readBy: parseActionMap(data.readBy),
@@ -118,6 +120,65 @@ export const isNotificationVisibleToUser = (
 
 export const getNotificationLink = (notification: Notification) => notification.deepLink || notification.href || '#';
 
+const hashNotificationIdentity = (value: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+export const getDeterministicNotificationId = ({
+  sourceType,
+  sourceId,
+  stateKey,
+}: {
+  sourceType: string;
+  sourceId: string;
+  stateKey: string;
+}) => {
+  const identity = `${sourceType}|${sourceId}|${stateKey}`;
+  return `${stableSlugify(sourceType) || 'notification'}-${hashNotificationIdentity(identity)}`;
+};
+
+const getNotificationSemanticKey = (notification: Notification) => {
+  if (!notification.sourceType || !notification.sourceId) return `document:${notification.id}`;
+  return `${notification.sourceType}|${notification.sourceId}|${notification.stateKey || 'legacy'}`;
+};
+
+export const deduplicateNotifications = (notifications: Notification[]) => {
+  const grouped = new Map<string, Notification>();
+
+  notifications.forEach((notification) => {
+    const key = getNotificationSemanticKey(notification);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, notification);
+      return;
+    }
+
+    const newer = notification.createdAt > existing.createdAt ? notification : existing;
+    const older = newer === notification ? existing : notification;
+    grouped.set(key, {
+      ...newer,
+      createdAt: older.createdAt,
+      expiresAt: newer.expiresAt > older.expiresAt ? newer.expiresAt : older.expiresAt,
+      readBy: { ...older.readBy, ...newer.readBy },
+      dismissedBy: { ...older.dismissedBy, ...newer.dismissedBy },
+      resolvedAt: newer.resolvedAt || older.resolvedAt,
+      resolvedBy: newer.resolvedBy || older.resolvedBy,
+    });
+  });
+
+  return Array.from(grouped.values()).sort((left, right) => {
+    const createdAtDifference = right.createdAt.getTime() - left.createdAt.getTime();
+    if (createdAtDifference) return createdAtDifference;
+    const semanticDifference = getNotificationSemanticKey(left).localeCompare(getNotificationSemanticKey(right));
+    return semanticDifference || left.id.localeCompare(right.id);
+  });
+};
+
 export const buildNotificationDocument = ({
   householdId,
   category,
@@ -126,6 +187,7 @@ export const buildNotificationDocument = ({
   deepLink,
   sourceType,
   sourceId,
+  stateKey,
   targetUser,
 }: {
   householdId: string;
@@ -135,6 +197,7 @@ export const buildNotificationDocument = ({
   deepLink?: string;
   sourceType?: string;
   sourceId?: string;
+  stateKey?: string;
   targetUser?: HomeHubUser;
 }) => {
   const createdAt = new Date();
@@ -149,6 +212,7 @@ export const buildNotificationDocument = ({
     deepLink,
     sourceType,
     sourceId,
+    stateKey,
     targetUserUid: targetUser?.uid,
     targetUserEmail: targetUser?.email,
     readBy: {},

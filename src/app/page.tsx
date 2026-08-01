@@ -37,7 +37,7 @@ export default function Home() {
           opts={{
             align: "start",
           }}
-          className="w-full"
+          className="w-full min-w-0"
         >
           <CarouselContent className="-ml-4">
             <CarouselItem className="pl-4 md:basis-1/2 lg:basis-1/3">
@@ -81,8 +81,8 @@ export default function Home() {
               />
             </CarouselItem>
           </CarouselContent>
-          <CarouselPrevious />
-          <CarouselNext />
+          <CarouselPrevious className="left-2 md:-left-12" />
+          <CarouselNext className="right-2 md:-right-12" />
         </Carousel>
       </section>
     </div>

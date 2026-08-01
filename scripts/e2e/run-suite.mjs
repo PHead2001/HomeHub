@@ -21,7 +21,7 @@ if (status === 0) {
   status = run([seedScript], 60_000);
 }
 if (status === 0) {
-  status = run([playwrightCli, "test", "tests/e2e/smoke.spec.ts"], 240_000);
+  status = run([playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts"], 360_000);
 }
 
 process.exit(status);
