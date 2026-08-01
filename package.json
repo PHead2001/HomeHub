@@ -12,13 +12,14 @@
     "typecheck": "tsc --noEmit",
     "docs:check": "node scripts/check-module-docs.mjs",
     "test:e2e:seed": "node scripts/e2e/seed.mjs",
-    "test:e2e": "playwright test tests/e2e/smoke.spec.ts tests/e2e/verification-findings.spec.ts",
+    "test:e2e": "playwright test tests/e2e/smoke.spec.ts tests/e2e/verification-findings.spec.ts tests/e2e/temporary-chores-maintenance-ui.spec.ts",
     "test:e2e:ui": "playwright test --ui",
     "test:visual": "playwright test tests/e2e/visual.spec.ts",
     "test:visual:update": "playwright test tests/e2e/visual.spec.ts --update-snapshots",
     "test:e2e:all": "node scripts/e2e/run-suite.mjs",
     "test:e2e:local": "node scripts/e2e/run-local.mjs",
     "test:e2e:ci": "node scripts/e2e/run-local.mjs --smoke-only",
+    "test:e2e:feature:local": "node scripts/e2e/run-local.mjs --feature-only",
     "test:visual:update:local": "node scripts/e2e/run-local.mjs --visual-update"
   },
   "dependencies": {

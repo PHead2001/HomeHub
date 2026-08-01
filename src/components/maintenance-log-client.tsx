@@ -77,7 +77,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { cn, slugify, stableSlugify } from '@/lib/utils';
-import { collection, deleteDoc, doc, getDocs, orderBy, query, runTransaction, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, runTransaction, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 
 const assetCategories = [
@@ -446,8 +446,12 @@ const getTargetName = (log: MaintenanceLog, assets: HomeAsset[], vehicles: Vehic
   if (targetType === 'vehicle') {
     return vehicles.find((vehicle) => vehicle.id === log.vehicleId)?.nickname || 'Unlinked vehicle';
   }
-  return 'General';
+  return log.formerTargetName ? `General - formerly ${log.formerTargetName}` : 'General';
 };
+
+type ScheduleRemovalTarget =
+  | { targetType: 'home_asset'; id: string; name: string }
+  | { targetType: 'vehicle'; id: string; name: string };
 
 const sanitizeFileName = (fileName: string) => {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
@@ -692,7 +696,7 @@ function AttachmentPanel({
   const [category, setCategory] = useState<MaintenanceAttachmentCategory>('photo');
 
   return (
-    <div className="rounded-lg border p-3">
+    <div className="rounded-lg border p-3" data-testid={`attachments-${targetType}-${targetId}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-muted-foreground" />
@@ -996,7 +1000,11 @@ export function MaintenanceLogClient() {
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [editingLog, setEditingLog] = useState<MaintenanceLog | null>(null);
   const [logToDelete, setLogToDelete] = useState<MaintenanceLog | null>(null);
+  const [assetToDelete, setAssetToDelete] = useState<HomeAsset | null>(null);
   const [vehicleToDelete, setVehicleToDelete] = useState<Vehicle | null>(null);
+  const [attachmentToDelete, setAttachmentToDelete] = useState<MaintenanceAttachment | null>(null);
+  const [scheduleToRemove, setScheduleToRemove] = useState<ScheduleRemovalTarget | null>(null);
+  const [deletingRecord, setDeletingRecord] = useState<string | null>(null);
   const [scheduleCompletionTarget, setScheduleCompletionTarget] = useState<ScheduleCompletionTarget | null>(null);
   const [assetScheduleForms, setAssetScheduleForms] = useState<AssetScheduleForm[]>([]);
   const [vehicleScheduleForms, setVehicleScheduleForms] = useState<VehicleScheduleForm[]>([]);
@@ -1305,7 +1313,7 @@ export function MaintenanceLogClient() {
   };
 
   const deleteAttachment = async (attachment: MaintenanceAttachment) => {
-    if (!currentUser?.householdId) return;
+    if (!currentUser?.householdId || deletingAttachmentId) return;
     const attachmentsCollection = getCollectionRef('maintenance-attachments');
     if (!attachmentsCollection) return;
 
@@ -1324,6 +1332,7 @@ export function MaintenanceLogClient() {
       }
 
       await deleteDoc(doc(attachmentsCollection, attachment.id));
+      setAttachmentToDelete(null);
       toast({ title: 'Attachment deleted' });
       await fetchMaintenanceData();
     } catch (deleteError) {
@@ -1467,6 +1476,14 @@ export function MaintenanceLogClient() {
     });
   };
 
+  const requestAssetScheduleRemoval = (schedule: AssetScheduleForm) => {
+    setScheduleToRemove({
+      targetType: 'home_asset',
+      id: schedule.id,
+      name: schedule.scheduleName.trim() || 'this maintenance item',
+    });
+  };
+
   const addVehicleSchedule = () => {
     setVehicleScheduleForms(prev => [...prev, vehicleScheduleToForm()]);
   };
@@ -1485,6 +1502,21 @@ export function MaintenanceLogClient() {
       delete next[id];
       return next;
     });
+  };
+
+  const requestVehicleScheduleRemoval = (schedule: VehicleScheduleForm) => {
+    setScheduleToRemove({
+      targetType: 'vehicle',
+      id: schedule.id,
+      name: schedule.serviceName.trim() || 'this service item',
+    });
+  };
+
+  const confirmScheduleRemoval = () => {
+    if (!scheduleToRemove) return;
+    if (scheduleToRemove.targetType === 'home_asset') removeAssetSchedule(scheduleToRemove.id);
+    else removeVehicleSchedule(scheduleToRemove.id);
+    setScheduleToRemove(null);
   };
 
   const getScheduleCompletionName = (target: ScheduleCompletionTarget) => {
@@ -1798,7 +1830,7 @@ export function MaintenanceLogClient() {
   };
 
   const deleteLog = async () => {
-    if (!logToDelete) return;
+    if (!logToDelete || deletingRecord) return;
     const logsCollection = getCollectionRef('maintenance');
     if (!logsCollection) return;
 
@@ -1811,6 +1843,7 @@ export function MaintenanceLogClient() {
       return;
     }
 
+    setDeletingRecord(`log:${logToDelete.id}`);
     try {
       await deleteDoc(doc(logsCollection, logToDelete.id));
       setSummaries(prev => {
@@ -1824,33 +1857,108 @@ export function MaintenanceLogClient() {
     } catch (deleteError) {
       console.error('Error deleting maintenance log:', deleteError);
       toast({ variant: 'destructive', title: 'Error', description: 'Could not delete maintenance log.' });
+    } finally {
+      setDeletingRecord(null);
     }
   };
 
-  const deleteVehicle = async () => {
-    if (!vehicleToDelete) return;
-    const vehiclesCollection = getCollectionRef('vehicles');
-    if (!vehiclesCollection) return;
+  const notificationBelongsToRegistryRecord = (
+    notification: Notification,
+    targetType: 'home_asset' | 'vehicle',
+    targetId: string
+  ) => {
+    const sourceTypes = targetType === 'home_asset'
+      ? ['maintenance_asset_schedule', 'maintenance_asset_warranty']
+      : ['maintenance_vehicle_service', 'maintenance_vehicle_registration', 'maintenance_vehicle_inspection'];
+    return Boolean(
+      notification.sourceType
+      && sourceTypes.includes(notification.sourceType)
+      && (notification.sourceId === targetId || notification.sourceId?.startsWith(`${targetId}:`))
+    );
+  };
 
-    if (getAttachmentsForTarget(attachments, 'vehicle', vehicleToDelete.id).length > 0) {
+  const deleteRegistryRecord = async (
+    targetType: 'home_asset' | 'vehicle',
+    target: HomeAsset | Vehicle
+  ) => {
+    if (!currentUser?.householdId || deletingRecord) return;
+    const registryCollection = getCollectionRef(targetType === 'home_asset' ? 'home-assets' : 'vehicles');
+    const logsCollection = getCollectionRef('maintenance');
+    const notificationsCollection = getCollectionRef('notifications');
+    if (!registryCollection || !logsCollection || !notificationsCollection) return;
+
+    const directAttachments = getAttachmentsForTarget(attachments, targetType, target.id);
+    if (directAttachments.length > 0) {
       toast({
         variant: 'destructive',
         title: 'Remove attachments first',
-        description: 'Delete attachments for this vehicle before deleting it.',
+        description: `Delete ${directAttachments.length === 1 ? 'the attachment' : 'all attachments'} for this ${targetType === 'home_asset' ? 'asset' : 'vehicle'} before deleting it.`,
       });
       return;
     }
 
+    setDeletingRecord(`${targetType}:${target.id}`);
     try {
-      await deleteDoc(doc(vehiclesCollection, vehicleToDelete.id));
-      setSelectedVehicleId(prev => prev === vehicleToDelete.id ? null : prev);
-      setVehicleToDelete(null);
-      toast({ title: 'Vehicle deleted' });
+      const [logsSnapshot, notificationsSnapshot] = await Promise.all([
+        getDocs(logsCollection),
+        getDocs(notificationsCollection),
+      ]);
+      const targetName = targetType === 'home_asset' ? (target as HomeAsset).name : (target as Vehicle).nickname;
+      const linkedLogs = logsSnapshot.docs
+        .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() } as MaintenanceLog))
+        .filter((log) => targetType === 'home_asset'
+          ? getLogTargetType(log) === 'home_asset' && log.assetId === target.id
+          : getLogTargetType(log) === 'vehicle' && log.vehicleId === target.id);
+      const relatedNotifications = notificationsSnapshot.docs
+        .map(parseNotificationDoc)
+        .filter((notification) => !notification.resolvedAt && notificationBelongsToRegistryRecord(notification, targetType, target.id));
+      const action = createNotificationAction(currentUser);
+      const now = new Date();
+      const batch = writeBatch(db);
+
+      batch.delete(doc(registryCollection, target.id));
+      linkedLogs.forEach((log) => {
+        batch.update(doc(logsCollection, log.id), {
+          targetType: 'general',
+          ...(targetType === 'home_asset' ? { assetId: deleteField() } : { vehicleId: deleteField() }),
+          formerTargetType: targetType,
+          formerTargetName: targetName,
+          updatedAt: now.toISOString(),
+        });
+      });
+      relatedNotifications.forEach((notification) => {
+        batch.update(doc(notificationsCollection, notification.id), { resolvedAt: now, resolvedBy: action });
+      });
+
+      await batch.commit();
+      if (targetType === 'home_asset') {
+        setSelectedAssetId(previous => previous === target.id ? null : previous);
+        setAssetToDelete(null);
+      } else {
+        setSelectedVehicleId(previous => previous === target.id ? null : previous);
+        setVehicleToDelete(null);
+      }
+      toast({
+        title: `${targetType === 'home_asset' ? 'Home asset' : 'Vehicle'} deleted`,
+        description: linkedLogs.length > 0
+          ? `${linkedLogs.length} historical ${linkedLogs.length === 1 ? 'log was' : 'logs were'} preserved as general maintenance.`
+          : undefined,
+      });
       await fetchMaintenanceData();
     } catch (deleteError) {
-      console.error('Error deleting vehicle:', deleteError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete vehicle.' });
+      console.error(`Error deleting ${targetType}:`, deleteError);
+      toast({ variant: 'destructive', title: 'Error', description: `Could not delete the ${targetType === 'home_asset' ? 'home asset' : 'vehicle'}.` });
+    } finally {
+      setDeletingRecord(null);
     }
+  };
+
+  const deleteAsset = async () => {
+    if (assetToDelete) await deleteRegistryRecord('home_asset', assetToDelete);
+  };
+
+  const deleteVehicle = async () => {
+    if (vehicleToDelete) await deleteRegistryRecord('vehicle', vehicleToDelete);
   };
 
   const handleSummarize = async (log: MaintenanceLog) => {
@@ -1965,7 +2073,7 @@ export function MaintenanceLogClient() {
                     onEdit={(log) => openLogDialog(undefined, log)}
                     onDelete={setLogToDelete}
                     onUploadAttachment={uploadAttachment}
-                    onDeleteAttachment={deleteAttachment}
+                    onDeleteAttachment={setAttachmentToDelete}
                   />
                 </CardContent>
               </Card>
@@ -2041,10 +2149,22 @@ export function MaintenanceLogClient() {
                         <CardTitle className="font-headline">{selectedAsset.name}</CardTitle>
                         <CardDescription>{selectedAsset.category}</CardDescription>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => openAssetDialog(selectedAsset)}>
-                        <Edit className="mr-2 h-4 w-4" />
-                        Edit
-                      </Button>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button aria-label={`Edit home asset ${selectedAsset.name}`} variant="outline" size="sm" onClick={() => openAssetDialog(selectedAsset)}>
+                          <Edit className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                        <Button
+                          aria-label={`Delete home asset ${selectedAsset.name}`}
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setAssetToDelete(selectedAsset)}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
                     </CardHeader>
                     <CardContent className="space-y-5">
                       <div className="grid gap-3 sm:grid-cols-2">
@@ -2066,7 +2186,7 @@ export function MaintenanceLogClient() {
                         uploading={uploadingAttachmentTarget === `home_asset:${selectedAsset.id}`}
                         deletingId={deletingAttachmentId}
                         onUpload={uploadAttachment}
-                        onDelete={deleteAttachment}
+                        onDelete={setAttachmentToDelete}
                       />
                       {selectedAsset.schedules && selectedAsset.schedules.length > 0 && (
                         <div className="space-y-2">
@@ -2136,7 +2256,7 @@ export function MaintenanceLogClient() {
                         onEdit={(log) => openLogDialog(undefined, log)}
                         onDelete={setLogToDelete}
                         onUploadAttachment={uploadAttachment}
-                        onDeleteAttachment={deleteAttachment}
+                        onDeleteAttachment={setAttachmentToDelete}
                       />
                     </CardContent>
                   </Card>
@@ -2233,11 +2353,11 @@ export function MaintenanceLogClient() {
                         <CardDescription>{[selectedVehicle.year, selectedVehicle.make, selectedVehicle.model, selectedVehicle.trim].filter(Boolean).join(' ') || 'Vehicle details'}</CardDescription>
                       </div>
                       <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => openVehicleDialog(selectedVehicle)}>
+                        <Button aria-label={`Edit vehicle ${selectedVehicle.nickname}`} variant="outline" size="sm" onClick={() => openVehicleDialog(selectedVehicle)}>
                           <Edit className="mr-2 h-4 w-4" />
                           Edit
                         </Button>
-                        <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setVehicleToDelete(selectedVehicle)}>
+                        <Button aria-label={`Delete vehicle ${selectedVehicle.nickname}`} variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setVehicleToDelete(selectedVehicle)}>
                           <Trash2 className="mr-2 h-4 w-4" />
                           Delete
                         </Button>
@@ -2262,7 +2382,7 @@ export function MaintenanceLogClient() {
                         uploading={uploadingAttachmentTarget === `vehicle:${selectedVehicle.id}`}
                         deletingId={deletingAttachmentId}
                         onUpload={uploadAttachment}
-                        onDelete={deleteAttachment}
+                        onDelete={setAttachmentToDelete}
                       />
                       {selectedVehicle.serviceSchedules && selectedVehicle.serviceSchedules.length > 0 && (
                         <div className="space-y-2">
@@ -2333,7 +2453,7 @@ export function MaintenanceLogClient() {
                         onEdit={(log) => openLogDialog(undefined, log)}
                         onDelete={setLogToDelete}
                         onUploadAttachment={uploadAttachment}
-                        onDeleteAttachment={deleteAttachment}
+                        onDeleteAttachment={setAttachmentToDelete}
                       />
                     </CardContent>
                   </Card>
@@ -2433,7 +2553,7 @@ export function MaintenanceLogClient() {
               onEdit={(log) => openLogDialog(undefined, log)}
               onDelete={setLogToDelete}
               onUploadAttachment={uploadAttachment}
-              onDeleteAttachment={deleteAttachment}
+              onDeleteAttachment={setAttachmentToDelete}
               highlightedLogId={highlightedLogId}
             />
           </TabsContent>
@@ -2511,7 +2631,7 @@ export function MaintenanceLogClient() {
                         <div key={schedule.id} className="rounded-md border p-3">
                           <div className="mb-3 flex items-center justify-between gap-2">
                             <p className="text-sm font-medium">Maintenance item #{index + 1}</p>
-                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeAssetSchedule(schedule.id)}>
+                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" aria-label={`Remove asset maintenance ${schedule.scheduleName || `item ${index + 1}`}`} onClick={() => requestAssetScheduleRemoval(schedule)}>
                               Remove
                             </Button>
                           </div>
@@ -2687,7 +2807,7 @@ export function MaintenanceLogClient() {
                         <div key={schedule.id} className="rounded-md border p-3">
                           <div className="mb-3 flex items-center justify-between gap-2">
                             <p className="text-sm font-medium">Service item #{index + 1}</p>
-                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeVehicleSchedule(schedule.id)}>
+                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" aria-label={`Remove vehicle service ${schedule.serviceName || `item ${index + 1}`}`} onClick={() => requestVehicleScheduleRemoval(schedule)}>
                               Remove
                             </Button>
                           </div>
@@ -2973,6 +3093,67 @@ export function MaintenanceLogClient() {
         </DialogContent>
       </Dialog>
 
+      <AlertDialog open={!!scheduleToRemove} onOpenChange={(open) => !open && setScheduleToRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {scheduleToRemove?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the {scheduleToRemove?.targetType === 'home_asset' ? 'asset maintenance item' : 'vehicle service item'} from this edit form. Save the record to persist the change.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={confirmScheduleRemoval}>
+              Remove Item
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => !open && setAttachmentToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete attachment {attachmentToDelete?.fileName}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes the file and its maintenance attachment record. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(deletingAttachmentId)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={Boolean(deletingAttachmentId)}
+              onClick={() => attachmentToDelete && void deleteAttachment(attachmentToDelete)}
+            >
+              {deletingAttachmentId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete Attachment
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!assetToDelete} onOpenChange={(open) => !open && setAssetToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete home asset {assetToDelete?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the asset and its schedules. Historical logs remain as general maintenance records, and active reminders for this asset are resolved. Remove direct attachments first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(deletingRecord)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={Boolean(deletingRecord)}
+              onClick={() => void deleteAsset()}
+            >
+              {deletingRecord?.startsWith('home_asset:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete Home Asset
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={!!logToDelete} onOpenChange={(open) => !open && setLogToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -2985,8 +3166,10 @@ export function MaintenanceLogClient() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={Boolean(deletingRecord)}
               onClick={deleteLog}
             >
+              {deletingRecord?.startsWith('log:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Delete Log
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -2998,15 +3181,17 @@ export function MaintenanceLogClient() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete vehicle?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove &quot;{vehicleToDelete?.nickname || 'this vehicle'}&quot; from the vehicle registry. Existing service logs will remain in maintenance history as unlinked vehicle logs.
+              This removes &quot;{vehicleToDelete?.nickname || 'this vehicle'}&quot; and its schedules. Historical service logs remain as general maintenance records, and active reminders for this vehicle are resolved. Remove direct attachments first.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={Boolean(deletingRecord)}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={Boolean(deletingRecord)}
               onClick={deleteVehicle}
             >
+              {deletingRecord?.startsWith('vehicle:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Delete Vehicle
             </AlertDialogAction>
           </AlertDialogFooter>

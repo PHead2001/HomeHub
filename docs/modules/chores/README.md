@@ -8,6 +8,7 @@ This module owns rooms, chore templates, one-time and recurring assignments, gen
 
 - Manage chores at `/chores`.
 - Create rooms and reusable task templates.
+- Create a Temporary Task directly as a one-time chore without adding a reusable template.
 - Assign one-time tasks or recurring schedules to household users.
 - Use daily, weekdays-only, weekly, biweekly, monthly day-of-month, and monthly first-through-fourth weekday recurrence.
 - View current, recurring, history, and calendar-oriented task views.
@@ -28,6 +29,8 @@ This module owns rooms, chore templates, one-time and recurring assignments, gen
 
 Completion updates chore instances. Editing or canceling a recurrence removes incomplete generated instances and regenerates from the template; completed history remains.
 
+Temporary Task validates name, room, assignee, and due date, then atomically writes one auto-ID chore instance and one deterministic assignee notification. It does not write `chore-templates`.
+
 ## Data Model and Persistence
 
 - Templates: `households/{householdId}/chore-templates/{templateId}`.
@@ -36,6 +39,8 @@ Completion updates chore instances. Editing or canceling a recurrence removes in
 - Notifications: `households/{householdId}/notifications/{notificationId}`.
 
 Important types are `Recurrence`, `RecurrenceFrequency`, `MonthlyRecurrenceMode`, `MonthlyNthWeekday`, `ChoreTemplate`, `Chore`, and `Room`.
+
+`Chore.templateId` is optional for backward-compatible direct instances. `Chore.sourceType` may explicitly distinguish `template` and `temporary`; existing documents without `sourceType` continue through the established template/instance behavior.
 
 Biweekly schedules use `startDate` as an anchor. Monthly day-of-month is limited to 1-28. Nth-weekday supports first through fourth; last-weekday recurrence is not implemented.
 
@@ -47,7 +52,7 @@ Navigation uses `chores.view`. Firestore's broad approved-member rule does not e
 
 ## Integrations and Background Processing
 
-- Assignment notifications are best-effort household notification writes.
+- Template assignment notifications are best-effort household notification writes. Temporary Task creation batches its direct chore and deterministic assignment notification together so a successful creation cannot omit its initial notification.
 - Overdue and configured daily reminders are checked every 60 seconds only while the chore client is mounted.
 - Deterministic per-user/day notification IDs suppress same-day duplicates.
 - New records can trigger the shared FCM Cloud Function.
@@ -69,11 +74,13 @@ Navigation uses `chores.view`. Firestore's broad approved-member rule does not e
 - Best-effort notification failures do not roll back chore writes.
 - Assignment forms show one-time date controls or recurring controls, never both; switching modes retains the unsaved recurrence state for that dialog session.
 - Active and completed chore instances use the same confirmation contract before permanent deletion.
+- Future/completed view switches use the shared control dimensions; their thumbs must remain inside the track at desktop and mobile widths.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
-- Manually test one-time tasks and every recurrence mode across refresh, including old records.
+- Manually test template-backed one-time tasks, direct Temporary Tasks, and every recurrence mode across refresh, including old records.
+- For Temporary Task, verify required-field failure, cancel, duplicate-submit prevention, direct chore persistence, no template creation, one assignee notification, completion, and confirmed deletion.
 - Test bulk completion with unfinished subtasks, one-time/each recurrence-mode control set, active/completed deletion cancel and confirm, reassignment, recurrence edit/cancel, room deletion, 90-day history cleanup, and guest/child direct-route behavior.
 
 ## When This Document Must Be Updated

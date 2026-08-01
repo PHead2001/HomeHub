@@ -102,10 +102,11 @@ Playwright starts and stops the Next.js development server on port `9002`. Do no
 - `npm.cmd run test:e2e:all`: seed and run all Playwright projects against running emulators.
 - `npm.cmd run test:e2e:local`: manage emulators and run the complete suite.
 - `npm.cmd run test:e2e:ci`: manage emulators and run authenticated desktop/mobile route smoke plus focused verification-finding regressions, matching GitHub Actions without visual comparison.
+- `npm.cmd run test:e2e:feature:local`: manage emulators and run the Temporary Task, chore bounds, maintenance deletion, dashboard, and shopping-inventory regression spec without visual comparison.
 
 ## Covered Routes
 
-The desktop and mobile Chromium projects cover `/`, `/household`, `/chores`, `/shopping`, `/pets`, `/maintenance`, `/automation`, `/notifications`, `/profile`, and `/library`. Route tests verify seeded authenticated content and reject login/onboarding UI. Focused regressions cover notification idempotency/dismissal, Maintenance deep links and schedule modes, shopping enrichment failures, barcode cleanup, destructive confirmations, recurrence relevance, and dashboard overflow. The visual spec captures full-page baselines separately.
+The desktop and mobile Chromium projects cover `/`, `/household`, `/chores`, `/shopping`, `/pets`, `/maintenance`, `/automation`, `/notifications`, `/profile`, and `/library`. Route tests verify seeded authenticated content and reject login/onboarding UI. Focused regressions cover notification idempotency/dismissal, Maintenance deep links and schedule modes, shopping enrichment failures, barcode cleanup, destructive confirmations, recurrence relevance, direct Temporary Tasks, maintenance registry cleanup, mobile inventory bounds, and dashboard overflow. The visual spec captures full-page baselines separately.
 
 Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.json`, including IndexedDB. Auth state, reports, traces, videos, and failure screenshots are ignored by Git.
 

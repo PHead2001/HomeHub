@@ -62,6 +62,8 @@ Primary topology:
 
 Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` currently declares no composite indexes or field overrides.
 
+Direct temporary chores use the existing `chores` path with optional `templateId` and `sourceType: temporary`; no parallel collection or fake template is created. Maintenance logs preserved after registry deletion remove their live target ID and retain optional `formerTargetType`/`formerTargetName` history fields.
+
 ## Authentication, Roles, and Security
 
 Rules use Firebase Auth UID/email, UID membership documents, and legacy `households.memberEmails`. Pending `newuser` members are blocked from ordinary household subcollections.
