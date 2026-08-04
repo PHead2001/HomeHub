@@ -7,6 +7,7 @@ This module owns the root layout, global providers and overlays, primary navigat
 ## User-Facing Capabilities
 
 - View dashboard module cards at `/`.
+- Generate a transient AI Overview whose exact metrics come from authorized household data.
 - Navigate through permission-filtered desktop header links and avatar actions.
 - Open profile, household management, barcode library, notifications, and logout controls.
 - Receive create/join-household and pending-approval overlays.
@@ -29,15 +30,15 @@ This module owns the root layout, global providers and overlays, primary navigat
 
 ## Architecture and Data Flow
 
-The root layout installs `AuthProvider`, foreground push handling, Firebase error reporting, theme injection, password-change handling, household-state overlays, the header, and global toasts around every route. The dashboard is a static set of links into implemented feature routes.
+The root layout installs `AuthProvider`, foreground push handling, Firebase error reporting, theme injection, password-change handling, household-state overlays, the header, and global toasts around every route. The dashboard includes static module links and the on-demand `HomeAiOverview`; it makes no overview request on page load and does not persist results.
 
 Dashboard card carousels contain their own horizontal movement. Their navigation controls remain inset from the carousel edge at every viewport so neither the carousel nor the document gains horizontal overflow.
 
-Header navigation derives visibility from effective permissions. Dashboard cards are not permission-filtered.
+Header navigation derives visibility from effective permissions. Dashboard cards are not permission-filtered. Overview metrics and generated sections are filtered by verified server-side effective permissions.
 
 ## Data Model and Persistence
 
-The shell owns no Firestore documents. It consumes `User`, `Household`, `HouseholdMember`, and permission data supplied by auth/household context.
+The shell owns no Firestore documents. It consumes `User`, `Household`, `HouseholdMember`, and permission data supplied by auth/household context. Overview facts are transient and the optional model narrative remains component state.
 
 Theme values are persisted by the identity/profile module and injected as CSS variables by `ThemeInjector`.
 
@@ -52,7 +53,7 @@ The overlays visually cover child routes but do not unmount them, so child effec
 
 ## Integrations and Background Processing
 
-The shell mounts foreground Firebase Cloud Messaging handling and links to the notification bell. Fonts use `next/font`. No shell-owned Cloud Function, external API, or scheduled job exists.
+The shell mounts foreground Firebase Cloud Messaging handling and links to the notification bell. The overview calls the authenticated AI server module only after `Generate Overview` or `Regenerate Overview`; provider failure leaves exact facts visible. Fonts use `next/font`. No shell-owned Cloud Function or scheduled job exists.
 
 Authenticated emulator tests enter through `/e2e-login`; that route is rendered only for an explicit demo-project emulator configuration and delegates custom-token sign-in to the identity module.
 

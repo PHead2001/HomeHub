@@ -41,11 +41,10 @@ export const generateRecipeFlow = ai.defineFlow(
       outputSchema: GenerateRecipeOutputSchema,
       timeoutMs: 25_000,
       maxOutputTokens: 1_600,
-      prompt: [
+      taskInstruction: [
         'Create one practical home recipe primarily using the supplied pantry items.',
         'Use conventional flavor pairings. Put only common missing staples under needed.',
         'Return clear steps and only the requested structured output.',
-        `Pantry items: ${JSON.stringify(input.items)}`,
       ].join('\n'),
     });
     return result.output;

@@ -35,7 +35,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 Popup cancellation produces `Login canceled.` and clears loading in `finally`.
 
-For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for the fixed fake owner and `/e2e-login` exchanges it with `signInWithCustomToken`. Both paths are guarded by explicit emulator mode, a `demo-` project ID, and loopback Auth/Firestore hosts; normal and production authentication remain Google-only.
+For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for an allowlisted fake test identity and `/e2e-login` exchanges it with `signInWithCustomToken`. The default remains `e2e-owner-uid`; limited, legacy, and Household B identities support isolation tests. Both paths are guarded by explicit emulator mode, the exact demo project, loopback Auth/Firestore hosts, and non-production runtime; normal and production authentication remain Google-only.
 
 ## Data Model and Persistence
 

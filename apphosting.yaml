@@ -31,3 +31,8 @@ env:
     value: gpt-5.6-luna
     availability:
       - RUNTIME
+
+  - variable: OPENAI_OVERVIEW_MODEL
+    value: gpt-5.6-luna
+    availability:
+      - RUNTIME

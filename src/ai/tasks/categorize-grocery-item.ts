@@ -32,11 +32,9 @@ export const categorizeGroceryItemFlow = ai.defineFlow(
       outputSchema: CategorizeGroceryItemOutputSchema,
       timeoutMs: 8_000,
       maxOutputTokens: 200,
-      prompt: [
+      taskInstruction: [
         'Categorize the grocery item using exactly one category from the supplied list.',
         'Use Other when none fits. Return only the requested structured output.',
-        `Item: ${JSON.stringify(input.itemName)}`,
-        `Categories: ${JSON.stringify(input.categories)}`,
       ].join('\n'),
     });
 

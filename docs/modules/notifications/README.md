@@ -61,6 +61,8 @@ Creation rules do not verify that optional target UID/email belongs to the house
 
 ## Cross-Module Dependencies
 
+The homepage overview counts only active notifications visible to the verified user, respecting UID/email targeting, expiration, dismissal, resolution, and read state. It sends at most five bounded maintenance/system titles to the optional narrative.
+
 - [Chores](../chores/README.md), [Maintenance Center](../maintenance-center/README.md), and [Household Governance](../household-governance/README.md) create records.
 - [Identity and Profile](../identity-profile/README.md) stores FCM tokens.
 - [Application Shell and Dashboard](../application-shell/README.md) mounts bell/foreground handlers.

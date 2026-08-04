@@ -3,8 +3,10 @@ import { z } from 'genkit';
 import { ai } from '@/ai/genkit';
 import { HomeHubAiError, normalizeAiError } from '@/ai/errors';
 import { hasOpenAiApiKey } from '@/ai/model-config';
+import { buildUntrustedDataPrompt, HOMEHUB_AI_SYSTEM_INSTRUCTION } from '@/ai/system-instruction';
 
-export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary';
+export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary' | 'overview';
+export type AiReasoningEffort = 'low' | 'medium' | 'high';
 
 export type AiGenerationUsage = {
   inputTokens?: number;
@@ -17,6 +19,22 @@ export type StructuredGenerationResult<T> = {
   model: string;
   usage?: AiGenerationUsage;
 };
+
+export type DeterministicGenerationMetadata = {
+  flowName: ModelBackedFlowName;
+  model: string;
+  system: string;
+  taskInstruction: string;
+  untrustedInput: unknown;
+  reasoningEffort?: AiReasoningEffort;
+};
+
+type GenerationState = typeof globalThis & {
+  __homeHubLastDeterministicGeneration?: DeterministicGenerationMetadata;
+};
+
+const generationState = globalThis as GenerationState;
+export const getLastDeterministicGeneration = () => generationState.__homeHubLastDeterministicGeneration;
 
 const deterministicModeName = 'deterministic';
 const loopbackHost = /^(?:localhost|127\.0\.0\.1|\[::1\]):\d+$/;
@@ -86,6 +104,28 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
     };
   }
 
+  if (flowName === 'overview') {
+    return {
+      headline: 'Your home at a glance',
+      summary: 'Review the exact household facts below and start with the most time-sensitive items.',
+      priorities: [
+        {
+          level: 'urgent',
+          title: 'Review due work',
+          explanation: 'Some supplied household facts are due or overdue.',
+          sourceSection: 'maintenance',
+        },
+        {
+          level: 'soon',
+          title: 'Check your tasks',
+          explanation: 'Your assigned chore facts include upcoming work.',
+          sourceSection: 'chores',
+        },
+      ],
+      sectionSummaries: {},
+    };
+  }
+
   const summaryInput = input as { log: string };
   const cleanLog = summaryInput.log.replace(/ai-test:[a-z-]+/gi, '').trim();
   return { summary: `Maintenance summary: ${cleanLog.slice(0, 220)}` };
@@ -110,23 +150,33 @@ export const generateStructured = async <Schema extends z.ZodTypeAny>({
   input,
   model,
   outputSchema,
-  prompt,
+  taskInstruction,
   timeoutMs,
   maxOutputTokens,
+  reasoningEffort,
 }: {
   flowName: ModelBackedFlowName;
   input: unknown;
   model: string;
   outputSchema: Schema;
-  prompt: string;
+  taskInstruction: string;
   timeoutMs: number;
   maxOutputTokens: number;
+  reasoningEffort?: AiReasoningEffort;
 }): Promise<StructuredGenerationResult<z.infer<Schema>>> => {
   const startedAt = Date.now();
   let outcome = 'success';
 
   try {
     if (isDeterministicMode()) {
+      generationState.__homeHubLastDeterministicGeneration = {
+        flowName,
+        model,
+        system: HOMEHUB_AI_SYSTEM_INSTRUCTION,
+        taskInstruction,
+        untrustedInput: input,
+        reasoningEffort,
+      };
       const output = outputSchema.parse(deterministicOutput(flowName, input));
       return { output, model: `deterministic/${model}` };
     }
@@ -134,10 +184,12 @@ export const generateStructured = async <Schema extends z.ZodTypeAny>({
 
     const response = await withTimeout(signal => ai.generate({
       model: openAI.model(model),
-      prompt,
+      system: HOMEHUB_AI_SYSTEM_INSTRUCTION,
+      prompt: buildUntrustedDataPrompt(taskInstruction, input),
       output: { schema: outputSchema },
       config: {
         max_completion_tokens: maxOutputTokens,
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       },
       abortSignal: signal,
     }), timeoutMs);

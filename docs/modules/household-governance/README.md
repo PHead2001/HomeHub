@@ -30,9 +30,9 @@ This module owns household creation and recovery, membership, roles, permission 
 
 `AuthProvider` creates, joins, leaves, and recovers household membership. `HouseholdManager` chooses the onboarding or pending-approval overlay. `HouseholdManagementClient` performs management operations with Firestore batches/transactions and writes audit/system notification records.
 
-Legacy users are resolved through `users/{email}.householdId` and `households.memberEmails`; missing UID member documents are backfilled best-effort.
+Legacy users are resolved through `users/{email}.householdId` and `households.memberEmails`; missing UID member documents are backfilled best-effort. Only household-owned owner UID/email evidence grants owner. Every other legacy email member is normalized to `member` with no profile-derived permission overrides, even when `users/{email}.role` contains an old elevated value.
 
-The emulator E2E seed creates matching email profile, household, and UID member documents for a fake owner, plus admin, member, and pending `newuser` membership fixtures. This validates the primary membership path without relying on legacy recovery.
+The emulator E2E seed creates Household A and Household B, matching fake identities, a limited member, and a legacy profile-elevation fixture. Cross-household and conservative fallback checks complement the primary owner/admin/member/pending membership path.
 
 ## Data Model and Persistence
 

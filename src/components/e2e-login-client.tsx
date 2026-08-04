@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { auth } from "@/lib/firebase";
 
-export function E2ELoginClient() {
+export function E2ELoginClient({ uid }: { uid?: string }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
 
@@ -18,6 +18,8 @@ export function E2ELoginClient() {
         const response = await fetch("/api/e2e/auth-token", {
           method: "POST",
           cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(uid ? { uid } : {}),
         });
         if (!response.ok) {
           throw new Error("The emulator-only authentication endpoint is unavailable.");
@@ -43,7 +45,7 @@ export function E2ELoginClient() {
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [router, uid]);
 
   return (
     <div className="container mx-auto flex min-h-[60vh] items-center justify-center px-4 py-8">

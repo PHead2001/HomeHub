@@ -8,8 +8,24 @@ const OWNER = {
   email: "alex.e2e@example.test",
   displayName: "Alex E2E",
 };
+const LIMITED_USER = {
+  uid: "e2e-limited-uid",
+  email: "casey.limited@example.test",
+  displayName: "Casey Limited",
+};
+const LEGACY_USER = {
+  uid: "e2e-legacy-uid",
+  email: "riley.legacy@example.test",
+  displayName: "Riley Legacy",
+};
+const HOUSEHOLD_B_OWNER = {
+  uid: "e2e-household-b-owner-uid",
+  email: "taylor.household-b@example.test",
+  displayName: "Taylor Household B",
+};
 const HOUSEHOLD_ID = "the-foxy-residence-e2e";
 const HOUSEHOLD_NAME = "The Foxy Residence E2E";
+const HOUSEHOLD_B_ID = "the-otter-residence-e2e";
 const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\]):\d+$/;
 const FIXED_NOW = new Date("2026-08-01T12:00:00.000Z");
 
@@ -54,25 +70,28 @@ const app = getApps()[0] || initializeApp({ projectId: PROJECT_ID });
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-try {
-  await auth.getUser(OWNER.uid);
-  await auth.updateUser(OWNER.uid, {
-    email: OWNER.email,
-    displayName: OWNER.displayName,
-    emailVerified: true,
-  });
-} catch (error) {
-  if (error?.code !== "auth/user-not-found") {
-    throw error;
+for (const user of [OWNER, LIMITED_USER, LEGACY_USER, HOUSEHOLD_B_OWNER]) {
+  try {
+    await auth.getUser(user.uid);
+    await auth.updateUser(user.uid, {
+      email: user.email,
+      displayName: user.displayName,
+      emailVerified: true,
+    });
+  } catch (error) {
+    if (error?.code !== "auth/user-not-found") {
+      throw error;
+    }
+    await auth.createUser({
+      ...user,
+      emailVerified: true,
+    });
   }
-  await auth.createUser({
-    ...OWNER,
-    emailVerified: true,
-  });
 }
 
 const household = db.collection("households").doc(HOUSEHOLD_ID);
-await db.recursiveDelete(household);
+const householdB = db.collection("households").doc(HOUSEHOLD_B_ID);
+await Promise.all([db.recursiveDelete(household), db.recursiveDelete(householdB)]);
 
 const batch = db.batch();
 const set = (path, data) => batch.set(db.doc(path), data);
@@ -89,6 +108,39 @@ set(`users/${OWNER.email}`, {
   forcePasswordChange: false,
   fcmTokens: [],
   theme: null,
+});
+set(`users/${LIMITED_USER.email}`, {
+  email: LIMITED_USER.email,
+  displayName: LIMITED_USER.displayName,
+  firstName: "Casey",
+  lastName: "Limited",
+  avatarUrl: null,
+  role: "guest",
+  permissions: {},
+  householdId: HOUSEHOLD_ID,
+  fcmTokens: [],
+});
+set(`users/${LEGACY_USER.email}`, {
+  email: LEGACY_USER.email,
+  displayName: LEGACY_USER.displayName,
+  firstName: "Riley",
+  lastName: "Legacy",
+  avatarUrl: null,
+  role: "super-admin",
+  permissions: { "household.delete": true, "shopping.delete": true },
+  householdId: HOUSEHOLD_ID,
+  fcmTokens: [],
+});
+set(`users/${HOUSEHOLD_B_OWNER.email}`, {
+  email: HOUSEHOLD_B_OWNER.email,
+  displayName: HOUSEHOLD_B_OWNER.displayName,
+  firstName: "Taylor",
+  lastName: "B",
+  avatarUrl: null,
+  role: "owner",
+  permissions: {},
+  householdId: HOUSEHOLD_B_ID,
+  fcmTokens: [],
 });
 set("users/morgan.admin@example.test", {
   email: "morgan.admin@example.test",
@@ -130,6 +182,8 @@ batch.set(household, {
     "morgan.admin@example.test",
     "sam.member@example.test",
     "jamie.pending@example.test",
+    LIMITED_USER.email,
+    LEGACY_USER.email,
   ],
   createdAt: "2026-01-15T15:00:00.000Z",
   updatedAt: FIXED_NOW.toISOString(),
@@ -169,14 +223,51 @@ const members = [
     status: "pending",
     joinedAt: "2026-07-31T18:00:00.000Z",
   },
+  {
+    uid: LIMITED_USER.uid,
+    email: LIMITED_USER.email,
+    displayName: LIMITED_USER.displayName,
+    role: "guest",
+    status: "active",
+    permissions: { "shopping.view": false, "notifications.view": false },
+    joinedAt: "2026-07-15T18:00:00.000Z",
+  },
 ];
 for (const member of members) {
   batch.set(household.collection("members").doc(member.uid), {
     ...member,
-    permissions: {},
+    permissions: member.permissions || {},
     avatarUrl: null,
   });
 }
+
+batch.set(householdB, {
+  name: "The Otter Residence E2E",
+  ownerUid: HOUSEHOLD_B_OWNER.uid,
+  ownerEmail: HOUSEHOLD_B_OWNER.email,
+  memberEmails: [HOUSEHOLD_B_OWNER.email],
+  createdAt: "2026-01-20T15:00:00.000Z",
+  updatedAt: FIXED_NOW.toISOString(),
+});
+batch.set(householdB.collection("members").doc(HOUSEHOLD_B_OWNER.uid), {
+  ...HOUSEHOLD_B_OWNER,
+  role: "owner",
+  status: "active",
+  permissions: {},
+  joinedAt: "2026-01-20T15:00:00.000Z",
+});
+batch.set(householdB.collection("chores").doc("private-b-chore"), {
+  task: "HOUSEHOLD-B-PRIVATE-CHORE",
+  assignedToEmail: HOUSEHOLD_B_OWNER.email,
+  dueDate: "2026-08-01",
+  isCompleted: false,
+  originalDueDate: "2026-08-01",
+});
+batch.set(householdB.collection("barcode-library").doc("012345678905"), {
+  name: "HOUSEHOLD-B-PRIVATE-PRODUCT",
+  imageUrl: "",
+  createdAt: "2026-07-25T15:00:00.000Z",
+});
 
 batch.set(household.collection("auditLogs").doc("seed-member-joined"), {
   actorUid: OWNER.uid,

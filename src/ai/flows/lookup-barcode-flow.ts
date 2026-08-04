@@ -1,105 +1,138 @@
-
 'use server';
-/**
- * @fileOverview Looks up a product by its barcode, first checking a local
- * household library and then falling back to the Open Food Facts API.
- * 
- * - lookupBarcode - A function that takes a barcode and returns product info.
- * - LookupBarcodeInput - The input type for the lookupBarcode function.
- * - LookupBarcodeOutput - The return type for the lookupBarcode function.
- */
 
-import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import type { BarcodeLibraryItem } from '@/lib/types';
-
+import {
+  executeAuthorizedAiAction,
+  type AiActionContext,
+  type AuthorizedHouseholdUser,
+} from '@/ai/action-auth';
+import type { AiActionResult } from '@/ai/errors';
+import { parseOpenFoodFactsQuantity } from '@/ai/barcode-quantity';
+import { adminDb } from '@/lib/server/firebase-admin';
+import type { BarcodeLibraryItem, PantryItemUnit } from '@/lib/types';
 
 const LookupBarcodeInputSchema = z.object({
-  barcode: z.string().describe('The product barcode (UPC) to look up.'),
-  householdId: z.string().describe('The ID of the household to check the local library for.'),
+  barcode: z.string().trim().regex(/^\d{6,32}$/),
 });
 export type LookupBarcodeInput = z.infer<typeof LookupBarcodeInputSchema>;
 
-const BarcodeLibraryItemSchema = z.object({
-    id: z.string(),
-    name: z.string(),
-    imageUrl: z.string(),
-    createdAt: z.string(),
+export type LookupBarcodeOutput = {
+  productName: string | null;
+  libraryItem: BarcodeLibraryItem | null;
+  source: 'household' | 'open_food_facts' | 'none';
+  quantity?: number;
+  unit?: PantryItemUnit;
+  rawQuantity?: string;
+  imageUrl?: string;
+};
+
+type OpenFoodFactsProduct = {
+  product_name?: unknown;
+  quantity?: unknown;
+  product_quantity?: unknown;
+  product_quantity_unit?: unknown;
+  image_front_url?: unknown;
+};
+
+const deterministicFixtures: Record<string, OpenFoodFactsProduct | null | 'timeout' | 'rate-limit' | 'malformed'> = {
+  '008500001280': { product_name: 'E2E Family Juice', quantity: '128 fl oz' },
+  '009900045000': { product_name: 'E2E Yogurt Multipack', quantity: '3 x 150 g', product_quantity: 450, product_quantity_unit: 'g' },
+  '007700000006': { product_name: 'E2E Odd Measure', quantity: '1 bushel' },
+  '000000000404': null,
+  '000000000408': 'timeout',
+  '000000000429': 'rate-limit',
+  '000000000422': 'malformed',
+};
+
+const isSafeDeterministicMode = () => process.env.HOMEHUB_AI_TEST_MODE === 'deterministic'
+  && process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === 'true'
+  && process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID === 'demo-homehub-e2e'
+  && process.env.NODE_ENV !== 'production';
+
+const sanitizeLibraryItem = (id: string, data: Record<string, unknown>): BarcodeLibraryItem => ({
+  id,
+  name: typeof data.name === 'string' ? data.name.slice(0, 160) : 'Saved product',
+  imageUrl: typeof data.imageUrl === 'string' ? data.imageUrl : '',
+  ...(typeof data.imagePath === 'string' ? { imagePath: data.imagePath } : {}),
+  createdAt: typeof data.createdAt === 'string' ? data.createdAt : new Date(0).toISOString(),
 });
 
-const LookupBarcodeOutputSchema = z.object({
-  productName: z.string().nullable().describe('The name of the product found, or null if not found.'),
-  libraryItem: BarcodeLibraryItemSchema.nullable().describe('The item from the local library, if found.'),
-});
-export type LookupBarcodeOutput = z.infer<typeof LookupBarcodeOutputSchema>;
-
-
-async function lookupInLocalLibrary(householdId: string, barcode: string): Promise<BarcodeLibraryItem | null> {
-    const itemDocRef = doc(db, 'households', householdId, 'barcode-library', barcode);
-    try {
-        const docSnap = await getDoc(itemDocRef);
-        if (docSnap.exists()) {
-            return { id: docSnap.id, ...docSnap.data() } as BarcodeLibraryItem;
-        }
-        return null;
-    } catch (error) {
-        console.error('Error looking up in local barcode library:', error);
-        return null; // Don't block the flow if this fails
-    }
-}
-
-
-async function lookupProductOnOpenFoodFacts(barcode: string): Promise<string | null> {
-    const url = `https://world.openfoodfacts.org/api/v0/product/${barcode}.json`;
-    try {
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'HomeHubApp - Web - Version 1.0',
-            }
-        });
-        if (!response.ok) {
-            console.error(`Open Food Facts API error: ${response.status}`);
-            return null;
-        }
-        const data = await response.json();
-        if (data.status === 1 && data.product && data.product.product_name) {
-            return data.product.product_name;
-        }
-        return null;
-    } catch (error) {
-        console.error('Failed to fetch from Open Food Facts API', error);
-        return null;
-    }
-}
-
-export async function lookupBarcode(input: LookupBarcodeInput): Promise<LookupBarcodeOutput> {
-  return lookupBarcodeFlow(input);
-}
-
-
-const lookupBarcodeFlow = ai.defineFlow(
-  {
-    name: 'lookupBarcodeFlow',
-    inputSchema: LookupBarcodeInputSchema,
-    outputSchema: LookupBarcodeOutputSchema,
-  },
-  async ({ barcode, householdId }) => {
-    // 1. Check local library first
-    const libraryItem = await lookupInLocalLibrary(householdId, barcode);
-    if (libraryItem) {
-        return {
-            productName: libraryItem.name,
-            libraryItem: libraryItem,
-        }
-    }
-
-    // 2. If not found, fall back to Open Food Facts API
-    const productName = await lookupProductOnOpenFoodFacts(barcode);
-    return {
-        productName,
-        libraryItem: null,
-    };
+const fetchOpenFoodFacts = async (barcode: string): Promise<OpenFoodFactsProduct | null> => {
+  if (isSafeDeterministicMode()) {
+    const fixture = deterministicFixtures[barcode] ?? null;
+    if (fixture === 'timeout') throw new Error('Open Food Facts request timed out.');
+    if (fixture === 'rate-limit') throw new Error('Open Food Facts request was rate limited.');
+    if (fixture === 'malformed') throw new Error('Open Food Facts returned malformed data.');
+    return fixture;
   }
-);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const fields = 'product_name,quantity,product_quantity,product_quantity_unit,image_front_url';
+    const response = await fetch(`https://world.openfoodfacts.org/api/v3/product/${barcode}.json?fields=${fields}`, {
+      headers: { 'User-Agent': 'HomeHub/1.0 (private household inventory application)' },
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    if (response.status === 404 || response.status === 429 || !response.ok) return null;
+    const payload = await response.json() as { status?: unknown; product?: OpenFoodFactsProduct };
+    return payload.status === 'success' || payload.status === 1 ? payload.product || null : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+export const lookupBarcodeForAuthorizedUser = async (
+  rawInput: LookupBarcodeInput,
+  user: AuthorizedHouseholdUser
+): Promise<LookupBarcodeOutput> => {
+  const { barcode } = LookupBarcodeInputSchema.parse(rawInput);
+  const snapshot = await adminDb
+    .collection('households')
+    .doc(user.householdId)
+    .collection('barcode-library')
+    .doc(barcode)
+    .get();
+
+  if (snapshot.exists) {
+    const libraryItem = sanitizeLibraryItem(snapshot.id, snapshot.data() || {});
+    return { productName: libraryItem.name, libraryItem, source: 'household' };
+  }
+
+  const product = await fetchOpenFoodFacts(barcode);
+  const productName = typeof product?.product_name === 'string' ? product.product_name.trim().slice(0, 160) : null;
+  if (!productName) return { productName: null, libraryItem: null, source: 'none' };
+  const productData = product as OpenFoodFactsProduct;
+
+  const rawQuantity = typeof productData.quantity === 'string' ? productData.quantity.trim().slice(0, 80) : undefined;
+  const parsed = parseOpenFoodFactsQuantity({
+    quantityText: rawQuantity,
+    normalizedQuantity: typeof productData.product_quantity === 'number' || typeof productData.product_quantity === 'string'
+      ? productData.product_quantity : undefined,
+    normalizedUnit: typeof productData.product_quantity_unit === 'string' ? productData.product_quantity_unit : undefined,
+  });
+  return {
+    productName,
+    libraryItem: null,
+    source: 'open_food_facts',
+    ...(parsed || {}),
+    ...(rawQuantity ? { rawQuantity } : {}),
+    ...(typeof productData.image_front_url === 'string' ? { imageUrl: productData.image_front_url } : {}),
+  };
+};
+
+export async function lookupBarcode(
+  input: LookupBarcodeInput,
+  context: AiActionContext
+): Promise<AiActionResult<LookupBarcodeOutput>> {
+  return executeAuthorizedAiAction({
+    context,
+    permission: 'shopping.view',
+    flowName: 'barcode-lookup',
+    maxRequestsPerMinute: 30,
+    task: user => lookupBarcodeForAuthorizedUser(input, user),
+  });
+}

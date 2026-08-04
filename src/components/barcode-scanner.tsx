@@ -1,7 +1,11 @@
 "use client";
 
+import * as React from 'react';
 import { useZxing } from 'react-zxing';
 import { useToast } from '@/hooks/use-toast';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 interface BarcodeScannerProps {
     onScan: (barcode: string) => void;
@@ -9,6 +13,7 @@ interface BarcodeScannerProps {
 
 export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
   const { toast } = useToast();
+  const [manualBarcode, setManualBarcode] = React.useState('');
   
   const { ref } = useZxing({
     onDecodeResult(result) {
@@ -34,11 +39,36 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
   });
 
   return (
-    <div className="relative w-full aspect-video overflow-hidden rounded-md">
-       <video ref={ref as React.RefObject<HTMLVideoElement>} className="w-full h-full object-cover" />
-       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className="w-3/4 h-1/3 border-2 border-red-500 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
+    <div className="space-y-4">
+      <div className="relative aspect-video w-full overflow-hidden rounded-md">
+        <video ref={ref as React.RefObject<HTMLVideoElement>} className="h-full w-full object-cover" />
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="h-1/3 w-3/4 rounded-lg border-2 border-red-500 shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
+        </div>
       </div>
+      <form
+        className="flex items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!/^\d{6,32}$/.test(manualBarcode.trim())) {
+            toast({ variant: 'destructive', title: 'Invalid Barcode', description: 'Enter 6 to 32 digits.' });
+            return;
+          }
+          onScan(manualBarcode.trim());
+        }}
+      >
+        <div className="min-w-0 flex-1 space-y-1">
+          <Label htmlFor="manual-barcode">Barcode number</Label>
+          <Input
+            id="manual-barcode"
+            inputMode="numeric"
+            autoComplete="off"
+            value={manualBarcode}
+            onChange={event => setManualBarcode(event.target.value.replace(/\D/g, ''))}
+          />
+        </div>
+        <Button type="submit">Use barcode</Button>
+      </form>
     </div>
   );
 };

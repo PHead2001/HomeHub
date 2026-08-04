@@ -5,6 +5,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const E2E_UID = "e2e-owner-uid";
+const ALLOWED_E2E_UIDS = new Set([
+  E2E_UID,
+  "e2e-limited-uid",
+  "e2e-legacy-uid",
+  "e2e-household-b-owner-uid",
+]);
 const CUSTOM_TOKEN_AUDIENCE =
   "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit";
 const LOOPBACK_EMULATOR_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\]):\d+$/;
@@ -24,7 +30,7 @@ const emulatorModeIsSafe = () => {
     && Boolean(firestoreHost && LOOPBACK_EMULATOR_HOST.test(firestoreHost));
 };
 
-const createEmulatorCustomToken = () => {
+const createEmulatorCustomToken = (uid: string) => {
   const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!;
   const now = Math.floor(Date.now() / 1000);
   const serviceAccount = `firebase-e2e@${projectId}.iam.gserviceaccount.com`;
@@ -35,7 +41,7 @@ const createEmulatorCustomToken = () => {
     aud: CUSTOM_TOKEN_AUDIENCE,
     iat: now,
     exp: now + 60 * 60,
-    uid: E2E_UID,
+    uid,
     claims: { e2e: true },
   });
 
@@ -48,13 +54,17 @@ const createEmulatorCustomToken = () => {
   return `${header}.${payload}.${signature}`;
 };
 
-export async function POST() {
+export async function POST(request: Request) {
   if (!emulatorModeIsSafe()) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
 
+  const body = await request.json().catch(() => ({})) as { uid?: string };
+  const uid = body.uid || E2E_UID;
+  if (!ALLOWED_E2E_UIDS.has(uid)) return NextResponse.json({ error: "Unknown E2E identity." }, { status: 400 });
+
   return NextResponse.json(
-    { token: createEmulatorCustomToken() },
+    { token: createEmulatorCustomToken(uid) },
     {
       headers: {
         "Cache-Control": "no-store",

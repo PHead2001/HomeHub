@@ -538,12 +538,16 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
     try {
-        const { productName, libraryItem } = await lookupBarcode({ barcode, householdId: currentUser.householdId });
+        const result = unwrapAiActionResult(await lookupBarcode(
+          { barcode },
+          await getAiActionContext(currentUser.householdId)
+        ));
+        const { productName, libraryItem } = result;
         
         const finalName = libraryItem?.name || productName;
 
         if (finalName) {
-            await onAddItemSubmit({ name: finalName, quantity: 1 }, libraryItem, barcode);
+            await onAddItemSubmit({ name: finalName, quantity: result.quantity || 1 }, libraryItem, barcode);
         } else {
             toast({ variant: 'destructive', title: 'Product Not Found', description: 'Could not find a product for that barcode. You can add it to your library manually.' });
         }
