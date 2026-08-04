@@ -7,6 +7,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
+import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { Button } from '@/components/ui/button';
@@ -490,13 +491,17 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
   const currentQuantity = watch('quantity');
 
   const onAddItemSubmit = async (values: z.infer<typeof itemSchema>, libraryItem?: BarcodeLibraryItem | null, barcode?: string) => {
-    if (!currentUser?.householdId || !selectedList) return;
+    const householdId = currentUser?.householdId;
+    if (!householdId || !selectedList) return;
     try {
         const categoryResult = await resolveShoppingCategory({
           itemName: values.name,
           categories,
           selectedCategory: values.category,
-          categorize: categorizeGroceryItem,
+          categorize: async categorizeInput => unwrapAiActionResult(await categorizeGroceryItem(
+            categorizeInput,
+            await getAiActionContext(householdId)
+          )),
         });
         const { category } = categoryResult;
         const newItem: Omit<ShoppingListItem, 'id' | 'status'> = {
@@ -508,10 +513,17 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
             ...(barcode ? { barcode } : {}),
         };
         const itemId = slugify(values.name);
-        await setDoc(doc(db, 'households', currentUser.householdId, 'shopping-lists', selectedList.id, 'items', itemId), { ...newItem, status: 'needed' });
+        await setDoc(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', itemId), { ...newItem, status: 'needed' });
         toast({ title: "Item Added", description: `${values.name} was added to the ${category} category.` });
         if (categoryResult.usedFallback) {
-          toast({ title: 'Automatic categorization unavailable', description: `${values.name} was saved to Other. You can update its category later.` });
+          const reason = categoryResult.reason === 'timeout'
+            ? 'Automatic categorization timed out.'
+            : categoryResult.reason === 'rate_limited'
+              ? 'Automatic categorization is receiving too many requests.'
+              : categoryResult.reason === 'configuration'
+                ? 'Automatic categorization is not configured.'
+                : 'Automatic categorization was unavailable.';
+          toast({ title: 'Item saved to Other', description: `${reason} You can update ${values.name} later.` });
         }
         form.reset({ name: '', quantity: 1, category: '' });
         setIsAddItemDialogOpen(false);

@@ -2,7 +2,7 @@
 
 HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance records, notifications, and Home Assistant entity-state viewing into one Firebase-backed Next.js app.
 
-The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/Gemini powers grocery categorization, recipe ideas, and maintenance-log summaries; a Genkit server flow coordinates household and public barcode lookup without invoking a model.
+The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/OpenAI powers grocery categorization, recipe ideas, and maintenance-log summaries; a Genkit server flow coordinates household and public barcode lookup without invoking a model.
 
 ## Main Modules
 
@@ -47,7 +47,7 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 - React 18 and TypeScript
 - Tailwind CSS and shadcn-style UI components
 - Firebase Auth, Firestore, Storage, Cloud Functions, Cloud Messaging, and App Hosting
-- Genkit with Google AI
+- Genkit with the OpenAI compatibility provider
 
 ## Project Structure
 
@@ -100,8 +100,14 @@ NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
 NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
 NEXT_PUBLIC_FIREBASE_APP_ID=
 NEXT_PUBLIC_FIREBASE_VAPID_KEY=
-GEMINI_API_KEY=
+OPENAI_API_KEY=
+OPENAI_DEFAULT_MODEL=gpt-5-mini
+OPENAI_CATEGORIZATION_MODEL=gpt-5-mini
+OPENAI_RECIPE_MODEL=gpt-5-mini
+OPENAI_MAINTENANCE_MODEL=gpt-5-mini
 ```
+
+`OPENAI_API_KEY` is server-only. The per-flow variables are optional overrides and default to `gpt-5-mini`. Normal emulator and CI tests use an explicit deterministic provider and do not need a key or make paid API calls.
 
 Run the app locally:
 
@@ -110,6 +116,14 @@ npm run dev
 ```
 
 The dev server uses port `9002`.
+
+For Firebase App Hosting, create or update the production secret interactively; never put its value in this repository:
+
+```powershell
+firebase apphosting:secrets:set openaiApiKey
+```
+
+`apphosting.yaml` exposes that secret only at runtime. A deployment is not ready for model traffic until the secret exists, backend access is granted, and the optional live smoke test has passed with the replacement key.
 
 ## Authenticated Emulator Testing
 
@@ -125,6 +139,19 @@ npm.cmd run test:e2e:local
 The runner starts Auth, Firestore, and Storage emulators, seeds deterministic household data, starts Next.js on port `9002`, authenticates through the emulator-only custom-token route, and runs desktop/mobile smoke, regression, and visual tests. See [Authenticated Firebase Emulator E2E and Visual Testing](docs/testing/firebase-emulator-e2e.md) for split-terminal commands, snapshot updates, generated artifacts, and safety details.
 
 Pull requests targeting `main` also run the `Authenticated E2E Smoke` GitHub Actions workflow. It validates lint, types, module docs, and the production build before running authenticated desktop/mobile route smoke coverage plus focused regression checks with `npm run test:e2e:ci`. Strict visual comparisons remain local-only because the committed baselines were generated on Windows and are not enforced against Linux rendering yet.
+
+AI-specific checks:
+
+```powershell
+npm.cmd run test:ai
+npm.cmd run test:e2e:ai:local
+```
+
+The optional paid provider smoke is manual-only and requires `OPENAI_API_KEY` already loaded securely in the process environment:
+
+```powershell
+npm.cmd run test:ai:openai:live
+```
 
 ## Validation
 

@@ -51,6 +51,7 @@ export const e2eEnvironment = {
   GCLOUD_PROJECT: E2E_PROJECT_ID,
   FIREBASE_CONFIG: JSON.stringify({ projectId: E2E_PROJECT_ID }),
   FIREBASE_CLI_DISABLE_UPDATE_CHECK: "true",
+  HOMEHUB_AI_TEST_MODE: "deterministic",
 };
 
 export const runCommand = (command, args, options = {}) => {

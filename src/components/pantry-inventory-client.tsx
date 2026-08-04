@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -15,6 +15,8 @@ import { collection, doc, getDocs, deleteDoc, writeBatch, query, orderBy, getDoc
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
+import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
+import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -353,30 +355,42 @@ function PantryItemDialog({
 function RecipeGeneratorDialog({
     isOpen,
     onOpenChange,
-    pantryItems
+    pantryItems,
+    householdId,
 }: {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
     pantryItems: PantryItem[];
+    householdId: string;
 }) {
     const { toast } = useToast();
     const [isLoading, setIsLoading] = useState(false);
     const [recipe, setRecipe] = useState<GenerateRecipeOutput | null>(null);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const requestInFlight = useRef(false);
 
     const handleGenerateRecipe = useCallback(async () => {
+        if (requestInFlight.current) return;
+        requestInFlight.current = true;
         setIsLoading(true);
         setRecipe(null);
+        setErrorMessage(null);
         try {
-            const result = await generateRecipe({ items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) });
+            const result = unwrapAiActionResult(await generateRecipe(
+              { items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
+              await getAiActionContext(householdId)
+            ));
             setRecipe(result);
         } catch (error) {
-            console.error("Error generating recipe: ", error instanceof Error ? error : String(error));
-            toast({ variant: 'destructive', title: "Generation Failed", description: getErrorMessage(error) || "Could not generate a recipe." });
-            onOpenChange(false); // Close dialog on error
+            const message = getErrorMessage(error) || 'Could not generate a recipe.';
+            console.error('Recipe generation failed', message);
+            setErrorMessage(message);
+            toast({ variant: 'destructive', title: 'Generation Failed', description: message });
         } finally {
+            requestInFlight.current = false;
             setIsLoading(false);
         }
-    }, [pantryItems, onOpenChange, toast]);
+    }, [householdId, pantryItems, toast]);
 
     // Automatically trigger generation when dialog opens
     useEffect(() => {
@@ -466,6 +480,15 @@ function RecipeGeneratorDialog({
                                  </ol>
                             </div>
                         </div>
+                    </div>
+                )}
+
+                {errorMessage && !isLoading && (
+                    <div role="alert" className="space-y-4 rounded-md border border-destructive/40 p-4">
+                        <p className="text-sm text-destructive">{errorMessage}</p>
+                        <Button type="button" variant="outline" onClick={() => void handleGenerateRecipe()}>
+                            Try Again
+                        </Button>
                     </div>
                 )}
                  <DialogFooter>
@@ -679,23 +702,31 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
   }, [currentUser, fetchItems, fetchShoppingLists]);
   
   const handleAddToSpecificList = useCallback(async (listId: string, itemName: string, quantity: number) => {
-    if (!currentUser?.householdId) return;
+    const householdId = currentUser?.householdId;
+    if (!householdId) return;
 
     toast({ title: "Adding to list...", description: `Categorizing ${itemName}...` });
     try {
-        const listItemsCollectionRef = collection(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'items');
-        const categoriesDocRef = doc(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'config', 'categories');
+        const listItemsCollectionRef = collection(db, 'households', householdId, 'shopping-lists', listId, 'items');
+        const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
         
         const categoriesDoc = await getDoc(categoriesDocRef);
         const defaultCategories = ['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other'];
         const categories = categoriesDoc.exists() && categoriesDoc.data().list ? categoriesDoc.data().list : defaultCategories;
 
-        const result = await categorizeGroceryItem({ itemName, categories });
+        const categoryResult = await resolveShoppingCategory({
+          itemName,
+          categories,
+          categorize: async categorizeInput => unwrapAiActionResult(await categorizeGroceryItem(
+            categorizeInput,
+            await getAiActionContext(householdId)
+          )),
+        });
         
         const newItem = {
             name: itemName,
             quantity: quantity,
-            category: result.category,
+            category: categoryResult.category,
             createdAt: new Date(),
             status: 'needed',
         };
@@ -703,6 +734,9 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
         const itemId = slugify(itemName);
         await setDoc(doc(listItemsCollectionRef, itemId), newItem);
         toast({ title: "Item Added!", description: `${itemName} was added to your shopping list.`});
+        if (categoryResult.usedFallback) {
+          toast({ title: 'Item saved to Other', description: 'Automatic categorization was unavailable. You can update the category later.' });
+        }
     } catch (error) {
         console.error('Failed to add to grocery list:', error);
         toast({ variant: 'destructive', title: 'Error', description: 'Could not add item to shopping list.' });
@@ -870,6 +904,7 @@ export function PantryInventoryClient({ itemToAddToPantry, onFinishAddingToPantr
         isOpen={isRecipeGenOpen}
         onOpenChange={setIsRecipeGenOpen}
         pantryItems={items}
+        householdId={currentUser?.householdId || ''}
       />
       <AlertDialog open={!!itemToDelete} onOpenChange={(open) => !open && setItemToDelete(null)}>
         <AlertDialogContent>

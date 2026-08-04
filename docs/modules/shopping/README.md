@@ -26,7 +26,7 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 
 ## Architecture and Data Flow
 
-`ShoppingCenterClient` coordinates Shopping Lists and Inventory tabs plus the purchased-item handoff. `ShoppingListClient` fetches list metadata/items explicitly, writes Firestore records, and treats the grocery categorization server action as optional enrichment for new items.
+`ShoppingCenterClient` coordinates Shopping Lists and Inventory tabs plus the purchased-item handoff. `ShoppingListClient` fetches list metadata/items explicitly, writes Firestore records, and treats the OpenAI-backed grocery categorization server action as optional enrichment for new items. The client sends a Firebase ID token; the action verifies household membership and `shopping.edit` before requesting a model.
 
 Checking a Grocery item marks it purchased before opening the pantry form. Canceling that form leaves the shopping item purchased. Reverting an item to needed does not subtract pantry inventory.
 
@@ -47,7 +47,7 @@ The `shopping.edit` and `shopping.delete` permissions exist, but the feature and
 
 ## Integrations and Background Processing
 
-- Grocery categorization calls the shared Genkit/Gemini flow only when the user leaves category selection on Automatic.
+- Grocery categorization calls the shared Genkit/OpenAI flow only when the user leaves category selection on Automatic. Emulator E2E uses the deterministic provider and never calls OpenAI.
 - Barcode lookup checks the household library, then Open Food Facts; camera capture uses `react-zxing`.
 - There are no shopping Cloud Functions, scheduled jobs, or real-time snapshot listeners.
 
@@ -60,7 +60,7 @@ The `shopping.edit` and `shopping.delete` permissions exist, but the feature and
 
 ## Invariants and Failure Behavior
 
-- A manually selected category bypasses AI. Automatic categorization errors, invalid responses, or a five-second timeout save exactly one item under `Other` and show a non-blocking fallback toast.
+- A manually selected category bypasses AI. Automatic categorization errors, invalid responses, configuration failures, rate limits, or a five-second client timeout save exactly one item under `Other` and show a non-blocking fallback toast.
 - Loaded custom category sets always include `Other`, so fallback items remain visible even when older category configuration omitted it.
 - Optional `imageUrl` and `barcode` fields are omitted from Firestore writes when absent; undefined values are never sent.
 - List/item refreshes use `getDocs`, not live listeners.

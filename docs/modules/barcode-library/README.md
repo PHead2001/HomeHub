@@ -25,7 +25,7 @@ This module owns camera/manual barcode capture, household product mappings, prod
 
 `BarcodeScanner` uses the device camera through `react-zxing` and returns a decoded value to its host form. `lookupBarcode` first attempts the household Firestore mapping and then calls Open Food Facts. The library client manages mappings and uploads images to household-scoped Storage before writing Firestore metadata.
 
-The lookup flow is implemented as a Genkit flow/server action but does not invoke a generative model.
+The lookup flow is implemented as a Genkit flow/server action but does not invoke OpenAI, does not need `OPENAI_API_KEY`, and remains usable when model configuration is absent.
 
 ## Data Model and Persistence
 

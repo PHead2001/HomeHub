@@ -1,44 +1,27 @@
 'use server';
-/**
- * @fileOverview Summarizes maintenance logs for quick understanding of appliance and home repair status.
- *
- * - summarizeMaintenanceLog - A function that summarizes maintenance logs.
- * - SummarizeMaintenanceLogInput - The input type for the summarizeMaintenanceLog function.
- * - SummarizeMaintenanceLogOutput - The return type for the summarizeMaintenanceLog function.
- */
 
-import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+import { executeAuthorizedAiAction, type AiActionContext } from '@/ai/action-auth';
+import type { AiActionResult } from '@/ai/errors';
+import {
+  summarizeMaintenanceLogFlow,
+} from '@/ai/tasks/summarize-maintenance-log';
+import type {
+  SummarizeMaintenanceLogInput as TaskInput,
+  SummarizeMaintenanceLogOutput as TaskOutput,
+} from '@/ai/tasks/summarize-maintenance-log';
 
-const SummarizeMaintenanceLogInputSchema = z.object({
-  log: z.string().describe('The maintenance log to summarize.'),
-});
-export type SummarizeMaintenanceLogInput = z.infer<typeof SummarizeMaintenanceLogInputSchema>;
+export type SummarizeMaintenanceLogInput = TaskInput;
+export type SummarizeMaintenanceLogOutput = TaskOutput;
 
-const SummarizeMaintenanceLogOutputSchema = z.object({
-  summary: z.string().describe('A summary of the maintenance log.'),
-});
-export type SummarizeMaintenanceLogOutput = z.infer<typeof SummarizeMaintenanceLogOutputSchema>;
-
-export async function summarizeMaintenanceLog(input: SummarizeMaintenanceLogInput): Promise<SummarizeMaintenanceLogOutput> {
-  return summarizeMaintenanceLogFlow(input);
+export async function summarizeMaintenanceLog(
+  input: SummarizeMaintenanceLogInput,
+  context: AiActionContext
+): Promise<AiActionResult<SummarizeMaintenanceLogOutput>> {
+  return executeAuthorizedAiAction({
+    context,
+    permission: 'maintenance.view',
+    flowName: 'maintenance-summary',
+    maxRequestsPerMinute: 12,
+    task: () => summarizeMaintenanceLogFlow(input),
+  });
 }
-
-const prompt = ai.definePrompt({
-  name: 'summarizeMaintenanceLogPrompt',
-  input: {schema: SummarizeMaintenanceLogInputSchema},
-  output: {schema: SummarizeMaintenanceLogOutputSchema},
-  prompt: `You are an expert home maintenance assistant. Please summarize the following maintenance log in a concise and easy-to-understand manner.\n\nLog: {{{log}}}`,
-});
-
-const summarizeMaintenanceLogFlow = ai.defineFlow(
-  {
-    name: 'summarizeMaintenanceLogFlow',
-    inputSchema: SummarizeMaintenanceLogInputSchema,
-    outputSchema: SummarizeMaintenanceLogOutputSchema,
-  },
-  async input => {
-    const {output} = await prompt(input);
-    return output!;
-  }
-);

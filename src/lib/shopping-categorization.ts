@@ -6,7 +6,7 @@ export type ShoppingCategorizer = (input: {
 export type ShoppingCategoryResolution = {
   category: string;
   usedFallback: boolean;
-  reason?: 'error' | 'timeout' | 'invalid';
+  reason?: 'configuration' | 'error' | 'invalid' | 'rate_limited' | 'refused' | 'timeout';
 };
 
 export async function resolveShoppingCategory({
@@ -40,7 +40,12 @@ export async function resolveShoppingCategory({
     }
     return { category: 'Other', usedFallback: true, reason: 'invalid' };
   } catch (error) {
-    const reason = error instanceof Error && error.message === 'categorization-timeout' ? 'timeout' : 'error';
+    const errorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    const reason = error instanceof Error && error.message === 'categorization-timeout'
+      ? 'timeout'
+      : errorCode === 'configuration' || errorCode === 'rate_limited' || errorCode === 'refused' || errorCode === 'timeout'
+        ? errorCode
+        : 'error';
     return { category: 'Other', usedFallback: true, reason };
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
