@@ -22,7 +22,7 @@ const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
 const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
 const emulatorTimeoutMs = 60_000;
-const suiteTimeoutMs = 360_000;
+const suiteTimeoutMs = process.env.CI === "true" ? 600_000 : 360_000;
 
 const parseHost = (value) => {
   const separator = value.lastIndexOf(":");

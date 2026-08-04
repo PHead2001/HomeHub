@@ -131,6 +131,6 @@ Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.j
 
 The CI command starts owned Auth, Firestore, and Storage emulator processes, seeds the fixed fake household, and runs authenticated route smoke plus focused regression coverage in desktop and mobile Chromium. Failures retain Playwright traces, screenshots, and videos through `test-results/`; the HTML report and Firebase emulator logs are also uploaded for 10 days. `playwright/.auth/` is deliberately excluded from artifacts.
 
-On Windows, `scripts/e2e/environment.mjs` uses `java` from `PATH` or discovers an installed JDK under common `Program Files` locations. Every owned runner still has hard timeouts and terminates its emulator process tree on completion or failure.
+On Windows, `scripts/e2e/environment.mjs` uses `java` from `PATH` or discovers an installed JDK under common `Program Files` locations. Every owned runner still has hard timeouts and terminates its emulator process tree on completion or failure. Local Playwright suites stop after six minutes; CI allows ten minutes for the same single-worker suite on a fresh Linux runner, within the workflow job's separate 25-minute limit.
 
 Strict visual snapshot comparison is intentionally local-only. The committed baselines are Windows Chromium images, while GitHub Actions runs Linux Chromium; CI does not run `test:visual`, update snapshots, or treat cross-platform pixel differences as application regressions. Linux visual baselines can be evaluated in a separate follow-up.
