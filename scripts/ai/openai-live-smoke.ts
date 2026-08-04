@@ -43,4 +43,8 @@ const run = async () => {
   console.log(`maintenance-summary: PASS model=${modelConfig.openAiModels.maintenance} usage=not-exposed-by-flow`);
 };
 
-await run();
+run().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`OpenAI live smoke failed: ${message}`);
+  process.exitCode = 1;
+});
