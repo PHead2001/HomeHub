@@ -81,7 +81,7 @@ Maintenance Storage restricts size/type; barcode/pet/avatar paths are scoped but
 - There are no scheduled functions or recursive household-delete function.
 - Environment names: `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`, and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - E2E-only names: `NEXT_PUBLIC_USE_FIREBASE_EMULATORS`, `NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST`, `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST`, `FIRESTORE_EMULATOR_HOST`, and `FIREBASE_STORAGE_EMULATOR_HOST`.
-- AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL`, `OPENAI_CATEGORIZATION_MODEL`, `OPENAI_RECIPE_MODEL`, and `OPENAI_MAINTENANCE_MODEL`.
+- AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL` (`gpt-5.6-luna`), `OPENAI_CATEGORIZATION_MODEL` (`gpt-5.6-luna`), `OPENAI_RECIPE_MODEL` (`gpt-5.6-terra`), and `OPENAI_MAINTENANCE_MODEL` (`gpt-5.6-luna`).
 - `HOMEHUB_AI_TEST_MODE=deterministic` is accepted only by the exact demo emulator environment and is never enabled automatically in production.
 
 ## Cross-Module Dependencies

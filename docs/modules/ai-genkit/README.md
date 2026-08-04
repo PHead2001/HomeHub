@@ -62,7 +62,7 @@ The model-free barcode action still accepts caller-supplied `householdId` and us
 ## Integrations and Background Processing
 
 - OpenAI through `@genkit-ai/compat-oai/openai`.
-- Default and per-flow model variables: `OPENAI_DEFAULT_MODEL`, `OPENAI_CATEGORIZATION_MODEL`, `OPENAI_RECIPE_MODEL`, and `OPENAI_MAINTENANCE_MODEL`.
+- Default and per-flow model variables: `OPENAI_DEFAULT_MODEL=gpt-5.6-luna`, `OPENAI_CATEGORIZATION_MODEL=gpt-5.6-luna`, `OPENAI_RECIPE_MODEL=gpt-5.6-terra`, and `OPENAI_MAINTENANCE_MODEL=gpt-5.6-luna`. Server environment values can override each fallback independently.
 - `OPENAI_API_KEY` is server-only. App Hosting maps it to Secret Manager secret `openaiApiKey` at runtime.
 - `HOMEHUB_AI_TEST_MODE=deterministic` works only with the exact demo emulator project, loopback Auth/Firestore hosts, and non-production Node environment.
 - Open Food Facts is used only by barcode lookup.

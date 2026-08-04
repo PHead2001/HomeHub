@@ -7,6 +7,10 @@ process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID = 'demo-homehub-e2e';
 process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9099';
 process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8080';
 delete process.env.OPENAI_API_KEY;
+delete process.env.OPENAI_DEFAULT_MODEL;
+delete process.env.OPENAI_CATEGORIZATION_MODEL;
+delete process.env.OPENAI_RECIPE_MODEL;
+delete process.env.OPENAI_MAINTENANCE_MODEL;
 
 type Tasks = {
   categorize: typeof import('../../src/ai/tasks/categorize-grocery-item');
@@ -15,14 +19,17 @@ type Tasks = {
 };
 
 let tasks: Tasks;
+let modelConfig: typeof import('../../src/ai/model-config');
 
 before(async () => {
-  const [categorize, recipe, maintenance] = await Promise.all([
+  const [categorize, recipe, maintenance, loadedModelConfig] = await Promise.all([
     import('../../src/ai/tasks/categorize-grocery-item'),
     import('../../src/ai/tasks/generate-recipe'),
     import('../../src/ai/tasks/summarize-maintenance-log'),
+    import('../../src/ai/model-config'),
   ]);
   tasks = { categorize, recipe, maintenance };
+  modelConfig = loadedModelConfig;
 });
 
 const assertAiCode = (code: string) => (error: unknown) => {
@@ -31,6 +38,15 @@ const assertAiCode = (code: string) => (error: unknown) => {
 };
 
 describe('deterministic OpenAI task provider', () => {
+  test('uses the configured Luna and Terra defaults', () => {
+    assert.deepEqual(modelConfig.openAiModels, {
+      default: 'gpt-5.6-luna',
+      categorization: 'gpt-5.6-luna',
+      recipe: 'gpt-5.6-terra',
+      maintenance: 'gpt-5.6-luna',
+    });
+  });
+
   test('categorization validates allowed output and safe fallbacks', async () => {
     assert.deepEqual(await tasks.categorize.categorizeGroceryItemFlow({
       itemName: 'Milk',

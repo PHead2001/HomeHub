@@ -101,13 +101,13 @@ NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
 NEXT_PUBLIC_FIREBASE_APP_ID=
 NEXT_PUBLIC_FIREBASE_VAPID_KEY=
 OPENAI_API_KEY=
-OPENAI_DEFAULT_MODEL=gpt-5-mini
-OPENAI_CATEGORIZATION_MODEL=gpt-5-mini
-OPENAI_RECIPE_MODEL=gpt-5-mini
-OPENAI_MAINTENANCE_MODEL=gpt-5-mini
+OPENAI_DEFAULT_MODEL=gpt-5.6-luna
+OPENAI_CATEGORIZATION_MODEL=gpt-5.6-luna
+OPENAI_RECIPE_MODEL=gpt-5.6-terra
+OPENAI_MAINTENANCE_MODEL=gpt-5.6-luna
 ```
 
-`OPENAI_API_KEY` is server-only. The per-flow variables are optional overrides and default to `gpt-5-mini`. Normal emulator and CI tests use an explicit deterministic provider and do not need a key or make paid API calls.
+`OPENAI_API_KEY` is server-only. The per-flow variables are optional overrides. General, categorization, and maintenance requests default to `gpt-5.6-luna`; recipe generation defaults to `gpt-5.6-terra`. Normal emulator and CI tests use an explicit deterministic provider and do not need a key or make paid API calls.
 
 Run the app locally:
 
