@@ -7,18 +7,27 @@ runConfig:
   # cpu: 1
   # memoryMiB: 512
 
-# Environment variables and secrets.
-# env:
-  # Configure environment variables.
-  # See https://firebase.google.com/docs/app-hosting/configure#user-defined-environment
-  # - variable: MESSAGE
-  #   value: Hello world!
-  #   availability:
-  #     - BUILD
-  #     - RUNTIME
+  # OpenAI calls run only at request time. The secret value is managed outside Git.
+env:
+  - variable: OPENAI_API_KEY
+    secret: openaiApiKey
 
-  # Grant access to secrets in Cloud Secret Manager.
-  # You can create secrets with the CLI command `firebase apphosting:secrets:set <secretName>`.
-  # See https://firebase.google.com/docs/app-hosting/configure#secret-parameters
-  # - variable: MY_SECRET
-  #   secret: mySecretRef
+  - variable: OPENAI_DEFAULT_MODEL
+    value: gpt-5.6-luna
+    availability:
+      - RUNTIME
+
+  - variable: OPENAI_CATEGORIZATION_MODEL
+    value: gpt-5.6-luna
+    availability:
+      - RUNTIME
+
+  - variable: OPENAI_RECIPE_MODEL
+    value: gpt-5.6-terra
+    availability:
+      - RUNTIME
+
+  - variable: OPENAI_MAINTENANCE_MODEL
+    value: gpt-5.6-luna
+    availability:
+      - RUNTIME

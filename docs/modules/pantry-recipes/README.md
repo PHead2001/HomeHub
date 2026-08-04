@@ -24,7 +24,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 ## Architecture and Data Flow
 
-`ShoppingCenterClient` hosts the inventory tab and passes shopping-list context into `PantryInventoryClient`. The inventory client reads and writes household-scoped Firestore documents. Recipe generation sends the loaded items as `{name, quantity, unit}` to the Genkit server action and keeps the result only in component state.
+`ShoppingCenterClient` hosts the inventory tab and passes shopping-list context into `PantryInventoryClient`. The inventory client reads and writes household-scoped Firestore documents. Recipe generation sends only loaded `{name, quantity, unit}` values plus a Firebase ID token to the Genkit server action and keeps the result only in component state. The server verifies household membership and `shopping.view` before requesting OpenAI.
 
 Inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
 
@@ -48,7 +48,7 @@ The `shopping.view`, `shopping.edit`, and `shopping.delete` permissions exist in
 
 ## Integrations and Background Processing
 
-- `generateRecipe` in `src/ai/flows/generate-recipe-flow.ts` uses the shared Genkit Google AI model and `GEMINI_API_KEY`.
+- `generateRecipe` uses the shared Genkit/OpenAI task and `OPENAI_RECIPE_MODEL`; `OPENAI_API_KEY` remains server-only.
 - `BarcodeScanner` supplies scanned product data through the barcode module.
 - There are no Cloud Functions, scheduled jobs, or persisted recipe records for this module.
 
@@ -64,7 +64,7 @@ The `shopping.view`, `shopping.edit`, and `shopping.delete` permissions exist in
 
 - Recipe generation rejects fewer than two inventory items, although the UI button can be enabled with one.
 - Invalid or missing Firestore dates are handled defensively for display.
-- A failed recipe request leaves inventory unchanged and reports an error toast.
+- A failed, timed-out, rate-limited, refused, or malformed recipe request leaves inventory unchanged, keeps the dialog open, reports a sanitized error, and offers retry.
 - Delete-and-return-to-shopping is not atomic; a shopping failure can occur after inventory deletion.
 - Slug-derived IDs can collide for names that normalize to the same slug.
 - Pantry, fridge, and freezer mobile lists must keep item actions and long names within the document bounds at 360 px and wider supported viewports.

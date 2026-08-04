@@ -12,8 +12,9 @@ import {
 const updateSnapshots = process.argv.includes("--visual-update");
 const smokeOnly = process.argv.includes("--smoke-only");
 const featureOnly = process.argv.includes("--feature-only");
+const aiOnly = process.argv.includes("--ai-only");
 
-if ([updateSnapshots, smokeOnly, featureOnly].filter(Boolean).length > 1) {
+if ([updateSnapshots, smokeOnly, featureOnly, aiOnly].filter(Boolean).length > 1) {
   throw new Error("Choose only one focused E2E run mode.");
 }
 
@@ -146,7 +147,15 @@ try {
     waitForPort(parseHost(E2E_STORAGE_HOST), emulatorTimeoutMs),
   ]);
 
-  if (featureOnly) {
+  if (aiOnly) {
+    await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
+    await runChild(
+      process.execPath,
+      [playwrightCli, "test", "tests/e2e/ai-openai.spec.ts"],
+      "Playwright AI migration suite",
+      suiteTimeoutMs
+    );
+  } else if (featureOnly) {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
@@ -158,7 +167,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
@@ -181,7 +190,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator reseed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );

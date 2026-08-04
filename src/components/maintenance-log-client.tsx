@@ -23,6 +23,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
+import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import type {
   HomeAsset,
   HomeAssetCategory,
@@ -1962,15 +1963,23 @@ export function MaintenanceLogClient() {
   };
 
   const handleSummarize = async (log: MaintenanceLog) => {
-    if (!log.notes) return;
+    const householdId = currentUser?.householdId;
+    if (!log.notes || !householdId) return;
 
     setLoadingSummaries(prev => ({ ...prev, [log.id]: true }));
     try {
-      const result = await summarizeMaintenanceLog({ log: log.notes });
+      const result = unwrapAiActionResult(await summarizeMaintenanceLog(
+        { log: log.notes },
+        await getAiActionContext(householdId)
+      ));
       setSummaries(prev => ({ ...prev, [log.id]: result.summary }));
     } catch (summaryError) {
-      console.error(summaryError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to generate summary.' });
+      console.error('Maintenance summary failed', summaryError instanceof Error ? summaryError.message : 'unknown');
+      toast({
+        variant: 'destructive',
+        title: 'Summary unavailable',
+        description: summaryError instanceof Error ? summaryError.message : 'Failed to generate summary.',
+      });
     } finally {
       setLoadingSummaries(prev => ({ ...prev, [log.id]: false }));
     }

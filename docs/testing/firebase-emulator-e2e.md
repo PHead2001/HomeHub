@@ -24,9 +24,11 @@ The seed, Playwright configuration, and E2E token endpoint independently require
 - loopback `FIREBASE_AUTH_EMULATOR_HOST`;
 - loopback `FIRESTORE_EMULATOR_HOST`.
 
+Model-backed tests additionally set `HOMEHUB_AI_TEST_MODE=deterministic`. The AI runtime accepts this mode only for the exact `demo-homehub-e2e` project, loopback Auth/Firestore hosts, and a non-production Node process. It does not read `OPENAI_API_KEY` or make paid provider requests.
+
 The seed requires the exact `demo-homehub-e2e` project. Firebase client bootstrap connects to emulators only when the explicit public flag is true. `/e2e-login` and `/api/e2e/auth-token` are unavailable when emulator mode is off. The token uses an ephemeral local signing key and is intended only for the Auth Emulator.
 
-Storage is not emulated because the current visual fixtures need only attachment metadata and a repository-local sample document. No credentials, production project aliases, Google accounts, Home Assistant tokens, or real Storage objects are used.
+Storage is emulated alongside Auth and Firestore so attachment workflows cannot reach a production bucket. Current visual fixtures still use attachment metadata and a repository-local sample document rather than real uploaded files. No credentials, production project aliases, Google accounts, Home Assistant tokens, or real Storage objects are used.
 
 ## Install
 
@@ -74,6 +76,7 @@ $env:NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST='127.0.0.1:8080'
 $env:FIREBASE_AUTH_EMULATOR_HOST='127.0.0.1:9099'
 $env:FIRESTORE_EMULATOR_HOST='127.0.0.1:8080'
 $env:FIREBASE_CLI_DISABLE_UPDATE_CHECK='true'
+$env:HOMEHUB_AI_TEST_MODE='deterministic'
 ```
 
 Terminal 1:
@@ -103,10 +106,13 @@ Playwright starts and stops the Next.js development server on port `9002`. Do no
 - `npm.cmd run test:e2e:local`: manage emulators and run the complete suite.
 - `npm.cmd run test:e2e:ci`: manage emulators and run authenticated desktop/mobile route smoke plus focused verification-finding regressions, matching GitHub Actions without visual comparison.
 - `npm.cmd run test:e2e:feature:local`: manage emulators and run the Temporary Task, chore bounds, maintenance deletion, dashboard, and shopping-inventory regression spec without visual comparison.
+- `npm.cmd run test:e2e:ai:local`: manage emulators and run authenticated desktop/mobile OpenAI-migration workflows using deterministic responses.
+- `npm.cmd run test:ai`: run key-free task-level schema, fallback, timeout, rate-limit, provider-error, malformed-output, refusal, and incomplete-response checks.
+- `npm.cmd run test:ai:openai:live`: optional manual provider smoke with fixed non-sensitive inputs; requires a securely loaded replacement key and is not part of CI.
 
 ## Covered Routes
 
-The desktop and mobile Chromium projects cover `/`, `/household`, `/chores`, `/shopping`, `/pets`, `/maintenance`, `/automation`, `/notifications`, `/profile`, and `/library`. Route tests verify seeded authenticated content and reject login/onboarding UI. Focused regressions cover notification idempotency/dismissal, Maintenance deep links and schedule modes, shopping enrichment failures, barcode cleanup, destructive confirmations, recurrence relevance, direct Temporary Tasks, maintenance registry cleanup, mobile inventory bounds, and dashboard overflow. The visual spec captures full-page baselines separately.
+The desktop and mobile Chromium projects cover `/`, `/household`, `/chores`, `/shopping`, `/pets`, `/maintenance`, `/automation`, `/notifications`, `/profile`, and `/library`. Route tests verify seeded authenticated content and reject login/onboarding UI. Focused regressions cover notification idempotency/dismissal, Maintenance deep links and schedule modes, shopping enrichment failures, barcode cleanup, destructive confirmations, recurrence relevance, direct Temporary Tasks, maintenance registry cleanup, mobile inventory bounds, dashboard overflow, and deterministic OpenAI success/failure workflows. The visual spec captures full-page baselines separately.
 
 Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.json`, including IndexedDB. Auth state, reports, traces, videos, and failure screenshots are ignored by Git.
 

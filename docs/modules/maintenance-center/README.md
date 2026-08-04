@@ -53,7 +53,7 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 
 ## Integrations and Background Processing
 
-- AI summaries use `summarizeMaintenanceLog` and the shared Gemini model; generated summaries remain client state.
+- AI summaries use the authenticated `summarizeMaintenanceLog` Genkit/OpenAI action; generated summaries remain client state and original notes are unchanged.
 - Date due-soon threshold: 14 days.
 - Mileage due-soon threshold: 500 miles.
 - Notification generation is client-triggered when Maintenance Center opens; no scheduled generator exists.
@@ -63,7 +63,7 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 ## Cross-Module Dependencies
 
 - [Notifications](../notifications/README.md) displays, dismisses, resolves, and pushes maintenance notices.
-- [AI and Genkit](../ai-genkit/README.md) owns Gemini configuration.
+- [AI and Genkit](../ai-genkit/README.md) owns OpenAI configuration, authorization, and deterministic test behavior.
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply user and household context.
 - [Firebase Platform](../firebase-platform/README.md) owns persistence initialization and rules.
 
@@ -74,6 +74,7 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 - Notification IDs hash stable source type, persisted owner/schedule identity, and a `stateKey` containing due status plus meaningful due date/mileage. Transactions make overlapping synchronization idempotent.
 - Read/dismiss history remains on an existing reminder document. A changed due status/date/mileage produces a new identity; completing a schedule resolves the current cycle and advances the embedded schedule.
 - Asset and vehicle deletion require confirmation and are blocked while direct attachments exist. Embedded schedules/checklists are deleted with the owning registry document.
+- Maintenance summary requests require verified household membership plus `maintenance.view`; provider failures are sanitized and non-destructive.
 - Registry deletion reads current logs and notifications immediately before committing one batch. Linked logs become general history, and active schedule/warranty/registration/inspection notifications for the deleted record are resolved. Unrelated records are unchanged.
 - Log, attachment, and embedded schedule/checklist removal use target-specific confirmation dialogs; attachment Storage cleanup remains best effort under the existing metadata workflow.
 - Storage is deleted before metadata; a missing object is tolerated.
