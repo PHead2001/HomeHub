@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { E2ELoginClient } from "@/components/e2e-login-client";
 
-export default function E2ELoginPage() {
+export default async function E2ELoginPage({ searchParams }: { searchParams: Promise<{ uid?: string }> }) {
   const enabled = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true"
     && process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID?.startsWith("demo-");
 
@@ -9,5 +9,6 @@ export default function E2ELoginPage() {
     notFound();
   }
 
-  return <E2ELoginClient />;
+  const { uid } = await searchParams;
+  return <E2ELoginClient uid={uid} />;
 }

@@ -26,6 +26,8 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 `ShoppingCenterClient` hosts the inventory tab and passes shopping-list context into `PantryInventoryClient`. The inventory client reads and writes household-scoped Firestore documents. Recipe generation sends only loaded `{name, quantity, unit}` values plus a Firebase ID token to the Genkit server action and keeps the result only in component state. The server verifies household membership and `shopping.view` before requesting OpenAI.
 
+The dashboard overview uses the same verified `shopping.view` boundary to calculate inventory and expiration counts server-side. It sends only bounded labels/dates and counts to the optional narrative, not full inventory documents.
+
 Inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
 
 Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins.

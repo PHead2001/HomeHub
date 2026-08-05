@@ -10,6 +10,7 @@ import {
   CarouselNext,
   CarouselPrevious,
 } from "@/components/ui/carousel"
+import { HomeAiOverview } from '@/components/home-ai-overview';
 
 export default function Home() {
   return (
@@ -18,6 +19,8 @@ export default function Home() {
         <h1 className="font-headline text-3xl font-bold tracking-tight">Welcome Home</h1>
         <p className="text-muted-foreground">Here&apos;s what&apos;s happening in your hub today.</p>
       </div>
+
+      <HomeAiOverview />
       
       <section>
         <h2 className="font-headline text-xl font-semibold mb-4 border-b pb-2">Your Dashboard</h2>

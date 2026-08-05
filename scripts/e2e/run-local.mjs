@@ -22,7 +22,7 @@ const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
 const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
 const emulatorTimeoutMs = 60_000;
-const suiteTimeoutMs = 360_000;
+const suiteTimeoutMs = process.env.CI === "true" ? 600_000 : 360_000;
 
 const parseHost = (value) => {
   const separator = value.lastIndexOf(":");
@@ -151,7 +151,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/ai-openai.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts"],
       "Playwright AI migration suite",
       suiteTimeoutMs
     );
@@ -167,7 +167,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
@@ -190,7 +190,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator reseed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );

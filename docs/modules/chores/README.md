@@ -60,6 +60,8 @@ Navigation uses `chores.view`. Firestore's broad approved-member rule does not e
 
 ## Cross-Module Dependencies
 
+The homepage AI Overview includes only incomplete chores assigned to the verified token email, with exact overdue/today/seven-day counts and at most five bounded urgent labels. It does not expose another member's assignment list to the model.
+
 - [Household Governance](../household-governance/README.md) supplies members and unassigns chores when members leave.
 - [Notifications](../notifications/README.md) owns read/dismiss history and push delivery.
 - [Firebase Platform](../firebase-platform/README.md) owns persistence and rules.

@@ -27,11 +27,10 @@ export const summarizeMaintenanceLogFlow = ai.defineFlow(
       outputSchema: SummarizeMaintenanceLogOutputSchema,
       timeoutMs: 15_000,
       maxOutputTokens: 500,
-      prompt: [
+      taskInstruction: [
         'Summarize this home or vehicle maintenance log concisely.',
         'Preserve important work performed, unresolved issues, dates, mileage, costs, and next steps when present.',
         'Do not invent facts. Return only the requested structured output.',
-        `Maintenance log: ${JSON.stringify(input.log)}`,
       ].join('\n'),
     });
     return result.output;

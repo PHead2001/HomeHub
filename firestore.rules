@@ -60,10 +60,55 @@ service cloud.firestore {
 
     function isApprovedHouseholdMember(householdId) {
       return signedIn() && (
-        (hasMemberDoc(householdId, request.auth.uid) && memberRole(householdId, request.auth.uid) != 'newuser') ||
+        (hasMemberDoc(householdId, request.auth.uid) &&
+          memberRole(householdId, request.auth.uid) != 'newuser' &&
+          memberDoc(householdId, request.auth.uid).status != 'pending') ||
         (!hasMemberDoc(householdId, request.auth.uid) &&
           request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails)
       );
+    }
+
+    function effectiveHouseholdRole(householdId) {
+      return hasMemberDoc(householdId, request.auth.uid)
+        ? memberRole(householdId, request.auth.uid)
+        : (get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail == request.auth.token.email
+          ? 'owner'
+          : 'member');
+    }
+
+    function roleHasPermission(role, permission) {
+      return role == 'owner' ||
+        (role == 'admin' && !(permission in ['household.delete', 'household.transferOwnership'])) ||
+        (role == 'member' && permission in [
+          'household.view',
+          'chores.view', 'chores.complete', 'chores.create', 'chores.edit', 'chores.assign',
+          'shopping.view', 'shopping.edit',
+          'pets.view', 'pets.addLogs',
+          'maintenance.view', 'maintenance.createLogs', 'maintenance.edit',
+          'automation.view',
+          'notifications.view', 'notifications.dismiss'
+        ]) ||
+        (role == 'child' && permission in [
+          'household.view', 'chores.view', 'chores.complete', 'pets.view', 'pets.addLogs',
+          'notifications.view', 'notifications.dismiss'
+        ]) ||
+        (role == 'guest' && permission in [
+          'household.view', 'chores.view', 'shopping.view', 'pets.view',
+          'maintenance.view', 'notifications.view'
+        ]);
+    }
+
+    function hasHouseholdPermission(householdId, permission) {
+      let role = effectiveHouseholdRole(householdId);
+      let overrides = hasMemberDoc(householdId, request.auth.uid)
+        ? memberDoc(householdId, request.auth.uid).get('permissions', {})
+        : {};
+      let hasOverride = permission in overrides;
+      return isApprovedHouseholdMember(householdId) &&
+        (role == 'owner' ||
+          (hasOverride
+            ? overrides[permission] == true
+            : roleHasPermission(role, permission)));
     }
 
     function isOwnerRole(householdId) {
@@ -107,23 +152,12 @@ service cloud.firestore {
         request.resource.data.email == request.auth.token.email &&
         request.resource.data.status == 'active' &&
         request.auth.token.email in get(/databases/$(database)/documents/households/$(householdId)).data.memberEmails &&
+        (!('permissions' in request.resource.data) || request.resource.data.permissions == {}) &&
         (
-          (
-            get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail == request.auth.token.email &&
-            request.resource.data.role == 'owner'
-          ) ||
-          (
-            get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin' &&
-            request.resource.data.role == 'admin'
-          ) ||
-          (
-            get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'super-admin' &&
-            request.resource.data.role == 'owner'
-          ) ||
-          (
-            get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role in ['user', 'member', 'child', 'guest'] &&
-            request.resource.data.role in ['member', 'child', 'guest']
-          )
+          (get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail == request.auth.token.email &&
+            request.resource.data.role == 'owner') ||
+          (get(/databases/$(database)/documents/households/$(householdId)).data.ownerEmail != request.auth.token.email &&
+            request.resource.data.role == 'member')
         );
     }
 
@@ -174,7 +208,7 @@ service cloud.firestore {
     }
 
     function validNewNotification(householdId) {
-      return isApprovedHouseholdMember(householdId) &&
+      return hasHouseholdPermission(householdId, 'notifications.view') &&
              request.resource.data.householdId == householdId &&
              request.resource.data.keys().hasAll([
                'householdId',
@@ -260,22 +294,23 @@ service cloud.firestore {
       }
 
       match /notifications/{notificationId} {
-        allow read: if isApprovedHouseholdMember(householdId);
+        allow read: if hasHouseholdPermission(householdId, 'notifications.view');
         allow create: if validNewNotification(householdId) ||
           ((isHouseholdMember(householdId) || requestUserHasAfterMember(householdId)) &&
             request.resource.data.householdId == householdId &&
             request.resource.data.category == 'system' &&
             request.resource.data.sourceId == request.auth.uid);
-        allow update: if isApprovedHouseholdMember(householdId) &&
-          (updatesOnlyOwnNotificationState() || resolvesMaintenanceNotification());
+        allow update: if
+          (hasHouseholdPermission(householdId, 'notifications.dismiss') && updatesOnlyOwnNotificationState()) ||
+          (hasHouseholdPermission(householdId, 'maintenance.edit') && resolvesMaintenanceNotification());
         allow delete: if false;
       }
 
       match /maintenance-attachments/{attachmentId} {
-        allow read: if isApprovedHouseholdMember(householdId);
-        allow create: if validNewMaintenanceAttachment(householdId);
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow create: if hasHouseholdPermission(householdId, 'maintenance.edit') && validNewMaintenanceAttachment(householdId);
         allow update: if false;
-        allow delete: if isApprovedHouseholdMember(householdId);
+        allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 
       match /auditLogs/{auditId} {
@@ -284,10 +319,108 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
-      // Approved members of a household can read/write to its subcollections (pets, chores, etc.).
-      match /{subcollection}/{docId=**} {
-        allow read, write: if !(subcollection in ['members', 'notifications', 'maintenance-attachments', 'auditLogs']) &&
-          isApprovedHouseholdMember(householdId);
+      match /chores/{choreId} {
+        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow create: if hasHouseholdPermission(householdId, 'chores.create');
+        allow update: if
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks']) &&
+            hasHouseholdPermission(householdId, 'chores.complete')) ||
+          hasHouseholdPermission(householdId, 'chores.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+      }
+
+      match /chore-templates/{templateId} {
+        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow create: if hasHouseholdPermission(householdId, 'chores.create');
+        allow update: if hasHouseholdPermission(householdId, 'chores.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+      }
+
+      match /rooms/{roomId} {
+        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'chores.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+      }
+
+      match /shopping-lists/{listId} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+
+        match /items/{itemId} {
+          allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+          allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+          allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+        }
+
+        match /config/{configId} {
+          allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+          allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+          allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+        }
+      }
+
+      match /pantry-inventory/{itemId} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+      }
+
+      match /barcode-library/{barcodeId} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+      }
+
+      match /pets/{petId} {
+        allow read: if hasHouseholdPermission(householdId, 'pets.view');
+        allow create, update, delete: if hasHouseholdPermission(householdId, 'pets.editProfiles');
+
+        match /feeding-logs/{logId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow create, update: if hasHouseholdPermission(householdId, 'pets.addLogs');
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+        }
+
+        match /medication-logs/{logId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow create, update: if hasHouseholdPermission(householdId, 'pets.addLogs');
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+        }
+
+        match /care-logs/{logId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow create, update: if hasHouseholdPermission(householdId, 'pets.addLogs');
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+        }
+      }
+
+      match /home-assets/{assetId} {
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
+      }
+
+      match /vehicles/{vehicleId} {
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
+      }
+
+      match /maintenance/{logId} {
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow create: if hasHouseholdPermission(householdId, 'maintenance.createLogs');
+        allow update: if hasHouseholdPermission(householdId, 'maintenance.edit');
+        allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
+      }
+
+      match /home-automation/{configId} {
+        allow read: if hasHouseholdPermission(householdId, 'automation.view');
+        allow create, update, delete: if hasHouseholdPermission(householdId, 'automation.manage');
+      }
+
+      match /{unknownPath=**} {
+        allow read, write: if false;
       }
     }
 

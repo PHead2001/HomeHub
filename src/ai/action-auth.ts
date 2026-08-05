@@ -1,18 +1,21 @@
 import 'server-only';
 
-import type { HouseholdPermission, HouseholdRole, PermissionOverrides } from '@/lib/types';
-import { hasPermission, normalizeRole } from '@/lib/permissions';
+import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
 import { HomeHubAiError, type AiActionResult, toAiActionFailure } from '@/ai/errors';
+import { resolveHouseholdAuthority } from '@/ai/household-authority';
 
 export type AiActionContext = {
   idToken: string;
   householdId: string;
 };
 
-type AuthorizedAiUser = {
+export type AuthorizedHouseholdUser = {
   uid: string;
+  email: string;
   householdId: string;
+  role: HouseholdRole;
+  permissions: Record<HouseholdPermission, boolean>;
 };
 
 type AiGuardState = typeof globalThis & {
@@ -26,10 +29,10 @@ const requestWindows = globalGuardState.__homeHubAiRequestWindows || new Map<str
 globalGuardState.__homeHubAiInFlight = inFlight;
 globalGuardState.__homeHubAiRequestWindows = requestWindows;
 
-const authorizeAiAction = async (
+export const authorizeHouseholdAction = async (
   context: AiActionContext,
-  permission: HouseholdPermission
-): Promise<AuthorizedAiUser> => {
+  permission?: HouseholdPermission
+): Promise<AuthorizedHouseholdUser> => {
   if (!context?.idToken || !context.householdId) throw new HomeHubAiError('unauthenticated');
 
   let decodedToken;
@@ -44,33 +47,23 @@ const authorizeAiAction = async (
 
   const householdRef = adminDb.collection('households').doc(context.householdId);
   const memberRef = householdRef.collection('members').doc(decodedToken.uid);
-  const [householdSnapshot, memberSnapshot, profileSnapshot] = await Promise.all([
+  const [householdSnapshot, memberSnapshot] = await Promise.all([
     householdRef.get(),
     memberRef.get(),
-    adminDb.collection('users').doc(email).get(),
   ]);
 
   if (!householdSnapshot.exists) throw new HomeHubAiError('forbidden');
 
   const household = householdSnapshot.data() || {};
   const member = memberSnapshot.data();
-  const profile = profileSnapshot.data() || {};
-  const legacyMemberEmails = Array.isArray(household.memberEmails) ? household.memberEmails : [];
-  const isLegacyMember = legacyMemberEmails.includes(email);
+  const authority = resolveHouseholdAuthority({ uid: decodedToken.uid, email, household, member });
+  if (permission && !authority.permissions[permission]) throw new HomeHubAiError('forbidden');
 
-  if (!member && !isLegacyMember) throw new HomeHubAiError('forbidden');
-  if (member?.status === 'pending' || member?.role === 'newuser') throw new HomeHubAiError('forbidden');
-
-  const role = normalizeRole((member?.role
-    || (household.ownerUid === decodedToken.uid || household.ownerEmail === email ? 'owner' : profile.role)) as HouseholdRole);
-  const overrides = (member?.permissions || profile.permissions || {}) as PermissionOverrides;
-  if (!hasPermission(role, permission, overrides)) throw new HomeHubAiError('forbidden');
-
-  return { uid: decodedToken.uid, householdId: context.householdId };
+  return { uid: decodedToken.uid, email, householdId: context.householdId, ...authority };
 };
 
 const runGuarded = async <T>(
-  user: AuthorizedAiUser,
+  user: AuthorizedHouseholdUser,
   flowName: string,
   maxRequestsPerMinute: number,
   task: () => Promise<T>
@@ -103,11 +96,11 @@ export const executeAuthorizedAiAction = async <T>({
   permission: HouseholdPermission;
   flowName: string;
   maxRequestsPerMinute: number;
-  task: () => Promise<T>;
+  task: (user: AuthorizedHouseholdUser) => Promise<T>;
 }): Promise<AiActionResult<T>> => {
   try {
-    const user = await authorizeAiAction(context, permission);
-    const data = await runGuarded(user, flowName, maxRequestsPerMinute, task);
+    const user = await authorizeHouseholdAction(context, permission);
+    const data = await runGuarded(user, flowName, maxRequestsPerMinute, () => task(user));
     return { ok: true, data };
   } catch (error) {
     return toAiActionFailure(error);

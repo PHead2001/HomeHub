@@ -47,7 +47,8 @@ The `shopping.edit` and `shopping.delete` permissions exist, but the feature and
 
 ## Integrations and Background Processing
 
-- Grocery categorization calls the shared Genkit/OpenAI flow only when the user leaves category selection on Automatic. Emulator E2E uses the deterministic provider and never calls OpenAI.
+- Grocery categorization calls the shared authenticated Genkit/OpenAI flow only when the user leaves category selection on Automatic. Household item names are serialized as untrusted data under the centralized AI system instruction. Emulator E2E uses the deterministic provider and never calls OpenAI.
+- The dashboard overview reads list/item counts only after server verification of `shopping.view`; omitted permission means no Shopping query or overview section.
 - Barcode lookup checks the household library, then Open Food Facts; camera capture uses `react-zxing`.
 - There are no shopping Cloud Functions, scheduled jobs, or real-time snapshot listeners.
 

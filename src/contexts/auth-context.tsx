@@ -249,15 +249,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (householdData.memberEmails?.includes(currentUser.email)) {
         const role = householdData.ownerEmail === currentUser.email || householdData.ownerUid === currentUser.uid
           ? 'owner'
-          : normalizeRole(currentUser.role);
+          : 'member';
+        const permissions = {};
         const legacyMember = removeUndefinedFields({
           uid: currentUser.uid,
           email: currentUser.email,
           displayName: currentUser.displayName,
           avatarUrl: currentUser.avatarUrl,
           role,
-          status: role === 'newuser' ? 'pending' : 'active',
-          permissions: currentUser.permissions || {},
+          status: 'active',
+          permissions,
           joinedAt: householdData.createdAt || new Date().toISOString(),
         }) as HouseholdMember;
         setCurrentMember(legacyMember);
@@ -265,7 +266,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ...prev,
           householdId: householdData.id,
           role,
-          permissions: currentUser.permissions || {},
+          permissions,
         } : prev);
 
         try {
@@ -274,7 +275,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           batch.set(doc(db, 'users', currentUser.email), {
             householdId: householdData.id,
             role,
-            permissions: currentUser.permissions || {},
+            permissions,
           }, { merge: true });
           await batch.commit();
         } catch (error) {

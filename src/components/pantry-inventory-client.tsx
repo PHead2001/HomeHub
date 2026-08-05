@@ -90,6 +90,7 @@ function PantryItemDialog({
 }) {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
+  const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
   const { toast } = useToast();
   const { currentUser } = useAuth();
   
@@ -120,6 +121,7 @@ function PantryItemDialog({
 
   // Effect to sync category when form's unit changes (e.g., when editing an item)
   useEffect(() => {
+    pendingScannedUnit.current = null;
     if (itemToEdit) {
       const category = getCategoryFromUnit(itemToEdit.unit);
       setUnitCategory(category);
@@ -145,6 +147,13 @@ function PantryItemDialog({
   // Effect to update the unit when the category changes
   useEffect(() => {
     const unitsInCurrentCategory = pantryItemUnitCategories[unitCategory];
+    if (pendingScannedUnit.current
+      && (unitsInCurrentCategory as readonly PantryItemUnit[]).includes(pendingScannedUnit.current)) {
+      const scannedUnit = pendingScannedUnit.current;
+      pendingScannedUnit.current = null;
+      setValue('unit', scannedUnit);
+      return;
+    }
     if (!(unitsInCurrentCategory as readonly PantryItemUnit[]).includes(currentUnit)) {
       setValue('unit', unitsInCurrentCategory[0] as PantryItemUnit);
     }
@@ -165,10 +174,26 @@ function PantryItemDialog({
         if (!currentUser?.householdId) {
             throw new Error('No household found for barcode lookup.');
         }
-        const { productName } = await lookupBarcode({ barcode, householdId: currentUser.householdId });
+        const result = unwrapAiActionResult(await lookupBarcode(
+          { barcode },
+          await getAiActionContext(currentUser.householdId)
+        ));
+        const { productName } = result;
         if (productName) {
-            form.setValue('name', productName);
-            toast({ title: "Product Found!", description: `${productName} has been filled in.`});
+            if (!form.formState.dirtyFields.name) form.setValue('name', productName);
+            if (result.quantity && result.unit
+              && !form.formState.dirtyFields.quantity
+              && !form.formState.dirtyFields.unit) {
+              form.setValue('quantity', result.quantity);
+              pendingScannedUnit.current = result.unit;
+              setUnitCategory(getCategoryFromUnit(result.unit));
+            }
+            toast({
+              title: "Product Found!",
+              description: result.quantity && result.unit
+                ? `${productName}, ${result.quantity} ${result.unit}, has been filled in.`
+                : `${productName} has been filled in. Enter the package quantity manually.`,
+            });
         } else {
             toast({ variant: 'destructive', title: 'Product Not Found', description: 'Could not find a product for that barcode.' });
         }
@@ -269,7 +294,7 @@ function PantryItemDialog({
                 <FormItem>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
-                      <SelectTrigger>
+                      <SelectTrigger aria-label="Unit">
                         <SelectValue placeholder="Select a unit" />
                       </SelectTrigger>
                     </FormControl>

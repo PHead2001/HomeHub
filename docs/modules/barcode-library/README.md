@@ -25,7 +25,11 @@ This module owns camera/manual barcode capture, household product mappings, prod
 
 `BarcodeScanner` uses the device camera through `react-zxing` and returns a decoded value to its host form. `lookupBarcode` first attempts the household Firestore mapping and then calls Open Food Facts. The library client manages mappings and uploads images to household-scoped Storage before writing Firestore metadata.
 
-The lookup flow is implemented as a Genkit flow/server action but does not invoke OpenAI, does not need `OPENAI_API_KEY`, and remains usable when model configuration is absent.
+Lookup is an authenticated server action but does not invoke Genkit generation or OpenAI, does not need `OPENAI_API_KEY`, and remains usable when model configuration is absent. It verifies the Firebase ID token, household membership, and `shopping.view`, then uses Firebase Admin for `households/{householdId}/barcode-library/{barcode}`.
+
+Lookup precedence is household library, Open Food Facts v3, then not found. A household hit prevents any public request. The v3 request asks only for product name, package quantity, normalized quantity/unit, and front image, uses a five-second timeout and HomeHub User-Agent, and treats community data as optional. Tests use emulator-only fixtures and never call production Open Food Facts.
+
+Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill pantry quantity/unit. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
 
 ## Data Model and Persistence
 
@@ -48,14 +52,15 @@ Storage rules scope paths by household but do not impose barcode-image size or c
 
 - Camera decoding: `react-zxing` and `@zxing/library`.
 - Public fallback: `https://world.openfoodfacts.org/api/v0/product/{barcode}.json`.
-- Genkit registration: `src/ai/flows/lookup-barcode-flow.ts`.
+- Authorized action and Open Food Facts fallback: `src/ai/flows/lookup-barcode-flow.ts`.
+- Quantity normalization: `src/ai/barcode-quantity.ts`.
 - No Cloud Function or scheduled processing is involved.
 
 ## Cross-Module Dependencies
 
 - [Shopping](../shopping/README.md) consumes lookup results for list items.
 - [Pantry Inventory and Recipes](../pantry-recipes/README.md) consumes lookup results for inventory.
-- [AI and Genkit](../ai-genkit/README.md) registers the server flow.
+- [AI and Genkit](../ai-genkit/README.md) supplies shared server authorization and sanitized action errors; barcode lookup itself is model-free.
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply household context.
 - [Firebase Platform](../firebase-platform/README.md) owns Firestore and Storage configuration.
 

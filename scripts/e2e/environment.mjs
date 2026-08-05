@@ -52,6 +52,7 @@ export const e2eEnvironment = {
   FIREBASE_CONFIG: JSON.stringify({ projectId: E2E_PROJECT_ID }),
   FIREBASE_CLI_DISABLE_UPDATE_CHECK: "true",
   HOMEHUB_AI_TEST_MODE: "deterministic",
+  HOMEHUB_TEST_NOW: "2026-08-01T12:00:00.000Z",
 };
 
 export const runCommand = (command, args, options = {}) => {

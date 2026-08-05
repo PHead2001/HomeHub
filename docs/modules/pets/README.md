@@ -53,6 +53,8 @@ Firebase Storage holds pet photos. No pet-specific Cloud Function, Genkit flow, 
 
 ## Cross-Module Dependencies
 
+The homepage AI Overview may include pet count and a seven-day care-log count for callers with `pets.view`. It does not infer health, neglect, or missed care and does not send raw pet histories to the model.
+
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply user, household, and role context.
 - [Firebase Platform](../firebase-platform/README.md) owns Firestore/Storage initialization and security rules.
 - [Application Shell and Dashboard](../application-shell/README.md) exposes pet navigation.

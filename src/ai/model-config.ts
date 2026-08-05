@@ -3,6 +3,7 @@ const DEFAULT_MODELS = {
   categorization: 'gpt-5.6-luna',
   recipe: 'gpt-5.6-terra',
   maintenance: 'gpt-5.6-luna',
+  overview: 'gpt-5.6-luna',
 } as const;
 const modelNamePattern = /^(?:gpt-[a-z0-9._-]+|o\d[a-z0-9._-]*)$/;
 
@@ -19,6 +20,7 @@ export const openAiModels = {
   categorization: readModelName('OPENAI_CATEGORIZATION_MODEL', DEFAULT_MODELS.categorization),
   recipe: readModelName('OPENAI_RECIPE_MODEL', DEFAULT_MODELS.recipe),
   maintenance: readModelName('OPENAI_MAINTENANCE_MODEL', DEFAULT_MODELS.maintenance),
+  overview: readModelName('OPENAI_OVERVIEW_MODEL', DEFAULT_MODELS.overview),
 } as const;
 
 export const hasOpenAiApiKey = Boolean(process.env.OPENAI_API_KEY?.trim());

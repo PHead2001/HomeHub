@@ -33,7 +33,7 @@ When `NEXT_PUBLIC_USE_FIREBASE_EMULATORS=true`, the client connects Auth, Firest
 
 The `Authenticated E2E Smoke` GitHub Actions workflow runs project validation, authenticated route smoke, and focused regression coverage on Linux for pull requests targeting `main` and manual dispatch. It sources fake emulator values from `.env.e2e.example`, uses the owned-emulator runner's `--smoke-only` mode, and uploads debugging artifacts only on failure. Windows visual baselines are not compared in CI.
 
-App Hosting serves the Next.js app. `apphosting.yaml` maps runtime-only `OPENAI_API_KEY` to Secret Manager secret `openaiApiKey` and supplies non-secret OpenAI model defaults. AI model calls do not run during build. Firestore document creation under household notifications triggers the Node 20 Functions codebase for FCM delivery.
+App Hosting serves the Next.js app. `apphosting.yaml` maps runtime-only `OPENAI_API_KEY` to Secret Manager secret `openaiApiKey` and supplies non-secret OpenAI model defaults, including the Luna overview model. AI model calls do not run during build. Firestore document creation under household notifications triggers the Node 20 Functions codebase for FCM delivery.
 
 No explicit Firestore offline persistence, Auth persistence override, App Check, or custom local-cache policy is configured.
 
@@ -68,9 +68,9 @@ Direct temporary chores use the existing `chores` path with optional `templateId
 
 Rules use Firebase Auth UID/email, UID membership documents, and legacy `households.memberEmails`. Pending `newuser` members are blocked from ordinary household subcollections.
 
-Specialized rules protect membership, notifications, maintenance attachment metadata, audit logs, invites, and user profiles. A generic household catch-all grants approved members read/write access to remaining feature collections and does not enforce granular role permission overrides.
+Firestore rules explicitly map known household collections to the closest role/permission operation: chores/templates/rooms, shopping lists/items/config, pantry, barcode library, pets/logs, assets, vehicles, maintenance logs/attachments, notifications, audit logs, and automation configuration. Member-document permission overrides are honored, pending users are denied, and unknown household paths deny by default. Where one update can represent multiple product actions, rules use the narrowest existing permission without field-level semantic inference.
 
-Model-backed server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before spending OpenAI quota. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
+Protected AI, overview, and barcode server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before any Admin aggregation, public fallback, or OpenAI request. Legacy email members receive member presets unless household owner UID/email evidence proves ownership; profile role/overrides do not grant household authority. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
 
 Maintenance Storage restricts size/type; barcode/pet/avatar paths are scoped but have no server-side size/MIME restrictions. No App Check enforcement is configured.
 
@@ -81,7 +81,7 @@ Maintenance Storage restricts size/type; barcode/pet/avatar paths are scoped but
 - There are no scheduled functions or recursive household-delete function.
 - Environment names: `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`, and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - E2E-only names: `NEXT_PUBLIC_USE_FIREBASE_EMULATORS`, `NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST`, `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST`, `FIRESTORE_EMULATOR_HOST`, and `FIREBASE_STORAGE_EMULATOR_HOST`.
-- AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL` (`gpt-5.6-luna`), `OPENAI_CATEGORIZATION_MODEL` (`gpt-5.6-luna`), `OPENAI_RECIPE_MODEL` (`gpt-5.6-terra`), and `OPENAI_MAINTENANCE_MODEL` (`gpt-5.6-luna`).
+- AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL` (`gpt-5.6-luna`), `OPENAI_CATEGORIZATION_MODEL` (`gpt-5.6-luna`), `OPENAI_RECIPE_MODEL` (`gpt-5.6-terra`), `OPENAI_MAINTENANCE_MODEL` (`gpt-5.6-luna`), and `OPENAI_OVERVIEW_MODEL` (`gpt-5.6-luna`).
 - `HOMEHUB_AI_TEST_MODE=deterministic` is accepted only by the exact demo emulator environment and is never enabled automatically in production.
 
 ## Cross-Module Dependencies
@@ -91,8 +91,8 @@ Every application module depends on this platform. [Notifications](../notificati
 ## Invariants and Failure Behavior
 
 - User profile document IDs are email addresses; household membership document IDs are Auth UIDs.
-- Legacy email membership is supported when no UID member document exists.
-- Generic feature rules authorize approved membership, not each permission override.
+- Legacy email membership is supported conservatively when no UID member document exists: household owner evidence grants owner and every other listed email receives member defaults.
+- Unknown household subcollections have no permissive fallback.
 - Notification deletion is denied; logical expiration needs manual TTL configuration.
 - Functions remove invalid FCM tokens after failed sends.
 - UID-only push targeting depends on a `users.uid` query, but profile creation does not consistently store that field.
@@ -109,7 +109,7 @@ Every application module depends on this platform. [Notifications](../notificati
 - Run `npm.cmd run test:e2e:ci` to reproduce the GitHub Actions authenticated smoke/regression phase locally without visual comparison.
 - Run `npm.cmd run test:ai` for key-free flow contracts and `npm.cmd run test:e2e:ai:local` for authenticated desktop/mobile AI workflows.
 - In `functions/`, run `npm.cmd run lint` and `npm.cmd run build` for function changes.
-- Use Firebase Emulator rules tests when added; no automated Firestore/Storage rules suite currently exists.
+- Run `npm.cmd run test:rules` for the Java-backed Firestore Emulator rules suite covering role presets, overrides, pending status, legacy fallback, and Household A/B isolation.
 - Manually verify cross-household denial, pending-user denial, legacy fallback, own-profile restrictions, attachment restrictions, FCM delivery, and invalid-token cleanup.
 
 ## When This Document Must Be Updated

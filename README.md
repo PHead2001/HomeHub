@@ -2,7 +2,7 @@
 
 HomeHub is a private household management app for desktop, tablet, and mobile use. It brings shared chores, shopping lists, pantry inventory, pet care, maintenance records, notifications, and Home Assistant entity-state viewing into one Firebase-backed Next.js app.
 
-The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/OpenAI powers grocery categorization, recipe ideas, and maintenance-log summaries; a Genkit server flow coordinates household and public barcode lookup without invoking a model.
+The app uses Firebase for authentication, Firestore data, Storage files, Cloud Functions, push notifications, and App Hosting. Genkit/OpenAI powers grocery categorization, recipe ideas, maintenance-log summaries, and an on-demand dashboard overview. Authorized barcode lookup is model-free and uses the household library before Open Food Facts.
 
 ## Main Modules
 
@@ -105,6 +105,7 @@ OPENAI_DEFAULT_MODEL=gpt-5.6-luna
 OPENAI_CATEGORIZATION_MODEL=gpt-5.6-luna
 OPENAI_RECIPE_MODEL=gpt-5.6-terra
 OPENAI_MAINTENANCE_MODEL=gpt-5.6-luna
+OPENAI_OVERVIEW_MODEL=gpt-5.6-luna
 ```
 
 `OPENAI_API_KEY` is server-only. The per-flow variables are optional overrides. General, categorization, and maintenance requests default to `gpt-5.6-luna`; recipe generation defaults to `gpt-5.6-terra`. Normal emulator and CI tests use an explicit deterministic provider and do not need a key or make paid API calls.

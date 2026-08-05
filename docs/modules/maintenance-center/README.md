@@ -54,6 +54,7 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 ## Integrations and Background Processing
 
 - AI summaries use the authenticated `summarizeMaintenanceLog` Genkit/OpenAI action; generated summaries remain client state and original notes are unchanged.
+- The homepage overview uses `maintenance.view` to calculate status, schedule/checklist, date, mileage, warranty, registration, and inspection signals server-side. Only bounded labels/dates/counts reach the optional narrative; serial numbers, VINs, plates, costs, notes, and attachment paths are excluded.
 - Date due-soon threshold: 14 days.
 - Mileage due-soon threshold: 500 miles.
 - Notification generation is client-triggered when Maintenance Center opens; no scheduled generator exists.

@@ -43,6 +43,8 @@ The long-lived token is stored directly in Firestore and is readable by approved
 
 ## Cross-Module Dependencies
 
+The homepage overview intentionally omits automation facts in the current implementation. Existing Home Assistant state access requires household credentials and an external request path that is not yet independently server-authorized enough for overview aggregation; no credential or entity attribute is sent to OpenAI.
+
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply identity and household context.
 - [Firebase Platform](../firebase-platform/README.md) supplies Firestore configuration/rules.
 - [Application Shell and Dashboard](../application-shell/README.md) exposes navigation.
