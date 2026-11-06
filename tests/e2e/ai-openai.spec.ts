@@ -83,8 +83,9 @@ test.describe('OpenAI migration workflows', () => {
       expect(snapshot.docs[0].data().category).toBe(category);
     }
 
+    // The open list is in the URL (?list=weekly-groceries), so a reload keeps it open.
     await page.reload();
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await expect(page).toHaveURL(/[?&]list=weekly-groceries(&|$)/);
     await expect(page.getByRole('checkbox', { name: /E2E AI milk/ })).toBeVisible();
   });
 

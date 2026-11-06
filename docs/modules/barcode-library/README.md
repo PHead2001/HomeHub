@@ -6,7 +6,8 @@ This module owns camera/manual barcode capture, household product mappings, prod
 
 ## User-Facing Capabilities
 
-- Manage household barcode mappings at `/library`.
+- Manage household barcode mappings at `/library`, shown as a photo-first grid of product cards: the product photo sits on a soft blurred copy of itself that also runs behind the title. Products without a photo, or whose photo fails to load, show a package placeholder with the product's initial (announced as "No product image for <name>").
+- See how many products are saved ("1 product", "3 products") and search by name or barcode.
 - Scan or enter a barcode when adding shopping or pantry items.
 - Create, edit, and delete a barcode-to-product mapping.
 - Store a product name and image for household reuse.
@@ -16,6 +17,7 @@ This module owns camera/manual barcode capture, household product mappings, prod
 
 - `src/app/library/page.tsx`
 - `src/components/barcode-library-client.tsx`
+- `src/components/shopping/product-card.tsx`
 - `src/components/barcode-scanner.tsx`
 - `src/components/image-upload.tsx`
 - `src/ai/flows/lookup-barcode-flow.ts`
@@ -46,6 +48,8 @@ Routes require an authenticated user and clients derive `householdId` from auth 
 
 The server-action lookup receives `householdId` and an ID token from its caller, verifies the token and the caller's member record with Firebase Admin, and requires `shopping.view` before reading the household mapping. Admin reads bypass security rules, so this server-side check is the authorization boundary for lookup.
 
+The library UI follows the same permissions: Add Item and Edit appear with `shopping.edit`, Delete with `shopping.delete`, and without `shopping.view` the page explains that the library is not shared (after membership has loaded, so it never flashes). The Shopping Center hides its Barcode Library link without `shopping.view`.
+
 Storage rules accept barcode-image creates and updates only when the object is 5 MB or smaller and its content type is `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/heic`, `image/heif`, or `image/avif`. The shared upload UI also validates images client-side.
 
 ## Integrations and Background Processing
@@ -59,17 +63,22 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 ## Cross-Module Dependencies
 
 - [Shopping](../shopping/README.md) consumes lookup results for list items.
-- [Pantry Inventory and Recipes](../pantry-recipes/README.md) consumes lookup results for inventory.
+- [Pantry Inventory and Recipes](../pantry-recipes/README.md) consumes lookup results for inventory and product photos for its shelf tiles.
+- [Application Shell](../application-shell/README.md) supplies `EmptyState`, `FieldError` and `toastError`.
 - [AI and Genkit](../ai-genkit/README.md) supplies shared server authorization and sanitized action errors; barcode lookup itself is model-free.
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply household context.
 - [Firebase Platform](../firebase-platform/README.md) owns Firestore and Storage configuration.
 
 ## Invariants and Failure Behavior
 
-- A new mapping requires an image in the current UI.
+- A new mapping requires an image in the current UI. A missing photo is shown inline under the image field (`FieldError`), never as a toast; the barcode must be 1 to 64 characters without `/`, and the scanner's manual entry (6 to 32 digits) also reports problems inline.
+- Save, load and delete failures use `toastError`, so raw Firebase text never reaches users.
+- Library deletes stay immediate (no confirmation) and metadata deletion stays prompt; image cleanup is still best effort.
+- Photos come from stored URLs without a Next.js remote-host allowlist (`unoptimized`); the blurred backdrop is decorative (`aria-hidden`, empty `alt`).
+- Shelf tiles in the pantry reuse library photos when a pantry item's name matches a product name exactly (case-insensitive).
 - Household data takes precedence over Open Food Facts when the Firestore read succeeds.
 - Unknown products and public API failures return no product rather than inventing data.
-- Camera permission/decode failures produce an error toast.
+- Camera permission/decode failures produce an error toast (an outcome, not a field problem).
 - Replacing an image does not delete the prior Storage object.
 - Missing Storage objects are treated as already cleaned. Other Storage failures can leave an orphaned object and produce a cleanup-specific toast without claiming metadata deletion failed.
 - Stored external image URLs render without requiring a Next.js remote-host allowlist and are never treated as managed objects.
@@ -77,6 +86,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
+- `tests/e2e/shopping-trip.spec.ts` covers the product count wording, product photos and the missing-photo placeholder, search, and the inline missing-photo error; `tests/e2e/verification-findings.spec.ts` keeps covering prompt deletes and the add dialog.
 - Manually test camera denial, manual entry, local-library precedence, public fallback, unknown barcodes, and mapping CRUD.
 - Verify image upload/delete behavior for an existing object, missing object, external URL, no image, and unavailable Storage; metadata deletion must remain prompt.
 - Runtime-test the server action while authenticated before claiming the private library lookup always succeeds.
