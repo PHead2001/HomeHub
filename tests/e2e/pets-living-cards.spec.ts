@@ -46,8 +46,16 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     // Measure only once the header has rendered with its action (it appears after
     // permissions load) and the page-enter transition has settled.
     await expect(addButton).toBeVisible();
-    await expect.poll(async () => (await addButton.boundingBox())?.y ?? null).not.toBeNull();
-    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== 'running'));
+    // Ambient effects loop forever, so wait for the button itself to stop moving (the
+    // page-enter transition) instead of waiting for every animation to end.
+    let previous = '';
+    await expect.poll(async () => {
+      const box = await addButton.boundingBox();
+      const current = box ? `${box.x},${box.y}` : '';
+      const settled = current !== '' && current === previous;
+      previous = current;
+      return settled;
+    }, { intervals: [100] }).toBe(true);
     // The header row holds the title block (heading + subtitle) and the actions.
     const row = await heading.locator('xpath=../..').boundingBox();
     const title = await heading.boundingBox();
