@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { Bot, CheckSquare, Home, LayoutGrid, PawPrint, ScanBarcode, ShoppingCart, User, Users, Wrench, type LucideIcon } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { cn } from '@/lib/utils';
+import { isActiveRoute } from '@/lib/navigation';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from './ui/sheet';
 import type { HouseholdPermission } from '@/lib/types';
 
@@ -27,8 +28,7 @@ const MORE: NavItem[] = [
   { href: '/profile', label: 'Profile', icon: User },
 ];
 
-const isActive = (pathname: string, href: string) =>
-  href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`);
+const isActive = isActiveRoute;
 
 export function MobileTabBar() {
   const pathname = usePathname() || '/';
@@ -45,14 +45,13 @@ export function MobileTabBar() {
 
   const tabClass = (active: boolean) => cn(
     'flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg py-1.5 text-[11px] font-medium transition-colors',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
     active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
   );
 
   return (
     <nav
       aria-label="Primary"
-      className="fixed inset-x-0 bottom-0 z-50 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:hidden"
+      className="surface-glass fixed inset-x-0 bottom-0 z-50 border-t border-border-subtle md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <ul className="mx-auto flex h-16 max-w-lg items-stretch gap-1 px-2">
@@ -94,7 +93,7 @@ export function MobileTabBar() {
                           aria-current={active ? 'page' : undefined}
                           className={cn(
                             'flex h-20 flex-col items-center justify-center gap-1.5 rounded-xl border text-center text-xs font-medium transition-colors',
-                            active ? 'border-primary bg-primary/10 text-primary' : 'bg-card hover:bg-accent',
+                            active ? 'border-primary bg-primary/10 text-primary' : 'bg-card shadow-raised hover:bg-accent',
                           )}
                         >
                           <Icon className="h-5 w-5" aria-hidden />

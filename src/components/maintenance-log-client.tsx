@@ -1933,7 +1933,7 @@ export function MaintenanceLogClient() {
                       type="button"
                       onClick={() => setSelectedAssetId(asset.id)}
                       className={cn(
-                        'rounded-lg border bg-card p-4 text-left transition-colors hover:bg-accent',
+                        'glow-card rounded-lg border bg-card p-4 text-left shadow-raised transition-colors hover:bg-accent',
                         selectedAsset?.id === asset.id && 'border-primary'
                       )}
                     >
@@ -2093,7 +2093,7 @@ export function MaintenanceLogClient() {
                           type="button"
                           onClick={() => setSelectedVehicleId(vehicle.id)}
                           className={cn(
-                            'rounded-lg border bg-card p-4 text-left transition-colors hover:bg-accent',
+                            'glow-card rounded-lg border bg-card p-4 text-left shadow-raised transition-colors hover:bg-accent',
                             selectedVehicle?.id === vehicle.id && 'border-primary'
                           )}
                         >
@@ -2133,7 +2133,7 @@ export function MaintenanceLogClient() {
                               type="button"
                               onClick={() => setSelectedVehicleId(vehicle.id)}
                               className={cn(
-                                'rounded-lg border bg-muted/30 p-4 text-left transition-colors hover:bg-accent',
+                                'glow-card rounded-lg border bg-muted/30 p-4 text-left transition-colors hover:bg-accent',
                                 selectedVehicle?.id === vehicle.id && 'border-primary'
                               )}
                             >

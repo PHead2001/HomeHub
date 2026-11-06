@@ -66,6 +66,9 @@ jobs:
       - name: Server authorization and AI unit tests
         run: npm run test:ai
 
+      - name: Design foundation unit tests (theme contrast, appearance, motion tokens)
+        run: npm run test:unit
+
       - name: Firestore and Storage security rules
         run: npm run test:rules
 

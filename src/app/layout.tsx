@@ -8,7 +8,13 @@ import { Toaster } from "@/components/ui/toaster"
 import { AuthProvider } from '@/contexts/auth-context';
 import { PasswordChangeHandler } from '@/components/password-change-handler';
 import { HouseholdManager } from '@/components/household-manager';
-import { ThemeInjector } from '@/components/theme-injector';
+import { AppearanceProvider } from '@/components/appearance-provider';
+import { AmbientBackground } from '@/components/motion/ambient-background';
+import { NavigationProgress } from '@/components/motion/navigation-progress';
+import { GlowPointerTracker } from '@/components/motion/glow-card';
+import { MorphRouteListener } from '@/hooks/use-morph-navigation';
+import { themeCss, DEFAULT_DARK_PRESET } from '@/lib/theme/tokens';
+import { THEME_COLORS, themeBootstrapScript } from '@/lib/theme/appearance';
 import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
 import { PushNotificationManager } from '@/components/PushNotificationManager';
 
@@ -39,7 +45,8 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#020817',
+  // Updated before paint (and on theme change) to the active preset's background.
+  themeColor: THEME_COLORS[DEFAULT_DARK_PRESET],
 };
 
 export default function RootLayout({
@@ -48,19 +55,36 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`dark ${inter.variable} ${spaceGrotesk.variable}`}>
+    // The theme script rewrites data-theme / class / data-motion before hydration.
+    <html
+      lang="en"
+      data-theme={DEFAULT_DARK_PRESET}
+      className={`dark ${inter.variable} ${spaceGrotesk.variable}`}
+      suppressHydrationWarning
+    >
+      <head>
+        {/* Color tokens for every preset (src/lib/theme/tokens.ts). */}
+        <style id="homehub-theme-tokens" dangerouslySetInnerHTML={{ __html: themeCss() }} />
+        {/* Applies the stored theme and motion preference before first paint: no flash. */}
+        <script id="homehub-theme-bootstrap" dangerouslySetInnerHTML={{ __html: themeBootstrapScript() }} />
+      </head>
       <body className="font-body antialiased min-h-screen flex flex-col">
+        <AmbientBackground />
         <AuthProvider>
-          <PushNotificationManager />
-          <FirebaseErrorListener />
-          <ThemeInjector />
-          <PasswordChangeHandler />
-          <HouseholdManager>
-            <Header />
-            <main className="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">{children}</main>
-            <MobileTabBar />
-          </HouseholdManager>
-          <Toaster />
+          <AppearanceProvider>
+            <NavigationProgress />
+            <GlowPointerTracker />
+            <MorphRouteListener />
+            <PushNotificationManager />
+            <FirebaseErrorListener />
+            <PasswordChangeHandler />
+            <HouseholdManager>
+              <Header />
+              <main className="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">{children}</main>
+              <MobileTabBar />
+            </HouseholdManager>
+            <Toaster />
+          </AppearanceProvider>
         </AuthProvider>
       </body>
     </html>
