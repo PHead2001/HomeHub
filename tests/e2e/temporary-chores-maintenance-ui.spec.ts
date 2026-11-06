@@ -54,11 +54,6 @@ async function assertSwitchBounds(page: Page, name: string) {
   }
 }
 
-async function openChoreManagerItem(page: Page, item: string) {
-  await page.getByRole('button', { name: 'Chore Manager' }).click();
-  await page.getByRole('menuitem', { name: item, exact: true }).click();
-}
-
 async function createMaintenanceLog(page: Page, title: string) {
   const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
   await dialog.getByLabel('Title').fill(title);
@@ -116,7 +111,7 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     }
   });
 
-  test('Temporary Task creates one direct chore and one notification without a template', async ({ page }, testInfo) => {
+  test('Add Chore (one time) creates one direct chore and one notification without a template', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const taskName = 'Replace hallway filter E2E';
     const existing = await household.collection('chores').where('task', '==', taskName).get();
@@ -124,27 +119,32 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     const templateCount = (await household.collection('chore-templates').get()).size;
 
     await openAuthenticated(page, '/chores', 'Chore Chart');
-    await openChoreManagerItem(page, 'Temporary Task');
-    let dialog = page.getByRole('dialog', { name: 'Temporary Task' });
-    await expect(dialog).toContainText('without adding it to the reusable chore library');
-    await dialog.getByLabel('Task name').fill('Canceled temporary task');
+    // Add Chore replaced the Chore Manager > Temporary Task dialog; "One time" is its default.
+    await page.getByRole('button', { name: 'Add Chore' }).first().click();
+    let dialog = page.getByRole('dialog', { name: 'Add chore' });
+    await expect(dialog.getByRole('radio', { name: 'One time' })).toBeChecked();
+    await dialog.getByLabel('Chore', { exact: true }).fill('Canceled temporary task');
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     expect((await household.collection('chores').where('task', '==', 'Canceled temporary task').get()).size).toBe(0);
 
-    await openChoreManagerItem(page, 'Temporary Task');
-    dialog = page.getByRole('dialog', { name: 'Temporary Task' });
-    await dialog.getByRole('button', { name: 'Create Temporary Task' }).click();
-    await expect(dialog.getByRole('alert')).toHaveCount(4);
+    await page.getByRole('button', { name: 'Add Chore' }).first().click();
+    dialog = page.getByRole('dialog', { name: 'Add chore' });
+    // Who defaults to the signed-in member and the due date to today, so only the
+    // name is missing; clearing the date shows its inline error too.
+    await dialog.getByLabel('Due date').fill('');
+    await dialog.getByRole('button', { name: 'Add Chore' }).click();
+    await expect(dialog.getByRole('alert')).toHaveCount(2);
+    await expect(dialog.getByRole('alert').first()).toContainText('Give the chore a name.');
 
-    await dialog.getByLabel('Task name').fill(taskName);
+    await dialog.getByLabel('Chore', { exact: true }).fill(taskName);
     await dialog.getByLabel(/Notes/).fill('Use the spare MERV 11 filter from the hall closet.');
-    await dialog.getByLabel('Room').click();
+    await dialog.getByLabel(/^Room/).click();
     await page.getByRole('option', { name: 'Living Room' }).click();
-    await dialog.getByLabel('Assignee').click();
+    await dialog.getByLabel('Who').click();
     await page.getByRole('option', { name: 'Sam Member' }).click();
     await dialog.getByLabel('Due date').fill('2026-08-04');
 
-    const createButton = dialog.getByRole('button', { name: 'Create Temporary Task' });
+    const createButton = dialog.getByRole('button', { name: 'Add Chore' });
     await createButton.evaluate((button) => {
       (button as HTMLButtonElement).click();
       (button as HTMLButtonElement).click();
@@ -175,6 +175,8 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await page.reload();
     await page.getByRole('button', { name: /^Future \(/ }).click();
     await expect(page.getByText(taskName, { exact: true })).toBeVisible();
+    // Checkboxes now complete in one tap; bulk completion lives in Select mode.
+    await page.getByRole('button', { name: 'Select', exact: true }).click();
     await page.getByRole('checkbox', { name: `Select ${taskName}` }).click();
     await page.getByRole('button', { name: 'Complete selected' }).click();
     await expect.poll(async () => (await chore.ref.get()).data()?.isCompleted).toBe(true);
