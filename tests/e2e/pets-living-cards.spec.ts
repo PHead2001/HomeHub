@@ -42,10 +42,16 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     desktopOnly(testInfo);
     await openPets(page);
     const heading = page.getByRole('heading', { name: 'Your Pets', exact: true });
+    const addButton = page.getByRole('button', { name: 'Add Pet' });
+    // Measure only once the header has rendered with its action (it appears after
+    // permissions load) and the page-enter transition has settled.
+    await expect(addButton).toBeVisible();
+    await expect.poll(async () => (await addButton.boundingBox())?.y ?? null).not.toBeNull();
+    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== 'running'));
     // The header row holds the title block (heading + subtitle) and the actions.
     const row = await heading.locator('xpath=../..').boundingBox();
     const title = await heading.boundingBox();
-    const add = await page.getByRole('button', { name: 'Add Pet' }).boundingBox();
+    const add = await addButton.boundingBox();
     expect(row && title && add).toBeTruthy();
     // Same row: the button's vertical centre falls within the header row, level with the title.
     const addCentre = add!.y + add!.height / 2;
