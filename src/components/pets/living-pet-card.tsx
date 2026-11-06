@@ -21,12 +21,12 @@ import {
   SPECIES_ART_LABEL,
   speciesArt,
 } from '@/lib/pets/care';
-import type { FoodType, PetFeedingLog, PetMedicationLog, PetProfile } from '@/lib/pets/types';
+import type { FoodType, PetFeedingLog, PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { FeedingRing } from './feeding-ring';
 import { MedicationChip } from './medication-chip';
 import { PetPhoto } from './pet-photo';
-import { usePetLogs } from './pet-log-api';
+import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
 import { QuickFeedButton } from './quick-feed-button';
 import { useNow } from './use-now';
 
@@ -56,7 +56,7 @@ export function petTypeLabel(pet: Pick<PetProfile, 'type' | 'dataAiHint'>): stri
 export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0 }: LivingPetCardProps) {
   const now = useNow();
   const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
-  const medications = usePetLogs<PetMedicationLog>(householdId, pet.id, 'medication-logs', 50);
+  const medications = useMedicationCountdownLogs(householdId, pet.id);
 
   const plan = feedingPlan(pet);
   const status = feedingStatus(feedings.logs, plan, now);

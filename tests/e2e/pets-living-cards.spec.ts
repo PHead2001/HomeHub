@@ -121,6 +121,30 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await page.keyboard.press('Escape');
   });
 
+  test('edit dialog: removing the photo does not submit, and reopening discards the draft', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await openPets(page);
+    const openEdit = async () => {
+      await page.getByRole('button', { name: 'Open actions for Maple' }).click();
+      await page.getByRole('menuitem', { name: 'Edit' }).click();
+      return page.getByRole('dialog', { name: 'Edit Maple' });
+    };
+    let dialog = await openEdit();
+    await dialog.getByRole('button', { name: /^Remove photo preview for Maple/i }).click();
+    // Still open: removal is a draft change until Save Changes.
+    await expect(dialog).toBeVisible();
+    await expect(page.getByText('Pet updated', { exact: true })).toHaveCount(0);
+    await dialog.getByLabel('Food schedule').fill('Draft schedule that is discarded');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+
+    dialog = await openEdit();
+    await expect(dialog.getByLabel('Food schedule')).toHaveValue('1.5 cups twice daily');
+    await expect(dialog.getByRole('img', { name: /Photo preview for Maple/i })).toBeVisible();
+    await page.keyboard.press('Escape');
+    expect((await household.collection('pets').doc('maple').get()).data()?.photoUrl).toBe('/favicon.ico');
+  });
+
   test('detail page puts history first, shows who logged and defaults to the planned portion', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await page.clock.setFixedTime(fixedNow);

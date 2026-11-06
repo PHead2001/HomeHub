@@ -48,6 +48,14 @@ function typeOptions(current: string): string[] {
   return (PET_SPECIES as readonly string[]).includes(current) || !current ? [...PET_SPECIES] : [...PET_SPECIES, current];
 }
 
+/** Stops a click on a button without an explicit `type` from submitting the enclosing form. */
+export function preventImplicitSubmit(event: React.MouseEvent<HTMLElement>) {
+  const button = (event.target as HTMLElement).closest('button');
+  if (button && event.currentTarget.contains(button) && !button.hasAttribute('type')) {
+    event.preventDefault();
+  }
+}
+
 export type PetFormFieldsProps = {
   idPrefix: string;
   values: PetFormState;
@@ -68,11 +76,15 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
     <div className="grid gap-4 py-2">
       <div className="grid gap-2">
         <Label>Photo</Label>
-        <ImageUpload
-          onFileChange={onPhotoChange}
-          existingImageUrl={existingPhotoUrl}
-          previewAlt={values.name ? `Photo preview for ${values.name}` : 'New pet photo preview'}
-        />
+        {/* The shared uploader's Remove button has no `type`, so inside the dialog form it
+            would submit. Cancel only the submit default; its own click handler still runs. */}
+        <div onClick={preventImplicitSubmit}>
+          <ImageUpload
+            onFileChange={onPhotoChange}
+            existingImageUrl={existingPhotoUrl}
+            previewAlt={values.name ? `Photo preview for ${values.name}` : 'New pet photo preview'}
+          />
+        </div>
         <p className="text-xs text-muted-foreground">Optional. Without a photo, your pet gets an illustrated avatar.</p>
       </div>
 

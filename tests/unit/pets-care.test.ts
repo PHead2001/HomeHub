@@ -12,6 +12,8 @@ import {
   hasRealPhoto,
   loggerName,
   medicationState,
+  mergeById,
+  pendingWindowStart,
   nextMedication,
   parseFeedingsPerDay,
   parseLocalDate,
@@ -72,6 +74,14 @@ describe('feeding plan', () => {
     assert.deepEqual(parsePortion('1/2 cup at night'), { amount: 0.5, unit: 'Cups' });
     assert.deepEqual(parsePortion('half a cup'), { amount: 0.5, unit: 'Cups' });
     assert.equal(parsePortion('whatever she wants'), null);
+  });
+
+  it('reads leading-dot decimals whole and never a numeric suffix', () => {
+    assert.deepEqual(parsePortion('.5 cups twice daily'), { amount: 0.5, unit: 'Cups' });
+    assert.deepEqual(parsePortion('0.75 scoops'), { amount: 0.75, unit: 'Scoops' });
+    assert.deepEqual(parsePortion('1.25 cups'), { amount: 1.25, unit: 'Cups' });
+    assert.equal(parsePortion('x5 cups'), null);
+    assert.deepEqual(feedingPlan({ foodSchedule: '.5 cups twice daily' }), { perDay: 2, amount: 0.5, unit: 'Cups' });
   });
 
   it('prefers structured fields, then the schedule, then 1 cup', () => {
@@ -163,6 +173,43 @@ describe('medication countdown', () => {
     assert.deepEqual(medicationState(0), { state: 'due', label: 'Due today' });
     assert.deepEqual(medicationState(1), { state: 'soon', label: 'Due tomorrow' });
     assert.deepEqual(medicationState(10), { state: 'upcoming', label: 'Due in 10 days' });
+  });
+
+  it('keeps a monthly dose pending beyond any history window', () => {
+    const monthly = { id: 'm1', date: '2026-07-05T09:00:00.000Z', medication: 'Flea prevention', dosage: '1 dose', nextDueDate: '2026-08-04' };
+    // 60 later twice-daily doses of another medication, none dated.
+    const daily = Array.from({ length: 60 }, (_, i) => ({
+      id: `d${i}`, date: new Date(Date.UTC(2026, 6, 6) + i * 12 * 3_600_000).toISOString(), medication: 'Antibiotic', dosage: '1 pill',
+    }));
+    const since = pendingWindowStart([monthly]);
+    assert.equal(since, monthly.date);
+    const recent = daily.filter((log) => log.date >= since!);
+    const due = nextMedication(mergeById([monthly], recent), now);
+    assert.equal(due?.medication, 'Flea prevention');
+    assert.equal(due?.label, 'Due in 3 days');
+    // The newest 50 entries alone would have lost it.
+    assert.equal(nextMedication(daily.slice(-50), now), null);
+  });
+
+  it('lets a later undated dose of the same medication supersede a due date', () => {
+    const dated = [{ id: 'a', date: '2026-07-01T09:00:00.000Z', medication: 'Heartworm', dosage: '1 chew', nextDueDate: '2026-07-31' }];
+    const since = pendingWindowStart(dated);
+    const recent = [...dated, { id: 'b', date: '2026-07-31T09:00:00.000Z', medication: 'heartworm', dosage: '1 chew' }];
+    assert.ok(recent.every((log) => log.date >= since!));
+    assert.equal(nextMedication(mergeById(dated, recent), now), null);
+  });
+
+  it('starts the window at the oldest pending medication and ignores undated entries', () => {
+    assert.equal(pendingWindowStart([]), null);
+    assert.equal(pendingWindowStart([{ date: '2026-07-01T00:00:00.000Z', medication: 'X', nextDueDate: '' }]), null);
+    assert.equal(
+      pendingWindowStart([
+        { date: '2026-06-01T00:00:00.000Z', medication: 'A', nextDueDate: '2026-07-01' },
+        { date: '2026-07-01T00:00:00.000Z', medication: 'a', nextDueDate: '2026-08-01' },
+        { date: '2026-07-10T00:00:00.000Z', medication: 'B', nextDueDate: '2026-08-10' },
+      ]),
+      '2026-07-01T00:00:00.000Z',
+    );
   });
 
   it('parses only real calendar dates', () => {

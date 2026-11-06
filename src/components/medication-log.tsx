@@ -20,7 +20,7 @@ import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
 import { MedicationChip } from './pets/medication-chip';
-import { addPetLog, deletePetLog, usePetLogs } from './pets/pet-log-api';
+import { addPetLog, deletePetLog, useMedicationCountdownLogs, usePetLogs } from './pets/pet-log-api';
 import { useNow } from './pets/use-now';
 
 const logSchema = z.object({
@@ -49,7 +49,8 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   const { logs, loading, error } = usePetLogs<PetMedicationLog>(householdId, petId, 'medication-logs', 100);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
-  const due = nextMedication(logs, now);
+  const pending = useMedicationCountdownLogs(householdId, petId);
+  const due = nextMedication(pending.logs, now);
 
   const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),

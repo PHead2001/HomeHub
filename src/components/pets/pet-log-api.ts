@@ -10,11 +10,12 @@ import {
   onSnapshot,
   orderBy,
   query,
+  where,
   type CollectionReference,
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { db } from '@/lib/firebase';
-import { toDate } from '@/lib/pets/care';
+import { mergeById, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { FoodType, LoggedBy, PetCareLog, PetFeedingLog, PetMedicationLog, PortionUnit } from '@/lib/pets/types';
 
 export type PetLogKind = 'feeding-logs' | 'medication-logs' | 'care-logs';
@@ -99,4 +100,58 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
   // Until the current subscription answers, show loading (never another pet's logs).
   const ready = state.key === key;
   return { logs: ready ? state.logs : [], loading: !ready, error: ready ? state.error : null };
+}
+
+type KeyedLogs<T> = { key: string | null; logs: T[]; error: unknown };
+const EMPTY_KEYED = { key: null, logs: [], error: null };
+
+/**
+ * Medication entries needed for the next-dose countdown, independent of any
+ * history window: every entry with a `nextDueDate` (live), plus every entry from
+ * the oldest pending medication's latest dated dose onward (live), so a monthly
+ * dose stays visible however many daily doses are logged, and a later dose of the
+ * same medication still supersedes it. Both queries use single-field indexes.
+ */
+export function useMedicationCountdownLogs(householdId: string | null | undefined, petId: string): LiveLogs<PetMedicationLog> {
+  const key = householdId ? `${householdId}/${petId}` : null;
+  const [dated, setDated] = useState<KeyedLogs<PetMedicationLog>>(EMPTY_KEYED);
+
+  useEffect(() => {
+    if (!householdId || !key) return;
+    const q = query(petLogsCollection(householdId, petId, 'medication-logs'), where('nextDueDate', '>=', ''));
+    return onSnapshot(
+      q,
+      (snapshot) => setDated({ key, logs: snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetMedicationLog), error: null }),
+      (error) => {
+        console.error('Error loading medication due dates:', error);
+        setDated({ key, logs: [], error });
+      },
+    );
+  }, [householdId, petId, key]);
+
+  const datedReady = dated.key === key;
+  const since = datedReady ? pendingWindowStart(dated.logs) : null;
+  const sinceKey = key && since ? `${key}@${since}` : null;
+  const [recent, setRecent] = useState<KeyedLogs<PetMedicationLog>>(EMPTY_KEYED);
+
+  useEffect(() => {
+    if (!householdId || !since || !sinceKey) return;
+    const q = query(petLogsCollection(householdId, petId, 'medication-logs'), where('date', '>=', since));
+    return onSnapshot(
+      q,
+      (snapshot) => setRecent({ key: sinceKey, logs: snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetMedicationLog), error: null }),
+      (error) => {
+        console.error('Error loading recent medication:', error);
+        setRecent({ key: sinceKey, logs: [], error });
+      },
+    );
+  }, [householdId, petId, since, sinceKey]);
+
+  if (!key) return { logs: [], loading: false, error: null };
+  if (!datedReady) return { logs: [], loading: true, error: null };
+  if (dated.error) return { logs: [], loading: false, error: dated.error };
+  if (!sinceKey) return { logs: [], loading: false, error: null };
+  if (recent.key !== sinceKey) return { logs: [], loading: true, error: null };
+  if (recent.error) return { logs: [], loading: false, error: recent.error };
+  return { logs: mergeById(dated.logs, recent.logs), loading: false, error: null };
 }

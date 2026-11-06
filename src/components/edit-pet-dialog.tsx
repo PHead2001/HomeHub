@@ -40,9 +40,13 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Reset the form when a different pet is opened (adjusting state during render,
-  // so the first frame already shows the right values).
+  // Reset the form on every opening (adjusting state during render, so the first
+  // frame already shows the right values). Closing clears the tracked pet, so
+  // reopening the same pet discards an unsaved draft and a discarded photo.
   const [formPet, setFormPet] = useState<PetProfile | null>(null);
+  if (!pet && formPet) {
+    setFormPet(null);
+  }
   if (pet && pet !== formPet) {
     setFormPet(pet);
     setValues(petFormFromProfile(pet));

@@ -106,7 +106,9 @@ const UNIT_WORDS: [PortionUnit, RegExp][] = [
 /** Best guess at the usual portion from free text such as "1.5 cups" or "One can". */
 export function parsePortion(schedule?: string | null): { amount: number; unit: PortionUnit } | null {
   const text = (schedule ?? '').toLowerCase();
-  const match = text.match(/(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:\.\d+)?|\ba\b|\ban\b|\bone\b|\bhalf\b|\btwo\b|\bthree\b|\bfour\b)\s*(?:a\s+)?(cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/);
+  // The number must start at a boundary (not inside "1.5" or "x5"), and leading-dot
+  // decimals (".5 cups") are read whole, so a portion is never misread tenfold.
+  const match = text.match(/(?<![\w.])(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d*\.\d+|\d+(?:\.\d+)?|\ba\b|\ban\b|\bone\b|\bhalf\b|\btwo\b|\bthree\b|\bfour\b)\s*(?:a\s+)?(cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/);
   if (!match) return null;
   const amount = toNumber(match[1]);
   if (!amount) return null;
@@ -297,6 +299,35 @@ export function nextMedication(
     }
   }
   return best;
+}
+
+/**
+ * Start of the history needed to compute `nextMedication` exactly: the oldest
+ * among the latest dated entry of each medication. Any entry that supersedes one
+ * of those is newer, so loading every entry from here on (plus the dated entries)
+ * is enough, however many unrelated doses were logged since. Null when nothing is
+ * pending. Medication dates are ISO strings, so they compare as text.
+ */
+export function pendingWindowStart(
+  datedLogs: Pick<PetMedicationLog, 'date' | 'medication' | 'nextDueDate'>[],
+): string | null {
+  const latest = new Map<string, string>();
+  for (const log of datedLogs) {
+    const key = (log.medication ?? '').trim().toLowerCase();
+    if (!key || typeof log.date !== 'string' || !parseLocalDate(log.nextDueDate)) continue;
+    const current = latest.get(key);
+    if (!current || log.date > current) latest.set(key, log.date);
+  }
+  let start: string | null = null;
+  for (const date of latest.values()) if (!start || date < start) start = date;
+  return start;
+}
+
+/** Merges entry lists by id (later lists win), for `nextMedication` over two queries. */
+export function mergeById<T extends { id: string }>(...lists: T[][]): T[] {
+  const byId = new Map<string, T>();
+  for (const list of lists) for (const entry of list) byId.set(entry.id, entry);
+  return [...byId.values()];
 }
 
 export function medicationState(days: number): Pick<MedicationDue, 'state' | 'label'> {

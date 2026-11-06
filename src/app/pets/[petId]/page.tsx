@@ -16,7 +16,7 @@ import {
   formatPortion,
   nextMedication,
 } from '@/lib/pets/care';
-import type { FoodType, PetFeedingLog, PetMedicationLog, PetProfile } from '@/lib/pets/types';
+import type { FoodType, PetFeedingLog, PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -40,7 +40,7 @@ import { PetPhoto } from '@/components/pets/pet-photo';
 import { petTypeLabel } from '@/components/pets/living-pet-card';
 import { QuickFeedButton } from '@/components/pets/quick-feed-button';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
-import { usePetLogs } from '@/components/pets/pet-log-api';
+import { useMedicationCountdownLogs, usePetLogs } from '@/components/pets/pet-log-api';
 import { useNow } from '@/components/pets/use-now';
 import type { PetFields } from '@/components/pets/pet-form';
 
@@ -50,7 +50,7 @@ type PetTab = (typeof TABS)[number];
 function PetSummary({ pet, householdId }: { pet: PetProfile; householdId: string }) {
   const now = useNow();
   const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
-  const medications = usePetLogs<PetMedicationLog>(householdId, pet.id, 'medication-logs', 50);
+  const medications = useMedicationCountdownLogs(householdId, pet.id);
   const plan = feedingPlan(pet);
   const status = feedingStatus(feedings.logs, plan, now);
   const due = nextMedication(medications.logs, now);
