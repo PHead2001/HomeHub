@@ -28,6 +28,16 @@ describe('collapseMissedRecurring', () => {
     assert.deepEqual(entries[1].missed.map(c => c.id), ['jul30', 'jul31']);
   });
 
+  it('does not count a same-day instance as missed', () => {
+    const entries = collapseMissedRecurring([
+      chore({ id: 'seeded', templateId: 'kitchen', roomIds: ['kitchen'], originalDueDate: '2026-08-01' }),
+      chore({ id: 'generated', templateId: 'kitchen', roomIds: ['kitchen'], originalDueDate: '2026-08-01' }),
+      chore({ id: 'older', templateId: 'kitchen', roomIds: ['kitchen'], originalDueDate: '2026-07-31' }),
+    ]);
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries.map(e => e.missed.map(c => c.id)), [['older'], []]);
+  });
+
   it('never collapses temporary chores, other rooms or other assignees', () => {
     const entries = collapseMissedRecurring([
       chore({ id: 't1', sourceType: 'temporary', originalDueDate: '2026-07-30' }),

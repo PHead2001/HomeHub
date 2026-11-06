@@ -47,7 +47,8 @@ const seriesKey = (chore: ChoreRecord) =>
  * rooms and assignee) only the latest instance due on or before today is listed;
  * the older incomplete ones are returned as `missed` so the page can say
  * "2 earlier missed" instead of piling up Aug 1, Aug 2, Aug 3 next to today.
- * One-time and temporary chores are never collapsed.
+ * Instances due on the same day are never folded into each other, and one-time
+ * and temporary chores are never collapsed.
  */
 export function collapseMissedRecurring<T extends ChoreRecord>(dueChores: readonly T[]): ToDoEntry<T>[] {
   const latest = new Map<string, ToDoEntry<T>>();
@@ -60,9 +61,14 @@ export function collapseMissedRecurring<T extends ChoreRecord>(dueChores: readon
       continue;
     }
     const existing = latest.get(key);
-    if (existing) {
+    if (existing && choreDueKey(existing.chore) < choreDueKey(chore)) {
+      // An older instance is a missed one; the newer instance takes its place.
       existing.missed.push(existing.chore);
       existing.chore = chore;
+    } else if (existing) {
+      // Same day (e.g. a one-time assignment next to a generated instance): not
+      // "missed", so it stays its own row.
+      entries.push({ chore, missed: [] });
     } else {
       const entry = { chore, missed: [] as T[] };
       latest.set(key, entry);

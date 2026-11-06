@@ -115,7 +115,10 @@ test.describe('chores wave 2', () => {
     try {
       await open(page, '/chores', 'Chore Chart');
       await expect(page.getByText('Chores UX repeating', { exact: true })).toHaveCount(1);
-      await expect(page.getByText('+1 earlier missed')).toBeVisible();
+      // Scope to this series' row: seeded chores (e.g. Reset the kitchen) may fold too.
+      const row = page.getByRole('listitem').filter({ hasText: 'Chores UX repeating' });
+      await expect(row.getByText('+1 earlier missed')).toBeVisible();
+      await expect(row.getByText('Thu, Jul 30')).toBeVisible();
     } finally {
       await Promise.all(ids.map((id) => household.collection('chores').doc(id).delete()));
     }
