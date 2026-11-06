@@ -31,12 +31,24 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
+import { EmptyState } from '@/components/empty-state';
+import { friendlyError } from '@/lib/friendly-error';
+import { cn } from '@/lib/utils';
+import { entityStateLabel, entityStateTone } from '@/components/automation/entity-state';
 
 const credentialsSchema = z.object({
   url: z.string().trim().url('Enter the full address, starting with https://'),
   accessToken: z.string().trim().min(20, 'Paste the full long-lived access token.'),
 });
 type Credentials = z.infer<typeof credentialsSchema>;
+
+const STATE_TONE_CLASSES = {
+  on: 'bg-success/15 text-success',
+  off: 'bg-muted text-muted-foreground',
+  alert: 'bg-warning/15 text-warning',
+  unavailable: 'border border-dashed text-muted-foreground',
+  value: 'bg-secondary text-secondary-foreground',
+} as const;
 
 const domainLabel = (entityId: string) => {
   const domain = entityId.split('.')[0] || 'other';
@@ -67,8 +79,8 @@ function CredentialsForm({ onSaved }: { onSaved: (host: string, count: number) =
       // Entered values stay in the form when something goes wrong.
       if (!result.ok) setError(result.message);
       else onSaved(result.data.host, result.data.entityCount);
-    } catch {
-      setError('We could not reach HomeHub. Check your connection and try again.');
+    } catch (caught) {
+      setError(friendlyError(caught));
     } finally {
       setIsSubmitting(false);
     }
@@ -154,7 +166,7 @@ export function AutomationClient() {
     if (!ctx) return;
     setIsRefreshing(true);
     setLoadError(null);
-    const result = await getHomeAssistantEntities(ctx).catch(() => ({ ok: false as const, message: 'We could not reach HomeHub. Check your connection.' }));
+    const result = await getHomeAssistantEntities(ctx).catch((error: unknown) => ({ ok: false as const, message: friendlyError(error) }));
     if (result.ok) setEntities(result.data);
     else {
       setEntities([]);
@@ -166,7 +178,7 @@ export function AutomationClient() {
   const loadStatus = useCallback(async () => {
     const ctx = await context();
     if (!ctx) return;
-    const result = await getHomeAssistantStatus(ctx).catch(() => ({ ok: false as const, message: 'We could not reach HomeHub.' }));
+    const result = await getHomeAssistantStatus(ctx).catch((error: unknown) => ({ ok: false as const, message: friendlyError(error) }));
     if (!result.ok) {
       setStatus({ configured: false, host: null });
       setLoadError(result.message);
@@ -184,7 +196,7 @@ export function AutomationClient() {
     setIsDisconnectOpen(false);
     const ctx = await context();
     if (!ctx) return;
-    const result = await disconnectHomeAssistant(ctx);
+    const result = await disconnectHomeAssistant(ctx).catch((error: unknown) => ({ ok: false as const, message: friendlyError(error) }));
     if (!result.ok) {
       toast({ variant: 'destructive', title: 'Could not disconnect', description: result.message });
       return;
@@ -221,10 +233,13 @@ export function AutomationClient() {
   if (!status.configured) {
     if (!canManage) {
       return (
-        <Alert className="max-w-lg">
-          <AlertTitle>Home Assistant is not connected</AlertTitle>
-          <AlertDescription>Ask a household owner or admin to connect it. You will see device states here afterwards.</AlertDescription>
-        </Alert>
+        <Card>
+          <EmptyState
+            kind="generic"
+            title="Home Assistant isn't connected yet"
+            description={loadError ?? 'Ask a household owner or admin to connect it. Your lights, sensors and devices will show up here.'}
+          />
+        </Card>
       );
     }
     return (
@@ -267,8 +282,8 @@ export function AutomationClient() {
             </CardDescription>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => void loadEntities()} disabled={isRefreshing}>
-              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} /> Refresh
+            <Button variant="outline" onClick={() => void loadEntities()} disabled={isRefreshing} aria-label={isRefreshing ? 'Refreshing devices' : 'Refresh devices'}>
+              <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshing && 'animate-spin')} /> Refresh
             </Button>
             {canManage && (
               <Button variant="outline" onClick={() => setIsDisconnectOpen(true)}>
@@ -304,9 +319,22 @@ export function AutomationClient() {
               {[0, 1, 2].map(key => <Skeleton key={key} className="h-12 w-full" />)}
             </div>
           ) : grouped.length === 0 && !loadError ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {filter ? 'No devices match your search.' : 'Home Assistant did not report any devices.'}
-            </p>
+            filter ? (
+              <EmptyState
+                compact
+                headingLevel={3}
+                title="No matches"
+                description={`Nothing is called "${filter.trim()}". Try part of a name or a device ID.`}
+                action={{ label: 'Clear search', onClick: () => setFilter('') }}
+              />
+            ) : (
+              <EmptyState
+                compact
+                headingLevel={3}
+                title="No devices yet"
+                description="Home Assistant didn't report any devices. Add some there, then refresh."
+              />
+            )
           ) : (
             grouped.map(([label, items]) => (
               <section key={label} aria-label={label}>
@@ -318,8 +346,8 @@ export function AutomationClient() {
                         <p className="truncate font-medium">{entity.attributes.friendly_name || entity.entity_id}</p>
                         <p className="truncate font-code text-xs text-muted-foreground">{entity.entity_id}</p>
                       </div>
-                      <span className="shrink-0 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-semibold text-secondary-foreground">
-                        {entity.state}{entity.attributes.unit_of_measurement ? ` ${entity.attributes.unit_of_measurement}` : ''}
+                      <span className={cn('shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold', STATE_TONE_CLASSES[entityStateTone(entity.state)])}>
+                        {entityStateLabel(entity.state, entity.attributes.unit_of_measurement)}
                       </span>
                     </li>
                   ))}
