@@ -21,7 +21,7 @@ This module owns rooms, chore templates, one-time and recurring assignments, gen
 - `src/components/chore-chart-client.tsx`
 - Chore/recurrence types in `src/lib/types.ts`
 - Notification helpers in `src/lib/notifications.ts`
-- Member departure cleanup in `src/contexts/auth-context.tsx` and `src/components/household-management-client.tsx`
+- Member departure cleanup in `src/lib/server/household-membership.ts` (leaving) and `src/components/household-management-client.tsx` (removal)
 
 ## Architecture and Data Flow
 

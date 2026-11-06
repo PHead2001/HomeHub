@@ -42,11 +42,11 @@ Deleting a mapping removes Firestore metadata first. Storage cleanup runs only f
 
 ## Authentication, Roles, and Security
 
-Routes require an authenticated user and clients derive `householdId` from auth context. Firestore and Storage rules allow approved household members and legacy members listed in `households.memberEmails`; pending `newuser` members are blocked.
+Routes require an authenticated user and clients derive `householdId` from auth context. Firestore and Storage rules treat `households/{householdId}/members/{uid}` as the only membership authority: the caller needs an approved member record (role `owner`, `admin`, `member`, `child`, or `guest` with `status` `active`), and `households.memberEmails` or user-profile fields never grant access. Pending `newuser` members are blocked. Both rule sets gate by effective permission (role preset plus per-member overrides; owners hold every permission): `shopping.view` to read, `shopping.edit` to create or update, and `shopping.delete` to delete mappings and barcode images.
 
-The server-action lookup receives `householdId` from its caller and uses the Firebase web client SDK. Whether server-side Firebase Auth state satisfies Firestore rules requires authenticated runtime verification. A local-library read failure is swallowed and lookup continues to the public API.
+The server-action lookup receives `householdId` and an ID token from its caller, verifies the token and the caller's member record with Firebase Admin, and requires `shopping.view` before reading the household mapping. Admin reads bypass security rules, so this server-side check is the authorization boundary for lookup.
 
-Storage rules scope paths by household but do not impose barcode-image size or content-type limits. The shared upload UI performs client-side image validation.
+Storage rules accept barcode-image creates and updates only when the object is 5 MB or smaller and its content type is `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/heic`, `image/heif`, or `image/avif`. The shared upload UI also validates images client-side.
 
 ## Integrations and Background Processing
 
