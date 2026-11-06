@@ -2,10 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { motion } from 'motion/react';
 import { Button } from '@/components/ui/button';
-import { useReducedMotion } from '@/hooks/use-reduced-motion';
-import { DURATION, EASE } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 
 export type EmptyStateKind = 'chores' | 'lists' | 'pets' | 'assets' | 'notifications' | 'generic';
@@ -178,8 +175,8 @@ function ActionControl({ action, variant }: { action: EmptyStateAction; variant:
 
 /**
  * Illustrated empty state (H24): picture, title, one-line invitation and a
- * primary action. Fades in with a 6 px settle (220 ms, opacity/transform only, so
- * nothing shifts); under reduced motion it renders in place.
+ * primary action. Fades in with a 6 px settle (200 ms CSS, opacity/transform only,
+ * so nothing shifts or waits for hydration); under reduced motion it renders in place.
  *
  *   <EmptyState
  *     kind="chores"
@@ -199,7 +196,6 @@ export function EmptyState({
   className,
   ...props
 }: EmptyStateProps) {
-  const reduced = useReducedMotion();
   const Heading = `h${headingLevel}` as 'h2' | 'h3' | 'h4';
   return (
     <div
@@ -207,12 +203,9 @@ export function EmptyState({
       data-empty-state={kind}
       className={cn('text-center', compact ? 'px-4 py-6' : 'px-6 py-10', className)}
     >
-      <motion.div
-        className={cn('flex flex-col items-center', compact ? 'gap-2' : 'gap-3')}
-        initial={reduced ? false : { opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: DURATION.ui, ease: EASE.standard }}
-      >
+      {/* A CSS entrance runs from first paint, so server-rendered empty states never
+          wait for hydration; the global reduced-motion rules collapse it to the end state. */}
+      <div className={cn('flex flex-col items-center animate-in fade-in-0 slide-in-from-bottom-1.5 duration-200 ease-out', compact ? 'gap-2' : 'gap-3')}>
         <EmptyStateIllustration kind={kind} className={compact ? 'h-16 w-20' : 'h-24 w-[7.5rem]'} />
         <Heading className={cn('font-headline font-semibold text-foreground', compact ? 'text-base' : 'text-lg')}>{title}</Heading>
         <p className="max-w-sm text-sm text-muted-foreground">{description}</p>
@@ -222,7 +215,7 @@ export function EmptyState({
             {secondaryAction ? <ActionControl action={secondaryAction} variant="ghost" /> : null}
           </div>
         ) : null}
-      </motion.div>
+      </div>
     </div>
   );
 }
