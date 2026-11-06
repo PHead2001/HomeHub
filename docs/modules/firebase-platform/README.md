@@ -23,7 +23,7 @@ This is a platform module with no standalone page. It provides authentication, h
 - `playwright.config.ts`
 - `scripts/e2e/*`
 - `tests/e2e/*`
-- `.github/workflows/e2e-smoke.yml`
+- `.github/workflows/e2e-smoke.yml` (also runs `npm run test:unit`, the design-foundation unit tests)
 
 ## Architecture and Data Flow
 
