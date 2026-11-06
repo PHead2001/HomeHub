@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, BellDot, CheckCheck, ExternalLink, X } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
@@ -23,6 +23,9 @@ import { errorEmitter } from '@/lib/error-emitter';
 import { FirestorePermissionError } from '@/lib/errors';
 import { useToast } from "@/hooks/use-toast";
 import { useAppBadge } from "@/hooks/use-app-badge";
+import { EmptyState } from "@/components/empty-state";
+import { caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
+import styles from "@/components/dashboard/dashboard.module.css";
 import {
   createNotificationAction,
   deduplicateNotifications,
@@ -155,7 +158,7 @@ function NotificationItem({
           type="button"
           variant="ghost"
           size="icon"
-          className="absolute right-1 top-1/2 hidden h-7 w-7 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex focus:flex"
+          className="absolute right-1 top-1/2 hidden h-7 w-7 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex group-focus-within:flex"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -175,7 +178,10 @@ export function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const { toast } = useToast();
+  const { toastError } = useToast();
+  // H11: the bell rings and the badge pops when a new unread notification arrives.
+  const [ringKey, setRingKey] = useState(0);
+  const previousUnread = useRef<number | null>(null);
 
   useEffect(() => {
     if (!currentUser?.householdId || !currentUser.uid) {
@@ -229,6 +235,15 @@ export function NotificationBell() {
   // Mirror the unread count on the installed app icon (Badging API).
   useAppBadge(isLoading || hasError ? null : unreadCount);
 
+  useEffect(() => {
+    if (isLoading || hasError) return;
+    if (previousUnread.current !== null && unreadCount > previousUnread.current) setRingKey((key) => key + 1);
+    previousUnread.current = unreadCount;
+  }, [unreadCount, isLoading, hasError]);
+
+  const groups = useMemo(() => groupNotifications(activeNotifications, new Date()), [activeNotifications]);
+  const bellLabel = unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications';
+
   const dismissNotifications = async (notificationIds: string[]) => {
     if (!currentUser?.householdId || !currentUser.uid || notificationIds.length === 0) return;
 
@@ -246,7 +261,7 @@ export function NotificationBell() {
       await batch.commit();
     } catch (error) {
       console.error("Error dismissing notifications:", error);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not dismiss notifications.' });
+      toastError(error, 'Could not dismiss notifications');
     }
   };
 
@@ -266,14 +281,19 @@ export function NotificationBell() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="relative">
-          {unreadCount > 0 ? <BellDot className="h-5 w-5" /> : <Bell className="h-5 w-5" />}
+        <Button variant="ghost" size="icon" className="relative" aria-label={bellLabel} data-testid="notification-bell">
+          <span key={`bell-${ringKey}`} aria-hidden className={cn("flex", ringKey > 0 && styles.ring)}>
+            {unreadCount > 0 ? <BellDot className="h-5 w-5" /> : <Bell className="h-5 w-5" />}
+          </span>
           {unreadCount > 0 && (
-            <span className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground">
-              {unreadCount}
+            <span
+              key={`badge-${ringKey}`}
+              aria-hidden
+              className={cn("absolute right-0 top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-0.5 text-[10px] font-semibold text-destructive-foreground", ringKey > 0 && styles.pop)}
+            >
+              {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           )}
-          <span className="sr-only">Open notifications</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-80 p-0">
@@ -298,21 +318,26 @@ export function NotificationBell() {
           {isLoading ? (
             <p className="py-8 text-center text-sm text-muted-foreground">Loading notifications...</p>
           ) : hasError ? (
-            <p className="px-4 py-8 text-center text-sm text-destructive">Could not load notifications.</p>
+            <p role="alert" className="px-4 py-8 text-center text-sm text-destructive">Could not load notifications. Check your connection and try again.</p>
           ) : activeNotifications.length > 0 ? (
             <div className="space-y-1 p-1">
-              {activeNotifications.map((notification) => (
-                <NotificationItem
-                  key={notification.id}
-                  notification={notification}
-                  isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
-                  onDismiss={(id) => dismissNotifications([id])}
-                  onOpen={handleOpenNotification}
-                />
+              {groups.map((group) => (
+                <Fragment key={group.id}>
+                  <p className="px-2 pb-0.5 pt-2 text-xs font-medium text-muted-foreground">{group.label}</p>
+                  {group.items.map((notification) => (
+                    <NotificationItem
+                      key={notification.id}
+                      notification={notification}
+                      isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
+                      onDismiss={(id) => dismissNotifications([id])}
+                      onOpen={handleOpenNotification}
+                    />
+                  ))}
+                </Fragment>
               ))}
             </div>
           ) : (
-            <p className="py-8 text-center text-sm text-muted-foreground">No active notifications</p>
+            <EmptyState kind="notifications" compact headingLevel={3} title="All caught up" description={caughtUpLine(new Date())} />
           )}
         </ScrollArea>
         <DropdownMenuSeparator />
