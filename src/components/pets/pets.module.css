@@ -1,0 +1,80 @@
+/*
+ * Pets motion (H09, D17). Base styles are the finished state, so anything that
+ * skips the animation (reduced motion, tests that zero durations) shows the end
+ * state at once. Only opacity and transform animate.
+ */
+
+/* Species avatar blink: a 140 ms blink every 7 s. Paused while the tab is hidden. */
+.eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pet-blink 7s ease-in-out infinite;
+}
+
+.eyes[data-delay='1'] { animation-delay: -2.3s; }
+.eyes[data-delay='2'] { animation-delay: -4.6s; }
+
+@keyframes pet-blink {
+  0%, 96%, 100% { transform: scaleY(1); }
+  98% { transform: scaleY(0.1); }
+}
+
+/* Feeding ring fill (data change: 500 ms, non-blocking). */
+.ringFill {
+  transition: stroke-dashoffset 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Paw-print burst after a feeding (celebration: 900 ms, decorative). */
+.burst {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.paw {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  opacity: 0;
+  animation: pet-paw 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes pet-paw {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.4) rotate(var(--paw-rotate, 0deg)); }
+  25% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--paw-x, 0), var(--paw-y, -28px)) scale(1) rotate(var(--paw-rotate, 0deg)); }
+}
+
+:global(html[data-visibility='hidden']) .eyes {
+  animation-play-state: paused;
+}
+
+:global(html[data-motion='reduce']) .eyes,
+:global(html[data-motion='reduce']) .paw {
+  animation: none !important;
+}
+
+:global(html[data-motion='reduce']) .paw {
+  display: none;
+}
+
+:global(html[data-motion='reduce']) .ringFill {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eyes,
+  .paw {
+    animation: none !important;
+  }
+  .paw {
+    display: none;
+  }
+  .ringFill {
+    transition: none !important;
+  }
+}
