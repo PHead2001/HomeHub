@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -9,119 +10,102 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
-import { PlusCircle } from "lucide-react"
-import type { Pet } from "@/lib/types";
-import { useToast } from "@/hooks/use-toast";
-import { ImageUpload } from "./image-upload";
-
+import { validatePetForm, type PetFormErrors } from "@/lib/pets/care";
+import {
+  EMPTY_PET_FORM,
+  PetFormFields,
+  focusFirstError,
+  petFieldsFromForm,
+  type PetFields,
+  type PetFormState,
+} from "./pets/pet-form";
 
 interface AddPetDialogProps {
-    onAddPet: (pet: Omit<Pet, 'id'>, photoFile: File | null) => Promise<boolean>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Names already used in the household (duplicates are rejected inline). */
+  existingNames: string[];
+  /** Resolves true when saved; failures are reported by the caller as outcome toasts. */
+  onAddPet: (fields: PetFields, photoFile: File | null) => Promise<boolean>;
 }
 
-export function AddPetDialog({ onAddPet }: AddPetDialogProps) {
-  const [open, setOpen] = useState(false);
-  const { toast } = useToast();
+const ID_PREFIX = "add-pet";
 
-  const [name, setName] = useState('');
-  const [type, setType] = useState<Pet['type']>('Dog');
+export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: AddPetDialogProps) {
+  const [values, setValues] = useState<PetFormState>(EMPTY_PET_FORM);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [foodSchedule, setFoodSchedule] = useState('');
+  const [errors, setErrors] = useState<PetFormErrors>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const clearForm = () => {
-    setName('');
-    setType('Dog');
+  const reset = () => {
+    setValues(EMPTY_PET_FORM);
     setPhotoFile(null);
-    setFoodSchedule('');
-  }
+    setErrors({});
+    setSubmitted(false);
+  };
 
-  const handleSubmit = async () => {
-    if (!name || !type || !foodSchedule) {
-        toast({
-            variant: "destructive",
-            title: "Missing Information",
-            description: "Please fill out all fields before saving.",
-        });
-        return;
+  const change = (patch: Partial<PetFormState>) => {
+    const next = { ...values, ...patch };
+    setValues(next);
+    // After the first submit, errors update as the member fixes them.
+    if (submitted) setErrors(validatePetForm(next, existingNames));
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (saving) return;
+    setSubmitted(true);
+    const nextErrors = validatePetForm(values, existingNames);
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      focusFirstError(ID_PREFIX, nextErrors);
+      return;
     }
-
-    const wasAdded = await onAddPet({
-        name,
-        type,
-        photoUrl: '', // This will be replaced by the uploader
-        dataAiHint: `${type.toLowerCase()}`,
-        foodSchedule,
-    }, photoFile);
-
-    if (wasAdded) {
-      toast({ title: "Pet Added!", description: `${name} has been added to your family.` });
-      setOpen(false);
-      clearForm();
+    setSaving(true);
+    try {
+      const saved = await onAddPet(petFieldsFromForm(values), photoFile);
+      if (saved) {
+        onOpenChange(false);
+        reset();
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
-
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => {
-        setOpen(isOpen);
-        if (!isOpen) clearForm();
-    }}>
-      <DialogTrigger asChild>
-        <Button><PlusCircle className="mr-2" /> Add Pet</Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
-        <DialogHeader>
-          <DialogTitle className="font-headline">Add a new pet</DialogTitle>
-          <DialogDescription>
-            Fill in the details for your new furry family member.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4 py-4">
-           <div className="grid grid-cols-4 items-center gap-4">
-             <Label className="text-right">
-              Photo
-            </Label>
-            <div className="col-span-3">
-                <ImageUpload onFileChange={setPhotoFile} previewAlt={name ? `Photo preview for ${name}` : 'New pet photo preview'} />
-            </div>
-           </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="name" className="text-right">
-              Name
-            </Label>
-            <Input id="name" value={name} onChange={e => setName(e.target.value)} placeholder="Buddy" className="col-span-3" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="type" className="text-right">
-              Type
-            </Label>
-            <Select onValueChange={(value: Pet['type']) => setType(value)} defaultValue={type}>
-              <SelectTrigger className="col-span-3">
-                <SelectValue placeholder="Select a type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Dog">Dog</SelectItem>
-                <SelectItem value="Cat">Cat</SelectItem>
-                <SelectItem value="Other">Other</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-           <div className="grid grid-cols-4 items-start gap-4">
-            <Label htmlFor="schedule" className="text-right pt-2">
-              Food Schedule
-            </Label>
-            <Textarea id="schedule" value={foodSchedule} onChange={e => setFoodSchedule(e.target.value)} placeholder="e.g. Twice a day, 8am and 6pm" className="col-span-3" />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button onClick={handleSubmit}>Save Pet</Button>
-        </DialogFooter>
+    <Dialog
+      open={open}
+      onOpenChange={(isOpen) => {
+        if (saving) return;
+        onOpenChange(isOpen);
+        if (!isOpen) reset();
+      }}
+    >
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[460px]">
+        <form onSubmit={handleSubmit} noValidate>
+          <DialogHeader>
+            <DialogTitle className="font-headline">Add a new pet</DialogTitle>
+            <DialogDescription>
+              A name and feeding schedule are all you need. Everything else is optional.
+            </DialogDescription>
+          </DialogHeader>
+          <PetFormFields
+            idPrefix={ID_PREFIX}
+            values={values}
+            errors={errors}
+            onChange={change}
+            onPhotoChange={setPhotoFile}
+          />
+          <DialogFooter className="pt-2">
+            <Button type="submit" disabled={saving}>
+              {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+              Save Pet
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
