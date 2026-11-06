@@ -6,13 +6,18 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 
 ## User-Facing Capabilities
 
-- Use the Shopping Lists tab at `/shopping`.
-- Create, edit, and delete Grocery, Auto, Hardware, Pets, and Custom lists.
-- Customize per-list categories.
-- Add/delete items, change quantity, and toggle needed/purchased status.
-- Clear purchased items and optionally remove an emptied list.
+- Use the Shopping Lists tab at `/shopping`. The open list is in the URL (`/shopping?list=<listId>`; the pantry tab is `?tab=pantry`), so refresh keeps your place, Back returns to the overview and a list can be linked; a link to a missing list falls back to the overview with a "List not found" toast.
+- See each list as a card with its tinted icon, "n to buy, n in the cart" and a trip progress bar.
+- Create, edit, and delete Grocery, Auto, Hardware, Pets, and Custom lists. Lists pick an icon and one of eight palette tints (or Automatic).
+- Customize per-list categories (duplicate or empty names are explained inline under the field).
+- Shop in store order: needed items are grouped by aisle in the order of a supermarket walk (Produce, Bakery, Meat, Dairy, Frozen, Pantry, Snacks, Drinks, Household), then the list's custom categories, then categories only found on items, then Other. Items in a category removed from the list's configuration still show.
+- Tick an item with its checkbox, or on touch devices by swiping the row right (with a haptic tick when Haptics is on). The name is struck through as it leaves Needed, the cart icon in the header wobbles and counts up, and a "Milk is in the cart" toast offers **Undo** for five seconds. Ticking never leaves the list.
+- Add several items at once with the quick-add field pinned to the bottom of an open list: `milk, eggs, 2 bread` (also `bread x2`, `2x bread`). A name already on the list as needed (ignoring case and spacing) raises that item's quantity instead of adding a duplicate; the same applies to the Add Item dialog. Typed all-lower-case names are capitalized ("milk" becomes "Milk"). An empty entry shows an inline error under the field.
+- Delete an item with five seconds to undo (the item is written back as it was).
+- Finish a trip: ticking the last needed item prints a receipt (list, time, items and totals) that offers **Add to pantry** (Grocery lists) and **Clear purchased**.
+- Clear purchased items and optionally remove an emptied list. On Grocery lists, Clear offers **Add to pantry, then clear**.
+- Send purchased Grocery items to the pantry in one batch: every item starts ticked with a shelf guessed from its category (Dairy goes to the Fridge, Frozen to the Freezer) and can be unticked or moved before confirming.
 - Scan a barcode while adding an item.
-- Move a purchased Grocery item into a prefilled pantry form.
 - Open the household barcode catalog from the `Barcode Library` inventory action.
 - Share a recipe link, product page or text into the installed app (`/share`), pick a list, and confirm to add it as an item, optionally keeping the link.
 - Open lists and tick items with no connection; ticks sync when the connection returns.
@@ -23,6 +28,10 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 - `src/app/shopping/page.tsx`
 - `src/components/shopping-center-client.tsx`
 - `src/components/shopping-list-client.tsx`
+- `src/components/shopping/` (list card and dialog, list icons, item row, cart indicator, quick-add bar, trip receipt, pantry handoff dialog)
+- `src/lib/shopping/items.ts` (name normalization, duplicate matching, quick-add parser, store-walk grouping)
+- `src/lib/shopping/list-style.ts` (list tints and icon fallback)
+- `src/lib/shopping/pantry.ts` and `src/lib/shopping/pantry-writes.ts` (pantry handoff)
 - `src/app/share/page.tsx`
 - `src/components/share-target-client.tsx`
 - `src/lib/share-target.ts`
@@ -33,15 +42,17 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 
 ## Architecture and Data Flow
 
-`ShoppingCenterClient` coordinates Shopping Lists and Inventory tabs plus the purchased-item handoff. `ShoppingListClient` fetches list metadata/items explicitly, writes Firestore records, and treats the OpenAI-backed grocery categorization server action as optional enrichment for new items. The client sends a Firebase ID token; the action verifies household membership and `shopping.edit` before requesting a model.
+`ShoppingCenterClient` coordinates the Shopping Lists and Pantry Inventory tabs and keeps the open tab and list in the URL with `history.pushState`/`replaceState` and a `popstate` listener (opening a list pushes an entry; leaving it or switching tabs replaces it). `ShoppingListClient` receives the list id, fetches list metadata/items explicitly, writes Firestore records, and treats the OpenAI-backed grocery categorization server action as optional enrichment for new items. The client sends a Firebase ID token; the action verifies household membership and `shopping.edit` before requesting a model.
 
-Checking a Grocery item marks it purchased before opening the pantry form. Canceling that form leaves the shopping item purchased. Reverting an item to needed does not subtract pantry inventory.
+Ticking an item only changes its status: it never switches tabs or opens a form. The pantry handoff is opt-in and batched: from the trip receipt, from **Add to pantry, then clear** in the Clear dialog, or (for members who can edit but not delete) an **Add to pantry** button next to Purchased. It is offered only for Grocery lists, to members with `shopping.edit`, and only while online. Reverting an item to needed does not subtract pantry inventory.
 
-Item creation goes through `buildShoppingListItem` (`src/lib/shopping-items.ts`), shared by the add-item dialog and the share target: document ID `slugify(name)` (a slug plus a random suffix, so the same name added twice creates two items; there is no dedupe), `status: 'needed'`, `createdAt: new Date()`, and optional `imageUrl`, `barcode` and `sourceUrl` omitted when empty.
+List cards load their counts with one items read per list after the lists render, so cards never wait on them; counts refresh when returning to the overview.
 
-**Offline.** Lists and items are read with `getDocsOfflineAware`/`getDocOfflineAware`, which use Firestore's persistent cache directly when the browser is offline. Ticking an item updates the screen immediately; the status write is queued by Firestore and syncs on reconnect, even if the page is reloaded in between. Offline, the Grocery purchase-to-pantry handoff is skipped (its form would wait on the network) and a one-time "You are offline" toast explains that ticks sync later; if a queued write is later rejected, an error toast appears and the list is re-read once Firestore has settled every queued write, so the screen shows the confirmed state. It is not reset to that tick's starting status, because several ticks of one item can be queued and rejected together. The same re-read runs when a list loads with writes still queued, such as offline ticks restored after a reload. `tests/e2e/pwa-share.spec.ts` covers a tick and an untick queued offline, both rejected on reconnect. Items added offline are saved under `Other` once categorization fails (as with any AI fallback) and confirmed with an "Item Added Offline" toast. The `/shopping` page shell itself loads offline from the service worker described in [Application Shell and Dashboard](../application-shell/README.md). Only lists and items this browser has already loaded are available offline.
+Item creation goes through `buildShoppingListItem` (`src/lib/shopping-items.ts`), shared by the add-item dialog, quick-add, the pantry's "Put on a shopping list" and the share target: document ID `slugify(name)` (a slug plus a random suffix). Before creating, the dialog and quick-add look for a still-needed item with the same `itemNameKey` and update its `quantity` instead; purchased items are never merged into, and the share target always creates (it may carry a link). New items have `status: 'needed'`, `createdAt: new Date()`, and optional `imageUrl`, `barcode` and `sourceUrl` omitted when empty.
 
-**Share target.** The manifest declares a GET share target at `/share` with `title`, `text` and `url` parameters. `parseSharedContent` takes the first http(s) URL from `url` or `text` (Android often places it in `text`) and suggests an item name from the title, then the text without the link, then the link's host name, capped at 120 characters. `ShareTargetClient` shows sign-in, no-household, pending-approval and no-permission states; otherwise the member edits the name and quantity, chooses whether to keep the link, and picks a list. Nothing is written until **Add to list** is pressed. The save reads the list's category config, categorizes like the add-item dialog (Automatic; `Other` immediately when offline), and writes one item; offline it reports "Saved offline".
+**Offline.** Lists, items and card counts are read with `getDocsOfflineAware`/`getDocOfflineAware`, which use Firestore's persistent cache directly when the browser is offline. Ticking an item updates the screen immediately; the status write is queued by Firestore and syncs on reconnect, even if the page is reloaded in between. Offline, the pantry handoff is not offered (its read and batch would wait on the network) and a one-time "You are offline" toast explains that ticks sync later; if a queued write is later rejected, an error toast appears and the list is re-read once Firestore has settled every queued write, so the screen shows the confirmed state. It is not reset to that tick's starting status, because several ticks of one item can be queued and rejected together. The same re-read runs when a list loads with writes still queued, such as offline ticks restored after a reload. `tests/e2e/pwa-share.spec.ts` covers a tick and an untick queued offline, both rejected on reconnect. Items added offline (dialog or quick-add) are saved under `Other` without asking the model, unless a category was picked, and confirmed with an "Item Added Offline" toast; quantity merges and deletes are queued the same way, and a later rejection shows a `toastError` and re-reads the list. The `/shopping` page shell itself loads offline from the service worker described in [Application Shell and Dashboard](../application-shell/README.md). Only lists and items this browser has already loaded are available offline.
+
+**Share target.** The manifest declares a GET share target at `/share` with `title`, `text` and `url` parameters. `parseSharedContent` takes the first http(s) URL from `url` or `text` (Android often places it in `text`) and suggests an item name from the title, then the text without the link, then the link's host name, capped at 120 characters. `ShareTargetClient` shows sign-in, no-household, pending-approval and no-permission states; otherwise the member edits the name and quantity, chooses whether to keep the link, and picks a list. Nothing is written until **Add to list** is pressed. Lists show their tinted icon, and the confirmation links straight to the chosen list (`/shopping?list=<listId>`). The save reads the list's category config, categorizes like the add-item dialog (Automatic; `Other` immediately when offline), and writes one item; offline it reports "Saved offline".
 
 **Quick add.** `/shopping?quickAdd=1` removes the parameter from the address bar once lists load, then opens the add-item dialog on the only list, or on the first Grocery list; otherwise it shows a "Choose a list" toast.
 
@@ -50,6 +61,7 @@ Item creation goes through `buildShoppingListItem` (`src/lib/shopping-items.ts`)
 - Lists: `households/{householdId}/shopping-lists/{listId}`.
 - Items: `households/{householdId}/shopping-lists/{listId}/items/{itemId}`.
 - Categories: `households/{householdId}/shopping-lists/{listId}/config/categories`.
+- List `color` now stores a palette tint `tint-1` to `tint-8` (or empty for Automatic). Older lists that stored a hex color, and lists without one, are read with a stable tint derived from the list id; nothing is migrated and the hex value is never rendered. An unknown `icon` name renders the list type's icon (Grocery cart, Auto car, Hardware wrench, Pets paw print, Custom clipboard).
 - Barcode lookup dependency: `households/{householdId}/barcode-library/{barcode}`.
 
 `ShoppingList`, `ShoppingListType`, `ShoppingListItem`, and `ShoppingListCategory` are defined in `src/lib/types.ts`. `ShoppingListItem.sourceUrl` (optional) holds an http(s) link saved from the share target; the item row shows an external-link button for it and re-checks the scheme before rendering.
@@ -58,7 +70,7 @@ Item creation goes through `buildShoppingListItem` (`src/lib/shopping-items.ts`)
 
 The page requires an authenticated user and scopes paths with `householdId`. Navigation uses `shopping.view`. Pending users are blocked.
 
-Firestore rules require `shopping.view` to read lists, items and category config, `shopping.edit` to create or update them, and `shopping.delete` to delete them. The Shopping Lists tab does not hide controls by permission; denied writes fail (most paths show an error toast). The share target checks `shopping.view` and `shopping.edit` (and blocks pending members) before loading lists or offering a save.
+Firestore rules require `shopping.view` to read lists, items and category config, `shopping.edit` to create or update them, and `shopping.delete` to delete them. The UI hides what a member cannot do: Create New List, Edit, Manage Categories, Add Item, quick-add, the tick checkboxes and swipe, undo-after-delete and the pantry handoff need `shopping.edit` (viewers see a read-only status mark instead of a checkbox); Delete list, Delete item and Clear purchased need `shopping.delete`. Members without `shopping.view` see an explanation instead of the tabs, and the Barcode Library header link is hidden. Denied writes still fail at the rules and show a `toastError`. The share target checks `shopping.view` and `shopping.edit` (and blocks pending members) before loading lists or offering a save.
 
 ## Integrations and Background Processing
 
@@ -69,7 +81,8 @@ Firestore rules require `shopping.view` to read lists, items and category config
 
 ## Cross-Module Dependencies
 
-- [Pantry Inventory and Recipes](../pantry-recipes/README.md) receives purchased grocery items.
+- [Pantry Inventory and Recipes](../pantry-recipes/README.md) receives purchased grocery items in one batch.
+- [Application Shell](../application-shell/README.md) supplies `EmptyState`, `FieldError`, `toastError`/`friendlyError`, `playFeedback`, the member-color palette used for list tints, and the motion tokens.
 - [Barcode Library](../barcode-library/README.md) owns mappings, scanning, and public fallback.
 - [AI and Genkit](../ai-genkit/README.md) owns category generation.
 - [Identity and Profile](../identity-profile/README.md), [Household Governance](../household-governance/README.md), and [Firebase Platform](../firebase-platform/README.md) supply scope/security.
@@ -83,7 +96,11 @@ Firestore rules require `shopping.view` to read lists, items and category config
 - A tick is never lost offline: local state updates first and the queued write survives reloads. The share target never writes before explicit confirmation.
 - `sourceUrl` is stored only when it parses as http(s), and is re-checked before rendering as a link.
 - Deleting a list removes only the parent document; nested items/config can remain orphaned despite destructive dialog wording.
-- Purchase-to-pantry is not transactional.
+- Purchase-to-pantry is one Firestore batch, but it is separate from clearing purchased items: "Add to pantry, then clear" clears only after the pantry batch succeeds.
+- Undo after a delete rewrites the same document id with the item's previous fields; undo after a tick writes the status back through the same offline-aware path.
+- Motion stays in budget and respects reduced motion (system or in-app): row strike-through 150 ms then a 120 ms fade, purchased rows drop in over 220 ms, the cart wobble is 350 ms and skipped under reduced motion, the receipt prints in 900 ms and any key or pointer press finishes it (instant under reduced motion). Swipe-to-tick is enabled only for coarse pointers; the checkbox never moves.
+- All colors are tokens (list tints use the contrast-tested `--member-N` palette); `tests/unit/shopping-logic.test.ts` fails on raw color literals in the shopping components.
+- Errors use `toastError`, so raw Firebase text never reaches users; field problems are inline (`FormMessage` or `FieldError`).
 - Barcode lookup failure does not invent product data.
 - The `/shopping` header action stacks on narrow screens so its label and controls stay inside the viewport.
 
@@ -92,9 +109,10 @@ Firestore rules require `shopping.view` to read lists, items and category config
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
 - Manually test list/category/item CRUD, each list type, clear-purchased behavior, barcode local/public fallback, AI failure, purchase-to-pantry cancellation, and the mobile `Barcode Library` action at 360/390/412 px.
 - Inspect nested documents after deleting a list and verify cross-household denial.
+- `tests/unit/shopping-logic.test.ts` covers name normalization, duplicate matching, the quick-add parser, store-walk grouping, list tints and icon fallback, and token-only colors. `tests/e2e/shopping-trip.spec.ts` covers tick-without-navigation and undo, URL state and Back, card counts, quick-add merging and its inline error, the trip receipt and batch pantry handoff, and steady width across tabs. `tests/e2e/ai-openai.spec.ts` expects a reload to keep the open list.
 - `tests/e2e/pwa-share.spec.ts` covers the manifest, the signed-out share page and the confirm-before-write flow; `tests/unit/pwa-share.test.ts` (part of `npm run test:ai`) covers share parsing and the item contract.
 - Manually, in a production build: load `/shopping` and open a list once, go offline (DevTools), reload, tick items, reload again, reconnect, and confirm the ticks reach Firestore.
 
 ## When This Document Must Be Updated
 
-Update this README when list/item/category paths or fields, the shared item-creation contract, purchasing transitions, pantry handoff, categorization, barcode behavior, deletion cleanup, live-update or offline strategy, the share target or quick-add shortcut, or shopping permission enforcement changes.
+Update this README when list/item/category paths or fields, URL state, duplicate merging, quick-add parsing, store order, list tints, the shared item-creation contract, purchasing transitions, pantry handoff, categorization, barcode behavior, deletion cleanup, live-update or offline strategy, the share target or quick-add shortcut, or shopping permission enforcement changes.
