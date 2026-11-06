@@ -27,7 +27,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
-import { auth, db } from '@/lib/firebase';
+import { auth, clearLocalFirestoreCache, db, firebaseEmulatorMode } from '@/lib/firebase';
 import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
@@ -382,7 +382,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchOrCreateUserProfile, toast]);
 
   const logout = useCallback(async () => {
-    await signOut(auth);
+    // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
+    // the rules reject them once signed out. Then remove this household's cached data
+    // from the device. A terminated Firestore instance cannot be reused, so the page
+    // reloads afterwards. (Emulator runs hold only synthetic data and keep the live
+    // instance.)
+    const firestoreStopped = !firebaseEmulatorMode && await clearLocalFirestoreCache();
+    try {
+      await signOut(auth);
+    } finally {
+      if (firestoreStopped) window.location.assign("/");
+    }
+    if (firestoreStopped) return;
     setCurrentUser(null);
     setHousehold(null);
     setCurrentMember(null);

@@ -22,6 +22,7 @@ import { db } from "@/lib/firebase";
 import { errorEmitter } from '@/lib/error-emitter';
 import { FirestorePermissionError } from '@/lib/errors';
 import { useToast } from "@/hooks/use-toast";
+import { useAppBadge } from "@/hooks/use-app-badge";
 import {
   createNotificationAction,
   deduplicateNotifications,
@@ -224,6 +225,9 @@ export function NotificationBell() {
     if (!currentUser?.uid) return 0;
     return activeNotifications.filter((notification) => !isNotificationReadBy(notification, currentUser.uid)).length;
   }, [activeNotifications, currentUser?.uid]);
+
+  // Mirror the unread count on the installed app icon (Badging API).
+  useAppBadge(isLoading || hasError ? null : unreadCount);
 
   const dismissNotifications = async (notificationIds: string[]) => {
     if (!currentUser?.householdId || !currentUser.uid || notificationIds.length === 0) return;

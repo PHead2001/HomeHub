@@ -83,12 +83,13 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 - The emulator E2E endpoint returns 404 unless every safety condition is active and never uses a production service-account key.
 - Avatar replacement does not establish a general cleanup contract for older avatar objects.
 - Household resolution is asynchronous and has a separate loading state from Auth.
+- Logout (`logout` in `src/contexts/auth-context.tsx`) outside emulator mode first calls `clearLocalFirestoreCache()` ([Firebase Platform](../firebase-platform/README.md)) while the member is still signed in, because the rules would reject queued writes after sign-out. That waits up to 3 s for queued writes, such as offline shopping ticks, to reach the server, terminates Firestore, and deletes the device's IndexedDB cache. Only then does it sign out of Firebase Auth. Once Firestore has been terminated the page always reloads to `/` (no toast), even if deleting the cache failed because another HomeHub tab still has it open; that failure is logged and the cache is cleared on a later sign-out. Writes still queued after 3 s are discarded with the cache. If Firestore could not be terminated, the member is signed out in place and sees the usual "Logged Out" toast. Emulator runs use the memory cache, skip this cleanup and show the toast.
 
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after identity/profile changes.
 - Run `npm.cmd run test:e2e:local` to verify emulator custom-token sign-in and persisted authenticated state.
-- Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, Profile > Appearance (mode, presets, Reduce motion, Sound, Haptics; reload without flash; sync to a second browser after sign-in), push subscription, and logout.
+- Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, Profile > Appearance (mode, presets, Reduce motion, Sound, Haptics; reload without flash; sync to a second browser after sign-in), push subscription, and logout (in a production build, confirm the page reloads to `/` and DevTools > Application shows no `firestore/` IndexedDB database afterwards).
 - Verify self-profile updates reject membership-field spoofing and unrelated users cannot list profiles.
 
 ## When This Document Must Be Updated

@@ -1,6 +1,16 @@
 // src/lib/firebase.ts
 import { initializeApp, getApps, getApp, type FirebaseOptions } from "firebase/app";
-import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import {
+  connectFirestoreEmulator,
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  terminate,
+  clearIndexedDbPersistence,
+  waitForPendingWrites,
+  type Firestore,
+} from "firebase/firestore";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { getMessaging, isSupported } from "firebase/messaging";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
@@ -18,10 +28,6 @@ export const firebaseConfig: FirebaseOptions = {
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-export const db = getFirestore(app);
-export const auth = getAuth(app);
-export const storage = getStorage(app);
-
 export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
 
 type AppCheckState = typeof globalThis & {
@@ -31,9 +37,10 @@ type AppCheckState = typeof globalThis & {
 
 // App Check: the browser proves it is the real HomeHub web app (reCAPTCHA Enterprise,
 // key limited to HomeHub's domains) before Firestore, Storage and Auth accept its
-// requests once enforcement is on. Browser only; never against the emulators.
-// Local development against the real project registers a debug token instead,
-// because localhost is not an allowed domain for the key.
+// requests once enforcement is on. It starts before those services are created so
+// their first requests already carry a token. Browser only; never against the
+// emulators. Local development against the real project registers a debug token
+// instead, because localhost is not an allowed domain for the key.
 const appCheckSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY;
 if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
   const appCheckState = globalThis as AppCheckState;
@@ -47,6 +54,62 @@ if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
     appCheckState.__homeHubAppCheckStarted = true;
   }
 }
+
+// In the browser Firestore keeps a persistent IndexedDB cache shared by every
+// open tab, so shopping lists (and other already-loaded data) open offline and
+// queued writes such as ticked items survive reloads and sync on reconnect.
+// Server code (route handlers, server actions) keeps the default memory cache.
+// NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE=true opts a build out of persistence.
+const createFirestore = (): Firestore => {
+  // Emulator runs keep the memory cache: the E2E suite pins the browser clock, and
+  // the persistent cache rejects server timestamps that look like they are in the
+  // future, logging errors on every snapshot. Production devices have real clocks.
+  if (typeof window === "undefined" || firebaseEmulatorMode
+      || process.env.NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE === "true") {
+    return getFirestore(app);
+  }
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    // Already initialized (development hot reload) or the cache cannot be created.
+    return getFirestore(app);
+  }
+};
+
+export const db = createFirestore();
+export const auth = getAuth(app);
+export const storage = getStorage(app);
+
+/**
+ * Sign-out cleanup: the persistent cache belongs to the browser profile, not the
+ * person, so cached household data must not outlive the session on a shared device.
+ * Waits briefly for queued writes (e.g. offline ticks) to reach the server, then
+ * terminates Firestore and deletes its IndexedDB cache. Returns true once Firestore
+ * has been terminated: it cannot be used again, so the caller must reload the page
+ * even when deleting the cache failed (for example another HomeHub tab still has it
+ * open; that tab's next sign-out clears it).
+ */
+export const clearLocalFirestoreCache = async (): Promise<boolean> => {
+  if (typeof window === "undefined") return false;
+  try {
+    await Promise.race([
+      waitForPendingWrites(db),
+      new Promise(resolve => setTimeout(resolve, 3000)),
+    ]);
+    await terminate(db);
+  } catch (error) {
+    console.warn("Firestore could not be stopped on sign-out.", error);
+    return false;
+  }
+  try {
+    await clearIndexedDbPersistence(db);
+  } catch (error) {
+    console.warn("The offline cache could not be cleared on sign-out.", error);
+  }
+  return true;
+};
 
 type EmulatorConnectionState = typeof globalThis & {
   __homeHubFirebaseEmulatorsConnected?: boolean;

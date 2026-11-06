@@ -15,6 +15,10 @@ This module owns the root layout, global providers and overlays, primary navigat
 - See the chosen theme (Dark, Light or System mode with curated presets) from the first paint, without a flash of the default theme.
 - Route changes crossfade page content (the header and tab bar stay put); every route shows a layout-matched skeleton while it loads, and navigations slower than 150 ms show a thin top progress bar.
 - With Reduce motion (system setting or the in-app switch), every transition renders its end state instantly.
+- See the HomeHub brand mark in the header, browser tab, and installed app icon; the header mark plays a one-time intro on the first load of a browser session.
+- Install HomeHub to a phone or desktop home screen (standalone window, splash from the manifest colors and icon), with long-press shortcuts for "Add to shopping", "Log feeding" and "My chores".
+- Share links or text into the installed app (handled by [Shopping Lists](../shopping/README.md)).
+- Open the dashboard and shopping lists offline; other routes show a friendly offline page.
 
 ## Entry Points
 
@@ -35,6 +39,12 @@ This module owns the root layout, global providers and overlays, primary navigat
 - `tailwind.config.ts`
 - `src/components/FirebaseErrorListener.tsx`
 - `src/components/password-change-handler.tsx`
+- `src/components/brand/logo.tsx`, `src/components/brand/logo.module.css`, `src/components/brand/logo-artwork.ts`
+- `src/app/manifest.ts`, `src/app/icon.svg`, `src/app/favicon.ico`, `src/app/apple-icon.png`, `public/icons/*`
+- `scripts/brand/render-icons.mjs` (`npm run brand:icons`)
+- `src/app/offline/page.tsx`
+- `src/app/api/sw/route.ts` (offline half; push half is owned by [Notifications](../notifications/README.md))
+- `src/lib/service-worker.ts`
 - `src/app/e2e-login/page.tsx`
 - `src/components/e2e-login-client.tsx`
 - `src/components/ui/*`
@@ -48,6 +58,32 @@ Dashboard card carousels contain their own horizontal movement. Their navigation
 Below the `md` breakpoint, `MobileTabBar` renders a fixed bottom navigation bar inside `HouseholdManager`, after `<main>`; at `md` and wider it is hidden. Primary tabs are Home, Chores, Shopping, and Pets; a More tab opens a bottom sheet with Maintenance, Automation, Household, Barcode Library, and Profile. The active tab or sheet item is marked with `aria-current="page"`, and More is highlighted when the current route is one of its items. The bar is not rendered for users without a household, without a loaded member record, or with role `newuser`.
 
 The root `viewport` export sets `viewportFit: 'cover'`. The tab bar pads its bottom by `env(safe-area-inset-bottom)` and the More sheet adds the same inset to its bottom padding, so content clears the home indicator. On phones `<main>` reserves `calc(4rem + env(safe-area-inset-bottom))` of bottom padding (the 4rem bar height plus the inset) so page content is not hidden behind the bar; `md:pb-0` removes it on larger screens. This padding applies whenever `<main>` renders on a phone, including when the bar itself is hidden.
+
+### Brand mark
+
+`Logo` renders the HomeHub mark as inline SVG: a house whose roof is two connection edges meeting at a hub node, with smaller nodes at the eaves, plus two windows. It uses `currentColor`, defaulting to `hsl(var(--primary))`, and fixed `width`/`height` from its `size` prop so it never shifts layout. `variant="wordmark"` adds the HomeHub name; the mark is decorative (`aria-hidden`) unless a `title` is passed. The header renders `<Logo size={24} animated />` next to its own HomeHub text.
+
+With `animated`, CSS keyframes in `logo.module.css` play once: the roof draws on with `stroke-dashoffset` (0-560 ms), the nodes pop in (380-680 ms), and the windows light up (620-900 ms), 900 ms in total. The base styles are the finished mark, so skipping the animation always shows the end state. An inline script rendered right after the SVG records `homehub:logo-intro-played` in `sessionStorage` and, on later loads in the same tab session, marks the SVG `data-intro-played` before it paints, so the intro never replays. The animation is also disabled by `@media (prefers-reduced-motion: reduce)` and by `html[data-motion="reduce"]` (the in-app motion setting contract). Nothing waits on the animation.
+
+All static brand assets come from the same artwork constants in `logo-artwork.ts`. `scripts/brand/render-icons.mjs` rasterizes them with `sharp` into `src/app/icon.svg` and `src/app/favicon.ico` (16/32/48 px, rounded navy tile), `src/app/apple-icon.png` (180 px, full bleed), `public/icons/icon-192.png` and `icon-512.png` (purpose `any`), `public/icons/maskable-512.png` (full bleed, mark inside the 80% safe zone) and `public/icons/shortcut-96.png`. Raster icons use the static hex values `BRAND_BACKGROUND_HEX` (`#020817`, the dark `--background`) and `BRAND_ACCENT_HEX` (`#4bb9ae`, the current `--primary`); regenerate and commit them if either token changes. Next's file conventions emit the favicon, SVG icon and apple-touch-icon links.
+
+### Installable app (PWA)
+
+`src/app/manifest.ts` is served at `/manifest.webmanifest` (Next adds the link tag): `id`/`start_url`/`scope` `/`, `display: standalone`, `background_color` and `theme_color` `#020817` (matching the dark default and the `viewport.themeColor`, so the splash blends into the first frame), the icons above, three shortcuts (`/shopping?quickAdd=1`, `/pets`, `/chores`), and a GET `share_target` to `/share` with `title`, `text` and `url`. The root `metadata` adds `applicationName` and `appleWebApp` (capable, title, `black-translucent` status bar) for iOS home-screen launches.
+
+### Service worker contract
+
+HomeHub has exactly one service worker, `/api/sw` with scope `/` (`src/lib/service-worker.ts` holds the URL and scope). It combines Firebase Messaging push handling (see [Notifications](../notifications/README.md)) with the offline app shell. Production builds register it from `PushNotificationManager` after the window `load` event; development builds and the Playwright suite (which runs the dev server) do not auto-register, so cached pages never mask code changes or intercept test traffic, though enabling push still registers it.
+
+- Install precaches the page shells for `/`, `/shopping` and `/offline`, every `/_next/static/` asset those pages reference, and the manifest and icons, then calls `skipWaiting`. Activate deletes `homehub-*` caches from other versions and claims open pages. The cache names carry `SHELL_VERSION` in `route.ts`; bump it when the caching logic or precache list changes.
+- Navigations are network first. A successful same-origin response for a shell route refreshes its cached copy. If the network fails, the cached shell for that path is returned (query strings are ignored, so `/shopping?quickAdd=1` works offline), otherwise the cached `/offline` page, otherwise a small inline offline page.
+- `/_next/static/` assets are cache first (they are content-hashed); the unhashed manifest and icons are served from cache and refreshed in the background. The static cache is trimmed to 300 entries.
+- The worker ignores non-GET requests, other origins (Firebase, Google APIs, CDNs), `/api/*` and `/__/*`. React Server Component fetches go to the network; when they fail offline, Next falls back to a full navigation, which the worker serves.
+- Cached shells are client-rendered and contain no household data. Offline data comes from Firestore's persistent cache ([Firebase Platform](../firebase-platform/README.md)).
+
+`/offline` is a static page with links to Shopping and Home.
+
+### Navigation
 
 The desktop header (`<nav aria-label="Main">`) marks the current link with `aria-current="page"`, the foreground color and an accent underline (a motion `layoutId="header-nav-underline"` element) that slides to the new link on navigation. Header and phone tab bar share `isActiveRoute` from `src/lib/navigation.ts`.
 
@@ -118,6 +154,9 @@ Authenticated emulator tests enter through `/e2e-login`; that route is rendered 
 - No animation delays content, errors or focus: the first page is not animated, loading skeletons match page layout, overlays remain interactive during their enter animation, and the progress bar is decorative (`aria-hidden`).
 - `html { scrollbar-gutter: stable }` keeps pages from shifting sideways when a scrollbar appears.
 - Ambient and glow effects are decorative (`aria-hidden`, `pointer-events: none`) and must keep text contrast; new ambient effects get one intensity token per preset.
+- Only one service worker may control the origin. Any new worker behavior goes into `/api/sw`; registering a different script at scope `/` would replace it and break push or offline support.
+- The logo intro must stay at or under 900 ms, show the finished mark under reduced motion (system or `data-motion="reduce"`), and never replay within a tab session.
+- The manifest, favicon and app icons must be regenerated from `logo-artwork.ts` with `npm run brand:icons`, never edited by hand.
 
 ## Validation
 
@@ -128,7 +167,9 @@ Authenticated emulator tests enter through `/e2e-login`; that route is rendered 
 - `tests/e2e/appearance.spec.ts` (desktop Chromium) picks a dark preset from Profile > Appearance and checks that the view transition's update callback still sees the old theme (the circular reveal needs the old snapshot), that the choice syncs to `users/{email}.theme` (version 2) and that it is kept on reload.
 - Run `npm.cmd run test:unit` for preset contrast, the pre-paint theme script, member colors, feedback and motion tokens.
 - Verify Dark/Light/System and every preset from Profile > Appearance (no flash on reload, circular reveal, instant with Reduce motion), keyboard focus rings on header links and controls, global toasts, notification bell, and password-change overlay placement.
+- `tests/e2e/pwa-share.spec.ts` checks the manifest fields, icons, shortcuts and share target.
+- In a production build (`npm run build` then `npm run start`), check in DevTools > Application that the manifest has no errors, the worker at `/api/sw` is active, and with the network offline `/shopping` loads from cache while an unvisited route shows the offline page. Run Lighthouse's installability checks after changes to the manifest or worker.
 
 ## When This Document Must Be Updated
 
-Update this README when root providers, global overlays, navigation, dashboard entry points, permission-based visibility, color tokens or theme presets, the theme script, the motion system or its reduced-motion contract, route loading skeletons, the feedback API, error handling, emulator-only test entry, or route-shell ownership changes.
+Update this README when root providers, global overlays, navigation, dashboard entry points, permission-based visibility, color tokens or theme presets, the theme script, the motion system or its reduced-motion contract, route loading skeletons, the feedback API, error handling, emulator-only test entry, route-shell ownership, the brand mark or its assets, the manifest, or the service worker's caching contract changes.

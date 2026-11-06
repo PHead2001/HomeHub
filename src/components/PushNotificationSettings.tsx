@@ -9,18 +9,9 @@ import { Button } from '@/components/ui/button';
 import { BellRing, Loader2 } from 'lucide-react';
 import { getFirebaseMessaging } from '@/lib/firebase';
 import { getToken } from 'firebase/messaging';
+import { registerHomeHubServiceWorker } from '@/lib/service-worker';
 
 
-async function registerServiceWorker() {
-    if (!('serviceWorker' in navigator)) {
-        throw new Error('Service workers are not supported by this browser.');
-    }
-    // Explicitly register our service worker at /api/sw with the root scope
-    const registration = await navigator.serviceWorker.register('/api/sw', {
-        scope: '/',
-    });
-    return registration;
-}
 
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
 
@@ -64,8 +55,8 @@ export function PushNotificationSettings() {
                 throw new Error('VAPID key is not configured. Please add NEXT_PUBLIC_FIREBASE_VAPID_KEY to your .env file.');
             }
 
-            // Register our custom service worker and get the registration object
-            const registration = await registerServiceWorker();
+            // Register (or reuse) the combined push + offline service worker at /api/sw
+            const registration = await registerHomeHubServiceWorker();
 
             // Get the token, explicitly passing our service worker registration
             const currentToken = await getToken(messaging, { 
