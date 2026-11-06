@@ -165,6 +165,41 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('a quick-add where one entry fails keeps only that entry for retry', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const mergeName = 'E2E fail merge';
+    const freshName = 'E2E fresh item';
+    await Promise.all([deleteWhere(groceryItems, mergeName), deleteWhere(groceryItems, freshName)]);
+    const target = groceryItems.doc('e2e-fail-merge');
+    await target.set({ name: mergeName, quantity: 1, category: 'Other', status: 'needed', createdAt: fixedNow });
+    // Merges run as Firestore transactions (REST commit), plain creates use the write
+    // stream: failing only transaction RPCs makes exactly the merge entry fail.
+    const transactionRpc = /:(beginTransaction|commit|batchGet)\b/;
+    try {
+      await open(page, '/shopping?list=weekly-groceries');
+      await expect(page.locator('#item-needed-e2e-fail-merge')).toBeVisible();
+      await page.route(transactionRpc, (route) => route.abort('failed'));
+      const field = page.getByLabel('Items to add to Weekly Groceries');
+      await field.fill(`${mergeName}, ${freshName}`);
+      await field.press('Enter');
+
+      await expect(field).toHaveValue(mergeName, { timeout: 30_000 });
+      await expect(page.getByRole('alert').filter({ hasText: `Couldn't add ${mergeName}` })).toBeVisible();
+      await expect(page.getByRole('checkbox', { name: new RegExp(freshName) })).toBeVisible();
+      expect((await target.get()).data()?.quantity).toBe(1);
+
+      // Retry adds only the failed entry: the saved one is not duplicated.
+      await page.unroute(transactionRpc);
+      await field.press('Enter');
+      await expect(field).toHaveValue('');
+      await expect.poll(async () => (await target.get()).data()?.quantity).toBe(2);
+      expect((await groceryItems.where('name', '==', freshName).get()).size).toBe(1);
+    } finally {
+      await page.unroute(transactionRpc).catch(() => undefined);
+      await Promise.all([deleteWhere(groceryItems, mergeName), deleteWhere(groceryItems, freshName)]);
+    }
+  });
+
   test('header navigation to /shopping resets the open tab and list to match the URL', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/shopping?tab=pantry');

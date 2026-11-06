@@ -38,7 +38,7 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import { findMergeTarget, groupItemsByAisle, isTripComplete, normalizeItemName, pluralize, withoutIds, type QuickAddEntry } from '@/lib/shopping/items';
+import { findMergeTarget, groupItemsByAisle, isTripComplete, normalizeItemName, pluralize, splitSettled, withoutIds, type QuickAddEntry } from '@/lib/shopping/items';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
@@ -50,7 +50,7 @@ import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
 import { CartIndicator } from './shopping/cart-indicator';
-import { QuickAddBar } from './shopping/quick-add-bar';
+import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
 import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
 
@@ -455,7 +455,7 @@ export function ShoppingListClient({
   const addEntries = async (
     entries: QuickAddEntry[],
     { selectedCategory, libraryItem, barcode }: { selectedCategory?: string; libraryItem?: BarcodeLibraryItem | null; barcode?: string } = {},
-  ): Promise<AddResult[] | null> => {
+  ): Promise<{ results: AddResult[]; failed: QuickAddEntry[]; firstError?: unknown } | null> => {
     const householdId = currentUser?.householdId;
     const list = selectedList;
     if (!householdId || !list) return null;
@@ -465,7 +465,9 @@ export function ShoppingListClient({
       reconcileWithServer(list.id);
     };
 
-    const results = await Promise.all(entries.map(async (entry): Promise<AddResult> => {
+    // Each entry is its own write: settle them all, so one failure never hides
+    // which entries were saved (and a retry never adds those twice).
+    const settled = await Promise.allSettled(entries.map(async (entry): Promise<AddResult> => {
       // The list on screen comes from a one-time read, so its statuses can be stale.
       // Online, the merge re-reads the target in a transaction and only increments it
       // if it is still needed; otherwise (bought or deleted meanwhile) a new needed
@@ -500,10 +502,12 @@ export function ShoppingListClient({
       );
       return { name: entry.name, merged: false, saved, usedFallback: categoryResult.usedFallback && !offline, reason: categoryResult.reason, category: categoryResult.category };
     }));
+    const { succeeded, failed, firstError } = splitSettled(entries, settled);
 
-    playFeedback('add');
+    if (succeeded.length > 0) playFeedback('add');
+    // Always refresh: whatever was saved shows, even when other entries failed.
     await fetchItemsAndCategories(list.id, { silent: true });
-    return results;
+    return { results: succeeded, failed, firstError };
   };
 
   const reportAddResults = (results: AddResult[]) => {
@@ -535,9 +539,14 @@ export function ShoppingListClient({
   const onAddItemSubmit = async (values: z.infer<typeof itemSchema>, libraryItem?: BarcodeLibraryItem | null, barcode?: string) => {
     const name = normalizeItemName(values.name);
     try {
-      const results = await addEntries([{ name, quantity: values.quantity }], { selectedCategory: values.category, libraryItem, barcode });
-      if (!results) return;
-      reportAddResults(results);
+      const outcome = await addEntries([{ name, quantity: values.quantity }], { selectedCategory: values.category, libraryItem, barcode });
+      if (!outcome) return;
+      if (outcome.failed.length > 0) {
+        // Nothing was saved: keep the dialog and its values for a retry.
+        toastError(outcome.firstError, 'Could not add the item');
+        return;
+      }
+      reportAddResults(outcome.results);
       form.reset({ name: '', quantity: 1, category: '' });
       setIsAddItemDialogOpen(false);
     } catch (error) {
@@ -545,15 +554,17 @@ export function ShoppingListClient({
     }
   };
 
-  const onQuickAdd = async (entries: QuickAddEntry[]): Promise<boolean> => {
+  // Saved entries are reported; failed ones go back into the field with an inline
+  // message naming them (QuickAddBar), so a retry only adds what is missing.
+  const onQuickAdd = async (entries: QuickAddEntry[]): Promise<QuickAddOutcome> => {
     try {
-      const results = await addEntries(entries);
-      if (!results) return false;
-      reportAddResults(results);
-      return true;
+      const outcome = await addEntries(entries);
+      if (!outcome) return null;
+      if (outcome.results.length > 0) reportAddResults(outcome.results);
+      return { failed: outcome.failed };
     } catch (error) {
       toastError(error, 'Could not add the items');
-      return false;
+      return null;
     }
   };
 
@@ -742,18 +753,23 @@ export function ShoppingListClient({
     try {
       const deleted = await deleteStillPurchasedItems(householdId, list.id, ids);
       toast({ title: deleted.length === ids.length ? 'Purchased items cleared' : `${pluralize(deleted.length, 'item')} cleared`, description: deleted.length === ids.length ? undefined : 'Items changed by someone else meanwhile were left on the list.' });
-      // Another list may have been opened while the transaction ran: leave its screen alone.
-      if (selectedListIdRef.current !== list.id) return;
-      setIsReceiptOpen(false);
-      setListItems(prev => withoutIds(prev, deleted));
-      const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
-      if (confirmed && confirmed.length === 0 && selectedListIdRef.current === list.id) {
-        setListToDelete(list);
-        setIsArchiveAlertOpen(true);
-      }
+      await afterCleared(list, deleted);
     } catch (error) {
       toastError(error, 'Could not clear purchased items');
       void fetchItemsAndCategories(list.id, { silent: true });
+    }
+  };
+
+  // After a confirmed clear: drop exactly the deleted ids, then decide "empty"
+  // from a re-read. Leaves another list's screen alone.
+  const afterCleared = async (list: ShoppingList, deleted: string[]) => {
+    if (selectedListIdRef.current !== list.id) return;
+    setIsReceiptOpen(false);
+    setListItems(prev => withoutIds(prev, deleted));
+    const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
+    if (confirmed && confirmed.length === 0 && selectedListIdRef.current === list.id) {
+      setListToDelete(list);
+      setIsArchiveAlertOpen(true);
     }
   };
 
@@ -766,17 +782,24 @@ export function ShoppingListClient({
       toast({ title: 'You are offline', description: 'Add items to the pantry once you are back online.' });
       return false;
     }
+    const list = selectedList;
+    // "Then clear" only clears the list on screen (the ids came from it).
+    const thenClear = handoffMode === 'then-clear' && list !== null && selectedListIdRef.current === list.id;
     try {
-      const written = await addPurchasesToPantry(householdId, choices);
-      const thenClear = handoffMode === 'then-clear';
+      // One transaction: with "then clear" the pantry writes and the clear succeed or
+      // fail together, so a retry can never add the same purchases twice.
+      const { written, cleared } = await addPurchasesToPantry(
+        householdId,
+        choices,
+        thenClear && list ? { listId: list.id, itemIds: shownIds } : undefined,
+      );
       toast({
-        title: 'Added to the pantry',
+        title: thenClear ? 'Added to the pantry and cleared' : 'Added to the pantry',
         description: `${pluralize(written, 'item')} on the shelves.`,
         action: onOpenPantry ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
       });
       setIsReceiptOpen(false);
-      // clearPurchasedItems itself only clears the list that is still on screen.
-      if (thenClear) await clearPurchasedItems(shownIds);
+      if (thenClear && list) await afterCleared(list, cleared);
       return true;
     } catch (error) {
       toastError(error, 'Could not add to the pantry');

@@ -11,6 +11,9 @@ import {
   parseQuickAdd,
   pluralize,
   withoutIds,
+  splitSettled,
+  formatQuickAddEntries,
+  quickAddFailureMessage,
   canMergeInto,
   isStillPurchased,
   isTripComplete,
@@ -242,6 +245,46 @@ describe('decisions from confirmed (re-read) state, not the cached list', () => 
     const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
     assert.match(pantry, /runTransaction\(/);
     assert.match(pantry, /pantryMergeStillValid\(/);
+  });
+});
+
+describe('quick-add partial failures', () => {
+  const entries = [{ name: 'Milk', quantity: 1 }, { name: 'Bread', quantity: 2 }, { name: 'Eggs', quantity: 1 }];
+
+  test('splits settled results into saved values and failed entries', () => {
+    const boom = new Error('denied');
+    const split = splitSettled(entries, [
+      { status: 'fulfilled', value: 'milk-saved' },
+      { status: 'rejected', reason: boom },
+      { status: 'fulfilled', value: 'eggs-saved' },
+    ] as PromiseSettledResult<string>[]);
+    assert.deepEqual(split.succeeded, ['milk-saved', 'eggs-saved']);
+    assert.deepEqual(split.failed, [{ name: 'Bread', quantity: 2 }]);
+    assert.equal(split.firstError, boom);
+    assert.equal('firstError' in splitSettled(entries.slice(0, 1), [{ status: 'fulfilled', value: 1 }]), false);
+  });
+
+  test('puts only the failed entries back as quick-add text, round-tripping through the parser', () => {
+    const text = formatQuickAddEntries([{ name: 'Bread', quantity: 2 }, { name: 'Eggs', quantity: 1 }]);
+    assert.equal(text, '2 Bread, Eggs');
+    assert.deepEqual(parseQuickAdd(text), [{ name: 'Bread', quantity: 2 }, { name: 'Eggs', quantity: 1 }]);
+    assert.equal(formatQuickAddEntries([]), '');
+  });
+
+  test('names the failed entries inline', () => {
+    assert.equal(quickAddFailureMessage([]), null);
+    assert.match(quickAddFailureMessage([{ name: 'Bread', quantity: 2 }])!, /^Couldn't add Bread\. It is still in the field/);
+    assert.match(quickAddFailureMessage(entries)!, /^Couldn't add Milk, Bread and Eggs\. They are still/);
+  });
+
+  test('every multi-write path is per-entry or atomic', () => {
+    const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
+    assert.match(client, /Promise\.allSettled\(entries\.map/);
+    assert.doesNotMatch(client, /Promise\.all\(entries\.map/);
+    const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
+    // Add to pantry, then clear: one transaction for both.
+    assert.match(pantry, /clear\?: \{ listId: string; itemIds: readonly string\[\] \}/);
+    assert.match(pantry, /transaction\.delete\(clearRefs\[index\]\)/);
   });
 });
 

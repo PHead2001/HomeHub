@@ -5,7 +5,13 @@ import { Loader2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
-import { MAX_QUICK_ADD_ITEMS, parseQuickAdd, type QuickAddEntry } from '@/lib/shopping/items';
+import { MAX_QUICK_ADD_ITEMS, formatQuickAddEntries, parseQuickAdd, quickAddFailureMessage, type QuickAddEntry } from '@/lib/shopping/items';
+
+/**
+ * What happened to a quick-add submission: `failed` are the entries that could not
+ * be saved (the others were). `null` means nothing was attempted.
+ */
+export type QuickAddOutcome = { failed: QuickAddEntry[] } | null;
 
 /**
  * The inline quick-add field pinned to the bottom of an open list (H07). It takes
@@ -13,7 +19,7 @@ import { MAX_QUICK_ADD_ITEMS, parseQuickAdd, type QuickAddEntry } from '@/lib/sh
  * the existing needed item. The field keeps focus after each add so a member can
  * keep typing. Problems are shown inline under the field.
  */
-export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (entries: QuickAddEntry[]) => Promise<boolean> }) {
+export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome> }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,9 +40,14 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
     setError(null);
     setBusy(true);
     try {
-      const ok = await onAdd(entries);
-      // Clear only what was added: text typed while the add was saving stays.
-      if (ok) setValue((current) => (current === submitted ? '' : current));
+      const outcome = await onAdd(entries);
+      if (outcome) {
+        // Keep only what failed (saved entries must not be added twice on retry), and
+        // never overwrite text typed while the add was saving.
+        const retry = formatQuickAddEntries(outcome.failed);
+        setValue((current) => (current === submitted ? retry : current));
+        setError(quickAddFailureMessage(outcome.failed));
+      }
     } finally {
       setBusy(false);
       inputRef.current?.focus();

@@ -91,6 +91,42 @@ export function parseQuickAdd(input: string): QuickAddEntry[] {
 }
 
 /**
+ * Splits `Promise.allSettled` results for a list of entries into what was saved
+ * and what failed, so a partial failure keeps only the failed entries for retry
+ * (retrying the whole text would add the saved ones twice).
+ */
+export function splitSettled<E, R>(
+  entries: readonly E[],
+  settled: readonly PromiseSettledResult<R>[],
+): { succeeded: R[]; failed: E[]; firstError?: unknown } {
+  const succeeded: R[] = [];
+  const failed: E[] = [];
+  let firstError: unknown;
+  settled.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      succeeded.push(result.value);
+    } else {
+      failed.push(entries[index]);
+      if (firstError === undefined) firstError = result.reason;
+    }
+  });
+  return firstError === undefined ? { succeeded, failed } : { succeeded, failed, firstError };
+}
+
+/** Quick-add text for entries, so failed ones can be put back in the field: "2 Bread, Milk". */
+export function formatQuickAddEntries(entries: readonly QuickAddEntry[]): string {
+  return entries.map((entry) => (entry.quantity > 1 ? `${entry.quantity} ${entry.name}` : entry.name)).join(', ');
+}
+
+/** Inline message naming the entries that could not be added. */
+export function quickAddFailureMessage(failed: readonly QuickAddEntry[]): string | null {
+  if (failed.length === 0) return null;
+  const names = failed.map((entry) => entry.name);
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `Couldn't add ${list}. ${failed.length === 1 ? 'It is' : 'They are'} still in the field; press Add to try again.`;
+}
+
+/**
  * The order a typical supermarket walk visits departments: fresh produce at the
  * door, then bakery, deli/meat, dairy along the back wall, frozen, the centre
  * aisles, and household goods by the tills.
