@@ -421,6 +421,8 @@ describe('independent review regressions', () => {
     await assertFails(addDoc(col(users.member), notification({ category: 'system' })));
     await assertSucceeds(addDoc(col(users.admin), notification({ category: 'system' })));
     await assertFails(addDoc(col(users.member), notification({ createdAt: inMinutes(60 * 24) })));
+    // A slow device clock (or a fixed test clock) must not block chore assignment.
+    await assertSucceeds(addDoc(col(users.member), notification({ createdAt: inMinutes(-60 * 24 * 90), expiresAt: inMinutes(-60 * 24 * 83) })));
     await assertFails(addDoc(col(users.member), notification({ expiresAt: inMinutes(60 * 24 * 30) })));
     await assertFails(addDoc(col(users.member), notification({ createdByUid: users.owner.uid })));
     await assertSucceeds(addDoc(col(users.member), notification({ createdByUid: users.member.uid })));

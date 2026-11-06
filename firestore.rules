@@ -270,8 +270,9 @@ service cloud.firestore {
       let data = request.resource.data;
       return isApprovedMember(householdId) &&
         canSendCategory(householdId, data.category) &&
-        data.createdAt > request.time - duration.value(10, 'm') &&
-        data.createdAt < request.time + duration.value(2, 'm') &&
+        // No future-dated notifications (they would win de-duplication). Past dates are
+        // allowed: device clocks drift and older entries cannot override newer ones.
+        data.createdAt < request.time + duration.value(15, 'm') &&
         data.expiresAt <= request.time + duration.value(8, 'd') &&
         (!('createdByUid' in data) || data.createdByUid == request.auth.uid) &&
         data.householdId == householdId &&
