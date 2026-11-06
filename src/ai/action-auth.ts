@@ -4,6 +4,7 @@ import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
 import { HomeHubAiError, type AiActionResult, toAiActionFailure } from '@/ai/errors';
 import { resolveHouseholdAuthority } from '@/ai/household-authority';
+import { consumeAiQuota } from '@/lib/server/ai-quota';
 
 export type AiActionContext = {
   idToken: string;
@@ -64,6 +65,7 @@ const runGuarded = async <T>(
   user: AuthorizedHouseholdUser,
   flowName: string,
   maxRequestsPerMinute: number,
+  consumeQuota: boolean,
   task: () => Promise<T>
 ) => {
   const guardKey = `${user.uid}:${user.householdId}:${flowName}`;
@@ -77,6 +79,8 @@ const runGuarded = async <T>(
   requestWindows.set(guardKey, recent);
   inFlight.add(guardKey);
   try {
+    // Durable per-user and per-household daily cap, shared across instances.
+    if (consumeQuota) await consumeAiQuota({ uid: user.uid, householdId: user.householdId, flowName });
     return await task();
   } finally {
     inFlight.delete(guardKey);
@@ -88,17 +92,24 @@ export const executeAuthorizedAiAction = async <T>({
   permission,
   flowName,
   maxRequestsPerMinute,
+  consumeQuota = true,
   task,
 }: {
   context: AiActionContext;
   permission: HouseholdPermission;
   flowName: string;
   maxRequestsPerMinute: number;
+  /**
+   * Take one daily AI request before the task runs (default). Actions that do
+   * non-AI work first and must still return it when the quota is used up (the
+   * overview's exact facts) pass false and call consumeAiQuota around the model call.
+   */
+  consumeQuota?: boolean;
   task: (user: AuthorizedHouseholdUser) => Promise<T>;
 }): Promise<AiActionResult<T>> => {
   try {
     const user = await authorizeHouseholdAction(context, permission);
-    const data = await runGuarded(user, flowName, maxRequestsPerMinute, () => task(user));
+    const data = await runGuarded(user, flowName, maxRequestsPerMinute, consumeQuota, () => task(user));
     return { ok: true, data };
   } catch (error) {
     return toAiActionFailure(error);

@@ -29,6 +29,7 @@ const getMetrics = (result: HomeOverviewResult): Metric[] => {
 const aiUnavailableMessage: Record<Exclude<HomeOverviewResult['aiStatus'], 'generated'>, string> = {
   configuration_unavailable: 'AI-written summary is not configured. Exact household facts are still available.',
   rate_limited: 'AI-written summary is temporarily rate limited. Exact household facts are still available.',
+  quota_exceeded: "Today's AI requests are used up (they reset at midnight UTC). Exact household facts are still available.",
   provider_unavailable: 'AI-written summary is temporarily unavailable. Exact household facts are still available.',
   timeout: 'AI-written summary took too long. Exact household facts are still available.',
   invalid_response: 'AI-written summary could not be validated. Exact household facts are still available.',

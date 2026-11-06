@@ -59,8 +59,9 @@ Primary topology:
 - `households/{householdId}/maintenance-attachments/{attachmentId}`
 - `households/{householdId}/home-automation/credentials`
 - `inviteCodes/{code}`
+- `aiUsage/{scope}_{id}_{day}` (server-only daily AI quota counters; rules deny all client access)
 
-Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` currently declares no composite indexes or field overrides.
+Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` declares no composite indexes; its `fieldOverrides` hold the TTL policies on `notifications.expiresAt` and `aiUsage.expiresAt` (each with the field's default single-field indexes), deployed by the release workflow.
 
 Direct temporary chores use the existing `chores` path with optional `templateId` and `sourceType: temporary`; no parallel collection or fake template is created. Maintenance logs preserved after registry deletion remove their live target ID and retain optional `formerTargetType`/`formerTargetName` history fields.
 

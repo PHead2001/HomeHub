@@ -65,6 +65,7 @@ export type HomeOverviewAiStatus =
   | 'generated'
   | 'configuration_unavailable'
   | 'rate_limited'
+  | 'quota_exceeded'
   | 'provider_unavailable'
   | 'timeout'
   | 'invalid_response';
