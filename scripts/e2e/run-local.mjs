@@ -23,8 +23,8 @@ const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
 const emulatorTimeoutMs = 60_000;
 // The whole E2E suite runs as one Playwright invocation. It grows with every module spec,
-// so the budget sits below the 25-minute CI job limit and can be raised per run.
-const suiteTimeoutMs = Number(process.env.E2E_SUITE_TIMEOUT_MS) || (process.env.CI === "true" ? 1_200_000 : 900_000);
+// so the budget sits below the 45-minute CI job limit and can be raised per run.
+const suiteTimeoutMs = Number(process.env.E2E_SUITE_TIMEOUT_MS) || (process.env.CI === "true" ? 2_100_000 : 900_000);
 
 const parseHost = (value) => {
   const separator = value.lastIndexOf(":");
