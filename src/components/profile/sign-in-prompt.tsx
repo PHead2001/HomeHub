@@ -9,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 /**
  * Shown on a signed-in-only page to a signed-out visitor: what the page is for and
  * a real Sign in button (opens the Google sign-in dialog), instead of a dead-end
- * "Please log in" line. Other modules can adopt it for their own pages.
+ * "Please log in" line. Every signed-in-only page uses it.
  *
  *   {!currentUser && <SignInPrompt what="manage your chores" />}
  */

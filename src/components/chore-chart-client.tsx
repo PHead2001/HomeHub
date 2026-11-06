@@ -42,6 +42,7 @@ import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useToday } from '@/components/chores/use-today';
 import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
 
@@ -679,7 +680,7 @@ export function ChoreChartClient() {
   }
 
   if (!currentUser) {
-    return <p className="py-8 text-sm">Please log in to manage chores.</p>;
+    return <SignInPrompt what="manage chores" />;
   }
 
   const filteredChores = assignedChores.filter(chore => {

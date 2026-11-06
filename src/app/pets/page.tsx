@@ -3,6 +3,7 @@
 import { useAuth } from "@/hooks/use-auth";
 import { PetsClient } from "@/components/pets-client";
 import { PetsPageHeader } from "@/components/pets/pets-page-header";
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 export default function PetsPage() {
   const { currentUser } = useAuth();
@@ -14,7 +15,7 @@ export default function PetsPage() {
       ) : (
         <>
           <PetsPageHeader />
-          <p className="text-center py-8">Please log in to manage your pets.</p>
+          <SignInPrompt what="manage your pets" />
         </>
       )}
     </div>

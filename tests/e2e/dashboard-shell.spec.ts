@@ -188,6 +188,18 @@ test.describe('dashboard, shell and notifications', () => {
     await context.close();
   });
 
+  test('every signed-in page offers a real Sign in button to signed-out visitors', async ({ browser }) => {
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark', storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
+    for (const path of ['/chores', '/calendar', '/shopping', '/library', '/pets', '/maintenance', '/household', '/profile', '/automation']) {
+      await page.goto(path);
+      await expect(page.getByRole('heading', { name: /^Sign in to / }), path).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Sign in', exact: true }), path).toBeVisible();
+      await expect(page.getByText(/Please log in/), path).toHaveCount(0);
+    }
+    await context.close();
+  });
+
   test('reduced motion keeps the house static and drops the time-of-day tint', async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: 'http://127.0.0.1:9002',

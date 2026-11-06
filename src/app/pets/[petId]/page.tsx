@@ -31,6 +31,7 @@ import { petTypeLabel } from '@/components/pets/living-pet-card';
 import { PetCareSummary } from '@/components/pets/pet-care-summary';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
 import type { PetFields } from '@/components/pets/pet-form';
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 const TABS = ['feeding', 'medication', 'care'] as const;
 type PetTab = (typeof TABS)[number];
@@ -147,7 +148,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
             action={loadFailed ? { label: 'Try again', onClick: () => window.location.reload() } : { label: 'All pets', href: '/pets' }}
           />
         ) : (
-          <p className="py-8 text-center">Please log in to see your pets.</p>
+          <SignInPrompt what="see your pets" />
         )}
       </div>
     );
