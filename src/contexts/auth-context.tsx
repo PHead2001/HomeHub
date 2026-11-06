@@ -30,6 +30,7 @@ import { useToast } from '@/hooks/use-toast';
 import { auth, clearLocalFirestoreCache, db, firebaseEmulatorMode } from '@/lib/firebase';
 import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
 import { normalizeInviteCode } from '@/lib/invite-codes';
+import { friendlyError } from '@/lib/friendly-error';
 import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
 import type {
   Household,
@@ -119,7 +120,6 @@ const browserTimeZone = () => {
   }
 };
 
-const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
 
 // --- Provider Component ---
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -427,7 +427,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (hasErrorCode(error) && error.code === 'auth/requires-recent-login') {
           description = "This action requires you to have recently logged in. Please log out and log back in to continue.";
       } else {
-          description = getErrorMessage(error) || description;
+          description = friendlyError(error);
       }
       toast({ variant: 'destructive', title: 'Update Failed', description });
     } finally {
@@ -519,7 +519,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         toast({
           variant: 'destructive',
           title: 'Creation Failed',
-          description: getErrorMessage(error) || 'Could not create the new household.',
+          description: friendlyError(error),
         });
     }
   }, [currentUser, toast]);

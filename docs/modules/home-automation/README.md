@@ -7,14 +7,18 @@ This module owns Home Assistant credentials, connection checks, and read-only en
 ## User-Facing Capabilities
 
 - Owners/admins (`automation.manage`) connect a public https Home Assistant address and long-lived token at `/automation`; the connection is tested before it is stored.
-- Members with `automation.view` see devices grouped by type, with search, friendly names, states and units, and can refresh.
+- The page subtitle says HomeHub only reads states and never switches anything; the address placeholder is a public https example (`https://your-home.ui.nabu.casa`), never a `.local` address.
+- Members with `automation.view` see devices grouped by type, with search, friendly names and units, and can refresh (a live Home Assistant request, so the button stays). States are shown in plain words ("Not home", "Unavailable") on tinted chips (on, off, needs attention, unavailable, value; `src/components/automation/entity-state.ts`).
 - Managers disconnect, which deletes the stored credentials.
-- People without `automation.manage` see an explanation instead of the setup form.
+- People without `automation.manage` see an `EmptyState` explaining that an owner or admin must connect it. No devices, and no search matches (with Clear search), also use `EmptyState`.
+- Signed-out visitors see the shared Sign in prompt.
+- Client-side failures (the server action could not be reached) show `friendlyError` text; server action errors are already plain language.
 
 ## Entry Points
 
 - `src/app/automation/page.tsx`
 - `src/components/automation-client.tsx`
+- `src/components/automation/entity-state.ts`
 - `src/app/automation/actions.ts`
 - `src/lib/server/home-assistant.ts` (address safety and state fetch)
 - `tests/server/home-assistant.test.ts`

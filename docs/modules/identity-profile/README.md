@@ -6,10 +6,10 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 ## User-Facing Capabilities
 
-- Sign in with Google from the header login dialog.
+- Sign in with Google from the header login dialog ("Sign in to HomeHub"). Signed-out visitors to `/profile`, `/household` and `/automation` see a `SignInPrompt` (`src/components/profile/sign-in-prompt.tsx`) with a real Sign in button that opens the same dialog; other modules can adopt it.
 - Cancel sign-in and return to an idle login state.
 - View and edit personal profile fields at `/profile`.
-- Upload an avatar.
+- See your current avatar at the top of Personal Information: your photo, or the generated gradient avatar in your member color (`MemberAvatar`), with your name, role and household. Add, change or remove the photo (preview before saving, Undo / Keep photo). Unsupported types and files over 5 MB are explained inline (`FieldError`); the display name (2-60 characters) is validated inline.
 - Choose appearance in Profile > Appearance: theme mode (Dark, Light, System), a dark preset (Midnight, Hearth, Forest) and a light preset (Light, Sunrise), Reduce motion, Sound effects (with a sample button) and Haptics (shown only where `navigator.vibrate` exists). Changes apply immediately; there is no save button.
 - Configure chore reminder time/enabled state.
 - Manage browser push-notification subscription.
@@ -22,7 +22,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 - `src/components/login-dialog.tsx`
 - `src/app/profile/page.tsx`
 - `src/components/profile-client.tsx`
-- `src/components/image-upload.tsx`
+- `src/components/profile/sign-in-prompt.tsx`, `src/components/profile/profile-validation.ts` (avatar type/size check)
 - `src/components/appearance-settings.tsx` (Profile > Appearance card)
 - `src/components/appearance-provider.tsx` and `src/lib/theme/appearance.ts` (preference store, profile sync)
 - `src/components/force-password-change-dialog.tsx`
@@ -58,7 +58,7 @@ Household compatibility fields are maintained by Household Governance, not ordin
 
 Firestore rules allow a user to read/write their own email-keyed profile, allow same-household point reads, and prohibit listing the full `users` collection. Self-service updates are limited to an explicit profile-field allowlist.
 
-Avatar Storage access requires the authenticated token email to match `{userEmail}`. Storage rules currently impose no avatar size or content-type limit.
+Avatar Storage access requires the authenticated token email to match `{userEmail}`, and uploads must be images of at most 5 MB (`isImage(5 * 1024 * 1024)` in `storage.rules`); the profile form checks the same limits before uploading.
 
 ## Integrations and Background Processing
 
@@ -80,6 +80,7 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 - Firestore user document IDs are email addresses; sign-in requires an Auth email.
 - Profile listing is intentionally denied.
 - Sign-in failures surface a specific toast and reset the spinner; tokens and credentials are not logged.
+- Profile save, profile update and household creation failures show `friendlyError` text (via `toastError` or the auth context); raw Firebase messages are never shown. Saving chore reminders shows one "Reminder saved" toast (the profile write is silent on success).
 - The emulator E2E endpoint returns 404 unless every safety condition is active and never uses a production service-account key.
 - Avatar replacement does not establish a general cleanup contract for older avatar objects.
 - Household resolution is asynchronous and has a separate loading state from Auth.
