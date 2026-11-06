@@ -47,7 +47,6 @@ const dbFor = (user: Identity) => environment
   .firestore();
 
 const now = () => Timestamp.fromDate(new Date('2026-08-01T12:00:00.000Z'));
-const later = () => Timestamp.fromDate(new Date('2026-08-08T12:00:00.000Z'));
 // Notifications and invites are checked against the real request time.
 const inMinutes = (minutes: number) => Timestamp.fromMillis(Date.now() + minutes * 60_000);
 
