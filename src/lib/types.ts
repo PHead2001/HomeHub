@@ -143,6 +143,8 @@ export type HomeAssetStatus = 'active' | 'needs_attention' | 'retired';
 export type MaintenanceScheduleMode = 'scheduled' | 'checklist';
 
 export type HomeAssetSchedule = {
+  /** Set by Snooze to the due date it moved to; quiets the push until then (see functions/src/shared/maintenance-reminders.ts). */
+  snoozedUntil?: string;
   id?: string;
   mode?: MaintenanceScheduleMode;
   scheduleName?: string;
@@ -175,6 +177,8 @@ export type HomeAsset = {
 export type VehicleStatus = 'active' | 'needs_attention' | 'retired' | 'sold';
 
 export type VehicleServiceSchedule = {
+  /** Set by Snooze to the due date it moved to; quiets the push until then (see functions/src/shared/maintenance-reminders.ts). */
+  snoozedUntil?: string;
   id?: string;
   mode?: MaintenanceScheduleMode;
   serviceName?: string;

@@ -1682,11 +1682,11 @@ export function MaintenanceLogClient() {
     try {
       if (target.targetType === 'home_asset') {
         const schedules = [...(target.asset.schedules || [])];
-        schedules[target.scheduleIndex] = { ...target.schedule, nextDueDate };
+        schedules[target.scheduleIndex] = { ...target.schedule, nextDueDate, snoozedUntil: nextDueDate };
         await updateDoc(doc(assetsCollection, target.asset.id), cleanForFirestore({ schedules, updatedAt: now }));
       } else {
         const serviceSchedules = [...(target.vehicle.serviceSchedules || [])];
-        serviceSchedules[target.scheduleIndex] = { ...target.schedule, nextDueDate };
+        serviceSchedules[target.scheduleIndex] = { ...target.schedule, nextDueDate, snoozedUntil: nextDueDate };
         await updateDoc(doc(vehiclesCollection, target.vehicle.id), cleanForFirestore({ serviceSchedules, updatedAt: now }));
       }
       const source = scheduleSourceFor(target);

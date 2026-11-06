@@ -21,6 +21,13 @@ type Schedule = {
   intervalMonths?: number;
   nextDueDate?: string;
   nextDueMileage?: number;
+  /**
+   * Set by "Snooze" to the due date it moved the schedule to. While it
+   * equals nextDueDate and that day has not come, the upcoming or due-soon
+   * reminder is snoozed: no notification. Completing or editing changes
+   * nextDueDate, so a stale value never applies.
+   */
+  snoozedUntil?: string;
 };
 
 export type AssetInput = {
@@ -57,6 +64,8 @@ export type MaintenanceReminder = {
   dueDate?: string;
   dueMileage?: number;
   currentMileage?: number;
+  /** Snoozed by a member until its due date: shown, but not notified. */
+  snoozed?: boolean;
   message: string;
   deepLink: string;
 };
@@ -109,6 +118,11 @@ const expiryPhrase: Record<ReminderStatus, string> = {
 const legacyKey = (index: number, title: string) =>
   `legacy-${index}-${stableSlugify(title)}`;
 
+const isSnoozed = (schedule: Schedule, status: ReminderStatus): boolean =>
+  Boolean(schedule.snoozedUntil) &&
+  schedule.snoozedUntil === schedule.nextDueDate &&
+  (status === "upcoming" || status === "due_soon");
+
 /**
  * Builds every maintenance reminder for a household, most urgent first.
  * Retired assets and retired/sold vehicles produce none.
@@ -148,6 +162,7 @@ export const buildMaintenanceReminders = (
         scheduleKey: sourceId,
         legacySourceId: `${asset.id}-${index}`,
         dueDate: schedule.nextDueDate,
+        snoozed: isSnoozed(schedule, status),
         message: `${title} for ${asset.name} ${phrase[status]}.`,
         deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}` +
           `&schedule=${encodeURIComponent(sourceId)}`,
@@ -206,6 +221,9 @@ export const buildMaintenanceReminders = (
           legacySourceId: `${vehicle.id}-${index}`,
           dueDate: schedule.nextDueDate,
           dueMileage: schedule.nextDueMileage,
+          // A snooze only quiets the date; a mileage trigger still notifies.
+          snoozed: (byMiles === null || byMiles === "upcoming") &&
+            isSnoozed(schedule, status),
           currentMileage: vehicle.currentMileage,
           message: `${title} for ${vehicle.nickname} ${phrase[status]}.`,
           deepLink:
@@ -256,4 +274,5 @@ export const buildMaintenanceReminders = (
  */
 export const actionableReminders = (
   reminders: MaintenanceReminder[],
-): MaintenanceReminder[] => reminders.filter((r) => r.status !== "upcoming");
+): MaintenanceReminder[] =>
+  reminders.filter((r) => r.status !== "upcoming" && !r.snoozed);

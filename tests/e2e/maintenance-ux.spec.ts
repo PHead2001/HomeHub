@@ -152,6 +152,8 @@ test.describe('maintenance center UX', () => {
     await expect(page.getByText('Snoozed for a week', { exact: true })).toBeVisible();
     await expect.poll(async () => (await household.collection('home-assets').doc('dishwasher').get()).get('schedules')?.[0]?.nextDueDate)
       .toBe('2026-08-08');
+    // The snooze is recorded so the hourly job stays quiet until that due date.
+    expect((await household.collection('home-assets').doc('dishwasher').get()).get('schedules')?.[0]?.snoozedUntil).toBe('2026-08-08');
     await expect(overdue.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' })).toHaveCount(0);
     // Still on the Reminders tab: the action happened in place.
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');

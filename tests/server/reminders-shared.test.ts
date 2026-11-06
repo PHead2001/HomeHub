@@ -149,3 +149,34 @@ describe('chore reminders', () => {
     assert.deepEqual(quiet, []);
   });
 });
+
+describe('snoozed maintenance reminders (D16)', () => {
+  const today = '2026-11-05';
+  const asset = (schedule: Record<string, unknown>) => [{ id: 'hvac', name: 'Main HVAC', schedules: [{ id: 's1', scheduleName: 'Replace filter', ...schedule }] }];
+
+  test('a snoozed due-soon reminder is still built but not notified until its due day', () => {
+    const snoozed = buildMaintenanceReminders(asset({ nextDueDate: '2026-11-12', snoozedUntil: '2026-11-12' }), [], today, CHI);
+    assert.equal(snoozed.length, 1);
+    assert.equal(snoozed[0].status, 'due_soon');
+    assert.equal(snoozed[0].snoozed, true);
+    assert.deepEqual(actionableReminders(snoozed), []);
+
+    const dueDay = buildMaintenanceReminders(asset({ nextDueDate: '2026-11-12', snoozedUntil: '2026-11-12' }), [], '2026-11-12', CHI);
+    assert.equal(dueDay[0].status, 'due_today');
+    assert.equal(actionableReminders(dueDay).length, 1);
+  });
+
+  test('a stale snooze (due date changed by completion or edit) no longer applies', () => {
+    const stale = buildMaintenanceReminders(asset({ nextDueDate: '2026-11-10', snoozedUntil: '2026-11-12' }), [], today, CHI);
+    assert.equal(stale[0].snoozed, false);
+    assert.equal(actionableReminders(stale).length, 1);
+  });
+
+  test('a vehicle service due by mileage still notifies even if its date was snoozed', () => {
+    const vehicles = [{ id: 'car', nickname: 'Family car', currentMileage: 49_800, serviceSchedules: [{ id: 'oil', serviceName: 'Oil change', nextDueDate: '2026-11-12', snoozedUntil: '2026-11-12', nextDueMileage: 50_000 }] }];
+    const reminders = buildMaintenanceReminders([], vehicles, today, CHI);
+    assert.equal(reminders[0].status, 'due_soon');
+    assert.equal(reminders[0].snoozed, false);
+    assert.equal(actionableReminders(reminders).length, 1);
+  });
+});
