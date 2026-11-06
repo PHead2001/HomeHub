@@ -6,6 +6,9 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  terminate,
+  clearIndexedDbPersistence,
+  waitForPendingWrites,
   type Firestore,
 } from "firebase/firestore";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
@@ -24,13 +27,44 @@ export const firebaseConfig: FirebaseOptions = {
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
+export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
+
+type AppCheckState = typeof globalThis & {
+  FIREBASE_APPCHECK_DEBUG_TOKEN?: string | boolean;
+  __homeHubAppCheckStarted?: boolean;
+};
+
+// App Check: the browser proves it is the real HomeHub web app (reCAPTCHA Enterprise,
+// key limited to HomeHub's domains) before Firestore, Storage and Auth accept its
+// requests once enforcement is on. It starts before those services are created so
+// their first requests already carry a token. Browser only; never against the
+// emulators. Local development against the real project registers a debug token
+// instead, because localhost is not an allowed domain for the key.
+const appCheckSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY;
+if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
+  const appCheckState = globalThis as AppCheckState;
+  if (!appCheckState.__homeHubAppCheckStarted) {
+    const debugToken = process.env.NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN;
+    if (debugToken) appCheckState.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
+    initializeAppCheck(app, {
+      provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+      isTokenAutoRefreshEnabled: true,
+    });
+    appCheckState.__homeHubAppCheckStarted = true;
+  }
+}
+
 // In the browser Firestore keeps a persistent IndexedDB cache shared by every
 // open tab, so shopping lists (and other already-loaded data) open offline and
 // queued writes such as ticked items survive reloads and sync on reconnect.
 // Server code (route handlers, server actions) keeps the default memory cache.
 // NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE=true opts a build out of persistence.
 const createFirestore = (): Firestore => {
-  if (typeof window === "undefined" || process.env.NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE === "true") {
+  // Emulator runs keep the memory cache: the E2E suite pins the browser clock, and
+  // the persistent cache rejects server timestamps that look like they are in the
+  // future, logging errors on every snapshot. Production devices have real clocks.
+  if (typeof window === "undefined" || firebaseEmulatorMode
+      || process.env.NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE === "true") {
     return getFirestore(app);
   }
   try {
@@ -47,31 +81,29 @@ export const db = createFirestore();
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
-export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
-
-type AppCheckState = typeof globalThis & {
-  FIREBASE_APPCHECK_DEBUG_TOKEN?: string | boolean;
-  __homeHubAppCheckStarted?: boolean;
-};
-
-// App Check: the browser proves it is the real HomeHub web app (reCAPTCHA Enterprise,
-// key limited to HomeHub's domains) before Firestore, Storage and Auth accept its
-// requests once enforcement is on. Browser only; never against the emulators.
-// Local development against the real project registers a debug token instead,
-// because localhost is not an allowed domain for the key.
-const appCheckSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY;
-if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
-  const appCheckState = globalThis as AppCheckState;
-  if (!appCheckState.__homeHubAppCheckStarted) {
-    const debugToken = process.env.NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN;
-    if (debugToken) appCheckState.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
-    initializeAppCheck(app, {
-      provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
-      isTokenAutoRefreshEnabled: true,
-    });
-    appCheckState.__homeHubAppCheckStarted = true;
+/**
+ * Sign-out cleanup: the persistent cache belongs to the browser profile, not the
+ * person, so cached household data must not outlive the session on a shared device.
+ * Waits briefly for queued writes (e.g. offline ticks) to reach the server, then
+ * terminates Firestore and deletes its IndexedDB cache. Firestore cannot be used
+ * afterwards, so callers must reload the page. Returns false when the cache could
+ * not be cleared (for example another HomeHub tab still has it open).
+ */
+export const clearLocalFirestoreCache = async (): Promise<boolean> => {
+  if (typeof window === "undefined") return true;
+  try {
+    await Promise.race([
+      waitForPendingWrites(db),
+      new Promise(resolve => setTimeout(resolve, 3000)),
+    ]);
+    await terminate(db);
+    await clearIndexedDbPersistence(db);
+    return true;
+  } catch (error) {
+    console.warn("The offline cache could not be cleared on sign-out.", error);
+    return false;
   }
-}
+};
 
 type EmulatorConnectionState = typeof globalThis & {
   __homeHubFirebaseEmulatorsConnected?: boolean;

@@ -27,7 +27,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
-import { auth, db } from '@/lib/firebase';
+import { auth, clearLocalFirestoreCache, db, firebaseEmulatorMode } from '@/lib/firebase';
 import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
@@ -386,6 +386,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setHousehold(null);
     setCurrentMember(null);
     setHouseholdLoading(false);
+    // Remove this household's cached data from the device, then reload: the
+    // Firestore instance cannot be reused after its cache is cleared. (Emulator
+    // runs hold only synthetic data and keep the live instance.)
+    if (!firebaseEmulatorMode && await clearLocalFirestoreCache()) {
+      window.location.assign("/");
+      return;
+    }
     toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
   

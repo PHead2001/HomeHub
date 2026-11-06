@@ -105,3 +105,31 @@ test.describe('share target signed in', () => {
     }
   });
 });
+
+test.describe('offline shopping', () => {
+  test('an item ticked offline shows as bought at once and syncs when the connection returns', async ({ page, context }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-chromium', 'one browser is enough for the sync contract');
+    const apples = groceryItems.doc('apples');
+    await apples.update({ status: 'needed' });
+    try {
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto('/shopping');
+      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      const needed = page.locator('#item-needed-apples');
+      await expect(needed).toBeVisible();
+
+      await context.setOffline(true);
+      await needed.click();
+      // Shown as bought at once, before any server confirmation (Purchased is collapsed by default).
+      await expect(needed).toHaveCount(0);
+      await expect(page.getByText(/^Purchased \(2\)/)).toBeVisible();
+      expect((await apples.get()).data()?.status, 'nothing reached the server while offline').toBe('needed');
+
+      await context.setOffline(false);
+      await expect.poll(async () => (await apples.get()).data()?.status, { timeout: 20_000 }).toBe('purchased');
+    } finally {
+      await context.setOffline(false);
+      await apples.update({ status: 'needed' });
+    }
+  });
+});
