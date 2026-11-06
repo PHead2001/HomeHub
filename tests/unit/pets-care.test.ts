@@ -12,6 +12,7 @@ import {
   hasRealPhoto,
   loggerName,
   medicationState,
+  isNonDailySchedule,
   isValidPortion,
   mergeById,
   newestFirst,
@@ -68,6 +69,27 @@ describe('feeding plan', () => {
     assert.equal(parseFeedingsPerDay('once daily'), 1);
     assert.equal(parseFeedingsPerDay('free feed'), null);
     assert.equal(parseFeedingsPerDay(''), null);
+  });
+
+  it('never turns a non-daily or irregular schedule into a daily target', () => {
+    for (const text of [
+      '1 scoop twice a week', 'once every other day', 'every 2 days', 'twice weekly', '3x per week', 'once a month',
+      'every third day', 'alternate days', 'as needed', 'free feed', 'free-choice hay', 'feed on Mondays and Thursdays',
+      '1 cup / week', 'every few days',
+    ]) {
+      assert.equal(parseFeedingsPerDay(text), null, text);
+      assert.equal(isNonDailySchedule(text), true, text);
+      assert.equal(feedingPlan({ foodSchedule: text }).perDay, null, text);
+    }
+  });
+
+  it('reads hourly intervals as a daily count and keeps daily schedules', () => {
+    assert.equal(parseFeedingsPerDay('every 8 hours'), 3);
+    assert.equal(parseFeedingsPerDay('1/2 can every twelve hours'), 2);
+    assert.equal(parseFeedingsPerDay('every 5 hours'), null);
+    assert.equal(parseFeedingsPerDay('twice a day'), 2);
+    assert.equal(parseFeedingsPerDay('every day at 7am'), 1);
+    assert.equal(isNonDailySchedule('1.5 cups twice daily'), false);
   });
 
   it('parses the usual portion', () => {
@@ -286,6 +308,30 @@ describe('pet form validation', () => {
     assert.ok(errors.portionAmount);
   });
 
+  it('never blocks editing a pet created before a rule existed', () => {
+    const legacy = {
+      name: 'A very long legacy pet name that is well over forty characters',
+      foodSchedule: 'x'.repeat(260),
+      feedingsPerDay: '',
+      portionAmount: '',
+    };
+    // Unchanged legacy values pass when the stored values are given.
+    assert.deepEqual(validatePetForm(legacy, [], legacy), {});
+    // A changed value still follows the rules.
+    const changed = validatePetForm({ ...legacy, foodSchedule: 'y'.repeat(260), feedingsPerDay: '20' }, [], legacy);
+    assert.ok(changed.foodSchedule);
+    assert.ok(changed.feedingsPerDay);
+    assert.equal(changed.name, undefined);
+    // Without stored values (adding), the name rule applies.
+    assert.ok(validatePetForm(legacy).name);
+    // An empty schedule is still required.
+    assert.ok(validatePetForm({ ...legacy, foodSchedule: ' ' }, [], legacy).foodSchedule);
+  });
+
+  it('ignores an out-of-range stored portion for the feeding plan', () => {
+    assert.deepEqual(feedingPlan({ foodSchedule: '2 cups daily', portionAmount: 80, portionUnit: 'Cups' }), { perDay: 1, amount: 2, unit: 'Cups' });
+  });
+
   it('rejects duplicate names case-insensitively', () => {
     assert.match(validatePetForm({ ...valid, name: 'pixel' }, ['Pixel']).name ?? '', /already have a pet named pixel/);
   });
@@ -298,6 +344,30 @@ describe('pets components use tokens only', () => {
       const text = readFileSync(join(dir, file), 'utf8');
       assert.doesNotMatch(text, /#[0-9a-f]{3,8}\b(?![\w-])|rgba?\(|\bhsl\((?!var\()/i, `${file} uses a raw color`);
     }
+  });
+
+  it('every live-log consumer handles load errors separately from empty results', () => {
+    // A failed subscription returns { logs: [], error }; rendering it as an empty
+    // history would read as "not fed" or "nothing due".
+    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/pet-care-summary.tsx'];
+    const hookCall = /const\s+(\w+|\{[^}]*\})\s*=\s*(?:usePetLogs|useMedicationCountdownLogs)\W/g;
+    for (const file of files) {
+      const text = readFileSync(resolve(process.cwd(), file), 'utf8');
+      const calls = [...text.matchAll(hookCall)];
+      assert.ok(calls.length > 0, `${file} uses a live-log hook`);
+      for (const [, binding] of calls) {
+        const handled = binding.startsWith('{')
+          ? binding.includes('error') && ['error ?', '!error', '&& error', '|| error'].some((use) => text.includes(use))
+          : text.includes(`${binding}.error`);
+        assert.ok(handled, `${file}: ${binding} ignores its error`);
+      }
+    }
+    const offenders = readdirSync(resolve(process.cwd(), 'src/components'), { recursive: true, encoding: 'utf8' })
+      .filter((file) => /\.tsx?$/.test(file))
+      .filter((file) => /(?:usePetLogs|useMedicationCountdownLogs)\W/.test(readFileSync(resolve(process.cwd(), 'src/components', file), 'utf8')))
+      .map((file) => `src/components/${file.split(String.fromCharCode(92)).join('/')}`)
+      .filter((file) => !files.includes(file) && !file.endsWith('pet-log-api.ts'));
+    assert.deepEqual(offenders, [], 'new consumers must be added to this check');
   });
 
   it('keeps every pets animation behind both reduced-motion selectors', () => {

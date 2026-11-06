@@ -44,12 +44,17 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
   // frame already shows the right values). Closing clears the tracked pet, so
   // reopening the same pet discards an unsaved draft and a discarded photo.
   const [formPet, setFormPet] = useState<PetProfile | null>(null);
+  // Stored values: unchanged ones are exempt from rules added after the pet was
+  // created (e.g. a legacy name over 40 characters cannot block a photo change).
+  const [original, setOriginal] = useState<PetFormState>(EMPTY_PET_FORM);
   if (!pet && formPet) {
     setFormPet(null);
   }
   if (pet && pet !== formPet) {
     setFormPet(pet);
-    setValues(petFormFromProfile(pet));
+    const stored = petFormFromProfile(pet);
+    setValues(stored);
+    setOriginal(stored);
     setPhotoFile(null);
     setIsPhotoRemoved(false);
     setErrors({});
@@ -65,7 +70,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
   const change = (patch: Partial<PetFormState>) => {
     const next = { ...values, ...patch };
     setValues(next);
-    if (submitted) setErrors(validatePetForm(next));
+    if (submitted) setErrors(validatePetForm(next, [], original));
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -73,7 +78,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
     if (saving) return;
     setSubmitted(true);
     // The name cannot change here, so duplicate names are not re-checked.
-    const nextErrors = validatePetForm(values);
+    const nextErrors = validatePetForm(values, [], original);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       focusFirstError(ID_PREFIX, nextErrors);

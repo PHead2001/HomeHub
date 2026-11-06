@@ -50,7 +50,8 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const pending = useMedicationCountdownLogs(householdId, petId);
-  const due = nextMedication(pending.logs, now);
+  // A failed countdown load is "unavailable", never "nothing due".
+  const due = pending.loading || pending.error ? null : nextMedication(pending.logs, now);
 
   const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),
@@ -114,6 +115,9 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
         )}
       </CardHeader>
       <CardContent className="space-y-6">
+        {pending.error ? (
+          <p className="text-sm text-muted-foreground">Next dose is unavailable right now.</p>
+        ) : null}
         {due && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-muted-foreground">Next dose:</span>

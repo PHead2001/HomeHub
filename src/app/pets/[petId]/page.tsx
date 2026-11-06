@@ -8,17 +8,8 @@ import { CalendarDays, Edit, Home, MoreVertical, Pill, Sparkles, Trash2, Utensil
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import {
-  feedingCountLabel,
-  knownFoodType,
-  feedingHeadline,
-  feedingPlan,
-  feedingStatus,
-  formatPortion,
-  nextMedication,
-} from '@/lib/pets/care';
-import type { PetFeedingLog, PetProfile } from '@/lib/pets/types';
-import { cn } from '@/lib/utils';
+import { feedingPlan, formatPortion } from '@/lib/pets/care';
+import type { PetProfile } from '@/lib/pets/types';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -35,58 +26,14 @@ import { CareLogClient } from '@/components/care-log';
 import { EditPetDialog } from '@/components/edit-pet-dialog';
 import { DeletePetAlert } from '@/components/delete-pet-alert';
 import { EmptyState } from '@/components/empty-state';
-import { FeedingRing } from '@/components/pets/feeding-ring';
-import { MedicationChip } from '@/components/pets/medication-chip';
 import { PetPhoto } from '@/components/pets/pet-photo';
 import { petTypeLabel } from '@/components/pets/living-pet-card';
-import { QuickFeedButton } from '@/components/pets/quick-feed-button';
+import { PetCareSummary } from '@/components/pets/pet-care-summary';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
-import { useMedicationCountdownLogs, usePetLogs } from '@/components/pets/pet-log-api';
-import { useNow } from '@/components/pets/use-now';
 import type { PetFields } from '@/components/pets/pet-form';
 
 const TABS = ['feeding', 'medication', 'care'] as const;
 type PetTab = (typeof TABS)[number];
-
-function PetSummary({ pet, householdId }: { pet: PetProfile; householdId: string }) {
-  const now = useNow();
-  const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
-  const medications = useMedicationCountdownLogs(householdId, pet.id);
-  const plan = feedingPlan(pet);
-  const status = feedingStatus(feedings.logs, plan, now);
-  const due = nextMedication(medications.logs, now);
-
-  return (
-    <div className="space-y-3">
-      {feedings.loading ? (
-        <div className="flex items-center gap-3" aria-hidden>
-          <Skeleton className="h-12 w-12 rounded-full" />
-          <Skeleton className="h-4 flex-1" />
-        </div>
-      ) : (
-        <div className="flex items-center gap-3">
-          <FeedingRing status={status} />
-          <div className="min-w-0">
-            <p className={cn('text-sm font-medium', status.last ? 'text-foreground' : 'text-muted-foreground')}>{feedingHeadline(status, now)}</p>
-            <p className={cn('text-xs', status.complete ? 'font-medium text-success' : 'text-muted-foreground')}>
-              {status.complete && status.perDay ? 'All fed today' : feedingCountLabel(status)}
-            </p>
-          </div>
-        </div>
-      )}
-      {due && <MedicationChip due={due} />}
-      <QuickFeedButton
-        petId={pet.id}
-        petName={pet.name}
-        plan={plan}
-        status={status}
-        foodType={knownFoodType(feedings.logs[0]?.foodType)}
-        variant={status.complete ? 'secondary' : 'default'}
-        className="w-full"
-      />
-    </div>
-  );
-}
 
 export default function PetDetailPage({ params }: { params: Promise<{ petId: string }> }) {
   const { petId } = use(params);
@@ -255,7 +202,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                 <h1 className="font-headline text-3xl font-bold tracking-tight">{pet.name}</h1>
                 <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
               </div>
-              <PetSummary pet={pet} householdId={householdId} />
+              <div className="flex flex-col gap-3">
+                <PetCareSummary pet={pet} householdId={householdId} />
+              </div>
             </CardContent>
           </Card>
 

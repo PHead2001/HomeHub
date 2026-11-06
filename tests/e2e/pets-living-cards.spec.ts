@@ -143,6 +143,27 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await expect(page.getByRole('img', { name: 'Photo of Maple' })).toHaveCSS('object-position', '50% 35%');
   });
 
+  test('legacy pets stay editable and non-daily schedules get no daily target', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Created before the 40-character name rule, with a twice-weekly schedule.
+    const legacyName = 'Sir Reginald Fluffington the Third of Maple Street';
+    await household.collection('pets').doc(TEST_PET).set({
+      name: legacyName, type: 'Small mammal', photoUrl: 'https://placehold.co/300x300.png', dataAiHint: 'rabbit', foodSchedule: '1 scoop twice a week',
+    });
+    await openPets(page);
+    const card = page.getByTestId(`pet-card-${TEST_PET}`);
+    await expect(card).toContainText('Not fed today');
+    await expect(card).not.toContainText('of 2 today');
+
+    await card.getByRole('button', { name: `Open actions for ${legacyName}` }).click();
+    await page.getByRole('menuitem', { name: 'Edit' }).click();
+    const dialog = page.getByRole('dialog', { name: `Edit ${legacyName}` });
+    await dialog.getByLabel('Feedings per day').fill('1');
+    await dialog.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(page.getByText('Pet updated', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await household.collection('pets').doc(TEST_PET).get()).data()?.feedingsPerDay).toBe(1);
+  });
+
   test('add pet shows inline field errors, not toasts', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openPets(page);

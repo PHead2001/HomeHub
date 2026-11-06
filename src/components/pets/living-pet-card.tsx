@@ -5,31 +5,16 @@ import Link from 'next/link';
 import { Edit, MoreVertical, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  feedingCountLabel,
-  knownFoodType,
-  feedingHeadline,
-  feedingPlan,
-  feedingStatus,
-  nextMedication,
-  SPECIES_ART_LABEL,
-  speciesArt,
-} from '@/lib/pets/care';
-import type { PetFeedingLog, PetProfile } from '@/lib/pets/types';
-import { cn } from '@/lib/utils';
-import { FeedingRing } from './feeding-ring';
-import { MedicationChip } from './medication-chip';
+import { SPECIES_ART_LABEL, speciesArt } from '@/lib/pets/care';
+import type { PetProfile } from '@/lib/pets/types';
+import { PetCareSummary } from './pet-care-summary';
 import { PetPhoto } from './pet-photo';
-import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
-import { QuickFeedButton } from './quick-feed-button';
-import { useNow } from './use-now';
 
 export type LivingPetCardProps = {
   pet: PetProfile;
@@ -55,14 +40,6 @@ export function petTypeLabel(pet: Pick<PetProfile, 'type' | 'dataAiHint'>): stri
  * feed button sit above the link layer so they stay separate targets.
  */
 export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0 }: LivingPetCardProps) {
-  const now = useNow();
-  const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
-  const medications = useMedicationCountdownLogs(householdId, pet.id);
-
-  const plan = feedingPlan(pet);
-  const status = feedingStatus(feedings.logs, plan, now);
-  const due = nextMedication(medications.logs, now);
-  const lastFoodType = knownFoodType(feedings.logs[0]?.foodType);
   const href = `/pets/${pet.id}`;
 
   return (
@@ -116,43 +93,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
           <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
         </div>
 
-        {feedings.loading ? (
-          <div className="flex items-center gap-3" aria-hidden>
-            <Skeleton className="h-12 w-12 rounded-full" />
-            <div className="flex-1 space-y-1.5">
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-3 w-1/3" />
-            </div>
-          </div>
-        ) : feedings.error ? (
-          <p className="text-sm text-muted-foreground">Feeding status is unavailable right now.</p>
-        ) : (
-          <div className="flex items-center gap-3">
-            <FeedingRing status={status} />
-            <div className="min-w-0">
-              <p className={cn('text-sm font-medium', status.last ? 'text-foreground' : 'text-muted-foreground')}>
-                {feedingHeadline(status, now)}
-              </p>
-              <p className={cn('text-xs', status.complete ? 'font-medium text-success' : 'text-muted-foreground')}>
-                {status.complete && status.perDay ? 'All fed today' : feedingCountLabel(status)}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {due && <MedicationChip due={due} className="self-start" />}
-
-        <div className="relative z-20 mt-auto pt-1">
-          <QuickFeedButton
-            petId={pet.id}
-            petName={pet.name}
-            plan={plan}
-            status={status}
-            foodType={lastFoodType}
-            variant={status.complete ? 'secondary' : 'default'}
-            className="w-full"
-          />
-        </div>
+        <PetCareSummary pet={pet} householdId={householdId} feedClassName="relative z-20 mt-auto pt-1" />
       </div>
     </Card>
   );

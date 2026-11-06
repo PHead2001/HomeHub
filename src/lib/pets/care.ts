@@ -76,10 +76,40 @@ function toNumber(raw: string): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+/**
+ * Explicitly non-daily or irregular schedules ("twice a week", "every other day",
+ * "as needed", "free feed", "Mondays"). They get no daily target, so the ring never
+ * presents them as a more frequent daily goal than the member entered.
+ */
+const NON_DAILY: RegExp[] = [
+  /\b(?:weekly|fortnightly|biweekly|monthly|bimonthly)\b/,
+  /\b(?:a|per|each|every|the|this)\s+(?:week|month|fortnight)\b/,
+  /\/\s*(?:week|wk|month)\b/,
+  /\bevery\s+(?:other|second|third|alternate|few|couple(?:\s+of)?|\d+|two|three|four|five|six|seven)\s+(?:days?|weeks?|months?)\b/,
+  /\b(?:alternate|alternating)\s+days\b/,
+  /\b(?:as|when|if)\s+needed\b/,
+  /\b(?:prn|on\s+demand|ad\s+lib(?:itum)?)\b/,
+  /\bfree[-\s]?(?:feed|feeding|fed|choice)\b/,
+  /\b(?:mon|tues?|wednes|thurs?|fri|satur|sun)days\b/,
+];
+
+export function isNonDailySchedule(schedule?: string | null): boolean {
+  const text = (schedule ?? '').toLowerCase();
+  return NON_DAILY.some((pattern) => pattern.test(text));
+}
+
+const HOUR_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, six: 6, eight: 8, twelve: 12 };
+
 /** Best guess at feedings per day from free text such as "1.5 cups twice daily". */
 export function parseFeedingsPerDay(schedule?: string | null): number | null {
   const text = (schedule ?? '').toLowerCase();
   if (!text.trim()) return null;
+  if (isNonDailySchedule(text)) return null;
+  const everyHours = text.match(/\bevery\s+(\d+|one|two|three|four|six|eight|twelve)\s*(?:hours?|hrs?|h)\b/);
+  if (everyHours) {
+    const hours = HOUR_WORDS[everyHours[1]] ?? Number(everyHours[1]);
+    return hours > 0 && hours <= 24 && Number.isInteger(24 / hours) ? 24 / hours : null;
+  }
   if (/\b(once)\b/.test(text)) return 1;
   if (/\b(twice)\b/.test(text)) return 2;
   if (/\b(thrice)\b/.test(text)) return 3;
@@ -149,7 +179,8 @@ export const DEFAULT_PORTION = { amount: 1, unit: 'Cups' as PortionUnit };
 export function feedingPlan(pet: Pick<PetProfile, 'foodSchedule' | 'feedingsPerDay' | 'portionAmount' | 'portionUnit'>): FeedingPlan {
   const parsedPortion = parsePortion(pet.foodSchedule);
   const perDay = isPositiveInteger(pet.feedingsPerDay) ? pet.feedingsPerDay : parseFeedingsPerDay(pet.foodSchedule);
-  const amount = isPositive(pet.portionAmount) ? pet.portionAmount : parsedPortion?.amount ?? DEFAULT_PORTION.amount;
+  // A stored portion outside the accepted bounds would make the detailed form's default invalid.
+  const amount = isPositive(pet.portionAmount) && isValidPortion(pet.portionAmount) ? pet.portionAmount : parsedPortion?.amount ?? DEFAULT_PORTION.amount;
   const unit = pet.portionUnit ?? parsedPortion?.unit ?? DEFAULT_PORTION.unit;
   return { perDay, amount, unit };
 }
@@ -397,23 +428,34 @@ export type PetFormValues = {
 
 export type PetFormErrors = Partial<Record<keyof PetFormValues, string>>;
 
-/** Inline field errors for the add/edit pet dialogs. `existingNames` excludes the pet being edited. */
-export function validatePetForm(values: PetFormValues, existingNames: string[] = []): PetFormErrors {
+/**
+ * Inline field errors for the add/edit pet dialogs. `existingNames` excludes the pet
+ * being edited. When editing, pass the stored values as `original`: a value the
+ * member did not change is never rejected by a rule newer than the document (name
+ * or schedule length, feedings per day, portion bounds), so older pets stay
+ * editable. (The name cannot be changed while editing.)
+ */
+export function validatePetForm(values: PetFormValues, existingNames: string[] = [], original?: PetFormValues): PetFormErrors {
   const errors: PetFormErrors = {};
+  const unchanged = (field: keyof PetFormValues) => original !== undefined && values[field].trim() === original[field].trim();
   const name = values.name.trim();
-  if (!name) errors.name = 'Give your pet a name.';
-  else if (name.length > PET_NAME_MAX) errors.name = `Keep the name under ${PET_NAME_MAX + 1} characters.`;
-  else if (existingNames.some((existing) => existing.trim().toLowerCase() === name.toLowerCase())) {
-    errors.name = `You already have a pet named ${name}.`;
+  if (!unchanged('name')) {
+    if (!name) errors.name = 'Give your pet a name.';
+    else if (name.length > PET_NAME_MAX) errors.name = `Keep the name under ${PET_NAME_MAX + 1} characters.`;
+    else if (existingNames.some((existing) => existing.trim().toLowerCase() === name.toLowerCase())) {
+      errors.name = `You already have a pet named ${name}.`;
+    }
   }
   const schedule = values.foodSchedule.trim();
   if (!schedule) errors.foodSchedule = 'Describe the feeding schedule, e.g. "1 cup at 8am and 6pm".';
-  else if (schedule.length > FOOD_SCHEDULE_MAX) errors.foodSchedule = `Keep the schedule under ${FOOD_SCHEDULE_MAX + 1} characters.`;
-  if (values.feedingsPerDay.trim()) {
+  else if (schedule.length > FOOD_SCHEDULE_MAX && !unchanged('foodSchedule')) {
+    errors.foodSchedule = `Keep the schedule under ${FOOD_SCHEDULE_MAX + 1} characters.`;
+  }
+  if (values.feedingsPerDay.trim() && !unchanged('feedingsPerDay')) {
     const perDay = Number(values.feedingsPerDay);
     if (!Number.isInteger(perDay) || perDay < 1 || perDay > 12) errors.feedingsPerDay = 'Use a whole number from 1 to 12.';
   }
-  if (values.portionAmount.trim()) {
+  if (values.portionAmount.trim() && !unchanged('portionAmount')) {
     const amount = Number(values.portionAmount);
     if (!isValidPortion(amount)) errors.portionAmount = `Use an amount above 0 and up to ${PORTION_MAX}.`;
   }

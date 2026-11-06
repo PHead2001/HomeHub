@@ -47,7 +47,8 @@ export type QuickFeedButtonProps = {
   petId: string;
   petName: string;
   plan: FeedingPlan;
-  status: FeedingStatus;
+  /** Today's status; null when it could not be loaded (no goal or celebration claims then). */
+  status: FeedingStatus | null;
   /** Food type of the last feeding, reused for one-tap feeding. */
   foodType?: FoodType;
   className?: string;
@@ -90,7 +91,7 @@ export function QuickFeedButton({ petId, petName, plan, status, foodType = 'Dry'
         loggedByUid: currentUser.uid,
         loggedByName: loggerName(currentUser),
       });
-      const reachedGoal = Boolean(plan.perDay) && status.fedToday + 1 === plan.perDay;
+      const reachedGoal = Boolean(plan.perDay && status) && status!.fedToday + 1 === plan.perDay;
       playFeedback(reachedGoal ? 'celebrate' : 'complete');
       if (!reducedMotion) setBurstKey(Date.now());
       const canUndo = Boolean(permissions['pets.deleteLogs']);
