@@ -477,12 +477,43 @@ service cloud.firestore {
 
       match /chores/{choreId} {
         allow read: if hasHouseholdPermission(householdId, 'chores.view');
-        allow create: if hasHouseholdPermission(householdId, 'chores.create');
-        allow update: if
-          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks']) &&
-            hasHouseholdPermission(householdId, 'chores.complete')) ||
-          hasHouseholdPermission(householdId, 'chores.edit');
+        allow create: if hasHouseholdPermission(householdId, 'chores.create') &&
+          choreCreatedWithServerCompletion();
+        allow update: if choreCompletionStampValid() &&
+          (
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks', 'completedAtServer']) &&
+              hasHouseholdPermission(householdId, 'chores.complete')) ||
+            hasHouseholdPermission(householdId, 'chores.edit')
+          );
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+      }
+
+      // Points and streaks are derived from completion times, so a completion is
+      // stamped by the server: a chore that becomes completed must carry
+      // completedAtServer == request.time, and a completed chore keeps its stamp.
+      function choreCompletionStampValid() {
+        return request.resource.data.get('isCompleted', false) != true ||
+          (resource.data.get('isCompleted', false) == true &&
+            request.resource.data.get('completedAtServer', null) == resource.data.get('completedAtServer', null)) ||
+          (resource.data.get('isCompleted', false) != true &&
+            request.resource.data.get('completedAtServer', null) == request.time);
+      }
+
+      function choreCreatedWithServerCompletion() {
+        return request.resource.data.get('isCompleted', false) != true ||
+          request.resource.data.get('completedAtServer', null) == request.time;
+      }
+
+      // Household chore display preferences (leaderboard on/off). Owners and
+      // admins change them; everyone who sees chores reads them.
+      match /chore-settings/{settingId} {
+        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow create, update: if settingId == 'preferences' &&
+          isOwnerOrAdmin(householdId) &&
+          request.resource.data.keys().hasOnly(['leaderboardEnabled', 'updatedAt']) &&
+          request.resource.data.leaderboardEnabled is bool &&
+          request.resource.data.get('updatedAt', '') is string;
+        allow delete: if false;
       }
 
       match /chore-templates/{templateId} {
