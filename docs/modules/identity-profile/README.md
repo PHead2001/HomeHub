@@ -43,6 +43,7 @@ For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for a
 - Avatar objects: `users/{email}/avatars/{uuid}.{extension}`.
 - `User` includes Auth `uid`, email/name fields, avatar, role and permission compatibility fields, `householdId`, theme, chore settings, birthday, gender, force-password-change state, and `fcmTokens`.
 - New profiles default to `role: member` and `householdId: null`.
+- `timeZone` (IANA name, at most 64 characters) is taken from the browser: whenever the profile loads and the browser's zone differs from the stored one, `AuthProvider` overwrites it (best effort; a failed write is ignored). Server-side upkeep uses it to decide when this person's overdue alert (after 07:00) and daily chore reminder fire; if it is missing or invalid, the household timezone is used.
 
 Household compatibility fields are maintained by Household Governance, not ordinary profile editing.
 

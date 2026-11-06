@@ -1,4 +1,4 @@
-name: Deploy Firebase security configuration
+name: Deploy Firebase rules, indexes and functions
 
 # App Hosting deploys the Next.js app on merge, but it never deploys rules or
 # indexes. This workflow is the release path for those: it re-runs the rules
@@ -15,6 +15,7 @@ on:
       - firestore.indexes.json
       - firebase.json
       - scripts/deploy/**
+      - functions/**
       - .github/workflows/deploy-firebase-config.yml
   workflow_dispatch:
 
@@ -67,6 +68,14 @@ jobs:
       - name: Security rules test matrix
         run: npm run test:rules
 
+      - name: Require deploy credentials
+        shell: bash
+        run: |
+          if [ -z "${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ] || [ -z "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" ]; then
+            echo "::error::Deploy credentials are not configured (GCP_WORKLOAD_IDENTITY_PROVIDER / GCP_DEPLOY_SERVICE_ACCOUNT). Nothing was deployed."
+            exit 1
+          fi
+
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
@@ -83,6 +92,13 @@ jobs:
             --only firestore:rules,firestore:indexes,storage \
             --project "$FIREBASE_PROJECT" \
             --non-interactive
+
+      - name: Build and deploy Cloud Functions
+        shell: bash
+        run: |
+          unset FIRESTORE_EMULATOR_HOST FIREBASE_AUTH_EMULATOR_HOST FIREBASE_STORAGE_EMULATOR_HOST
+          npm --prefix functions ci
+          npx firebase deploy --only functions --project "$FIREBASE_PROJECT" --non-interactive --force
 
       - name: Verify live rulesets match this commit
         shell: bash

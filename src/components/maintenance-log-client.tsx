@@ -1,11 +1,13 @@
 "use client";
 
 import * as React from 'react';
+import { buildMaintenanceReminders } from '@functions/shared/maintenance-reminders';
+import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { add, differenceInCalendarDays, format, isAfter, isBefore, isSameDay, isValid, parseISO, startOfToday, subDays } from 'date-fns';
+import { add, format, isAfter, isValid, parseISO, subDays } from 'date-fns';
 import {
   AlertCircle,
   CalendarDays,
@@ -40,11 +42,7 @@ import type {
   VehicleServiceSchedule,
 } from '@/lib/types';
 import {
-  buildNotificationDocument,
   createNotificationAction,
-  deduplicateNotifications,
-  getDeterministicNotificationId,
-  isNotificationExpired,
   parseNotificationDoc,
 } from '@/lib/notifications';
 import { Badge } from '@/components/ui/badge';
@@ -78,7 +76,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { cn, slugify, stableSlugify } from '@/lib/utils';
-import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, runTransaction, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 
 const assetCategories = [
@@ -473,30 +471,8 @@ const getAttachmentsForTarget = (
   return attachments.filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId);
 };
 
-const parseDueDate = (date?: string) => {
-  if (!date) return null;
-  const parsed = parseISO(date);
-  return isValid(parsed) ? parsed : null;
-};
 
-const getDateReminderStatus = (date?: string): MaintenanceReminderStatus | null => {
-  const dueDate = parseDueDate(date);
-  if (!dueDate) return null;
 
-  const today = startOfToday();
-  if (isBefore(dueDate, today)) return 'overdue';
-  if (isSameDay(dueDate, today)) return 'due_today';
-  const daysUntilDue = differenceInCalendarDays(dueDate, today);
-  if (daysUntilDue <= REMINDER_DUE_SOON_DAYS) return 'due_soon';
-  return 'upcoming';
-};
-
-const getMileageReminderStatus = (nextDueMileage?: number, currentMileage?: number): MaintenanceReminderStatus | null => {
-  if (typeof nextDueMileage !== 'number' || typeof currentMileage !== 'number') return null;
-  if (currentMileage >= nextDueMileage) return 'overdue';
-  if (nextDueMileage - currentMileage <= MILEAGE_DUE_SOON_THRESHOLD) return 'due_soon';
-  return 'upcoming';
-};
 
 const getReminderBadgeVariant = (status: MaintenanceReminderStatus) => {
   if (status === 'overdue') return 'destructive';
@@ -504,133 +480,6 @@ const getReminderBadgeVariant = (status: MaintenanceReminderStatus) => {
   return 'secondary';
 };
 
-const buildMaintenanceReminders = (assets: HomeAsset[], vehicles: Vehicle[]): MaintenanceReminder[] => {
-  const reminders: MaintenanceReminder[] = [];
-
-  assets.forEach((asset) => {
-    asset.schedules?.forEach((schedule, index) => {
-      if (getAssetScheduleMode(schedule) === 'checklist') return;
-      const status = getDateReminderStatus(schedule.nextDueDate);
-      if (!status) return;
-      const title = schedule.scheduleName || 'Scheduled maintenance';
-      const sourceId = `${asset.id}:${schedule.id || `legacy-${index}-${stableSlugify(title)}`}`;
-      const stateKey = `${status}|${schedule.nextDueDate || 'no-date'}`;
-      reminders.push({
-        id: `asset-schedule-${asset.id}-${index}-${status}`,
-        group: 'scheduled',
-        status,
-        title,
-        relatedName: asset.name,
-        targetType: 'home_asset',
-        targetId: asset.id,
-        sourceType: 'maintenance_asset_schedule',
-        sourceId,
-        stateKey,
-        scheduleKey: sourceId,
-        legacySourceId: `${asset.id}-${index}`,
-        dueDate: schedule.nextDueDate,
-        message: `${title} for ${asset.name} is ${humanizeLabel(status).toLowerCase()}.`,
-        deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}&schedule=${encodeURIComponent(sourceId)}`,
-      });
-    });
-
-    const warrantyStatus = getDateReminderStatus(asset.warrantyExpiration);
-    if (warrantyStatus && warrantyStatus !== 'upcoming') {
-      const stateKey = `${warrantyStatus}|${asset.warrantyExpiration || 'no-date'}`;
-      reminders.push({
-        id: `asset-warranty-${asset.id}-${warrantyStatus}`,
-        group: 'warranty',
-        status: warrantyStatus,
-        title: 'Warranty expiration',
-        relatedName: asset.name,
-        targetType: 'home_asset',
-        targetId: asset.id,
-        sourceType: 'maintenance_asset_warranty',
-        sourceId: asset.id,
-        stateKey,
-        dueDate: asset.warrantyExpiration,
-        message: `${asset.name} warranty is ${humanizeLabel(warrantyStatus).toLowerCase()}.`,
-        deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}`,
-      });
-    }
-  });
-
-  vehicles.forEach((vehicle) => {
-    vehicle.serviceSchedules?.forEach((schedule, index) => {
-      if (getVehicleScheduleMode(schedule) === 'checklist') return;
-      const dateStatus = getDateReminderStatus(schedule.nextDueDate);
-      const mileageStatus = getMileageReminderStatus(schedule.nextDueMileage, vehicle.currentMileage);
-      const status = dateStatus === 'overdue' || mileageStatus === 'overdue'
-        ? 'overdue'
-        : dateStatus === 'due_today'
-          ? 'due_today'
-          : dateStatus === 'due_soon' || mileageStatus === 'due_soon'
-            ? 'due_soon'
-            : dateStatus || mileageStatus;
-
-      if (!status) return;
-      const title = schedule.serviceName || 'Scheduled service';
-      const sourceId = `${vehicle.id}:${schedule.id || `legacy-${index}-${stableSlugify(title)}`}`;
-      const stateKey = `${status}|${schedule.nextDueDate || 'no-date'}|${schedule.nextDueMileage ?? 'no-mileage'}`;
-      reminders.push({
-        id: `vehicle-service-${vehicle.id}-${index}-${status}`,
-        group: 'vehicle_service',
-        status,
-        title,
-        relatedName: vehicle.nickname,
-        targetType: 'vehicle',
-        targetId: vehicle.id,
-        sourceType: 'maintenance_vehicle_service',
-        sourceId,
-        stateKey,
-        scheduleKey: sourceId,
-        legacySourceId: `${vehicle.id}-${index}`,
-        dueDate: schedule.nextDueDate,
-        dueMileage: schedule.nextDueMileage,
-        currentMileage: vehicle.currentMileage,
-        message: `${title} for ${vehicle.nickname} is ${humanizeLabel(status).toLowerCase()}.`,
-        deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}&schedule=${encodeURIComponent(sourceId)}`,
-      });
-    });
-
-    ([
-      ['Vehicle registration', vehicle.registrationExpiration, 'maintenance_vehicle_registration'],
-      ['Vehicle inspection', vehicle.inspectionExpiration, 'maintenance_vehicle_inspection'],
-    ] as const).forEach(([title, dueDate, sourceType]) => {
-      const status = getDateReminderStatus(dueDate);
-      if (!status || status === 'upcoming') return;
-      const stateKey = `${status}|${dueDate || 'no-date'}`;
-      reminders.push({
-        id: `${sourceType}-${vehicle.id}-${status}`,
-        group: 'vehicle_document',
-        status,
-        title,
-        relatedName: vehicle.nickname,
-        targetType: 'vehicle',
-        targetId: vehicle.id,
-        sourceType,
-        sourceId: vehicle.id,
-        stateKey,
-        dueDate,
-        message: `${title} for ${vehicle.nickname} is ${humanizeLabel(status).toLowerCase()}.`,
-        deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`,
-      });
-    });
-  });
-
-  return reminders.sort((a, b) => {
-    const statusWeight: Record<MaintenanceReminderStatus, number> = {
-      overdue: 0,
-      due_today: 1,
-      due_soon: 2,
-      upcoming: 3,
-    };
-    if (statusWeight[a.status] !== statusWeight[b.status]) {
-      return statusWeight[a.status] - statusWeight[b.status];
-    }
-    return parseLogDate(a.dueDate || '2999-12-31').getTime() - parseLogDate(b.dueDate || '2999-12-31').getTime();
-  });
-};
 
 function SummaryCard({
   title,
@@ -979,13 +828,12 @@ function LogList({
 }
 
 export function MaintenanceLogClient() {
-  const { currentUser } = useAuth();
+  const { currentUser, household } = useAuth();
   const { toast } = useToast();
   const [assets, setAssets] = useState<HomeAsset[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [logs, setLogs] = useState<MaintenanceLog[]>([]);
   const [attachments, setAttachments] = useState<MaintenanceAttachment[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('overview');
@@ -1048,14 +896,12 @@ export function MaintenanceLogClient() {
     const vehiclesCollection = getCollectionRef('vehicles');
     const logsCollection = getCollectionRef('maintenance');
     const attachmentsCollection = getCollectionRef('maintenance-attachments');
-    const notificationsCollection = getCollectionRef('notifications');
 
-    if (!assetsCollection || !vehiclesCollection || !logsCollection || !attachmentsCollection || !notificationsCollection) {
+    if (!assetsCollection || !vehiclesCollection || !logsCollection || !attachmentsCollection) {
       setAssets([]);
       setVehicles([]);
       setLogs([]);
       setAttachments([]);
-      setNotifications([]);
       setLoading(false);
       return;
     }
@@ -1064,19 +910,17 @@ export function MaintenanceLogClient() {
     setError(null);
 
     try {
-      const [assetSnap, vehicleSnap, logSnap, attachmentSnap, notificationSnap] = await Promise.all([
+      const [assetSnap, vehicleSnap, logSnap, attachmentSnap] = await Promise.all([
         getDocs(query(assetsCollection, orderBy('name', 'asc'))),
         getDocs(query(vehiclesCollection, orderBy('nickname', 'asc'))),
         getDocs(query(logsCollection, orderBy('date', 'desc'))),
         getDocs(query(attachmentsCollection, orderBy('createdAt', 'desc'))),
-        getDocs(query(notificationsCollection, orderBy('createdAt', 'desc'))),
       ]);
 
       setAssets(assetSnap.docs.map((assetDoc) => ({ id: assetDoc.id, ...assetDoc.data() } as HomeAsset)));
       setVehicles(vehicleSnap.docs.map((vehicleDoc) => ({ id: vehicleDoc.id, ...vehicleDoc.data() } as Vehicle)));
       setLogs(logSnap.docs.map((logDoc) => ({ id: logDoc.id, ...logDoc.data() } as MaintenanceLog)));
       setAttachments(attachmentSnap.docs.map((attachmentDoc) => ({ id: attachmentDoc.id, ...attachmentDoc.data() } as MaintenanceAttachment)));
-      setNotifications(deduplicateNotifications(notificationSnap.docs.map(parseNotificationDoc)));
     } catch (fetchError) {
       console.error('Error fetching maintenance data:', fetchError);
       setError('Could not load maintenance data.');
@@ -1094,7 +938,6 @@ export function MaintenanceLogClient() {
       setVehicles([]);
       setLogs([]);
       setAttachments([]);
-      setNotifications([]);
       setLoading(false);
     }
   }, [currentUser?.householdId, fetchMaintenanceData]);
@@ -1157,11 +1000,11 @@ export function MaintenanceLogClient() {
     }
   }, [assets, loading, locationSearch, logs, vehicles]);
 
-  const reminders = useMemo(() => buildMaintenanceReminders(assets, vehicles), [assets, vehicles]);
-
-  const actionableReminders = useMemo(() => {
-    return reminders.filter((reminder) => reminder.status !== 'upcoming');
-  }, [reminders]);
+  // Same rules as the scheduled reminders, in the household's timezone.
+  const reminders = useMemo(() => {
+    const timeZone = safeTimeZone(household?.timeZone);
+    return buildMaintenanceReminders(assets, vehicles, localDay(new Date(), timeZone), timeZone) as MaintenanceReminder[];
+  }, [assets, vehicles, household?.timeZone]);
 
   const dueSoonReminders = useMemo(() => {
     return reminders.filter((reminder) => reminder.status === 'due_soon' || reminder.status === 'due_today');
@@ -1218,54 +1061,8 @@ export function MaintenanceLogClient() {
     }
   };
 
-  const notificationSyncKey = useMemo(() => {
-    return actionableReminders.map((reminder) => `${reminder.sourceType}:${reminder.sourceId}:${reminder.status}`).join('|');
-  }, [actionableReminders]);
-
-  useEffect(() => {
-    if (!currentUser?.householdId || actionableReminders.length === 0) return;
-
-    const syncMaintenanceNotifications = async () => {
-      const notificationsCollection = getCollectionRef('notifications');
-      if (!notificationsCollection) return;
-
-      await Promise.all(actionableReminders.map(async (reminder) => {
-        const notificationId = getDeterministicNotificationId({
-          sourceType: reminder.sourceType,
-          sourceId: reminder.sourceId,
-          stateKey: reminder.stateKey,
-        });
-        const existingNotification = notifications.find((notification) => notification.id === notificationId);
-        const legacyNotification = notifications.find((notification) => (
-          notification.sourceType === reminder.sourceType
-          && notification.sourceId === `${reminder.legacySourceId || reminder.sourceId}:${reminder.status}`
-          && !notification.stateKey
-          && !isNotificationExpired(notification)
-        ));
-        if ((existingNotification && !isNotificationExpired(existingNotification)) || legacyNotification) return;
-
-        const notificationRef = doc(notificationsCollection, notificationId);
-        await runTransaction(db, async (transaction) => {
-          const notificationSnap = await transaction.get(notificationRef);
-          if (notificationSnap.exists()) return;
-          transaction.set(notificationRef, buildNotificationDocument({
-            householdId: currentUser.householdId!,
-            category: 'maintenance',
-            title: reminder.title,
-            message: reminder.message,
-            deepLink: reminder.deepLink,
-            sourceType: reminder.sourceType,
-            sourceId: reminder.sourceId,
-            stateKey: reminder.stateKey,
-          }));
-        });
-      }));
-    };
-
-    void syncMaintenanceNotifications().catch((notificationError) => {
-      console.error('Error syncing maintenance notifications:', notificationError);
-    });
-  }, [actionableReminders, currentUser?.householdId, getCollectionRef, notificationSyncKey, notifications]);
+  // Maintenance reminder notifications are created by the server on a schedule
+  // (functions/src/reminders.ts), not by whoever has this page open.
 
   const uploadAttachment = async (
     targetType: MaintenanceAttachmentTargetType,

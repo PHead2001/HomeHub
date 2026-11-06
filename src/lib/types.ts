@@ -371,6 +371,8 @@ export type BarcodeLibraryItem = {
 export type User = {
   uid: string; // From Firebase Auth
   email: string;
+  /** IANA timezone captured from the browser; used for daily chore reminders. */
+  timeZone?: string;
   firstName: string;
   lastName: string;
   displayName: string;
@@ -406,6 +408,8 @@ export type Household = {
     /** Set when the owner starts deleting the household; data is frozen until removal finishes. */
     deletingAt?: unknown;
     deletingByUid?: string;
+    /** IANA timezone used for reminders and recurring chores (default America/Chicago). */
+    timeZone?: string;
 }
 
 export type InviteCode = {

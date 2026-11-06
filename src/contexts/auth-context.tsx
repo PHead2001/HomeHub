@@ -110,6 +110,14 @@ const hasErrorCode = (error: unknown): error is Error & { code: string } => {
   return typeof (error as Error & { code?: unknown }).code === 'string';
 };
 
+const browserTimeZone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
 
 // --- Provider Component ---
@@ -133,7 +141,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const docSnap = await getDoc(userDocRef);
 
     if (docSnap.exists()) {
-      return { uid: firebaseUser.uid, ...docSnap.data() } as User;
+      const profile = { uid: firebaseUser.uid, ...docSnap.data() } as User;
+      // Daily chore reminders fire at each person's chosen time in their own timezone.
+      const timeZone = browserTimeZone();
+      if (timeZone && profile.timeZone !== timeZone) {
+        void setDoc(userDocRef, { timeZone }, { merge: true }).catch(() => undefined);
+      }
+      return profile;
     }
 
     if (!googleProfileData) {
@@ -439,6 +453,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           memberEmails: [currentUser.email],
           createdAt: now,
           updatedAt: now,
+          // Reminders and recurring chores run on the server in this timezone.
+          timeZone: browserTimeZone(),
         };
         const ownerMember: HouseholdMember = {
           uid: currentUser.uid,

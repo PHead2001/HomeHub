@@ -53,10 +53,9 @@ Creation rules require an approved sender, the household's own `householdId`, Ti
 - FCM web config uses `NEXT_PUBLIC_FIREBASE_*` and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - Cloud Function `sendPushOnNewNotification` runs on notification creation.
 - The push function re-validates every document: it ignores documents whose `householdId` does not match their path, loads the household's membership records, and pushes only to approved active members. A `targetUserUid`/`targetUserEmail` that is not an approved member receives nothing; untargeted notifications go to approved members only (never pending joiners). Links are reduced to `/`-relative in-app paths, and title/body are bounded (`functions/src/push-policy.ts`, tested in `tests/server/push-policy.test.ts`).
-- Chore checks run every minute while Chores is mounted. Direct Temporary Task creation writes one deterministic targeted assignment notification in the same batch as its chore.
-- Maintenance synchronization runs when Maintenance opens.
+- Reminders are never written by browser code: there is no per-minute timer on Chores and no synchronization when Maintenance opens. Opening Chores does call the server-side `syncHouseholdUpkeep` action, which runs the full upkeep step (recurring chores, retention, maintenance and chore reminders) on demand. Direct Temporary Task creation writes one deterministic targeted assignment notification in the same batch as its chore.
 - Pending-member reminders are client-triggered after 24 hours.
-- No scheduled reminder or cleanup function exists.
+- Maintenance and chore reminders are scheduled server-side. The hourly `householdUpkeep` Cloud Function (`functions/src/index.ts` → `functions/src/reminders.ts`) runs the same idempotent step for every household; the Chores page also runs it on demand through `syncHouseholdUpkeep` (`src/app/chores/actions.ts`, authorized by `chores.view`) on each load so a new recurring assignment appears immediately. Maintenance Center computes its due/overdue list locally from the same shared rules (`functions/src/shared/maintenance-reminders.ts`) for display only and writes no reminder notifications.
 - Physical expiration requires manual Firestore TTL configuration on collection group `notifications`, field `expiresAt`.
 
 ## Cross-Module Dependencies
@@ -76,7 +75,7 @@ The homepage overview counts only active notifications visible to the verified u
 - Deterministic maintenance identity is `(sourceType, sourceId, stateKey)`; `stateKey` changes only for a meaningful due-state/date/mileage cycle change.
 - Deleting a maintenance asset or vehicle resolves its active schedule and expiration reminders from a fresh notification snapshot; unrelated notification history remains intact.
 - Bell and center presentation deduplicate legacy documents with the same semantic source while merging read, dismiss, and resolution history.
-- Reminders are absent until a relevant client page runs its generator.
+- Reminders appear without anyone opening a page; IDs are deterministic, so overlapping runs never duplicate.
 - Push recipients come from the household's membership records: a notification targeted by `targetUserUid` (or `targetUserEmail`) goes only to that approved member, an untargeted one to every approved member, never to pending or former members. Each recipient's profile is then read directly by email (`users/{email}`) for its FCM tokens; no `users.uid` query is involved, so profiles without a stored `uid` still receive pushes.
 - New-member approval notifications are targeted at each active owner/admin.
 
