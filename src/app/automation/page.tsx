@@ -11,7 +11,7 @@ export default function AutomationPage() {
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8">
                 <h1 className="font-headline text-3xl font-bold tracking-tight">House Automation</h1>
-                <p className="text-muted-foreground">Control and manage your smart home devices via Home Assistant.</p>
+                <p className="text-muted-foreground">See what your lights, sensors and devices are doing, straight from Home Assistant.</p>
             </div>
             
             {!currentUser && (

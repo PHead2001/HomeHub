@@ -69,6 +69,15 @@ jobs:
       - name: Firestore and Storage security rules
         run: npm run test:rules
 
+      - name: Server membership, Home Assistant and push policy tests
+        run: npm run test:server
+
+      - name: Cloud Functions lint and build
+        run: |
+          npm --prefix functions ci
+          npm --prefix functions run lint
+          npm --prefix functions run build
+
       - name: Build application
         run: npm run build
 

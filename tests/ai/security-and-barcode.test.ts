@@ -54,3 +54,17 @@ describe('Open Food Facts package quantity parsing', () => {
     assert.equal(parseOpenFoodFactsQuantity({ quantityText: 'per serving 30 g' }), null);
   });
 });
+
+describe('client permissions', () => {
+  test('come only from an approved membership record', async () => {
+    const { getMemberPermissions } = await import('../../src/lib/permissions');
+    assert.equal(getMemberPermissions(null)['chores.view'], false);
+    assert.equal(getMemberPermissions({ role: 'newuser', status: 'pending' })['chores.view'], false);
+    assert.equal(getMemberPermissions({ role: 'member', status: 'pending' })['chores.view'], false);
+    assert.equal(getMemberPermissions({ role: 'super-admin' as never, status: 'active' })['household.delete'], false);
+    const guest = getMemberPermissions({ role: 'guest', status: 'active', permissions: { 'notifications.view': false } });
+    assert.equal(guest['notifications.view'], false);
+    assert.equal(guest['chores.view'], true);
+    assert.equal(getMemberPermissions({ role: 'owner', status: 'active' })['household.delete'], true);
+  });
+});

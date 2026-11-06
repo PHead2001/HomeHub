@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   arrayRemove,
   collection,
@@ -65,7 +66,7 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cn } from '@/lib/utils';
+import { cn, copyText } from '@/lib/utils';
 
 const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const INVITE_TTL_MINUTES = 30;
@@ -101,10 +102,16 @@ const roleLabel = (role: HouseholdRole) => role.charAt(0).toUpperCase() + role.s
 
 const hasOverrides = (member: HouseholdMember) => Object.keys(member.permissions || {}).length > 0;
 
+const householdTabs = ['overview', 'invites', 'members', 'roles', 'activity', 'danger'];
+
 export function HouseholdManagementClient() {
   const { currentUser, household, currentMember, permissions, leaveHousehold } = useAuth();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState('overview');
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => {
+    const requested = searchParams.get('tab');
+    return requested && householdTabs.includes(requested) ? requested : 'overview';
+  });
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -294,9 +301,17 @@ export function HouseholdManagementClient() {
       }
 
       if (!createdInviteCode) throw new Error('Could not generate a unique invite code.');
-      await navigator.clipboard.writeText(createdInviteCode);
-      toast({ title: 'Invite Generated', description: 'The temporary invite code was copied to your clipboard.' });
-      await fetchHouseholdData();
+      // The code exists now; refreshing and copying are conveniences that must not
+      // turn a successful invite into a reported failure (iOS often blocks clipboard
+      // writes after an await).
+      await fetchHouseholdData().catch(refreshError => console.warn('Invite list refresh failed', refreshError));
+      const copied = await copyText(createdInviteCode);
+      toast({
+        title: 'Invite code ready',
+        description: copied
+          ? `${createdInviteCode} is copied. Share it within ${INVITE_TTL_MINUTES} minutes.`
+          : `Share ${createdInviteCode} within ${INVITE_TTL_MINUTES} minutes. It is also listed below.`,
+      });
     } catch (error) {
       console.error('Failed to generate invite', error);
       toast({ variant: 'destructive', title: 'Invite Failed', description: 'Could not generate an invite code.' });
@@ -626,7 +641,7 @@ export function HouseholdManagementClient() {
             <Card>
               <CardHeader>
                 <CardTitle>Temporary Invite Codes</CardTitle>
-                <CardDescription>Invite codes expire after {INVITE_TTL_MINUTES} minutes and place joiners into the newuser approval state.</CardDescription>
+                <CardDescription>Codes last {INVITE_TTL_MINUTES} minutes and work once. New people wait for you to choose their role before they see anything.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex flex-col gap-2 sm:flex-row">
@@ -656,7 +671,10 @@ export function HouseholdManagementClient() {
                           </p>
                         </div>
                         <div className="flex gap-2">
-                          <Button variant="outline" size="icon" aria-label={`Copy invite code ${invite.code}`} onClick={() => navigator.clipboard.writeText(invite.code)}>
+                          <Button variant="outline" size="icon" aria-label={`Copy invite code ${invite.code}`} onClick={async () => {
+                            const copied = await copyText(invite.code);
+                            toast(copied ? { title: 'Copied', description: invite.code } : { title: 'Copy not available', description: `Share ${invite.code} manually.` });
+                          }}>
                             <Copy className="h-4 w-4" />
                           </Button>
                           <Button variant="outline" onClick={() => revokeInvite(invite)} disabled={!canManageInvites || !isActiveInvite(invite)}>

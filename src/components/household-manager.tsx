@@ -24,6 +24,8 @@ import {
   CardTitle,
 } from './ui/card';
 
+const HOUSEHOLD_NAME_MAX = 80;
+
 interface HouseholdManagerProps {
   children: ReactNode;
 }
@@ -36,33 +38,52 @@ function CreateHouseholdForm({
   isCreating: boolean;
 }) {
   const [name, setName] = useState('');
+  const trimmed = name.trim();
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="font-headline">Create a Household</CardTitle>
-        <CardDescription>
-          Give your household a name to get started.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Label htmlFor="householdName">Household Name</Label>
-        <Input
-          id="householdName"
-          placeholder="e.g. The Miller Residence"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={isCreating}
-        />
-      </CardContent>
-      <CardFooter>
-        <Button onClick={() => onCreate(name)} disabled={isCreating || !name}>
-          {isCreating && <Loader2 className="mr-2 animate-spin" />}
-          Create Household
-        </Button>
-      </CardFooter>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (trimmed && !isCreating) onCreate(trimmed);
+        }}
+      >
+        <CardHeader>
+          <CardTitle className="font-headline">Create a Household</CardTitle>
+          <CardDescription>
+            Give your household a name to get started.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Label htmlFor="householdName">Household Name</Label>
+          <Input
+            id="householdName"
+            placeholder="e.g. The Miller Residence"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={isCreating}
+            maxLength={HOUSEHOLD_NAME_MAX}
+            autoComplete="off"
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            You can rename it later. {name.length > HOUSEHOLD_NAME_MAX - 15 && `${HOUSEHOLD_NAME_MAX - name.length} characters left.`}
+          </p>
+        </CardContent>
+        <CardFooter>
+          <Button type="submit" disabled={isCreating || !trimmed}>
+            {isCreating && <Loader2 className="mr-2 animate-spin" />}
+            Create Household
+          </Button>
+        </CardFooter>
+      </form>
     </Card>
   );
 }
+
+// Show invite codes as XXXX-XXXX-XX while people type, with or without dashes.
+const formatInviteInput = (value: string) => {
+  const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+  return [compact.slice(0, 4), compact.slice(4, 8), compact.slice(8)].filter(Boolean).join('-');
+};
 
 function JoinHouseholdForm({
   onJoin,
@@ -72,31 +93,46 @@ function JoinHouseholdForm({
   isJoining: boolean;
 }) {
   const [code, setCode] = useState('');
+  const complete = code.replace(/-/g, '').length === 10;
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="font-headline">Join a Household</CardTitle>
-        <CardDescription>
-          Enter an invite code to join an existing household.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Label htmlFor="inviteCode">Invite Code</Label>
-        <Input
-          id="inviteCode"
-          placeholder="XXXX-XXXX-XX"
-          value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase())}
-          disabled={isJoining}
-          maxLength={12}
-        />
-      </CardContent>
-      <CardFooter>
-        <Button onClick={() => onJoin(code)} disabled={isJoining || code.trim().length < 10}>
-          {isJoining && <Loader2 className="mr-2 animate-spin" />}
-          Join Household
-        </Button>
-      </CardFooter>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (complete && !isJoining) onJoin(code);
+        }}
+      >
+        <CardHeader>
+          <CardTitle className="font-headline">Join a Household</CardTitle>
+          <CardDescription>
+            Ask someone in the household for an invite code. Codes last 30 minutes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Label htmlFor="inviteCode">Invite Code</Label>
+          <Input
+            id="inviteCode"
+            placeholder="ABCD-EFGH-JK"
+            value={code}
+            onChange={(e) => setCode(formatInviteInput(e.target.value))}
+            disabled={isJoining}
+            maxLength={12}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            className="font-code tracking-widest"
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            After you join, an owner or admin chooses your role.
+          </p>
+        </CardContent>
+        <CardFooter>
+          <Button type="submit" disabled={isJoining || !complete}>
+            {isJoining && <Loader2 className="mr-2 animate-spin" />}
+            Join Household
+          </Button>
+        </CardFooter>
+      </form>
     </Card>
   );
 }
@@ -110,11 +146,13 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   if (currentUser && currentMember?.role === 'newuser' && pathname !== '/profile') {
     return (
       <>
-        <div className="hidden">{children}</div>
+        {/* Module pages are not mounted until membership is approved, so they never fetch. */}
         <Dialog open={true} onOpenChange={() => {}}>
           <DialogContent
             className="max-w-md"
             onInteractOutside={(e) => e.preventDefault()}
+            onEscapeKeyDown={(e) => e.preventDefault()}
+            hideClose
           >
             <DialogHeader>
               <DialogTitle className="font-headline text-2xl text-center">
@@ -165,11 +203,13 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   // Display this overlay if user is logged in but has no household
   return (
     <>
-      <div className="hidden">{children}</div>
+      {/* Module pages are not mounted until membership is approved, so they never fetch. */}
       <Dialog open={true} onOpenChange={() => {}}>
         <DialogContent
           className="max-w-4xl"
           onInteractOutside={(e) => e.preventDefault()}
+            onEscapeKeyDown={(e) => e.preventDefault()}
+            hideClose
         >
           <DialogHeader>
             <DialogTitle className="font-headline text-3xl text-center">

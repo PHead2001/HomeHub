@@ -1,0 +1,127 @@
+import assert from 'node:assert/strict';
+import { after, beforeEach, describe, test } from 'node:test';
+import { adminDb } from '../../src/lib/server/firebase-admin';
+import { MembershipError, redeemInvite, type VerifiedCaller } from '../../src/lib/server/household-membership';
+
+// Runs against the Firestore emulator through the real Admin SDK path the app uses.
+const NOW = new Date('2026-08-01T12:00:00.000Z');
+const HOUSE = 'server-join-house';
+const OTHER = 'server-other-house';
+
+const owner: VerifiedCaller = { uid: 'join-owner', email: 'join.owner@example.test', displayName: 'Owner' };
+const admin: VerifiedCaller = { uid: 'join-admin', email: 'join.admin@example.test' };
+const guest: VerifiedCaller = { uid: 'join-guest', email: 'join.guest@example.test' };
+const newcomer: VerifiedCaller = { uid: 'join-new', email: 'join.new@example.test', displayName: 'Jordan' };
+const second: VerifiedCaller = { uid: 'join-second', email: 'join.second@example.test' };
+const elsewhere: VerifiedCaller = { uid: 'join-elsewhere', email: 'join.elsewhere@example.test' };
+
+const invite = (code: string, overrides: Record<string, unknown> = {}) => adminDb.collection('inviteCodes').doc(code).set({
+  code,
+  householdId: HOUSE,
+  createdByUid: owner.uid,
+  createdByEmail: owner.email,
+  createdAt: '2026-08-01T11:50:00.000Z',
+  expiresAt: '2026-08-01T12:20:00.000Z',
+  maxUses: 1,
+  useCount: 0,
+  ...overrides,
+});
+
+const clear = async () => {
+  for (const id of [HOUSE, OTHER]) {
+    const ref = adminDb.collection('households').doc(id);
+    await adminDb.recursiveDelete(ref);
+  }
+  const invites = await adminDb.collection('inviteCodes').where('householdId', '==', HOUSE).get();
+  await Promise.all(invites.docs.map(d => d.ref.delete()));
+  await Promise.all([owner, admin, guest, newcomer, second, elsewhere].map(u => adminDb.collection('users').doc(u.email).delete()));
+};
+
+beforeEach(async () => {
+  await clear();
+  const house = adminDb.collection('households').doc(HOUSE);
+  await house.set({ name: 'Join House', ownerUid: owner.uid, ownerEmail: owner.email, memberEmails: [owner.email, admin.email, guest.email] });
+  await house.collection('members').doc(owner.uid).set({ ...owner, role: 'owner', status: 'active' });
+  await house.collection('members').doc(admin.uid).set({ ...admin, role: 'admin', status: 'active' });
+  await house.collection('members').doc(guest.uid).set({ ...guest, role: 'guest', status: 'active' });
+  const other = adminDb.collection('households').doc(OTHER);
+  await other.set({ name: 'Other', ownerUid: elsewhere.uid, ownerEmail: elsewhere.email, memberEmails: [elsewhere.email] });
+  await other.collection('members').doc(elsewhere.uid).set({ ...elsewhere, role: 'owner', status: 'active' });
+  await adminDb.collection('users').doc(elsewhere.email).set({ email: elsewhere.email, householdId: OTHER, role: 'owner' });
+});
+
+after(clear);
+
+const rejects = (promise: Promise<unknown>, pattern: RegExp) => assert.rejects(promise, (error: unknown) => {
+  assert.ok(error instanceof MembershipError, `expected MembershipError, got ${String(error)}`);
+  assert.match(error.userMessage, pattern);
+  return true;
+});
+
+describe('invite redemption', () => {
+  test('a valid code typed loosely creates a pending membership and notifies approvers only', async () => {
+    await invite('ABCD-EFGH-JK');
+    const result = await redeemInvite(newcomer, ' abcd efgh jk ', NOW);
+    assert.equal(result.household.id, HOUSE);
+    assert.equal(result.member.role, 'newuser');
+    assert.equal(result.member.status, 'pending');
+
+    const house = adminDb.collection('households').doc(HOUSE);
+    const member = (await house.collection('members').doc(newcomer.uid).get()).data();
+    assert.equal(member?.role, 'newuser');
+    assert.equal(member?.status, 'pending');
+    const used = (await adminDb.collection('inviteCodes').doc('ABCD-EFGH-JK').get()).data();
+    assert.equal(used?.useCount, 1);
+    const profile = (await adminDb.collection('users').doc(newcomer.email).get()).data();
+    assert.equal(profile?.householdId, HOUSE);
+    assert.equal(profile?.uid, newcomer.uid);
+
+    const notes = await house.collection('notifications').where('sourceId', '==', newcomer.uid).get();
+    const targets = notes.docs.map(d => d.data().targetUserUid).sort();
+    assert.deepEqual(targets, [admin.uid, owner.uid].sort());
+    for (const note of notes.docs) assert.equal(note.data().deepLink, '/household?tab=members');
+  });
+
+  test('expired, cancelled, used-up and unknown codes are refused with clear messages', async () => {
+    await invite('EXPI-REDX-XX', { expiresAt: '2026-08-01T11:59:59.000Z' });
+    await invite('REVO-KEDX-XX', { revokedAt: '2026-08-01T11:55:00.000Z' });
+    await invite('USED-UPXX-XX', { useCount: 1 });
+    await rejects(redeemInvite(newcomer, 'EXPI-REDX-XX', NOW), /expired/);
+    await rejects(redeemInvite(newcomer, 'REVO-KEDX-XX', NOW), /cancelled/);
+    await rejects(redeemInvite(newcomer, 'USED-UPXX-XX', NOW), /already been used/);
+    await rejects(redeemInvite(newcomer, 'NOPE-NOPE-NO', NOW), /not found/);
+    await rejects(redeemInvite(newcomer, 'short', NOW), /10-character/);
+    const member = await adminDb.collection('households').doc(HOUSE).collection('members').doc(newcomer.uid).get();
+    assert.equal(member.exists, false);
+  });
+
+  test('existing members and people in another household cannot redeem', async () => {
+    await invite('MEMB-ERXX-XX');
+    await rejects(redeemInvite(guest, 'MEMB-ERXX-XX', NOW), /already part/);
+    await rejects(redeemInvite(elsewhere, 'MEMB-ERXX-XX', NOW), /Leave your current household/);
+    const used = (await adminDb.collection('inviteCodes').doc('MEMB-ERXX-XX').get()).data();
+    assert.equal(used?.useCount, 0);
+  });
+
+  test('a single-use code redeemed concurrently admits exactly one person', async () => {
+    await invite('RACE-RACE-RA');
+    const outcomes = await Promise.allSettled([
+      redeemInvite(newcomer, 'RACE-RACE-RA', NOW),
+      redeemInvite(second, 'RACE-RACE-RA', NOW),
+    ]);
+    assert.equal(outcomes.filter(o => o.status === 'fulfilled').length, 1);
+    const used = (await adminDb.collection('inviteCodes').doc('RACE-RACE-RA').get()).data();
+    assert.equal(used?.useCount, 1);
+    const pending = await adminDb.collection('households').doc(HOUSE).collection('members').where('status', '==', 'pending').get();
+    assert.equal(pending.size, 1);
+  });
+
+  test('multi-use codes stop at their limit', async () => {
+    await invite('MULT-IUSE-XX', { maxUses: 2 });
+    await redeemInvite(newcomer, 'MULT-IUSE-XX', NOW);
+    await redeemInvite(second, 'MULT-IUSE-XX', NOW);
+    const third: VerifiedCaller = { uid: 'join-third', email: 'join.third@example.test' };
+    await rejects(redeemInvite(third, 'MULT-IUSE-XX', NOW), /already been used/);
+    await adminDb.collection('users').doc(third.email).delete();
+  });
+});

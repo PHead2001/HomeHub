@@ -1,66 +1,52 @@
-
 import {onDocumentCreated} from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import * as logger from "firebase-functions/logger";
+import {
+  clampText,
+  safeDeepLink,
+  selectRecipientEmails,
+  type MemberRecord,
+} from "./push-policy";
 
 admin.initializeApp();
 
 const db = admin.firestore();
 const messaging = admin.messaging();
 
+type TokenOwner = {token: string; ref: admin.firestore.DocumentReference};
+
 export const sendPushOnNewNotification = onDocumentCreated(
   "households/{householdId}/notifications/{notificationId}",
   async (event) => {
     const {householdId} = event.params;
-    const snapshot = event.data;
-
-    if (!snapshot) {
-      logger.log("No data associated with the event, exiting.");
-      return;
-    }
-    const notificationData = snapshot.data();
-
+    const notificationData = event.data?.data();
     if (!notificationData) {
       logger.log("No data in notification, exiting.");
       return;
     }
-
-    logger.log("New notification created; attempting to send push.");
-
-    const recipientRefs: admin.firestore.DocumentReference[] = [];
-    const targetUserEmail = notificationData.targetUserEmail;
-    const targetUserUid = notificationData.targetUserUid;
-
-    if (typeof targetUserEmail === "string") {
-      recipientRefs.push(db.collection("users").doc(targetUserEmail));
-    } else if (typeof targetUserUid === "string") {
-      const userQuery = await db
-        .collection("users")
-        .where("uid", "==", targetUserUid)
-        .limit(1)
-        .get();
-      userQuery.docs.forEach((doc) => recipientRefs.push(doc.ref));
-    } else {
-      const householdDoc = await db.collection("households").doc(householdId).get();
-      const householdData = householdDoc.data();
-      const memberEmails = Array.isArray(householdData?.memberEmails) ?
-        householdData.memberEmails :
-        [];
-
-      memberEmails.forEach((email) => {
-        if (typeof email === "string") {
-          recipientRefs.push(db.collection("users").doc(email));
-        }
-      });
+    if (notificationData.householdId !== householdId) {
+      logger.warn("Notification householdId does not match its path.");
+      return;
     }
 
-    const recipientDocs = await Promise.all(recipientRefs.map((ref) => ref.get()));
-    const tokenOwners: {token: string; ref: admin.firestore.DocumentReference}[] = [];
+    // Membership records are the only authority for who receives a push.
+    const membersSnap = await db.collection("households").doc(householdId)
+      .collection("members").get();
+    const members: MemberRecord[] = membersSnap.docs
+      .map((doc) => ({uid: doc.id, ...doc.data()}));
+    const recipientEmails = selectRecipientEmails(members, notificationData);
+    if (recipientEmails.length === 0) {
+      logger.log("No approved recipients for notification.");
+      return;
+    }
 
+    const recipientDocs = await Promise.all(
+      recipientEmails.map((email) => db.collection("users").doc(email).get()),
+    );
+    const tokenOwners: TokenOwner[] = [];
     recipientDocs.forEach((userDoc) => {
-      const userData = userDoc.data();
-      const tokens = Array.isArray(userData?.fcmTokens) ? userData.fcmTokens : [];
-
+      const raw = userDoc.data()?.fcmTokens;
+      const tokens: unknown[] = Array.isArray(raw) ? raw : [];
       tokens.forEach((token) => {
         if (typeof token === "string") {
           tokenOwners.push({token, ref: userDoc.ref});
@@ -69,30 +55,24 @@ export const sendPushOnNewNotification = onDocumentCreated(
     });
 
     if (tokenOwners.length === 0) {
-      logger.log("No FCM tokens found for notification recipient.");
+      logger.log("No FCM tokens found for notification recipients.");
       return;
     }
 
-    const tokens = tokenOwners.map((entry) => entry.token);
-
     const payload: admin.messaging.MulticastMessage = {
       notification: {
-        title: notificationData.title || "HomeHub",
-        body: notificationData.message || "You have a new notification.",
+        title: clampText(notificationData.title, "HomeHub", 120),
+        body: clampText(
+          notificationData.message, "You have a new notification.", 500),
       },
       webpush: {
-        fcmOptions: {
-          link: notificationData.deepLink || notificationData.href || "/",
-        },
-        notification: {
-          icon: "/favicon.ico",
-        },
+        fcmOptions: {link: safeDeepLink(notificationData.deepLink)},
+        notification: {icon: "/favicon.ico"},
       },
-      tokens: tokens,
+      tokens: tokenOwners.map((entry) => entry.token),
     };
 
     const response = await messaging.sendEachForMulticast(payload);
-
     logger.log("Push notification send completed.", {
       successCount: response.successCount,
       failureCount: response.failureCount,
@@ -100,26 +80,17 @@ export const sendPushOnNewNotification = onDocumentCreated(
 
     const tokensToRemove: Promise<admin.firestore.WriteResult>[] = [];
     response.responses.forEach((result, index) => {
-      if (!result.success) {
-        const error = result.error;
-        if (error) {
-          logger.error(
-            "Failure sending notification.",
-            {code: error.code},
-          );
-          if (
-            error.code === "messaging/invalid-registration-token" ||
-            error.code === "messaging/registration-token-not-registered"
-          ) {
-            const invalidToken = tokenOwners[index].token;
-            const invalidTokenOwner = tokenOwners[index].ref;
-            tokensToRemove.push(
-              invalidTokenOwner.update({
-                fcmTokens: admin.firestore.FieldValue.arrayRemove(invalidToken),
-              }),
-            );
-          }
-        }
+      const error = result.error;
+      if (result.success || !error) return;
+      logger.error("Failure sending notification.", {code: error.code});
+      if (
+        error.code === "messaging/invalid-registration-token" ||
+        error.code === "messaging/registration-token-not-registered"
+      ) {
+        tokensToRemove.push(tokenOwners[index].ref.update({
+          fcmTokens: admin.firestore.FieldValue.arrayRemove(
+            tokenOwners[index].token),
+        }));
       }
     });
 

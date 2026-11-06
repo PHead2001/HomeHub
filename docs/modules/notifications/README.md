@@ -46,13 +46,13 @@ Approved household members can read household notification documents. Rule updat
 
 `notifications.view` controls navigation, but `notifications.dismiss` is not checked by the notification UI/rules. Action-map keys are UID-restricted, but rules do not validate email/display-name values inside the action object.
 
-Creation rules require an approved sender, the household's own `householdId`, Timestamp `createdAt`/`expiresAt`, a known category, bounded title/message, an allow-listed set of fields, a `/`-relative `deepLink` (no scheme, no `//`), and targets that belong to the household (a `targetUserUid` membership record; a `targetUserEmail` profile pointing at the household). The Admin SDK push function still trusts targeting fields until it re-validates them server-side.
+Creation rules require an approved sender, the household's own `householdId`, Timestamp `createdAt`/`expiresAt`, a known category, bounded title/message, an allow-listed set of fields, a `/`-relative `deepLink` (no scheme, no `//`), and targets that belong to the household (a `targetUserUid` membership record; a `targetUserEmail` profile pointing at the household). The push function independently re-validates targets and links.
 
 ## Integrations and Background Processing
 
 - FCM web config uses `NEXT_PUBLIC_FIREBASE_*` and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - Cloud Function `sendPushOnNewNotification` runs on notification creation.
-- Recipient order is target email, then target UID query, otherwise legacy `households.memberEmails`.
+- The push function re-validates every document: it ignores documents whose `householdId` does not match their path, loads the household's membership records, and pushes only to approved active members. A `targetUserUid`/`targetUserEmail` that is not an approved member receives nothing; untargeted notifications go to approved members only (never pending joiners). Links are reduced to `/`-relative in-app paths, and title/body are bounded (`functions/src/push-policy.ts`, tested in `tests/server/push-policy.test.ts`).
 - Chore checks run every minute while Chores is mounted. Direct Temporary Task creation writes one deterministic targeted assignment notification in the same batch as its chore.
 - Maintenance synchronization runs when Maintenance opens.
 - Pending-member reminders are client-triggered after 24 hours.
@@ -78,7 +78,7 @@ The homepage overview counts only active notifications visible to the verified u
 - Bell and center presentation deduplicate legacy documents with the same semantic source while merging read, dismiss, and resolution history.
 - Reminders are absent until a relevant client page runs its generator.
 - UID-only push targeting queries `users.uid`, while current profile creation does not consistently persist a `uid` field.
-- Untargeted governance notifications broadcast through legacy member emails.
+- New-member approval notifications are targeted at each active owner/admin.
 
 ## Validation
 
