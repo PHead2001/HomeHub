@@ -146,6 +146,28 @@ test.describe('dashboard, shell and notifications', () => {
     }
   });
 
+  test('H13: arrow keys keep the active palette option scrolled into view', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.setViewportSize({ width: 1280, height: 560 });
+    await openDashboard(page);
+    await page.keyboard.press('Control+k');
+    const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+    const input = palette.getByRole('combobox', { name: 'Search or quick add' });
+    const options = palette.getByRole('option');
+    const count = await options.count();
+    expect(count).toBeGreaterThan(3);
+    // Up from the first option wraps to the last one, below the list's fold.
+    await input.press('ArrowUp');
+    const last = options.nth(count - 1);
+    await expect(last).toHaveAttribute('aria-selected', 'true');
+    await expect(input).toHaveAttribute('aria-activedescendant', (await last.getAttribute('id'))!);
+    await expect(last).toBeInViewport();
+    // And back down to the first.
+    await input.press('ArrowDown');
+    await expect(options.first()).toHaveAttribute('aria-selected', 'true');
+    await expect(options.first()).toBeInViewport();
+  });
+
   test('H28: shortcuts open help and jump between modules, never while typing', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openDashboard(page);

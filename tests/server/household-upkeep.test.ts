@@ -185,14 +185,21 @@ describe('household upkeep', () => {
     // Completed just after New Year in UTC, but still Dec 31 in the household's timezone (Chicago).
     await chores.doc('new-year').set({ task: 'Party', isCompleted: true, completedAt: '2026-01-01T03:00:00.000Z', assignedToEmail: 'owner@example.test' });
     await chores.doc('recent').set({ task: 'Recent', isCompleted: true, completedAt: '2026-10-30T12:00:00.000Z', assignedToEmail: 'owner@example.test' });
+    // The server stamp is authoritative: completedAt says Dec 31 2025 (Chicago),
+    // completedAtServer says Jan 1 2026 (Chicago), so it belongs to 2026.
+    await chores.doc('stamped').set({
+      task: 'Stamped', isCompleted: true, assignedToEmail: 'owner@example.test',
+      completedAt: '2026-01-01T05:30:00.000Z', completedAtServer: Timestamp.fromDate(new Date('2026-01-01T07:00:00.000Z')),
+    });
     const key = choreStatsAssigneeKey('sam.member@example.test');
+    const owner = choreStatsAssigneeKey('owner@example.test');
 
     const first = await run(new Date('2026-11-05T15:00:00Z'));
-    assert.equal(first.purgedChores, 3);
+    assert.equal(first.purgedChores, 4);
     const stats2026 = (await house().collection('stats').doc('chores-2026').get()).data();
     assert.equal(stats2026?.year, 2026);
-    assert.equal(stats2026?.completed, 2);
-    assert.deepEqual(stats2026?.byAssignee, { [key]: 2 });
+    assert.equal(stats2026?.completed, 3);
+    assert.deepEqual(stats2026?.byAssignee, { [key]: 2, [owner]: 1 });
     assert.equal(stats2026?.names?.[key], 'Sam Member');
     const stats2025 = (await house().collection('stats').doc('chores-2025').get()).data();
     assert.equal(stats2025?.completed, 1);
@@ -200,7 +207,7 @@ describe('household upkeep', () => {
     // Nothing left to purge: a second run counts nothing again.
     const second = await run(new Date('2026-11-05T16:00:00Z'));
     assert.equal(second.purgedChores, 0);
-    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 2);
+    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 3);
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
   });
 });

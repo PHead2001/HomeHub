@@ -235,8 +235,9 @@ export const runHouseholdReminders = async (
     const chore = choreDoc.data();
     const completedAt = typeof chore.completedAt === "string" ?
       localDay(new Date(chore.completedAt), timeZone) : null;
-    const year = completedAt ?
-      completionYear(chore.completedAt, timeZone) : null;
+    // Retention keys off completedAt (unchanged policy); the stats year comes
+    // from the authoritative completion instant (completedAtServer first).
+    const year = completedAt ? completionYear(chore, timeZone) : null;
     if (chore.isCompleted && completedAt && year !== null &&
         completedAt < purgeBefore && choreOps.length < 450) {
       choreOps.push({

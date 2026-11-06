@@ -3,6 +3,7 @@
 // same transaction, so Home Wrapped can still count the whole year. Pure.
 import {localDay} from "./calendar";
 import {choreStatsAssigneeKey} from "./ids";
+import {choreCompletionInstant, type CompletionFields} from "./completion";
 
 export type ChoreStatsDoc = {
   year: number;
@@ -27,18 +28,19 @@ export type PurgedChore = {
 export const choreStatsDocId = (year: number): string => `chores-${year}`;
 
 /**
- * Calendar year of a completion instant in the household's timezone.
- * @param {string} completedAt ISO instant.
+ * Calendar year, in the household's timezone, of a chore's authoritative
+ * completion instant (`choreCompletionInstant`: the server stamp when present,
+ * else `completedAt`), the same rule the Chores page uses.
+ * @param {CompletionFields} chore Chore fields.
  * @param {string} timeZone IANA timezone.
- * @return {number | null} Year, or null when unreadable.
+ * @return {number | null} Year, or null when not completed or unreadable.
  */
 export const completionYear = (
-  completedAt: string,
+  chore: CompletionFields,
   timeZone: string,
 ): number | null => {
-  const date = new Date(completedAt);
-  if (Number.isNaN(date.getTime())) return null;
-  return Number(localDay(date, timeZone).slice(0, 4));
+  const date = choreCompletionInstant(chore);
+  return date ? Number(localDay(date, timeZone).slice(0, 4)) : null;
 };
 
 /**

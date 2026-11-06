@@ -228,6 +228,14 @@ export function CommandPalette({
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
+  // Keep the active option visible as arrow keys move past the list's edge
+  // (aria-activedescendant already points at it; this moves the scroll box only).
+  const activeOptionId = options[active] ? optionId(active) : null;
+  useEffect(() => {
+    if (!activeOptionId) return;
+    document.getElementById(activeOptionId)?.scrollIntoView({ block: 'nearest' });
+  }, [activeOptionId]);
+
   const listen = useCallback(() => {
     voice.start((spoken, final) => {
       setText(spoken);
@@ -376,7 +384,7 @@ export function CommandPalette({
                 role="combobox"
                 aria-expanded="true"
                 aria-controls={listId}
-                aria-activedescendant={options[active] ? optionId(active) : undefined}
+                aria-activedescendant={activeOptionId ?? undefined}
                 aria-autocomplete="list"
                 aria-label="Search or quick add"
                 placeholder="Search, or type “milk and eggs to groceries”"

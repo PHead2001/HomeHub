@@ -12,7 +12,7 @@ import {
 
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
-import { maintenanceSpend, summarizeChores, topPurchasedItem, firstNameOnly } from '../../src/lib/dashboard/wrapped';
+import { countInYear, maintenanceSpend, summarizeChores, topPurchasedItem, firstNameOnly, yearBounds, yearIn } from '../../src/lib/dashboard/wrapped';
 import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
 import { addPurgedChores, choreStatsDocId, completionYear, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { dayKey, daysBetween, toDateValue } from '../../src/lib/dashboard/dates';
@@ -327,12 +327,38 @@ describe('Home Wrapped aggregation', () => {
     assert.doesNotMatch(choreStatsAssigneeKey('sam.member@example.test'), /[.@/]/);
     assert.notEqual(choreStatsAssigneeKey('sam.one@example.test'), choreStatsAssigneeKey('sam.two@example.test'));
     assert.equal(choreStatsDocId(2026), 'chores-2026');
-    assert.equal(completionYear('2026-01-01T03:00:00.000Z', 'America/Chicago'), 2025);
+    assert.equal(completionYear({ isCompleted: true, completedAt: '2026-01-01T03:00:00.000Z' }, 'America/Chicago'), 2025);
+    // The server stamp wins over the client-written string, as in Chores' completionInstant.
+    assert.equal(completionYear({ isCompleted: true, completedAt: '2025-12-31T12:00:00.000Z', completedAtServer: { toDate: () => new Date('2026-01-02T12:00:00.000Z') } }, 'America/Chicago'), 2026);
+    assert.equal(completionYear({ isCompleted: true, completedAt: '2025-12-31T12:00:00.000Z', completedAtServer: { seconds: Date.parse('2026-01-02T12:00:00.000Z') / 1000 } }, 'UTC'), 2026);
     const next = addPurgedChores(readChoreStats({ completed: 'x', byAssignee: { bad: -1 } }, 2026), [
       { assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: '2026-02-01T00:00:00Z' },
       { completedAt: '2026-02-01T00:00:00Z' },
     ]);
     assert.deepEqual(next, { year: 2026, completed: 2, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 1 }, names: { [choreStatsAssigneeKey('sam@example.test')]: 'Sam' } });
+  });
+
+  it('buckets feedings and upkeep by their own dates, in the household year, in either shape', () => {
+    const zone = 'America/Chicago';
+    // Feedings: Timestamp-like, Date and ISO string; 03:00 UTC Jan 1 is still Dec 31 in Chicago.
+    const dates = [
+      { toDate: () => new Date('2026-03-01T12:00:00Z') },
+      new Date('2026-07-04T12:00:00Z'),
+      '2026-01-01T03:00:00.000Z',
+      '2026-12-31T12:00:00.000Z',
+      '2027-01-01T08:00:00.000Z',
+    ];
+    assert.equal(countInYear(dates, 2026, zone), 3);
+    assert.equal(countInYear(dates, 2025, zone), 1);
+    const { start, end } = yearBounds(2026, zone);
+    assert.equal(start.toISOString(), '2026-01-01T06:00:00.000Z');
+    assert.equal(end.toISOString(), '2027-01-01T06:00:00.000Z');
+    // Maintenance logs store a calendar day; it is that day's year in any zone.
+    assert.equal(yearIn('2026-01-01', 'Pacific/Kiritimati'), 2026);
+    assert.deepEqual(maintenanceSpend([
+      { id: '1', date: '2026-01-01', cost: 50 },
+      { id: '2', date: '2026-01-01T03:00:00.000Z', cost: 70 },
+    ], 2026, zone), { spend: 50, logs: 1 });
   });
 
   it('merges purchased items case-insensitively and sums upkeep spend', () => {

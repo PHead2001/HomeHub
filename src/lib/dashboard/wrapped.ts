@@ -5,7 +5,7 @@
 import { toDateValue } from './dates';
 import { completionInstant, type ChoreRecord } from '../chores/dates';
 import type { RawDoc } from './facts';
-import { localDay, safeTimeZone } from '../../../functions/src/shared/calendar';
+import { localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { choreStatsAssigneeKey } from '../../../functions/src/shared/ids';
 import { readChoreStats } from '../../../functions/src/shared/chore-stats';
 
@@ -15,6 +15,10 @@ export type WrappedSummary = {
   /** `'year'` when removed chores were included (stats document found), else only the last 90 days. */
   choresWindow?: 'year' | 'last90days';
   champion: { name: string; count: number } | null;
+  /**
+   * Most-bought item among purchased items still on the lists. Shopping keeps no
+   * dated purchase history, so this is not limited to `year`; the card says so.
+   */
   topItem: { name: string; count: number } | null;
   feedings: number | null;
   maintenanceSpend: number | null;
@@ -29,7 +33,28 @@ export const firstNameOnly = (value: unknown): string | null => {
   return base ? base.charAt(0).toUpperCase() + base.slice(1) : null;
 };
 
-const inYear = (value: unknown, year: number) => toDateValue(value)?.getFullYear() === year;
+/**
+ * Calendar year of a stored date in the household's timezone. Date-only strings
+ * ("2026-03-01", as maintenance logs store them) are that calendar day; Timestamps,
+ * Dates and ISO instants are read in the zone, like the chore stats.
+ */
+export function yearIn(value: unknown, timeZone?: string | null): number | null {
+  const zone = safeTimeZone(timeZone);
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return Number(value.slice(0, 4));
+  const date = toDateValue(value);
+  return date ? Number(localDay(date, zone).slice(0, 4)) : null;
+}
+
+/** The instants that start and end `year` in the household's timezone: [start, end). */
+export function yearBounds(year: number, timeZone?: string | null): { start: Date; end: Date } {
+  const zone = safeTimeZone(timeZone);
+  return { start: new Date(zonedMidnightIso(`${year}-01-01`, zone)), end: new Date(zonedMidnightIso(`${year + 1}-01-01`, zone)) };
+}
+
+/** How many of `dates` (any shape: Timestamp, Date, ISO or date-only string) fall in `year` in the zone. */
+export function countInYear(dates: readonly unknown[], year: number, timeZone?: string | null): number {
+  return dates.filter((value) => yearIn(value, timeZone) === year).length;
+}
 
 /**
  * Chores completed in `year`, including the ones server upkeep has already
@@ -95,8 +120,9 @@ export function topPurchasedItem(items: RawDoc[]): WrappedSummary['topItem'] {
   return [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))[0] ?? null;
 }
 
-export function maintenanceSpend(logs: RawDoc[], year: number): { spend: number; logs: number } {
-  const thisYear = logs.filter((log) => inYear(log.date, year));
+/** Upkeep spend for `year`, bucketed by each log's own `date` (the Maintenance log date) in the household's zone. */
+export function maintenanceSpend(logs: RawDoc[], year: number, timeZone?: string | null): { spend: number; logs: number } {
+  const thisYear = logs.filter((log) => yearIn(log.date, timeZone) === year);
   const spend = thisYear.reduce((sum, log) => sum + (typeof log.cost === 'number' && Number.isFinite(log.cost) && log.cost > 0 ? log.cost : 0), 0);
   return { spend: Math.round(spend * 100) / 100, logs: thisYear.length };
 }

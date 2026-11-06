@@ -8,7 +8,7 @@
  * system share sheet, or saves the image where sharing files is not supported.
  */
 import { useRef, useState } from 'react';
-import { collection, doc, getCountFromServer, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { Timestamp, collection, doc, getCountFromServer, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { choreStatsDocId } from '@functions/shared/chore-stats';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronLeft, ChevronRight, Gift, Loader2, Share2 } from 'lucide-react';
@@ -18,7 +18,7 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { DURATION, EASE } from '@/lib/motion';
-import { maintenanceSpend, summarizeChores, topPurchasedItem, type WrappedSummary } from '@/lib/dashboard/wrapped';
+import { countInYear, maintenanceSpend, summarizeChores, topPurchasedItem, yearBounds, type WrappedSummary } from '@/lib/dashboard/wrapped';
 import type { RawDoc } from '@/lib/dashboard/facts';
 
 type Card = { eyebrow: string; headline: string; detail: string };
@@ -29,7 +29,7 @@ function buildCards(summary: WrappedSummary, householdName: string, unavailable:
   const cards: Card[] = [{ eyebrow: `${summary.year} at home`, headline: householdName, detail: 'Here is your year, wrapped.' }];
   if (summary.choresDone !== null) {
     cards.push({
-      eyebrow: summary.choresWindow === 'last90days' ? 'Chores done (last 90 days)' : 'Chores done',
+      eyebrow: summary.choresWindow === 'last90days' ? 'Chores done (last 90 days)' : `Chores done in ${summary.year}`,
       headline: String(summary.choresDone),
       detail: summary.choresWindow === 'last90days'
         ? 'Counts from the last 90 days: older completions from before yearly totals were kept are not included.'
@@ -37,17 +37,26 @@ function buildCards(summary: WrappedSummary, householdName: string, unavailable:
     });
   }
   if (summary.champion) {
-    cards.push({ eyebrow: 'Chore champion', headline: summary.champion.name, detail: `${summary.champion.count} ${summary.champion.count === 1 ? 'chore' : 'chores'} finished.` });
+    cards.push({
+      eyebrow: summary.choresWindow === 'last90days' ? 'Chore champion (last 90 days)' : `Chore champion of ${summary.year}`,
+      headline: summary.champion.name,
+      detail: `${summary.champion.count} ${summary.champion.count === 1 ? 'chore' : 'chores'} finished.`,
+    });
   }
   if (summary.topItem) {
-    cards.push({ eyebrow: 'Most ticked off the list', headline: summary.topItem.name, detail: `Bought ${summary.topItem.count} ${summary.topItem.count === 1 ? 'time' : 'times'} (items still on your lists).` });
+    // Shopping stores no purchase date, so this card is about the lists as they are now, not the year.
+    cards.push({
+      eyebrow: 'Most bought, on your lists now',
+      headline: summary.topItem.name,
+      detail: `Ticked off ${summary.topItem.count} ${summary.topItem.count === 1 ? 'time' : 'times'} among bought items still on your lists. Shopping keeps no dated history, so this is not limited to ${summary.year}.`,
+    });
   }
   if (summary.feedings !== null) {
-    cards.push({ eyebrow: 'Pet meals logged', headline: String(summary.feedings), detail: summary.feedings > 0 ? 'Nobody went hungry on your watch.' : 'Log feedings to see them here next time.' });
+    cards.push({ eyebrow: `Pet meals logged in ${summary.year}`, headline: String(summary.feedings), detail: summary.feedings > 0 ? 'Nobody went hungry on your watch.' : 'Log feedings to see them here next time.' });
   }
   if (summary.maintenanceSpend !== null) {
     cards.push({
-      eyebrow: 'Spent on upkeep',
+      eyebrow: `Spent on upkeep in ${summary.year}`,
       headline: money(summary.maintenanceSpend),
       detail: `Across ${summary.maintenanceLogs ?? 0} maintenance ${summary.maintenanceLogs === 1 ? 'log' : 'logs'}.`,
     });
@@ -147,23 +156,26 @@ export function HomeWrapped() {
         }));
       }
       if (permissions['pets.view']) {
-        // Feeding dates are Timestamps or (older entries) ISO strings; count both shapes.
-        const start = new Date(year, 0, 1);
-        const end = new Date(year + 1, 0, 1);
+        // Bucketed by each log's own date, in the household's timezone, in both
+        // shapes: Timestamps are counted exactly between the zone's year bounds;
+        // the (older, few) ISO-string dates are read with a day of margin and
+        // counted by their zoned year.
+        const { start, end } = yearBounds(year, household?.timeZone);
         section('Pet meals', getDocs(base('pets')).then(async (pets) => {
-          const counts = await Promise.all(pets.docs.flatMap((pet) => {
+          const perPet = await Promise.all(pets.docs.map(async (pet) => {
             const logs = base('pets', pet.id, 'feeding-logs');
-            return [
-              getCountFromServer(query(logs, where('date', '>=', start), where('date', '<', end))),
-              getCountFromServer(query(logs, where('date', '>=', `${year}-01-01`), where('date', '<', `${year + 1}-01-01`))),
-            ];
+            const [stamped, strings] = await Promise.all([
+              getCountFromServer(query(logs, where('date', '>=', Timestamp.fromDate(start)), where('date', '<', Timestamp.fromDate(end)))),
+              getDocs(query(logs, where('date', '>=', `${year - 1}-12-31`), where('date', '<', `${year + 1}-01-02`))),
+            ]);
+            return stamped.data().count + countInYear(strings.docs.map((entry) => entry.data().date), year, household?.timeZone);
           }));
-          summary.feedings = counts.reduce((sum, count) => sum + count.data().count, 0);
+          summary.feedings = perPet.reduce((sum, count) => sum + count, 0);
         }));
       }
       if (permissions['maintenance.view']) {
         section('Maintenance', getDocs(base('maintenance')).then((snapshot) => {
-          const result = maintenanceSpend(docs(snapshot), year);
+          const result = maintenanceSpend(docs(snapshot), year, household?.timeZone);
           summary.maintenanceSpend = result.spend;
           summary.maintenanceLogs = result.logs;
         }));
