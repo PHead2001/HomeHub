@@ -88,6 +88,21 @@ describe('household upkeep', () => {
     assert.equal(refreshed.docs[0].data().createdAt.toDate().toISOString(), eightDaysLater.toISOString());
   });
 
+  test('a still-overdue reminder is refreshed before TTL could delete it, keeping its state', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const ref = (await house().collection('notifications').where('category', '==', 'maintenance').get()).docs[0].ref;
+    await ref.update({ 'dismissedBy.o1': true, 'readBy.o1': true });
+    // Five days in: not expired yet (expiry is day 7) but within the 2-day margin.
+    assert.equal((await run(new Date(now.getTime() + 4 * 86400000))).refreshedNotifications, 0, 'not refreshed early');
+    const fiveDays = new Date(now.getTime() + 5.5 * 86400000);
+    assert.equal((await run(fiveDays)).refreshedNotifications, 1, 'refreshed before expiry');
+    const data = (await ref.get()).data()!;
+    assert.ok(data.expiresAt.toDate() > new Date(fiveDays.getTime() + 6 * 86400000), 'expiry pushed out');
+    assert.equal(data.dismissedBy.o1, true, 'dismissal kept');
+    assert.equal(data.readBy.o1, true, 'read state kept');
+  });
+
   test('chore reminders respect the member’s reminder time and never duplicate', async () => {
     await run(new Date('2026-11-05T15:00:00Z')); // 9am: before the 5pm reminder
     const morning = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();

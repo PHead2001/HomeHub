@@ -95,7 +95,7 @@ Every application module depends on this platform. [Notifications](../notificati
 - User profile document IDs are email addresses; household membership document IDs are Auth UIDs.
 - There is no legacy email fallback: an identity without an approved membership record has no household access in rules or server actions.
 - Unknown household subcollections have no permissive fallback.
-- Notification deletion is denied; logical expiration needs manual TTL configuration.
+- Clients cannot delete notifications; expired ones are removed by the Firestore TTL policy on `notifications.expiresAt`, versioned in `firestore.indexes.json`.
 - Functions remove invalid FCM tokens after failed sends.
 - Push recipients are resolved from membership records (approved members only; targeted notifications reach only their target), and each recipient's profile is read directly by email for FCM tokens. No `users.uid` query is used.
 - Creation rules require notification targets to be household members (UID membership record, or a profile pointing at the household), allow only `/`-relative deep links, and reject unknown fields.
