@@ -137,6 +137,34 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('an addition never merges into an item another member already bought', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const name = 'E2E stale bread';
+    await deleteWhere(groceryItems, name);
+    try {
+      await open(page, '/shopping?list=weekly-groceries');
+      const field = page.getByLabel('Items to add to Weekly Groceries');
+      await field.fill(name);
+      await field.press('Enter');
+      await expect(page.getByRole('checkbox', { name: /E2E stale bread/ })).toBeVisible();
+      await expect(field).toHaveValue('');
+
+      // Another member buys it; this device still shows it as needed.
+      const [created] = (await groceryItems.where('name', '==', name).get()).docs;
+      await created.ref.update({ status: 'purchased' });
+      await expect(page.locator(`#item-needed-${created.id}`)).toBeVisible();
+
+      await field.fill(name);
+      await field.press('Enter');
+      await expect.poll(async () => {
+        const snapshot = await groceryItems.where('name', '==', name).get();
+        return snapshot.docs.map((document) => `${document.data().status}:${document.data().quantity}`).sort();
+      }).toEqual(['needed:1', 'purchased:1']);
+    } finally {
+      await deleteWhere(groceryItems, name);
+    }
+  });
+
   test('header navigation to /shopping resets the open tab and list to match the URL', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/shopping?tab=pantry');

@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AnimatePresence, motion } from 'motion/react';
-import { collection, doc, updateDoc, deleteDoc, writeBatch, setDoc, query, waitForPendingWrites } from 'firebase/firestore';
+import { collection, doc, updateDoc, deleteDoc, setDoc, query, waitForPendingWrites } from 'firebase/firestore';
 import { ArchiveX, ArrowLeft, Loader2, Minus, Plus, PlusCircle, ScanBarcode, Settings, X } from 'lucide-react';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
@@ -38,11 +38,11 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, withoutIds, type QuickAddEntry } from '@/lib/shopping/items';
+import { findMergeTarget, groupItemsByAisle, isTripComplete, normalizeItemName, pluralize, withoutIds, type QuickAddEntry } from '@/lib/shopping/items';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
-import { quantityIncrement } from '@/lib/shopping/item-writes';
+import { deleteStillPurchasedItems, mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
 import { ListCard, type ListCounts } from './shopping/list-card';
@@ -466,13 +466,16 @@ export function ShoppingListClient({
     };
 
     const results = await Promise.all(entries.map(async (entry): Promise<AddResult> => {
-      const target = findMergeTarget(listItemsRef.current, entry.name);
+      // The list on screen comes from a one-time read, so its statuses can be stale.
+      // Online, the merge re-reads the target in a transaction and only increments it
+      // if it is still needed; otherwise (bought or deleted meanwhile) a new needed
+      // item is created below. Offline, transactions cannot run, so there is no merge
+      // at all: a new needed item is queued. A duplicate is harmless; folding an
+      // addition into an item someone already bought would lose it.
+      const target = offline ? undefined : findMergeTarget(listItemsRef.current, entry.name);
       if (target) {
-        // Atomic: another member adding the same item at the same time (or a device
-        // whose list is stale) still adds up, and the increment queues offline.
-        const write = updateDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', target.id), quantityIncrement(entry.quantity));
-        const saved = await awaitWriteUnlessOffline(write, onLateError(target.name));
-        return { name: target.name, merged: true, saved, usedFallback: false, category: target.category };
+        const merged = await mergeIntoNeededItem(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', target.id), entry.quantity);
+        if (merged) return { name: target.name, merged: true, saved: 'saved', usedFallback: false, category: target.category };
       }
       const categoryResult = await resolveShoppingCategory({
         itemName: entry.name,
@@ -609,12 +612,14 @@ export function ShoppingListClient({
 
       // Ticking never leaves the list: the pantry is offered at the end of the trip
       // (receipt) or when clearing purchased items, never per tick.
-      if (isCheckingOff) {
-        playFeedback(lastNeeded ? 'celebrate' : 'complete');
-        if (lastNeeded) setIsReceiptOpen(true);
-      }
+      if (isCheckingOff) playFeedback('complete');
 
       if (isBrowserOffline()) {
+        // Offline the cache is all there is, so "list done" is judged from it.
+        if (lastNeeded) {
+          playFeedback('celebrate');
+          setIsReceiptOpen(true);
+        }
         write.catch(failToggle);
         if (!offlineNoticeShownRef.current) {
           offlineNoticeShownRef.current = true;
@@ -629,7 +634,13 @@ export function ShoppingListClient({
 
       try {
         await write;
-        await fetchItemsAndCategories(list.id, { silent: true });
+        // Online, "trip complete" is decided from the confirmed list (another member
+        // may have added items since this device last read it), not from the cache.
+        const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
+        if (isCheckingOff && confirmed && isListOpen() && isTripComplete(confirmed)) {
+          playFeedback('celebrate');
+          setIsReceiptOpen(true);
+        }
       } catch {
           failToggle();
       }
@@ -721,22 +732,20 @@ export function ShoppingListClient({
       toast({ title: 'Nothing to clear' });
       return;
     }
-    const batch = writeBatch(db);
-    ids.forEach(id => {
-      batch.delete(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', id));
-    });
+    // Deleting from a stale status could remove an item another member un-ticked, so
+    // clearing needs the server: it runs in a transaction that deletes only the ids
+    // that are still purchased.
+    if (isBrowserOffline()) {
+      toast({ title: 'You are offline', description: 'Clear purchased items once you are back online.' });
+      return;
+    }
     try {
-      const saved = await awaitWriteUnlessOffline(batch.commit(), (error) => {
-        toastError(error, 'Could not clear purchased items');
-        reconcileWithServer(list.id);
-      });
-      toast({ title: saved === 'queued' ? 'Cleared offline' : 'Purchased items cleared' });
-      // Another list may have been opened while the batch ran: leave its screen alone.
+      const deleted = await deleteStillPurchasedItems(householdId, list.id, ids);
+      toast({ title: deleted.length === ids.length ? 'Purchased items cleared' : `${pluralize(deleted.length, 'item')} cleared`, description: deleted.length === ids.length ? undefined : 'Items changed by someone else meanwhile were left on the list.' });
+      // Another list may have been opened while the transaction ran: leave its screen alone.
       if (selectedListIdRef.current !== list.id) return;
       setIsReceiptOpen(false);
-      setListItems(prev => withoutIds(prev, ids));
-      // Offline the server state cannot be confirmed, so never offer to delete the list.
-      if (saved === 'queued') return;
+      setListItems(prev => withoutIds(prev, deleted));
       const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
       if (confirmed && confirmed.length === 0 && selectedListIdRef.current === list.id) {
         setListToDelete(list);

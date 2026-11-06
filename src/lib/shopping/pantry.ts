@@ -28,7 +28,7 @@ export type PantryHandoffChoice = {
 
 export type PantryWritePlan =
   /** Adds `add` to the existing entry with an atomic Firestore increment (never a read-then-write total). */
-  | { kind: 'increment'; id: string; name: string; add: number }
+  | { kind: 'increment'; id: string; name: string; add: number; location: PantryItemLocation }
   | { kind: 'create'; name: string; quantity: number; location: PantryItemLocation };
 
 /**
@@ -58,12 +58,29 @@ export function planPantryHandoff(
       && pantryItem.unit === 'items'
       && itemNameKey(pantryItem.name) === itemNameKey(entry.name));
     if (match) {
-      plans.push({ kind: 'increment', id: match.id, name: match.name, add: entry.quantity });
+      plans.push({ kind: 'increment', id: match.id, name: match.name, add: entry.quantity, location: entry.location });
     } else {
       plans.push({ kind: 'create', ...entry });
     }
   }
   return plans;
+}
+
+/**
+ * Whether a planned pantry increment still applies to the entry as just read
+ * inside a transaction: it must still exist on the same shelf, counted in
+ * `items`, with the same name. Otherwise the purchase becomes a new entry.
+ */
+export function pantryMergeStillValid(
+  data: { name?: unknown; unit?: unknown; location?: unknown } | undefined | null,
+  plan: { name: string },
+  location: PantryItemLocation,
+): boolean {
+  return Boolean(data)
+    && data!.unit === 'items'
+    && data!.location === location
+    && typeof data!.name === 'string'
+    && itemNameKey(data!.name) === itemNameKey(plan.name);
 }
 
 export type ExpiryState = 'expired' | 'soon' | 'fresh' | 'none';

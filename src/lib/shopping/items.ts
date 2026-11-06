@@ -145,6 +145,28 @@ export function groupItemsByAisle<T extends Pick<ShoppingListItem, 'name' | 'cat
     }));
 }
 
+/**
+ * Whether an addition may be folded into this item, judged from the item as just
+ * read inside a transaction (never from the cached list): only while it exists
+ * and is still needed. A bought or deleted item gets a new needed item instead.
+ */
+export function canMergeInto(data: { status?: unknown } | undefined | null): boolean {
+  return Boolean(data) && data!.status === 'needed';
+}
+
+/** Whether a confirmed (just read) item may be removed by "Clear purchased". */
+export function isStillPurchased(data: { status?: unknown } | undefined | null): boolean {
+  return Boolean(data) && data!.status === 'purchased';
+}
+
+/**
+ * Whether the open list is finished, from a confirmed re-read: it has items and
+ * none is still needed. Drives the trip receipt online.
+ */
+export function isTripComplete(items: readonly { status?: unknown }[]): boolean {
+  return items.length > 0 && items.every((item) => item.status !== 'needed');
+}
+
 /** `items` without the given ids (for removing exactly what a write deleted). */
 export function withoutIds<T extends { id: string }>(items: readonly T[], ids: Iterable<string>): T[] {
   const drop = new Set(ids);

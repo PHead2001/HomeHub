@@ -11,6 +11,9 @@ import {
   parseQuickAdd,
   pluralize,
   withoutIds,
+  canMergeInto,
+  isStillPurchased,
+  isTripComplete,
 } from '../../src/lib/shopping/items';
 import {
   daysUntilExpiry,
@@ -21,6 +24,7 @@ import {
   pantryLocationForCategory,
   planPantryHandoff,
   productPhotoForName,
+  pantryMergeStillValid,
 } from '../../src/lib/shopping/pantry';
 import { isListTint, listTint, listTintIndex, resolveListIconName } from '../../src/lib/shopping/list-style';
 import { parseShoppingUrlState, shoppingHref } from '../../src/lib/shopping/url-state';
@@ -139,7 +143,7 @@ describe('pantry handoff', () => {
       { item: { name: '  ', quantity: 1 }, location: 'Pantry' },
     ], existing);
     assert.deepEqual(plans, [
-      { kind: 'increment', id: 'milk-1', name: 'Whole Milk', add: 2 },
+      { kind: 'increment', id: 'milk-1', name: 'Whole Milk', add: 2, location: 'Fridge' },
       { kind: 'create', name: 'Rice', quantity: 1, location: 'Pantry' },
       { kind: 'create', name: 'Peas', quantity: 3, location: 'Freezer' },
     ]);
@@ -152,7 +156,7 @@ describe('pantry handoff is concurrency-safe', () => {
       [{ item: { name: 'Eggs', quantity: 1 }, location: 'Fridge' }],
       [{ id: 'eggs', name: 'Eggs', quantity: 2, unit: 'items', location: 'Fridge' }],
     );
-    assert.deepEqual(plans, [{ kind: 'increment', id: 'eggs', name: 'Eggs', add: 1 }]);
+    assert.deepEqual(plans, [{ kind: 'increment', id: 'eggs', name: 'Eggs', add: 1, location: 'Fridge' }]);
     assert.ok(!('quantity' in plans[0]));
   });
 
@@ -193,9 +197,51 @@ describe('clearing purchased items', () => {
   test('clear and the empty-list prompt never derive from a local status filter', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
     const clear = source.slice(source.indexOf('const clearPurchasedItems'), source.indexOf('const sendToPantry'));
-    assert.match(clear, /withoutIds\(prev, ids\)/);
+    assert.match(clear, /deleteStillPurchasedItems\(/);
+    assert.match(clear, /withoutIds\(prev, deleted\)/);
+    assert.match(clear, /isBrowserOffline\(\)/);
     assert.match(clear, /const confirmed = await fetchItemsAndCategories/);
     assert.doesNotMatch(clear, /status === '(?:needed|purchased)'/);
+  });
+});
+
+describe('decisions from confirmed (re-read) state, not the cached list', () => {
+  test('an addition merges only into an item that is still needed', () => {
+    assert.equal(canMergeInto({ status: 'needed' }), true);
+    assert.equal(canMergeInto({ status: 'purchased' }), false, 'bought by someone else meanwhile');
+    assert.equal(canMergeInto(undefined), false, 'deleted meanwhile');
+  });
+
+  test('clear removes only items that are still purchased', () => {
+    assert.equal(isStillPurchased({ status: 'purchased' }), true);
+    assert.equal(isStillPurchased({ status: 'needed' }), false, 'un-ticked by someone else meanwhile');
+    assert.equal(isStillPurchased(null), false);
+  });
+
+  test('a trip is complete only when the confirmed list has items and none is needed', () => {
+    assert.equal(isTripComplete([{ status: 'purchased' }]), true);
+    assert.equal(isTripComplete([{ status: 'purchased' }, { status: 'needed' }]), false, 'someone added an item');
+    assert.equal(isTripComplete([]), false);
+  });
+
+  test('a pantry increment applies only to an entry still on the same shelf, unit and name', () => {
+    const plan = { name: 'Eggs' };
+    assert.equal(pantryMergeStillValid({ name: 'eggs', unit: 'items', location: 'Fridge' }, plan, 'Fridge'), true);
+    assert.equal(pantryMergeStillValid({ name: 'Eggs', unit: 'items', location: 'Freezer' }, plan, 'Fridge'), false, 'moved');
+    assert.equal(pantryMergeStillValid({ name: 'Eggs', unit: 'dozen', location: 'Fridge' }, plan, 'Fridge'), false, 'unit changed');
+    assert.equal(pantryMergeStillValid({ name: 'Duck eggs', unit: 'items', location: 'Fridge' }, plan, 'Fridge'), false, 'renamed');
+    assert.equal(pantryMergeStillValid(undefined, plan, 'Fridge'), false, 'deleted');
+  });
+
+  test('the merge is a transaction online and never happens offline', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
+    assert.match(source, /const target = offline \? undefined : findMergeTarget\(/);
+    assert.match(source, /await mergeIntoNeededItem\(/);
+    const tx = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'item-transactions.ts'), 'utf8');
+    assert.match(tx, /runTransaction\(db, async \(transaction\) => \{\s*const snapshot = await transaction\.get\(itemRef\);\s*if \(!canMergeInto/);
+    const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
+    assert.match(pantry, /runTransaction\(/);
+    assert.match(pantry, /pantryMergeStillValid\(/);
   });
 });
 
