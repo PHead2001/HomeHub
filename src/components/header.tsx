@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Boxes, User, LogOut, ScanBarcode, Home } from 'lucide-react';
+import { User, LogOut, ScanBarcode, Home } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from './ui/button';
 import { useAuth } from '@/hooks/use-auth';
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { NotificationBell } from './notification-bell';
+import { Logo } from './brand/logo';
 
 
 export function Header() {
@@ -26,7 +27,7 @@ export function Header() {
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto flex h-14 items-center px-4">
         <Link href="/" className="flex items-center gap-2 mr-6">
-          <Boxes className="h-6 w-6 text-primary" />
+          <Logo size={24} animated />
           <span className="font-headline text-xl font-bold">HomeHub</span>
         </Link>
         <nav className="hidden md:flex items-center gap-4 text-sm">
