@@ -13,6 +13,7 @@ This module owns household notification records, bell/history presentation, per-
 - Dismiss one or all active notifications without deleting history.
 - Follow supported deep links to source pages.
 - Enable/disable browser push notifications from Profile.
+- See the unread count as a badge on the installed app's home-screen or taskbar icon where the browser supports the Badging API.
 
 ## Entry Points
 
@@ -22,6 +23,8 @@ This module owns household notification records, bell/history presentation, per-
 - `src/components/PushNotificationManager.tsx`
 - `src/components/PushNotificationSettings.tsx`
 - `src/app/api/sw/route.ts`
+- `src/lib/service-worker.ts`
+- `src/hooks/use-app-badge.ts`
 - `src/lib/notifications.ts`
 - `functions/src/index.ts`
 - Notification types in `src/lib/types.ts`
@@ -30,7 +33,9 @@ This module owns household notification records, bell/history presentation, per-
 
 Feature code creates household notification documents with `buildNotificationDocument`. Bell and center queries parse legacy/current shapes, merge duplicate semantic identities for presentation, filter per-user target/read/dismiss state, and write only the current UID's map entries. Mobile cards reserve horizontal pointer movement while preserving vertical pan, and track drag position synchronously so a fast swipe can dismiss reliably. Gesture capture ignores the desktop dismiss button so pointer capture cannot swallow its click.
 
-A Firestore create trigger resolves recipients, sends FCM, and removes invalid registration tokens. Foreground messages become toasts. `/api/sw` serves a Firebase Messaging service worker for background display and deep-link clicks.
+A Firestore create trigger resolves recipients, sends FCM, and removes invalid registration tokens. Foreground messages become toasts. `/api/sw` serves HomeHub's single service worker: Firebase Messaging background display and deep-link clicks, plus the offline app shell owned by [Application Shell and Dashboard](../application-shell/README.md). Production builds register it on every page load through `PushNotificationManager`; `PushNotificationSettings` registers the same URL and scope (`src/lib/service-worker.ts`) on push opt-in and so receives the same registration for `getToken`. Background notifications use `/icons/icon-192.png` when the payload has no icon. If the Firebase scripts cannot be imported (CDN blocked or offline at install), the worker still installs without push and retries on its next update.
+
+`NotificationBell` passes its unread count to `useAppBadge`, which calls `navigator.setAppBadge(count)` (or `clearAppBadge()` at zero) when the Badging API exists. The badge is left unchanged while notifications are loading or failed to load, and cleared when the bell unmounts (sign-out, or loss of `notifications.view`). The badge updates only while HomeHub is open; push messages received in the background do not change it.
 
 ## Data Model and Persistence
 
@@ -64,7 +69,7 @@ The homepage overview counts only active notifications visible to the verified u
 
 - [Chores](../chores/README.md), [Maintenance Center](../maintenance-center/README.md), and [Household Governance](../household-governance/README.md) create records.
 - [Identity and Profile](../identity-profile/README.md) stores FCM tokens.
-- [Application Shell and Dashboard](../application-shell/README.md) mounts bell/foreground handlers.
+- [Application Shell and Dashboard](../application-shell/README.md) mounts bell/foreground handlers and owns the offline half of the shared service worker.
 - [Firebase Platform](../firebase-platform/README.md) owns Functions and rules.
 
 ## Invariants and Failure Behavior

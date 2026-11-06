@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -13,7 +13,7 @@ import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Beer, Car, Cat, Coffee, Dog, Drama, Dumbbell, Gift, HeartPulse, HelpCircle, Home, PawPrint, Pizza, Plane, PlusCircle, Popcorn, School, Shirt, ShoppingCart, Stethoscope, TreePalm, Trash2, Loader2, Settings, X, ArchiveX, Edit, MoreVertical, ScanBarcode, ArrowLeft, Plus, Minus, Wrench } from 'lucide-react';
+import { Beer, Car, Cat, Coffee, Dog, Drama, Dumbbell, Gift, HeartPulse, HelpCircle, Home, PawPrint, Pizza, Plane, PlusCircle, Popcorn, School, Shirt, ShoppingCart, Stethoscope, TreePalm, Trash2, Loader2, Settings, X, ArchiveX, Edit, MoreVertical, ScanBarcode, ArrowLeft, Plus, Minus, Wrench, ExternalLink } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, PantryItem, ShoppingListType, BarcodeLibraryItem } from '@/lib/types';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
@@ -40,10 +40,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, doc, getDocs, updateDoc, deleteDoc, getDoc, writeBatch, setDoc, query } from 'firebase/firestore';
+import { collection, doc, updateDoc, deleteDoc, writeBatch, setDoc, query, waitForPendingWrites } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
+import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeSourceUrl, normalizeStoredCategories } from '@/lib/shopping-items';
 import { cn } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
 import Image from 'next/image';
@@ -350,13 +352,26 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
   );
 }
 
+function ItemSourceLink({ item }: { item: ShoppingListItem }) {
+  // Re-validate on render: stored data is not trusted to be http(s).
+  const href = normalizeSourceUrl(item.sourceUrl);
+  if (!href) return null;
+  return (
+    <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+      <a href={href}target="_blank" rel="noopener noreferrer" aria-label={`Open saved link for ${item.name}`}>
+        <ExternalLink className="h-4 w-4 text-muted-foreground" />
+      </a>
+    </Button>
+  );
+}
+
 export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectList }: { onAddItemToPantry: (item: PantryItem, currentList: ShoppingList) => void, selectedList: ShoppingList | null, onSelectList: (list: ShoppingList | null) => void }) {
   const { currentUser } = useAuth();
   const { toast } = useToast();
   
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [listItems, setListItems] = useState<ShoppingListItem[]>([]);
-  const [categories, setCategories] = useState<ShoppingListCategory[]>(['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other']);
+  const [categories, setCategories] = useState<ShoppingListCategory[]>(DEFAULT_SHOPPING_CATEGORIES);
   
   const [loading, setLoading] = useState(true);
   const [loadingItems, setLoadingItems] = useState(false);
@@ -368,6 +383,11 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
   const [isArchiveAlertOpen, setIsArchiveAlertOpen] = useState(false);
+  const quickAddHandledRef = useRef(false);
+  const offlineNoticeShownRef = useRef(false);
+  const selectedListIdRef = useRef<string | null>(null);
+  const reconcilingListRef = useRef<string | null>(null);
+  selectedListIdRef.current = selectedList?.id ?? null;
   
   // --- Data Fetching ---
 
@@ -384,7 +404,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     }
     setLoading(true);
     try {
-      const snapshot = await getDocs(query(listsCollection));
+      const snapshot = await getDocsOfflineAware(query(listsCollection));
       const listsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingList));
       setLists(listsData);
     } catch {
@@ -394,34 +414,43 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     }
   }, [getListsCollectionRef, toast]);
   
-  const fetchItemsAndCategories = useCallback(async (listId: string) => {
+  const fetchItemsAndCategories = useCallback(async (listId: string, { silent = false }: { silent?: boolean } = {}) => {
     if (!currentUser?.householdId) return;
-    setLoadingItems(true);
+    if (!silent) setLoadingItems(true);
     try {
       const itemsCollection = collection(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'items');
       const categoriesDoc = doc(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'config', 'categories');
       
       const [itemsSnapshot, categoriesSnapshot] = await Promise.all([
-        getDocs(query(itemsCollection)),
-        getDoc(categoriesDoc)
+        getDocsOfflineAware(query(itemsCollection)),
+        getDocOfflineAware(categoriesDoc)
       ]);
 
       const itemsData = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
       setListItems(itemsData);
 
-      if (categoriesSnapshot.exists()) {
-        const storedCategories = Array.isArray(categoriesSnapshot.data().list)
-          ? categoriesSnapshot.data().list.filter((category: unknown): category is string => typeof category === 'string')
-          : [];
-        setCategories(storedCategories.includes('Other') ? storedCategories : [...storedCategories, 'Other']);
-      } else {
-        // Reset to default if no specific categories are set for this list
-        setCategories(['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other']);
+      // Ticks queued offline survive a reload, but the promise that would report a
+      // server rejection does not. When the list shows queued writes, re-read it once
+      // they are acknowledged so a rejected tick is shown rolled back.
+      if (itemsSnapshot.docs.some(item => item.metadata.hasPendingWrites) && reconcilingListRef.current !== listId) {
+        reconcilingListRef.current = listId;
+        waitForPendingWrites(db)
+          .then(() => {
+            if (selectedListIdRef.current === listId) return fetchItemsAndCategories(listId, { silent: true });
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            if (reconcilingListRef.current === listId) reconcilingListRef.current = null;
+          });
       }
+
+      const storedCategories = categoriesSnapshot.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null;
+      // Reset to default if no specific categories are set for this list
+      setCategories(storedCategories ?? DEFAULT_SHOPPING_CATEGORIES);
     } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch list items.' });
     } finally {
-      setLoadingItems(false);
+      if (!silent) setLoadingItems(false);
     }
   }, [currentUser, toast]);
 
@@ -438,6 +467,26 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       setListItems([]);
     }
   }, [selectedList, fetchItemsAndCategories]);
+
+  // The home-screen shortcut "Add to shopping" opens /shopping?quickAdd=1: open
+  // the add-item dialog on the only list, or else on the first Grocery list.
+  useEffect(() => {
+    if (loading || quickAddHandledRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('quickAdd') !== '1') return;
+    quickAddHandledRef.current = true;
+    params.delete('quickAdd');
+    const remaining = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${remaining ? `?${remaining}` : ''}`);
+
+    const target = lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery');
+    if (target) {
+      onSelectList(target);
+      setIsAddItemDialogOpen(true);
+    } else if (lists.length > 0) {
+      toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
+    }
+  }, [loading, lists, onSelectList, toast]);
 
   // --- List CRUD ---
 
@@ -504,17 +553,20 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
           )),
         });
         const { category } = categoryResult;
-        const newItem: Omit<ShoppingListItem, 'id' | 'status'> = {
+        const { itemId, data } = buildShoppingListItem({
             name: values.name,
             quantity: values.quantity,
-            category: category,
-            createdAt: new Date(),
-            ...(libraryItem?.imageUrl ? { imageUrl: libraryItem.imageUrl } : {}),
-            ...(barcode ? { barcode } : {}),
-        };
-        const itemId = slugify(values.name);
-        await setDoc(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', itemId), { ...newItem, status: 'needed' });
-        toast({ title: "Item Added", description: `${values.name} was added to the ${category} category.` });
+            category,
+            imageUrl: libraryItem?.imageUrl,
+            barcode,
+        });
+        const saved = await awaitWriteUnlessOffline(
+            setDoc(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', itemId), data),
+            () => toast({ variant: 'destructive', title: 'Could not sync item', description: `${values.name} could not be saved when the connection returned.` }),
+        );
+        toast(saved === 'queued'
+            ? { title: 'Item Added Offline', description: `${values.name} will sync when you are back online.` }
+            : { title: "Item Added", description: `${values.name} was added to the ${category} category.` });
         if (categoryResult.usedFallback) {
           const reason = categoryResult.reason === 'timeout'
             ? 'Automatic categorization timed out.'
@@ -562,24 +614,46 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
+      const list = selectedList;
+      const setItemStatus = (status: ShoppingListItem['status']) =>
+        setListItems(prev => prev.map(listItem => listItem.id === item.id ? { ...listItem, status } : listItem));
+      const failToggle = () => {
+        setItemStatus(item.status);
+        toast({ variant: 'destructive', title: 'Error', description: 'Could not update item status.' });
+      };
 
-      const itemRef = doc(db, 'households', currentUser.householdId, 'shopping-lists', selectedList.id, 'items', item.id);
+      // Show the tick immediately. Offline, the write waits in Firestore's persistent
+      // queue (it survives reloads) and syncs when the connection returns.
+      setItemStatus(newStatus);
+      const itemRef = doc(db, 'households', currentUser.householdId, 'shopping-lists', list.id, 'items', item.id);
+      const write = updateDoc(itemRef, { status: newStatus });
+
+      if (isBrowserOffline()) {
+        // The pantry handoff is skipped offline: its form would wait on the network.
+        write.catch(failToggle);
+        if (!offlineNoticeShownRef.current) {
+          offlineNoticeShownRef.current = true;
+          toast({ title: 'You are offline', description: 'Ticks are saved on this device and sync when you reconnect.' });
+        }
+        return;
+      }
+
       try {
-        await updateDoc(itemRef, { status: newStatus });
-        
-        if (isCheckingOff && selectedList.type === 'Grocery') {
+        await write;
+
+        if (isCheckingOff && list.type === 'Grocery') {
            onAddItemToPantry({
             id: '', // Will be generated by pantry logic
             name: item.name,
             quantity: item.quantity,
             unit: 'items',
             location: 'Pantry'
-           }, selectedList);
+           }, list);
         }
-        await fetchItemsAndCategories(selectedList.id);
+        await fetchItemsAndCategories(list.id);
 
       } catch {
-          toast({ variant: 'destructive', title: 'Error', description: 'Could not update item status.' });
+          failToggle();
       }
   };
 
@@ -805,6 +879,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                                         <Image src={item.imageUrl} alt={`Product image for ${item.name}`} width={40} height={40} sizes="40px" className="rounded-md object-cover h-10 w-10"/>
                                                     )}
                                                     <label htmlFor={`item-needed-${item.id}`} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">{item.name} <span className="text-muted-foreground">(x{item.quantity})</span></label>
+                                                    <ItemSourceLink item={item} />
                                                 </div>
                                                 <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} className="h-8 w-8" onClick={() => deleteItem(item.id)}>
                                                     <Trash2 className="h-4 w-4 text-muted-foreground" />
@@ -838,6 +913,7 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
                                             <Image src={item.imageUrl} alt={`Product image for ${item.name}`} width={40} height={40} sizes="40px" className="rounded-md object-cover h-10 w-10 opacity-50"/>
                                         )}
                                         <label htmlFor={`item-purchased-${item.id}`} className="text-sm font-medium leading-none text-muted-foreground line-through">{item.name} <span className="text-muted-foreground">(x{item.quantity})</span></label>
+                                        <ItemSourceLink item={item} />
                                         </div>
                                         <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} className="h-8 w-8" onClick={() => deleteItem(item.id)}>
                                             <Trash2 className="h-4 w-4 text-muted-foreground" />

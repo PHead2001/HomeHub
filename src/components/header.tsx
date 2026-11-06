@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Boxes, User, LogOut, ScanBarcode, Home } from 'lucide-react';
+import { User, LogOut, ScanBarcode, Home } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'motion/react';
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { NotificationBell } from './notification-bell';
+import { Logo } from './brand/logo';
 
 
 const NAV_LINKS: Array<{ href: string; label: string; permission: HouseholdPermission }> = [
@@ -41,7 +42,7 @@ export function Header() {
     <header className="surface-glass sticky top-0 z-50 w-full border-b border-border-subtle">
       <div className="container mx-auto flex h-14 items-center px-4">
         <Link href="/" className="flex items-center gap-2 mr-6">
-          <Boxes className="h-6 w-6 text-primary" />
+          <Logo size={24} animated />
           <span className="font-headline text-xl font-bold">HomeHub</span>
         </Link>
         <nav aria-label="Main" className="hidden md:flex items-center gap-1 text-sm">
