@@ -19,7 +19,7 @@ interface LoginDialogProps {
 }
 
 const GoogleIcon = () => (
-    <svg className="mr-2 h-4 w-4" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+    <svg aria-hidden="true" focusable="false" className="mr-2 h-4 w-4" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
       <g>
         <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
         <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
@@ -45,9 +45,9 @@ export function LoginDialog({ children }: LoginDialogProps) {
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle className="font-headline">Login or Sign Up</DialogTitle>
+          <DialogTitle className="font-headline">Sign in to HomeHub</DialogTitle>
           <DialogDescription>
-            Use your Google account to access your HomeHub.
+            Use your Google account. New here? Signing in creates your account, then you can start a household or join one with an invite code.
           </DialogDescription>
         </DialogHeader>
         <div className="py-8 flex justify-center">
@@ -58,7 +58,7 @@ export function LoginDialog({ children }: LoginDialogProps) {
                 disabled={loading}
                 className="w-full"
             >
-                {loading ? <Loader2 className="animate-spin" /> : <><GoogleIcon /> Sign in with Google</>}
+                {loading ? <><Loader2 aria-hidden className="mr-2 animate-spin" /> Signing in…</> : <><GoogleIcon /> Sign in with Google</>}
             </Button>
         </div>
       </DialogContent>

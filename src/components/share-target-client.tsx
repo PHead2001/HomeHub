@@ -16,6 +16,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { LoginDialog } from '@/components/login-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
+import { listTint } from '@/lib/shopping/list-style';
+import { cn } from '@/lib/utils';
+import { renderListIcon } from '@/components/shopping/list-icons';
 import { db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { MAX_ITEM_NAME_LENGTH, type SharedContent } from '@/lib/share-target';
@@ -65,7 +68,7 @@ function StateCard({ title, description, children }: { title: string; descriptio
  */
 export function ShareTargetClient({ shared }: { shared: SharedContent }) {
   const { currentUser, currentMember, permissions, loading, householdLoading } = useAuth();
-  const { toast } = useToast();
+  const { toastError } = useToast();
   const householdId = currentUser?.householdId ?? null;
   const isPending = currentMember?.role === 'newuser';
   const canEdit = Boolean(householdId && currentMember && !isPending && permissions['shopping.view'] && permissions['shopping.edit']);
@@ -129,11 +132,11 @@ export function ShareTargetClient({ shared }: { shared: SharedContent }) {
       });
       const saved = await awaitWriteUnlessOffline(
         setDoc(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', itemId), data),
-        () => toast({ variant: 'destructive', title: 'Could not sync item', description: `${trimmedName} could not be saved when the connection returned.` }),
+        (error) => toastError(error, `Could not sync ${trimmedName}`),
       );
       setResult({ listId: selectedList.id, listName: selectedList.name, itemName: trimmedName, queued: saved === 'queued' });
-    } catch {
-      toast({ variant: 'destructive', title: 'Could not add the item', description: 'Please try again.' });
+    } catch (error) {
+      toastError(error, 'Could not add the item');
     } finally {
       setIsSaving(false);
     }
@@ -195,7 +198,7 @@ export function ShareTargetClient({ shared }: { shared: SharedContent }) {
           <span>{result.queued ? 'Waiting to sync' : 'Saved'}</span>
         </div>
         <Button asChild className="w-full sm:w-auto">
-          <Link href="/shopping">Open shopping lists</Link>
+          <Link href={`/shopping?list=${encodeURIComponent(result.listId)}`}>Open {result.listName}</Link>
         </Button>
       </StateCard>
     );
@@ -266,6 +269,9 @@ export function ShareTargetClient({ shared }: { shared: SharedContent }) {
                   className="flex cursor-pointer items-center gap-3 rounded-md border p-3 font-normal has-[[data-state=checked]]:border-primary"
                 >
                   <RadioGroupItem id={`share-list-${list.id}`} value={list.id} />
+                  <span className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-lg', listTint(list).classes.softChip)}>
+                    {renderListIcon(list, { className: 'h-4 w-4' })}
+                  </span>
                   <span className="min-w-0 flex-1 break-words">{list.name}</span>
                   <span className="text-xs text-muted-foreground">{list.type}</span>
                 </Label>

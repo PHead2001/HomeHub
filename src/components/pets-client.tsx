@@ -1,317 +1,182 @@
-
-
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
+import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { collection, doc, getDocs, setDoc, getDoc, deleteDoc, updateDoc } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { v4 as uuidv4 } from 'uuid';
-import type { Pet } from '@/lib/types';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './ui/card';
-import Image from 'next/image';
+import type { PetProfile } from '@/lib/pets/types';
 import { AddPetDialog } from './add-pet-dialog';
+import { DeletePetAlert } from './delete-pet-alert';
+import { EditPetDialog } from './edit-pet-dialog';
+import { EmptyState } from './empty-state';
 import { Button } from './ui/button';
 import { Skeleton } from './ui/skeleton';
-import { useToast } from '@/hooks/use-toast';
-import { CalendarDays, MoreVertical, Edit, Trash2, Loader2, ArrowRight } from 'lucide-react';
-import { EditPetDialog } from './edit-pet-dialog';
-import { DeletePetAlert } from './delete-pet-alert';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import Link from 'next/link';
-import { slugify } from '@/lib/utils';
+import { LivingPetCard } from './pets/living-pet-card';
+import { PetsPageHeader } from './pets/pets-page-header';
+import { createPet, deletePet, updatePet } from './pets/pet-profile-api';
+import type { PetFields } from './pets/pet-form';
 
-
-function PetCard({ pet, onEdit, onDelete, priority = false }: { pet: Pet, onEdit: (pet: Pet) => void, onDelete: (petId: string) => void, priority?: boolean }) {
-  const handleEditClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onEdit(pet);
-  };
-  
-  const handleDeleteClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onDelete(pet.id);
-  }
-
-  return (
-    <Link href={`/pets/${pet.id}`} className="block hover:shadow-lg transition-shadow rounded-lg">
-      <Card className="flex flex-col h-full">
-        <CardHeader className="p-0 relative">
-          <div className="absolute top-2 right-2 z-10">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="secondary" size="icon" aria-label={`Open actions for ${pet.name}`} className="h-8 w-8 rounded-full bg-background/70 hover:bg-background/90" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={handleEditClick}>
-                  <Edit className="mr-2 h-4 w-4" />
-                  <span>Edit</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDeleteClick} className="text-destructive focus:text-destructive focus:bg-destructive/10">
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  <span>Delete</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <div className="relative w-full h-48">
-              <Image
-                  src={pet.photoUrl || 'https://placehold.co/300x300.png'}
-                  alt={`Photo of ${pet.name}`}
-                  fill
-                  sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
-                  priority={priority}
-                  className="object-cover rounded-t-lg"
-                  data-ai-hint={pet.dataAiHint}
-              />
-          </div>
-        </CardHeader>
-        <CardContent className="p-4 flex-grow">
-          <CardTitle className="font-headline text-xl">{pet.name}</CardTitle>
-          <CardDescription>{pet.type}</CardDescription>
-          <div className="flex items-start gap-2 text-sm text-muted-foreground mt-4">
-              <CalendarDays className="h-4 w-4 mt-1 flex-shrink-0" />
-              <div>
-                  <h4 className="font-semibold text-foreground">Feeding Schedule</h4>
-                  <p className="line-clamp-2">{pet.foodSchedule}</p>
-              </div>
-          </div>
-        </CardContent>
-        <CardFooter className="p-4 pt-0">
-          <Button variant="secondary" className="w-full">
-            View Details <ArrowRight className="ml-2" />
-          </Button>
-        </CardFooter>
-      </Card>
-    </Link>
-  )
-}
+const GRID = 'grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
 
 function PetSkeleton() {
-    return (
-        <Card>
-            <CardHeader className="p-0">
-                <Skeleton className="h-48 w-full rounded-t-lg" />
-            </CardHeader>
-            <CardContent className="p-4 space-y-2">
-                <Skeleton className="h-6 w-1/2" />
-                <Skeleton className="h-4 w-1/4" />
-                <div className="pt-4 space-y-2">
-                    <Skeleton className="h-4 w-1/3" />
-                    <Skeleton className="h-4 w-3/4" />
-                </div>
-            </CardContent>
-             <CardFooter className="p-4">
-                 <Skeleton className="h-10 w-full" />
-            </CardFooter>
-        </Card>
-    );
+  return (
+    <div className="overflow-hidden rounded-lg border bg-card shadow-raised" aria-hidden>
+      <Skeleton className="aspect-[4/3] w-full rounded-none" />
+      <div className="space-y-3 p-4">
+        <Skeleton className="h-6 w-1/2" />
+        <Skeleton className="h-4 w-1/4" />
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-12 w-12 rounded-full" />
+          <Skeleton className="h-4 flex-1" />
+        </div>
+        <Skeleton className="h-10 w-full" />
+      </div>
+    </div>
+  );
 }
 
 export function PetsClient() {
-  const { currentUser } = useAuth();
-  const [pets, setPets] = useState<Pet[]>([]);
-  const [loading, setLoading] = useState(true);
-  const { toast } = useToast();
-  const [petToEdit, setPetToEdit] = useState<Pet | null>(null);
-  const [petToDelete, setPetToDelete] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { currentUser, permissions } = useAuth();
+  const { toast, toastError } = useToast();
+  const householdId = currentUser?.householdId ?? null;
+  const canEdit = Boolean(permissions['pets.editProfiles']);
 
-  const getPetsCollectionRef = useCallback(() => {
-    if (!currentUser?.householdId) return null;
-    return collection(db, 'households', currentUser.householdId, 'pets');
-  }, [currentUser]);
+  // Keyed by household so a household switch never shows the previous pets.
+  const [snapshot, setSnapshot] = useState<{ householdId: string | null; pets: PetProfile[]; failed: boolean }>({
+    householdId: null,
+    pets: [],
+    failed: false,
+  });
+  const [addOpen, setAddOpen] = useState(false);
+  const [petToEdit, setPetToEdit] = useState<PetProfile | null>(null);
+  const [petToDelete, setPetToDelete] = useState<PetProfile | null>(null);
 
-  const fetchPets = useCallback(async () => {
-    const petsCollection = getPetsCollectionRef();
-    if (!petsCollection) {
-        setPets([]);
-        setLoading(false);
-        return;
-    }
-    setLoading(true);
-    try {
-        const querySnapshot = await getDocs(petsCollection);
-        const petsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Pet));
-        setPets(petsData.sort((a,b) => a.name.localeCompare(b.name)));
-    } catch (error) {
-        console.error("Error fetching pets:", error);
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch your pets.' });
-    } finally {
-        setLoading(false);
-    }
-  }, [getPetsCollectionRef, toast]);
-
+  // Live pet list: edits from other members and devices appear without a refresh.
   useEffect(() => {
-    if (currentUser?.householdId) {
-      fetchPets();
-    } else {
-      setLoading(false);
-    }
-  }, [currentUser, fetchPets]);
+    if (!householdId) return;
+    return onSnapshot(
+      collection(db, 'households', householdId, 'pets'),
+      (result) => {
+        const next = result.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetProfile);
+        setSnapshot({ householdId, pets: next.sort((a, b) => a.name.localeCompare(b.name)), failed: false });
+      },
+      (error) => {
+        console.error('Error loading pets:', error);
+        setSnapshot({ householdId, pets: [], failed: true });
+        toastError(error, "Couldn't load your pets");
+      },
+    );
+  }, [householdId, toastError]);
 
-  const uploadPhoto = async (photoFile: File): Promise<string> => {
-    if (!currentUser?.householdId) throw new Error("User not in a household");
-    const storage = getStorage();
-    const fileExtension = photoFile.name.split('.').pop();
-    const fileName = `${uuidv4()}.${fileExtension}`;
-    const storageRef = ref(storage, `households/${currentUser.householdId}/pets/${fileName}`);
-    await uploadBytes(storageRef, photoFile);
-    const downloadURL = await getDownloadURL(storageRef);
-    return downloadURL;
-  };
+  const ready = snapshot.householdId === householdId;
+  const loading = Boolean(householdId) && !ready;
+  const pets = useMemo(() => (ready ? snapshot.pets : []), [ready, snapshot.pets]);
+  const loadFailed = ready && snapshot.failed;
 
-  const handleAddPet = async (newPetData: Omit<Pet, 'id'>, photoFile: File | null): Promise<boolean> => {
-    setIsSubmitting(true);
-    const petsCollection = getPetsCollectionRef();
-    if (!petsCollection) {
-        toast({ variant: 'destructive', title: 'Error', description: 'User not in a household.' });
-        setIsSubmitting(false);
-        return false;
-    }
+  const existingNames = useMemo(() => pets.map((pet) => pet.name), [pets]);
 
-    const petId = slugify(newPetData.name);
-    const petDocRef = doc(petsCollection, petId);
-
+  const handleAddPet = async (fields: PetFields, photoFile: File | null): Promise<boolean> => {
+    if (!householdId) return false;
     try {
-        const docSnap = await getDoc(petDocRef);
-        if (docSnap.exists()) {
-            toast({ variant: 'destructive', title: 'Duplicate Name', description: 'A pet with this name already exists. Please choose a unique name.' });
-            setIsSubmitting(false);
-            return false;
-        }
-
-        let photoUrl = 'https://placehold.co/300x300.png';
-        if (photoFile) {
-            photoUrl = await uploadPhoto(photoFile);
-        }
-
-        await setDoc(petDocRef, { ...newPetData, photoUrl });
-        await fetchPets(); // Refresh the list
-        return true;
-    } catch(error) {
-        console.error("Error adding pet:", error);
-        toast({ variant: 'destructive', title: 'Database Error', description: 'Could not add the new pet.' });
-        return false;
-    } finally {
-        setIsSubmitting(false);
-    }
-  };
-
-  const handleUpdatePet = async (updatedPetData: Omit<Pet, 'id'>, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
-    setIsSubmitting(true);
-    const petsCollection = getPetsCollectionRef();
-    if (!petsCollection || !petToEdit) {
-      toast({ variant: "destructive", title: "Error", description: "Could not update pet."});
-      setIsSubmitting(false);
-      return false;
-    }
-
-    const petDocRef = doc(petsCollection, petToEdit.id);
-    try {
-      let photoUrl = updatedPetData.photoUrl;
-
-      if (photoFile) {
-        // New photo uploaded, replace old one
-        photoUrl = await uploadPhoto(photoFile);
-      } else if (isPhotoRemoved) {
-        // Photo was removed by user
-        photoUrl = 'https://placehold.co/300x300.png';
-      }
-      
-      await updateDoc(petDocRef, { ...updatedPetData, photoUrl });
-      await fetchPets();
-      setPetToEdit(null);
-      toast({ title: "Pet Updated", description: `${updatedPetData.name}'s info has been updated.`});
+      await createPet(householdId, fields, photoFile);
+      toast({ title: 'Pet added', description: `${fields.name} has joined the household.` });
       return true;
     } catch (error) {
-      console.error("Error updating pet: ", error);
-      toast({ variant: "destructive", title: "Database Error", description: "Could not update pet."});
+      console.error('Error adding pet:', error);
+      toastError(error, "Couldn't add the pet");
       return false;
-    } finally {
-      setIsSubmitting(false);
     }
-  }
+  };
+
+  const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
+    if (!householdId || !petToEdit) return false;
+    try {
+      await updatePet(householdId, petToEdit.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: petToEdit.photoUrl });
+      toast({ title: 'Pet updated', description: `${petToEdit.name}'s details are saved.` });
+      setPetToEdit(null);
+      return true;
+    } catch (error) {
+      console.error('Error updating pet:', error);
+      toastError(error, "Couldn't update the pet");
+      return false;
+    }
+  };
 
   const handleDeletePet = async () => {
-    const petsCollection = getPetsCollectionRef();
-    if (!petsCollection || !petToDelete) {
-      toast({ variant: "destructive", title: "Error", description: "Could not delete pet."});
-      return;
-    }
-
-    const petDocRef = doc(petsCollection, petToDelete);
+    const target = petToDelete;
+    setPetToDelete(null);
+    if (!householdId || !target) return;
     try {
-      // Here you might want to delete the photo from storage before deleting the doc
-      await deleteDoc(petDocRef);
-      await fetchPets();
-      setPetToDelete(null);
-      toast({ title: "Pet Deleted", description: "The pet has been removed from your family." });
+      await deletePet(householdId, target.id);
+      toast({ title: 'Pet deleted', description: `${target.name} has been removed.` });
     } catch (error) {
-      console.error("Error deleting pet: ", error);
-      toast({ variant: "destructive", title: "Database Error", description: "Could not delete pet."});
+      console.error('Error deleting pet:', error);
+      toastError(error, "Couldn't delete the pet");
     }
-  }
+  };
 
-
-  if (loading) {
-    return (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-            <PetSkeleton />
-            <PetSkeleton />
-            <PetSkeleton />
-        </div>
-    )
-  }
+  const addButton = canEdit ? (
+    <Button onClick={() => setAddOpen(true)} className="w-full sm:w-auto">
+      <PlusCircle className="mr-2" /> Add Pet
+    </Button>
+  ) : null;
 
   return (
     <div>
-      <div className="flex justify-end mb-4">
-        <AddPetDialog onAddPet={handleAddPet} />
-      </div>
+      <PetsPageHeader action={addButton} />
 
-      <EditPetDialog
-        pet={petToEdit}
-        onUpdatePet={handleUpdatePet}
-        onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)}
-      />
-
-       <DeletePetAlert
+      {canEdit && (
+        <AddPetDialog open={addOpen} onOpenChange={setAddOpen} existingNames={existingNames} onAddPet={handleAddPet} />
+      )}
+      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} />
+      <DeletePetAlert
         isOpen={!!petToDelete}
+        petName={petToDelete?.name}
         onConfirm={handleDeletePet}
         onCancel={() => setPetToDelete(null)}
       />
-      
-      {isSubmitting && (
-        <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
-            <div className="flex items-center gap-2 text-lg">
-                <Loader2 className="h-6 w-6 animate-spin" />
-                <p>Processing...</p>
-            </div>
-        </div>
-      )}
 
-      {pets.length > 0 ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+      {loading ? (
+        <div className={GRID} role="status" aria-label="Loading pets">
+          <PetSkeleton />
+          <PetSkeleton />
+          <PetSkeleton />
+        </div>
+      ) : pets.length > 0 && householdId ? (
+        <div className={GRID}>
           {pets.map((pet, index) => (
-            <PetCard key={pet.id} pet={pet} onEdit={setPetToEdit} onDelete={setPetToDelete} priority={index === 0} />
+            <LivingPetCard
+              key={pet.id}
+              pet={pet}
+              householdId={householdId}
+              canEdit={canEdit}
+              onEdit={setPetToEdit}
+              onDelete={setPetToDelete}
+              priority={index === 0}
+              index={index}
+            />
           ))}
         </div>
+      ) : loadFailed ? (
+        <EmptyState
+          kind="pets"
+          title="Pets are unavailable right now"
+          description="We couldn't load your pets. Check your connection and try again."
+          action={{ label: 'Try again', onClick: () => window.location.reload() }}
+        />
       ) : (
-        <div className="text-center py-16 border-2 border-dashed rounded-lg">
-          <h2 className="text-xl font-semibold">No Pets Yet</h2>
-          <p className="text-muted-foreground mt-2">Click &quot;Add Pet&quot; to get started!</p>
-        </div>
+        <EmptyState
+          kind="pets"
+          title="No pets yet"
+          description={
+            canEdit
+              ? 'Add your first pet to track feedings, medication and care in one place.'
+              : 'Pets your household adds will show up here.'
+          }
+          action={canEdit ? { label: 'Add your first pet', icon: <PlusCircle className="mr-2 h-4 w-4" />, onClick: () => setAddOpen(true) } : undefined}
+        />
       )}
     </div>
   );
