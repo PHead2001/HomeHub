@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "docs:check": "node scripts/check-module-docs.mjs",
-    "test:ai": "node --import tsx --test tests/ai/deterministic-flows.test.ts tests/ai/security-and-barcode.test.ts",
+    "test:ai": "node --import tsx --test tests/ai/deterministic-flows.test.ts tests/ai/security-and-barcode.test.ts tests/ai/firebase-app-id.test.ts",
     "test:rules": "node scripts/e2e/run-rules.mjs",
     "test:server": "node scripts/e2e/run-server.mjs",
     "test:ai:openai:live": "tsx scripts/ai/openai-live-smoke.ts",

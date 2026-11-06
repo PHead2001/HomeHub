@@ -44,3 +44,11 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+  # Firebase web app ID (public). Declared here so the build always gets the full
+  # `1:`-prefixed form; App Check rejects the short form.
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: 1:562837692805:web:a21c3805ca4921564d24ec
+    availability:
+      - BUILD
+      - RUNTIME
