@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { dayKey, type ChoreRecord } from '../../src/lib/chores/dates';
 import {
-  choreEvents, groupByDay, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, sortEvents, weekDays,
+  choreEvents, groupByDay, maintenanceCalendarItems, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, sortEvents, weekDays,
 } from '../../src/lib/chores/calendar';
 
 const chore = (overrides: Partial<ChoreRecord>): ChoreRecord => ({
@@ -90,5 +90,61 @@ describe('calendar grids', () => {
     const fields = rescheduleFields('2026-08-07');
     assert.equal(fields.originalDueDate, '2026-08-07');
     assert.equal(dayKey(new Date(fields.dueDate)), '2026-08-07');
+  });
+});
+
+describe('calendar reads every date in the visible range', () => {
+  const tz = 'America/Chicago';
+
+  it('includes expirations beyond the 14-day reminder window', () => {
+    const items = maintenanceCalendarItems(
+      [{ id: 'hvac', name: 'HVAC', status: 'active', warrantyExpiration: '2027-03-01' }],
+      [{ id: 'car', nickname: 'Car', status: 'active', registrationExpiration: '2026-12-15', inspectionExpiration: '2026-11-20' }],
+      '2026-08-01',
+      tz,
+    );
+    const days = new Map(items.map(i => [i.id, i]));
+    assert.equal(days.get('asset-warranty-hvac')!.day, '2027-03-01');
+    assert.equal(days.get('vehicle-registration-car')!.day, '2026-12-15');
+    assert.equal(days.get('vehicle-inspection-car')!.day, '2026-11-20');
+    assert.equal(days.get('vehicle-registration-car')!.title, 'Registration expires');
+  });
+
+  it('treats an expired warranty as information, an expired registration as overdue', () => {
+    const items = maintenanceCalendarItems(
+      [{ id: 'hvac', name: 'HVAC', status: 'active', warrantyExpiration: '2026-07-01' }],
+      [{ id: 'car', nickname: 'Car', status: 'active', registrationExpiration: '2026-07-15' }],
+      '2026-08-01',
+      tz,
+    );
+    const events = new Map(maintenanceEvents(items).map(e => [e.id, e]));
+    assert.equal(events.get('maintenance:asset-warranty-hvac')!.overdue, false);
+    assert.equal(events.get('maintenance:asset-warranty-hvac')!.title, 'Warranty expired');
+    assert.equal(events.get('maintenance:vehicle-registration-car')!.overdue, true);
+  });
+
+  it('includes far-off scheduled services and skips retired or sold items', () => {
+    const items = maintenanceCalendarItems(
+      [
+        { id: 'filter', name: 'Furnace', status: 'active', schedules: [{ id: 's', mode: 'scheduled', scheduleName: 'Filter', nextDueDate: '2027-01-10' }] },
+        { id: 'old', name: 'Old', status: 'retired', warrantyExpiration: '2027-01-01' },
+      ],
+      [{ id: 'sold', nickname: 'Sold', status: 'sold', registrationExpiration: '2027-01-01' }],
+      '2026-08-01',
+      tz,
+    );
+    assert.deepEqual(items.map(i => i.day), ['2027-01-10']);
+  });
+
+  it('plans repeating chores beyond the generated lookahead, from today on', () => {
+    const templates = [{ id: 'trash', task: 'Trash', assignedToEmail: 'sam@example.test', recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1] } } }];
+    const existing = [chore({ id: 'gen', templateId: 'trash', originalDueDate: '2027-02-01' })];
+    const events = plannedRecurringEvents(templates, existing, members, '2026-08-01', '2027-01-25', '2027-02-14');
+    // Mondays in range: Jan 25, Feb 1 (already generated), Feb 8.
+    assert.deepEqual(events.map(e => e.day), ['2027-01-25', '2027-02-08']);
+    assert.ok(events.every(e => e.planned && !e.choreId && e.memberUid === 'sam-uid'));
+    // Never in the past, never for non-members.
+    assert.equal(plannedRecurringEvents(templates, [], members, '2026-08-01', '2026-07-01', '2026-07-31').length, 0);
+    assert.equal(plannedRecurringEvents([{ ...templates[0], assignedToEmail: 'gone@example.test' }], [], members, '2026-08-01', '2026-08-01', '2026-08-31').length, 0);
   });
 });

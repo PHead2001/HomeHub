@@ -2,6 +2,9 @@
  * Household calendar model (H19): chores, maintenance due dates and pet
  * medication as day-keyed events, plus Week/Month grid helpers. Pure.
  */
+import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
+import { toDay } from '../../../functions/src/shared/calendar';
+import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
 export type CalendarEventKind = 'chore' | 'maintenance' | 'medication';
@@ -20,6 +23,11 @@ export type CalendarEvent = {
   href: string;
   /** Chore document id, for rescheduling. */
   choreId?: string;
+  /**
+   * A future occurrence of a repeating chore that the server has not generated
+   * yet (it creates the next 30). Shown so far-off weeks are complete; not movable.
+   */
+  planned?: boolean;
 };
 
 export type CalendarMember = { uid: string; email: string; name: string };
@@ -53,6 +61,8 @@ export type MaintenanceDue = {
   day: string | null;
   status: 'upcoming' | 'due_soon' | 'due_today' | 'overdue';
   deepLink: string;
+  /** Expirations that are informational only (a warranty that ran out is not "overdue"). */
+  neverOverdue?: boolean;
 };
 
 export function maintenanceEvents(items: readonly MaintenanceDue[]): CalendarEvent[] {
@@ -62,7 +72,7 @@ export function maintenanceEvents(items: readonly MaintenanceDue[]): CalendarEve
     title: item.title,
     subtitle: item.relatedName,
     day: item.day,
-    overdue: item.status === 'overdue',
+    overdue: item.status === 'overdue' && !item.neverOverdue,
     completed: false,
     href: item.deepLink.startsWith('/') ? item.deepLink : '/maintenance',
   }] : []));
@@ -162,4 +172,97 @@ export function rescheduleFields(day: string): { dueDate: string; originalDueDat
   const noon = dayFromKey(day);
   noon.setHours(12, 0, 0, 0);
   return { dueDate: noon.toISOString(), originalDueDate: day };
+}
+
+/**
+ * Every dated maintenance item, for any range. Scheduled asset and vehicle
+ * services come from the shared reminder builder (all statuses). Warranty,
+ * registration and inspection expirations are read straight from their fields,
+ * because the builder only reports them inside its 14-day reminder window.
+ * Retired assets and retired or sold vehicles are left out, as in Maintenance.
+ */
+export function maintenanceCalendarItems(
+  assets: readonly AssetInput[],
+  vehicles: readonly VehicleInput[],
+  today: string,
+  timeZone: string,
+): MaintenanceDue[] {
+  const scheduled: MaintenanceDue[] = buildMaintenanceReminders([...assets], [...vehicles], today, timeZone)
+    .filter(r => r.group === 'scheduled' || r.group === 'vehicle_service')
+    .map(r => ({ id: r.id, title: r.title, relatedName: r.relatedName, day: toDay(r.dueDate, timeZone), status: r.status, deepLink: r.deepLink }));
+
+  const expiry = (id: string, label: string, relatedName: string, value: string | undefined, deepLink: string, neverOverdue: boolean): MaintenanceDue[] => {
+    const day = toDay(value, timeZone);
+    if (!day) return [];
+    const past = day < today;
+    return [{
+      id,
+      title: `${label} ${past ? 'expired' : 'expires'}`,
+      relatedName,
+      day,
+      status: past ? 'overdue' : day === today ? 'due_today' : 'upcoming',
+      deepLink,
+      neverOverdue,
+    }];
+  };
+
+  const expirations = [
+    ...assets.filter(a => a.status !== 'retired').flatMap(asset =>
+      expiry(`asset-warranty-${asset.id}`, 'Warranty', asset.name, asset.warrantyExpiration, `/maintenance?asset=${encodeURIComponent(asset.id)}`, true)),
+    ...vehicles.filter(v => v.status !== 'retired' && v.status !== 'sold').flatMap(vehicle => [
+      ...expiry(`vehicle-registration-${vehicle.id}`, 'Registration', vehicle.nickname, vehicle.registrationExpiration, `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`, false),
+      ...expiry(`vehicle-inspection-${vehicle.id}`, 'Inspection', vehicle.nickname, vehicle.inspectionExpiration, `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`, false),
+    ]),
+  ];
+  return [...scheduled, ...expirations];
+}
+
+export type RecurringTemplate = {
+  id: string;
+  task: string;
+  assignedToEmail?: string | null;
+  recurrence?: (RecurrenceInput & { assignedToEmail?: string }) | null;
+};
+
+/**
+ * Occurrences of repeating chores inside [rangeStart, rangeEnd] (from today on)
+ * that have no chore document yet. The server only generates the next 30
+ * occurrences, so without these a month far ahead would look empty. Uses the
+ * same recurrence rules as the server; days that already have an instance of
+ * the template are skipped, and nothing is planned for non-members.
+ */
+export function plannedRecurringEvents(
+  templates: readonly RecurringTemplate[],
+  chores: readonly ChoreRecord[],
+  members: readonly CalendarMember[],
+  today: string,
+  rangeStart: string,
+  rangeEnd: string,
+): CalendarEvent[] {
+  const byEmail = new Map(members.map(member => [member.email, member]));
+  const existing = new Set(chores.filter(c => c.templateId).map(c => `${c.templateId}|${choreDueKey(c)}`));
+  const start = rangeStart > today ? rangeStart : today;
+  const events: CalendarEvent[] = [];
+  for (const template of templates) {
+    const recurrence = normalizeRecurrence(template.recurrence, today);
+    const assignee = template.assignedToEmail || template.recurrence?.assignedToEmail;
+    const member = assignee ? byEmail.get(assignee) : undefined;
+    if (!recurrence || !member) continue;
+    for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
+      if (!occursOn(day, recurrence) || existing.has(`${template.id}|${day}`)) continue;
+      events.push({
+        id: `planned:${template.id}:${day}`,
+        kind: 'chore',
+        title: template.task,
+        subtitle: member.name,
+        day,
+        memberUid: member.uid,
+        overdue: false,
+        completed: false,
+        href: '/chores',
+        planned: true,
+      });
+    }
+  }
+  return events;
 }

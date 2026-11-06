@@ -27,7 +27,7 @@ import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib
 import { stableSlugify } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
-import { addDaysToKey, choreDueKey, completionInstant, dayKey, type ChoreRecord } from '@/lib/chores/dates';
+import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, openSubTasks, uniqueTemplateId, type ToDoEntry } from '@/lib/chores/list';
 import { completionSnapshot, completionUpdate, undoCompletionUpdate, type CompletionSnapshot } from '@/lib/chores/completion';
 import { computeChoreStats, isPodiumDay } from '@/lib/chores/stats';
@@ -46,6 +46,9 @@ import { memberName } from '@/components/chores/assignee-select';
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
 
 const UNDO_MS = 5000;
+
+/** End of `today` (local), so every completion made today counts and the week is today's week. */
+const statsNow = (today: string) => { const d = dayFromKey(today); d.setHours(23, 59, 59, 999); return d; };
 
 const houseCleanKey = (householdId: string, day: string) => `homehub.houseClean.${householdId}.${day}`;
 
@@ -651,7 +654,8 @@ export function ChoreChartClient() {
   const statsMembers = useMemo(() => householdUsers.map(user => ({
     email: user.email, uid: user.uid || user.email, name: memberName(user), role: user.memberRole,
   })), [householdUsers]);
-  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, new Date()), [assignedChores, statsMembers]);
+  // Follows `today`, so the week, streaks and podium roll over at midnight.
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today)), [assignedChores, statsMembers, today]);
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.email, user.avatarUrl])), [householdUsers]);
 
   if (loading || !isMounted) {
@@ -1029,7 +1033,7 @@ export function ChoreChartClient() {
 
           {showLeaderboard && (
             <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
-              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} showPodium={isPodiumDay(new Date())} />
+              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} showPodium={isPodiumDay(statsNow(today))} />
             </aside>
           )}
         </div>

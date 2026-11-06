@@ -118,6 +118,14 @@ describe('computeChoreStats', () => {
     assert.ok(podium.every(member => member.weekPoints > 0));
   });
 
+  it('rolls the week and streaks over when today changes', () => {
+    const nextMonday = computeChoreStats(chores, members, at(2026, 8, 10, 23));
+    assert.equal(nextMonday.weekStart, '2026-08-10');
+    assert.ok(nextMonday.members.every(member => member.weekPoints === 0));
+    // Sam's last completion was Aug 6 (or the skewed Aug 8 for Alex): streaks have lapsed by Monday.
+    assert.equal(nextMonday.members.find(m => m.email === 'sam@example.test')!.streak, 0);
+  });
+
   it('shows the podium on Sundays only', () => {
     assert.equal(isPodiumDay(at(2026, 8, 9)), true);
     assert.equal(isPodiumDay(at(2026, 8, 6)), false);

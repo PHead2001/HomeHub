@@ -6,9 +6,8 @@ import { LayoutGroup, motion } from 'motion/react';
 import { format } from 'date-fns';
 import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, ListChecks, Pill, Wrench } from 'lucide-react';
 import { collection, doc, getDoc, getDocs, updateDoc } from 'firebase/firestore';
-import type { HomeAsset, HouseholdMember, MedicationLog, Pet, User as HomeHubUser, Vehicle } from '@/lib/types';
-import { buildMaintenanceReminders } from '@functions/shared/maintenance-reminders';
-import { localDay, safeTimeZone, toDay } from '@functions/shared/calendar';
+import type { ChoreTemplate, HomeAsset, HouseholdMember, MedicationLog, Pet, User as HomeHubUser, Vehicle } from '@/lib/types';
+import { safeTimeZone } from '@functions/shared/calendar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,8 +29,8 @@ import { SPRING_SNAPPY } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { addDaysToKey, dayFromKey, isDayKey, type ChoreRecord } from '@/lib/chores/dates';
 import {
-  choreEvents, groupByDay, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
-  type CalendarEvent, type CalendarMember, type MaintenanceDue, type MedicationEntry,
+  choreEvents, groupByDay, maintenanceCalendarItems, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
+  type CalendarEvent, type CalendarMember, type MedicationEntry, type RecurringTemplate,
 } from '@/lib/chores/calendar';
 
 type View = 'week' | 'month';
@@ -125,6 +124,7 @@ function EventChip({
             className={cn(
               'flex w-full min-w-0 items-center gap-1 rounded-md border-l-[3px] px-1.5 py-1 text-left text-xs font-medium',
               chipClasses(event, color),
+              event.planned && 'border-dashed',
               movable && 'cursor-grab active:cursor-grabbing',
             )}
             aria-label={`${KIND_LABEL[event.kind]}: ${event.title}, ${event.subtitle}${event.overdue ? ', overdue' : ''}${event.completed && event.kind === 'chore' ? ', done' : ''}`}
@@ -141,6 +141,7 @@ function EventChip({
             <p className="font-semibold text-foreground">{event.title}</p>
             <p className="text-sm text-muted-foreground">{event.subtitle} · {format(dayFromKey(event.day), 'EEE, MMM d')}</p>
             {event.overdue && <p className="mt-1 text-sm font-medium text-destructive">Overdue</p>}
+            {event.planned && <p className="mt-1 text-sm text-muted-foreground">Repeating chore. It joins the chart closer to the day.</p>}
           </div>
           {movable && (
             <form onSubmit={submit} className="space-y-2" noValidate>
@@ -185,13 +186,23 @@ export function HouseholdCalendar() {
   const [loading, setLoading] = useState(true);
   const [members, setMembers] = useState<Member[]>([]);
   const [chores, setChores] = useState<ChoreRecord[]>([]);
-  const [maintenance, setMaintenance] = useState<MaintenanceDue[]>([]);
+  const [templates, setTemplates] = useState<RecurringTemplate[]>([]);
+  const [assets, setAssets] = useState<HomeAsset[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [medication, setMedication] = useState<MedicationEntry[]>([]);
   const [sourceErrors, setSourceErrors] = useState<SourceErrors>({});
   const [view, setView] = useState<View>('week');
   const today = useToday();
   const [anchor, setAnchor] = useState(today);
   const [selectedDay, setSelectedDay] = useState(today);
+  // At midnight, a view that was showing "today" moves with it; a view the member
+  // navigated elsewhere stays put.
+  const [shownToday, setShownToday] = useState(today);
+  if (today !== shownToday) {
+    setShownToday(today);
+    if (anchor === shownToday) setAnchor(today);
+    if (selectedDay === shownToday) setSelectedDay(today);
+  }
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const dragging = useRef<CalendarEvent | null>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
@@ -209,26 +220,25 @@ export function HouseholdCalendar() {
           if (firebaseUser) {
             await syncHouseholdUpkeep({ idToken: await firebaseUser.getIdToken(), householdId }).catch(() => undefined);
           }
-          const snap = await getDocs(collection(db, 'households', householdId, 'chores'));
-          if (active) setChores(snap.docs.map(d => ({ id: d.id, ...d.data() } as ChoreRecord)));
+          const [snap, templateSnap] = await Promise.all([
+            getDocs(collection(db, 'households', householdId, 'chores')),
+            getDocs(collection(db, 'households', householdId, 'chore-templates')),
+          ]);
+          if (active) {
+            setChores(snap.docs.map(d => ({ id: d.id, ...d.data() } as ChoreRecord)));
+            setTemplates(templateSnap.docs.map(d => ({ ...(d.data() as ChoreTemplate), id: d.id })));
+          }
         })().catch(() => { errors.chores = 'Chores could not be loaded.'; }));
       }
       if (canViewMaintenance) {
         tasks.push((async () => {
-          const [assets, vehicles] = await Promise.all([
+          const [assetSnap, vehicleSnap] = await Promise.all([
             getDocs(collection(db, 'households', householdId, 'home-assets')),
             getDocs(collection(db, 'households', householdId, 'vehicles')),
           ]);
-          const reminders = buildMaintenanceReminders(
-            assets.docs.map(d => ({ ...(d.data() as HomeAsset), id: d.id })),
-            vehicles.docs.map(d => ({ ...(d.data() as Vehicle), id: d.id })),
-            localDay(new Date(), timeZone),
-            timeZone,
-          );
           if (active) {
-            setMaintenance(reminders.map(r => ({
-              id: r.id, title: r.title, relatedName: r.relatedName, day: toDay(r.dueDate, timeZone), status: r.status, deepLink: r.deepLink,
-            })));
+            setAssets(assetSnap.docs.map(d => ({ ...(d.data() as HomeAsset), id: d.id })));
+            setVehicles(vehicleSnap.docs.map(d => ({ ...(d.data() as Vehicle), id: d.id })));
           }
         })().catch(() => { errors.maintenance = 'Maintenance dates could not be loaded.'; }));
       }
@@ -256,11 +266,17 @@ export function HouseholdCalendar() {
   }, [householdId, canViewChores, canViewMaintenance, canViewPets, timeZone]);
 
   const colors = useMemo(() => memberColorMap(members.map(m => m.uid)), [members]);
+  // The whole visible range, so repeating chores beyond the server's 30-occurrence
+  // lookahead still show.
+  const visibleDays = useMemo(() => (view === 'week' ? weekDays(anchor) : monthGrid(anchor).flat()), [view, anchor]);
+  // Everything date-dependent is derived from `today`, so it rolls over at midnight.
+  const maintenance = useMemo(() => maintenanceCalendarItems(assets, vehicles, today, timeZone), [assets, vehicles, today, timeZone]);
   const events = useMemo(() => [
     ...choreEvents(chores, members, today),
+    ...plannedRecurringEvents(templates, chores, members, today, visibleDays[0], visibleDays[visibleDays.length - 1]),
     ...maintenanceEvents(maintenance),
     ...medicationEvents(medication),
-  ], [chores, members, maintenance, medication, today]);
+  ], [chores, templates, members, maintenance, medication, today, visibleDays]);
   const byDay = useMemo(() => groupByDay(events), [events]);
   const rail = useMemo(() => overdueRail(events), [events]);
 
