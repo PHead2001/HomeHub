@@ -89,3 +89,9 @@ export function weekStartKey(key: string): string {
   const offset = (date.getDay() + 6) % 7; // Monday = 0
   return addDaysToKey(key, -offset);
 }
+
+/** Milliseconds from `now` until the next local midnight (at least 1 s). */
+export function msUntilNextMidnight(now: Date): number {
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return Math.max(1000, next.getTime() - now.getTime());
+}

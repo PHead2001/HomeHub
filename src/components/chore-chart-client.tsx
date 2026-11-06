@@ -39,6 +39,8 @@ import { HouseCleanMoment, type CleanRoom } from '@/components/chores/house-clea
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
+import { useToday } from '@/components/chores/use-today';
+import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
@@ -355,6 +357,8 @@ export function ChoreChartClient() {
             subTasks: template.subTasks || [],
             completedSubTasks: [],
             templateId: template.id,
+            // One-time library assignment: never folded as a missed repeating instance.
+            sourceType: 'template',
             originalDueDate,
             roomIds: roomId === 'general' ? [] : [roomId],
           });
@@ -457,7 +461,7 @@ export function ChoreChartClient() {
   /* Completing (H05)                                                        */
   /* ---------------------------------------------------------------------- */
 
-  const today = dayKey(new Date());
+  const today = useToday();
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
@@ -486,12 +490,13 @@ export function ChoreChartClient() {
       batch.update(doc(choresCollection, id), update);
       locals.set(id, local);
     });
-    const previous = choresRef.current;
+    const saved = new Map(choresRef.current.filter(c => snapshots.has(c.id)).map(c => [c.id, completionFields(c)]));
     patchChores([...snapshots.keys()], chore => ({ ...chore, ...locals.get(chore.id) }));
     try {
       await batch.commit();
     } catch (error) {
-      setAssignedChores(previous);
+      // Put back only these chores' completion fields; keep anything else that changed meanwhile.
+      setAssignedChores(current => restoreChoreFields(current, saved));
       toastError(error, "Couldn't undo");
     }
   }, [getCollectionRef, patchChores, toastError]);
@@ -511,12 +516,14 @@ export function ChoreChartClient() {
     }
     const before = choresRef.current;
     const after = before.map(chore => (locals.has(chore.id) ? { ...chore, ...locals.get(chore.id) } as ChoreRecord : chore));
-    setAssignedChores(after);
+    const saved = new Map(before.filter(c => locals.has(c.id)).map(c => [c.id, completionFields(c)]));
+    setAssignedChores(current => restoreChoreFields(current, locals));
     setSelectedChoreIds(previous => previous.filter(id => !locals.has(id)));
     try {
       await batch.commit();
     } catch (error) {
-      setAssignedChores(before);
+      // Roll back only this completion's chores (a parallel completion may have succeeded).
+      setAssignedChores(current => restoreChoreFields(current, saved));
       toastError(error, chores.length === 1 ? "Couldn't complete the chore" : "Couldn't complete the chores");
       return;
     }
@@ -545,12 +552,12 @@ export function ChoreChartClient() {
   const reopenChore = useCallback(async (chore: ChoreRecord) => {
     const choresCollection = getCollectionRef('chores');
     if (!choresCollection) return;
-    const previous = choresRef.current;
+    const saved = new Map([[chore.id, completionFields(chore)]]);
     patchChores([chore.id], c => ({ ...c, isCompleted: false, completedAt: undefined, completedAtServer: undefined }));
     try {
       await updateDoc(doc(choresCollection, chore.id), { isCompleted: false, completedAt: deleteField(), completedAtServer: deleteField() });
     } catch (error) {
-      setAssignedChores(previous);
+      setAssignedChores(current => restoreChoreFields(current, saved));
       toastError(error, "Couldn't reopen the chore");
     }
   }, [getCollectionRef, patchChores, toastError]);
@@ -676,7 +683,8 @@ export function ChoreChartClient() {
   });
 
   const byDue = (a: ChoreRecord, b: ChoreRecord) => choreDueKey(a).localeCompare(choreDueKey(b)) || a.task.localeCompare(b.task);
-  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue));
+  const recurringTemplateIds = new Set(choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence)).map(t => t.id));
+  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);
   const visibleFutureChores = showFullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);

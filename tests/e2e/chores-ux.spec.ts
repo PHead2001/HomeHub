@@ -110,6 +110,15 @@ test.describe('chores wave 2', () => {
 
   test('missed repeating chores fold into the latest one', async ({ page }) => {
     const ids = ['chores-ux-missed-1', 'chores-ux-missed-2'];
+    // Only instances of a template that currently repeats fold. Monthly on the 28th
+    // keeps the generated instances out of today's To Do.
+    const template = household.collection('chore-templates').doc('chores-ux-series');
+    await template.set({
+      task: 'Chores UX repeating',
+      roomIds: ['kitchen'],
+      assignedToEmail: ownerEmail,
+      recurrence: { frequency: 'monthly', interval: 1, assignedToEmail: ownerEmail, monthlyOptions: { mode: 'dayOfMonth', dayOfMonth: 28 } },
+    });
     await seedChore(ids[0], { task: 'Chores UX repeating', templateId: 'chores-ux-series', originalDueDate: '2026-07-29', dueDate: '2026-07-29' });
     await seedChore(ids[1], { task: 'Chores UX repeating', templateId: 'chores-ux-series', originalDueDate: '2026-07-30', dueDate: '2026-07-30' });
     try {
@@ -120,7 +129,9 @@ test.describe('chores wave 2', () => {
       await expect(row.getByText('+1 earlier missed')).toBeVisible();
       await expect(row.getByText('Thu, Jul 30')).toBeVisible();
     } finally {
-      await Promise.all(ids.map((id) => household.collection('chores').doc(id).delete()));
+      await template.delete();
+      const generated = await household.collection('chores').where('templateId', '==', 'chores-ux-series').get();
+      await Promise.all([...ids.map((id) => household.collection('chores').doc(id).delete()), ...generated.docs.map((d) => d.ref.delete())]);
     }
   });
 

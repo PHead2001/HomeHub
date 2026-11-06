@@ -22,12 +22,13 @@ import { MemberAvatar } from '@/components/member-avatar';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
+import { useToday } from '@/components/chores/use-today';
 import { auth, db } from '@/lib/firebase';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap, type MemberColor } from '@/lib/member-colors';
 import { SPRING_SNAPPY } from '@/lib/motion';
 import { cn } from '@/lib/utils';
-import { addDaysToKey, dayFromKey, dayKey, isDayKey, type ChoreRecord } from '@/lib/chores/dates';
+import { addDaysToKey, dayFromKey, isDayKey, type ChoreRecord } from '@/lib/chores/dates';
 import {
   choreEvents, groupByDay, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
   type CalendarEvent, type CalendarMember, type MaintenanceDue, type MedicationEntry,
@@ -188,7 +189,7 @@ export function HouseholdCalendar() {
   const [medication, setMedication] = useState<MedicationEntry[]>([]);
   const [sourceErrors, setSourceErrors] = useState<SourceErrors>({});
   const [view, setView] = useState<View>('week');
-  const [today] = useState(() => dayKey(new Date()));
+  const today = useToday();
   const [anchor, setAnchor] = useState(today);
   const [selectedDay, setSelectedDay] = useState(today);
   const [dropTarget, setDropTarget] = useState<string | null>(null);

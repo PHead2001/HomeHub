@@ -37,8 +37,15 @@ export type ToDoEntry<T extends ChoreRecord = ChoreRecord> = {
   missed: T[];
 };
 
-const seriesKey = (chore: ChoreRecord) =>
-  chore.templateId && chore.sourceType !== 'temporary'
+/**
+ * Generated recurring instances carry a `templateId` and no `sourceType`. One-time
+ * library assignments are written with `sourceType: 'template'` and temporary
+ * chores with `'temporary'`, so neither ever folds. Older one-time assignments
+ * have no `sourceType` either; they fold only while their template currently has
+ * a repeating schedule (`recurringTemplateIds`).
+ */
+const seriesKey = (chore: ChoreRecord, recurringTemplateIds: ReadonlySet<string>) =>
+  chore.templateId && !chore.sourceType && recurringTemplateIds.has(chore.templateId)
     ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${chore.assignedToEmail}`
     : null;
 
@@ -50,12 +57,12 @@ const seriesKey = (chore: ChoreRecord) =>
  * Instances due on the same day are never folded into each other, and one-time
  * and temporary chores are never collapsed.
  */
-export function collapseMissedRecurring<T extends ChoreRecord>(dueChores: readonly T[]): ToDoEntry<T>[] {
+export function collapseMissedRecurring<T extends ChoreRecord>(dueChores: readonly T[], recurringTemplateIds: ReadonlySet<string>): ToDoEntry<T>[] {
   const latest = new Map<string, ToDoEntry<T>>();
   const entries: ToDoEntry<T>[] = [];
   const sorted = [...dueChores].sort((a, b) => choreDueKey(a).localeCompare(choreDueKey(b)));
   for (const chore of sorted) {
-    const key = seriesKey(chore);
+    const key = seriesKey(chore, recurringTemplateIds);
     if (!key) {
       entries.push({ chore, missed: [] });
       continue;

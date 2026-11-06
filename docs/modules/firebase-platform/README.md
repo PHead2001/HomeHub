@@ -55,6 +55,7 @@ Primary topology:
 - `households/{householdId}/chores/{choreId}`
 - `households/{householdId}/chore-templates/{templateId}`
 - `households/{householdId}/rooms/{roomId}`
+- `households/{householdId}/chore-settings/preferences` (household chore preferences: `leaderboardEnabled`)
 - `households/{householdId}/shopping-lists/{listId}` with `items` and `config/categories`
 - `households/{householdId}/pantry-inventory/{itemId}`
 - `households/{householdId}/barcode-library/{barcode}`
@@ -69,7 +70,7 @@ Primary topology:
 
 Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` declares no composite indexes; its `fieldOverrides` hold the TTL policies on `notifications.expiresAt` and `aiUsage.expiresAt` (each with the field's default single-field indexes), deployed by the release workflow.
 
-Direct temporary chores use the existing `chores` path with optional `templateId` and `sourceType: temporary`; no parallel collection or fake template is created. Maintenance logs preserved after registry deletion remove their live target ID and retain optional `formerTargetType`/`formerTargetName` history fields.
+Direct temporary chores use the existing `chores` path with optional `templateId` and `sourceType: temporary`; no parallel collection or fake template is created. One-time library assignments are written with `sourceType: template`; generated recurring instances have none. Completed chores may carry `completedAtServer` (a server timestamp written with the completion). Maintenance logs preserved after registry deletion remove their live target ID and retain optional `formerTargetType`/`formerTargetName` history fields.
 
 ## Authentication, Roles, and Security
 
@@ -78,6 +79,8 @@ Rules use Firebase Auth UID/email and UID membership documents only; `households
 Home Assistant credentials under `home-automation/*` can be read and written only by members with `automation.manage`; every other role is denied. The app itself reads and writes them through authorized server actions.
 
 Firestore rules explicitly map known household collections to the closest role/permission operation: chores/templates/rooms, shopping lists/items/config, pantry, barcode library, pets/logs, assets, vehicles, maintenance logs/attachments, notifications, audit logs, and automation configuration. Member-document permission overrides are honored, pending users are denied, and unknown household paths deny by default. Where one update can represent multiple product actions, rules use the narrowest existing permission without field-level semantic inference.
+
+Chore completion stamp (phase 1): the `chores.complete` field allowlist is `isCompleted`, `completedAt`, `completedSubTasks` and `completedAtServer`. On every chore create and update, a chore that becomes completed with a `completedAtServer` must have it equal `request.time`, and a chore that stays completed must keep its stamp unchanged; completions without the field are still accepted for rollout compatibility with older open clients (phase 2 will require it). Chore points and streaks read the stamp when present, so stamped completions cannot be backdated. `chore-settings/preferences` is readable with `chores.view` and writable only by owners and admins (role, not overrides), only at the `preferences` ID and only with `leaderboardEnabled` (bool) and `updatedAt` (string); delete is denied. Both are covered in `tests/rules/firestore.rules.test.ts`.
 
 Protected AI, overview, and barcode server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before any Admin aggregation, public fallback, or OpenAI request. Authority comes only from the caller's approved `members/{uid}` record (`src/ai/household-authority.ts`); legacy email listings, owner email/UID fields and profile role/overrides grant nothing. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
 
