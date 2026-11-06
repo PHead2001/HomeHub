@@ -79,8 +79,8 @@ No App Check enforcement is configured.
 ## Integrations and Background Processing
 
 - Firebase Auth, Firestore, Storage, Cloud Messaging, Functions, and App Hosting.
-- `sendPushOnNewNotification` is the only Cloud Function.
-- There are no scheduled functions or recursive household-delete function.
+- Cloud Functions: `sendPushOnNewNotification` (Firestore trigger) and `householdUpkeep` (every 60 minutes: recurring chores, 90-day completed-chore retention, maintenance and chore reminders). Shared, dependency-free rules live in `functions/src/shared/` and are imported by the web app through the `@functions/*` path alias.
+- Household deletion is an Admin SDK server action (`src/app/household/actions.ts`), not a function.
 - Environment names: `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`, and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - E2E-only names: `NEXT_PUBLIC_USE_FIREBASE_EMULATORS`, `NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST`, `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST`, `FIRESTORE_EMULATOR_HOST`, and `FIREBASE_STORAGE_EMULATOR_HOST`.
 - AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL` (`gpt-5.6-luna`), `OPENAI_CATEGORIZATION_MODEL` (`gpt-5.6-luna`), `OPENAI_RECIPE_MODEL` (`gpt-5.6-terra`), `OPENAI_MAINTENANCE_MODEL` (`gpt-5.6-luna`), and `OPENAI_OVERVIEW_MODEL` (`gpt-5.6-luna`).

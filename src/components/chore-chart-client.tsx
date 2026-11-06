@@ -11,12 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Loader2, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
 import type { LucideIcon, LucideProps } from 'lucide-react';
 import type { Chore, HouseholdMember, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
-import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, differenceInCalendarDays, isValid } from 'date-fns';
+import { format, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, isValid } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
+import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { stableSlugify, cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
@@ -85,12 +86,6 @@ const isRecurrenceFrequency = (frequency: string): frequency is RecurrenceFreque
     return ['daily', 'weekly', 'biweekly', 'monthly'].includes(frequency);
 };
 
-const getWeekOfMonth = (date: Date) => Math.floor((date.getDate() - 1) / 7) + 1;
-
-const isNthWeekday = (date: Date, nthWeekday: MonthlyNthWeekday) => {
-    return getWeekOfMonth(date) === nthWeekday.week && getDay(date) === nthWeekday.dayOfWeek;
-};
-
 const getRecurringWeekdays = (recurrence: Recurrence) => {
     const days = recurrence.weeklyOptions?.daysOfWeek?.filter(day => Number.isInteger(day) && day >= 0 && day <= 6) || [];
     if (days.length > 0) return days;
@@ -129,46 +124,6 @@ const normalizeRecurrence = (recurrence?: Recurrence | null): Recurrence | null 
     return normalized;
 };
 
-const isValidRecurringDate = (date: Date, recurrence: Recurrence) => {
-    const normalizedRecurrence = normalizeRecurrence(recurrence);
-    if (!normalizedRecurrence) return false;
-
-    recurrence = normalizedRecurrence;
-
-    if (recurrence.frequency === 'daily') {
-        if (recurrence.dailyOptions?.excludeWeekends) {
-            const day = getDay(date);
-            return day > 0 && day < 6;
-        }
-        return true;
-    }
-
-    if (recurrence.frequency === 'weekly' || recurrence.frequency === 'biweekly') {
-        const day = getDay(date);
-        if (!getRecurringWeekdays(recurrence).includes(day)) {
-            return false;
-        }
-
-        if (recurrence.frequency === 'biweekly') {
-            const anchorDate = parseISO(recurrence.startDate || getDefaultAnchorDate());
-            const daysSinceAnchor = differenceInCalendarDays(date, anchorDate);
-            return daysSinceAnchor >= 0 && Math.floor(daysSinceAnchor / 7) % 2 === 0;
-        }
-
-        return true;
-    }
-
-    if (recurrence.frequency === 'monthly') {
-        const monthlyOptions = recurrence.monthlyOptions;
-        if (!monthlyOptions) return false;
-        if (getMonthlyMode(recurrence) === 'nthWeekday') {
-            return monthlyOptions.nthWeekday ? isNthWeekday(date, monthlyOptions.nthWeekday) : false;
-        }
-        return date.getDate() === (monthlyOptions.dayOfMonth || 1);
-    }
-
-    return false;
-};
 
 function ManageRoomsDialog({
     isOpen,
@@ -1414,7 +1369,7 @@ function ChoreCalendar({ chores }: { chores: Chore[] }) {
 }
 
 export function ChoreChartClient() {
-  const { currentUser, permissions } = useAuth();
+  const { currentUser } = useAuth();
   const { toast } = useToast();
   
   const [assignedChores, setAssignedChores] = useState<Chore[]>([]);
@@ -1492,31 +1447,19 @@ export function ChoreChartClient() {
            return;
         }
         
+        // Recurring chores, retention and reminders run on the server (hourly, and
+        // here on demand) so every household member sees the same schedule.
+        const firebaseUser = auth.currentUser;
+        if (firebaseUser) {
+            await syncHouseholdUpkeep({ idToken: await firebaseUser.getIdToken(), householdId: currentUser.householdId })
+                .catch(syncError => console.warn('Household upkeep could not run.', syncError));
+        }
+
         const [choresSnapshot, templatesSnapshot, roomsSnapshot] = await Promise.all([
             getDocs(query(choresCollection)),
             getDocs(query(choreTemplatesCollection)),
             getDocs(query(roomsCollection)),
         ]);
-
-        const ninetyDaysAgo = sub(new Date(), { days: 90 });
-        const completedChoresQuery = query(choresCollection, where('isCompleted', '==', true));
-        const completedChoresSnapshot = await getDocs(completedChoresQuery);
-        
-        const purgeBatch = writeBatch(db);
-        let purgedCount = 0;
-        completedChoresSnapshot.forEach(doc => {
-            const chore = doc.data() as Chore;
-            if (chore.completedAt && parseISO(chore.completedAt) < ninetyDaysAgo) {
-                purgeBatch.delete(doc.ref);
-                purgedCount++;
-            }
-        });
-        
-        // Retention: completed chores older than 90 days are removed. Only people who
-        // may delete chores run it, and a failure never blocks viewing.
-        if (purgedCount > 0 && permissions['chores.delete']) {
-            await purgeBatch.commit().catch(purgeError => console.warn('Old completed chores were not purged.', purgeError));
-        }
 
         const templatesData: ChoreTemplate[] = templatesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ChoreTemplate));
         setChoreTemplates(templatesData.sort((a,b) => a.task.localeCompare(b.task)));
@@ -1526,85 +1469,13 @@ export function ChoreChartClient() {
 
         const existingChoresData: Chore[] = choresSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Chore));
         
-        const generationBatch = writeBatch(db);
-        const generationLimit = 30;
-        const recurringTemplates = templatesData.filter(t => normalizeRecurrence(t.recurrence) && (t.assignedToEmail || t.recurrence?.assignedToEmail));
-        let generatedInThisPass = 0;
-        
-        for (const template of recurringTemplates) {
-            const recurrence = normalizeRecurrence(template.recurrence);
-            const assignedToEmail = template.assignedToEmail || recurrence?.assignedToEmail;
-            const { task } = template;
-            if (!recurrence || !assignedToEmail) continue;
-
-            const user = usersData.find(u => u.email === assignedToEmail);
-            const assignedToDisplayName = user?.displayName || assignedToEmail;
-            
-            let nextDueDate = startOfToday();
-            let generatedCount = 0;
-
-            while (generatedCount < generationLimit) {
-                const isValidDate = isValidRecurringDate(nextDueDate, recurrence);
-
-                if (isValidDate) {
-                    const originalDueDate = format(nextDueDate, 'yyyy-MM-dd');
-                    const roomsToAssign = template.roomIds && template.roomIds.length > 0 ? template.roomIds : ['general'];
-                    
-                    roomsToAssign.forEach(roomId => {
-                        const choreId = stableSlugify(`${template.id}-${roomId}-${originalDueDate}-${assignedToEmail}`);
-                        const exists = existingChoresData.some(c => c.id === choreId);
-                        
-                        if (!exists) {
-                            const newChore: Omit<Chore, 'id'> = {
-                                task,
-                                assignedToEmail,
-                                assignedToDisplayName,
-                                dueDate: nextDueDate.toISOString(),
-                                isCompleted: false,
-                                notes: template.notes || '',
-                                subTasks: template.subTasks || [],
-                                completedSubTasks: [],
-                                templateId: template.id,
-                                originalDueDate: originalDueDate,
-                                roomIds: roomId === 'general' ? [] : [roomId],
-                            };
-                            generationBatch.set(doc(choresCollection, choreId), newChore);
-                            generatedInThisPass++;
-                        }
-                    });
-                    generatedCount++;
-                }
-                nextDueDate = addDays(nextDueDate, 1);
-            }
-        }
-
-        let generated = false;
-        if (generatedInThisPass > 0 && permissions['chores.create']) {
-            generated = await generationBatch.commit().then(() => true, generationError => {
-                console.warn('Upcoming recurring chores were not generated.', generationError);
-                return false;
-            });
-        }
-        if (generated) {
-            const finalChoresSnapshot = await getDocs(query(choresCollection));
-            const finalChoresData: Chore[] = finalChoresSnapshot.docs.map(doc => {
-                const chore = { id: doc.id, ...doc.data() } as Chore;
-                const user = usersData.find(u => u.email === chore.assignedToEmail);
-                return {
-                    ...chore,
-                    assignedToDisplayName: user?.displayName || chore.assignedToEmail,
-                };
-            });
-            setAssignedChores(finalChoresData);
-        } else {
-            setAssignedChores(existingChoresData.map(chore => {
-                const user = usersData.find(u => u.email === chore.assignedToEmail);
-                return {
-                    ...chore,
-                    assignedToDisplayName: user?.displayName || chore.assignedToEmail,
-                };
-            }));
-        }
+        setAssignedChores(existingChoresData.map(chore => {
+            const user = usersData.find(u => u.email === chore.assignedToEmail);
+            return {
+                ...chore,
+                assignedToDisplayName: user?.displayName || chore.assignedToEmail,
+            };
+        }));
 
     } catch (error) {
         console.error("Error fetching data:", error instanceof Error ? error : String(error));
@@ -1612,7 +1483,7 @@ export function ChoreChartClient() {
     } finally {
         setLoading(false);
     }
-  }, [getCollectionRef, currentUser, permissions, toast]);
+  }, [getCollectionRef, currentUser, toast]);
 
   useEffect(() => {
     if (currentUser?.householdId) {
@@ -1622,87 +1493,8 @@ export function ChoreChartClient() {
     }
   }, [currentUser, fetchAllData]);
   
-    useEffect(() => {
-        if (!householdUsers.length || !assignedChores.length || !currentUser?.email || !currentUser.householdId) {
-            return;
-        }
-
-        const householdId = currentUser.householdId;
-
-        const intervalId = setInterval(async () => {
-            const now = new Date();
-            const dateStr = format(now, 'yyyy-MM-dd');
-            const user = householdUsers.find(u => u.email === currentUser.email);
-            if (!user) return;
-
-            const settings = user.choreSettings;
-            
-            // 1. Overdue Alerts (After Midnight check)
-            // Chores are overdue if due date is in the past and NOT today
-            const overdueChores = assignedChores.filter(c => 
-                c.assignedToEmail === user.email &&
-                !c.isCompleted && 
-                isPast(parseISO(c.dueDate)) && !isToday(parseISO(c.dueDate))
-            );
-
-            // We check if it's past 12:01 AM
-            if (overdueChores.length > 0) {
-                const overdueNotifId = `overdue-${dateStr}`;
-                const notifRef = doc(db, 'households', householdId, 'notifications', `${user.uid}-${overdueNotifId}`);
-                
-                // Use a simple check to see if we've already notified for this deterministic ID today
-                const snap = await getDoc(notifRef);
-                if (!snap.exists()) {
-                    const message = `Alert: You have ${overdueChores.length} overdue chore${overdueChores.length > 1 ? 's' : ''}!`;
-                    setDoc(notifRef, buildNotificationDocument({
-                        householdId,
-                        category: 'chores',
-                        title: 'Overdue chores',
-                        message,
-                        deepLink: '/chores',
-                        sourceType: 'chore-reminder',
-                        sourceId: overdueNotifId,
-                        targetUser: user,
-                    }));
-                }
-            }
-
-            // 2. User's Daily Custom Reminder
-            if (settings?.reminderEnabled && settings?.reminderTime) {
-                const [hours, minutes] = settings.reminderTime.split(':').map(Number);
-                // Trigger if current time is after or equal to the reminder time
-                if (now.getHours() > hours || (now.getHours() === hours && now.getMinutes() >= minutes)) {
-                    const todayChores = assignedChores.filter(c => 
-                        c.assignedToEmail === user.email &&
-                        !c.isCompleted && 
-                        isToday(parseISO(c.dueDate))
-                    );
-                    
-                    const totalPending = overdueChores.length + todayChores.length;
-                    if (totalPending > 0) {
-                        const customNotifId = `reminder-${dateStr}`;
-                        const customNotifRef = doc(db, 'households', householdId, 'notifications', `${user.uid}-${customNotifId}`);
-                        const snap = await getDoc(customNotifRef);
-                        if (!snap.exists()) {
-                            const message = `Daily Reminder: You have ${totalPending} chore${totalPending > 1 ? 's' : ''} pending.`;
-                            setDoc(customNotifRef, buildNotificationDocument({
-                                householdId,
-                                category: 'chores',
-                                title: 'Daily chore reminder',
-                                message,
-                                deepLink: '/chores',
-                                sourceType: 'chore-reminder',
-                                sourceId: customNotifId,
-                                targetUser: user,
-                            }));
-                        }
-                    }
-                }
-            }
-        }, 60 * 1000);
-
-        return () => clearInterval(intervalId);
-    }, [householdUsers, assignedChores, currentUser]);
+    // Chore reminders are sent by the server (functions/src/reminders.ts), not
+    // by whichever browser happens to have this page open.
 
   const handleSaveChoreTemplate = async (choreData: Partial<ChoreTemplate>, id?: string) => {
     const templatesCollection = getCollectionRef('chore-templates');

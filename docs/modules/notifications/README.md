@@ -56,7 +56,7 @@ Creation rules require an approved sender, the household's own `householdId`, Ti
 - Chore checks run every minute while Chores is mounted. Direct Temporary Task creation writes one deterministic targeted assignment notification in the same batch as its chore.
 - Maintenance synchronization runs when Maintenance opens.
 - Pending-member reminders are client-triggered after 24 hours.
-- No scheduled reminder or cleanup function exists.
+- Maintenance and chore reminders are scheduled server-side. The hourly `householdUpkeep` Cloud Function (`functions/src/index.ts` → `functions/src/reminders.ts`) runs the same idempotent step for every household; the Chores page also runs it on demand through `syncHouseholdUpkeep` (`src/app/chores/actions.ts`, authorized by `chores.view`) so a new recurring assignment appears immediately.
 - Physical expiration requires manual Firestore TTL configuration on collection group `notifications`, field `expiresAt`.
 
 ## Cross-Module Dependencies
@@ -76,7 +76,7 @@ The homepage overview counts only active notifications visible to the verified u
 - Deterministic maintenance identity is `(sourceType, sourceId, stateKey)`; `stateKey` changes only for a meaningful due-state/date/mileage cycle change.
 - Deleting a maintenance asset or vehicle resolves its active schedule and expiration reminders from a fresh notification snapshot; unrelated notification history remains intact.
 - Bell and center presentation deduplicate legacy documents with the same semantic source while merging read, dismiss, and resolution history.
-- Reminders are absent until a relevant client page runs its generator.
+- Reminders appear without anyone opening a page; IDs are deterministic, so overlapping runs never duplicate.
 - Push recipients come from the household's membership records: a notification targeted by `targetUserUid` (or `targetUserEmail`) goes only to that approved member, an untargeted one to every approved member, never to pending or former members. Each recipient's profile is then read directly by email (`users/{email}`) for its FCM tokens; no `users.uid` query is involved, so profiles without a stored `uid` still receive pushes.
 - New-member approval notifications are targeted at each active owner/admin.
 

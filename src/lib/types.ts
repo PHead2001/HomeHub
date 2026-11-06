@@ -406,6 +406,8 @@ export type Household = {
     /** Set when the owner starts deleting the household; data is frozen until removal finishes. */
     deletingAt?: unknown;
     deletingByUid?: string;
+    /** IANA timezone used for reminders and recurring chores (default America/Chicago). */
+    timeZone?: string;
 }
 
 export type InviteCode = {

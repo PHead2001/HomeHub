@@ -1,6 +1,8 @@
 import {onDocumentCreated} from "firebase-functions/v2/firestore";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import * as logger from "firebase-functions/logger";
+import {runHouseholdReminders} from "./reminders";
 import {
   clampText,
   safeDeepLink,
@@ -95,5 +97,40 @@ export const sendPushOnNewNotification = onDocumentCreated(
     });
 
     return Promise.all(tokensToRemove);
+  },
+);
+
+// Hourly upkeep for every household: maintenance and chore reminders, and the
+// next recurring chores. Runs without anyone opening the app. Each household is
+// isolated so one failure is logged and never blocks the others.
+export const householdUpkeep = onSchedule(
+  {schedule: "every 60 minutes", timeZone: "UTC", retryCount: 0},
+  async () => {
+    const now = new Date();
+    const ts = (d: Date) => admin.firestore.Timestamp.fromDate(d);
+    const households = await db.collection("households").select().get();
+    const totals = {households: 0, failed: 0, generatedChores: 0,
+      purgedChores: 0, createdNotifications: 0, refreshedNotifications: 0};
+    for (const household of households.docs) {
+      try {
+        const result = await runHouseholdReminders(db, household.id, now, ts);
+        totals.households++;
+        totals.generatedChores += result.generatedChores;
+        totals.purgedChores += result.purgedChores;
+        totals.createdNotifications += result.createdNotifications;
+        totals.refreshedNotifications += result.refreshedNotifications;
+      } catch (error) {
+        totals.failed++;
+        logger.error("Household upkeep failed.", {
+          householdId: household.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    logger.info("Household upkeep finished.", totals);
+    if (totals.failed > 0) {
+      // Surface partial failure in Error Reporting without retrying the rest.
+      logger.error("Household upkeep had failures.", {failed: totals.failed});
+    }
   },
 );

@@ -53,10 +53,10 @@ Navigation uses `chores.view`. Firestore's broad approved-member rule does not e
 ## Integrations and Background Processing
 
 - Template assignment notifications are best-effort household notification writes. Temporary Task creation batches its direct chore and deterministic assignment notification together so a successful creation cannot omit its initial notification.
-- Overdue and configured daily reminders are checked every 60 seconds only while the chore client is mounted.
+- Overdue alerts (after 7:00 local time) and each person's daily reminder (at their chosen time, in their own `users.timeZone`, falling back to the household's) are created on the server. The hourly `householdUpkeep` Cloud Function (`functions/src/index.ts` → `functions/src/reminders.ts`) runs the same idempotent step for every household; the Chores page also runs it on demand through `syncHouseholdUpkeep` (`src/app/chores/actions.ts`, authorized by `chores.view`) so a new recurring assignment appears immediately.
 - Deterministic per-user/day notification IDs suppress same-day duplicates.
 - New records can trigger the shared FCM Cloud Function.
-- There is no scheduled recurrence or reminder function.
+- Recurring instances for the next 30 occurrences are generated on the server from `functions/src/shared/recurrence.ts`, using the household `timeZone` (default `America/Chicago`). Chore IDs are `stableSlugify(templateId-roomId-day-email)`, identical to the previous browser-generated IDs. Nothing is generated for someone who is not an approved member.
 
 ## Cross-Module Dependencies
 
@@ -70,9 +70,9 @@ The homepage AI Overview includes only incomplete chores assigned to the verifie
 ## Invariants and Failure Behavior
 
 - Defensive normalization supplies defaults for old recurrence records missing interval, weekdays, anchors, monthly mode, or day.
-- Completed chores older than 90 days are deleted during chore-page loading, only when the viewer has `chores.delete`; a failed purge is logged and never blocks viewing.
+- Retention: completed chores older than 90 days (household-local) are deleted by the server step.
 - Room deletion updates templates but not existing chore instances; unresolved room IDs can disappear from grouped views.
-- Client-only generation means recurring instances and reminders are not advanced while nobody with `chores.create` (generation) or `chores.delete` (retention) opens the chore page.
+- Generation and reminders no longer depend on anyone opening the app.
 - Best-effort notification failures do not roll back chore writes.
 - Assignment forms show one-time date controls or recurring controls, never both; switching modes retains the unsaved recurrence state for that dialog session.
 - Active and completed chore instances use the same confirmation contract before permanent deletion.

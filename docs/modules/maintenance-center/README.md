@@ -24,7 +24,7 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 
 ## Architecture and Data Flow
 
-`MaintenanceLogClient` loads assets, vehicles, logs, attachment metadata, and notifications together. Assets and vehicles embed schedule arrays. Reminder cards are projected client-side from dates, mileage, and schedules; deterministic state notification documents are transactionally created when the center is opened.
+`MaintenanceLogClient` loads assets, vehicles, logs, attachment metadata, and notifications together. Assets and vehicles embed schedule arrays. Reminder cards and server notifications share one builder (`functions/src/shared/maintenance-reminders.ts`) evaluated in the household timezone. Retired assets and retired/sold vehicles produce no reminders; warranties and vehicle documents "expire" rather than become "overdue". Notification documents are created by the server, not by opening this page.
 
 Completing a schedule creates a routine log and writes the updated embedded schedule. Vehicle completion can also update current mileage.
 
@@ -57,7 +57,7 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 - The homepage overview uses `maintenance.view` to calculate status, schedule/checklist, date, mileage, warranty, registration, and inspection signals server-side. Only bounded labels/dates/counts reach the optional narrative; serial numbers, VINs, plates, costs, notes, and attachment paths are excluded.
 - Date due-soon threshold: 14 days.
 - Mileage due-soon threshold: 500 miles.
-- Notification generation is client-triggered when Maintenance Center opens; no scheduled generator exists.
+- The hourly `householdUpkeep` Cloud Function (`functions/src/index.ts` → `functions/src/reminders.ts`) runs the same idempotent step for every household; the Chores page also runs it on demand through `syncHouseholdUpkeep` (`src/app/chores/actions.ts`, authorized by `chores.view`) so a new recurring assignment appears immediately. An expired notification for something still overdue is extended rather than allowed to disappear; resolved ones are left alone.
 - New notification documents can trigger FCM through the shared Cloud Function.
 - Physical notification expiration requires Firestore TTL on `expiresAt`.
 
