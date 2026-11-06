@@ -28,6 +28,7 @@ import {
   planPantryHandoff,
   productPhotoForName,
   pantryMergeStillValid,
+  confirmedHandoffChoices,
 } from '../../src/lib/shopping/pantry';
 import { isListTint, listTint, listTintIndex, resolveListIconName } from '../../src/lib/shopping/list-style';
 import { parseShoppingUrlState, shoppingHref } from '../../src/lib/shopping/url-state';
@@ -283,8 +284,59 @@ describe('quick-add partial failures', () => {
     assert.doesNotMatch(client, /Promise\.all\(entries\.map/);
     const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
     // Add to pantry, then clear: one transaction for both.
-    assert.match(pantry, /clear\?: \{ listId: string; itemIds: readonly string\[\] \}/);
-    assert.match(pantry, /transaction\.delete\(clearRefs\[index\]\)/);
+    assert.match(pantry, /\{ clearItemIds = \[\] \}/);
+    assert.match(pantry, /transaction\.delete\(itemRef\(id\)\)/);
+  });
+});
+
+describe('pantry handoff credits only confirmed purchases', () => {
+  const choice = (itemId: string, name: string, quantity = 1, location: 'Pantry' | 'Fridge' | 'Freezer' = 'Fridge') =>
+    ({ itemId, item: { name, quantity }, location });
+
+  test('keeps confirmed purchased items, using their confirmed name and quantity', () => {
+    const confirmed = new Map<string, { name?: unknown; quantity?: unknown; status?: unknown } | undefined>([
+      ['milk', { name: 'Whole milk', quantity: 3, status: 'purchased' }], // quantity changed since the dialog opened
+      ['eggs', { name: 'Eggs', quantity: 1, status: 'needed' }], // un-ticked by someone else
+      ['bread', undefined], // already cleared by another member's "then clear"
+      ['jam', { name: 'Jam', quantity: 1, status: 'purchased' }],
+    ]);
+    const { credited, skipped } = confirmedHandoffChoices(
+      [choice('milk', 'Whole milk', 1), choice('eggs', 'Eggs'), choice('bread', 'Bread', 2, 'Pantry'), choice('jam', 'Jam', 1, 'Pantry')],
+      confirmed,
+    );
+    assert.deepEqual(credited.map((c) => [c.itemId, c.item.name, c.item.quantity, c.location]), [
+      ['milk', 'Whole milk', 3, 'Fridge'],
+      ['jam', 'Jam', 1, 'Pantry'],
+    ]);
+    assert.deepEqual(skipped.map((c) => c.itemId), ['eggs', 'bread']);
+
+    // The pantry plan is built from the credited choices only.
+    const plans = planPantryHandoff(credited, [{ id: 'p-milk', name: 'whole milk', quantity: 1, unit: 'items', location: 'Fridge' }]);
+    assert.deepEqual(plans, [
+      { kind: 'increment', id: 'p-milk', name: 'whole milk', add: 3, location: 'Fridge' },
+      { kind: 'create', name: 'Jam', quantity: 1, location: 'Pantry' },
+    ]);
+  });
+
+  test('credits nothing when every item was cleared by a concurrent handoff', () => {
+    const { credited, skipped } = confirmedHandoffChoices([choice('a', 'A'), choice('b', 'B')], new Map());
+    assert.equal(credited.length, 0);
+    assert.equal(skipped.length, 2);
+  });
+
+  test('never credits the same shopping item twice', () => {
+    const confirmed = new Map([['a', { name: 'A', quantity: 1, status: 'purchased' }]]);
+    const { credited } = confirmedHandoffChoices([choice('a', 'A'), choice('a', 'A')], confirmed);
+    assert.equal(credited.length, 1);
+  });
+
+  test('the transaction reads every shopping item before planning or writing', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
+    const body = source.slice(source.indexOf('return runTransaction('));
+    const firstWrite = Math.min(...['transaction.update', 'transaction.set', 'transaction.delete'].map((w) => body.indexOf(w)));
+    for (const step of ['transaction.get(itemRef(id))', 'confirmedHandoffChoices(choices, confirmed)', 'planPantryHandoff(credited, existing)', 'transaction.get(doc(pantry, plan.id))']) {
+      assert.ok(body.indexOf(step) >= 0 && body.indexOf(step) < firstWrite, `${step} happens before the first write`);
+    }
   });
 });
 

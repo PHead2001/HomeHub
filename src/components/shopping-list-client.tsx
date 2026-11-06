@@ -788,18 +788,23 @@ export function ShoppingListClient({
     try {
       // One transaction: with "then clear" the pantry writes and the clear succeed or
       // fail together, so a retry can never add the same purchases twice.
-      const { written, cleared } = await addPurchasesToPantry(
+      if (!list) return false;
+      // Only purchases the transaction confirms are credited (and, with "then clear",
+      // deleted in the same commit), so concurrent handoffs never double-credit.
+      const { written, cleared, skipped } = await addPurchasesToPantry(
         householdId,
+        list.id,
         choices,
-        thenClear && list ? { listId: list.id, itemIds: shownIds } : undefined,
+        thenClear ? { clearItemIds: shownIds } : undefined,
       );
       toast({
         title: thenClear ? 'Added to the pantry and cleared' : 'Added to the pantry',
-        description: `${pluralize(written, 'item')} on the shelves.`,
+        description: `${pluralize(written, 'item')} on the shelves.${skipped.length > 0 ? ` Skipped ${skipped.join(', ')}: no longer bought or already cleared.` : ''}`,
         action: onOpenPantry ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
       });
       setIsReceiptOpen(false);
-      if (thenClear && list) await afterCleared(list, cleared);
+      if (thenClear) await afterCleared(list, cleared);
+      else void fetchItemsAndCategories(list.id, { silent: true });
       return true;
     } catch (error) {
       toastError(error, 'Could not add to the pantry');

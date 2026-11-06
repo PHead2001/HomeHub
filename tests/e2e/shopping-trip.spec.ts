@@ -200,6 +200,39 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('add to pantry, then clear credits only items still purchased when it commits', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const listId = 'e2e-handoff-list';
+    const listRef = lists.doc(listId);
+    const kept = 'E2E handoff cheese';
+    const unticked = 'E2E handoff crackers';
+    await listRef.set({ name: 'E2E Handoff', description: '', icon: 'ShoppingCart', type: 'Grocery', color: 'tint-2' });
+    await listRef.collection('items').doc('cheese').set({ name: kept, quantity: 2, category: 'Dairy', status: 'purchased', createdAt: fixedNow });
+    await listRef.collection('items').doc('crackers').set({ name: unticked, quantity: 1, category: 'Snacks', status: 'purchased', createdAt: fixedNow });
+    try {
+      await open(page, `/shopping?list=${listId}`);
+      await page.getByRole('button', { name: 'Clear', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Add to pantry, then clear' }).click();
+      const handoff = page.getByRole('dialog', { name: 'Add to pantry' });
+      await expect(handoff.getByText(unticked)).toBeVisible();
+
+      // Another member un-ticks one item while the dialog is open.
+      await listRef.collection('items').doc('crackers').update({ status: 'needed' });
+      await handoff.getByRole('button', { name: /^Add and clear \(2 items\)$/ }).click();
+      await expect(handoff).toHaveCount(0);
+
+      await expect.poll(async () => (await pantry.where('name', '==', kept).get()).docs.map((d) => d.data().quantity)).toEqual([2]);
+      expect((await pantry.where('name', '==', unticked).get()).size).toBe(0);
+      expect((await listRef.collection('items').doc('cheese').get()).exists).toBe(false);
+      expect((await listRef.collection('items').doc('crackers').get()).data()?.status).toBe('needed');
+      await expect(page.locator('#item-needed-crackers')).toBeVisible();
+    } finally {
+      await Promise.all([deleteWhere(pantry, kept), deleteWhere(pantry, unticked)]);
+      await Promise.all(['cheese', 'crackers'].map((id) => listRef.collection('items').doc(id).delete()));
+      await listRef.delete();
+    }
+  });
+
   test('header navigation to /shopping resets the open tab and list to match the URL', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/shopping?tab=pantry');

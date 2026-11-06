@@ -47,7 +47,7 @@ export function PantryHandoffDialog({
     if (chosen.length === 0 || saving) return;
     setSaving(true);
     try {
-      const ok = await onConfirm(chosen.map(({ item, location }) => ({ item, location })), rows.map(({ item }) => item.id));
+      const ok = await onConfirm(chosen.map(({ item, location }) => ({ itemId: item.id, item, location })), rows.map(({ item }) => item.id));
       if (ok) onOpenChange(false);
     } finally {
       setSaving(false);

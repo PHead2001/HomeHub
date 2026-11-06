@@ -22,9 +22,43 @@ export function pantryLocationForCategory(category: string | undefined | null): 
 }
 
 export type PantryHandoffChoice = {
+  /** The shopping item this purchase comes from (re-read inside the transaction). */
+  itemId: string;
   item: Pick<ShoppingListItem, 'name' | 'quantity'>;
   location: PantryItemLocation;
 };
+
+/**
+ * Keeps only the choices whose shopping item is confirmed still purchased by a
+ * read inside the transaction, using the confirmed name and quantity. An item
+ * someone un-ticked, deleted or already cleared (for example a second member
+ * running "Add to pantry, then clear" at the same time) is skipped, so the pantry
+ * is credited only for purchases this transaction confirms.
+ */
+export function confirmedHandoffChoices(
+  choices: readonly PantryHandoffChoice[],
+  confirmed: ReadonlyMap<string, { name?: unknown; quantity?: unknown; status?: unknown } | undefined>,
+): { credited: PantryHandoffChoice[]; skipped: PantryHandoffChoice[] } {
+  const credited: PantryHandoffChoice[] = [];
+  const skipped: PantryHandoffChoice[] = [];
+  const seen = new Set<string>();
+  for (const choice of choices) {
+    const data = confirmed.get(choice.itemId);
+    if (seen.has(choice.itemId) || !data || data.status !== 'purchased') {
+      skipped.push(choice);
+      continue;
+    }
+    seen.add(choice.itemId);
+    credited.push({
+      ...choice,
+      item: {
+        name: typeof data.name === 'string' && data.name.trim() ? data.name : choice.item.name,
+        quantity: Number(data.quantity) > 0 ? Number(data.quantity) : choice.item.quantity,
+      },
+    });
+  }
+  return { credited, skipped };
+}
 
 export type PantryWritePlan =
   /** Adds `add` to the existing entry with an atomic Firestore increment (never a read-then-write total). */
@@ -38,7 +72,7 @@ export type PantryWritePlan =
  * `items`. Two purchases of the same name and location in one batch are combined.
  */
 export function planPantryHandoff(
-  choices: readonly PantryHandoffChoice[],
+  choices: readonly Pick<PantryHandoffChoice, 'item' | 'location'>[],
   existing: readonly Pick<PantryItem, 'id' | 'name' | 'quantity' | 'unit' | 'location'>[],
 ): PantryWritePlan[] {
   const combined = new Map<string, { name: string; quantity: number; location: PantryItemLocation }>();

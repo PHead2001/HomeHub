@@ -2,49 +2,71 @@ import { collection, doc, getDocs, increment, runTransaction } from 'firebase/fi
 import { db } from '@/lib/firebase';
 import { slugify } from '@/lib/utils';
 import type { PantryItem } from '@/lib/types';
-import { pantryMergeStillValid, planPantryHandoff, type PantryHandoffChoice } from './pantry';
+import { confirmedHandoffChoices, pantryMergeStillValid, planPantryHandoff, type PantryHandoffChoice } from './pantry';
 import { isStillPurchased } from './items';
 
+export type PantryHandoffResult = {
+  /** Pantry entries written (incremented or created). */
+  written: number;
+  /** Shopping item ids deleted by "then clear". */
+  cleared: string[];
+  /** Names of chosen items that were no longer purchased, so not credited. */
+  skipped: string[];
+};
+
 /**
- * Writes purchased items into `households/{id}/pantry-inventory` in one Firestore
- * transaction. Merge targets are planned from a fresh read, then re-read inside the
- * transaction: an entry that still exists on the same shelf, counted in `items`,
- * with the same name grows by an atomic `increment()`; if another member deleted,
- * moved or re-unitted it meanwhile, the purchase becomes a new entry instead.
- * New entries get the fields the pantry form writes (`name`, `quantity`,
- * `unit: 'items'`, `location`, `expiryDate: null`). Online only: the caller hides
- * the action offline.
+ * Credits purchased shopping items to `households/{id}/pantry-inventory` in one
+ * Firestore transaction, structured so every read happens before any write and a
+ * retry recomputes everything from fresh reads:
  *
- * With `clear`, the same transaction also deletes those shopping items (of
- * `clear.itemIds`) that are still purchased, so "Add to pantry, then clear" is
- * all-or-nothing: a failure leaves both the pantry and the list unchanged, and a
- * retry can never add to the pantry twice. Resolves with the number of pantry
- * entries written and the shopping item ids deleted.
+ * 1. Read every chosen shopping item and every item to clear.
+ * 2. Keep only the choices confirmed still `purchased` (`confirmedHandoffChoices`),
+ *    using their confirmed name and quantity, and plan the pantry writes from those.
+ * 3. Read each planned merge target and re-check it (`pantryMergeStillValid`).
+ * 4. Write: increment valid targets atomically, create the rest, and with
+ *    `clearItemIds` delete exactly those items confirmed still purchased.
+ *
+ * So the pantry is credited only for purchases this transaction confirms: with
+ * "then clear", every credited item is also deleted in the same commit, and a
+ * second member doing the same at the same time finds the items gone and credits
+ * nothing. Without clear the items stay purchased on the list, so the handoff can
+ * be repeated on purpose; it still skips items no longer purchased.
+ *
+ * Merge candidates come from one pantry read made before the transaction (Firestore
+ * web transactions cannot run queries); each is re-validated inside it. An entry
+ * created by someone else after that read is not merged into, so a same-name entry
+ * may be created instead (a harmless duplicate). Online only.
  */
 export async function addPurchasesToPantry(
   householdId: string,
+  listId: string,
   choices: readonly PantryHandoffChoice[],
-  clear?: { listId: string; itemIds: readonly string[] },
-): Promise<{ written: number; cleared: string[] }> {
+  { clearItemIds = [] }: { clearItemIds?: readonly string[] } = {},
+): Promise<PantryHandoffResult> {
   const pantry = collection(db, 'households', householdId, 'pantry-inventory');
+  const itemRef = (id: string) => doc(db, 'households', householdId, 'shopping-lists', listId, 'items', id);
   const snapshot = await getDocs(pantry);
   const existing = snapshot.docs.map((pantryDoc) => ({ id: pantryDoc.id, ...pantryDoc.data() } as PantryItem));
-  const plans = planPantryHandoff(choices, existing);
-  if (plans.length === 0 && !clear?.itemIds.length) return { written: 0, cleared: [] };
-  const clearRefs = (clear?.itemIds ?? []).map((id) => doc(db, 'households', householdId, 'shopping-lists', clear!.listId, 'items', id));
+  const readIds = [...new Set([...choices.map((choice) => choice.itemId), ...clearItemIds])];
+  if (readIds.length === 0) return { written: 0, cleared: [], skipped: [] };
 
   const create = (name: string, quantity: number, location: PantryItem['location']) => ({
     ref: doc(pantry, slugify(name)),
     data: { name, quantity, unit: 'items', location, expiryDate: null },
   });
 
-  const cleared = await runTransaction(db, async (transaction) => {
-    // Every read happens before any write.
+  return runTransaction(db, async (transaction) => {
+    // --- Reads (all before any write; recomputed on every retry) ---
+    const shopping = await Promise.all(readIds.map((id) => transaction.get(itemRef(id))));
+    const confirmed = new Map(readIds.map((id, index) => [id, shopping[index].exists() ? shopping[index].data() : undefined]));
+    const { credited, skipped } = confirmedHandoffChoices(choices, confirmed);
+    const plans = planPantryHandoff(credited, existing);
     const increments = plans.filter((plan) => plan.kind === 'increment');
-    const current = await Promise.all(increments.map((plan) => transaction.get(doc(pantry, plan.id))));
-    const shopping = await Promise.all(clearRefs.map((ref) => transaction.get(ref)));
+    const targets = await Promise.all(increments.map((plan) => transaction.get(doc(pantry, plan.id))));
+
+    // --- Writes ---
     increments.forEach((plan, index) => {
-      const read = current[index];
+      const read = targets[index];
       if (pantryMergeStillValid(read.exists() ? read.data() : undefined, plan, plan.location)) {
         transaction.update(read.ref, { quantity: increment(plan.add) });
       } else {
@@ -57,14 +79,13 @@ export async function addPurchasesToPantry(
       const fresh = create(plan.name, plan.quantity, plan.location);
       transaction.set(fresh.ref, fresh.data);
     }
-    const deleted: string[] = [];
-    shopping.forEach((snapshot, index) => {
-      if (snapshot.exists() && isStillPurchased(snapshot.data())) {
-        transaction.delete(clearRefs[index]);
-        deleted.push(clear!.itemIds[index]);
+    const cleared: string[] = [];
+    for (const id of new Set(clearItemIds)) {
+      if (isStillPurchased(confirmed.get(id))) {
+        transaction.delete(itemRef(id));
+        cleared.push(id);
       }
-    });
-    return deleted;
+    }
+    return { written: plans.length, cleared, skipped: skipped.map((choice) => choice.item.name) };
   });
-  return { written: plans.length, cleared };
 }
