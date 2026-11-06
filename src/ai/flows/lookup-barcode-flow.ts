@@ -133,6 +133,9 @@ export async function lookupBarcode(
     permission: 'shopping.view',
     flowName: 'barcode-lookup',
     maxRequestsPerMinute: 30,
+    // Model-free (household library, then Open Food Facts): never spends or needs
+    // the daily AI quota, so scanning keeps working when AI capacity is used up.
+    consumeQuota: false,
     task: user => lookupBarcodeForAuthorizedUser(input, user),
   });
 }
