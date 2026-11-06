@@ -706,15 +706,17 @@ describe('Home Assistant credentials', () => {
 describe('chore completion stamps and chore settings', () => {
   const chore = (user: Identity, id = 'task') => doc(dbFor(user), 'households', householdA, 'chores', id);
 
-  test('completing a chore requires the server completion time', async () => {
-    // Without the stamp, or with a client-chosen (backdated) time, completion is denied.
-    await assertFails(updateDoc(chore(users.child), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+  test('a completion stamp must be the server time', async () => {
+    // A client-chosen (backdated) stamp is denied, for completers and editors alike.
     await assertFails(updateDoc(chore(users.child), {
       isCompleted: true,
       completedAt: '2026-07-01T12:00:00.000Z',
       completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')),
     }));
-    await assertFails(updateDoc(chore(users.owner), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+    await assertFails(updateDoc(chore(users.owner), {
+      isCompleted: true,
+      completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')),
+    }));
     await assertSucceeds(updateDoc(chore(users.child), {
       isCompleted: true,
       completedAt: '2026-08-04T12:00:00.000Z',
@@ -738,10 +740,17 @@ describe('chore completion stamps and chore settings', () => {
     }));
   });
 
-  test('chores cannot be created already completed with a client time', async () => {
+  test('phase 1: a completion without a stamp (previous client) is still accepted', async () => {
+    // Open tabs and cached copies of the previous client don't send completedAtServer.
+    // Phase 2 removes this allowance once every client sends the stamp.
+    await assertSucceeds(updateDoc(chore(users.child), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+  });
+
+  test('chores cannot be created already completed with a client-chosen stamp', async () => {
     const db = dbFor(users.member);
     await assertFails(setDoc(doc(db, 'households', householdA, 'chores', 'fake-done'), {
       task: 'Fake', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z',
+      completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')),
     }));
     await assertSucceeds(setDoc(doc(db, 'households', householdA, 'chores', 'open-task'), {
       task: 'Open', isCompleted: false,

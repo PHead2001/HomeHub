@@ -488,20 +488,26 @@ service cloud.firestore {
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
       }
 
-      // Points and streaks are derived from completion times, so a completion is
-      // stamped by the server: a chore that becomes completed must carry
-      // completedAtServer == request.time, and a completed chore keeps its stamp.
+      // Points and streaks are derived from completion times, so the current client
+      // stamps a completion with the server time: when a chore becomes completed with
+      // a completedAtServer, it must equal request.time, and a completed chore keeps
+      // its stamp. Phase 1 (rollout compatibility): a completion WITHOUT a stamp is
+      // still accepted, because open tabs and cached copies of the previous client
+      // don't send one; stats fall back to completedAt for those. Phase 2, once every
+      // client sends the stamp, removes the "no stamp" branches below.
       function choreCompletionStampValid() {
         return request.resource.data.get('isCompleted', false) != true ||
           (resource.data.get('isCompleted', false) == true &&
             request.resource.data.get('completedAtServer', null) == resource.data.get('completedAtServer', null)) ||
           (resource.data.get('isCompleted', false) != true &&
-            request.resource.data.get('completedAtServer', null) == request.time);
+            (request.resource.data.get('completedAtServer', null) == request.time ||
+              !('completedAtServer' in request.resource.data)));
       }
 
       function choreCreatedWithServerCompletion() {
         return request.resource.data.get('isCompleted', false) != true ||
-          request.resource.data.get('completedAtServer', null) == request.time;
+          request.resource.data.get('completedAtServer', null) == request.time ||
+          !('completedAtServer' in request.resource.data);
       }
 
       // Household chore display preferences (leaderboard on/off). Owners and
