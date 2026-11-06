@@ -148,7 +148,15 @@ describe('reminder actions', () => {
     assert.equal(tires.nextDueMileage, 54_750);
     assert.equal(tires.lastCompletedMileage, 48_750);
     const brakes = completedVehicleSchedule(suv.serviceSchedules![1], { completedDate: TODAY });
-    assert.equal(brakes.nextDueDate, '2028-08-01');
+    assert.equal(brakes.nextDueDate, '2028-08-01');
+
+    // Completion ends a snooze even when the new cycle lands on the snoozed date (snooze + done the same day).
+    const snoozed = { ...hvac.schedules![0], nextDueDate: '2026-08-08', snoozedUntil: '2026-08-08' };
+    const done = completedAssetSchedule(snoozed, { completedDate: TODAY, nextDueDate: '2026-08-08' });
+    assert.equal(done.nextDueDate, '2026-08-08');
+    assert.equal('snoozedUntil' in done, false);
+    const doneVehicle = completedVehicleSchedule({ ...suv.serviceSchedules![1], snoozedUntil: '2026-08-08' }, { completedDate: TODAY });
+    assert.equal('snoozedUntil' in doneVehicle, false);
   });
 });
 

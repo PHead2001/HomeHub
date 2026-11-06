@@ -211,6 +211,8 @@ type AssetScheduleForm = {
   intervalValue: string;
   lastCompletedDate: string;
   nextDueDate: string;
+  /** Not editable: kept so saving unrelated edits does not cancel a snooze. */
+  snoozedUntil: string;
 };
 
 type VehicleScheduleForm = {
@@ -223,6 +225,8 @@ type VehicleScheduleForm = {
   lastCompletedDate: string;
   nextDueMileage: string;
   nextDueDate: string;
+  /** Not editable: kept so saving unrelated edits does not cancel a snooze. */
+  snoozedUntil: string;
 };
 
 const todayInputValue = () => format(new Date(), 'yyyy-MM-dd');
@@ -304,6 +308,7 @@ const assetScheduleToForm = (schedule?: HomeAssetSchedule): AssetScheduleForm =>
   intervalValue: schedule?.intervalValue?.toString() || '',
   lastCompletedDate: schedule?.lastCompletedDate || '',
   nextDueDate: schedule?.nextDueDate || '',
+  snoozedUntil: schedule?.snoozedUntil || '',
 });
 
 const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule): VehicleScheduleForm => ({
@@ -316,6 +321,7 @@ const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule): VehicleSchedu
   lastCompletedDate: schedule?.lastCompletedDate || '',
   nextDueMileage: schedule?.nextDueMileage?.toString() || '',
   nextDueDate: schedule?.nextDueDate || '',
+  snoozedUntil: schedule?.snoozedUntil || '',
 });
 
 const toNumber = (value?: string) => {
@@ -1368,6 +1374,9 @@ export function MaintenanceLogClient() {
         intervalValue: toNumber(schedule.intervalValue),
         lastCompletedDate: trimOptional(schedule.lastCompletedDate),
         nextDueDate: trimOptional(schedule.nextDueDate),
+        // Carried through unchanged. It only applies while it equals nextDueDate,
+        // so editing the due date here ends the snooze on its own.
+        snoozedUntil: trimOptional(schedule.snoozedUntil),
       });
       return nextSchedules;
     }, []);
@@ -1440,6 +1449,9 @@ export function MaintenanceLogClient() {
         lastCompletedDate: trimOptional(schedule.lastCompletedDate),
         nextDueMileage: toNumber(schedule.nextDueMileage),
         nextDueDate: trimOptional(schedule.nextDueDate),
+        // Carried through unchanged. It only applies while it equals nextDueDate,
+        // so editing the due date here ends the snooze on its own.
+        snoozedUntil: trimOptional(schedule.snoozedUntil),
       });
       return schedules;
     }, []);
@@ -1683,11 +1695,11 @@ export function MaintenanceLogClient() {
     try {
       if (target.targetType === 'home_asset') {
         const schedules = [...(target.asset.schedules || [])];
-        schedules[target.scheduleIndex] = { ...target.schedule, nextDueDate };
+        schedules[target.scheduleIndex] = { ...target.schedule, nextDueDate, snoozedUntil: nextDueDate };
         await updateDoc(doc(assetsCollection, target.asset.id), cleanForFirestore({ schedules, updatedAt: now }));
       } else {
         const serviceSchedules = [...(target.vehicle.serviceSchedules || [])];
-        serviceSchedules[target.scheduleIndex] = { ...target.schedule, nextDueDate };
+        serviceSchedules[target.scheduleIndex] = { ...target.schedule, nextDueDate, snoozedUntil: nextDueDate };
         await updateDoc(doc(vehiclesCollection, target.vehicle.id), cleanForFirestore({ serviceSchedules, updatedAt: now }));
       }
       const source = scheduleSourceFor(target);
