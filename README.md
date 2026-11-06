@@ -43,7 +43,7 @@ The app uses Firebase for authentication, Firestore data, Storage files, Cloud F
 
 ## Tech Stack
 
-- Next.js 15 App Router
+- Next.js 16 App Router
 - React 18 and TypeScript
 - Tailwind CSS and shadcn-style UI components
 - Firebase Auth, Firestore, Storage, Cloud Functions, Cloud Messaging, and App Hosting
