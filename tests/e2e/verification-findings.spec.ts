@@ -233,31 +233,32 @@ test.describe('verification finding regressions', () => {
     desktopOnly(testInfo);
     await openAuthenticated(page, '/chores', 'Chore Chart');
     await page.getByRole('button', { name: 'Chore Manager' }).click();
-    await page.getByRole('menuitem', { name: 'Chores' }).click();
-    const choresDialog = page.getByRole('dialog', { name: 'Chores' });
-    const templateRow = choresDialog.getByRole('row').filter({ hasText: 'Reset the kitchen' });
-    await templateRow.getByRole('checkbox').click();
+    await page.getByRole('menuitem', { name: 'Chore library' }).click();
+    const choresDialog = page.getByRole('dialog', { name: 'Chore library' });
+    await choresDialog.getByRole('checkbox', { name: 'Select Reset the kitchen' }).click();
     await choresDialog.getByRole('button', { name: 'Assign (1)' }).click();
 
-    const assignDialog = page.getByRole('dialog', { name: /Assign 1 Chore/ });
-    await expect(assignDialog.getByText('One-time Due Date')).toBeVisible();
-    await expect(assignDialog.getByText('Recurring Schedule', { exact: true })).toHaveCount(0);
-    await assignDialog.getByLabel('Recurring Task').click();
-    await expect(assignDialog.getByText('Recurring Schedule', { exact: true })).toBeVisible();
-    await expect(assignDialog.getByText('One-time Due Date')).toHaveCount(0);
+    // The assign dialog is titled after the chore; "One time" / "Repeats" pick the schedule.
+    const assignDialog = page.getByRole('dialog', { name: 'Assign Reset the kitchen' });
+    await expect(assignDialog.getByLabel('Due date')).toBeVisible();
+    await expect(assignDialog.getByRole('radio', { name: 'Weekly', exact: true })).toHaveCount(0);
+    await assignDialog.getByLabel('Repeats').click();
+    await expect(assignDialog.getByRole('radio', { name: 'Weekly', exact: true })).toBeVisible();
+    await expect(assignDialog.getByLabel('Due date')).toHaveCount(0);
 
     await assignDialog.getByRole('radio', { name: 'Daily', exact: true }).click();
-    await expect(assignDialog.getByLabel('Weekdays Only')).toBeVisible();
+    await expect(assignDialog.getByLabel('Weekdays only')).toBeVisible();
     await assignDialog.getByRole('radio', { name: 'Weekly', exact: true }).click();
     await expect(assignDialog.getByText('Repeat weekly on')).toBeVisible();
-    await assignDialog.getByRole('radio', { name: 'Biweekly', exact: true }).click();
-    await expect(assignDialog.getByText('Anchor Week Start')).toBeVisible();
+    await assignDialog.getByRole('radio', { name: 'Every 2 weeks', exact: true }).click();
+    await expect(assignDialog.getByText('Start from the week of')).toBeVisible();
     await assignDialog.getByRole('radio', { name: 'Monthly', exact: true }).click();
-    await expect(assignDialog.getByLabel('Day of month')).toBeVisible();
-    await assignDialog.getByLabel('Nth weekday').click();
+    await expect(assignDialog.getByRole('combobox', { name: 'Day of month' })).toBeVisible();
+    await assignDialog.getByRole('radio', { name: 'Nth weekday' }).click();
     await expect(assignDialog.getByText('Weekday', { exact: true })).toBeVisible();
-    await assignDialog.getByLabel('One-time Task').click();
-    await expect(assignDialog.getByText('Recurring Schedule', { exact: true })).toHaveCount(0);
+    await assignDialog.getByLabel('One time').click();
+    await expect(assignDialog.getByRole('radio', { name: 'Monthly', exact: true })).toHaveCount(0);
+    await expect(assignDialog.getByLabel('Due date')).toBeVisible();
   });
 
   test('active and completed chore deletion requires confirmation', async ({ page }, testInfo) => {

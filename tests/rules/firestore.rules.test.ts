@@ -14,6 +14,8 @@ import {
   doc,
   getDoc,
   getDocs,
+  deleteField,
+  serverTimestamp,
   setDoc,
   updateDoc,
   writeBatch,
@@ -181,6 +183,7 @@ describe('household modules', () => {
     await assertSucceeds(updateDoc(doc(dbFor(users.child), 'households', householdA, 'chores', 'task'), {
       isCompleted: true,
       completedAt: '2026-08-04T12:00:00.000Z',
+      completedAtServer: serverTimestamp(),
     }));
     await assertFails(updateDoc(doc(dbFor(users.child), 'households', householdA, 'chores', 'task'), { task: 'Renamed' }));
   });
@@ -697,5 +700,76 @@ describe('Home Assistant credentials', () => {
     await assertSucceeds(setDoc(doc(dbFor(users.owner), 'households', householdA, 'home-automation', 'credentials'), credentials));
     await assertFails(setDoc(doc(dbFor(users.member), 'households', householdA, 'home-automation', 'credentials'), credentials));
     await assertSucceeds(deleteDoc(doc(dbFor(users.admin), 'households', householdA, 'home-automation', 'credentials')));
+  });
+});
+
+describe('chore completion stamps and chore settings', () => {
+  const chore = (user: Identity, id = 'task') => doc(dbFor(user), 'households', householdA, 'chores', id);
+
+  test('a completion stamp must be the server time', async () => {
+    // A client-chosen (backdated) stamp is denied, for completers and editors alike.
+    await assertFails(updateDoc(chore(users.child), {
+      isCompleted: true,
+      completedAt: '2026-07-01T12:00:00.000Z',
+      completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')),
+    }));
+    await assertFails(updateDoc(chore(users.owner), {
+      isCompleted: true,
+      completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')),
+    }));
+    await assertSucceeds(updateDoc(chore(users.child), {
+      isCompleted: true,
+      completedAt: '2026-08-04T12:00:00.000Z',
+      completedAtServer: serverTimestamp(),
+      completedSubTasks: [],
+    }));
+  });
+
+  test('a completed chore keeps its stamp; undo removes it', async () => {
+    await assertSucceeds(updateDoc(chore(users.child), {
+      isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z', completedAtServer: serverTimestamp(),
+    }));
+    // Rewriting the stamp of a completed chore is denied, even for editors.
+    await assertFails(updateDoc(chore(users.owner), { completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')) }));
+    await assertFails(updateDoc(chore(users.child), { completedAtServer: deleteField() }));
+    // Editors may still change other fields of a completed chore.
+    await assertSucceeds(updateDoc(chore(users.owner), { task: 'Renamed after completion' }));
+    // Undo: reopen and clear the completion fields.
+    await assertSucceeds(updateDoc(chore(users.child), {
+      isCompleted: false, completedAt: deleteField(), completedSubTasks: deleteField(), completedAtServer: deleteField(),
+    }));
+  });
+
+  test('phase 1: a completion without a stamp (previous client) is still accepted', async () => {
+    // Open tabs and cached copies of the previous client don't send completedAtServer.
+    // Phase 2 removes this allowance once every client sends the stamp.
+    await assertSucceeds(updateDoc(chore(users.child), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+  });
+
+  test('chores cannot be created already completed with a client-chosen stamp', async () => {
+    const db = dbFor(users.member);
+    await assertFails(setDoc(doc(db, 'households', householdA, 'chores', 'fake-done'), {
+      task: 'Fake', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z',
+      completedAtServer: Timestamp.fromDate(new Date('2026-07-01T12:00:00.000Z')),
+    }));
+    await assertSucceeds(setDoc(doc(db, 'households', householdA, 'chores', 'open-task'), {
+      task: 'Open', isCompleted: false,
+    }));
+  });
+
+  test('only owners and admins change chore preferences; chore viewers read them', async () => {
+    const prefs = (user: Identity, id = 'preferences') => doc(dbFor(user), 'households', householdA, 'chore-settings', id);
+    await assertSucceeds(setDoc(prefs(users.owner), { leaderboardEnabled: false, updatedAt: '2026-08-01T12:00:00.000Z' }));
+    await assertSucceeds(setDoc(prefs(users.admin), { leaderboardEnabled: true }));
+    await assertFails(setDoc(prefs(users.member), { leaderboardEnabled: false }));
+    await assertFails(setDoc(prefs(users.child), { leaderboardEnabled: false }));
+    await assertFails(setDoc(prefs(users.owner), { leaderboardEnabled: 'no' }));
+    await assertFails(setDoc(prefs(users.owner), { leaderboardEnabled: true, points: 9000 }));
+    await assertFails(setDoc(prefs(users.owner, 'other'), { leaderboardEnabled: true }));
+    await assertFails(deleteDoc(prefs(users.owner)));
+    await assertSucceeds(getDoc(prefs(users.child)));
+    await assertSucceeds(getDoc(prefs(users.guest)));
+    await assertFails(getDoc(prefs(users.pending)));
+    await assertFails(getDoc(doc(dbFor(users.ownerB), 'households', householdA, 'chore-settings', 'preferences')));
   });
 });

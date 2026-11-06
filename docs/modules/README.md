@@ -13,7 +13,7 @@ Executable code, types, Firebase rules, configuration, and Cloud Functions remai
 | [Application Shell and Dashboard](./application-shell/README.md) | `/`, global layout/header/overlays | `src/app/layout.tsx`, `src/app/page.tsx`, `src/components/header.tsx`, `src/components/household-manager.tsx` |
 | [Identity and Profile](./identity-profile/README.md) | Google sign-in, `/profile`, Auth context | `src/contexts/auth-context.tsx`, `src/components/login-dialog.tsx`, `src/components/profile-client.tsx` |
 | [Household Governance](./household-governance/README.md) | `/household`, create/join/approve/leave/transfer | `src/components/household-management-client.tsx`, `src/lib/permissions.ts`, `firestore.rules` |
-| [Chores](./chores/README.md) | `/chores`, recurrence/completion/reminders | `src/components/chore-chart-client.tsx`, `src/lib/types.ts` |
+| [Chores](./chores/README.md) | `/chores`, `/calendar`, recurrence/completion/reminders, leaderboard | `src/components/chore-chart-client.tsx`, `src/lib/types.ts` |
 | [Shopping Lists](./shopping/README.md) | `/shopping` Shopping Lists tab | `src/components/shopping-center-client.tsx`, `src/components/shopping-list-client.tsx` |
 | [Pantry Inventory and Recipes](./pantry-recipes/README.md) | `/shopping` Inventory tab | `src/components/pantry-inventory-client.tsx`, `src/ai/flows/generate-recipe-flow.ts` |
 | [Barcode Scanning and Household Library](./barcode-library/README.md) | `/library`, embedded scanners | `src/components/barcode-library-client.tsx`, `src/components/barcode-scanner.tsx`, `src/ai/flows/lookup-barcode-flow.ts` |
