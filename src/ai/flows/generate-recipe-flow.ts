@@ -19,6 +19,7 @@ export async function generateRecipe(
 ): Promise<AiActionResult<GenerateRecipeOutput>> {
   return executeAuthorizedAiAction({
     context,
+    input,
     permission: 'shopping.view',
     flowName: 'recipe',
     maxRequestsPerMinute: 20,

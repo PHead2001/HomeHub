@@ -87,8 +87,26 @@ const runGuarded = async <T>(
   }
 };
 
+/**
+ * Largest client payload (context + input, as JSON) an AI action accepts. Real
+ * inputs are a few KB (a 60-item recipe request is about 12 KB). Rejecting larger
+ * payloads before any validation bounds the work Genkit's pinned zod 3 can be made
+ * to do (GHSA-mrhx-c7xc-m3w5, oversized constrained collections); see the AI/Genkit
+ * module README.
+ */
+export const MAX_AI_ACTION_PAYLOAD_BYTES = 64 * 1024;
+
+const payloadBytes = (value: unknown): number => {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value) ?? '').length;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+};
+
 export const executeAuthorizedAiAction = async <T>({
   context,
+  input,
   permission,
   flowName,
   maxRequestsPerMinute,
@@ -96,6 +114,8 @@ export const executeAuthorizedAiAction = async <T>({
   task,
 }: {
   context: AiActionContext;
+  /** The action's client input, size-checked before authorization and validation. */
+  input?: unknown;
   permission: HouseholdPermission;
   flowName: string;
   maxRequestsPerMinute: number;
@@ -108,6 +128,9 @@ export const executeAuthorizedAiAction = async <T>({
   task: (user: AuthorizedHouseholdUser) => Promise<T>;
 }): Promise<AiActionResult<T>> => {
   try {
+    if (payloadBytes({ context, input }) > MAX_AI_ACTION_PAYLOAD_BYTES) {
+      throw new HomeHubAiError('invalid_input');
+    }
     const user = await authorizeHouseholdAction(context, permission);
     const data = await runGuarded(user, flowName, maxRequestsPerMinute, consumeQuota, () => task(user));
     return { ok: true, data };
