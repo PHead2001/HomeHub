@@ -10,7 +10,8 @@ const alertVariants = cva(
       variant: {
         default: "bg-background text-foreground",
         destructive:
-          "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+          // Dark --destructive (#7f1d1d) is a fill color; as text on the page it measured about 2:1.
+          "border-destructive/50 text-destructive dark:border-red-500/60 dark:bg-red-950/40 dark:text-red-300 [&>svg]:text-destructive dark:[&>svg]:text-red-400",
       },
     },
     defaultVariants: {
