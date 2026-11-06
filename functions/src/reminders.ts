@@ -1,7 +1,12 @@
 // Server-side reminders and recurring chores, run on a schedule so they happen
 // whether or not anyone opens the app. Every step is idempotent: notification
 // and chore IDs are deterministic, so overlapping or repeated runs are safe.
-import type {firestore} from "firebase-admin";
+// Types come from the "firebase-admin/firestore" entry point, which both the
+// functions package and the web app's (newer) firebase-admin provide; the web
+// app type-checks this file through the @functions alias.
+import type {
+  DocumentReference, Firestore, Timestamp as FirestoreTimestamp,
+} from "firebase-admin/firestore";
 import {
   addDays, localDay, safeTimeZone, zonedMidnightIso,
 } from "./shared/calendar";
@@ -13,8 +18,8 @@ import {
 } from "./shared/maintenance-reminders";
 import {normalizeRecurrence, upcomingOccurrences} from "./shared/recurrence";
 
-type Db = firestore.Firestore;
-type Timestamp = firestore.Timestamp;
+type Db = Firestore;
+type Timestamp = FirestoreTimestamp;
 
 export const NOTIFICATION_TTL_DAYS = 7;
 export const COMPLETED_CHORE_RETENTION_DAYS = 90;
@@ -72,7 +77,7 @@ export const runHouseholdReminders = async (
   // Each chore is also re-read: a generated chore is created only if it is
   // still absent (an overlapping run may have created it and someone may have
   // completed it since), and a purge happens only if the chore is unchanged.
-  type Ref = firestore.DocumentReference;
+  type Ref = DocumentReference;
   type ChoreOp =
     {kind: "create"; ref: Ref; data: Record<string, unknown>} |
     {kind: "purge"; ref: Ref; completedAt: unknown};
