@@ -15,6 +15,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, LogOut } from 'lucide-react';
+import { FieldError, fieldErrorProps } from '@/components/field-error';
+import { HOUSEHOLD_NAME_MAX, formatInviteInput, householdNameError, inviteCodeError } from '@/components/household/household-model';
 import {
   Card,
   CardContent,
@@ -23,8 +25,6 @@ import {
   CardHeader,
   CardTitle,
 } from './ui/card';
-
-const HOUSEHOLD_NAME_MAX = 80;
 
 interface HouseholdManagerProps {
   children: ReactNode;
@@ -38,13 +38,17 @@ function CreateHouseholdForm({
   isCreating: boolean;
 }) {
   const [name, setName] = useState('');
-  const trimmed = name.trim();
+  const [submitted, setSubmitted] = useState(false);
+  const error = submitted ? householdNameError(name) : null;
+  const left = HOUSEHOLD_NAME_MAX - name.length;
   return (
     <Card>
       <form
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          if (trimmed && !isCreating) onCreate(trimmed);
+          setSubmitted(true);
+          if (!householdNameError(name) && !isCreating) onCreate(name.trim());
         }}
       >
         <CardHeader>
@@ -53,23 +57,25 @@ function CreateHouseholdForm({
             Give your household a name to get started.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-2">
           <Label htmlFor="householdName">Household Name</Label>
           <Input
-            id="householdName"
+            {...fieldErrorProps('householdName', error)}
             placeholder="e.g. The Miller Residence"
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={isCreating}
             maxLength={HOUSEHOLD_NAME_MAX}
             autoComplete="off"
+            enterKeyHint="go"
           />
-          <p className="mt-2 text-xs text-muted-foreground">
-            You can rename it later. {name.length > HOUSEHOLD_NAME_MAX - 15 && `${HOUSEHOLD_NAME_MAX - name.length} characters left.`}
+          <FieldError id="householdName">{error}</FieldError>
+          <p className="text-xs text-muted-foreground" aria-live="polite">
+            You can rename it later.{left <= 15 && ` ${left} ${left === 1 ? 'character' : 'characters'} left.`}
           </p>
         </CardContent>
         <CardFooter>
-          <Button type="submit" disabled={isCreating || !trimmed}>
+          <Button type="submit" disabled={isCreating}>
             {isCreating && <Loader2 className="mr-2 animate-spin" />}
             Create Household
           </Button>
@@ -79,12 +85,6 @@ function CreateHouseholdForm({
   );
 }
 
-// Show invite codes as XXXX-XXXX-XX while people type, with or without dashes.
-const formatInviteInput = (value: string) => {
-  const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
-  return [compact.slice(0, 4), compact.slice(4, 8), compact.slice(8)].filter(Boolean).join('-');
-};
-
 function JoinHouseholdForm({
   onJoin,
   isJoining,
@@ -93,13 +93,16 @@ function JoinHouseholdForm({
   isJoining: boolean;
 }) {
   const [code, setCode] = useState('');
-  const complete = code.replace(/-/g, '').length === 10;
+  const [submitted, setSubmitted] = useState(false);
+  const error = submitted ? inviteCodeError(code) : null;
   return (
     <Card>
       <form
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          if (complete && !isJoining) onJoin(code);
+          setSubmitted(true);
+          if (!inviteCodeError(code) && !isJoining) onJoin(code);
         }}
       >
         <CardHeader>
@@ -108,10 +111,10 @@ function JoinHouseholdForm({
             Ask someone in the household for an invite code. Codes last 30 minutes.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-2">
           <Label htmlFor="inviteCode">Invite Code</Label>
           <Input
-            id="inviteCode"
+            {...fieldErrorProps('inviteCode', error)}
             placeholder="ABCD-EFGH-JK"
             value={code}
             onChange={(e) => setCode(formatInviteInput(e.target.value))}
@@ -120,14 +123,16 @@ function JoinHouseholdForm({
             autoComplete="off"
             autoCapitalize="characters"
             spellCheck={false}
+            enterKeyHint="go"
             className="font-code tracking-widest"
           />
-          <p className="mt-2 text-xs text-muted-foreground">
+          <FieldError id="inviteCode">{error}</FieldError>
+          <p className="text-xs text-muted-foreground">
             After you join, an owner or admin chooses your role.
           </p>
         </CardContent>
         <CardFooter>
-          <Button type="submit" disabled={isJoining || !complete}>
+          <Button type="submit" disabled={isJoining}>
             {isJoining && <Loader2 className="mr-2 animate-spin" />}
             Join Household
           </Button>
@@ -160,7 +165,9 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
                 Waiting for approval
               </DialogTitle>
               <DialogDescription className="text-center text-base">
-                An owner or admin needs to assign your household role before you can access HomeHub household data.
+                {household?.name
+                  ? `You asked to join ${household.name}. An owner or admin will choose your role, and then everything opens up.`
+                  : 'An owner or admin will choose your role, and then everything opens up.'}
               </DialogDescription>
             </DialogHeader>
             <div className="flex flex-col gap-3 pt-2">
@@ -282,10 +289,10 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
       {/* Module pages are not mounted until membership is approved, so they never fetch. */}
       <Dialog open={true} onOpenChange={() => {}}>
         <DialogContent
-          className="max-w-4xl"
+          className="max-h-[100dvh] max-w-4xl overflow-y-auto"
           onInteractOutside={(e) => e.preventDefault()}
-            onEscapeKeyDown={(e) => e.preventDefault()}
-            hideClose
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          hideClose
         >
           <DialogHeader>
             <DialogTitle className="font-headline text-3xl text-center">
@@ -300,7 +307,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
             <CreateHouseholdForm onCreate={handleCreate} isCreating={isCreating} />
             <JoinHouseholdForm onJoin={handleJoin} isJoining={isJoining} />
           </div>
-           <div className="mt-6 text-center">
+          <div className="mt-6 text-center">
             <p className="text-sm text-muted-foreground">
               Signed in as {currentUser.email}. Not the right account?
             </p>
