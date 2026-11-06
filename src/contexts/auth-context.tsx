@@ -52,7 +52,8 @@ interface AuthContextType {
   retryHouseholdLoad: () => void;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
-  updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string) => Promise<void>;
+  /** `silent` skips the global loading state and the success toast (used for background preference sync). */
+  updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string, options?: { silent?: boolean }) => Promise<void>;
   createHousehold: (name: string) => Promise<void>;
   joinHousehold: (code: string) => Promise<boolean>;
   leaveHousehold: () => Promise<boolean>;
@@ -389,12 +390,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
   
-  const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string) => {
+  const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string, options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     if (!auth.currentUser || !currentUser?.email) {
-      toast({ variant: 'destructive', title: 'Not Authenticated', description: 'You must be logged in to update your profile.' });
+      if (!silent) toast({ variant: 'destructive', title: 'Not Authenticated', description: 'You must be logged in to update your profile.' });
       return;
     }
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       if (newPassword && auth.currentUser.providerData.some(p => p.providerId === 'password')) {
         toast({title: 'Updating Password...'})
@@ -406,7 +408,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const userDocRef = doc(db, 'users', currentUser.email);
       await setDoc(userDocRef, data, { merge: true });
       setCurrentUser(prev => prev ? { ...prev, ...data } : null);
-      toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
+      if (!silent) toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
     
     } catch (error) {
       console.error("Update User Error:", error instanceof Error ? error : String(error));
@@ -418,7 +420,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       toast({ variant: 'destructive', title: 'Update Failed', description });
     } finally {
-        setLoading(false);
+        if (!silent) setLoading(false);
     }
   }, [currentUser, toast]);
 

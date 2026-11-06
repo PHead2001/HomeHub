@@ -474,18 +474,18 @@ function RecipeGeneratorDialog({
                                     <ul className="space-y-1">
                                     {recipe.ingredients.used.map(ing => (
                                         <li key={ing} className="flex items-center gap-2">
-                                            <Check className="h-4 w-4 text-green-500" /> <span>{ing}</span>
+                                            <Check className="h-4 w-4 text-success" /> <span>{ing}</span>
                                         </li>
                                     ))}
                                     </ul>
                                 </div>
                                 {recipe.ingredients.needed.length > 0 && (
-                                    <div className="p-4 bg-amber-500/10 rounded-lg">
+                                    <div className="p-4 bg-warning/10 rounded-lg">
                                         <h4 className="font-semibold mb-2">You Might Need</h4>
                                         <ul className="space-y-1">
                                         {recipe.ingredients.needed.map(ing => (
                                             <li key={ing} className="flex items-center gap-2">
-                                                <PlusCircle className="h-4 w-4 text-amber-600"/> <span>{ing}</span>
+                                                <PlusCircle className="h-4 w-4 text-warning"/> <span>{ing}</span>
                                             </li>
                                         ))}
                                         </ul>

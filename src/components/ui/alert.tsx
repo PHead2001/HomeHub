@@ -8,10 +8,10 @@ const alertVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-background text-foreground",
+        default: "bg-card text-card-foreground",
+        // --destructive is AA as text on every surface and on its own 10% tint (tests/unit/theme-contrast.test.ts).
         destructive:
-          // Dark --destructive (#7f1d1d) is a fill color; as text on the page it measured about 2:1.
-          "border-destructive/50 text-destructive dark:border-red-500/60 dark:bg-red-950/40 dark:text-red-300 [&>svg]:text-destructive dark:[&>svg]:text-red-400",
+          "border-destructive bg-destructive/10 text-destructive [&>svg]:text-destructive",
       },
     },
     defaultVariants: {

@@ -18,8 +18,9 @@ const Progress = React.forwardRef<
     {...props}
   >
     <ProgressPrimitive.Indicator
-      className="h-full w-full flex-1 bg-primary transition-all"
-      style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
+      className="h-full w-full flex-1 bg-primary transition-ui"
+      // Value changes use the data-change budget (400–700 ms).
+      style={{ transform: `translateX(-${100 - (value || 0)}%)`, transitionDuration: 'var(--duration-data)' }}
     />
   </ProgressPrimitive.Root>
 ))
