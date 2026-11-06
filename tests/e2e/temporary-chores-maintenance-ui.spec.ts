@@ -114,7 +114,7 @@ test.describe('temporary chores and maintenance UI regressions', () => {
   test('Add Chore (one time) creates one direct chore and one notification without a template', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const taskName = 'Replace hallway filter E2E';
-    const existing = await household.collection('chores').where('task', '==', taskName).get();
+    const existing = await household.collection('chores').where('task', 'in', [taskName, 'Canceled temporary task']).get();
     await Promise.all(existing.docs.map((item) => item.ref.delete()));
     const templateCount = (await household.collection('chore-templates').get()).size;
 
@@ -125,6 +125,10 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await expect(dialog.getByRole('radio', { name: 'One time' })).toBeChecked();
     await dialog.getByLabel('Chore', { exact: true }).fill('Canceled temporary task');
     await dialog.getByRole('button', { name: 'Cancel' }).click();
+    // Wait for the dialog to finish closing: while it is still in the DOM, Radix
+    // hides the rest of the page from the accessibility tree, so "Add Chore" would
+    // resolve to the closing dialog's submit button instead of the header button.
+    await expect(dialog).toHaveCount(0);
     expect((await household.collection('chores').where('task', '==', 'Canceled temporary task').get()).size).toBe(0);
 
     await page.getByRole('button', { name: 'Add Chore' }).first().click();
