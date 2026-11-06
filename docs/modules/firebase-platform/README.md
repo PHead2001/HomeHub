@@ -33,7 +33,7 @@ When `NEXT_PUBLIC_USE_FIREBASE_EMULATORS=true`, the client connects Auth, Firest
 
 The `Authenticated E2E Smoke` GitHub Actions workflow runs project validation, authenticated route smoke, and focused regression coverage on Linux for pull requests targeting `main` and manual dispatch. It sources fake emulator values from `.env.e2e.example`, uses the owned-emulator runner's `--smoke-only` mode, and uploads debugging artifacts only on failure. Windows visual baselines are not compared in CI.
 
-App Hosting serves the Next.js app. `apphosting.yaml` maps runtime-only `OPENAI_API_KEY` to Secret Manager secret `openaiApiKey` and supplies non-secret OpenAI model defaults, including the Luna overview model. AI model calls do not run during build. Firestore document creation under household notifications triggers the Node 20 Functions codebase for FCM delivery.
+App Hosting serves the Next.js app. `apphosting.yaml` maps runtime-only `OPENAI_API_KEY` to Secret Manager secret `openaiApiKey` and supplies non-secret OpenAI model defaults, including the Luna overview model. AI model calls do not run during build. Firestore document creation under household notifications triggers the Node 24 Functions codebase for FCM delivery.
 
 No explicit Firestore offline persistence, Auth persistence override, App Check, or custom local-cache policy is configured.
 
