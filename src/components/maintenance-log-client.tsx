@@ -715,10 +715,11 @@ function AttachmentPanel({
             </SelectContent>
           </Select>
           <Button asChild variant="outline" size="sm" disabled={uploading}>
-            <label className="cursor-pointer">
+            <label className="relative cursor-pointer overflow-hidden">
               {uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
               Upload
-              <Input
+              {/* Plain input: the shared Input's w-full overrides sr-only and widened the page (B7). */}
+              <input
                 type="file"
                 className="sr-only"
                 disabled={uploading}
@@ -2128,7 +2129,7 @@ export function MaintenanceLogClient() {
               <EmptyState title="No home assets yet" description="Add HVAC, appliances, tools, and other assets to build your registry." />
             ) : (
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid content-start gap-3 sm:grid-cols-2">
                   {assets.map((asset) => (
                     <button
                       key={asset.id}

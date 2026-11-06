@@ -1,8 +1,9 @@
 
-import type {Metadata} from 'next';
+import type {Metadata, Viewport} from 'next';
 import { Inter, Space_Grotesk } from 'next/font/google';
 import './globals.css';
 import { Header } from '@/components/header';
+import { MobileTabBar } from '@/components/mobile-tab-bar';
 import { Toaster } from "@/components/ui/toaster"
 import { AuthProvider } from '@/contexts/auth-context';
 import { PasswordChangeHandler } from '@/components/password-change-handler';
@@ -30,6 +31,14 @@ export const metadata: Metadata = {
   description: 'Your all-in-one home management dashboard.',
 };
 
+// viewport-fit=cover lets the phone tab bar sit above the home indicator via safe-area insets.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#020817',
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -45,7 +54,8 @@ export default function RootLayout({
           <PasswordChangeHandler />
           <HouseholdManager>
             <Header />
-            <main className="flex-1">{children}</main>
+            <main className="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">{children}</main>
+            <MobileTabBar />
           </HouseholdManager>
           <Toaster />
         </AuthProvider>
