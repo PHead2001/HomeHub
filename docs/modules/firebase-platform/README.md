@@ -86,7 +86,7 @@ Chore completion stamp (phase 1): the `chores.complete` field allowlist is `isCo
 
 Protected AI, overview, and barcode server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before any Admin aggregation, public fallback, or OpenAI request. Authority comes only from the caller's approved `members/{uid}` record (`src/ai/household-authority.ts`); legacy email listings, owner email/UID fields and profile role/overrides grant nothing. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
 
-App Check is registered but not enforced for Firestore, Storage or Auth. Enforcement is turned on only after the App Check metrics show production requests arriving with valid tokens, so legitimate clients are not cut off. Server-side code uses the Admin SDK, which App Check does not gate.
+App Check is **enforced** for Firestore and Storage and not enforced for Auth (see "App Check enforcement" above for the evidence, propagation delay and rollback). Requests without a valid App Check token from the registered web app are refused before security rules run; tokenized Storage download URLs keep working. Server-side code uses the Admin SDK, which App Check does not gate. A new client must be registered with App Check before it ships.
 
 ## Integrations and Background Processing
 
