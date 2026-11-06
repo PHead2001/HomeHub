@@ -6,6 +6,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { FieldError, fieldErrorProps } from '@/components/field-error';
 
 interface BarcodeScannerProps {
     onScan: (barcode: string) => void;
@@ -14,6 +15,7 @@ interface BarcodeScannerProps {
 export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
   const { toast } = useToast();
   const [manualBarcode, setManualBarcode] = React.useState('');
+  const [manualError, setManualError] = React.useState<string | null>(null);
   
   const { ref } = useZxing({
     onDecodeResult(result) {
@@ -50,25 +52,31 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
         className="flex items-end gap-2"
         onSubmit={(event) => {
           event.preventDefault();
+          // A field problem is shown inline under the field, never as a toast.
           if (!/^\d{6,32}$/.test(manualBarcode.trim())) {
-            toast({ variant: 'destructive', title: 'Invalid Barcode', description: 'Enter 6 to 32 digits.' });
+            setManualError('Enter 6 to 32 digits.');
             return;
           }
+          setManualError(null);
           onScan(manualBarcode.trim());
         }}
       >
         <div className="min-w-0 flex-1 space-y-1">
           <Label htmlFor="manual-barcode">Barcode number</Label>
           <Input
-            id="manual-barcode"
             inputMode="numeric"
             autoComplete="off"
             value={manualBarcode}
-            onChange={event => setManualBarcode(event.target.value.replace(/\D/g, ''))}
+            onChange={event => {
+              setManualBarcode(event.target.value.replace(/\D/g, ''));
+              setManualError(null);
+            }}
+            {...fieldErrorProps('manual-barcode', manualError)}
           />
         </div>
         <Button type="submit">Use barcode</Button>
       </form>
+      <FieldError id="manual-barcode">{manualError}</FieldError>
     </div>
   );
 };
