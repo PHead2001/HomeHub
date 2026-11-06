@@ -104,6 +104,8 @@ Every application module depends on this platform. [Notifications](../notificati
 - CI artifacts exclude `playwright/.auth/`; only failure reports, traces, screenshots, videos, and emulator logs are uploaded.
 - Normal CI/emulator commands do not need `OPENAI_API_KEY` and cannot call OpenAI through the deterministic test provider.
 
+- Dependency security overrides (root `package.json` `overrides`): `protobufjs ^7.6.6` and `@grpc/grpc-js ^1.14.7`. `@firebase/firestore` (Node build) and `google-gax` (through Genkit's Google Cloud logging) pin `grpc-js 1.9.x` / `protobufjs 7.2.x`, which carry critical protobufjs code-injection and grpc-js advisories. Both overrides stay within the same major version. Keep them until those upstream pins move past the fixed versions (`npm ls protobufjs @grpc/grpc-js --omit=dev` shows a single patched version of each), and run the rules, server and E2E suites after any change to them.
+
 ## Validation
 
 - Run `npm.cmd run lint`, `npm.cmd run typecheck`, and `npm.cmd run build` for platform/config changes.
