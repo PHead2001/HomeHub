@@ -349,8 +349,10 @@ export function ChoreChartClient() {
       for (const template of templatesToAssign) {
         const roomsToAssign = assignment.roomIds.length > 0 ? assignment.roomIds : (template.roomIds && template.roomIds.length > 0 ? template.roomIds : ['general']);
         roomsToAssign.forEach(roomId => {
-          const choreId = stableSlugify(`${template.id}-${roomId}-${originalDueDate}-${assignment.assignedToEmail}`);
-          batch.set(doc(choresCollection, choreId), {
+          // Auto ID: a one-time assignment is its own chore. It must never share the
+          // deterministic ID of a generated occurrence (or an earlier assignment), which
+          // would overwrite that chore, including a moved or completed one.
+          batch.set(doc(choresCollection), {
             task: template.task,
             assignedToEmail: assignment.assignedToEmail,
             assignedToDisplayName,

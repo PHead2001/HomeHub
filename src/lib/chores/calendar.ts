@@ -5,6 +5,7 @@
 import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
 import { toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
+import { recurringChoreId } from '../../../functions/src/shared/ids';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
 export type CalendarEventKind = 'chore' | 'maintenance' | 'medication';
@@ -220,16 +221,29 @@ export function maintenanceCalendarItems(
 export type RecurringTemplate = {
   id: string;
   task: string;
+  roomIds?: string[];
   assignedToEmail?: string | null;
   recurrence?: (RecurrenceInput & { assignedToEmail?: string }) | null;
 };
 
 /**
+ * The document ID the server gives a generated occurrence. It is the occurrence's
+ * stable identity: the server skips an occurrence when this document exists, even
+ * if the chore was moved to another day, so planning must match on it too.
+ * Delegates to the server's `recurringChoreId` and mirrors its room fallback.
+ */
+export function occurrenceIds(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string, assignee: string): string[] {
+  const rooms = Array.isArray(template.roomIds) && template.roomIds.length > 0 ? template.roomIds : ['general'];
+  return rooms.map(roomId => recurringChoreId(template.id, roomId, day, assignee));
+}
+
+/**
  * Occurrences of repeating chores inside [rangeStart, rangeEnd] (from today on)
- * that have no chore document yet. The server only generates the next 30
- * occurrences, so without these a month far ahead would look empty. Uses the
- * same recurrence rules as the server; days that already have an instance of
- * the template are skipped, and nothing is planned for non-members.
+ * whose chore document does not exist yet. The server only generates the next
+ * 30 occurrences, so without these a month far ahead would look empty. Uses the
+ * server's recurrence rules and occurrence IDs: an occurrence whose document
+ * exists (even if it was moved or completed) is never planned again. One event
+ * per missing room instance, as the server would create; none for non-members.
  */
 export function plannedRecurringEvents(
   templates: readonly RecurringTemplate[],
@@ -240,28 +254,31 @@ export function plannedRecurringEvents(
   rangeEnd: string,
 ): CalendarEvent[] {
   const byEmail = new Map(members.map(member => [member.email, member]));
-  const existing = new Set(chores.filter(c => c.templateId).map(c => `${c.templateId}|${choreDueKey(c)}`));
+  const existing = new Set(chores.map(c => c.id));
   const start = rangeStart > today ? rangeStart : today;
   const events: CalendarEvent[] = [];
   for (const template of templates) {
     const recurrence = normalizeRecurrence(template.recurrence, today);
     const assignee = template.assignedToEmail || template.recurrence?.assignedToEmail;
     const member = assignee ? byEmail.get(assignee) : undefined;
-    if (!recurrence || !member) continue;
+    if (!recurrence || !member || !assignee) continue;
     for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
-      if (!occursOn(day, recurrence) || existing.has(`${template.id}|${day}`)) continue;
-      events.push({
-        id: `planned:${template.id}:${day}`,
-        kind: 'chore',
-        title: template.task,
-        subtitle: member.name,
-        day,
-        memberUid: member.uid,
-        overdue: false,
-        completed: false,
-        href: '/chores',
-        planned: true,
-      });
+      if (!occursOn(day, recurrence)) continue;
+      for (const id of occurrenceIds(template, day, assignee)) {
+        if (existing.has(id)) continue;
+        events.push({
+          id: `planned:${id}`,
+          kind: 'chore',
+          title: template.task,
+          subtitle: member.name,
+          day,
+          memberUid: member.uid,
+          overdue: false,
+          completed: false,
+          href: '/chores',
+          planned: true,
+        });
+      }
     }
   }
   return events;
