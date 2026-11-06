@@ -22,7 +22,9 @@ const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
 const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
 const emulatorTimeoutMs = 60_000;
-const suiteTimeoutMs = process.env.CI === "true" ? 600_000 : 360_000;
+// The whole E2E suite runs as one Playwright invocation. It grows with every module spec,
+// so the budget sits below the 45-minute CI job limit and can be raised per run.
+const suiteTimeoutMs = Number(process.env.E2E_SUITE_TIMEOUT_MS) || (process.env.CI === "true" ? 2_100_000 : 900_000);
 
 const parseHost = (value) => {
   const separator = value.lastIndexOf(":");
