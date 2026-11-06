@@ -387,6 +387,32 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const reconcilingListRef = useRef<string | null>(null);
+  const reconcileAgainRef = useRef(false);
+  const fetchItemsRef = useRef<((listId: string, options?: { silent?: boolean }) => Promise<void>) | null>(null);
+
+  // Re-reads the list once Firestore has settled every queued write, so the screen
+  // shows the confirmed state: rejected writes are rolled back in the local cache.
+  // Used after a failed write and when a list loads with writes still queued (offline
+  // ticks restored after a reload, whose rejection promises did not survive). Only one
+  // pass runs per list at a time; a request made meanwhile triggers one more pass.
+  const reconcileWithServer = useCallback((listId: string) => {
+    if (reconcilingListRef.current === listId) {
+      reconcileAgainRef.current = true;
+      return;
+    }
+    reconcilingListRef.current = listId;
+    reconcileAgainRef.current = false;
+    waitForPendingWrites(db)
+      .then(() => {
+        if (selectedListIdRef.current === listId) return fetchItemsRef.current?.(listId, { silent: true });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (reconcilingListRef.current !== listId) return;
+        reconcilingListRef.current = null;
+        if (reconcileAgainRef.current) reconcileWithServer(listId);
+      });
+  }, []);
   selectedListIdRef.current = selectedList?.id ?? null;
   
   // --- Data Fetching ---
@@ -430,18 +456,9 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       setListItems(itemsData);
 
       // Ticks queued offline survive a reload, but the promise that would report a
-      // server rejection does not. When the list shows queued writes, re-read it once
-      // they are acknowledged so a rejected tick is shown rolled back.
+      // server rejection does not: re-read once the queue settles.
       if (itemsSnapshot.docs.some(item => item.metadata.hasPendingWrites) && reconcilingListRef.current !== listId) {
-        reconcilingListRef.current = listId;
-        waitForPendingWrites(db)
-          .then(() => {
-            if (selectedListIdRef.current === listId) return fetchItemsAndCategories(listId, { silent: true });
-          })
-          .catch(() => undefined)
-          .finally(() => {
-            if (reconcilingListRef.current === listId) reconcilingListRef.current = null;
-          });
+        reconcileWithServer(listId);
       }
 
       const storedCategories = categoriesSnapshot.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null;
@@ -452,7 +469,8 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     } finally {
       if (!silent) setLoadingItems(false);
     }
-  }, [currentUser, toast]);
+  }, [currentUser, reconcileWithServer, toast]);
+  fetchItemsRef.current = fetchItemsAndCategories;
 
   useEffect(() => {
     if (currentUser?.householdId) {
@@ -617,9 +635,12 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       const list = selectedList;
       const setItemStatus = (status: ShoppingListItem['status']) =>
         setListItems(prev => prev.map(listItem => listItem.id === item.id ? { ...listItem, status } : listItem));
+      // A failed write is not undone by restoring this tick's starting status: several
+      // ticks on one item can be queued offline and fail together, and each captured a
+      // different predecessor. Show the confirmed state from Firestore instead.
       const failToggle = () => {
-        setItemStatus(item.status);
         toast({ variant: 'destructive', title: 'Error', description: 'Could not update item status.' });
+        reconcileWithServer(list.id);
       };
 
       // Show the tick immediately. Offline, the write waits in Firestore's persistent
