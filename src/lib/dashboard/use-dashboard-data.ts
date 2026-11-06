@@ -97,12 +97,18 @@ export function useDashboardData(enabled = true): DashboardData {
     };
 
     if (canChores) {
-      const todayStart = startOfLocalDay(new Date()).toISOString();
+      const todayStartDate = startOfLocalDay(new Date());
+      const todayStart = todayStartDate.toISOString();
       listen('chores', query(base('rooms')), (s) => setRaw((r) => ({ ...r, rooms: docs(s) })));
       // Templates tell which series repeat, so missed instances fold as on the Chores page.
       listen('chores', query(base('chore-templates')), (s) => setRaw((r) => ({ ...r, templates: docs(s) })));
       listen('chores', query(base('chores'), where('isCompleted', '==', false)), (s) => setRaw((r) => ({ ...r, openChores: docs(s) })));
       listen('chores', query(base('chores'), where('originalDueDate', '==', today)), (s) => setRaw((r) => ({ ...r, todayChores: docs(s) })));
+      // Today's completions, by the same pair of timestamps as `completionInstant`:
+      // the server stamp (authoritative, a Timestamp) and the legacy client string.
+      // Both are single-field range queries (automatic indexes); documents missing
+      // the field are simply not returned by that query, and the other one covers them.
+      listen('chores', query(base('chores'), where('completedAtServer', '>=', Timestamp.fromDate(todayStartDate))), (s) => setRaw((r) => ({ ...r, doneTodayServer: docs(s) })));
       listen('chores', query(base('chores'), where('completedAt', '>=', todayStart)), (s) => setRaw((r) => ({ ...r, doneToday: docs(s) })));
     }
 

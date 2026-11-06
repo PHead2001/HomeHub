@@ -31,7 +31,10 @@ export type DashboardRaw = {
   templates?: RawDoc[];
   openChores?: RawDoc[];
   todayChores?: RawDoc[];
+  /** Completed today by the legacy client `completedAt` string. */
   doneToday?: RawDoc[];
+  /** Completed today by the authoritative server stamp `completedAtServer`. */
+  doneTodayServer?: RawDoc[];
   lists?: RawDoc[];
   /** Items per list id; a list without an entry has not answered yet. */
   items?: Record<string, RawDoc[]>;
@@ -65,9 +68,11 @@ export function assembleDashboardFacts(
     else loading = true;
   };
 
-  section('chores', Boolean(raw.rooms && raw.templates && raw.openChores && raw.todayChores && raw.doneToday), () => {
+  section('chores', Boolean(raw.rooms && raw.templates && raw.openChores && raw.todayChores && raw.doneToday && raw.doneTodayServer), () => {
+    // Merged by document id: a chore found by more than one query counts once
+    // (computeChoreFacts then reads its completion with `completionInstant`).
     const merged = new Map<string, RawDoc>();
-    [...raw.openChores!, ...raw.todayChores!, ...raw.doneToday!].forEach((chore) => merged.set(chore.id, chore));
+    [...raw.openChores!, ...raw.todayChores!, ...raw.doneToday!, ...raw.doneTodayServer!].forEach((chore) => merged.set(chore.id, chore));
     facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, dayKey(context.now)));
   });
 

@@ -64,6 +64,26 @@ describe('assembleDashboardFacts: loading, failed and empty stay distinct', () =
     assert.equal(loading, true);
   });
 
+  it('counts today’s completions found by the server stamp, merged by id with the legacy query', () => {
+    const base = { rooms: [{ id: 'kitchen', name: 'Kitchen' }], templates: [], openChores: [], todayChores: [] };
+    const stamped = {
+      id: 'k', task: 'Reset', assignedToEmail: 'u1@example.test', originalDueDate: '2026-07-31', dueDate: '2026-07-31', roomIds: ['kitchen'],
+      isCompleted: true,
+      // The client string says yesterday (a skewed clock); the server stamp says today.
+      completedAt: '2026-07-31T10:00:00.000Z', completedAtServer: { toDate: () => new Date(2026, 7, 1, 9) },
+    };
+    // Not ready until the server-stamp listener has answered too.
+    const waiting = assembleDashboardFacts({ ...base, doneToday: [] }, new Set(), { ...none, chores: true }, context);
+    assert.equal(waiting.facts.chores, undefined);
+    assert.equal(waiting.loading, true);
+    const { facts } = assembleDashboardFacts({ ...base, doneToday: [], doneTodayServer: [stamped] }, new Set(), { ...none, chores: true }, context);
+    assert.equal(facts.chores?.todayDone, 1);
+    assert.equal(facts.chores?.rooms.find((room) => room.id === 'kitchen')?.doneToday, 1);
+    // Found by both queries: counted once.
+    const both = assembleDashboardFacts({ ...base, doneToday: [stamped], doneTodayServer: [stamped] }, new Set(), { ...none, chores: true }, context);
+    assert.equal(both.facts.chores?.todayDone, 1);
+  });
+
   it('ignores sections the member cannot view', () => {
     const { facts, loading } = assembleDashboardFacts({}, new Set(['chores']), none, context);
     assert.deepEqual(facts, {});
