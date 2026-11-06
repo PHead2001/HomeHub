@@ -63,7 +63,20 @@ export const runHouseholdReminders = async (
   };
   const house = db.collection("households").doc(householdId);
   const houseSnap = await house.get();
-  if (!houseSnap.exists) return result;
+  // A household being deleted is frozen: upkeep must not add anything back.
+  if (!houseSnap.exists || houseSnap.get("deletingAt")) return result;
+
+  // Every upkeep write re-reads the household in the same transaction. The
+  // deletion freeze writes that document, so Firestore serializes the two:
+  // writes before the freeze are swept by the delete, and none land after it.
+  type Op = (tx: firestore.Transaction) => void;
+  const commitGuarded = (ops: Op[]): Promise<boolean> =>
+    db.runTransaction(async (tx) => {
+      const home = await tx.get(house);
+      if (!home.exists || home.get("deletingAt")) return false;
+      ops.forEach((op) => op(tx));
+      return true;
+    });
   const timeZone = safeTimeZone(houseSnap.get("timeZone"));
   const today = localDay(now, timeZone);
 
@@ -87,8 +100,8 @@ export const runHouseholdReminders = async (
 
   // Recurring chores: create the next occurrences that do not exist yet.
   const choreIds = new Set(choresSnap.docs.map((d) => d.id));
-  const choreWrites = db.batch();
-  let pendingWrites = 0;
+  const choreOps: Op[] = [];
+  const stopped = {...result, generatedChores: 0, purgedChores: 0};
   for (const templateDoc of templatesSnap.docs) {
     const template = templateDoc.data();
     const recurrence = normalizeRecurrence(template.recurrence, today);
@@ -106,7 +119,8 @@ export const runHouseholdReminders = async (
         const id = recurringChoreId(templateDoc.id, roomId, day, assignee);
         if (choreIds.has(id)) continue;
         choreIds.add(id);
-        choreWrites.set(house.collection("chores").doc(id), {
+        const choreRef = house.collection("chores").doc(id);
+        const chore = {
           task: template.task,
           assignedToEmail: assignee,
           assignedToDisplayName: person.displayName || assignee,
@@ -118,11 +132,11 @@ export const runHouseholdReminders = async (
           templateId: templateDoc.id,
           originalDueDate: day,
           roomIds: roomId === "general" ? [] : [roomId],
-        });
-        pendingWrites++;
+        };
+        choreOps.push((tx) => tx.set(choreRef, chore));
         result.generatedChores++;
-        if (pendingWrites >= 450) {
-          await choreWrites.commit();
+        if (choreOps.length >= 450) {
+          if (!(await commitGuarded(choreOps))) return stopped;
           return {...result, ...(await runHouseholdReminders(
             db, householdId, now, ts))};
         }
@@ -138,18 +152,19 @@ export const runHouseholdReminders = async (
     const completedAt = typeof chore.completedAt === "string" ?
       localDay(new Date(chore.completedAt), timeZone) : null;
     if (chore.isCompleted && completedAt && completedAt < purgeBefore &&
-        pendingWrites < 450) {
-      choreWrites.delete(choreDoc.ref);
-      pendingWrites++;
+        choreOps.length < 450) {
+      choreOps.push((tx) => tx.delete(choreDoc.ref));
       result.purgedChores++;
     }
   }
-  if (pendingWrites > 0) await choreWrites.commit();
+  if (choreOps.length > 0 && !(await commitGuarded(choreOps))) return stopped;
 
+  // Returns false when the household disappeared or started deleting.
   const ensure = async (id: string, fields: Record<string, unknown>) => {
     const ref = house.collection("notifications").doc(id);
     const created = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+      const [home, snap] = await Promise.all([tx.get(house), tx.get(ref)]);
+      if (!home.exists || home.get("deletingAt")) return "stopped";
       if (!snap.exists) {
         tx.set(ref, notificationBody(householdId, now, ts, fields));
         return "created";
@@ -173,6 +188,7 @@ export const runHouseholdReminders = async (
     });
     if (created === "created") result.createdNotifications++;
     if (created === "refreshed") result.refreshedNotifications++;
+    return created !== "stopped";
   };
 
   // Maintenance reminders (household-wide).
@@ -181,7 +197,7 @@ export const runHouseholdReminders = async (
     vehiclesSnap.docs.map((d) => ({id: d.id, ...d.data()}) as VehicleInput),
     today, timeZone));
   for (const r of reminders) {
-    await ensure(
+    const kept = await ensure(
       deterministicNotificationId(r.sourceType, r.sourceId, r.stateKey), {
         category: "maintenance",
         title: r.title,
@@ -191,6 +207,7 @@ export const runHouseholdReminders = async (
         sourceId: r.sourceId,
         stateKey: r.stateKey,
       });
+    if (!kept) return result;
   }
 
   // Chore reminders (per person, in their own timezone). Reminder documents
@@ -215,7 +232,7 @@ export const runHouseholdReminders = async (
       reminderTime: settings.reminderTime,
     }, chores, now);
     for (const note of notes) {
-      await ensure(note.id, {
+      const kept = await ensure(note.id, {
         category: "chores",
         title: note.title,
         message: note.message,
@@ -225,6 +242,7 @@ export const runHouseholdReminders = async (
         targetUserUid: note.targetUserUid,
         targetUserEmail: note.targetUserEmail,
       });
+      if (!kept) return result;
     }
   }
   return result;

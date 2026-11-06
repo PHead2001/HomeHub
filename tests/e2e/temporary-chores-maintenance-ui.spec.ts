@@ -474,3 +474,27 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await expect(page.getByRole('cell', { name: 'Inventory CRUD Updated E2E', exact: true })).toHaveCount(0);
   });
 });
+
+test.describe('chore dates for a viewer west of the household', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' });
+
+  test('a server-generated chore shows on its occurrence day, not the day before', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const id = 'west-viewer-occurrence-e2e';
+    // Thursday Aug 6 in the household's zone (Chicago midnight = Wed 22:00 in Los Angeles).
+    await household.collection('chores').doc(id).set({
+      task: 'West Viewer Occurrence E2E', assignedToEmail: 'alex.e2e@example.test', assignedToDisplayName: 'Alex E2E',
+      dueDate: '2026-08-06T05:00:00.000Z', originalDueDate: '2026-08-06', isCompleted: false,
+      notes: '', subTasks: [], completedSubTasks: [], roomIds: ['kitchen'], templateId: 'west-viewer-template',
+    });
+    try {
+      await openAuthenticated(page, '/chores', 'Chore Chart');
+      await page.getByRole('button', { name: /^Future \(/ }).click();
+      const row = page.getByText('West Viewer Occurrence E2E', { exact: true }).locator('xpath=ancestor::*[contains(., "Aug")][1]');
+      await expect(row).toContainText('Aug 6');
+      await expect(row).not.toContainText('Aug 5');
+    } finally {
+      await household.collection('chores').doc(id).delete();
+    }
+  });
+});

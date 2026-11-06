@@ -85,6 +85,14 @@ describe('household upkeep', () => {
     assert.equal(reminder.data()?.message, '1 chore due today.');
   });
 
+  test('a household being deleted gets no upkeep writes', async () => {
+    await house().update({ deletingAt: new Date() });
+    const result = await run(new Date('2026-11-05T23:30:00Z'));
+    assert.equal(result.generatedChores, 0);
+    assert.equal((await house().collection('chores').get()).size, 0);
+    assert.equal((await house().collection('notifications').get()).size, 0);
+  });
+
   test('completed chores older than 90 days are removed; recent ones are kept', async () => {
     await house().collection('chores').doc('old').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z' });
     await house().collection('chores').doc('recent').set({ task: 'Recent', isCompleted: true, completedAt: '2026-10-30T12:00:00.000Z' });

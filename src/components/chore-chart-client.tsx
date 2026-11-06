@@ -1290,13 +1290,19 @@ function ManageRecurringTasksDialog({
     )
 }
 
+// The day a chore is due. Recurring and temporary chores store their calendar day
+// (originalDueDate, in the household's timezone); reading it as a local date keeps
+// Thursday's chore on Thursday for every viewer. Older chores fall back to dueDate.
+const choreDueDay = (chore: Chore): Date =>
+    /^\d{4}-\d{2}-\d{2}$/.test(chore.originalDueDate || '') ? parseISO(chore.originalDueDate) : parseISO(chore.dueDate);
+
 function ChoreCalendar({ chores }: { chores: Chore[] }) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const choresByDate = useMemo(() => {
     const grouped = new Map<string, Chore[]>();
     chores.forEach(chore => {
-      const day = format(parseISO(chore.dueDate), 'yyyy-MM-dd');
+      const day = format(choreDueDay(chore), 'yyyy-MM-dd');
       if (!grouped.has(day)) {
         grouped.set(day, []);
       }
@@ -1975,11 +1981,11 @@ export function ChoreChartClient() {
   });
 
   const upcomingChores = filteredChores
-    .filter(c => !c.isCompleted && !isAfter(parseISO(c.dueDate), today))
+    .filter(c => !c.isCompleted && !isAfter(choreDueDay(c), today))
     .sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
     
   const futureChores = filteredChores
-    .filter(c => !c.isCompleted && isAfter(parseISO(c.dueDate), today))
+    .filter(c => !c.isCompleted && isAfter(choreDueDay(c), today))
     .sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
 
   const seventyTwoHoursAgo = sub(today, { hours: 72 });
@@ -1995,7 +2001,7 @@ export function ChoreChartClient() {
     
   const visibleFutureChores = showFullFuture
     ? futureChores
-    : futureChores.filter(c => !isAfter(parseISO(c.dueDate), sevenDaysFromNow));
+    : futureChores.filter(c => !isAfter(choreDueDay(c), sevenDaysFromNow));
     
   const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
 
@@ -2031,7 +2037,7 @@ export function ChoreChartClient() {
             onValueChange={setOpenChoreAccordions}
         >
             {chores.map((chore) => {
-                const isOverdue = isPast(parseISO(chore.dueDate)) && !isToday(parseISO(chore.dueDate));
+                const isOverdue = isPast(choreDueDay(chore)) && !isToday(choreDueDay(chore));
                 const isCompleted = chore.isCompleted;
                 const hasDetails = chore.notes || (chore.subTasks && chore.subTasks.length > 0);
 
@@ -2058,7 +2064,7 @@ export function ChoreChartClient() {
                                             {chore.task}
                                         </span>
                                         <div className={cn("text-[9px] md:text-xs text-muted-foreground", isCompleted && "line-through")}>
-                                            {format(parseISO(chore.dueDate), 'MMM d')}
+                                            {format(choreDueDay(chore), 'MMM d')}
                                         </div>
                                     </button>
                                 </AccordionPrimitive.Trigger>
