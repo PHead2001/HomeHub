@@ -102,6 +102,26 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     }
   });
 
+  test('an exhausted daily AI quota blocks only model calls: barcode scans and overview facts keep working', async ({ request }) => {
+    // The quota uses the server's real clock (UTC day), not the browser's fixed clock.
+    const day = new Date().toISOString().slice(0, 10);
+    const usage = adminDb.collection('aiUsage').doc(`user_e2e-owner-uid_${day}`);
+    await usage.set({ scope: 'user', id: 'e2e-owner-uid', day, count: 100_000, byFlow: {}, expiresAt: new Date(Date.now() + 86_400_000) });
+    try {
+      const ownerToken = await emulatorIdToken(request, 'e2e-owner-uid');
+      const barcode = await probe(request, ownerToken, { operation: 'barcode', householdId: householdA, barcode: '008500001280' });
+      expect(barcode).toMatchObject({ ok: true, data: { source: 'open_food_facts', productName: 'E2E Family Juice' } });
+
+      const overview = await probe(request, ownerToken, { operation: 'overview', householdId: householdA });
+      expect(overview).toMatchObject({ ok: true, data: { aiStatus: 'quota_exceeded', narrative: null } });
+      expect(overview.data.facts).toBeTruthy();
+
+      expect((await usage.get()).data()?.count, 'neither call took quota').toBe(100_000);
+    } finally {
+      await usage.delete();
+    }
+  });
+
   test('overview is on-demand, exact, transient, and useful through deterministic provider failures', async ({ page }, testInfo) => {
     const choreRef = adminDb.collection('households').doc(householdA).collection('chores').doc('chore-kitchen');
     await openAuthenticated(page);

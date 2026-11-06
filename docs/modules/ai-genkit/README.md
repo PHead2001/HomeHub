@@ -58,7 +58,7 @@ Input limits include 120-character grocery names, at most 60 recipe inventory it
 
 ## Authentication, Roles, and Security
 
-Protected clients send the current Firebase ID token and household ID to the server action. Firebase Admin derives UID/email from the verified token, loads `households/{householdId}` and `members/{uid}`, rejects missing/pending/`newuser` membership, and applies member-document role presets and overrides. If the member document is absent, household owner UID/email evidence alone grants owner; another legacy `memberEmails` entry receives normal member permissions with no authority inherited from `users/{email}`.
+Protected clients send the current Firebase ID token and household ID to the server action. Firebase Admin derives UID/email from the verified token, loads `households/{householdId}` and `members/{uid}`, rejects missing/pending/`newuser` membership, and applies member-document role presets and overrides. The approved member record is the only authority: without one (including legacy `memberEmails`, owner email/UID fields or `users/{email}` role data) the request is rejected.
 
 - Categorization requires `shopping.edit`.
 - Recipe generation requires `shopping.view`.
@@ -66,7 +66,7 @@ Protected clients send the current Firebase ID token and household ID to the ser
 - Dashboard overview requires `household.view`, then independently gates every fact section by its module permission.
 - Barcode lookup requires `shopping.view` before either Admin Firestore or Open Food Facts is accessed.
 
-Per-instance request guards reject overlapping calls for the same user/household/flow and apply a bounded one-minute request window. This prevents ordinary duplicate UI submissions but is not a distributed quota system across multiple App Hosting instances.
+Per-instance request guards reject overlapping calls for the same user/household/flow and apply a bounded one-minute request window, which stops duplicate UI submissions. A durable daily quota (`src/lib/server/ai-quota.ts`) caps spend across all App Hosting instances: after authorization, each AI request takes one unit from the caller's per-UTC-day counter (`AI_DAILY_USER_LIMIT`, default 150) and the household's (`AI_DAILY_HOUSEHOLD_LIMIT`, default 400) in one Firestore transaction, so concurrent requests cannot overshoot and a refused request is not counted. Reaching either limit returns `quota_exceeded` ("You've used today's AI requests. They reset at midnight UTC."). Barcode lookup never calls a model (household library, then Open Food Facts), so it neither takes nor needs quota. The dashboard overview takes its unit only for the AI narrative, so exact facts stay available with a "used up" note; categorization still saves the item under `Other`. Counters live in server-only `aiUsage/{user|household}_{id}_{day}` documents (per-flow counts in `byFlow`) that rules deny to every client and a TTL policy on `aiUsage.expiresAt` removes three days after the day ends.
 
 Admin SDK reads occur only after this authorization result exists. Altered household IDs fail before aggregation, model generation, or Open Food Facts fallback.
 
