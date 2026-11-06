@@ -268,7 +268,11 @@ export function LivingHouse({
   };
 
   const rooms = facts.chores?.rooms ?? [];
-  const shownRooms = rooms.slice(0, MAX_ROOMS);
+  // With more rooms than fit, rooms that need attention (overdue, then due today,
+  // including the "Unknown Room" bucket) are shown first; display keeps name order.
+  const rank = (room: RoomState) => (room.status === 'overdue' ? 0 : room.status === 'due' ? 1 : 2);
+  const visibleIds = new Set([...rooms].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ROOMS).map((room) => room.id));
+  const shownRooms = rooms.filter((room) => visibleIds.has(room.id));
   const hiddenRooms = rooms.length - shownRooms.length;
   const pets = facts.pets?.pets ?? [];
   const maintenance = facts.maintenance;

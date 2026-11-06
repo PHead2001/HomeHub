@@ -143,6 +143,10 @@ export type DashboardFacts = {
 /** Pantry items expiring within this many days count as "expiring soon". */
 const SOON_DAYS = 7;
 const GENERAL_ROOM_ID = 'general';
+/** Bucket for chores whose room id no longer matches a room. */
+export const UNKNOWN_ROOM_ID = 'unknown-room';
+/** Same label the Chores page uses for a missing room. */
+export const UNKNOWN_ROOM_NAME = 'Unknown Room';
 
 const text = (value: unknown, fallback: string) =>
   typeof value === 'string' && value.trim() ? value.trim().replace(/\s+/g, ' ').slice(0, 100) : fallback;
@@ -209,8 +213,12 @@ export function computeChoreFacts(
     const completedToday = completed && finishedAt !== null && choreDayKey(finishedAt) === today;
     const isToday = key === today;
     const mine = chore.assignedToEmail === viewer.email;
-    const roomIds = Array.isArray(chore.roomIds) && chore.roomIds.length > 0
-      ? chore.roomIds.filter((id): id is string => typeof id === 'string')
+    const listed = Array.isArray(chore.roomIds) ? chore.roomIds.filter((id): id is string => typeof id === 'string' && id !== '') : [];
+    // A room that no longer exists (deleted, or not readable) keeps its chores in an
+    // "Unknown Room" bucket, as the Chores page labels them, so their work is never
+    // dropped from the house. Each chore counts once per bucket.
+    const roomIds = listed.length > 0
+      ? [...new Set(listed.map((id) => (id === GENERAL_ROOM_ID || roomMap.has(id) ? id : UNKNOWN_ROOM_ID)))]
       : [GENERAL_ROOM_ID];
 
     if (isToday) {
@@ -224,8 +232,8 @@ export function computeChoreFacts(
 
     const dueLabel = days === null ? 'no date' : `due ${relativeDays(days)}`;
     for (const roomId of roomIds) {
-      const room = roomMap.get(roomId) ?? (roomId === GENERAL_ROOM_ID ? ensureRoom(GENERAL_ROOM_ID, 'Around the house') : null);
-      if (!room) continue;
+      const room = roomMap.get(roomId)
+        ?? (roomId === GENERAL_ROOM_ID ? ensureRoom(GENERAL_ROOM_ID, 'Around the house') : ensureRoom(UNKNOWN_ROOM_ID, UNKNOWN_ROOM_NAME));
       if (completed) {
         if (completedToday) room.doneToday += 1;
         continue;

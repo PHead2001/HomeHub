@@ -7,6 +7,7 @@ import {
   computePetFacts,
   computeShoppingFacts,
   recurringTemplateIdsFrom,
+  UNKNOWN_ROOM_ID,
 } from '../../src/lib/dashboard/facts';
 
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -200,6 +201,31 @@ describe('shopping, pantry, maintenance and pets', () => {
     ]);
     assert.equal(facts.pets[0].headline, 'Fed 2 h ago by Sam');
     assert.equal(facts.hungry, 2);
+  });
+});
+
+describe('records whose group was deleted are never dropped', () => {
+  it('keeps chores of a deleted room in an "Unknown Room" bucket, counted once', () => {
+    const facts = computeChoreFacts([
+      { id: 'gone', task: 'Paint shed', assignedToEmail: viewer.email, dueDate: '2026-07-29', originalDueDate: '2026-07-29', isCompleted: false, roomIds: ['shed', 'attic'] },
+      { id: 'mixed', task: 'Dust', assignedToEmail: viewer.email, dueDate: '2026-08-01', originalDueDate: '2026-08-01', isCompleted: false, roomIds: ['kitchen', 'shed'] },
+    ], rooms, viewer, now);
+    const unknown = facts.rooms.find((room) => room.id === UNKNOWN_ROOM_ID);
+    assert.equal(unknown?.name, 'Unknown Room');
+    assert.equal(unknown?.overdue, 1, 'two missing rooms on one chore count once');
+    assert.equal(unknown?.dueToday, 1);
+    assert.equal(unknown?.status, 'overdue');
+    assert.equal(facts.rooms.find((room) => room.id === 'kitchen')?.dueToday, 1);
+    assert.equal(facts.overdueTotal, 1);
+  });
+
+  it('counts chores of an assignee who is no longer a member in household totals', () => {
+    const facts = computeChoreFacts([
+      { id: 'left', task: 'Mow', assignedToEmail: 'former@example.test', dueDate: '2026-07-30', originalDueDate: '2026-07-30', isCompleted: false, roomIds: ['garage'] },
+    ], rooms, viewer, now);
+    assert.equal(facts.overdueTotal, 1);
+    assert.equal(facts.rooms.find((room) => room.id === 'garage')?.overdue, 1);
+    assert.equal(facts.mineOpen, 0);
   });
 });
 

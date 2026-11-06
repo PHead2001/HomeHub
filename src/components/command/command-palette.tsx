@@ -269,16 +269,16 @@ export function CommandPalette({
         return;
       } else if (pending.kind === 'feeding') {
         const portion = feedingPortion(pending);
-        await logFeeding(householdId, pending.pet.id, portion.amount, portion.unit, currentUser, lateError);
+        const status = await logFeeding(householdId, pending.pet.id, portion.amount, portion.unit, currentUser, lateError);
         notifyDataChanged({ module: 'pets', householdId, petId: pending.pet.id });
-        toast({ title: 'Feeding logged', description: `${pending.pet.name} has been fed.` });
+        toast({ title: status === 'queued' ? 'Saved offline' : 'Feeding logged', description: status === 'queued' ? `${pending.pet.name}'s feeding will sync when you're back online.` : `${pending.pet.name} has been fed.` });
       } else if (pending.kind === 'chore') {
         // Without chores.assign the chore can only be yours (as in the Add Chore dialog).
         const { assignee } = resolveChoreAssignee(choreAssignee ?? pending.assignee, assignable, self);
         if (!assignee) throw new Error('missing-assignee');
-        const choreId = await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee });
+        const { choreId, status } = await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee, onLateError: lateError });
         notifyDataChanged({ module: 'chores', householdId, choreId });
-        toast({ title: 'Chore added', description: `${pending.task} for ${assignee.name}.` });
+        toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${pending.task} will sync when you're back online.` : `${pending.task} for ${assignee.name}.` });
       }
       playFeedback('add');
       close();

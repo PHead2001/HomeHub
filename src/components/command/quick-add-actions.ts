@@ -14,12 +14,12 @@
  *   skipped when you assign it to yourself), as Chores creates them.
  * Nothing is written until the person confirms the preview.
  */
-import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { db } from '@/lib/firebase';
-import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
+import { awaitWriteUnlessOffline, getDocOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { addFeedingLog } from '@/components/pets/pet-log-api';
 import { loggerName } from '@/lib/pets/care';
 import type { PortionUnit } from '@/lib/pets/types';
@@ -38,7 +38,7 @@ export async function addShoppingItems(
   items: QuickAddEntry[],
   onLateError: (error: unknown) => void,
 ): Promise<ShoppingAddOutcome> {
-  const categoriesSnapshot = await getDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
+  const categoriesSnapshot = await getDocOfflineAware(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
   const offline = isBrowserOffline();
   const itemsRef = collection(db, 'households', householdId, 'shopping-lists', list.id, 'items');
@@ -90,13 +90,15 @@ export async function createOneTimeChore({
   task,
   dueDate,
   assignee,
+  onLateError,
 }: {
   householdId: string;
   viewer: User;
   task: string;
   dueDate: string;
   assignee: QuickAddMember;
-}) {
+  onLateError: (error: unknown) => void;
+}): Promise<{ choreId: string; status: 'saved' | 'queued' }> {
   const choreRef = doc(collection(db, 'households', householdId, 'chores'));
   const batch = writeBatch(db);
   const chore: Omit<Chore, 'id'> = {
@@ -128,6 +130,8 @@ export async function createOneTimeChore({
       targetUser: { uid: assignee.uid, email: assignee.email, displayName: assignee.name } as User,
     }));
   }
-  await batch.commit();
-  return choreRef.id;
+  // Like the other quick-add writes: offline, the batch stays queued (it syncs on
+  // reconnect) instead of waiting for a server acknowledgement that cannot come.
+  const status = await awaitWriteUnlessOffline(batch.commit(), onLateError);
+  return { choreId: choreRef.id, status };
 }
