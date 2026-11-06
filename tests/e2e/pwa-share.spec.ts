@@ -132,4 +132,39 @@ test.describe('offline shopping', () => {
       await apples.update({ status: 'needed' });
     }
   });
+
+  test('ticks queued offline that are all rejected leave the confirmed state, not a stale tick', async ({ page, context }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-chromium', 'one browser is enough for the sync contract');
+    const itemId = 'e2e-offline-reject';
+    const item = groceryItems.doc(itemId);
+    await item.set({ name: 'E2E offline reject', quantity: 1, category: 'Produce', status: 'needed', createdAt: new Date('2026-07-31T15:00:00.000Z') });
+    try {
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto('/shopping');
+      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      const needed = page.locator(`#item-needed-${itemId}`);
+      const purchased = page.locator(`#item-purchased-${itemId}`);
+      await expect(needed).toBeVisible();
+
+      // Offline: tick, then untick. Two writes are queued, each from a different status.
+      await context.setOffline(true);
+      await needed.click();
+      await expect(needed).toHaveCount(0);
+      await page.getByText(/^Purchased \(\d+\)/).click();
+      await purchased.click();
+      await expect(needed).toBeVisible();
+
+      // The item is removed on the server meanwhile, so both queued updates are rejected.
+      await item.delete();
+      await context.setOffline(false);
+
+      // The screen settles on the confirmed state (no item), not on either write's guess.
+      await expect(page.getByText('Could not update item status.').first()).toBeVisible({ timeout: 20_000 });
+      await expect(needed).toHaveCount(0, { timeout: 20_000 });
+      await expect(purchased).toHaveCount(0);
+    } finally {
+      await context.setOffline(false);
+      await item.delete();
+    }
+  });
 });
