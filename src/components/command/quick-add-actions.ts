@@ -17,6 +17,8 @@ import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
+import { addFeedingLog } from '@/components/pets/pet-log-api';
+import { loggerName } from '@/lib/pets/care';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
@@ -50,22 +52,23 @@ export async function addShoppingItems(
   return status;
 }
 
+// Feedings go through the Pets module's own writer, so quick-add entries carry the
+// same shape (including who logged them) as the one-tap button and the full form.
 export async function logFeeding(
   householdId: string,
   petId: string,
   amount: number | null,
   unit: 'Cups' | 'Cans' | 'Scoops' | null,
+  viewer: User,
   onLateError: (error: unknown) => void,
 ) {
-  const now = new Date();
-  const ref = doc(collection(db, 'households', householdId, 'pets', petId, 'feeding-logs'));
-  return awaitWriteUnlessOffline(setDoc(ref, {
-    cups: amount ?? 1,
-    foodAmountType: unit ?? 'Cups',
+  return awaitWriteUnlessOffline(addFeedingLog(householdId, petId, {
+    amount: amount ?? 1,
+    unit: unit ?? 'Cups',
     foodType: 'Dry',
     comments: 'Logged with quick add',
-    date: now,
-    ampm: format(now, 'a').toUpperCase(),
+    loggedByUid: viewer.uid,
+    loggedByName: loggerName(viewer),
   }), onLateError);
 }
 

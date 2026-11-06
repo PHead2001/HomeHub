@@ -233,7 +233,7 @@ export function CommandPalette({
         const status = await addShoppingItems(householdId, pending.list, pending.items, lateError);
         toast({ title: status === 'queued' ? 'Saved offline' : 'Added to the list', description: `${pending.items.map((item) => item.name).join(', ')} on ${pending.list.name}.` });
       } else if (pending.kind === 'feeding') {
-        await logFeeding(householdId, pending.pet.id, pending.amount, pending.unit, lateError);
+        await logFeeding(householdId, pending.pet.id, pending.amount, pending.unit, currentUser, lateError);
         toast({ title: 'Feeding logged', description: `${pending.pet.name} has been fed.` });
       } else if (pending.kind === 'chore') {
         const assignee = choreAssignee ?? pending.assignee ?? self;
