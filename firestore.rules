@@ -261,6 +261,10 @@ service cloud.firestore {
     function canSendCategory(householdId, category) {
       return (category == 'chores' && (hasHouseholdPermission(householdId, 'chores.assign') ||
           hasHouseholdPermission(householdId, 'chores.create') || hasHouseholdPermission(householdId, 'chores.edit'))) ||
+        // Anyone who can see chores may remind themselves (daily/overdue reminders).
+        (category == 'chores' && hasHouseholdPermission(householdId, 'chores.view') &&
+          request.resource.data.get('sourceType', '') == 'chore-reminder' &&
+          request.resource.data.get('targetUserUid', '') == request.auth.uid) ||
         (category == 'maintenance' && (hasHouseholdPermission(householdId, 'maintenance.createLogs') ||
           hasHouseholdPermission(householdId, 'maintenance.edit'))) ||
         (category == 'shopping' && hasHouseholdPermission(householdId, 'shopping.edit')) ||
@@ -286,7 +290,7 @@ service cloud.firestore {
           'targetUserUid', 'targetUserEmail', 'readBy', 'dismissedBy', 'createdByUid'
         ]) &&
         data.category in ['chores', 'shopping', 'pets', 'maintenance', 'automation', 'system', 'general'] &&
-        data.message is string && data.message.size() > 0 && data.message.size() <= 500 &&
+        data.message is string && data.message.size() > 0 && data.message.size() <= 1000 &&
         (!('title' in data) || (data.title is string && data.title.size() <= 120)) &&
         data.createdAt is timestamp &&
         data.expiresAt is timestamp &&
@@ -326,6 +330,46 @@ service cloud.firestore {
         data.actorEmail == request.auth.token.email &&
         data.action is string && data.action.size() <= 80 &&
         data.createdAt is string;
+    }
+
+    function leavingMember(householdId) {
+      return signedIn() &&
+        exists(memberPath(householdId, request.auth.uid)) &&
+        get(memberPath(householdId, request.auth.uid)).data.get('status', 'active') == 'active' &&
+        get(memberPath(householdId, request.auth.uid)).data.role != 'owner' &&
+        !existsAfter(memberPath(householdId, request.auth.uid));
+    }
+
+    function validDepartureAudit(householdId) {
+      let data = request.resource.data;
+      return leavingMember(householdId) &&
+        data.keys().hasOnly(['actorUid', 'actorEmail', 'actorName', 'action', 'targetUid', 'targetEmail',
+          'targetName', 'createdAt', 'details']) &&
+        data.action == 'member.left' &&
+        data.actorUid == request.auth.uid && data.targetUid == request.auth.uid &&
+        data.actorEmail == request.auth.token.email &&
+        data.createdAt is string;
+    }
+
+    function validDepartureNotice(householdId) {
+      let data = request.resource.data;
+      return leavingMember(householdId) &&
+        data.householdId == householdId &&
+        data.category == 'system' &&
+        data.get('sourceType', '') == 'household-member-left' &&
+        data.get('sourceId', '') == request.auth.uid &&
+        !('targetUserUid' in data) && !('targetUserEmail' in data) &&
+        data.keys().hasOnly([
+          'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
+          'deepLink', 'sourceType', 'sourceId', 'stateKey', 'readBy', 'dismissedBy', 'createdByUid'
+        ]) &&
+        (!('createdByUid' in data) || data.createdByUid == request.auth.uid) &&
+        data.message is string && data.message.size() > 0 && data.message.size() <= 300 &&
+        (!('title' in data) || (data.title is string && data.title.size() <= 120)) &&
+        data.createdAt is timestamp && data.createdAt < request.time + duration.value(15, 'm') &&
+        data.expiresAt is timestamp && data.expiresAt <= request.time + duration.value(8, 'd') &&
+        data.readBy == {} && data.dismissedBy == {} &&
+        validDeepLink(data);
     }
 
     function validNewMaintenanceAttachment(householdId) {
@@ -411,7 +455,7 @@ service cloud.firestore {
 
       match /notifications/{notificationId} {
         allow read: if hasHouseholdPermission(householdId, 'notifications.view');
-        allow create: if validNewNotification(householdId);
+        allow create: if validNewNotification(householdId) || validDepartureNotice(householdId);
         allow update: if
           (hasHouseholdPermission(householdId, 'notifications.dismiss') && updatesOnlyOwnNotificationState()) ||
           (hasHouseholdPermission(householdId, 'maintenance.edit') && resolvesMaintenanceNotification());
@@ -427,7 +471,7 @@ service cloud.firestore {
 
       match /auditLogs/{auditId} {
         allow read: if isOwnerOrAdmin(householdId);
-        allow create: if validNewAuditEntry(householdId);
+        allow create: if validNewAuditEntry(householdId) || validDepartureAudit(householdId);
         allow update, delete: if false;
       }
 
@@ -526,11 +570,11 @@ service cloud.firestore {
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 
-      // Home Assistant credentials hold a long-lived token. Clients may save or
-      // clear them with automation.manage but can never read them back; the
-      // server reads them with the Admin SDK after authorizing the caller.
+      // Home Assistant credentials hold a long-lived token. Only members who may
+      // manage automation (and could replace the token anyway) can read it; the
+      // server reads it with the Admin SDK after authorizing the caller.
       match /home-automation/{configId} {
-        allow read: if false;
+        allow read: if hasHouseholdPermission(householdId, 'automation.manage');
         allow create, update, delete: if hasHouseholdPermission(householdId, 'automation.manage');
       }
 
@@ -556,9 +600,13 @@ service cloud.firestore {
         request.resource.data.createdByUid == request.auth.uid &&
         request.resource.data.createdByEmail == request.auth.token.email &&
         request.resource.data.useCount == 0 &&
-        request.resource.data.expiresAt is timestamp &&
-        request.resource.data.expiresAt > request.time &&
-        request.resource.data.expiresAt <= request.time + duration.value(2, 'h') &&
+        (
+          (request.resource.data.expiresAt is timestamp &&
+            request.resource.data.expiresAt > request.time &&
+            request.resource.data.expiresAt <= request.time + duration.value(2, 'h')) ||
+          (request.resource.data.expiresAt is string &&
+            request.resource.data.expiresAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$'))
+        ) &&
         request.resource.data.maxUses is int &&
         request.resource.data.maxUses >= 1 &&
         request.resource.data.maxUses <= 10;

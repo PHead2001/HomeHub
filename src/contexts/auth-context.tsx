@@ -47,6 +47,9 @@ interface AuthContextType {
   permissions: PermissionMap;
   loading: boolean;
   householdLoading: boolean;
+  /** True when membership could not be loaded for an operational reason (offline, timeout). */
+  householdLoadFailed: boolean;
+  retryHouseholdLoad: () => void;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
   updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string) => Promise<void>;
@@ -116,6 +119,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
   const [loading, setLoading] = useState(true);
   const [householdLoading, setHouseholdLoading] = useState(true);
+  const [householdLoadFailed, setHouseholdLoadFailed] = useState(false);
+  const [householdLoadAttempt, setHouseholdLoadAttempt] = useState(0);
+  const retryHouseholdLoad = useCallback(() => setHouseholdLoadAttempt(attempt => attempt + 1), []);
   const { toast } = useToast();
 
   const fetchOrCreateUserProfile = useCallback(async (firebaseUser: FirebaseAuthUser, googleProfileData?: GoogleProfileData): Promise<User | null> => {
@@ -245,6 +251,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const fetchHousehold = async () => {
       setHouseholdLoading(true);
+      setHouseholdLoadFailed(false);
       try {
         if (!currentUser?.householdId) {
           setHousehold(null);
@@ -255,9 +262,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const member = await loadMembership(currentUser.householdId);
           if (!member) await clearStaleHousehold();
         } catch (error) {
-          // Permission denied means this account is not a member of that household.
+          // Only a definitive denial means this account is not a member. Offline or
+          // transient failures keep the profile's reference so loading can be retried.
           console.warn('Household membership could not be loaded.', error);
-          await clearStaleHousehold();
+          if ((error as { code?: string })?.code === 'permission-denied') {
+            await clearStaleHousehold();
+          } else {
+            setHousehold(null);
+            setCurrentMember(null);
+            setHouseholdLoadFailed(true);
+          }
         }
       } finally {
         setHouseholdLoading(false);
@@ -273,6 +287,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     currentUser?.permissions,
     currentUser?.role,
     currentUser?.uid,
+    householdLoadAttempt,
   ]);
 
   // This is for session management ONLY (on page refresh)
@@ -570,6 +585,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     permissions,
     loading,
     householdLoading,
+    householdLoadFailed,
+    retryHouseholdLoad,
     signInWithGoogle,
     logout,
     updateUser,

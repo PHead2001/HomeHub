@@ -27,6 +27,25 @@ describe('Home Assistant address safety', () => {
     }
   });
 
+  test('IPv6 forms that embed a private IPv4 address are refused in any notation', async () => {
+    for (const address of [
+      '::ffff:7f00:1', '::ffff:a9fe:a9fe', '0:0:0:0:0:ffff:7f00:1', '::ffff:127.0.0.1', // IPv4-mapped
+      '::7f00:1', '::127.0.0.1', '::', // IPv4-compatible and unspecified
+      '64:ff9b::a9fe:a9fe', '64:ff9b::10.0.0.1', // NAT64
+      '2002:7f00:1::', '2002:c0a8:101::1', // 6to4
+      '2001:0:4136:e378::1', // Teredo
+      'fe80::1%eth0', 'ff02::1',
+    ]) {
+      assert.equal(isPublicAddress(address), false, address);
+    }
+    for (const address of ['::ffff:5db8:d822', '64:ff9b::808:808', '2002:808:808::1']) {
+      assert.equal(isPublicAddress(address), true, address);
+    }
+    // The URL parser canonicalizes the dotted tail to hex; both forms are refused.
+    await rejectsWith(normalizeHomeAssistantUrl('https://[::ffff:127.0.0.1]', publicResolver), /private network/);
+    await rejectsWith(normalizeHomeAssistantUrl('https://[::ffff:169.254.169.254]', publicResolver), /private network/);
+  });
+
   test('http, local names, credentials in the URL and private DNS answers are refused', async () => {
     await rejectsWith(normalizeHomeAssistantUrl('http://example.com', publicResolver), /https/);
     await rejectsWith(normalizeHomeAssistantUrl('https://homeassistant.local:8123', publicResolver), /inside your home/);

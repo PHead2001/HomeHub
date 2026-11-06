@@ -138,7 +138,7 @@ function JoinHouseholdForm({
 }
 
 export function HouseholdManager({ children }: HouseholdManagerProps) {
-  const { currentUser, household, currentMember, householdLoading, createHousehold, joinHousehold, logout } = useAuth();
+  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, createHousehold, joinHousehold, logout } = useAuth();
   const pathname = usePathname();
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
@@ -174,6 +174,34 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
           </DialogContent>
         </Dialog>
       </>
+    );
+  }
+
+  // Membership could not be loaded (offline, timeout): offer a retry, never onboarding.
+  if (currentUser?.householdId && householdLoadFailed && !householdLoading) {
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          hideClose
+        >
+          <DialogHeader>
+            <DialogTitle className="font-headline text-2xl text-center">Couldn&apos;t load your household</DialogTitle>
+            <DialogDescription className="text-center text-base">
+              HomeHub couldn&apos;t be reached. Check your connection and try again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-2">
+            <Button onClick={retryHouseholdLoad}>Try again</Button>
+            <Button variant="link" className="text-primary" onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     );
   }
 
