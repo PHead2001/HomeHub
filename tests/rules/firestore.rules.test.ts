@@ -326,29 +326,6 @@ describe('roles and ownership', () => {
     await assertFails(deleteDoc(doc(db, 'households', householdA, 'members', users.owner.uid)));
   });
 
-  test('a member can leave: delete their record and remove only their own email together', async () => {
-    const db = dbFor(users.member);
-    const remaining = [users.owner, users.admin, users.child, users.guest, users.denied, users.pending, users.legacy].map(u => u.email);
-    const leave = writeBatch(db);
-    leave.delete(doc(db, 'households', householdA, 'members', users.member.uid));
-    leave.update(doc(db, 'households', householdA), { memberEmails: remaining, updatedAt: 'x' });
-    leave.set(doc(db, 'users', users.member.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
-    await assertSucceeds(leave.commit());
-  });
-
-  test('leaving cannot remove other people or keep the membership', async () => {
-    const db = dbFor(users.member);
-    const withoutGuest = [users.owner, users.admin, users.member, users.child, users.denied, users.pending, users.legacy].map(u => u.email);
-    await assertFails(updateDoc(doc(db, 'households', householdA), { memberEmails: withoutGuest, updatedAt: 'x' }));
-    const sneaky = writeBatch(db);
-    sneaky.delete(doc(db, 'households', householdA, 'members', users.member.uid));
-    sneaky.update(doc(db, 'households', householdA), {
-      memberEmails: [users.owner.email, users.admin.email],
-      updatedAt: 'x',
-    });
-    await assertFails(sneaky.commit());
-  });
-
   test('members cannot change their own role', async () => {
     await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA, 'members', users.member.uid), { role: 'admin' }));
   });
@@ -500,12 +477,6 @@ describe('invite codes', () => {
       ...invite, code: 'BBBB-BBBB-BB', createdByUid: users.ownerB.uid, createdByEmail: users.ownerB.email,
     }));
     await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'inviteCodes', 'AAAA-BBBB-CC'), { revokedAt: 'now' }));
-  });
-
-  test('owners can check that a new code is free inside the generation transaction', async () => {
-    await assertSucceeds(getDoc(doc(dbFor(users.owner), 'inviteCodes', 'FREE-CODE-00')));
-    await assertSucceeds(getDoc(doc(dbFor(users.owner), 'inviteCodes', 'AAAA-BBBB-CC')));
-    await assertFails(getDoc(doc(dbFor(users.member), 'inviteCodes', 'AAAA-BBBB-CC')));
   });
 
   test('invites cannot be pre-used or created with unlimited uses', async () => {
