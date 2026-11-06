@@ -4,6 +4,7 @@
  * a module carries an `href` so the UI can render it as a link.
  */
 import type { DashboardFacts } from './facts';
+import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from './links';
 
 export type BriefSegment = { text: string; href?: string };
 
@@ -50,7 +51,7 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   if (pets && pets.pets.length > 0) {
     const hungry = pets.pets.filter((pet) => !pet.fed);
     if (hungry.length === 1) {
-      phrases.push([{ text: `${hungry[0].name}'s next meal`, href: `/pets/${encodeURIComponent(hungry[0].id)}` }, { text: ' is due' }]);
+      phrases.push([{ text: `${hungry[0].name}'s next meal`, href: petFeedingHref(hungry[0].id) }, { text: ' is due' }]);
     } else if (hungry.length > 1) {
       phrases.push([{ text: `${plural(hungry.length, 'pet')} to feed`, href: '/pets' }]);
     }
@@ -59,14 +60,14 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   const pantry = facts.pantry;
   if (pantry && pantry.nearest.length > 0 && pantry.nearest[0].days <= 2) {
     const item = pantry.nearest[0];
-    phrases.push([{ text: `the ${item.name.toLowerCase()}`, href: '/shopping' }, { text: ` ${item.label}` }]);
+    phrases.push([{ text: `the ${item.name.toLowerCase()}`, href: PANTRY_HREF }, { text: ` ${item.label}` }]);
   } else if (pantry && pantry.expired > 0) {
-    phrases.push([{ text: `${plural(pantry.expired, 'pantry item')} expired`, href: '/shopping' }]);
+    phrases.push([{ text: `${plural(pantry.expired, 'pantry item')} expired`, href: PANTRY_HREF }]);
   }
 
   const maintenance = facts.maintenance;
   if (maintenance && maintenance.overdue > 0) {
-    phrases.push([{ text: `${plural(maintenance.overdue, 'maintenance task')} overdue`, href: '/maintenance' }]);
+    phrases.push([{ text: `${plural(maintenance.overdue, 'maintenance task')} overdue`, href: MAINTENANCE_REMINDERS_HREF }]);
   } else if (maintenance?.next && maintenance.next.days === 0) {
     phrases.push([{ text: maintenance.next.label, href: maintenance.next.href }, { text: ' is due today' }]);
   }

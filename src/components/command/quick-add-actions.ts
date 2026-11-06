@@ -4,14 +4,17 @@
  * Writes for natural-language quick-add (H13). Each one uses the same document
  * contract as the module that owns the data, so Firestore rules and the module's
  * screens treat the result exactly like something added there:
- * - shopping items: `buildShoppingListItem` plus the share target's category
+ * - shopping items: merged into a still-needed item of the same name with the
+ *   Shopping list's own transaction (`findMergeTarget` + `mergeIntoNeededItem`),
+ *   otherwise created with `buildShoppingListItem` and the shared category
  *   resolution (the guarded, quota-counted categorizer; "Other" offline);
- * - feedings: the Pets feeding-log shape with the form's defaults;
+ * - feedings: the Pets module's `addFeedingLog`, defaulting to the pet's usual
+ *   portion (`feedingPlan`) like the one-tap feed button;
  * - one-time chores: a temporary task (chore + targeted assignment notification,
  *   skipped when you assign it to yourself), as Chores creates them.
  * Nothing is written until the person confirms the preview.
  */
-import { collection, doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
@@ -19,10 +22,13 @@ import { db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addFeedingLog } from '@/components/pets/pet-log-api';
 import { loggerName } from '@/lib/pets/care';
+import type { PortionUnit } from '@/lib/pets/types';
+import { findMergeTarget } from '@/lib/shopping/items';
+import { mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import type { Chore, User } from '@/lib/types';
+import type { Chore, ShoppingListItem, User } from '@/lib/types';
 import type { QuickAddList, QuickAddMember } from '@/lib/dashboard/quick-add';
 
 export async function addShoppingItems(
@@ -34,8 +40,15 @@ export async function addShoppingItems(
   const categoriesSnapshot = await getDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
   const offline = isBrowserOffline();
+  const itemsRef = collection(db, 'households', householdId, 'shopping-lists', list.id, 'items');
+  // As on the Shopping list: online, a name that is still needed merges into that
+  // item (the transaction re-checks it is still needed); offline nothing merges.
+  const needed = offline ? [] : (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
+    ?.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<ShoppingListItem, 'id'>) })) ?? [];
   let status: 'saved' | 'queued' = 'saved';
   for (const item of items) {
+    const target = findMergeTarget(needed, item.name);
+    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), item.quantity)) continue;
     const { category } = await resolveShoppingCategory({
       itemName: item.name,
       categories,
@@ -44,7 +57,7 @@ export async function addShoppingItems(
     });
     const { itemId, data } = buildShoppingListItem({ name: item.name, quantity: item.quantity, category });
     const result = await awaitWriteUnlessOffline(
-      setDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', itemId), data),
+      setDoc(doc(itemsRef, itemId), data),
       onLateError,
     );
     if (result === 'queued') status = 'queued';
@@ -57,14 +70,14 @@ export async function addShoppingItems(
 export async function logFeeding(
   householdId: string,
   petId: string,
-  amount: number | null,
-  unit: 'Cups' | 'Cans' | 'Scoops' | null,
+  amount: number,
+  unit: PortionUnit,
   viewer: User,
   onLateError: (error: unknown) => void,
 ) {
   return awaitWriteUnlessOffline(addFeedingLog(householdId, petId, {
-    amount: amount ?? 1,
-    unit: unit ?? 'Cups',
+    amount,
+    unit,
     foodType: 'Dry',
     comments: 'Logged with quick add',
     loggedByUid: viewer.uid,

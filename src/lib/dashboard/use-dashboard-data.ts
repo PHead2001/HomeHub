@@ -17,10 +17,13 @@ import {
   type DocumentData,
   type Query,
   type QuerySnapshot,
+  Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
-import { isNotificationDismissedBy, isNotificationExpired, isNotificationReadBy, isNotificationVisibleToUser, parseNotificationDoc } from '@/lib/notifications';
+import { deduplicateNotifications, isNotificationReadBy, parseNotificationDoc } from '@/lib/notifications';
+import { newestFirst } from '@/lib/pets/care';
+import { activeBellNotifications } from './notification-display';
 import { dayKey, startOfLocalDay } from './dates';
 import {
   computeChoreFacts,
@@ -28,9 +31,15 @@ import {
   computePantryFacts,
   computePetFacts,
   computeShoppingFacts,
+  recurringTemplateIdsFrom,
   type DashboardFacts,
   type RawDoc,
 } from './facts';
+
+/** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
+const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
+/** Feedings read per pet and shape: enough for any daily target. */
+const RECENT_FEEDINGS = 12;
 
 const docs = (snapshot: QuerySnapshot<DocumentData>): RawDoc[] => snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
 
@@ -54,8 +63,10 @@ type Raw = {
   pantry?: RawDoc[];
   assets?: RawDoc[];
   vehicles?: RawDoc[];
+  templates?: RawDoc[];
   pets?: RawDoc[];
-  lastFeeding?: Record<string, unknown>;
+  /** Recent feedings per pet, one list per date shape. */
+  feedings?: Record<string, { timestamp?: RawDoc[]; string?: RawDoc[] }>;
   unread?: number;
 };
 
@@ -72,7 +83,8 @@ export type DashboardData = {
 };
 
 export function useDashboardData(enabled = true): DashboardData {
-  const { currentUser, permissions } = useAuth();
+  const { currentUser, household, permissions } = useAuth();
+  const timeZone = household?.timeZone ?? null;
   const householdId = enabled ? currentUser?.householdId ?? null : null;
   const uid = currentUser?.uid ?? '';
   const email = currentUser?.email ?? '';
@@ -110,6 +122,8 @@ export function useDashboardData(enabled = true): DashboardData {
     if (canChores) {
       const todayStart = startOfLocalDay(new Date()).toISOString();
       listen('chores', query(base('rooms')), (s) => setRaw((r) => ({ ...r, rooms: docs(s) })));
+      // Templates tell which series repeat, so missed instances fold as on the Chores page.
+      listen('chores', query(base('chore-templates')), (s) => setRaw((r) => ({ ...r, templates: docs(s) })));
       listen('chores', query(base('chores'), where('isCompleted', '==', false)), (s) => setRaw((r) => ({ ...r, openChores: docs(s) })));
       listen('chores', query(base('chores'), where('originalDueDate', '==', today)), (s) => setRaw((r) => ({ ...r, todayChores: docs(s) })));
       listen('chores', query(base('chores'), where('completedAt', '>=', todayStart)), (s) => setRaw((r) => ({ ...r, doneToday: docs(s) })));
@@ -146,30 +160,47 @@ export function useDashboardData(enabled = true): DashboardData {
     }
 
     if (canPets) {
-      const feedListeners = new Map<string, () => void>();
+      // Feeding dates come in two shapes (Timestamps, and ISO strings on older
+      // entries). Firestore orders types separately, so each shape is read on its
+      // own and merged chronologically, as the Pets module does (`newestFirst`).
+      const feedListeners = new Map<string, Array<() => void>>();
+      const recent = (shape: 'timestamp' | 'string', petId: string) => query(
+        base('pets', petId, 'feeding-logs'),
+        where('date', '>=', shape === 'timestamp' ? MIN_TIMESTAMP : ''),
+        orderBy('date', 'desc'),
+        limit(RECENT_FEEDINGS),
+      );
       listen('pets', query(base('pets')), (s) => {
         const pets = docs(s);
-        setRaw((r) => ({ ...r, pets, lastFeeding: r.lastFeeding ?? {} }));
+        setRaw((r) => ({ ...r, pets, feedings: r.feedings ?? {} }));
+        const ids = new Set(pets.map((pet) => pet.id));
+        for (const [id, stops] of feedListeners) {
+          if (!ids.has(id)) {
+            stops.forEach((stop) => stop());
+            feedListeners.delete(id);
+          }
+        }
         for (const pet of pets) {
           if (feedListeners.has(pet.id)) continue;
-          feedListeners.set(pet.id, onSnapshot(
-            query(base('pets', pet.id, 'feeding-logs'), orderBy('date', 'desc'), limit(1)),
-            (logs) => setRaw((r) => ({ ...r, lastFeeding: { ...(r.lastFeeding ?? {}), [pet.id]: logs.docs[0]?.data().date ?? null } })),
+          feedListeners.set(pet.id, (['timestamp', 'string'] as const).map((shape) => onSnapshot(
+            recent(shape, pet.id),
+            (logs) => setRaw((r) => {
+              const previous = r.feedings?.[pet.id] ?? {};
+              return { ...r, feedings: { ...(r.feedings ?? {}), [pet.id]: { ...previous, [shape]: docs(logs) } } };
+            }),
             fail('pets'),
-          ));
+          )));
         }
       });
-      unsubscribers.push(() => feedListeners.forEach((stop) => stop()));
+      unsubscribers.push(() => feedListeners.forEach((stops) => stops.forEach((stop) => stop())));
     }
 
     if (canNotifications && uid) {
       const since = new Date(Date.now() - 7 * 86_400_000);
       listen('notifications', query(base('notifications'), where('createdAt', '>=', since), orderBy('createdAt', 'desc'), limit(30)), (s) => {
-        const unread = s.docs
-          .map(parseNotificationDoc)
-          .filter((n) => !isNotificationExpired(n) && isNotificationVisibleToUser(n, { uid, email }) && !n.resolvedAt)
-          .filter((n) => !isNotificationDismissedBy(n, uid) && !isNotificationReadBy(n, uid)).length;
-        setRaw((r) => ({ ...r, unread }));
+        // The bell's own pipeline: deduplicate, then the same filters and cap.
+        const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), { uid, email });
+        setRaw((r) => ({ ...r, unread: active.filter((n) => !isNotificationReadBy(n, uid)).length }));
       });
     }
 
@@ -187,17 +218,23 @@ export function useDashboardData(enabled = true): DashboardData {
     if (canChores && raw.openChores && raw.rooms) {
       const merged = new Map<string, RawDoc>();
       [...(raw.openChores ?? []), ...(raw.todayChores ?? []), ...(raw.doneToday ?? [])].forEach((chore) => merged.set(chore.id, chore));
-      result.chores = computeChoreFacts([...merged.values()], raw.rooms, viewer, now);
+      result.chores = computeChoreFacts([...merged.values()], raw.rooms, viewer, now, recurringTemplateIdsFrom(raw.templates ?? [], dayKey(now)));
     }
     if (canShopping && raw.lists) {
       result.shopping = computeShoppingFacts(raw.lists, raw.items ?? {});
       if (raw.pantry) result.pantry = computePantryFacts(raw.pantry, now);
     }
-    if (canMaintenance && raw.assets && raw.vehicles) result.maintenance = computeMaintenanceFacts(raw.assets, raw.vehicles, now);
-    if (canPets && raw.pets) result.pets = computePetFacts(raw.pets, raw.lastFeeding ?? {}, now);
+    if (canMaintenance && raw.assets && raw.vehicles) result.maintenance = computeMaintenanceFacts(raw.assets, raw.vehicles, now, timeZone);
+    if (canPets && raw.pets) {
+      const feedings = Object.fromEntries(Object.entries(raw.feedings ?? {}).map(([petId, shapes]) => [
+        petId,
+        newestFirst([shapes.timestamp ?? [], shapes.string ?? []] as Array<Array<RawDoc & { date: unknown }>>, RECENT_FEEDINGS),
+      ]));
+      result.pets = computePetFacts(raw.pets, feedings, now);
+    }
     if (canNotifications && raw.unread !== undefined) result.notifications = { unread: raw.unread };
     return result;
-  }, [raw, now, uid, email, canChores, canShopping, canMaintenance, canPets, canNotifications]);
+  }, [raw, now, uid, email, timeZone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
 
   const loading = Boolean(householdId) && (
     (canChores && !failed.has('chores') && (!raw.openChores || !raw.rooms))

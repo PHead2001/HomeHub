@@ -54,7 +54,7 @@ function Dashboard() {
 
       <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} />
       <MorningBrief facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} ready={!loading} />
-      <BentoGrid facts={facts} loading={loading} failed={failed} now={now} />
+      <BentoGrid facts={facts} loading={loading} failed={failed} />
       <HomeAiOverview />
 
       <div className="flex flex-wrap items-center gap-3">

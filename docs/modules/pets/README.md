@@ -78,7 +78,7 @@ The homepage AI Overview may include pet count and a seven-day care-log count fo
 
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply user, household, role and effective permission context.
 - [Firebase Platform](../firebase-platform/README.md) owns Firestore/Storage initialization and security rules.
-- [Application Shell and Dashboard](../application-shell/README.md) exposes pet navigation and the **Log feeding** home-screen shortcut (`/pets`), and provides the design foundation used here (`EmptyState`, `MemberAvatar`, `FieldError`, `toastError`/`friendlyError`, `playFeedback`, `useReducedMotion`, tokens, `glow-card`).
+- [Application Shell and Dashboard](../application-shell/README.md) reads pets and feedings read-only for the dashboard (both date shapes, judged with `feedingPlan`/`feedingStatus`, so "fed" there means today's target is met, as on the pet card) and logs quick-add feedings through `addFeedingLog` with the pet's usual portion unless an amount is given (amounts parsed with `parsePortion`; gated by `pets.addLogs`). It links to `/pets/<id>?tab=feeding`. It also exposes pet navigation and the **Log feeding** home-screen shortcut (`/pets`), and provides the design foundation used here (`EmptyState`, `MemberAvatar`, `FieldError`, `toastError`/`friendlyError`, `playFeedback`, `useReducedMotion`, tokens, `glow-card`).
 - [Notifications](../notifications/README.md) defines a `pets` category but receives no records from this module today.
 
 ## Invariants and Failure Behavior

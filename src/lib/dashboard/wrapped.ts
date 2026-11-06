@@ -3,6 +3,7 @@
  * Pure aggregation; people appear by first name only.
  */
 import { toDateValue } from './dates';
+import { completionInstant, type ChoreRecord } from '../chores/dates';
 import type { RawDoc } from './facts';
 
 export type WrappedSummary = {
@@ -25,15 +26,26 @@ export const firstNameOnly = (value: unknown): string | null => {
 
 const inYear = (value: unknown, year: number) => toDateValue(value)?.getFullYear() === year;
 
-export function summarizeChores(chores: RawDoc[], year: number): Pick<WrappedSummary, 'choresDone' | 'champion'> {
-  const done = chores.filter((chore) => chore.isCompleted === true && inYear(chore.completedAt ?? chore.dueDate, year));
-  const counts = new Map<string, number>();
+/**
+ * Chores completed in `year` (the Chores module's `completionInstant`: the server
+ * stamp when present, else `completedAt`) and the champion. Scores are grouped by
+ * the assignee's email, the stable identity, so two members who share a first name
+ * never pool their chores and a renamed member keeps one score; the first name is
+ * applied only to the winner's label (preferring `names`, then the chore's
+ * display name, then the email).
+ */
+export function summarizeChores(chores: RawDoc[], year: number, names: ReadonlyMap<string, string> = new Map()): Pick<WrappedSummary, 'choresDone' | 'champion'> {
+  const done = chores.filter((chore) => completionInstant(chore as unknown as ChoreRecord)?.getFullYear() === year);
+  const counts = new Map<string, { count: number; displayName: unknown }>();
   done.forEach((chore) => {
-    const name = firstNameOnly(chore.assignedToDisplayName) ?? firstNameOnly(chore.assignedToEmail);
-    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+    const email = typeof chore.assignedToEmail === 'string' ? chore.assignedToEmail.trim().toLowerCase() : '';
+    if (!email) return;
+    const current = counts.get(email);
+    counts.set(email, { count: (current?.count ?? 0) + 1, displayName: current?.displayName ?? chore.assignedToDisplayName });
   });
-  const champion = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
-  return { choresDone: done.length, champion: champion ? { name: champion[0], count: champion[1] } : null };
+  const winner = [...counts.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))[0];
+  const label = winner ? (firstNameOnly(names.get(winner[0])) ?? firstNameOnly(winner[1].displayName) ?? firstNameOnly(winner[0])) : null;
+  return { choresDone: done.length, champion: winner && label ? { name: label, count: winner[1].count } : null };
 }
 
 export function topPurchasedItem(items: RawDoc[]): WrappedSummary['topItem'] {

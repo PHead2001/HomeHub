@@ -24,16 +24,13 @@ import { FirestorePermissionError } from '@/lib/errors';
 import { useToast } from "@/hooks/use-toast";
 import { useAppBadge } from "@/hooks/use-app-badge";
 import { EmptyState } from "@/components/empty-state";
-import { caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
+import { activeBellNotifications, caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
 import styles from "@/components/dashboard/dashboard.module.css";
 import {
   createNotificationAction,
   deduplicateNotifications,
   getNotificationLink,
-  isNotificationDismissedBy,
-  isNotificationExpired,
   isNotificationReadBy,
-  isNotificationVisibleToUser,
   parseNotificationDoc,
 } from "@/lib/notifications";
 
@@ -219,12 +216,7 @@ export function NotificationBell() {
 
   const activeNotifications = useMemo(() => {
     if (!currentUser?.uid || !currentUser.email) return [];
-    return notifications
-      .filter((notification) => !isNotificationExpired(notification))
-      .filter((notification) => isNotificationVisibleToUser(notification, currentUser))
-      .filter((notification) => !notification.resolvedAt)
-      .filter((notification) => !isNotificationDismissedBy(notification, currentUser.uid))
-      .slice(0, 10);
+    return activeBellNotifications(notifications, currentUser);
   }, [currentUser, notifications]);
 
   const unreadCount = useMemo(() => {

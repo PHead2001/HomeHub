@@ -37,7 +37,11 @@ import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
-import { describeRepeat, parseQuickAdd, type QuickAddIntent, type QuickAddMember } from '@/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, parseQuickAdd, resolveChoreAssignee, type QuickAddIntent, type QuickAddMember } from '@/lib/dashboard/quick-add';
+import { choreCapabilities } from '@/lib/chores/list';
+import { DEFAULT_PORTION, formatPortion } from '@/lib/pets/care';
+import type { PortionUnit } from '@/lib/pets/types';
+import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, logFeeding } from './quick-add-actions';
@@ -78,8 +82,15 @@ const INTENT_PERMISSION: Record<QuickAddIntent['kind'], HouseholdPermission> = {
   shopping: 'shopping.edit',
   feeding: 'pets.addLogs',
   chore: 'chores.create',
-  maintenance: 'maintenance.view',
+  // The same permission Maintenance requires to log (the preview opens its form).
+  maintenance: 'maintenance.createLogs',
 };
+
+/** The amount to log: the one in the sentence, else the pet's usual portion, else the Pets default. */
+function feedingPortion(intent: Extract<QuickAddIntent, { kind: 'feeding' }>): { amount: number; unit: PortionUnit } {
+  if (intent.amount !== null) return { amount: intent.amount, unit: intent.unit ?? intent.pet.portion?.unit ?? DEFAULT_PORTION.unit };
+  return intent.pet.portion ?? DEFAULT_PORTION;
+}
 
 function describeIntent(intent: QuickAddIntent, self: QuickAddMember | null): { title: string; detail: string } {
   switch (intent.kind) {
@@ -88,8 +99,10 @@ function describeIntent(intent: QuickAddIntent, self: QuickAddMember | null): { 
         title: `Add ${intent.items.map((item) => (item.quantity > 1 ? `${item.quantity} × ${item.name}` : item.name)).join(', ')}`,
         detail: intent.list ? `to ${intent.list.name}` : 'No shopping list yet',
       };
-    case 'feeding':
-      return { title: `Log a meal for ${intent.pet.name}`, detail: `${intent.amount ?? 1} ${(intent.unit ?? 'Cups').toLowerCase()}, now` };
+    case 'feeding': {
+      const portion = feedingPortion(intent);
+      return { title: `Log a meal for ${intent.pet.name}`, detail: `${formatPortion(portion.amount, portion.unit)}, now` };
+    }
     case 'chore': {
       const who = intent.assignee ?? self;
       const when = intent.repeat ? describeRepeat(intent.repeat) : `due ${new Date(`${intent.dueDate}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
@@ -131,6 +144,13 @@ export function CommandPalette({
     return index.members.find((member) => member.uid === currentUser.uid || member.email === currentUser.email)
       ?? { uid: currentUser.uid, email: currentUser.email, name: currentUser.displayName || currentUser.email };
   }, [currentUser, index.members]);
+
+  const canAssign = choreCapabilities(permissions).canAssign;
+  const assignable = useMemo(() => {
+    if (!currentUser) return [];
+    const list = assignableMembers(index.members, currentUser, canAssign);
+    return list.length > 0 || !self ? list : [self];
+  }, [index.members, currentUser, canAssign, self]);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const navigate = useCallback((href: string) => {
@@ -233,10 +253,12 @@ export function CommandPalette({
         const status = await addShoppingItems(householdId, pending.list, pending.items, lateError);
         toast({ title: status === 'queued' ? 'Saved offline' : 'Added to the list', description: `${pending.items.map((item) => item.name).join(', ')} on ${pending.list.name}.` });
       } else if (pending.kind === 'feeding') {
-        await logFeeding(householdId, pending.pet.id, pending.amount, pending.unit, currentUser, lateError);
+        const portion = feedingPortion(pending);
+        await logFeeding(householdId, pending.pet.id, portion.amount, portion.unit, currentUser, lateError);
         toast({ title: 'Feeding logged', description: `${pending.pet.name} has been fed.` });
       } else if (pending.kind === 'chore') {
-        const assignee = choreAssignee ?? pending.assignee ?? self;
+        // Without chores.assign the chore can only be yours (as in the Add Chore dialog).
+        const { assignee } = resolveChoreAssignee(choreAssignee ?? pending.assignee, assignable, self);
         if (!assignee) throw new Error('missing-assignee');
         await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee });
         toast({ title: 'Chore added', description: `${pending.task} for ${assignee.name}.` });
@@ -310,7 +332,7 @@ export function CommandPalette({
           <QuickAddPreview
             intent={pending}
             self={self}
-            members={index.members}
+            members={assignable}
             saving={saving}
             onBack={() => {
               setPending(null);
@@ -404,15 +426,16 @@ function QuickAddPreview({
   onConfirm: (assignee?: QuickAddMember | null) => void;
   onNavigate: (href: string) => void;
 }) {
-  const [assigneeEmail, setAssigneeEmail] = useState(intent.kind === 'chore' ? (intent.assignee ?? self)?.email ?? '' : '');
-  const description = describeIntent(intent, self);
+  const resolved = intent.kind === 'chore' ? resolveChoreAssignee(intent.assignee, members, self) : { assignee: null, restricted: false };
+  const [assigneeEmail, setAssigneeEmail] = useState(resolved.assignee?.email ?? '');
+  const description = describeIntent(intent.kind === 'chore' ? { ...intent, assignee: resolved.assignee } : intent, self);
   const assignee = members.find((member) => member.email === assigneeEmail) ?? (self?.email === assigneeEmail ? self : null);
   const confirmRef = useRef<HTMLButtonElement>(null);
   useEffect(() => confirmRef.current?.focus(), []);
 
   // Recurring chores and maintenance logs need their module's full form.
   const handOff = intent.kind === 'maintenance'
-    ? { href: '/maintenance', label: 'Open Maintenance', note: 'Maintenance logs need a target and details, so this opens Maintenance where you can log it.' }
+    ? { href: MAINTENANCE_LOGS_HREF, label: 'Open Maintenance', note: 'Maintenance logs need a target and details, so this opens Maintenance where you can log it.' }
     : intent.kind === 'chore' && intent.repeat
       ? { href: '/chores', label: 'Open Chores', note: 'Repeating chores are set up from a chore template in Chores. Quick add can create one-time chores.' }
       : null;
@@ -424,7 +447,12 @@ function QuickAddPreview({
         <p className="font-medium">{description.title}</p>
         <p className="text-sm text-muted-foreground">{description.detail}</p>
       </div>
-      {intent.kind === 'chore' && !intent.repeat && members.length > 0 && (
+      {resolved.restricted && (
+        <p className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-assignee-restricted">
+          You can only assign chores to yourself, so this one will be yours.
+        </p>
+      )}
+      {intent.kind === 'chore' && !intent.repeat && members.length > 1 && (
         <label className="mt-3 block text-sm">
           <span className="mb-1 block text-muted-foreground">Assign to</span>
           <select

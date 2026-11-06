@@ -11,6 +11,9 @@ import { db } from '@/lib/firebase';
 import { getDocsOfflineAware } from '@/lib/firestore-offline';
 import { useAuth } from '@/hooks/use-auth';
 import type { QuickAddList, QuickAddMember, QuickAddPet } from '@/lib/dashboard/quick-add';
+import { shoppingListHref } from '@/lib/dashboard/links';
+import { feedingPlan } from '@/lib/pets/care';
+import type { PetProfile } from '@/lib/pets/types';
 
 export type IndexEntry = { id: string; label: string; detail?: string; href: string; group: 'Chores' | 'Shopping' | 'Pets' | 'Maintenance' };
 
@@ -65,8 +68,9 @@ export function useCommandIndex(open: boolean): CommandIndex {
           href: '/chores',
           group: 'Chores' as const,
         })) : []),
-        ...listRows.map((list) => ({ id: `list-${list.id}`, label: str(list.name, 'Shopping list'), detail: 'List', href: '/shopping', group: 'Shopping' as const })),
-        ...items.map(({ item, list }) => ({ id: `item-${list.id}-${item.id}`, label: str(item.name, 'Item'), detail: str(list.name), href: '/shopping', group: 'Shopping' as const })),
+        // Shopping's own URL scheme (`?list=<id>`), so a result opens the list that holds it.
+        ...listRows.map((list) => ({ id: `list-${list.id}`, label: str(list.name, 'Shopping list'), detail: 'List', href: shoppingListHref(list.id), group: 'Shopping' as const })),
+        ...items.map(({ item, list }) => ({ id: `item-${list.id}-${item.id}`, label: str(item.name, 'Item'), detail: str(list.name), href: shoppingListHref(list.id), group: 'Shopping' as const })),
         ...(pets ? rows(pets).map((pet) => ({ id: `pet-${pet.id}`, label: str(pet.name, 'Pet'), detail: str(pet.type) || undefined, href: `/pets/${encodeURIComponent(pet.id)}`, group: 'Pets' as const })) : []),
         ...(assets ? rows(assets).map((asset) => ({ id: `asset-${asset.id}`, label: str(asset.name, 'Home asset'), detail: str(asset.location) || 'Home asset', href: `/maintenance?asset=${encodeURIComponent(asset.id)}`, group: 'Maintenance' as const })) : []),
         ...(vehicles ? rows(vehicles).map((vehicle) => ({ id: `vehicle-${vehicle.id}`, label: str(vehicle.nickname, 'Vehicle'), detail: 'Vehicle', href: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`, group: 'Maintenance' as const })) : []),
@@ -79,7 +83,10 @@ export function useCommandIndex(open: boolean): CommandIndex {
               .filter((member) => member.role !== 'newuser' && (member.status ?? 'active') === 'active' && typeof member.email === 'string')
               .map((member) => ({ uid: str(member.uid, member.id), email: member.email as string, name: str(member.displayName, member.email as string) }))
           : [],
-        pets: pets ? rows(pets).map((pet) => ({ id: pet.id, name: str(pet.name, 'Pet') })) : [],
+        pets: pets ? rows(pets).map((pet) => {
+          const plan = feedingPlan(pet as unknown as PetProfile);
+          return { id: pet.id, name: str(pet.name, 'Pet'), portion: { amount: plan.amount, unit: plan.unit } };
+        }) : [],
         lists: listRows.map((list) => ({ id: list.id, name: str(list.name, 'Shopping list'), type: str(list.type) || undefined })),
         loading: false,
       });

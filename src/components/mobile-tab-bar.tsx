@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils';
 import { isActiveRoute } from '@/lib/navigation';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from './ui/sheet';
 import { openCommandPalette } from './command/events';
+import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import styles from './dashboard/dashboard.module.css';
 import type { HouseholdPermission } from '@/lib/types';
 
@@ -56,7 +57,7 @@ const QUICK_ACTIONS: QuickAction[] = [
   { label: 'Add chore', short: 'Chore', icon: CheckSquare, permission: 'chores.create', text: 'chore ' },
   { label: 'Add shopping item', short: 'Item', icon: ShoppingCart, permission: 'shopping.edit', text: 'add ' },
   { label: 'Log feeding', short: 'Feeding', icon: UtensilsCrossed, permission: 'pets.addLogs', text: 'fed ' },
-  { label: 'Log maintenance', short: 'Service', icon: Wrench, permission: 'maintenance.createLogs', href: '/maintenance' },
+  { label: 'Log maintenance', short: 'Service', icon: Wrench, permission: 'maintenance.createLogs', href: MAINTENANCE_LOGS_HREF },
 ];
 
 const LONG_PRESS_MS = 500;

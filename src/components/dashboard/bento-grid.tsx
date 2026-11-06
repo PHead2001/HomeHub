@@ -12,7 +12,8 @@ import Link from 'next/link';
 import { Bell, CheckSquare, PawPrint, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { relativeDays } from '@/lib/dashboard/dates';
-import { timeAgo, type DashboardFacts } from '@/lib/dashboard/facts';
+import type { DashboardFacts } from '@/lib/dashboard/facts';
+import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { useAuth } from '@/hooks/use-auth';
 import { cn } from '@/lib/utils';
 import { PeekCard } from './peek-card';
@@ -85,7 +86,7 @@ const Big = ({ value, suffix }: { value: number; suffix?: string }) => (
   </span>
 );
 
-export function BentoGrid({ facts, loading, failed, now }: { facts: DashboardFacts; loading: boolean; failed: Set<string>; now: Date }) {
+export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; loading: boolean; failed: Set<string> }) {
   const { permissions } = useAuth();
   const tiles: ReactNode[] = [];
 
@@ -175,7 +176,7 @@ export function BentoGrid({ facts, loading, failed, now }: { facts: DashboardFac
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
                 <span className={cn('shrink-0 text-xs', pet.fed ? 'text-success' : 'text-warning')}>
-                  {pet.fed ? `Fed ${pet.lastFedAt ? timeAgo(pet.lastFedAt, now) : ''}`.trim() : 'Not fed yet'}
+                  {pet.countLabel}
                 </span>
               </li>
             ))}
@@ -192,7 +193,7 @@ export function BentoGrid({ facts, loading, failed, now }: { facts: DashboardFac
     tiles.push(maintenance ? (
       <Tile
         key="maintenance"
-        href={next?.href ?? '/maintenance'}
+        href={next?.href ?? MAINTENANCE_REMINDERS_HREF}
         title="Next maintenance"
         icon={Wrench}
         testId="dashboard-tile-maintenance"
@@ -226,7 +227,7 @@ export function BentoGrid({ facts, loading, failed, now }: { facts: DashboardFac
   if (permissions['shopping.view']) {
     const pantry = facts.pantry;
     tiles.push(pantry ? (
-      <Tile key="pantry" href="/shopping" title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry">
+      <Tile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry">
         <Big value={pantry.expiringSoon} suffix={pantry.expired > 0 ? `· ${pantry.expired} expired` : 'this week'} />
         {pantry.nearest[0] ? (
           <span className="truncate text-sm text-muted-foreground">{pantry.nearest[0].name} {pantry.nearest[0].label}</span>

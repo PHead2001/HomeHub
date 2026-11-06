@@ -4,6 +4,26 @@
  * are never shown to people.
  */
 import { startOfLocalDay } from './dates';
+import { isNotificationDismissedBy, isNotificationExpired, isNotificationVisibleToUser } from '../notifications';
+import type { Notification } from '../types';
+
+/** The bell shows at most this many active notifications (and counts unread among them). */
+export const BELL_LIMIT = 10;
+
+/**
+ * The bell's active list: not expired, meant for this member, not resolved and not
+ * dismissed by them, newest first, capped at {@link BELL_LIMIT}. Pass notifications
+ * already merged with `deduplicateNotifications`. The dashboard's unread tile uses
+ * the same list, so both always show the same number.
+ */
+export function activeBellNotifications(notifications: Notification[], user: { uid: string; email: string }, now = new Date()): Notification[] {
+  return notifications
+    .filter((notification) => !isNotificationExpired(notification, now))
+    .filter((notification) => isNotificationVisibleToUser(notification, user))
+    .filter((notification) => !notification.resolvedAt)
+    .filter((notification) => !isNotificationDismissedBy(notification, user.uid))
+    .slice(0, BELL_LIMIT);
+}
 
 export type NotificationGroupId = 'today' | 'week' | 'earlier';
 

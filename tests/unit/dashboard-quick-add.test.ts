@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { describeRepeat, findDate, parseQuickAdd, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, resolveChoreAssignee, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
@@ -27,7 +27,7 @@ describe('parseQuickAdd: shopping', () => {
     const intent = parseQuickAdd('milk and eggs', context);
     assert.equal(intent?.kind, 'shopping');
     if (intent?.kind !== 'shopping') return;
-    assert.deepEqual(intent.items, [{ name: 'milk', quantity: 1 }, { name: 'eggs', quantity: 1 }]);
+    assert.deepEqual(intent.items, [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 1 }]);
     assert.equal(intent.list?.id, 'weekly-groceries');
     assert.equal(intent.explicit, false);
   });
@@ -38,7 +38,7 @@ describe('parseQuickAdd: shopping', () => {
     if (intent?.kind !== 'shopping') return;
     assert.equal(intent.explicit, true);
     assert.equal(intent.list?.id, 'hardware-run');
-    assert.deepEqual(intent.items, [{ name: 'furnace filters', quantity: 2 }, { name: 'duct tape', quantity: 1 }]);
+    assert.deepEqual(intent.items, [{ name: 'Furnace filters', quantity: 2 }, { name: 'Duct tape', quantity: 1 }]);
   });
 
   it('matches list types by keyword', () => {
@@ -46,8 +46,18 @@ describe('parseQuickAdd: shopping', () => {
     assert.equal(intent?.kind === 'shopping' && intent.list?.id, 'weekly-groceries');
   });
 
-  it('splits quantities written either way', () => {
-    assert.deepEqual(splitItems('3 apples & bread x2'), [{ name: 'apples', quantity: 3 }, { name: 'bread', quantity: 2 }]);
+  it('splits with the Shopping parser: counts, casing and repeated names', () => {
+    assert.deepEqual(splitItems('3 apples & bread x2'), [{ name: 'Apples', quantity: 3 }, { name: 'Bread', quantity: 2 }]);
+    assert.deepEqual(splitItems('milk and Milk x2'), [{ name: 'Milk', quantity: 3 }]);
+    // "and" splits only as a whole word.
+    assert.deepEqual(splitItems('candles'), [{ name: 'Candles', quantity: 1 }]);
+  });
+
+  it('matches list names by whole tokens only', () => {
+    assert.equal(findList('hardware', context.lists)?.id, 'hardware-run');
+    assert.equal(findList('run', context.lists)?.id, 'hardware-run');
+    assert.equal(findList('hard', context.lists), null);
+    assert.equal(findList('week', context.lists), null);
   });
 });
 
@@ -64,6 +74,25 @@ describe('parseQuickAdd: feedings', () => {
     assert.equal(intent.pet.id, 'pixel');
     assert.equal(intent.amount, 1);
     assert.equal(intent.unit, 'Cans');
+  });
+
+  it('reads whole portions: leading-dot decimals, fractions and mixed numbers', () => {
+    const amount = (text: string) => {
+      const intent = parseQuickAdd(text, context);
+      return intent?.kind === 'feeding' ? [intent.amount, intent.unit] : intent;
+    };
+    assert.deepEqual(amount('fed Maple .5 cups'), [0.5, 'Cups']);
+    assert.deepEqual(amount('fed Maple 1/2 cup'), [0.5, 'Cups']);
+    assert.deepEqual(amount('fed Maple 1 1/2 cups'), [1.5, 'Cups']);
+    assert.deepEqual(amount('fed Maple 1.5 cups'), [1.5, 'Cups']);
+    assert.deepEqual(amount('fed Pixel one can'), [1, 'Cans']);
+    // An amount that cannot be read is rejected, never misread.
+    assert.equal(amount('fed Maple 3/0 cups'), null);
+    assert.equal(amount('fed Maple 99 cups'), null);
+  });
+
+  it('matches pet names as whole words', () => {
+    assert.equal(parseQuickAdd('fed Mapleton', context), null);
   });
 
   it('does not invent pets', () => {
@@ -110,9 +139,32 @@ describe('parseQuickAdd: chores', () => {
   });
 });
 
+describe('chore assignees and chores.assign', () => {
+  const self = context.members[0];
+  const sam = context.members[1];
+
+  it('lets members with chores.assign pick anyone', () => {
+    const assignable = assignableMembers(context.members, context.viewer, true);
+    assert.equal(assignable.length, 3);
+    assert.deepEqual(resolveChoreAssignee(sam, assignable, self), { assignee: sam, restricted: false });
+  });
+
+  it('restricts members without chores.assign to themselves', () => {
+    const assignable = assignableMembers(context.members, context.viewer, false);
+    assert.deepEqual(assignable, [self]);
+    assert.deepEqual(resolveChoreAssignee(sam, assignable, self), { assignee: self, restricted: true });
+    assert.deepEqual(resolveChoreAssignee(null, assignable, self), { assignee: self, restricted: false });
+  });
+});
+
 describe('parseQuickAdd: maintenance and fallbacks', () => {
   it('recognizes a maintenance log with mileage', () => {
     assert.deepEqual(parseQuickAdd('oil change 48,200 miles', context), { kind: 'maintenance', title: 'Oil change', mileage: 48200 });
+  });
+
+  it('needs whole service words', () => {
+    assert.equal(parseQuickAdd('log filters replaced', context)?.kind, 'maintenance');
+    assert.notEqual(parseQuickAdd('log filtered water', context)?.kind, 'maintenance');
   });
 
   it('returns null for text it cannot read, so the palette searches instead', () => {

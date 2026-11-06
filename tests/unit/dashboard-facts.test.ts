@@ -6,8 +6,10 @@ import {
   computePantryFacts,
   computePetFacts,
   computeShoppingFacts,
-  timeAgo,
+  recurringTemplateIdsFrom,
 } from '../../src/lib/dashboard/facts';
+
+const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import { maintenanceSpend, summarizeChores, topPurchasedItem, firstNameOnly } from '../../src/lib/dashboard/wrapped';
 import { dayKey, daysBetween, toDateValue } from '../../src/lib/dashboard/dates';
@@ -122,6 +124,7 @@ describe('shopping, pantry, maintenance and pets', () => {
         serviceSchedules: [{ serviceName: 'Tire rotation', nextDueMileage: 49000, nextDueDate: '2026-08-15' }],
       }],
       now,
+      localZone,
     );
     assert.equal(facts.items.some((item) => /warranty/.test(item.label)), false, 'expired warranty is not a due item');
     assert.equal(facts.climateDue, true);
@@ -130,17 +133,76 @@ describe('shopping, pantry, maintenance and pets', () => {
     assert.equal(facts.next?.days, 0);
     assert.equal(facts.overdue, 0);
     assert.equal(facts.needsAttention, 1);
+    assert.equal(facts.next?.href, '/maintenance?asset=hvac&schedule=hvac%3Alegacy-0-replace-air-filter');
   });
 
-  it('treats a pet as fed within 12 hours', () => {
+  it('leaves out retired assets and retired or sold vehicles, as Maintenance does', () => {
+    const facts = computeMaintenanceFacts(
+      [{ id: 'old-ac', name: 'Old AC', category: 'HVAC', status: 'retired', schedules: [{ scheduleName: 'Service', nextDueDate: '2026-07-01' }] }],
+      [
+        { id: 'sold', nickname: 'Sold car', status: 'sold', registrationExpiration: '2026-07-01', serviceSchedules: [{ serviceName: 'Oil', nextDueDate: '2026-07-01' }] },
+        { id: 'retired', nickname: 'Retired van', status: 'retired', currentMileage: 99000, serviceSchedules: [{ serviceName: 'Tires', nextDueMileage: 1000 }] },
+      ],
+      now,
+      localZone,
+    );
+    assert.deepEqual(facts.items, []);
+    assert.equal(facts.next, null);
+    assert.equal(facts.overdue, 0);
+    assert.equal(facts.vehicleDue, false);
+    assert.equal(facts.climateDue, false);
+    assert.equal(facts.vehicles, 0);
+  });
+
+  it('uses the Pets feeding model: the daily target from the schedule, both date shapes', () => {
+    const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 3_600_000);
     const facts = computePetFacts(
-      [{ id: 'maple', name: 'Maple', type: 'Dog' }, { id: 'pixel', name: 'Pixel', type: 'Cat' }],
-      { maple: new Date(now.getTime() - 2 * 3_600_000), pixel: new Date(now.getTime() - 20 * 3_600_000) },
+      [
+        { id: 'maple', name: 'Maple', type: 'Dog', foodSchedule: '1.5 cups twice daily' },
+        { id: 'pixel', name: 'Pixel', type: 'Cat', foodSchedule: 'One can morning and evening' },
+        { id: 'rex', name: 'Rex', type: 'Dog', feedingsPerDay: 1 },
+      ],
+      {
+        // A Timestamp-like entry and a legacy ISO-string entry both count.
+        maple: [{ date: { toDate: () => hoursAgo(2) }, loggedByName: 'Sam' }, { date: hoursAgo(4).toISOString() }],
+        pixel: [{ date: hoursAgo(1) }],
+        rex: [{ date: hoursAgo(26) }],
+      },
       now,
     );
-    assert.deepEqual(facts.pets.map((pet) => [pet.name, pet.fed]), [['Maple', true], ['Pixel', false]]);
-    assert.equal(facts.hungry, 1);
-    assert.equal(timeAgo(facts.pets[0].lastFedAt!, now), '2h ago');
+    assert.deepEqual(facts.pets.map((pet) => [pet.name, pet.fed, pet.countLabel]), [
+      ['Maple', true, '2 of 2 today'],
+      ['Pixel', false, '1 of 2 today'],
+      ['Rex', false, '0 of 1 today'],
+    ]);
+    assert.equal(facts.pets[0].headline, 'Fed 2 h ago by Sam');
+    assert.equal(facts.hungry, 2);
+  });
+});
+
+describe('chore folding', () => {
+  it('counts a missed recurring series once, as the Chores page does', () => {
+    const series = (id: string, day: string) => ({
+      id, task: 'Water plants', templateId: 'water', assignedToEmail: viewer.email, dueDate: day, originalDueDate: day, isCompleted: false, roomIds: ['kitchen'],
+    });
+    const records = [series('w1', '2026-07-30'), series('w2', '2026-07-31'), series('w3', '2026-08-01')];
+    const recurring = recurringTemplateIdsFrom([{ id: 'water', recurrence: { frequency: 'daily', interval: 1, assignedToEmail: viewer.email } }], '2026-08-01');
+    const folded = computeChoreFacts(records, rooms, viewer, now, recurring);
+    assert.equal(folded.mineOverdue, 0);
+    assert.equal(folded.mineDueToday, 1);
+    assert.equal(folded.rooms.find((room) => room.id === 'kitchen')?.overdue, 0);
+    // Without a repeating template nothing folds.
+    const unfolded = computeChoreFacts(records, rooms, viewer, now);
+    assert.equal(unfolded.mineOverdue, 2);
+  });
+
+  it('reads completion from the server stamp when present', () => {
+    const facts = computeChoreFacts([{
+      id: 'k', task: 'Reset', assignedToEmail: viewer.email, originalDueDate: '2026-08-01', dueDate: '2026-08-01', isCompleted: true,
+      completedAt: '2026-07-01T10:00:00.000Z', completedAtServer: { toDate: () => new Date(2026, 7, 1, 9) }, roomIds: ['kitchen'],
+    }], rooms, viewer, now);
+    assert.equal(facts.todayDone, 1);
+    assert.equal(facts.rooms.find((room) => room.id === 'kitchen')?.doneToday, 1);
   });
 });
 
@@ -148,12 +210,12 @@ describe('buildMorningBrief', () => {
   it('builds one sentence from exact counts with links', () => {
     const facts = {
       chores: computeChoreFacts(chores, rooms, viewer, now),
-      pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat' }], {}, now),
+      pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat', foodSchedule: 'twice daily' }], {}, now),
       pantry: computePantryFacts([{ id: 'milk', name: 'Milk', location: 'Fridge', expiryDate: '2026-08-02' }], now),
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });
     assert.equal(brief.text, "Good morning, Alex. 1 chore today (1 overdue), Pixel's next meal is due, and the milk expires tomorrow.");
-    assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores', '/pets/pixel', '/shopping']);
+    assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores', '/pets/pixel?tab=feeding', '/shopping?tab=pantry']);
   });
 
   it('has a calm line when nothing needs attention', () => {
@@ -165,14 +227,27 @@ describe('buildMorningBrief', () => {
 describe('Home Wrapped aggregation', () => {
   it('counts chores in the year and names the champion by first name only', () => {
     const summary = summarizeChores([
-      { id: '1', isCompleted: true, completedAt: '2026-03-01T10:00:00Z', assignedToDisplayName: 'Sam Member' },
-      { id: '2', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToDisplayName: 'Sam Member' },
+      { id: '1', isCompleted: true, completedAt: '2026-03-01T10:00:00Z', assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam Member' },
+      { id: '2', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam Member' },
       { id: '3', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToEmail: 'morgan.admin@example.test' },
-      { id: '4', isCompleted: true, completedAt: '2025-12-30T10:00:00Z', assignedToDisplayName: 'Old Year' },
+      { id: '4', isCompleted: true, completedAt: '2025-12-30T10:00:00Z', assignedToEmail: 'old@example.test', assignedToDisplayName: 'Old Year' },
     ], 2026);
     assert.equal(summary.choresDone, 3);
     assert.deepEqual(summary.champion, { name: 'Sam', count: 2 });
     assert.equal(firstNameOnly('morgan.admin@example.test'), 'Morgan');
+  });
+
+  it('scores members by identity, so two people with one first name never pool chores', () => {
+    const done = (id: string, email: string, name: string) => ({ id, isCompleted: true, completedAt: '2026-05-01T10:00:00Z', assignedToEmail: email, assignedToDisplayName: name });
+    const summary = summarizeChores([
+      ...['a', 'b', 'c'].map((id) => done(`s1${id}`, 'sam.one@example.test', 'Sam One')),
+      ...['a', 'b', 'c'].map((id) => done(`s2${id}`, 'sam.two@example.test', 'Sam Two')),
+      ...['a', 'b', 'c', 'd', 'e'].map((id) => done(`al${id}`, 'alex@example.test', 'Alex')),
+    ], 2026, new Map([['alex@example.test', 'Alex Owner']]));
+    assert.deepEqual(summary.champion, { name: 'Alex', count: 5 });
+    // A renamed member keeps one score.
+    const renamed = summarizeChores([done('1', 'jo@example.test', 'Jo'), done('2', 'jo@example.test', 'Joanna')], 2026);
+    assert.deepEqual(renamed.champion, { name: 'Jo', count: 2 });
   });
 
   it('merges purchased items case-insensitively and sums upkeep spend', () => {

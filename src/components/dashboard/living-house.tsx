@@ -22,7 +22,8 @@ import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { playFeedback } from '@/lib/feedback';
 import { seasonFor, type Season } from '@/lib/dashboard/ambience';
 import { isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
-import { roomSummary, timeAgo, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
+import { roomSummary, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
+import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from '@/lib/dashboard/links';
 import { useDayLight } from './time-of-day';
 import { PeekCard } from './peek-card';
 import styles from './dashboard.module.css';
@@ -95,14 +96,13 @@ function RoomTile({ room, href, sparkle }: { room: RoomState; href: string; spar
   );
 }
 
-function PetSprite({ pet, index, reduced, now }: { pet: PetState; index: number; reduced: boolean; now: Date }) {
+function PetSprite({ pet, index, reduced }: { pet: PetState; index: number; reduced: boolean }) {
   const [hopping, setHopping] = useState(false);
   const pressTimer = useRef<number | null>(null);
   const longPressed = useRef(false);
   const Icon = pet.type === 'Dog' ? Dog : pet.type === 'Cat' ? Cat : PawPrint;
-  const status = pet.fed
-    ? `fed ${pet.lastFedAt ? timeAgo(pet.lastFedAt, now) : 'recently'}`
-    : pet.lastFedAt ? `waiting by the bowl, last fed ${timeAgo(pet.lastFedAt, now)}` : 'waiting by the bowl';
+  // The Pets module's own wording: "1 of 2 today. Fed 2 h ago by Sam".
+  const status = `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`;
 
   // Long-press (H29): a little hop and the "add" chirp, only if sound/haptics are on.
   const startPress = () => {
@@ -120,7 +120,7 @@ function PetSprite({ pet, index, reduced, now }: { pet: PetState; index: number;
 
   return (
     <Link
-      href={`/pets/${encodeURIComponent(pet.id)}`}
+      href={petFeedingHref(pet.id)}
       aria-label={`${pet.name}: ${status}`}
       data-testid={`house-pet-${pet.id}`}
       data-fed={pet.fed ? 'true' : 'false'}
@@ -340,7 +340,7 @@ export function LivingHouse({
         <div className="mt-2 flex items-end gap-3 overflow-x-auto border-t border-border-subtle bg-secondary/40 px-4 pb-2 pt-3" aria-label="Yard" role="group">
           {pantry && (
             <YardObject
-              href="/shopping"
+              href={PANTRY_HREF}
               testId="house-fridge"
               label={`Fridge: ${pantry.fridgeItems} ${pantry.fridgeItems === 1 ? 'item' : 'items'}${pantry.expiringSoon ? `, ${pantry.expiringSoon} expiring soon` : ''}`}
             >
@@ -354,7 +354,7 @@ export function LivingHouse({
           )}
           {maintenance && (
             <YardObject
-              href={climateItem?.href ?? '/maintenance'}
+              href={climateItem?.href ?? MAINTENANCE_REMINDERS_HREF}
               testId="house-hvac"
               label={maintenance.climateDue ? `Heating and cooling: ${climateItem?.label ?? 'needs attention'}` : 'Heating and cooling: all good'}
             >
@@ -367,7 +367,7 @@ export function LivingHouse({
           )}
           {maintenance && maintenance.vehicles > 0 && (
             <YardObject
-              href={vehicleItem?.href ?? '/maintenance'}
+              href={vehicleItem?.href ?? MAINTENANCE_REMINDERS_HREF}
               testId="house-car"
               label={maintenance.vehicleDue ? `Car: ${vehicleItem?.label ?? 'service'} due` : 'Car: no service due'}
             >
@@ -380,7 +380,7 @@ export function LivingHouse({
           )}
           <span className="flex-1" aria-hidden />
           {pets.map((pet, index) => (
-            <PetSprite key={pet.id} pet={pet} index={index} reduced={reduced || demo} now={now} />
+            <PetSprite key={pet.id} pet={pet} index={index} reduced={reduced || demo} />
           ))}
         </div>
       </div>

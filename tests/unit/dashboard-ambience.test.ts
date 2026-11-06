@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { DAY_PHASES, dominantPhase, greeting, phaseWeights, seasonFor, windowsLit } from '../../src/lib/dashboard/ambience';
-import { caughtUpLine, groupNotifications, notificationGroupFor, notificationSourceLabel } from '../../src/lib/dashboard/notification-display';
+import { activeBellNotifications, caughtUpLine, groupNotifications, notificationGroupFor, notificationSourceLabel } from '../../src/lib/dashboard/notification-display';
+import { deduplicateNotifications, isNotificationReadBy } from '../../src/lib/notifications';
+import type { Notification } from '../../src/lib/types';
 
 const at = (hour: number, minute = 0) => new Date(2026, 7, 1, hour, minute);
 
@@ -71,5 +73,26 @@ describe('notification presentation', () => {
 
   it('has a stable caught-up line per day', () => {
     assert.equal(caughtUpLine(now), caughtUpLine(new Date(2026, 7, 1, 23)));
+  });
+
+  it('counts unread after merging duplicate copies, exactly as the bell does', () => {
+    const user = { uid: 'u1', email: 'u1@example.test' };
+    const base = (id: string, createdAt: Date, extra: Partial<Notification> = {}): Notification => ({
+      id, householdId: 'h', category: 'maintenance', title: 'HVAC filter due', message: 'Due today', createdAt,
+      expiresAt: new Date(createdAt.getTime() + 7 * 86_400_000), sourceType: 'maintenance_asset_schedule', sourceId: 'hvac:filter',
+      stateKey: 'due_today|2026-08-01', readBy: {}, dismissedBy: {}, ...extra,
+    });
+    const read = { u1: { at: now, uid: 'u1' } };
+    const raw = [
+      base('copy-a', new Date(2026, 7, 1, 8)),
+      base('copy-b', new Date(2026, 7, 1, 9), { readBy: read }),
+      base('other', new Date(2026, 7, 1, 10), { sourceId: 'suv:tires', title: 'Tires' }),
+      base('other-copy', new Date(2026, 7, 1, 11), { sourceId: 'suv:tires', title: 'Tires' }),
+    ];
+    const active = activeBellNotifications(deduplicateNotifications(raw), user, now);
+    assert.equal(active.length, 2, 'two semantic notifications');
+    assert.equal(active.filter((n) => !isNotificationReadBy(n, user.uid)).length, 1, 'the read copy marks its twin read');
+    // Counting raw documents would have said 3.
+    assert.equal(raw.filter((n) => !isNotificationReadBy(n, user.uid)).length, 3);
   });
 });

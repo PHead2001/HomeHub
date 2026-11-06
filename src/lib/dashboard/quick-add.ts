@@ -5,9 +5,18 @@
  * returns `null`, and the palette falls back to search.
  */
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
+import { parsePortion } from '../pets/care';
+import type { PortionUnit } from '../pets/types';
+import { parseQuickAdd as parseShoppingEntries } from '../shopping/items';
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Matches `value` only as whole words (a letter or digit on either side does not count). */
+const wholeToken = (value: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value.toLowerCase())}(?![\\p{L}\\p{N}])`, 'u');
+const PORTION_UNIT_WORD = /\b(?:cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/i;
 
 export type QuickAddMember = { uid: string; email: string; name: string };
-export type QuickAddPet = { id: string; name: string };
+/** A pet, with its usual portion (Pets' `feedingPlan`) used when the sentence gives no amount. */
+export type QuickAddPet = { id: string; name: string; portion?: { amount: number; unit: PortionUnit } };
 export type QuickAddList = { id: string; name: string; type?: string };
 
 export type QuickAddContext = {
@@ -37,7 +46,7 @@ export type FeedingIntent = {
   kind: 'feeding';
   pet: QuickAddPet;
   amount: number | null;
-  unit: 'Cups' | 'Cans' | 'Scoops' | null;
+  unit: PortionUnit | null;
 };
 
 export type ChoreIntent = {
@@ -214,8 +223,13 @@ const LIST_TYPE_WORDS: Array<[RegExp, string]> = [
 export function findList(phrase: string, lists: QuickAddList[]): QuickAddList | null {
   const target = normalize(phrase.replace(/\b(the|my|our|list)\b/gi, ''));
   if (!target) return null;
+  // Whole tokens only: "groceries" finds "Weekly Groceries"; "hard" finds nothing.
+  const targetTokens = target.split(' ');
   const byName = lists.find((list) => normalize(list.name) === target)
-    ?? lists.find((list) => normalize(list.name).startsWith(target) || normalize(list.name).split(' ').includes(target));
+    ?? lists.find((list) => {
+      const tokens = normalize(list.name).split(' ');
+      return targetTokens.every((token) => tokens.includes(token));
+    });
   if (byName) return byName;
   for (const [pattern, type] of LIST_TYPE_WORDS) {
     if (pattern.test(target)) return lists.find((list) => list.type === type) ?? null;
@@ -225,21 +239,14 @@ export function findList(phrase: string, lists: QuickAddList[]): QuickAddList | 
 
 const defaultList = (lists: QuickAddList[]) => lists.find((list) => list.type === 'Grocery') ?? lists[0] ?? null;
 
-/** Splits "2 milk, eggs and bread x3" into items with quantities. */
+/**
+ * Splits "2 milk, eggs and bread x3" into items. The whole words "and", "&" and "+"
+ * also separate items; the result then goes through the Shopping module's own
+ * quick-add parser, so counts, name casing ("milk" becomes "Milk") and repeated
+ * names match the Shopping list's inline quick add exactly.
+ */
 export function splitItems(text: string): Array<{ name: string; quantity: number }> {
-  return text
-    .split(/,|\band\b|&|\+/i)
-    .map((part) => collapse(part))
-    .filter(Boolean)
-    .map((part) => {
-      const leading = /^(\d{1,3})\s*(?:x\s*)?(.+)$/i.exec(part);
-      if (leading) return { name: collapse(leading[2]), quantity: Number(leading[1]) };
-      const trailing = /^(.+?)\s*(?:x\s*(\d{1,3})|\((\d{1,3})\))$/i.exec(part);
-      if (trailing) return { name: collapse(trailing[1]), quantity: Number(trailing[2] ?? trailing[3]) };
-      return { name: part, quantity: 1 };
-    })
-    .filter((item) => item.name.length > 0 && item.name.length <= 100 && item.quantity > 0)
-    .slice(0, 10);
+  return parseShoppingEntries(text.replace(/\s+(?:and|&|\+)\s+/gi, ','));
 }
 
 const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
@@ -250,16 +257,17 @@ function parseFeeding(text: string, context: QuickAddContext): FeedingIntent | n
   const rest = match[1].toLowerCase();
   const pet = [...context.pets]
     .sort((a, b) => b.name.length - a.name.length)
-    .find((candidate) => new RegExp(`\\b${candidate.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(rest));
+    .find((candidate) => wholeToken(candidate.name).test(rest));
   if (!pet) return null;
-  const amount = /(\d+(?:\.\d+)?|half|one|two)\s*(cups?|cans?|scoops?)/i.exec(text);
-  const numeric = amount ? ({ half: 0.5, one: 1, two: 2 } as Record<string, number>)[amount[1].toLowerCase()] ?? Number(amount[1]) : null;
-  const unitWord = amount?.[2].toLowerCase() ?? '';
-  const unit = unitWord.startsWith('cup') ? 'Cups' : unitWord.startsWith('can') ? 'Cans' : unitWord.startsWith('scoop') ? 'Scoops' : null;
-  return { kind: 'feeding', pet, amount: numeric && numeric > 0 && numeric <= 20 ? numeric : null, unit };
+  // The Pets module's portion parser reads amounts whole (".5 cups", "1/2 cup",
+  // "1 1/2 cups", "one can"), never the digits at the end of a decimal or fraction.
+  const portion = parsePortion(text);
+  // A unit with an amount the parser cannot read is rejected (falls back to search), never guessed.
+  if (!portion && PORTION_UNIT_WORD.test(text)) return null;
+  return { kind: 'feeding', pet, amount: portion?.amount ?? null, unit: portion?.unit ?? null };
 }
 
-const MAINTENANCE_WORDS = /\b(oil change|tire rotation|tyre rotation|brake|filter|inspection|serviced?|tune[- ]?up|alignment|repair(ed)?|replaced?|maintenance|miles|mi\b|odometer)/i;
+const MAINTENANCE_WORDS = /\b(oil change|tire rotation|tyre rotation|brakes?|filters?|inspections?|service[sd]?|tune[- ]?up|alignment|repair(?:ed|s)?|replaced?|maintenance|miles|mi|odometer)\b/i;
 
 function parseMaintenance(text: string): MaintenanceIntent | null {
   const explicit = /^(?:log|logged|did|done)\s+(.+)$/i.exec(text);
@@ -327,6 +335,9 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
 
   const feeding = parseFeeding(text, context);
   if (feeding) return feeding;
+  // "fed …" that names no known pet, or an amount that cannot be read, is never
+  // reinterpreted as something else: it falls back to search.
+  if (/^(?:i\s+)?(?:fed|feed|feeding)\s/i.test(text)) return null;
 
   if (/^(?:chore|task|todo|to do|remind (?:me|us) to)\b/i.test(text)) return parseChore(text, context);
 
@@ -356,4 +367,27 @@ export function describeRepeat(repeat: QuickAddRepeat): string {
     case 'monthly':
       return `monthly on day ${repeat.dayOfMonth}`;
   }
+}
+
+/**
+ * Members a chore may be assigned to, as in the Chores module's Add Chore dialog:
+ * everyone with `chores.assign`, otherwise only the viewer.
+ */
+export function assignableMembers(members: QuickAddMember[], viewer: { uid: string; email: string }, canAssign: boolean): QuickAddMember[] {
+  return canAssign ? members : members.filter((member) => member.uid === viewer.uid || member.email === viewer.email);
+}
+
+/**
+ * The assignee a quick-add chore will really get: the requested member when they
+ * are assignable, otherwise the viewer. `restricted` is true when a requested
+ * member was replaced because the viewer lacks `chores.assign`.
+ */
+export function resolveChoreAssignee(
+  requested: QuickAddMember | null,
+  assignable: QuickAddMember[],
+  self: QuickAddMember | null,
+): { assignee: QuickAddMember | null; restricted: boolean } {
+  if (requested && assignable.some((member) => member.email === requested.email)) return { assignee: requested, restricted: false };
+  const fallback = self && assignable.some((member) => member.email === self.email) ? self : assignable[0] ?? self;
+  return { assignee: fallback, restricted: Boolean(requested && fallback && requested.email !== fallback.email) };
 }

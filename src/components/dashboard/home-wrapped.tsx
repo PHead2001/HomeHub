@@ -107,8 +107,14 @@ export function HomeWrapped() {
       const summary: WrappedSummary = { year, choresDone: null, champion: null, topItem: null, feedings: null, maintenanceSpend: null, maintenanceLogs: null };
       const tasks: Promise<void>[] = [];
       if (permissions['chores.view']) {
+        // Member names label the champion; scores are grouped by email (see summarizeChores).
+        const members = await getDocs(base('members')).catch(() => null);
+        const names = new Map((members?.docs ?? []).flatMap((member) => {
+          const data = member.data() as { email?: unknown; displayName?: unknown };
+          return typeof data.email === 'string' && typeof data.displayName === 'string' ? [[data.email.trim().toLowerCase(), data.displayName] as const] : [];
+        }));
         tasks.push(getDocs(query(base('chores'), where('isCompleted', '==', true))).then((snapshot) => {
-          Object.assign(summary, summarizeChores(docs(snapshot), year));
+          Object.assign(summary, summarizeChores(docs(snapshot), year, names));
         }));
       }
       if (permissions['shopping.view']) {
@@ -118,9 +124,17 @@ export function HomeWrapped() {
         }));
       }
       if (permissions['pets.view']) {
+        // Feeding dates are Timestamps or (older entries) ISO strings; count both shapes.
         const start = new Date(year, 0, 1);
+        const end = new Date(year + 1, 0, 1);
         tasks.push(getDocs(base('pets')).then(async (pets) => {
-          const counts = await Promise.all(pets.docs.map((pet) => getCountFromServer(query(base('pets', pet.id, 'feeding-logs'), where('date', '>=', start)))));
+          const counts = await Promise.all(pets.docs.flatMap((pet) => {
+            const logs = base('pets', pet.id, 'feeding-logs');
+            return [
+              getCountFromServer(query(logs, where('date', '>=', start), where('date', '<', end))),
+              getCountFromServer(query(logs, where('date', '>=', `${year}-01-01`), where('date', '<', `${year + 1}-01-01`))),
+            ];
+          }));
           summary.feedings = counts.reduce((sum, count) => sum + count.data().count, 0);
         }));
       }

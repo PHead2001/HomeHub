@@ -39,8 +39,8 @@ export function sampleFacts(now: Date): DashboardFacts {
     pets: {
       hungry: 1,
       pets: [
-        { id: 'sample-dog', name: 'Biscuit', type: 'Dog', lastFedAt: hoursAgo(2), fed: true },
-        { id: 'sample-cat', name: 'Miso', type: 'Cat', lastFedAt: hoursAgo(14), fed: false },
+        { id: 'sample-dog', name: 'Biscuit', type: 'Dog', lastFedAt: hoursAgo(2), lastFedBy: null, fed: true, countLabel: '2 of 2 today', headline: 'Fed 2 h ago' },
+        { id: 'sample-cat', name: 'Miso', type: 'Cat', lastFedAt: hoursAgo(14), lastFedBy: null, fed: false, countLabel: '0 of 2 today', headline: 'Fed yesterday' },
       ],
     },
   };

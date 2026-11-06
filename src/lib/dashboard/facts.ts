@@ -5,7 +5,15 @@
  * overview aggregation (`src/ai/overview-facts.ts`) so the dashboard and the AI
  * Overview agree, but nothing here calls a model or uses the AI quota.
  */
-import { daysBetween, dayKey, relativeDays, toDateValue } from './dates';
+import { relativeDays, toDateValue } from './dates';
+import { choreDueKey, completionInstant, dayKey as choreDayKey, diffDayKeys, type ChoreRecord } from '../chores/dates';
+import { collapseMissedRecurring } from '../chores/list';
+import { daysUntilExpiry } from '../shopping/pantry';
+import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
+import type { PetProfile } from '../pets/types';
+import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
+import { diffDays, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
+import { normalizeRecurrence, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 
 export type RawDoc = Record<string, unknown> & { id: string };
 
@@ -81,8 +89,13 @@ export type PetState = {
   type: string;
   photoUrl?: string;
   lastFedAt: Date | null;
-  /** Fed within the last `FED_WINDOW_HOURS`. */
+  lastFedBy: string | null;
+  /** Today's feeding target is met (Pets' `feedingStatus(...).complete`). */
   fed: boolean;
+  /** "1 of 2 today", "Not fed today" (Pets' `feedingCountLabel`). */
+  countLabel: string;
+  /** "Fed 2 h ago by Sam", "No feedings logged yet" (Pets' `feedingHeadline`). */
+  headline: string;
 };
 
 export type PetFacts = { pets: PetState[]; hungry: number };
@@ -96,17 +109,42 @@ export type DashboardFacts = {
   notifications?: { unread: number };
 };
 
-export const FED_WINDOW_HOURS = 12;
+/** Pantry items expiring within this many days count as "expiring soon". */
 const SOON_DAYS = 7;
 const GENERAL_ROOM_ID = 'general';
 
 const text = (value: unknown, fallback: string) =>
   typeof value === 'string' && value.trim() ? value.trim().replace(/\s+/g, ' ').slice(0, 100) : fallback;
 
-const choreDue = (chore: RawDoc): Date | null => toDateValue(chore.dueDate) ?? toDateValue(chore.originalDueDate);
+/**
+ * Template ids whose recurrence is valid, for folding missed instances the way the
+ * Chores page does (`collapseMissedRecurring`).
+ */
+export function recurringTemplateIdsFrom(templates: RawDoc[], today: string): Set<string> {
+  return new Set(templates
+    .filter((template) => normalizeRecurrence(template.recurrence as RecurrenceInput | null | undefined, today) !== null)
+    .map((template) => template.id));
+}
 
-export function computeChoreFacts(chores: RawDoc[], rooms: RawDoc[], viewer: DashboardViewer, now: Date): ChoreFacts {
-  const today = dayKey(now);
+/**
+ * Chore facts with the Chores module's own day logic (`choreDueKey`, local day
+ * keys, `completionInstant`) and its folding of missed recurring instances: an
+ * older missed instance of a series that has a newer one due counts once, as on
+ * the Chores page.
+ */
+export function computeChoreFacts(
+  chores: RawDoc[],
+  rooms: RawDoc[],
+  viewer: DashboardViewer,
+  now: Date,
+  recurringTemplateIds: ReadonlySet<string> = new Set(),
+): ChoreFacts {
+  const today = choreDayKey(now);
+  const records = chores as unknown as ChoreRecord[];
+  // Same folding as the Chores page: only the latest instance of each recurring series counts.
+  const dueByToday = records.filter((chore) => chore.isCompleted !== true && choreDueKey(chore) !== '' && choreDueKey(chore) <= today);
+  const folded = new Set(collapseMissedRecurring(dueByToday, recurringTemplateIds).flatMap((entry) => entry.missed.map((missed) => missed.id)));
+
   const roomMap = new Map<string, RoomState>();
   const ensureRoom = (id: string, name: string) => {
     let state = roomMap.get(id);
@@ -128,15 +166,14 @@ export function computeChoreFacts(chores: RawDoc[], rooms: RawDoc[], viewer: Das
   let overdueTotal = 0;
   const openWithDays: Array<{ entry: ChoreFacts['nextUp'][number]; days: number }> = [];
 
-  for (const chore of chores) {
-    const due = choreDue(chore);
-    const days = due ? daysBetween(due, now) : null;
+  for (const chore of records) {
+    if (folded.has(chore.id)) continue;
+    const key = choreDueKey(chore);
+    const days = key ? diffDayKeys(today, key) : null;
     const completed = chore.isCompleted === true;
-    const completedToday = completed && (() => {
-      const at = toDateValue(chore.completedAt);
-      return at ? dayKey(at) === today : false;
-    })();
-    const isToday = due ? dayKey(due) === today : false;
+    const finishedAt = completionInstant(chore);
+    const completedToday = completed && finishedAt !== null && choreDayKey(finishedAt) === today;
+    const isToday = key === today;
     const mine = chore.assignedToEmail === viewer.email;
     const roomIds = Array.isArray(chore.roomIds) && chore.roomIds.length > 0
       ? chore.roomIds.filter((id): id is string => typeof id === 'string')
@@ -151,6 +188,7 @@ export function computeChoreFacts(chores: RawDoc[], rooms: RawDoc[], viewer: Das
       todayDone += 1;
     }
 
+    const dueLabel = days === null ? 'no date' : `due ${relativeDays(days)}`;
     for (const roomId of roomIds) {
       const room = roomMap.get(roomId) ?? (roomId === GENERAL_ROOM_ID ? ensureRoom(GENERAL_ROOM_ID, 'Around the house') : null);
       if (!room) continue;
@@ -161,12 +199,7 @@ export function computeChoreFacts(chores: RawDoc[], rooms: RawDoc[], viewer: Das
       if (days !== null && days < 0) room.overdue += 1;
       else if (days === 0) room.dueToday += 1;
       else room.upcoming += 1;
-      room.chores.push({
-        id: chore.id,
-        task: text(chore.task, 'Chore'),
-        dueLabel: days === null ? 'no date' : `due ${relativeDays(days)}`,
-        overdue: days !== null && days < 0,
-      });
+      room.chores.push({ id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0 });
     }
 
     if (completed) continue;
@@ -176,14 +209,10 @@ export function computeChoreFacts(chores: RawDoc[], rooms: RawDoc[], viewer: Das
       if (days === 0) mineDueToday += 1;
     }
     if (days !== null && days < 0) overdueTotal += 1;
-    const entry = {
-      id: chore.id,
-      task: text(chore.task, 'Chore'),
-      dueLabel: days === null ? 'no date' : `due ${relativeDays(days)}`,
-      overdue: days !== null && days < 0,
-      mine,
-    };
-    openWithDays.push({ entry, days: days ?? Number.MAX_SAFE_INTEGER });
+    openWithDays.push({
+      entry: { id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0, mine },
+      days: days ?? Number.MAX_SAFE_INTEGER,
+    });
   }
 
   for (const room of roomMap.values()) {
@@ -231,11 +260,11 @@ export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string
   return { activeLists: lists.length, neededItems, firstItems, lists: summary };
 }
 
+/** Pantry facts with the Shopping module's expiry day math (`daysUntilExpiry`). */
 export function computePantryFacts(items: RawDoc[], now: Date): PantryFacts {
   const dated = items
-    .map((item) => ({ item, date: toDateValue(item.expiryDate) }))
-    .filter((entry): entry is { item: RawDoc; date: Date } => entry.date !== null)
-    .map((entry) => ({ ...entry, days: daysBetween(entry.date, now) }));
+    .map((item) => ({ item, days: daysUntilExpiry(typeof item.expiryDate === 'string' ? item.expiryDate : null, now) }))
+    .filter((entry): entry is { item: RawDoc; days: number } => entry.days !== null);
   return {
     total: items.length,
     fridgeItems: items.filter((item) => item.location === 'Fridge').length,
@@ -255,89 +284,83 @@ export function computePantryFacts(items: RawDoc[], now: Date): PantryFacts {
 
 const CLIMATE = /hvac|furnace|air ?condition|heat ?pump|boiler|a\/c|\bac\b/i;
 
-export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date): MaintenanceFacts {
-  const items: MaintenanceItem[] = [];
-  const push = (item: Omit<MaintenanceItem, 'overdue' | 'dueSoon'> & { overdue?: boolean; dueSoon?: boolean }) => {
-    const overdue = item.overdue ?? (item.days !== null && item.days < 0);
-    const dueSoon = item.dueSoon ?? (item.days !== null && item.days >= 0 && item.days <= SOON_DAYS);
-    items.push({ ...item, overdue, dueSoon: !overdue && dueSoon });
-  };
+/**
+ * Maintenance facts from the Maintenance module's own reminder rules
+ * (`buildMaintenanceReminders`, shared with the Maintenance page and the hourly
+ * reminders): retired assets and retired or sold vehicles are excluded, "soon"
+ * means within 14 days or 500 miles, and deep links are the module's own.
+ * An expired warranty is not a task and is left out.
+ */
+export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date, timeZone?: string | null): MaintenanceFacts {
+  const zone = safeTimeZone(timeZone);
+  const today = localDay(now, zone);
+  const activeAssets = assets.filter((asset) => asset.status !== 'retired');
+  const activeVehicles = vehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold');
+  const assetsById = new Map(activeAssets.map((asset) => [asset.id, asset]));
+  const reminders = buildMaintenanceReminders(
+    activeAssets as unknown as AssetInput[],
+    activeVehicles as unknown as VehicleInput[],
+    today,
+    zone,
+  ).filter((reminder) => !(reminder.group === 'warranty' && reminder.status === 'overdue'));
 
-  for (const asset of assets) {
-    const name = text(asset.name, 'Home asset');
-    const climate = CLIMATE.test(`${asset.category ?? ''} ${name}`);
-    const href = `/maintenance?asset=${encodeURIComponent(asset.id)}`;
-    for (const schedule of Array.isArray(asset.schedules) ? asset.schedules as Array<Record<string, unknown>> : []) {
-      if (schedule?.mode === 'checklist') continue;
-      const due = toDateValue(schedule?.nextDueDate);
-      if (!due) continue;
-      push({ label: text(schedule.scheduleName, name), kind: 'asset', climate, days: daysBetween(due, now), href });
-    }
-    const warranty = toDateValue(asset.warrantyExpiration);
-    if (warranty) {
-      const days = daysBetween(warranty, now);
-      // A warranty expires; it is never "overdue". Only upcoming expirations are surfaced.
-      if (days >= 0 && days <= 30) push({ label: `${name} warranty ends`, kind: 'asset', climate: false, days, href, overdue: false, dueSoon: true });
-    }
-  }
-
-  for (const vehicle of vehicles) {
-    const nickname = text(vehicle.nickname, 'Vehicle');
-    const href = `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`;
-    const mileage = typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage : null;
-    for (const schedule of Array.isArray(vehicle.serviceSchedules) ? vehicle.serviceSchedules as Array<Record<string, unknown>> : []) {
-      if (schedule?.mode === 'checklist') continue;
-      const due = toDateValue(schedule?.nextDueDate);
-      const days = due ? daysBetween(due, now) : null;
-      const nextMileage = typeof schedule?.nextDueMileage === 'number' ? schedule.nextDueMileage : null;
-      const remaining = mileage !== null && nextMileage !== null ? nextMileage - mileage : null;
-      const overdue = (days !== null && days < 0) || (remaining !== null && remaining <= 0);
-      const dueSoon = (days !== null && days >= 0 && days <= SOON_DAYS) || (remaining !== null && remaining > 0 && remaining <= 500);
-      if (!overdue && !dueSoon && days === null) continue;
-      push({ label: text(schedule.serviceName, `${nickname} service`), kind: 'vehicle', climate: false, days, href, overdue, dueSoon });
-    }
-    for (const [value, suffix] of [[vehicle.registrationExpiration, 'registration'], [vehicle.inspectionExpiration, 'inspection']] as const) {
-      const due = toDateValue(value);
-      if (!due) continue;
-      const days = daysBetween(due, now);
-      if (days <= 30) push({ label: `${nickname} ${suffix}`, kind: 'vehicle', climate: false, days, href, dueSoon: days >= 0 && days <= 30 });
-    }
-  }
-
-  const active = items.filter((item) => item.overdue || item.dueSoon);
-  const upcoming = [...items].sort((a, b) => {
-    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
-    return (a.days ?? Number.MAX_SAFE_INTEGER) - (b.days ?? Number.MAX_SAFE_INTEGER);
+  const items: MaintenanceItem[] = reminders.map((reminder) => {
+    const dueDay = toDay(reminder.dueDate, zone);
+    const asset = reminder.targetType === 'home_asset' ? assetsById.get(reminder.targetId) : undefined;
+    const label = reminder.group === 'warranty'
+      ? `${reminder.relatedName} warranty ends`
+      : reminder.group === 'vehicle_document'
+        ? `${reminder.relatedName} ${reminder.title.replace(/^Vehicle\s+/i, '')}`
+        : reminder.title;
+    return {
+      label: text(label, 'Maintenance'),
+      kind: reminder.targetType === 'vehicle' ? 'vehicle' : 'asset',
+      climate: Boolean(asset && CLIMATE.test(`${asset.category ?? ''} ${asset.name ?? ''}`)),
+      days: dueDay ? diffDays(dueDay, today) : null,
+      overdue: reminder.status === 'overdue',
+      dueSoon: reminder.status === 'due_today' || reminder.status === 'due_soon',
+      href: reminder.deepLink,
+    };
   });
+  const active = items.filter((item) => item.overdue || item.dueSoon);
 
   return {
     overdue: items.filter((item) => item.overdue).length,
     dueSoon: items.filter((item) => item.dueSoon).length,
-    needsAttention: assets.filter((asset) => asset.status === 'needs_attention').length
-      + vehicles.filter((vehicle) => vehicle.status === 'needs_attention').length,
-    next: upcoming[0] ?? null,
-    items: upcoming.slice(0, 6),
+    needsAttention: activeAssets.filter((asset) => asset.status === 'needs_attention').length
+      + activeVehicles.filter((vehicle) => vehicle.status === 'needs_attention').length,
+    // Reminders arrive most urgent first (overdue, today, soon, upcoming; then by date).
+    next: items[0] ?? null,
+    items: items.slice(0, 6),
     vehicleDue: active.some((item) => item.kind === 'vehicle')
-      || vehicles.some((vehicle) => vehicle.status === 'needs_attention'),
+      || activeVehicles.some((vehicle) => vehicle.status === 'needs_attention'),
     climateDue: active.some((item) => item.climate)
-      || assets.some((asset) => asset.status === 'needs_attention' && CLIMATE.test(`${asset.category ?? ''} ${asset.name ?? ''}`)),
-    vehicles: vehicles.filter((vehicle) => vehicle.status !== 'sold' && vehicle.status !== 'retired').length,
+      || activeAssets.some((asset) => asset.status === 'needs_attention' && CLIMATE.test(`${asset.category ?? ''} ${asset.name ?? ''}`)),
+    vehicles: activeVehicles.length,
   };
 }
 
-export function computePetFacts(pets: RawDoc[], lastFeeding: Record<string, unknown>, now: Date): PetFacts {
+/**
+ * Pet facts with the Pets module's own feeding model: `feedingPlan` (structured
+ * fields, else the parsed schedule) and `feedingStatus` (today's feedings against
+ * the plan). A pet counts as fed when today's target is met, as on its card.
+ * `feedings` holds each pet's recent feeding entries in either date shape.
+ */
+export function computePetFacts(pets: RawDoc[], feedings: Record<string, FeedingEntry[]>, now: Date): PetFacts {
   const states = [...pets]
     .sort((a, b) => text(a.name, a.id).localeCompare(text(b.name, b.id)))
     .map<PetState>((pet) => {
-      const lastFedAt = toDateValue(lastFeeding[pet.id]);
-      const fed = lastFedAt !== null && now.getTime() - lastFedAt.getTime() <= FED_WINDOW_HOURS * 3_600_000 && lastFedAt.getTime() <= now.getTime() + 60_000;
+      const status = feedingStatus(feedings[pet.id] ?? [], feedingPlan(pet as unknown as PetProfile), now);
       return {
         id: pet.id,
         name: text(pet.name, 'Pet'),
         type: text(pet.type, 'Other'),
         photoUrl: typeof pet.photoUrl === 'string' && pet.photoUrl ? pet.photoUrl : undefined,
-        lastFedAt,
-        fed,
+        lastFedAt: status.last?.date ?? null,
+        lastFedBy: status.last?.by ?? null,
+        fed: status.complete,
+        countLabel: feedingCountLabel(status),
+        headline: feedingHeadline(status, now),
       };
     });
   return { pets: states, hungry: states.filter((pet) => !pet.fed).length };

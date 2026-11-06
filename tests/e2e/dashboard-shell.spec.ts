@@ -2,7 +2,8 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, type QuerySnapshot } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
-import { computeChoreFacts, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
+import { computeChoreFacts, computePetFacts, recurringTemplateIdsFrom, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
+import { dayKey } from '../../src/lib/dashboard/dates';
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 
 const projectId = 'demo-homehub-e2e';
@@ -18,10 +19,31 @@ const ownerEmail = 'alex.e2e@example.test';
  * emulator data with the dashboard's own pure functions (same local-day logic,
  * same pinned clock). Other specs add chores, so counts are never hard-coded.
  */
+const docs = (snapshot: QuerySnapshot): RawDoc[] => snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
 async function expectedChoreFacts() {
-  const [chores, rooms] = await Promise.all([household.collection('chores').get(), household.collection('rooms').get()]);
-  const docs = (snapshot: QuerySnapshot): RawDoc[] => snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-  return computeChoreFacts(docs(chores), docs(rooms), { uid: 'e2e-owner-uid', email: ownerEmail }, fixedNow);
+  const [chores, rooms, templates] = await Promise.all([
+    household.collection('chores').get(),
+    household.collection('rooms').get(),
+    household.collection('chore-templates').get(),
+  ]);
+  return computeChoreFacts(
+    docs(chores),
+    docs(rooms),
+    { uid: 'e2e-owner-uid', email: ownerEmail },
+    fixedNow,
+    recurringTemplateIdsFrom(docs(templates), dayKey(fixedNow)),
+  );
+}
+
+/** Each pet's fed state with the Pets module's own model, from every feeding (both date shapes). */
+async function expectedPetFacts() {
+  const pets = await household.collection('pets').get();
+  const feedings = Object.fromEntries(await Promise.all(pets.docs.map(async (pet) => {
+    const logs = await pet.ref.collection('feeding-logs').get();
+    return [pet.id, logs.docs.map((log) => log.data() as { date: unknown })] as const;
+  })));
+  return computePetFacts(docs(pets), feedings, fixedNow);
 }
 
 const mobileOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'mobile-chromium');
@@ -52,8 +74,12 @@ test.describe('dashboard, shell and notifications', () => {
     const kitchen = choreFacts.rooms.find((room) => room.id === 'kitchen');
     expect(kitchen?.dueToday ?? 0, 'the seed has at least one Kitchen chore due today').toBeGreaterThanOrEqual(1);
     await expect(house.getByRole('link', { name: `Kitchen: ${roomSummary(kitchen!)}`, exact: true })).toBeVisible();
-    await expect(house.getByTestId('house-pet-maple')).toHaveAttribute('data-fed', 'true');
-    await expect(house.getByTestId('house-pet-pixel')).toHaveAttribute('data-fed', 'false');
+    const petFacts = await expectedPetFacts();
+    expect(petFacts.pets.length, 'the seed has pets').toBeGreaterThanOrEqual(2);
+    for (const pet of petFacts.pets) {
+      await expect(house.getByTestId(`house-pet-${pet.id}`)).toHaveAttribute('data-fed', String(pet.fed));
+      await expect(page.getByTestId('dashboard-tile-pets')).toContainText(pet.countLabel);
+    }
     await expect(house.getByRole('link', { name: /^Heating and cooling: Replace air filter/ })).toBeVisible();
     await expect(house.getByRole('link', { name: /^Car: .+ due$/ })).toBeVisible();
 
@@ -101,20 +127,21 @@ test.describe('dashboard, shell and notifications', () => {
     await page.keyboard.press('Control+k');
     await input.fill('add e2e paper towels to groceries');
     const quickAdd = palette.getByTestId('palette-quick-add');
-    await expect(quickAdd).toContainText('Add e2e paper towels');
+    // Names go through the Shopping parser, which capitalizes all-lowercase names.
+    await expect(quickAdd).toContainText('Add E2e paper towels');
     await expect(quickAdd).toContainText('Weekly Groceries');
     await input.press('Enter');
     await expect(palette.getByTestId('quick-add-preview')).toBeVisible();
     // Nothing is written before Confirm.
-    const before = await household.collection('shopping-lists').doc('weekly-groceries').collection('items').where('name', '==', 'e2e paper towels').get();
+    const before = await household.collection('shopping-lists').doc('weekly-groceries').collection('items').where('name', '==', 'E2e paper towels').get();
     expect(before.size).toBe(0);
     try {
       await palette.getByTestId('quick-add-confirm').click();
       await expect(palette).toHaveCount(0);
       await expect.poll(async () => (await household.collection('shopping-lists').doc('weekly-groceries').collection('items')
-        .where('name', '==', 'e2e paper towels').get()).size).toBe(1);
+        .where('name', '==', 'E2e paper towels').get()).size).toBe(1);
     } finally {
-      const created = await household.collection('shopping-lists').doc('weekly-groceries').collection('items').where('name', '==', 'e2e paper towels').get();
+      const created = await household.collection('shopping-lists').doc('weekly-groceries').collection('items').where('name', '==', 'E2e paper towels').get();
       await Promise.all(created.docs.map((item) => item.ref.delete()));
     }
   });

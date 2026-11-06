@@ -111,6 +111,7 @@ Firestore rules enforce the granular permissions (with per-member overrides): re
 - [AI and Genkit](../ai-genkit/README.md) owns OpenAI configuration, authorization, and deterministic test behavior.
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply user and household context.
 - [Firebase Platform](../firebase-platform/README.md) owns persistence initialization and rules.
+- [Application Shell and Dashboard](../application-shell/README.md) reads assets and vehicles read-only for the dashboard and computes its "next maintenance", HVAC and car states with the shared `buildMaintenanceReminders` (so retired assets and retired or sold vehicles never appear there either), linking to each reminder's own deep link. The command palette's maintenance hand-off requires `maintenance.createLogs` and opens `?tab=logs`.
 
 ## Invariants and Failure Behavior
 
