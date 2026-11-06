@@ -1,0 +1,202 @@
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { getApps, initializeApp } from 'firebase-admin/app';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { getDeterministicNotificationId } from '../../src/lib/notifications';
+import { fixedNow } from './test-helpers';
+
+// Maintenance Center UX (wave 2): home health, in-place reminder actions,
+// collapsed detail fields, photo-first asset cards, tab deep links and
+// permission-aware controls. Runs against the seeded emulator household.
+
+const projectId = 'demo-homehub-e2e';
+const householdId = 'the-foxy-residence-e2e';
+const adminApp = getApps().find((app) => app.name === 'maintenance-ux')
+  || initializeApp({ projectId, storageBucket: `${projectId}.appspot.com` }, 'maintenance-ux');
+const household = getFirestore(adminApp).collection('households').doc(householdId);
+const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'desktop-chromium');
+
+const HVAC_SCHEDULES = [{
+  id: 'asset-filter-e2e', mode: 'scheduled', scheduleName: 'Replace air filter', frequencyType: 'months',
+  intervalValue: 3, lastCompletedDate: '2026-05-01', nextDueDate: '2026-08-01',
+}];
+const DISHWASHER_SCHEDULES = [{
+  id: 'dishwasher-filter-e2e', mode: 'scheduled', scheduleName: 'Clean filter', frequencyType: 'months',
+  intervalValue: 1, nextDueDate: '2026-08-08',
+}];
+const HVAC_NOTIFICATION = getDeterministicNotificationId({
+  sourceType: 'maintenance_asset_schedule', sourceId: 'hvac-main:asset-filter-e2e', stateKey: 'due_today|2026-08-01',
+});
+
+async function restoreMaintenanceSeed() {
+  const createdLogs = await household.collection('maintenance').where('date', '==', '2026-08-01').get();
+  const photos = await household.collection('maintenance-attachments').where('fileName', '==', 'maintenance-ux-photo.png').get();
+  await Promise.all([
+    household.collection('home-assets').doc('hvac-main').update({ schedules: HVAC_SCHEDULES }),
+    household.collection('home-assets').doc('dishwasher').update({ schedules: DISHWASHER_SCHEDULES }),
+    household.collection('notifications').doc(HVAC_NOTIFICATION).update({
+      resolvedAt: FieldValue.delete(), resolvedBy: FieldValue.delete(),
+    }).catch(() => undefined),
+    ...createdLogs.docs
+      .filter((log) => ['Replace air filter', 'Clean filter'].includes(log.get('title')))
+      .map((log) => log.ref.delete()),
+    ...photos.docs.map((photo) => photo.ref.delete()),
+  ]);
+}
+
+async function open(page: Page, path: string) {
+  await page.clock.setFixedTime(fixedNow);
+  await page.goto(path);
+  await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
+}
+
+test.describe('maintenance center UX', () => {
+  test.afterEach(async ({}, testInfo) => {
+    if (testInfo.project.name === 'desktop-chromium') await restoreMaintenanceSeed();
+  });
+
+  test('H10: overview shows the home health score with its reasons, linked to the items', async ({ page }) => {
+    await open(page, '/maintenance');
+    const panel = page.getByTestId('maintenance-health');
+    // Seed: HVAC flagged (−10), filter due today (−5), warranty ending (−2); dishwasher filter due soon (−2);
+    // SUV tire rotation, registration and inspection due soon (−2 each); two logs in 90 days (+4).
+    await expect(panel.getByRole('img', { name: 'Home health 79 out of 100, needs some care.' })).toBeVisible();
+    await expect(panel.getByText('Needs some care')).toBeVisible();
+    const deduction = panel.getByRole('button', { name: /Main HVAC System: flagged as needing attention/ });
+    await expect(deduction).toContainText('−10');
+    await deduction.click();
+    await expect(page.getByRole('tab', { name: 'Home Assets' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page).toHaveURL(/\?asset=hvac-main$/);
+    await expect(page.getByRole('img', { name: /^Main HVAC System health 85 out of 100/ }).first()).toBeVisible();
+  });
+
+  test('tabs are linkable with ?tab= and choosing a tab updates the URL', async ({ page }) => {
+    await open(page, '/maintenance?tab=reminders');
+    await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('tab', { name: 'Logs' }).click();
+    await expect(page).toHaveURL(/\/maintenance\?tab=logs$/);
+    await page.reload();
+    await expect(page.getByRole('tab', { name: 'Logs' })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('tab', { name: 'Overview' }).click();
+    await expect(page).toHaveURL(/\/maintenance$/);
+  });
+
+  test('D16: reminder cards say the status once and can be snoozed or marked done in place', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await household.collection('home-assets').doc('dishwasher').update({
+      schedules: [{ ...DISHWASHER_SCHEDULES[0], nextDueDate: '2026-07-01' }],
+    });
+    await open(page, '/maintenance?tab=reminders');
+
+    const overdue = page.getByTestId('reminders-overdue');
+    const dishwasher = overdue.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' });
+    await expect(dishwasher.getByText('Overdue', { exact: true })).toHaveCount(1);
+    await expect(dishwasher).toContainText('Due Jul 1, 2026 · 4 weeks ago');
+    await expect(dishwasher).not.toContainText('is overdue');
+
+    // Warranties expire; they are never "overdue" or "due".
+    const warranty = page.getByTestId('reminders-warranty').getByRole('listitem').filter({ hasText: 'Main HVAC System' });
+    await expect(warranty.getByText('Expires soon', { exact: true })).toBeVisible();
+    await expect(warranty.getByRole('button', { name: /^Mark done/ })).toHaveCount(0);
+    await expect(warranty.getByRole('button', { name: /^Snooze/ })).toHaveCount(0);
+
+    await dishwasher.getByRole('button', { name: 'Snooze 1 week: Clean filter for Kitchen Dishwasher' }).click();
+    await expect(page.getByText('Snoozed for a week')).toBeVisible();
+    await expect.poll(async () => (await household.collection('home-assets').doc('dishwasher').get()).get('schedules')?.[0]?.nextDueDate)
+      .toBe('2026-08-08');
+    await expect(overdue.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' })).toHaveCount(0);
+    // Still on the Reminders tab: the action happened in place.
+    await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
+
+    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    await filter.getByRole('button', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
+    await expect(page.getByText('Marked done')).toBeVisible();
+    await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0])
+      .toMatchObject({ lastCompletedDate: '2026-08-01', nextDueDate: '2026-11-01' });
+    await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get()).size)
+      .toBe(1);
+    await expect.poll(async () => Boolean((await household.collection('notifications').doc(HVAC_NOTIFICATION).get()).get('resolvedAt')))
+      .toBe(true);
+    await expect(page.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('D15: the detail panel hides empty fields and keeps one action row', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?asset=dishwasher');
+    const panel = page.getByRole('tabpanel', { name: 'Home Assets' });
+    await expect(panel.getByText('Not recorded')).toHaveCount(0);
+    await expect(panel.getByText('Bosch', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Serial Number', { exact: true })).toHaveCount(0);
+    const edit = panel.getByRole('button', { name: 'Edit home asset Kitchen Dishwasher' });
+    const remove = panel.getByRole('button', { name: 'Delete home asset Kitchen Dishwasher' });
+    const details = panel.getByRole('button', { name: /^Add details/ });
+    await expect(details).toBeVisible();
+    const [editBox, removeBox, detailsBox] = await Promise.all([edit.boundingBox(), remove.boundingBox(), details.boundingBox()]);
+    expect(Math.abs(editBox!.y - removeBox!.y)).toBeLessThan(2);
+    expect(Math.abs(editBox!.y - detailsBox!.y)).toBeLessThan(2);
+    // Delete sits apart from Edit.
+    expect(removeBox!.x - (editBox!.x + editBox!.width)).toBeGreaterThan(48);
+    await details.click();
+    await expect(page.getByRole('dialog', { name: 'Edit Home Asset' })).toBeVisible();
+  });
+
+  test('H30: asset cards show the newest photo, with tokenized art otherwise', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await household.collection('maintenance-attachments').doc('maintenance-ux-photo').set({
+      householdId,
+      targetType: 'home_asset',
+      targetId: 'hvac-main',
+      category: 'photo',
+      fileName: 'maintenance-ux-photo.png',
+      filePath: `households/${householdId}/maintenance/home_asset/hvac-main/maintenance-ux-photo.png`,
+      downloadUrl: '/icons/icon-192.png',
+      contentType: 'image/png',
+      size: 1024,
+      uploadedByUid: 'e2e-owner-uid',
+      createdAt: '2026-07-31T12:00:00.000Z',
+    });
+    await page.setViewportSize({ width: 1009, height: 900 });
+    await open(page, '/maintenance?tab=assets');
+    await expect(page.getByTestId('asset-card-hvac-main').locator('[data-asset-photo="image"]')).toBeVisible();
+    await expect(page.getByTestId('asset-card-dishwasher').locator('[data-asset-photo="fallback"]')).toBeVisible();
+    // B7 still holds with the photo band.
+    const height = await page.getByTestId('asset-card-hvac-main').evaluate((el) => el.getBoundingClientRect().height);
+    expect(height).toBeLessThan(250);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  });
+
+  test('summaries are offered only for notes worth summarizing; validation stays inline', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=logs');
+    await expect(page.getByTestId('maintenance-log-hvac-inspection').getByRole('button', { name: 'Summarize with AI' })).toBeVisible();
+    await expect(page.getByTestId('maintenance-log-oil-change').getByRole('button', { name: 'Summarize with AI' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Add Maintenance Log' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
+    await dialog.getByRole('combobox').first().click();
+    await page.getByRole('option', { name: 'Home Asset' }).click();
+    await dialog.getByLabel('Title').fill('Inline validation E2E');
+    await dialog.getByRole('button', { name: 'Save Log' }).click();
+    await expect(dialog.getByRole('alert')).toContainText('Choose a home asset or switch the log to general.');
+    await expect(page.getByRole('region', { name: /Notifications/ }).getByText('Choose a home asset')).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+  });
+
+  test('a guest can view but not change maintenance', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark' });
+    const page = await context.newPage();
+    await page.clock.setFixedTime(fixedNow);
+    await page.goto('/e2e-login?uid=e2e-limited-uid');
+    await expect(page).toHaveURL('/');
+    await open(page, '/maintenance?tab=reminders');
+    await expect(page.getByRole('button', { name: /^Open: Replace air filter/ }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Mark done/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Snooze/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add Log', exact: true })).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Home Assets' }).click();
+    await expect(page.getByRole('button', { name: /^Edit home asset/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Delete home asset/ })).toHaveCount(0);
+    await context.close();
+  });
+});
