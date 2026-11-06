@@ -4,6 +4,7 @@ export type AiErrorCode =
   | 'forbidden'
   | 'invalid_input'
   | 'invalid_response'
+  | 'quota_exceeded'
   | 'rate_limited'
   | 'refused'
   | 'timeout'
@@ -16,6 +17,7 @@ const publicMessages: Record<AiErrorCode, string> = {
   forbidden: 'You do not have permission to use this AI feature.',
   invalid_input: 'The information provided for this AI request is invalid.',
   invalid_response: 'AI returned an invalid response. Please try again.',
+  quota_exceeded: "You've used today's AI requests. They reset at midnight UTC.",
   rate_limited: 'AI is receiving too many requests. Please wait a moment and retry.',
   refused: 'AI could not complete that request. Adjust the content and try again.',
   timeout: 'AI took too long to respond. Please try again.',

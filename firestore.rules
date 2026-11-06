@@ -584,6 +584,15 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
+    // AI usage counters: written only by the server (Admin SDK) to enforce the
+    // daily AI quota. No client may read or change them.
+    // ---------------------------------------------------------------------
+
+    match /aiUsage/{usageId} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------------------
     // Invite codes: owners/admins create, list and revoke. Redemption happens
     // on the server, which validates expiry, revocation and use count.
     // ---------------------------------------------------------------------

@@ -35,7 +35,7 @@ The `Authenticated E2E Smoke` GitHub Actions workflow runs project validation, a
 
 App Hosting serves the Next.js app. `apphosting.yaml` maps runtime-only `OPENAI_API_KEY` to Secret Manager secret `openaiApiKey` and supplies non-secret OpenAI model defaults, including the Luna overview model. AI model calls do not run during build. Firestore document creation under household notifications triggers the Node 24 Functions codebase for FCM delivery.
 
-No explicit Firestore offline persistence, Auth persistence override, or custom local-cache policy is configured. App Check starts in `src/lib/firebase.ts` in the browser only (never in emulator mode) when `NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY` is set: a reCAPTCHA Enterprise score-based key (`HomeHub web App Check`) limited to `studio--homehub-j91jb.us-central1.hosted.app`, `homehub-j91jb.web.app` and `homehub-j91jb.firebaseapp.com`, registered as the App Check provider for web app `1:562837692805:web:a21c3805ca4921564d24ec` (token TTL 1 hour, auto-refresh). The public site key is set in `apphosting.yaml` for build and runtime. `localhost` is not an allowed domain; local development against the real project sets `NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN` to a debug token registered in the console.
+No explicit Firestore offline persistence, Auth persistence override, or custom local-cache policy is configured. App Check starts in `src/lib/firebase.ts` in the browser only (never in emulator mode) when `NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY` is set: a reCAPTCHA Enterprise score-based key (`HomeHub web App Check`) limited to `studio--homehub-j91jb.us-central1.hosted.app`, `homehub-j91jb.web.app` and `homehub-j91jb.firebaseapp.com`, registered as the App Check provider for web app `1:562837692805:web:a21c3805ca4921564d24ec` (token TTL 1 hour, auto-refresh). The public site key is set in `apphosting.yaml` for build and runtime. App Check validates the web app ID strictly: it must be the full `1:<project number>:web:<hash>` form. `apphosting.yaml` declares it, and `normalizeFirebaseAppId` (`src/lib/firebase-app-id.ts`) restores a missing `1:` prefix, because the value previously configured on App Hosting lacked it and every token exchange failed with "Invalid App ID". `localhost` is not an allowed domain; local development against the real project sets `NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN` to a debug token registered in the console.
 
 ## Data Model and Persistence
 
@@ -59,8 +59,9 @@ Primary topology:
 - `households/{householdId}/maintenance-attachments/{attachmentId}`
 - `households/{householdId}/home-automation/credentials`
 - `inviteCodes/{code}`
+- `aiUsage/{scope}_{id}_{day}` (server-only daily AI quota counters; rules deny all client access)
 
-Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` currently declares no composite indexes or field overrides.
+Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` declares no composite indexes; its `fieldOverrides` hold the TTL policies on `notifications.expiresAt` and `aiUsage.expiresAt` (each with the field's default single-field indexes), deployed by the release workflow.
 
 Direct temporary chores use the existing `chores` path with optional `templateId` and `sourceType: temporary`; no parallel collection or fake template is created. Maintenance logs preserved after registry deletion remove their live target ID and retain optional `formerTargetType`/`formerTargetName` history fields.
 
