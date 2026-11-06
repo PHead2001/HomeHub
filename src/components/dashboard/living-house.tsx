@@ -22,7 +22,7 @@ import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { playFeedback } from '@/lib/feedback';
 import { seasonFor, type Season } from '@/lib/dashboard/ambience';
 import { isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
-import { timeAgo, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
+import { roomSummary, timeAgo, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
 import { useDayLight } from './time-of-day';
 import { PeekCard } from './peek-card';
 import styles from './dashboard.module.css';
@@ -37,15 +37,6 @@ const readSeasonalPref = () => {
   } catch {
     return true;
   }
-};
-
-const roomSummary = (room: RoomState) => {
-  const parts: string[] = [];
-  if (room.overdue) parts.push(`${room.overdue} overdue`);
-  if (room.dueToday) parts.push(`${room.dueToday} due today`);
-  if (!parts.length && room.upcoming) parts.push(`${room.upcoming} coming up`);
-  if (!parts.length) parts.push(room.doneToday ? 'All done today' : 'All clear');
-  return parts.join(', ');
 };
 
 function RoomTile({ room, href, sparkle }: { room: RoomState; href: string; sparkle: boolean }) {

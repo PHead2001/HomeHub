@@ -1,13 +1,28 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, type QuerySnapshot } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
+import { computeChoreFacts, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
+import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 
 const projectId = 'demo-homehub-e2e';
 const householdId = 'the-foxy-residence-e2e';
 const adminApp = getApps().find((app) => app.name === 'dashboard-shell')
   || initializeApp({ projectId }, 'dashboard-shell');
 const household = getFirestore(adminApp).collection('households').doc(householdId);
+
+const ownerEmail = 'alex.e2e@example.test';
+
+/**
+ * The chore facts the dashboard should show right now, computed from the live
+ * emulator data with the dashboard's own pure functions (same local-day logic,
+ * same pinned clock). Other specs add chores, so counts are never hard-coded.
+ */
+async function expectedChoreFacts() {
+  const [chores, rooms] = await Promise.all([household.collection('chores').get(), household.collection('rooms').get()]);
+  const docs = (snapshot: QuerySnapshot): RawDoc[] => snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return computeChoreFacts(docs(chores), docs(rooms), { uid: 'e2e-owner-uid', email: ownerEmail }, fixedNow);
+}
 
 const mobileOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'mobile-chromium');
 const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'desktop-chromium');
@@ -33,7 +48,10 @@ test.describe('dashboard, shell and notifications', () => {
     await expect(house.getByTestId('house-room-kitchen')).toHaveAttribute('data-room-status', 'due');
     await expect(house.getByTestId('house-room-living-room')).toHaveAttribute('data-room-status', 'due');
     await expect(house.getByTestId('house-room-garage')).toHaveAttribute('data-room-status', 'clear');
-    await expect(house.getByRole('link', { name: /^Kitchen: \d+ due today$/ })).toBeVisible();
+    const choreFacts = await expectedChoreFacts();
+    const kitchen = choreFacts.rooms.find((room) => room.id === 'kitchen');
+    expect(kitchen?.dueToday ?? 0, 'the seed has at least one Kitchen chore due today').toBeGreaterThanOrEqual(1);
+    await expect(house.getByRole('link', { name: `Kitchen: ${roomSummary(kitchen!)}`, exact: true })).toBeVisible();
     await expect(house.getByTestId('house-pet-maple')).toHaveAttribute('data-fed', 'true');
     await expect(house.getByTestId('house-pet-pixel')).toHaveAttribute('data-fed', 'false');
     await expect(house.getByRole('link', { name: /^Heating and cooling: Replace air filter/ })).toBeVisible();
@@ -50,8 +68,10 @@ test.describe('dashboard, shell and notifications', () => {
 
     // H04: the brief is built from the same facts and links its nouns.
     const brief = page.getByTestId('morning-brief');
-    await expect(brief).toContainText(/\d+ chores? today/);
-    await expect(brief.getByRole('link', { name: /\d+ chores? today/ })).toHaveAttribute('href', '/chores');
+    expect(choreFacts.mineDueToday, 'the owner has at least one chore due today').toBeGreaterThanOrEqual(1);
+    const choresPhrase = buildMorningBrief({ chores: choreFacts }, { greeting: 'Hi' }).segments.find((segment) => segment.href === '/chores')!;
+    expect(choresPhrase.text).toBe(`${choreFacts.mineDueToday} ${choreFacts.mineDueToday === 1 ? 'chore' : 'chores'} today`);
+    await expect(brief.getByRole('link', { name: choresPhrase.text, exact: true })).toHaveAttribute('href', '/chores');
   });
 
   test('the old carousel is gone and nothing overflows on small phones', async ({ page }, testInfo) => {

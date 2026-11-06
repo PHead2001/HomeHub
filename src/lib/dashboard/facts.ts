@@ -343,6 +343,16 @@ export function computePetFacts(pets: RawDoc[], lastFeeding: Record<string, unkn
   return { pets: states, hungry: states.filter((pet) => !pet.fed).length };
 }
 
+/** A room's text summary, used as its link name: "1 overdue, 2 due today", "All clear"... */
+export function roomSummary(room: RoomState): string {
+  const parts: string[] = [];
+  if (room.overdue) parts.push(`${room.overdue} overdue`);
+  if (room.dueToday) parts.push(`${room.dueToday} due today`);
+  if (!parts.length && room.upcoming) parts.push(`${room.upcoming} coming up`);
+  if (!parts.length) parts.push(room.doneToday ? 'All done today' : 'All clear');
+  return parts.join(', ');
+}
+
 /** "2h ago", "35m ago", "yesterday", "3d ago". */
 export function timeAgo(date: Date, now: Date): string {
   const minutes = Math.max(0, Math.round((now.getTime() - date.getTime()) / 60_000));
