@@ -193,8 +193,13 @@ export const runHouseholdReminders = async (
       });
   }
 
-  // Chore reminders (per person, in their own timezone).
-  const chores = choresSnap.docs.map((d) => ({id: d.id, ...d.data()}) as
+  // Chore reminders (per person, in their own timezone). Reminder documents
+  // are fixed per day once written, so they must see this run's generated
+  // and purged chores: re-read when this run changed any.
+  const choreDocs = result.generatedChores > 0 || result.purgedChores > 0 ?
+    (await house.collection("chores").get()).docs :
+    choresSnap.docs;
+  const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
   const profiles = await Promise.all(members.map((m) =>
     db.collection("users").doc(m.email).get()));
@@ -205,6 +210,7 @@ export const runHouseholdReminders = async (
       uid: member.uid,
       email: member.email,
       timeZone: safeTimeZone(profile.timeZone || timeZone),
+      householdTimeZone: timeZone,
       reminderEnabled: Boolean(settings.reminderEnabled),
       reminderTime: settings.reminderTime,
     }, chores, now);

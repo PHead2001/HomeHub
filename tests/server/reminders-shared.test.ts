@@ -131,6 +131,19 @@ describe('chore reminders', () => {
     assert.equal(midnight.find(n => n.id === 'u1-reminder-2026-11-05')?.message, '1 chore due yesterday and 1 overdue.');
   });
 
+  test('a member west of the household keeps the occurrence day', () => {
+    const la = { ...person, timeZone: 'America/Los_Angeles', householdTimeZone: CHI };
+    // A Thursday Chicago occurrence, stored as Chicago midnight (Wednesday 22:00 in LA).
+    const thursday = [{ id: 't', task: 'Trash', assignedToEmail: 'sam@example.test', dueDate: '2026-11-05T06:00:00.000Z', originalDueDate: '2026-11-05' }];
+    assert.deepEqual(choreNotificationsFor(la, thursday, new Date('2026-11-05T01:30:00Z')), [], 'not reminded a day early (Wed 17:30 LA)');
+    assert.deepEqual(choreNotificationsFor(la, thursday, new Date('2026-11-05T16:00:00Z')), [], 'not overdue on its own day (Thu 08:00 LA)');
+    const thursdayEvening = choreNotificationsFor(la, thursday, new Date('2026-11-06T01:30:00Z')); // Thu 17:30 LA
+    assert.equal(thursdayEvening.find(n => n.id === 'u1-reminder-2026-11-05')?.message, '1 chore due today.');
+    // Older records without originalDueDate fall back to the household zone, not the member's.
+    const legacy = [{ ...thursday[0], originalDueDate: undefined }];
+    assert.deepEqual(choreNotificationsFor(la, legacy, new Date('2026-11-05T01:30:00Z')), []);
+  });
+
   test('disabled reminders and no pending chores stay quiet', () => {
     const quiet = choreNotificationsFor({ ...person, reminderEnabled: false }, chores.slice(1, 2), new Date('2026-11-05T23:30:00Z'));
     assert.deepEqual(quiet, []);

@@ -36,7 +36,7 @@ The emulator E2E seed creates Household A and Household B, matching fake identit
 
 ## Data Model and Persistence
 
-- Household: `households/{householdId}` with `name`, owner fields, `memberEmails`, and timestamps.
+- Household: `households/{householdId}` with `name`, owner fields, `memberEmails`, timestamps, and `timeZone`. `timeZone` is captured from the creator's browser when the household is created (owners/admins may change it; the rules bound it to a 64-character string). Server-side upkeep uses it for recurring-chore dates and maintenance due days; households without one use `America/Chicago`.
 - Membership: `households/{householdId}/members/{uid}`.
 - Temporary invite: `inviteCodes/{code}`.
 - Audit: `households/{householdId}/auditLogs/{auditId}`.

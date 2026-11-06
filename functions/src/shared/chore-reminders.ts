@@ -1,6 +1,8 @@
 // Chore reminder rules shared by the scheduled Cloud Function. Pure: callers
 // pass the current instant and each person's timezone and settings.
-import {localDay, localMinutes, parseTimeOfDay, toDay} from "./calendar";
+import {
+  isDayString, localDay, localMinutes, parseTimeOfDay, toDay,
+} from "./calendar";
 
 export const OVERDUE_ALERT_AFTER_MINUTES = 7 * 60;
 /** householdUpkeep runs every 60 minutes. */
@@ -11,6 +13,8 @@ export type ChoreInput = {
   task?: string;
   assignedToEmail?: string;
   dueDate?: string;
+  /** Occurrence day ("YYYY-MM-DD") in the household's timezone. */
+  originalDueDate?: string;
   isCompleted?: boolean;
 };
 
@@ -18,6 +22,8 @@ export type ReminderPerson = {
   uid: string;
   email: string;
   timeZone: string;
+  /** Zone chore dates were written in (for chores without originalDueDate). */
+  householdTimeZone?: string;
   reminderEnabled?: boolean;
   reminderTime?: string;
 };
@@ -53,7 +59,13 @@ export const choreNotificationsFor = (
   const minutes = localMinutes(now, person.timeZone);
   const mine = chores.filter((c) =>
     !c.isCompleted && c.assignedToEmail === person.email);
-  const dueDay = (c: ChoreInput) => toDay(c.dueDate, person.timeZone);
+  // The occurrence's calendar day is fixed when the chore is created (in
+  // the household's timezone). Re-reading its midnight instant in a member's
+  // own zone would shift it a day for anyone west of the household; the
+  // member's zone only decides when reminders are sent.
+  const dueDay = (c: ChoreInput) => isDayString(c.originalDueDate) ?
+    c.originalDueDate :
+    toDay(c.dueDate, person.householdTimeZone || person.timeZone);
   const overdue = mine.filter((c) => {
     const day = dueDay(c);
     return day !== null && day < today;

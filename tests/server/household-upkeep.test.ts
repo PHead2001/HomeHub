@@ -77,6 +77,14 @@ describe('household upkeep', () => {
     assert.equal(evening.docs[0].data().targetUserUid, 'o1');
   });
 
+  test('a run after the reminder time includes the chores it just generated', async () => {
+    // First run ever, at 5:30pm Thursday: the Thursday trash chore does not exist yet.
+    await run(new Date('2026-11-05T23:30:00Z'));
+    const reminder = await house().collection('notifications').doc('o1-reminder-2026-11-05').get();
+    assert.equal(reminder.exists, true, 'reminder sent in the same run that generated the chore');
+    assert.equal(reminder.data()?.message, '1 chore due today.');
+  });
+
   test('completed chores older than 90 days are removed; recent ones are kept', async () => {
     await house().collection('chores').doc('old').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z' });
     await house().collection('chores').doc('recent').set({ task: 'Recent', isCompleted: true, completedAt: '2026-10-30T12:00:00.000Z' });
