@@ -1,1410 +1,102 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Button } from '@/components/ui/button';
+import Link from 'next/link';
+import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
+import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { format } from 'date-fns';
+import type { ChoreTemplate, HouseholdMember, Recurrence, Room, User as HomeHubUser } from '@/lib/types';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Loader2, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
-import type { LucideIcon, LucideProps } from 'lucide-react';
-import type { Chore, HouseholdMember, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
-import { format, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, isValid } from 'date-fns';
-import { Skeleton } from './ui/skeleton';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { ToastAction } from '@/components/ui/toast';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import * as AccordionPrimitive from '@radix-ui/react-accordion';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { ChevronDown } from 'lucide-react';
+import { EmptyState } from '@/components/empty-state';
 import { useAuth } from '@/hooks/use-auth';
-import { syncHouseholdUpkeep } from '@/app/chores/actions';
-import { collection, query, getDocs, doc, updateDoc, deleteDoc, where, setDoc, writeBatch, runTransaction, getDoc } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
+import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
-import { stableSlugify, cn } from '@/lib/utils';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
-import { ScrollArea } from './ui/scroll-area';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { Textarea } from './ui/textarea';
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
-import * as AccordionPrimitive from "@radix-ui/react-accordion";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
-import { buttonVariants } from './ui/button';
-import { Calendar } from './ui/calendar';
-import { RadioGroup, RadioGroupItem } from './ui/radio-group';
-import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group';
-import { Switch } from './ui/switch';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu';
+import { stableSlugify } from '@/lib/utils';
+import { playFeedback } from '@/lib/feedback';
+import { memberColorMap } from '@/lib/member-colors';
+import { addDaysToKey, choreDueKey, completionInstant, dayKey, type ChoreRecord } from '@/lib/chores/dates';
+import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, openSubTasks, uniqueTemplateId, type ToDoEntry } from '@/lib/chores/list';
+import { completionSnapshot, completionUpdate, undoCompletionUpdate, type CompletionSnapshot } from '@/lib/chores/completion';
+import { computeChoreStats, isPodiumDay } from '@/lib/chores/stats';
+import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
+import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
+import { ChoreList } from '@/components/chores/chore-list';
+import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
+import { HouseCleanMoment, type CleanRoom } from '@/components/chores/house-clean-moment';
+import { useConfetti } from '@/components/chores/confetti';
+import { RoomIcon } from '@/components/chores/room-icons';
+import { useChoreSettings } from '@/components/chores/use-chore-settings';
+import { memberName } from '@/components/chores/assignee-select';
 
-const roomIcons = ["Home", "BedDouble", "Bath", "Sofa", "Utensils", "Microwave", "Refrigerator", "WashingMachine", "Car", "Bike", "TreeDeciduous", "Warehouse", "Armchair", "Tv", "Gamepad2", "Baby", "Dog", "Cat", "Hammer", "Paintbrush" ];
-const lucideIconRegistry: Partial<Record<string, LucideIcon>> = {
-    Armchair,
-    Baby,
-    Bath,
-    BedDouble,
-    Bike,
-    Car,
-    Cat,
-    Dog,
-    Gamepad2,
-    Hammer,
-    Home,
-    Microwave,
-    Paintbrush,
-    Refrigerator,
-    Sofa,
-    TreeDeciduous,
-    Tv,
-    Utensils,
-    Warehouse,
-    WashingMachine,
-};
+type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
 
-const getLucideIcon = (name: string, fallback: LucideIcon): LucideIcon => {
-    return lucideIconRegistry[name] ?? fallback;
-};
+const UNDO_MS = 5000;
 
-const renderIcon = (name: string, props: LucideProps = {}) => {
-    const Icon = getLucideIcon(name, Home);
-    return <Icon {...props} />;
+const houseCleanKey = (householdId: string, day: string) => `homehub.houseClean.${householdId}.${day}`;
+
+function readFlag(key: string): boolean {
+  try { return window.sessionStorage.getItem(key) === '1'; } catch { return false; }
 }
 
-const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const fullDayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const ordinalLabels: Record<MonthlyNthWeekday['week'], string> = {
-    1: '1st',
-    2: '2nd',
-    3: '3rd',
-    4: '4th',
-};
-
-const getDefaultAnchorDate = () => format(startOfToday(), 'yyyy-MM-dd');
-
-const getMonthlyMode = (recurrence: Recurrence): MonthlyRecurrenceMode => {
-    return recurrence.monthlyOptions?.mode ?? 'dayOfMonth';
-};
-
-const isRecurrenceFrequency = (frequency: string): frequency is RecurrenceFrequency => {
-    return ['daily', 'weekly', 'biweekly', 'monthly'].includes(frequency);
-};
-
-const getRecurringWeekdays = (recurrence: Recurrence) => {
-    const days = recurrence.weeklyOptions?.daysOfWeek?.filter(day => Number.isInteger(day) && day >= 0 && day <= 6) || [];
-    if (days.length > 0) return days;
-
-    const anchorDate = recurrence.startDate ? parseISO(recurrence.startDate) : startOfToday();
-    return [isValid(anchorDate) ? getDay(anchorDate) : getDay(startOfToday())];
-};
-
-const normalizeRecurrence = (recurrence?: Recurrence | null): Recurrence | null => {
-    if (!recurrence || !isRecurrenceFrequency(recurrence.frequency)) return null;
-
-    const normalized: Recurrence = {
-        ...recurrence,
-        interval: recurrence.frequency === 'biweekly' ? 2 : (recurrence.interval || 1),
-    };
-
-    if (normalized.frequency === 'daily') {
-        normalized.dailyOptions = { excludeWeekends: Boolean(recurrence.dailyOptions?.excludeWeekends) };
-    }
-
-    if (normalized.frequency === 'weekly' || normalized.frequency === 'biweekly') {
-        normalized.weeklyOptions = { daysOfWeek: getRecurringWeekdays(normalized) };
-    }
-
-    if (normalized.frequency === 'biweekly') {
-        normalized.startDate = recurrence.startDate || getDefaultAnchorDate();
-    }
-
-    if (normalized.frequency === 'monthly') {
-        const mode = getMonthlyMode(normalized);
-        normalized.monthlyOptions = mode === 'nthWeekday' && recurrence.monthlyOptions?.nthWeekday
-            ? { mode: 'nthWeekday', nthWeekday: recurrence.monthlyOptions.nthWeekday }
-            : { mode: 'dayOfMonth', dayOfMonth: recurrence.monthlyOptions?.dayOfMonth || 1 };
-    }
-
-    return normalized;
-};
-
-
-function ManageRoomsDialog({
-    isOpen,
-    onOpenChange,
-    rooms,
-    onRoomSave,
-    onRoomDelete,
-}: {
-    isOpen: boolean;
-    onOpenChange: (open: boolean) => void;
-    rooms: Room[];
-    onRoomSave: (roomData: { name: string, icon: string }, id?: string) => Promise<void>;
-    onRoomDelete: (id: string) => Promise<void>;
-}) {
-    const [editingRoom, setEditingRoom] = useState<Room | null>(null);
-
-    const openEditForm = (room?: Room) => {
-        setEditingRoom(room || { id: '', name: '', icon: 'Home' });
-    }
-
-    const closeEditForm = () => {
-        setEditingRoom(null);
-    }
-    
-    const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        if (editingRoom) {
-            await onRoomSave({ name: editingRoom.name, icon: editingRoom.icon }, editingRoom.id || undefined);
-            closeEditForm();
-        }
-    }
-
-    useEffect(() => {
-        if (!isOpen) {
-            closeEditForm();
-        }
-    }, [isOpen]);
-    
-    return (
-        <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Manage Rooms</DialogTitle>
-                    <DialogDescription>Add, edit, or delete rooms for chore assignment.</DialogDescription>
-                </DialogHeader>
-                <ScrollArea className="max-h-[60vh] pr-4">
-                    <div className="py-4 space-y-4">
-                        {editingRoom ? (
-                            <form onSubmit={handleSave} className="space-y-4 p-4 border rounded-lg">
-                                <h3 className="font-semibold">{editingRoom.id ? 'Edit Room' : 'Add New Room'}</h3>
-                                <Input 
-                                    placeholder="New room name..."
-                                    value={editingRoom.name}
-                                    onChange={(e) => setEditingRoom({...editingRoom, name: e.target.value})}
-                                />
-                                <div className="space-y-2">
-                                    <Label>Icon</Label>
-                                    <div className="grid grid-cols-7 gap-2">
-                                        {roomIcons.map(iconName => (
-                                            <Button key={iconName} type="button" variant="outline" size="icon" aria-label={`Use ${iconName} room icon`}
-                                                className={cn("h-12 w-12", editingRoom.icon === iconName && "ring-2 ring-primary")}
-                                                onClick={() => setEditingRoom({...editingRoom, icon: iconName})}
-                                            >
-                                                {renderIcon(iconName)}
-                                            </Button>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="flex justify-end gap-2">
-                                    <Button type="button" variant="secondary" onClick={closeEditForm}>Cancel</Button>
-                                    <Button type="submit" disabled={!editingRoom.name.trim()}>Save Room</Button>
-                                </div>
-                            </form>
-                        ) : (
-                            <>
-                                <Button onClick={() => openEditForm()}><PlusCircle className="mr-2"/> Add Room</Button>
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead>Room Name</TableHead>
-                                            <TableHead className="text-right">Actions</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {rooms.map(room => (
-                                            <TableRow key={room.id}>
-                                                <TableCell className="flex items-center gap-2">
-                                                    {renderIcon(room.icon, { className: 'h-5 w-5' })}
-                                                    {room.name}
-                                                </TableCell>
-                                                <TableCell className="text-right">
-                                                    <Button variant="ghost" size="icon" aria-label={`Edit ${room.name}`} onClick={() => openEditForm(room)}><Edit className="h-4 w-4"/></Button>
-                                                    <Button variant="ghost" size="icon" aria-label={`Delete ${room.name}`} onClick={() => onRoomDelete(room.id)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
-                                                </TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </>
-                        )}
-                    </div>
-                </ScrollArea>
-                <DialogFooter>
-                    <Button variant="secondary" onClick={() => onOpenChange(false)}>Done</Button>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
-    )
-}
-
-
-function ChoreTemplateEditDialog({
-  chore,
-  isNew,
-  onSave,
-  onDelete,
-  rooms,
-  isOpen,
-  onOpenChange,
-}: {
-  chore: ChoreTemplate | null;
-  isNew: boolean;
-  onSave: (choreData: Partial<ChoreTemplate>, id?: string) => void;
-  onDelete: (id: string) => void;
-  rooms: Room[];
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-    const [task, setTask] = useState('');
-    const [notes, setNotes] = useState('');
-    const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
-    const [subTasks, setSubTasks] = useState(['']);
-
-    useEffect(() => {
-        if (isOpen) {
-            setTask(chore?.task || '');
-            setNotes(chore?.notes || '');
-            setSelectedRoomIds(chore?.roomIds || []);
-            setSubTasks(chore?.subTasks && chore.subTasks.length > 0 ? chore.subTasks : ['']);
-        }
-    }, [chore, isOpen]);
-
-    const handleRoomSelection = (roomId: string) => {
-        setSelectedRoomIds(prev => prev.includes(roomId) ? prev.filter(id => id !== roomId) : [...prev, roomId]);
-    }
-    
-    const handleSubTaskChange = (index: number, value: string) => {
-        const newSubTasks = [...subTasks];
-        newSubTasks[index] = value;
-        setSubTasks(newSubTasks);
-    }
-
-    const addSubTask = () => {
-        setSubTasks([...subTasks, '']);
-    }
-
-    const removeSubTask = (index: number) => {
-        const newSubTasks = subTasks.filter((_, i) => i !== index);
-        if (newSubTasks.length === 0) {
-            setSubTasks(['']);
-        } else {
-            setSubTasks(newSubTasks);
-        }
-    }
-
-    const handleSave = () => {
-        if (!task) return;
-        const finalSubTasks = subTasks.map(st => st.trim()).filter(st => st !== '');
-        
-        const templateData: Partial<ChoreTemplate> = {
-            task,
-            notes,
-            roomIds: selectedRoomIds,
-            subTasks: finalSubTasks,
-        };
-
-        onSave(templateData, chore?.id);
-        onOpenChange(false);
-    };
-
-    return (
-        <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-2xl">
-                <DialogHeader>
-                    <DialogTitle>{isNew ? 'Create Chore' : 'Edit Chore'}</DialogTitle>
-                    <DialogDescription>{isNew ? 'Create a reusable chore template.' : `Update ${chore?.task || 'this chore template'}.`}</DialogDescription>
-                </DialogHeader>
-                <div className="grid gap-4 py-4 max-h-[70vh] overflow-y-auto pr-4">
-                    <div className="space-y-4">
-                        <Label htmlFor="task-edit">Chore Name</Label>
-                        <Input id="task-edit" value={task} onChange={e => setTask(e.target.value)} />
-                    </div>
-                     <div>
-                        <Label htmlFor="notes-edit">Notes (Optional)</Label>
-                        <Textarea id="notes-edit" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Any special instructions..."/>
-                    </div>
-                    <div>
-                        <Label>Rooms</Label>
-                         <Popover>
-                            <PopoverTrigger asChild>
-                                <Button variant="outline" className="w-full justify-start font-normal">
-                                    {selectedRoomIds.length > 0 ? `${selectedRoomIds.length} room(s) selected` : "Select rooms..."}
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-auto p-0">
-                                <div className="space-y-1 p-2">
-                                    {rooms.map(room => (
-                                        <div key={room.id} className="flex items-center gap-2">
-                                            <Checkbox
-                                                id={`room-${room.id}`}
-                                                checked={selectedRoomIds.includes(room.id)}
-                                                onCheckedChange={() => handleRoomSelection(room.id)}
-                                            />
-                                            <Label htmlFor={`room-${room.id}`}>{room.name}</Label>
-                                        </div>
-                                    ))}
-                                </div>
-                            </PopoverContent>
-                         </Popover>
-                    </div>
-                    <div>
-                        <Label>Sub-tasks (Optional)</Label>
-                        <div className="space-y-2">
-                            {subTasks.map((subTask, index) => (
-                                <div key={index} className="flex items-center gap-2">
-                                    <Input 
-                                        value={subTask} 
-                                        onChange={(e) => handleSubTaskChange(index, e.target.value)}
-                                        placeholder={`Sub-task #${index + 1}`}
-                                    />
-                                    <Button variant="ghost" size="icon" aria-label={`Remove subtask ${subTask || index + 1}`} onClick={() => removeSubTask(index)}>
-                                        <X className="h-4 w-4"/>
-                                    </Button>
-                                </div>
-                            ))}
-                        </div>
-                        <Button variant="outline" size="sm" onClick={addSubTask} className="mt-2">
-                            <PlusCircle className="mr-2"/> Add Sub-task
-                        </Button>
-                    </div>
-                </div>
-                <DialogFooter className="justify-between">
-                    <div>
-                        {!isNew && chore && (
-                            <Button variant="destructive" onClick={() => { onDelete(chore.id); onOpenChange(false); }}>Delete</Button>
-                        )}
-                    </div>
-                    <div className="flex gap-2">
-                         <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
-                         <Button onClick={handleSave} disabled={!task}>Save</Button>
-                    </div>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
-    );
-}
-
-function AssignChoresDialog({
-    isOpen,
-    onOpenChange,
-    users,
-    rooms,
-    templatesToAssign,
-    onAssign,
-}: {
-    isOpen: boolean;
-    onOpenChange: (open: boolean) => void;
-    users: HomeHubUser[];
-    rooms: Room[];
-    templatesToAssign: ChoreTemplate[];
-    onAssign: (
-      assignment: { assignedToEmail: string; roomIds: string[] },
-      schedule:
-        | { type: 'onetime'; dueDate: Date }
-        | { type: 'recurring'; recurrence: Omit<Recurrence, 'assignedToEmail'> }
-    ) => void;
-}) {
-    const { toast } = useToast();
-    const [isRecurring, setIsRecurring] = useState(false);
-    const [assignedToEmail, setAssignedToEmail] = useState('');
-    const [dueDate, setDueDate] = useState<Date | undefined>(new Date());
-    const [frequency, setFrequency] = useState<RecurrenceFrequency>('weekly');
-    const [excludeWeekends, setExcludeWeekends] = useState(false);
-    const [daysOfWeek, setDaysOfWeek] = useState<string[]>([]);
-    const [biweeklyStartDate, setBiweeklyStartDate] = useState<Date | undefined>(new Date());
-    const [monthlyMode, setMonthlyMode] = useState<MonthlyRecurrenceMode>('dayOfMonth');
-    const [dayOfMonth, setDayOfMonth] = useState<number>(1);
-    const [nthWeek, setNthWeek] = useState<MonthlyNthWeekday['week']>(1);
-    const [nthWeekday, setNthWeekday] = useState<number>(1);
-    const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
-
-    const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
-
-    const availableRoomsForTemplates = useMemo(() => {
-        if (templatesToAssign.length === 0) return [];
-        const allRoomIds = templatesToAssign.flatMap(t => t.roomIds || []);
-        if (allRoomIds.length === 0) return [];
-
-        const roomCounts = allRoomIds.reduce((acc, id) => {
-            acc[id] = (acc[id] || 0) + 1;
-            return acc;
-        }, {} as Record<string, number>);
-
-        const commonRoomIds = Object.keys(roomCounts).filter(id => roomCounts[id] === templatesToAssign.length);
-
-        return commonRoomIds.map(id => roomsById.get(id)).filter(Boolean) as Room[];
-    }, [templatesToAssign, roomsById]);
-    
-    useEffect(() => {
-        if(isOpen) {
-            setIsRecurring(false);
-            setAssignedToEmail('');
-            setDueDate(new Date());
-            setFrequency('weekly');
-            setExcludeWeekends(false);
-            setDaysOfWeek([]);
-            setBiweeklyStartDate(new Date());
-            setMonthlyMode('dayOfMonth');
-            setDayOfMonth(1);
-            setNthWeek(1);
-            setNthWeekday(1);
-            setSelectedRoomIds(availableRoomsForTemplates.map(r => r.id));
-        }
-    }, [isOpen, availableRoomsForTemplates]);
-
-    const handleAssign = () => {
-        if (!assignedToEmail) {
-            toast({ variant: 'destructive', title: 'Missing assignee', description: 'Please assign a user.' });
-            return;
-        }
-
-        if (availableRoomsForTemplates.length > 0 && selectedRoomIds.length === 0) {
-            toast({ variant: 'destructive', title: 'Missing room', description: 'Please select at least one room for this assignment.' });
-            return;
-        }
-
-        const assignment = { assignedToEmail, roomIds: selectedRoomIds };
-        let schedule:
-          | { type: 'onetime'; dueDate: Date }
-          | { type: 'recurring'; recurrence: Omit<Recurrence, 'assignedToEmail'> };
-
-        if (isRecurring) {
-             const recurrence: Omit<Recurrence, 'assignedToEmail'> = {
-                frequency,
-                interval: 1,
-            };
-            if (frequency === 'daily') {
-                recurrence.dailyOptions = { excludeWeekends };
-            }
-            if (frequency === 'weekly' || frequency === 'biweekly') {
-                if (daysOfWeek.length === 0) {
-                    toast({ variant: 'destructive', title: 'Missing day', description: `Please select at least one day for ${frequency} recurrence.` });
-                    return;
-                }
-                recurrence.weeklyOptions = { daysOfWeek: daysOfWeek.map(Number) };
-            }
-            if (frequency === 'biweekly') {
-                if (!biweeklyStartDate) {
-                    toast({ variant: 'destructive', title: 'Missing start date', description: 'Please select a start date for biweekly recurrence.' });
-                    return;
-                }
-                recurrence.interval = 2;
-                recurrence.startDate = format(biweeklyStartDate, 'yyyy-MM-dd');
-            }
-            if (frequency === 'monthly') {
-                recurrence.monthlyOptions = monthlyMode === 'dayOfMonth'
-                    ? { mode: 'dayOfMonth', dayOfMonth }
-                    : { mode: 'nthWeekday', nthWeekday: { week: nthWeek, dayOfWeek: nthWeekday } };
-            }
-            schedule = { type: 'recurring' as const, recurrence };
-        } else {
-             if (!dueDate) {
-                toast({ variant: 'destructive', title: 'Missing due date', description: 'Please select a due date for the one-time task.' });
-                return;
-            }
-            schedule = { type: 'onetime' as const, dueDate };
-        }
-
-        onAssign(assignment, schedule);
-        onOpenChange(false);
-    }
-    
-    const handleRoomSelection = (roomId: string) => {
-        setSelectedRoomIds(prev => prev.includes(roomId) ? prev.filter(id => id !== roomId) : [...prev, roomId]);
-    }
-
-    return (
-        <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Assign {templatesToAssign.length} Chore(s)</DialogTitle>
-                    <DialogDescription>Choose an assignee, rooms, and either a one-time date or recurring schedule.</DialogDescription>
-                </DialogHeader>
-                 <div className="grid gap-4 py-4 max-h-[70vh] overflow-y-auto pr-4">
-                     <div>
-                        <Label htmlFor="assignedTo">Assign To</Label>
-                        <Select onValueChange={setAssignedToEmail} value={assignedToEmail}>
-                            <SelectTrigger><SelectValue placeholder="Select a person" /></SelectTrigger>
-                            <SelectContent>{users.map(user => <SelectItem key={user.email} value={user.email}>{user.displayName || user.email}</SelectItem>)}</SelectContent>
-                        </Select>
-                    </div>
-
-                    {availableRoomsForTemplates.length > 0 && (
-                        <div>
-                            <Label>Rooms for this assignment</Label>
-                             <div className="space-y-1 p-2 border rounded-md">
-                                {availableRoomsForTemplates.map(room => (
-                                    <div key={room.id} className="flex items-center gap-2">
-                                        <Checkbox
-                                            id={`assign-room-${room.id}`}
-                                            checked={selectedRoomIds.includes(room.id)}
-                                            onCheckedChange={() => handleRoomSelection(room.id)}
-                                        />
-                                        <Label htmlFor={`assign-room-${room.id}`} className="font-normal">{room.name}</Label>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    <div className="space-y-4 pt-4 border-t">
-                        <Label>Scheduling</Label>
-                        <RadioGroup value={isRecurring ? 'recurring' : 'onetime'} onValueChange={(val) => setIsRecurring(val === 'recurring')} className="flex gap-4">
-                            <Label htmlFor="onetime" className="flex items-center gap-2 border rounded-md p-3 flex-1 has-[:checked]:border-primary">
-                                <RadioGroupItem value="onetime" id="onetime" /> One-time Task
-                            </Label>
-                            <Label htmlFor="recurring" className="flex items-center gap-2 border rounded-md p-3 flex-1 has-[:checked]:border-primary">
-                                <RadioGroupItem value="recurring" id="recurring" /> Recurring Task
-                            </Label>
-                        </RadioGroup>
-                        
-                        {!isRecurring && <div className="space-y-4 rounded-lg border p-4">
-                            <h4 className="font-medium">One-time Due Date</h4>
-                             <Popover>
-                                <PopoverTrigger asChild>
-                                    <Button variant={"outline"} className={cn("w-[240px] justify-start text-left font-normal", !dueDate && "text-muted-foreground")} >
-                                        <CalendarIcon className="mr-2 h-4 w-4" />
-                                        {dueDate ? format(dueDate, "PPP") : <span>Pick a date</span>}
-                                    </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-auto p-0" align="start">
-                                    <Calendar mode="single" selected={dueDate} onSelect={setDueDate} initialFocus />
-                                </PopoverContent>
-                             </Popover>
-                        </div>}
-                        
-                        {isRecurring && <div className="space-y-4 rounded-lg border p-4">
-                             <h4 className="font-medium">Recurring Schedule</h4>
-                             <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as RecurrenceFrequency)} className="flex flex-wrap gap-2">
-                                 <Label htmlFor="daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="daily" className="mr-1"/> Daily </Label>
-                                 <Label htmlFor="weekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekly" id="weekly" className="mr-1"/> Weekly </Label>
-                                 <Label htmlFor="biweekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="biweekly" id="biweekly" className="mr-1"/> Biweekly </Label>
-                                 <Label htmlFor="monthly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="monthly" id="monthly" className="mr-1"/> Monthly </Label>
-                             </RadioGroup>
-
-                            {frequency === 'daily' && (
-                                <RadioGroup value={excludeWeekends ? 'weekdays' : 'all'} onValueChange={(v) => setExcludeWeekends(v === 'weekdays')} className="flex gap-2">
-                                    <Label htmlFor="all-days" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="all" id="all-days" className="mr-1"/> Every Day </Label>
-                                    <Label htmlFor="weekdays-only" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekdays" id="weekdays-only" className="mr-1"/> Weekdays Only </Label>
-                                </RadioGroup>
-                            )}
-                            {(frequency === 'weekly' || frequency === 'biweekly') && (
-                                <div className="space-y-3">
-                                    <div>
-                                        <Label>{frequency === 'biweekly' ? 'Repeat every other week on' : 'Repeat weekly on'}</Label>
-                                        <ToggleGroup type="multiple" value={daysOfWeek} onValueChange={setDaysOfWeek} className="flex flex-wrap justify-start gap-1 pt-2">
-                                            {dayNames.map((day, i) => <ToggleGroupItem key={day} value={String(i)} className="rounded-full">{day}</ToggleGroupItem>)}
-                                        </ToggleGroup>
-                                    </div>
-                                    {frequency === 'biweekly' && (
-                                        <div>
-                                            <Label>Anchor Week Start</Label>
-                                            <Popover>
-                                                <PopoverTrigger asChild>
-                                                    <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !biweeklyStartDate && "text-muted-foreground")}>
-                                                        <CalendarIcon className="mr-2 h-4 w-4" />
-                                                        {biweeklyStartDate ? format(biweeklyStartDate, "PPP") : <span>Pick a start date</span>}
-                                                    </Button>
-                                                </PopoverTrigger>
-                                                <PopoverContent className="w-auto p-0" align="start">
-                                                    <Calendar mode="single" selected={biweeklyStartDate} onSelect={setBiweeklyStartDate} initialFocus />
-                                                </PopoverContent>
-                                            </Popover>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                            {frequency === 'monthly' && (
-                                <div className="space-y-3">
-                                    <RadioGroup value={monthlyMode} onValueChange={(v) => setMonthlyMode(v as MonthlyRecurrenceMode)} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                        <Label htmlFor="monthly-day-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
-                                            <RadioGroupItem value="dayOfMonth" id="monthly-day-mode" className="mr-1"/> Day of month
-                                        </Label>
-                                        <Label htmlFor="monthly-nth-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
-                                            <RadioGroupItem value="nthWeekday" id="monthly-nth-mode" className="mr-1"/> Nth weekday
-                                        </Label>
-                                    </RadioGroup>
-                                    {monthlyMode === 'dayOfMonth' ? (
-                                        <div>
-                                            <Label>Day of Month</Label>
-                                            <Select onValueChange={(v) => setDayOfMonth(Number(v))} value={String(dayOfMonth)}>
-                                                <SelectTrigger><SelectValue/></SelectTrigger>
-                                                <SelectContent>{Array.from({length: 28}, (_, i) => i + 1).map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent>
-                                            </Select>
-                                        </div>
-                                    ) : (
-                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                            <div>
-                                                <Label>Week</Label>
-                                                <Select onValueChange={(v) => setNthWeek(Number(v) as MonthlyNthWeekday['week'])} value={String(nthWeek)}>
-                                                    <SelectTrigger><SelectValue/></SelectTrigger>
-                                                    <SelectContent>{([1, 2, 3, 4] as const).map(week => <SelectItem key={week} value={String(week)}>{ordinalLabels[week]}</SelectItem>)}</SelectContent>
-                                                </Select>
-                                            </div>
-                                            <div>
-                                                <Label>Weekday</Label>
-                                                <Select onValueChange={(v) => setNthWeekday(Number(v))} value={String(nthWeekday)}>
-                                                    <SelectTrigger><SelectValue/></SelectTrigger>
-                                                    <SelectContent>{fullDayNames.map((day, i) => <SelectItem key={day} value={String(i)}>{day}</SelectItem>)}</SelectContent>
-                                                </Select>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>}
-                    </div>
-                 </div>
-                 <DialogFooter>
-                    <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
-                    <Button onClick={handleAssign}>Assign</Button>
-                 </DialogFooter>
-            </DialogContent>
-        </Dialog>
-    )
-}
-
-type TemporaryTaskInput = {
-    task: string;
-    notes: string;
-    roomId: string;
-    dueDate: string;
-    assignedToEmail: string;
-};
-
-function TemporaryTaskDialog({
-    isOpen,
-    onOpenChange,
-    users,
-    rooms,
-    onCreate,
-}: {
-    isOpen: boolean;
-    onOpenChange: (open: boolean) => void;
-    users: HomeHubUser[];
-    rooms: Room[];
-    onCreate: (input: TemporaryTaskInput) => Promise<boolean>;
-}) {
-    const [task, setTask] = useState('');
-    const [notes, setNotes] = useState('');
-    const [roomId, setRoomId] = useState('');
-    const [dueDate, setDueDate] = useState('');
-    const [assignedToEmail, setAssignedToEmail] = useState('');
-    const [errors, setErrors] = useState<Record<string, string>>({});
-    const [isSubmitting, setIsSubmitting] = useState(false);
-    const submittingRef = useRef(false);
-
-    useEffect(() => {
-        if (!isOpen) return;
-        setTask('');
-        setNotes('');
-        setRoomId('');
-        setDueDate('');
-        setAssignedToEmail('');
-        setErrors({});
-        setIsSubmitting(false);
-        submittingRef.current = false;
-    }, [isOpen]);
-
-    const updateField = (field: string, update: () => void) => {
-        update();
-        setErrors(previous => ({ ...previous, [field]: '' }));
-    };
-
-    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        if (submittingRef.current) return;
-
-        const nextErrors: Record<string, string> = {};
-        if (!task.trim()) nextErrors.task = 'Task name is required.';
-        if (!roomId) nextErrors.roomId = 'Room assignment is required.';
-        if (!dueDate) nextErrors.dueDate = 'Due date is required.';
-        if (!assignedToEmail) nextErrors.assignedToEmail = 'Assignee is required.';
-        if (Object.keys(nextErrors).length > 0) {
-            setErrors(nextErrors);
-            return;
-        }
-
-        submittingRef.current = true;
-        setIsSubmitting(true);
-        const created = await onCreate({
-            task: task.trim(),
-            notes: notes.trim(),
-            roomId,
-            dueDate,
-            assignedToEmail,
-        });
-        submittingRef.current = false;
-        setIsSubmitting(false);
-        if (created) onOpenChange(false);
-    };
-
-    return (
-        <Dialog open={isOpen} onOpenChange={(open) => !isSubmitting && onOpenChange(open)}>
-            <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col overflow-hidden p-0">
-                <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-                    <DialogTitle>Temporary Task</DialogTitle>
-                    <DialogDescription>Create one household task without adding it to the reusable chore library.</DialogDescription>
-                </DialogHeader>
-                <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
-                    <div className="min-h-0 flex-1 touch-pan-y space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
-                        <div className="space-y-2">
-                            <Label htmlFor="temporary-task-name">Task name</Label>
-                            <Input
-                                id="temporary-task-name"
-                                value={task}
-                                onChange={(event) => updateField('task', () => setTask(event.target.value))}
-                                aria-invalid={Boolean(errors.task)}
-                            />
-                            {errors.task && <p role="alert" className="text-sm text-destructive">{errors.task}</p>}
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="temporary-task-notes">Notes <span className="text-muted-foreground">(optional)</span></Label>
-                            <Textarea
-                                id="temporary-task-notes"
-                                value={notes}
-                                onChange={(event) => setNotes(event.target.value)}
-                                className="min-h-24 resize-none"
-                            />
-                        </div>
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="space-y-2">
-                                <Label htmlFor="temporary-task-room">Room</Label>
-                                <Select value={roomId} onValueChange={(value) => updateField('roomId', () => setRoomId(value))}>
-                                    <SelectTrigger id="temporary-task-room" aria-invalid={Boolean(errors.roomId)}>
-                                        <SelectValue placeholder="Choose a room" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="general">General</SelectItem>
-                                        {rooms.map(room => <SelectItem key={room.id} value={room.id}>{room.name}</SelectItem>)}
-                                    </SelectContent>
-                                </Select>
-                                {errors.roomId && <p role="alert" className="text-sm text-destructive">{errors.roomId}</p>}
-                            </div>
-                            <div className="space-y-2">
-                                <Label htmlFor="temporary-task-assignee">Assignee</Label>
-                                <Select value={assignedToEmail} onValueChange={(value) => updateField('assignedToEmail', () => setAssignedToEmail(value))}>
-                                    <SelectTrigger id="temporary-task-assignee" aria-invalid={Boolean(errors.assignedToEmail)}>
-                                        <SelectValue placeholder="Choose a member" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {users.map(user => <SelectItem key={user.email} value={user.email}>{user.displayName || user.email}</SelectItem>)}
-                                    </SelectContent>
-                                </Select>
-                                {errors.assignedToEmail && <p role="alert" className="text-sm text-destructive">{errors.assignedToEmail}</p>}
-                            </div>
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="temporary-task-due-date">Due date</Label>
-                            <Input
-                                id="temporary-task-due-date"
-                                type="date"
-                                value={dueDate}
-                                onChange={(event) => updateField('dueDate', () => setDueDate(event.target.value))}
-                                aria-invalid={Boolean(errors.dueDate)}
-                            />
-                            {errors.dueDate && <p role="alert" className="text-sm text-destructive">{errors.dueDate}</p>}
-                        </div>
-                    </div>
-                    <DialogFooter className="border-t px-6 py-4">
-                        <Button type="button" variant="secondary" disabled={isSubmitting} onClick={() => onOpenChange(false)}>Cancel</Button>
-                        <Button type="submit" disabled={isSubmitting}>
-                            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                            Create Temporary Task
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
-    );
-}
-
-function ManageChoresDialog({
-    isOpen,
-    onOpenChange,
-    choreTemplates,
-    onChoreTemplateSave,
-    onChoreTemplateDelete,
-    rooms,
-    onAssignChores
-}: {
-    isOpen: boolean;
-    onOpenChange: (open: boolean) => void;
-    choreTemplates: ChoreTemplate[];
-    onChoreTemplateSave: (choreData: Partial<ChoreTemplate>, id?: string) => void;
-    onChoreTemplateDelete: (id: string) => void;
-    rooms: Room[];
-    onAssignChores: (templates: ChoreTemplate[]) => void;
-}) {
-    const [choreToEdit, setChoreToEdit] = useState<ChoreTemplate | null>(null);
-    const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-    const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-    const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
-    const [filterRoomId, setFilterRoomId] = useState<string>('all');
-
-    const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
-
-    const filteredTemplates = useMemo(() => {
-        if (filterRoomId === 'all') return choreTemplates;
-        if (filterRoomId === 'none') return choreTemplates.filter(t => !t.roomIds || t.roomIds.length === 0);
-        return choreTemplates.filter(t => t.roomIds?.includes(filterRoomId));
-    }, [choreTemplates, filterRoomId]);
-
-    const openCreateDialog = () => {
-        setChoreToEdit(null);
-        setIsCreateDialogOpen(true);
-    };
-
-    const openEditDialog = (template: ChoreTemplate) => {
-        setChoreToEdit(template);
-        setIsEditDialogOpen(true);
-    };
-    
-    const handleAssign = () => {
-        const templatesToAssign = choreTemplates.filter(t => selectedTemplateIds.includes(t.id));
-        onAssignChores(templatesToAssign);
-        setSelectedTemplateIds([]);
-    }
-    
-     const handleSelectTemplate = (templateId: string) => {
-        setSelectedTemplateIds(prev =>
-            prev.includes(templateId)
-                ? prev.filter(id => id !== templateId)
-                : [...prev, templateId]
-        );
-    };
-
-    return (
-        <>
-            <ChoreTemplateEditDialog
-                isOpen={isCreateDialogOpen}
-                onOpenChange={setIsCreateDialogOpen}
-                chore={null}
-                isNew={true}
-                onSave={onChoreTemplateSave}
-                onDelete={onChoreTemplateDelete}
-                rooms={rooms}
-            />
-            <ChoreTemplateEditDialog
-                isOpen={isEditDialogOpen}
-                onOpenChange={setIsEditDialogOpen}
-                chore={choreToEdit}
-                isNew={false}
-                onSave={onChoreTemplateSave}
-                onDelete={onChoreTemplateDelete}
-                rooms={rooms}
-            />
-
-            <Dialog open={isOpen} onOpenChange={onOpenChange}>
-                <DialogContent className="max-w-3xl">
-                    <DialogHeader className="pr-10 sm:pr-12">
-                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                            <div>
-                                <DialogTitle>Chores</DialogTitle>
-                                <DialogDescription>Create, edit, and assign chore templates.</DialogDescription>
-                            </div>
-                            <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                    <Button variant="outline" size="sm" className="h-8">
-                                        <Filter className="mr-2 h-3 w-3" /> 
-                                        {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'none' ? 'No Room' : rooms.find(r => r.id === filterRoomId)?.name || 'Filter')}
-                                    </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end" className="w-56">
-                                    <DropdownMenuLabel>Filter by Room</DropdownMenuLabel>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuRadioGroup value={filterRoomId} onValueChange={setFilterRoomId}>
-                                        <DropdownMenuRadioItem value="all">All Rooms</DropdownMenuRadioItem>
-                                        <DropdownMenuRadioItem value="none">No Room Assigned</DropdownMenuRadioItem>
-                                        {rooms.length > 0 ? rooms.map(room => (
-                                            <DropdownMenuRadioItem key={room.id} value={room.id}>
-                                                <div className="flex items-center gap-2">
-                                                    {renderIcon(room.icon, { className: 'h-3 w-3' })}
-                                                    {room.name}
-                                                </div>
-                                            </DropdownMenuRadioItem>
-                                        )) : (
-                                            <DropdownMenuItem disabled className="text-center italic">No rooms created yet</DropdownMenuItem>
-                                        )}
-                                    </DropdownMenuRadioGroup>
-                                </DropdownMenuContent>
-                            </DropdownMenu>
-                        </div>
-                    </DialogHeader>
-                    <ScrollArea className="max-h-[60vh]">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead className="w-12"></TableHead>
-                                    <TableHead>Task</TableHead>
-                                    <TableHead>Rooms</TableHead>
-                                    <TableHead className="text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {filteredTemplates.length > 0 ? filteredTemplates.map(template => (
-                                    <TableRow key={template.id}>
-                                        <TableCell>
-                                            <Checkbox
-                                                checked={selectedTemplateIds.includes(template.id)}
-                                                onCheckedChange={() => handleSelectTemplate(template.id)}
-                                            />
-                                        </TableCell>
-                                        <TableCell className="font-medium">{template.task}</TableCell>
-                                        <TableCell>
-                                            <div className="flex flex-wrap gap-1">
-                                                {(template.roomIds || []).map(roomId => (
-                                                    <span key={roomId} className="text-[10px] bg-secondary text-secondary-foreground px-1.5 py-0.5 rounded-full">
-                                                        {roomsById.get(roomId)?.name || '...'}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </TableCell>
-                                        <TableCell className="text-right">
-                                            <Button variant="ghost" size="icon" aria-label={`Edit ${template.task}`} className="h-8 w-8" onClick={() => openEditDialog(template)}><Edit className="h-3.5 w-3.5"/></Button>
-                                        </TableCell>
-                                    </TableRow>
-                                )) : (
-                                    <TableRow>
-                                        <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
-                                            {filterRoomId === 'all' ? 'No chore templates created yet.' : 'No chores found for this filter.'}
-                                        </TableCell>
-                                    </TableRow>
-                                )}
-                            </TableBody>
-                        </Table>
-                    </ScrollArea>
-                    <DialogFooter className="justify-between pt-4 gap-2 flex-col sm:flex-row">
-                        <Button variant="outline" onClick={openCreateDialog} className="w-full sm:w-auto"><PlusCircle className="mr-2 h-4 w-4"/> Create Chore</Button>
-                         <div className="flex items-center gap-2 w-full sm:w-auto">
-                             <Button onClick={handleAssign} disabled={selectedTemplateIds.length === 0} className="flex-1 sm:flex-none">Assign ({selectedTemplateIds.length})</Button>
-                             <Button variant="secondary" onClick={() => onOpenChange(false)} className="flex-1 sm:flex-none">Close</Button>
-                        </div>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-        </>
-    );
-}
-
-function EditRecurringTaskDialog({
-  isOpen,
-  onOpenChange,
-  chore,
-  users,
-  onSave,
-}: {
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
-  chore: ChoreTemplate | null;
-  users: HomeHubUser[];
-  onSave: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => void;
-}) {
-    const { toast } = useToast();
-    const [assignedToEmail, setAssignedToEmail] = useState('');
-    const [frequency, setFrequency] = useState<RecurrenceFrequency>('weekly');
-    const [excludeWeekends, setExcludeWeekends] = useState(false);
-    const [daysOfWeek, setDaysOfWeek] = useState<string[]>([]);
-    const [biweeklyStartDate, setBiweeklyStartDate] = useState<Date | undefined>(new Date());
-    const [monthlyMode, setMonthlyMode] = useState<MonthlyRecurrenceMode>('dayOfMonth');
-    const [dayOfMonth, setDayOfMonth] = useState<number>(1);
-    const [nthWeek, setNthWeek] = useState<MonthlyNthWeekday['week']>(1);
-    const [nthWeekday, setNthWeekday] = useState<number>(1);
-    
-    useEffect(() => {
-        const recurrence = normalizeRecurrence(chore?.recurrence);
-        if (chore && recurrence) {
-            setAssignedToEmail(chore.assignedToEmail || recurrence.assignedToEmail || '');
-            setFrequency(recurrence.frequency);
-            setExcludeWeekends(recurrence.dailyOptions?.excludeWeekends || false);
-            setDaysOfWeek(getRecurringWeekdays(recurrence).map(String));
-            setBiweeklyStartDate(recurrence.startDate ? parseISO(recurrence.startDate) : new Date());
-            setMonthlyMode(getMonthlyMode(recurrence));
-            setDayOfMonth(recurrence.monthlyOptions?.dayOfMonth || 1);
-            setNthWeek(recurrence.monthlyOptions?.nthWeekday?.week || 1);
-            setNthWeekday(recurrence.monthlyOptions?.nthWeekday?.dayOfWeek || 1);
-        }
-    }, [chore]);
-
-    const handleSave = () => {
-        if (!chore || !assignedToEmail) {
-            toast({ variant: 'destructive', title: 'Missing assignee', description: 'Please select a user.' });
-            return;
-        }
-
-        const recurrence: Recurrence = {
-            frequency,
-            assignedToEmail,
-            interval: 1,
-        };
-
-        if (frequency === 'daily') {
-            recurrence.dailyOptions = { excludeWeekends };
-        }
-        if (frequency === 'weekly' || frequency === 'biweekly') {
-             if (daysOfWeek.length === 0) {
-                toast({ variant: 'destructive', title: 'Missing day', description: `Please select at least one day for ${frequency} recurrence.` });
-                return;
-            }
-            recurrence.weeklyOptions = { daysOfWeek: daysOfWeek.map(Number) };
-        }
-        if (frequency === 'biweekly') {
-            if (!biweeklyStartDate) {
-                toast({ variant: 'destructive', title: 'Missing start date', description: 'Please select a start date for biweekly recurrence.' });
-                return;
-            }
-            recurrence.interval = 2;
-            recurrence.startDate = format(biweeklyStartDate, 'yyyy-MM-dd');
-        }
-        if (frequency === 'monthly') {
-            recurrence.monthlyOptions = monthlyMode === 'dayOfMonth'
-                ? { mode: 'dayOfMonth', dayOfMonth }
-                : { mode: 'nthWeekday', nthWeekday: { week: nthWeek, dayOfWeek: nthWeekday } };
-        }
-
-        onSave(chore.id, assignedToEmail, recurrence);
-        onOpenChange(false);
-    }
-    
-    return (
-        <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Edit Recurring Task</DialogTitle>
-                     <DialogDescription>{chore?.task}</DialogDescription>
-                </DialogHeader>
-                 <div className="grid gap-4 py-4 max-h-[70vh] overflow-y-auto pr-4">
-                     <div>
-                        <Label htmlFor="assignedTo">Assign To</Label>
-                        <Select onValueChange={setAssignedToEmail} value={assignedToEmail}>
-                            <SelectTrigger><SelectValue placeholder="Select a person" /></SelectTrigger>
-                            <SelectContent>{users.map(user => <SelectItem key={user.email} value={user.email}>{user.displayName || user.email}</SelectItem>)}</SelectContent>
-                        </Select>
-                    </div>
-
-                    <div className={cn("space-y-4 p-4 border rounded-lg")}>
-                         <h4 className="font-medium">Recurring Schedule</h4>
-                         <RadioGroup value={frequency} onValueChange={(v) => setFrequency(v as RecurrenceFrequency)} className="flex flex-wrap gap-2">
-                             <Label htmlFor="edit-daily" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="daily" id="edit-daily" className="mr-1"/> Daily </Label>
-                             <Label htmlFor="edit-weekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekly" id="edit-weekly" className="mr-1"/> Weekly </Label>
-                             <Label htmlFor="edit-biweekly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="biweekly" id="edit-biweekly" className="mr-1"/> Biweekly </Label>
-                             <Label htmlFor="edit-monthly" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="monthly" id="edit-monthly" className="mr-1"/> Monthly </Label>
-                         </RadioGroup>
-
-                        {frequency === 'daily' && (
-                            <RadioGroup value={excludeWeekends ? 'weekdays' : 'all'} onValueChange={(v) => setExcludeWeekends(v === 'weekdays')} className="flex gap-2">
-                                <Label htmlFor="edit-all-days" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="all" id="edit-all-days" className="mr-1"/> Every Day </Label>
-                                <Label htmlFor="edit-weekdays-only" className="text-xs p-2 border rounded has-[:checked]:border-primary"> <RadioGroupItem value="weekdays" id="edit-weekdays-only" className="mr-1"/> Weekdays Only </Label>
-                            </RadioGroup>
-                        )}
-                        {(frequency === 'weekly' || frequency === 'biweekly') && (
-                            <div className="space-y-3">
-                                <div>
-                                    <Label>{frequency === 'biweekly' ? 'Repeat every other week on' : 'Repeat weekly on'}</Label>
-                                    <ToggleGroup type="multiple" value={daysOfWeek} onValueChange={setDaysOfWeek} className="flex flex-wrap justify-start gap-1 pt-2">
-                                        {dayNames.map((day, i) => <ToggleGroupItem key={day} value={String(i)} className="rounded-full">{day}</ToggleGroupItem>)}
-                                    </ToggleGroup>
-                                </div>
-                                {frequency === 'biweekly' && (
-                                    <div>
-                                        <Label>Anchor Week Start</Label>
-                                        <Popover>
-                                            <PopoverTrigger asChild>
-                                                <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !biweeklyStartDate && "text-muted-foreground")}>
-                                                    <CalendarIcon className="mr-2 h-4 w-4" />
-                                                    {biweeklyStartDate ? format(biweeklyStartDate, "PPP") : <span>Pick a start date</span>}
-                                                </Button>
-                                            </PopoverTrigger>
-                                            <PopoverContent className="w-auto p-0" align="start">
-                                                <Calendar mode="single" selected={biweeklyStartDate} onSelect={setBiweeklyStartDate} initialFocus />
-                                            </PopoverContent>
-                                        </Popover>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                        {frequency === 'monthly' && (
-                            <div className="space-y-3">
-                                <RadioGroup value={monthlyMode} onValueChange={(v) => setMonthlyMode(v as MonthlyRecurrenceMode)} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                    <Label htmlFor="edit-monthly-day-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
-                                        <RadioGroupItem value="dayOfMonth" id="edit-monthly-day-mode" className="mr-1"/> Day of month
-                                    </Label>
-                                    <Label htmlFor="edit-monthly-nth-mode" className="text-xs p-2 border rounded has-[:checked]:border-primary">
-                                        <RadioGroupItem value="nthWeekday" id="edit-monthly-nth-mode" className="mr-1"/> Nth weekday
-                                    </Label>
-                                </RadioGroup>
-                                {monthlyMode === 'dayOfMonth' ? (
-                                    <div>
-                                        <Label>Day of Month</Label>
-                                        <Select onValueChange={(v) => setDayOfMonth(Number(v))} value={String(dayOfMonth)}>
-                                            <SelectTrigger><SelectValue/></SelectTrigger>
-                                            <SelectContent>{Array.from({length: 28}, (_, i) => i + 1).map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent>
-                                        </Select>
-                                    </div>
-                                ) : (
-                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                        <div>
-                                            <Label>Week</Label>
-                                            <Select onValueChange={(v) => setNthWeek(Number(v) as MonthlyNthWeekday['week'])} value={String(nthWeek)}>
-                                                <SelectTrigger><SelectValue/></SelectTrigger>
-                                                <SelectContent>{([1, 2, 3, 4] as const).map(week => <SelectItem key={week} value={String(week)}>{ordinalLabels[week]}</SelectItem>)}</SelectContent>
-                                            </Select>
-                                        </div>
-                                        <div>
-                                            <Label>Weekday</Label>
-                                            <Select onValueChange={(v) => setNthWeekday(Number(v))} value={String(nthWeekday)}>
-                                                <SelectTrigger><SelectValue/></SelectTrigger>
-                                                <SelectContent>{fullDayNames.map((day, i) => <SelectItem key={day} value={String(i)}>{day}</SelectItem>)}</SelectContent>
-                                            </Select>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                 </div>
-                 <DialogFooter>
-                    <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
-                    <Button onClick={handleSave}>Save Changes</Button>
-                 </DialogFooter>
-            </DialogContent>
-        </Dialog>
-    )
-}
-
-
-function ManageRecurringTasksDialog({
-  isOpen,
-  onOpenChange,
-  recurringChores,
-  users,
-  onUpdate,
-  onDelete,
-}: {
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
-  recurringChores: ChoreTemplate[];
-  users: HomeHubUser[];
-  onUpdate: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => void;
-  onDelete: (choreId: string) => void;
-}) {
-    const [choreToEdit, setChoreToEdit] = useState<ChoreTemplate | null>(null);
-    const [choreToDelete, setChoreToDelete] = useState<ChoreTemplate | null>(null);
-
-    const usersByEmail = useMemo(() => new Map(users.map(u => [u.email, u])), [users]);
-
-    const getScheduleText = (recurrence: Recurrence) => {
-        const normalizedRecurrence = normalizeRecurrence(recurrence);
-        if (!normalizedRecurrence) return 'One-time';
-        switch (normalizedRecurrence.frequency) {
-            case 'daily':
-                return `Daily ${normalizedRecurrence.dailyOptions?.excludeWeekends ? '(Weekdays only)' : ''}`;
-            case 'weekly':
-                const days = [...getRecurringWeekdays(normalizedRecurrence)].sort().map(d => dayNames[d]).join(', ');
-                return `Weekly on ${days}`;
-            case 'biweekly':
-                const biweeklyDays = [...getRecurringWeekdays(normalizedRecurrence)].sort().map(d => dayNames[d]).join(', ');
-                const anchor = normalizedRecurrence.startDate ? ` from ${format(parseISO(normalizedRecurrence.startDate), 'MMM d, yyyy')}` : '';
-                return `Every 2 weeks on ${biweeklyDays}${anchor}`;
-            case 'monthly':
-                if (getMonthlyMode(normalizedRecurrence) === 'nthWeekday' && normalizedRecurrence.monthlyOptions?.nthWeekday) {
-                    const { week, dayOfWeek } = normalizedRecurrence.monthlyOptions.nthWeekday;
-                    return `Monthly on the ${ordinalLabels[week]} ${fullDayNames[dayOfWeek]}`;
-                }
-                return `Monthly on day ${normalizedRecurrence.monthlyOptions?.dayOfMonth || 1}`;
-            default:
-                return 'Invalid schedule';
-        }
-    }
-
-    return (
-        <>
-            <EditRecurringTaskDialog 
-                isOpen={!!choreToEdit}
-                onOpenChange={(open) => !open && setChoreToEdit(null)}
-                chore={choreToEdit}
-                users={users}
-                onSave={onUpdate}
-            />
-            <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Delete this recurring task?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            This will delete all future instances of &quot;{choreToDelete?.task}&quot; and stop it from being assigned. This cannot be undone.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => {
-                            if (choreToDelete) onDelete(choreToDelete.id);
-                            setChoreToDelete(null);
-                        }} className={buttonVariants({ variant: "destructive" })}>
-                            Delete Recurring Task
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-            <Dialog open={isOpen} onOpenChange={onOpenChange}>
-                <DialogContent className="max-w-3xl">
-                    <DialogHeader>
-                        <DialogTitle>Manage Recurring Tasks</DialogTitle>
-                        <DialogDescription>
-                            Edit or cancel your recurring chore schedules here.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <ScrollArea className="max-h-[60vh] mt-4">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Task</TableHead>
-                                    <TableHead>Assigned To</TableHead>
-                                    <TableHead>Schedule</TableHead>
-                                    <TableHead className="text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {recurringChores.length > 0 ? (
-                                    recurringChores.map(chore => (
-                                        <TableRow key={chore.id}>
-                                            <TableCell className="font-medium">{chore.task}</TableCell>
-                                            <TableCell>{usersByEmail.get(chore.assignedToEmail || '')?.displayName || chore.assignedToEmail}</TableCell>
-                                            <TableCell>{getScheduleText(chore.recurrence!)}</TableCell>
-                                            <TableCell className="text-right">
-                                                <Button variant="ghost" size="icon" aria-label={`Edit recurring task ${chore.task}`} onClick={() => setChoreToEdit(chore)}><Edit className="h-4 w-4"/></Button>
-                                                <Button variant="ghost" size="icon" aria-label={`Cancel recurring task ${chore.task}`} onClick={() => setChoreToDelete(chore)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))
-                                ) : (
-                                    <TableRow>
-                                        <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">No recurring tasks have been set up.</TableCell>
-                                    </TableRow>
-                                )}
-                            </TableBody>
-                        </Table>
-                    </ScrollArea>
-                    <DialogFooter>
-                        <Button variant="secondary" onClick={() => onOpenChange(false)}>Close</Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-        </>
-    )
-}
-
-// The day a chore is due. Recurring and temporary chores store their calendar day
-// (originalDueDate, in the household's timezone); reading it as a local date keeps
-// Thursday's chore on Thursday for every viewer. Older chores fall back to dueDate.
-const choreDueDay = (chore: Chore): Date =>
-    /^\d{4}-\d{2}-\d{2}$/.test(chore.originalDueDate || '') ? parseISO(chore.originalDueDate) : parseISO(chore.dueDate);
-
-function ChoreCalendar({ chores }: { chores: Chore[] }) {
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-
-  const choresByDate = useMemo(() => {
-    const grouped = new Map<string, Chore[]>();
-    chores.forEach(chore => {
-      const day = format(choreDueDay(chore), 'yyyy-MM-dd');
-      if (!grouped.has(day)) {
-        grouped.set(day, []);
-      }
-      grouped.get(day)!.push(chore);
-    });
-    return grouped;
-  }, [chores]);
-
-  const DayWithChores = ({ date }: { date: Date, displayMonth: Date }) => {
-    const dayKey = format(date, 'yyyy-MM-dd');
-    const choresForDay = choresByDate.get(dayKey);
-
-    return (
-      <Popover>
-        <PopoverTrigger asChild disabled={!choresForDay}>
-          <div className={cn("relative w-full h-full flex items-center justify-center", choresForDay && "cursor-pointer")}>
-            {date.getDate()}
-            {choresForDay && (
-              <div className="absolute bottom-1 w-1.5 h-1.5 bg-primary rounded-full" />
-            )}
-          </div>
-        </PopoverTrigger>
-        {choresForDay && (
-          <PopoverContent className="w-80">
-            <div className="space-y-2">
-              <h4 className="font-medium leading-none">{format(date, 'PPP')}</h4>
-              <div className="space-y-2">
-                {choresForDay.map(chore => (
-                  <div key={chore.id} className="text-sm">
-                    <p className="font-semibold">{chore.task}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Assigned to: {chore.assignedToDisplayName}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </PopoverContent>
-        )}
-      </Popover>
-    );
-  };
-
-  return (
-    <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="default" className="h-9 px-3 md:h-11 md:px-8 text-xs md:text-sm"><CalendarIcon className="mr-2 h-4 w-4" /> Calendar</Button>
-      </DialogTrigger>
-      <DialogContent className="w-auto">
-        <DialogHeader>
-          <DialogTitle>Chore Calendar</DialogTitle>
-          <DialogDescription>
-            An overview of your household&apos;s scheduled chores.
-          </DialogDescription>
-        </DialogHeader>
-        <Calendar
-          mode="single"
-          selected={new Date()}
-          components={{
-            Day: DayWithChores,
-          }}
-          className="rounded-md"
-        />
-        <DialogFooter>
-            <Button variant="secondary" onClick={() => setIsDialogOpen(false)}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+function writeFlag(key: string) {
+  try { window.sessionStorage.setItem(key, '1'); } catch { /* storage blocked: the moment may show again */ }
 }
 
 export function ChoreChartClient() {
-  const { currentUser } = useAuth();
-  const { toast } = useToast();
-  
-  const [assignedChores, setAssignedChores] = useState<Chore[]>([]);
+  const { currentUser, currentMember, permissions } = useAuth();
+  const { toast, toastError } = useToast();
+  const capabilities = useMemo(() => choreCapabilities(permissions), [permissions]);
+  const isManager = currentMember?.role === 'owner' || currentMember?.role === 'admin';
+  const { settings, setLeaderboardEnabled } = useChoreSettings(currentUser?.householdId);
+  const { burst, layer: confettiLayer } = useConfetti();
+
+  const [assignedChores, setAssignedChores] = useState<ChoreRecord[]>([]);
   const [choreTemplates, setChoreTemplates] = useState<ChoreTemplate[]>([]);
-  const [householdUsers, setHouseholdUsers] = useState<HomeHubUser[]>([]);
+  const [householdUsers, setHouseholdUsers] = useState<ChoreUser[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
-  const [openChoreAccordions, setOpenChoreAccordions] = useState<string[]>([]);
-  
-  const [isChoreTemplatesOpen, setIsChoreTemplatesOpen] = useState(false);
-  const [isManageRoomsOpen, setIsManageRoomsOpen] = useState(false);
-  const [isRecurringTasksOpen, setIsRecurringTasksOpen] = useState(false);
-  const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false);
-  const [isTemporaryTaskOpen, setIsTemporaryTaskOpen] = useState(false);
+
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [roomsDialog, setRoomsDialog] = useState<{ open: boolean; startNew: boolean }>({ open: false, startNew: false });
+  const [isRecurringOpen, setIsRecurringOpen] = useState(false);
+  const [isAssignOpen, setIsAssignOpen] = useState(false);
   const [templatesToAssign, setTemplatesToAssign] = useState<ChoreTemplate[]>([]);
+  const [selectMode, setSelectMode] = useState(false);
   const [selectedChoreIds, setSelectedChoreIds] = useState<string[]>([]);
-  const [choresPendingCompletion, setChoresPendingCompletion] = useState<Chore[] | null>(null);
-  const [choreToDelete, setChoreToDelete] = useState<Chore | null>(null);
-  
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const [choresPendingCompletion, setChoresPendingCompletion] = useState<ChoreRecord[] | null>(null);
+  const [choreToDelete, setChoreToDelete] = useState<ChoreRecord | null>(null);
+  const [houseClean, setHouseClean] = useState<CleanRoom[] | null>(null);
+
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
   const [filterRoomId, setFilterRoomId] = useState<string>('all');
-  
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
+
+  // Chores that already celebrated in this visit: confetti never fires twice for one chore.
+  const celebrated = useRef(new Set<string>());
+  const choresRef = useRef<ChoreRecord[]>([]);
+  useEffect(() => { choresRef.current = assignedChores; }, [assignedChores]);
+
+  useEffect(() => { setIsMounted(true); }, []);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
+  const usersByEmail = useMemo(() => new Map(householdUsers.map(user => [user.email, user as HomeHubUser])), [householdUsers]);
+  const memberColors = useMemo(() => memberColorMap(householdUsers.map(user => user.uid || user.email)), [householdUsers]);
 
   const getCollectionRef = useCallback((collectionName: string) => {
     if (!currentUser?.householdId) return null;
@@ -1416,563 +108,566 @@ export function ChoreChartClient() {
       setLoading(false);
       return;
     }
-    setLoading(true);
-
     try {
-        const householdDocRef = doc(db, 'households', currentUser.householdId);
-        const householdDocSnap = await getDoc(householdDocRef);
-        if (!householdDocSnap.exists()) {
-            throw new Error("Household document not found.");
-        }
-        // Assignees come from approved membership records (the authority), enriched
-        // with profile details where readable. One unreadable profile must not break the page.
-        const membersSnap = await getDocs(collection(db, 'households', currentUser.householdId, 'members'));
-        const approvedMembers = membersSnap.docs
-            .map(snap => snap.data() as HouseholdMember)
-            .filter(member => member.email && member.role !== 'newuser' && (member.status || 'active') === 'active');
-        const profileResults = await Promise.allSettled(approvedMembers.map(member => getDoc(doc(db, 'users', member.email))));
-        const usersData: HomeHubUser[] = approvedMembers.map((member, index) => {
-            const result = profileResults[index];
-            const profile = result.status === 'fulfilled' && result.value.exists() ? result.value.data() as HomeHubUser : null;
-            return {
-                ...(profile || {}),
-                uid: member.uid,
-                email: member.email,
-                displayName: profile?.displayName || member.displayName || member.email,
-                avatarUrl: profile?.avatarUrl || member.avatarUrl,
-            } as HomeHubUser;
-        });
-        setHouseholdUsers(usersData);
+      const householdDocSnap = await getDoc(doc(db, 'households', currentUser.householdId));
+      if (!householdDocSnap.exists()) throw new Error('not-found');
+      // Assignees come from approved membership records (the authority), enriched
+      // with profile details where readable. One unreadable profile must not break the page.
+      const membersSnap = await getDocs(collection(db, 'households', currentUser.householdId, 'members'));
+      const approvedMembers = membersSnap.docs
+        .map(snap => snap.data() as HouseholdMember)
+        .filter(member => member.email && member.role !== 'newuser' && (member.status || 'active') === 'active');
+      const profileResults = await Promise.allSettled(approvedMembers.map(member => getDoc(doc(db, 'users', member.email))));
+      const usersData: ChoreUser[] = approvedMembers.map((member, index) => {
+        const result = profileResults[index];
+        const profile = result.status === 'fulfilled' && result.value.exists() ? result.value.data() as HomeHubUser : null;
+        return {
+          ...(profile || {}),
+          uid: member.uid,
+          email: member.email,
+          displayName: profile?.displayName || member.displayName || member.email,
+          avatarUrl: profile?.avatarUrl || member.avatarUrl || null,
+          memberRole: member.role,
+        } as ChoreUser;
+      });
+      setHouseholdUsers(usersData);
 
-        const choresCollection = getCollectionRef('chores');
-        const choreTemplatesCollection = getCollectionRef('chore-templates');
-        const roomsCollection = getCollectionRef('rooms');
+      const choresCollection = getCollectionRef('chores');
+      const templatesCollection = getCollectionRef('chore-templates');
+      const roomsCollection = getCollectionRef('rooms');
+      if (!choresCollection || !templatesCollection || !roomsCollection) return;
 
-        if (!choresCollection || !choreTemplatesCollection || !roomsCollection) {
-           setLoading(false);
-           return;
-        }
-        
-        // Recurring chores, retention and reminders run on the server (hourly, and
-        // here on demand) so every household member sees the same schedule.
-        const firebaseUser = auth.currentUser;
-        if (firebaseUser) {
-            await syncHouseholdUpkeep({ idToken: await firebaseUser.getIdToken(), householdId: currentUser.householdId })
-                .catch(syncError => console.warn('Household upkeep could not run.', syncError));
-        }
+      // Recurring chores, retention and reminders run on the server (hourly, and
+      // here on demand) so every household member sees the same schedule.
+      const firebaseUser = auth.currentUser;
+      if (firebaseUser) {
+        await syncHouseholdUpkeep({ idToken: await firebaseUser.getIdToken(), householdId: currentUser.householdId })
+          .catch(syncError => console.warn('Household upkeep could not run.', syncError));
+      }
 
-        const [choresSnapshot, templatesSnapshot, roomsSnapshot] = await Promise.all([
-            getDocs(query(choresCollection)),
-            getDocs(query(choreTemplatesCollection)),
-            getDocs(query(roomsCollection)),
-        ]);
+      const [choresSnapshot, templatesSnapshot, roomsSnapshot] = await Promise.all([
+        getDocs(query(choresCollection)),
+        getDocs(query(templatesCollection)),
+        getDocs(query(roomsCollection)),
+      ]);
 
-        const templatesData: ChoreTemplate[] = templatesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ChoreTemplate));
-        setChoreTemplates(templatesData.sort((a,b) => a.task.localeCompare(b.task)));
-
-        const roomsData: Room[] = roomsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Room));
-        setRooms(roomsData.sort((a,b) => a.name.localeCompare(b.name)));
-
-        const existingChoresData: Chore[] = choresSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Chore));
-        
-        setAssignedChores(existingChoresData.map(chore => {
-            const user = usersData.find(u => u.email === chore.assignedToEmail);
-            return {
-                ...chore,
-                assignedToDisplayName: user?.displayName || chore.assignedToEmail,
-            };
-        }));
-
+      setChoreTemplates(templatesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as ChoreTemplate)).sort((a, b) => a.task.localeCompare(b.task)));
+      setRooms(roomsSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Room)).sort((a, b) => a.name.localeCompare(b.name)));
+      setAssignedChores(choresSnapshot.docs.map(d => {
+        const chore = { id: d.id, ...d.data() } as ChoreRecord;
+        const user = usersData.find(u => u.email === chore.assignedToEmail);
+        return { ...chore, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || chore.assignedToEmail };
+      }));
     } catch (error) {
-        console.error("Error fetching data:", error instanceof Error ? error : String(error));
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch household data.' });
+      console.error('Error fetching chores:', error instanceof Error ? error.message : String(error));
+      toastError(error, "Couldn't load chores");
     } finally {
-        setLoading(false);
-    }
-  }, [getCollectionRef, currentUser, toast]);
-
-  useEffect(() => {
-    if (currentUser?.householdId) {
-      fetchAllData();
-    } else {
       setLoading(false);
     }
+  }, [getCollectionRef, currentUser, toastError]);
+
+  useEffect(() => {
+    if (currentUser?.householdId) void fetchAllData();
+    else setLoading(false);
   }, [currentUser, fetchAllData]);
-  
-    // Chore reminders are sent by the server (functions/src/reminders.ts), not
-    // by whichever browser happens to have this page open.
+
+  // Chore reminders are sent by the server (functions/src/reminders.ts), not
+  // by whichever browser happens to have this page open.
+
+  const patchChores = useCallback((ids: readonly string[], patch: (chore: ChoreRecord) => ChoreRecord) => {
+    const idSet = new Set(ids);
+    setAssignedChores(previous => previous.map(chore => (idSet.has(chore.id) ? patch(chore) : chore)));
+  }, []);
+
+  /** Assignment notifications go to other people only, never to yourself. */
+  const shouldNotify = useCallback((email: string) => email !== currentUser?.email, [currentUser?.email]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Creating                                                                */
+  /* ---------------------------------------------------------------------- */
+
+  const handleCreateChore = useCallback(async (input: AddChoreInput) => {
+    if (!currentUser?.householdId) return false;
+    const choresCollection = getCollectionRef('chores');
+    const templatesCollection = getCollectionRef('chore-templates');
+    const notificationsCollection = getCollectionRef('notifications');
+    if (!choresCollection || !templatesCollection || !notificationsCollection) return false;
+    const assignee = householdUsers.find(user => user.email === input.assignedToEmail);
+    if (!assignee) {
+      toastError({ code: 'not-found' }, "Couldn't add the chore");
+      return false;
+    }
+    const assigneeName = memberName(assignee);
+    const roomIds = input.roomId === 'general' ? [] : [input.roomId];
+
+    try {
+      if (!input.repeat) {
+        // One-time: a direct chore plus (for someone else) its assignment notification, atomically.
+        const choreRef = doc(choresCollection);
+        const stateKey = `assigned|${input.dueDate}|${input.assignedToEmail}`;
+        const batch = writeBatch(db);
+        batch.set(choreRef, {
+          task: input.task,
+          notes: input.notes,
+          assignedToEmail: input.assignedToEmail,
+          assignedToDisplayName: assigneeName,
+          dueDate: new Date(`${input.dueDate}T12:00:00`).toISOString(),
+          originalDueDate: input.dueDate,
+          roomIds,
+          isCompleted: false,
+          completedSubTasks: [],
+          sourceType: 'temporary',
+        });
+        if (shouldNotify(input.assignedToEmail)) {
+          const notificationId = getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId: choreRef.id, stateKey });
+          batch.set(doc(notificationsCollection, notificationId), buildNotificationDocument({
+            householdId: currentUser.householdId,
+            category: 'chores',
+            title: 'New chore assigned',
+            message: `You have a new chore: ${input.task}. Due ${format(new Date(`${input.dueDate}T12:00:00`), 'MMM d, yyyy')}.`,
+            deepLink: '/chores',
+            sourceType: 'chore-assignment',
+            sourceId: choreRef.id,
+            stateKey,
+            targetUser: assignee,
+          }));
+        }
+        await batch.commit();
+      } else {
+        const templateId = uniqueTemplateId(stableSlugify(input.task), new Set(choreTemplates.map(t => t.id)));
+        const recurrence: Recurrence = { ...input.recurrence, assignedToEmail: input.assignedToEmail };
+        await setDoc(doc(templatesCollection, templateId), {
+          task: input.task,
+          notes: input.notes,
+          roomIds,
+          subTasks: [],
+          recurrence,
+          assignedToEmail: input.assignedToEmail,
+        });
+        if (shouldNotify(input.assignedToEmail)) {
+          await setDoc(doc(notificationsCollection), buildNotificationDocument({
+            householdId: currentUser.householdId,
+            category: 'chores',
+            title: 'New chore assigned',
+            message: `You have a new repeating chore: ${input.task}.`,
+            deepLink: '/chores',
+            sourceType: 'chore-assignment',
+            sourceId: templateId,
+            targetUser: assignee,
+          })).catch(error => console.warn('Chore saved, but the notification failed:', error instanceof Error ? error.message : String(error)));
+        }
+      }
+      playFeedback('add');
+      toast({ title: 'Chore added', description: `${input.task} is on ${assignee.email === currentUser.email ? 'your' : `${assigneeName}'s`} list.` });
+      await fetchAllData();
+      return true;
+    } catch (error) {
+      toastError(error, "Couldn't add the chore");
+      return false;
+    }
+  }, [currentUser, getCollectionRef, householdUsers, choreTemplates, shouldNotify, toast, toastError, fetchAllData]);
 
   const handleSaveChoreTemplate = async (choreData: Partial<ChoreTemplate>, id?: string) => {
     const templatesCollection = getCollectionRef('chore-templates');
     const choresCollection = getCollectionRef('chores');
-    if (!templatesCollection || !choresCollection) return;
-
-    const templateId = id || stableSlugify(choreData.task!);
+    if (!templatesCollection || !choresCollection) return false;
+    const templateId = id || uniqueTemplateId(stableSlugify(choreData.task!), new Set(choreTemplates.map(t => t.id)));
     const templateRef = doc(templatesCollection, templateId);
-    
     try {
-        await runTransaction(db, async (transaction) => {
-            const oldTemplateSnap = id ? await transaction.get(templateRef) : null;
-            const oldTemplate = oldTemplateSnap?.exists() ? oldTemplateSnap.data() as ChoreTemplate : null;
-
-            transaction.set(templateRef, choreData, { merge: true });
-            
-            if (id) {
-                 const q = query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false));
-                 const choresToUpdateSnap = await getDocs(q);
-                 choresToUpdateSnap.forEach(choreDoc => {
-                    transaction.update(choreDoc.ref, { 
-                        task: choreData.task,
-                        notes: choreData.notes,
-                        subTasks: choreData.subTasks,
-                    });
-                 });
-            }
-
-            if (oldTemplate && oldTemplate.roomIds && choreData.roomIds) {
-                const removedRoomIds = oldTemplate.roomIds.filter(roomId => !choreData.roomIds!.includes(roomId));
-                if (removedRoomIds.length > 0) {
-                    const q = query(choresCollection, where('templateId', '==', templateId), where('isCompleted', '==', false));
-                    const choresSnap = await getDocs(q);
-                    choresSnap.forEach(choreDoc => {
-                        const chore = choreDoc.data() as Chore;
-                        if (chore.roomIds && chore.roomIds.some(rId => removedRoomIds.includes(rId))) {
-                            transaction.delete(choreDoc.ref);
-                        }
-                    });
-                }
-            }
+      await runTransaction(db, async (transaction) => {
+        const oldTemplateSnap = id ? await transaction.get(templateRef) : null;
+        const oldTemplate = oldTemplateSnap?.exists() ? oldTemplateSnap.data() as ChoreTemplate : null;
+        transaction.set(templateRef, choreData, { merge: true });
+        if (!id) return;
+        const openChores = await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false)));
+        const removedRoomIds = oldTemplate?.roomIds && choreData.roomIds ? oldTemplate.roomIds.filter(roomId => !choreData.roomIds!.includes(roomId)) : [];
+        openChores.forEach(choreDoc => {
+          const chore = choreDoc.data() as ChoreRecord;
+          if (removedRoomIds.length > 0 && chore.roomIds?.some(roomId => removedRoomIds.includes(roomId))) {
+            transaction.delete(choreDoc.ref);
+          } else {
+            transaction.update(choreDoc.ref, { task: choreData.task, notes: choreData.notes, subTasks: choreData.subTasks });
+          }
         });
-
-        toast({ title: id ? 'Chore Updated' : 'Chore Created' });
-        await fetchAllData();
-    } catch(error) {
-        console.error("Error saving chore template:", error)
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not save chore.' });
+      });
+      toast({ title: id ? 'Chore updated' : 'Saved to library' });
+      await fetchAllData();
+      return true;
+    } catch (error) {
+      toastError(error, "Couldn't save the chore");
+      return false;
     }
-  }
+  };
 
   const handleDeleteChoreTemplate = async (id: string) => {
     const templatesCollection = getCollectionRef('chore-templates');
     const choresCollection = getCollectionRef('chores');
     if (!templatesCollection || !choresCollection) return;
-    
     try {
-        await runTransaction(db, async (transaction) => {
-            transaction.delete(doc(templatesCollection, id));
-            const q = query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false));
-            const existingChoresSnap = await getDocs(q);
-            existingChoresSnap.forEach(choreDoc => {
-                transaction.delete(choreDoc.ref);
-            });
-        });
-
-        toast({ title: 'Chore Deleted' });
-        await fetchAllData();
-    } catch(error) {
-        console.error("Error deleting template:", error);
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not delete chore.' });
-    }
-  }
-  
-  const handleOpenAssignDialog = (templates: ChoreTemplate[]) => {
-      setTemplatesToAssign(templates);
-      setIsAssignDialogOpen(true);
-      setIsChoreTemplatesOpen(false);
-  }
-
-  const handleCreateTemporaryTask = useCallback(async (input: TemporaryTaskInput) => {
-    if (!currentUser?.householdId) return false;
-    const choresCollection = getCollectionRef('chores');
-    const notificationsCollection = getCollectionRef('notifications');
-    if (!choresCollection || !notificationsCollection) return false;
-
-    const assignee = householdUsers.find(user => user.email === input.assignedToEmail);
-    if (!assignee) {
-        toast({ variant: 'destructive', title: 'Missing assignee', description: 'Could not find the selected household member.' });
-        return false;
-    }
-
-    const choreRef = doc(choresCollection);
-    const originalDueDate = input.dueDate;
-    const dueDate = new Date(`${input.dueDate}T12:00:00`).toISOString();
-    const stateKey = `assigned|${originalDueDate}|${input.assignedToEmail}`;
-    const notificationId = getDeterministicNotificationId({
-        sourceType: 'chore-assignment',
-        sourceId: choreRef.id,
-        stateKey,
-    });
-    const batch = writeBatch(db);
-    const newChore: Omit<Chore, 'id'> = {
-        task: input.task,
-        notes: input.notes,
-        assignedToEmail: input.assignedToEmail,
-        assignedToDisplayName: assignee.displayName || assignee.email,
-        dueDate,
-        originalDueDate,
-        roomIds: input.roomId === 'general' ? [] : [input.roomId],
-        isCompleted: false,
-        completedSubTasks: [],
-        sourceType: 'temporary',
-    };
-    const notification = buildNotificationDocument({
-        householdId: currentUser.householdId,
-        category: 'chores',
-        title: 'New chore assigned',
-        message: `You have a new chore: ${input.task}. Due ${format(parseISO(input.dueDate), 'MMM d, yyyy')}.`,
-        deepLink: '/chores',
-        sourceType: 'chore-assignment',
-        sourceId: choreRef.id,
-        stateKey,
-        targetUser: assignee,
-    });
-    batch.set(choreRef, newChore);
-    batch.set(doc(notificationsCollection, notificationId), notification);
-
-    try {
-        await batch.commit();
-        toast({ title: 'Temporary task created', description: `${input.task} was assigned to ${assignee.displayName || assignee.email}.` });
-        await fetchAllData();
-        return true;
+      await runTransaction(db, async (transaction) => {
+        const openChores = await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false)));
+        transaction.delete(doc(templatesCollection, id));
+        openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
+      });
+      toast({ title: 'Chore deleted' });
+      await fetchAllData();
     } catch (error) {
-        console.error('Error creating temporary task:', error instanceof Error ? error.message : String(error));
-        toast({ variant: 'destructive', title: 'Could not create task', description: 'The temporary task was not saved.' });
-        return false;
+      toastError(error, "Couldn't delete the chore");
     }
-  }, [currentUser?.householdId, fetchAllData, getCollectionRef, householdUsers, toast]);
+  };
 
-  const handleAssignChores = useCallback(async (
-      assignment: { assignedToEmail: string, roomIds: string[] },
-      schedule: { type: 'onetime'; dueDate: Date } | { type: 'recurring'; recurrence: Omit<Recurrence, 'assignedToEmail'> }
-    ) => {
-    if (!currentUser?.householdId || templatesToAssign.length === 0) return;
-    
+  const handleOpenAssignDialog = (templates: ChoreTemplate[]) => {
+    setTemplatesToAssign(templates);
+    setIsAssignOpen(true);
+    setIsLibraryOpen(false);
+  };
+
+  const handleAssignChores = useCallback(async (assignment: { assignedToEmail: string; roomIds: string[] }, schedule: AssignSchedule) => {
+    if (!currentUser?.householdId || templatesToAssign.length === 0) return false;
     const templatesCollection = getCollectionRef('chore-templates');
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection || !templatesCollection) return;
-
-    const batch = writeBatch(db);
+    if (!choresCollection || !templatesCollection) return false;
     const user = householdUsers.find(u => u.email === assignment.assignedToEmail);
     if (!user) {
-        toast({ variant: 'destructive', title: 'Missing assignee', description: 'Could not find the selected household member.' });
-        return;
+      toastError({ code: 'not-found' }, "Couldn't assign");
+      return false;
     }
-    const assignedToDisplayName = user.displayName || assignment.assignedToEmail;
-
-    const notificationMessage = templatesToAssign.length > 1
-        ? `You have been assigned ${templatesToAssign.length} new chores.`
-        : `You have a new chore: ${templatesToAssign[0].task}.`;
-
-    const newNotification = buildNotificationDocument({
-        householdId: currentUser.householdId,
-        category: 'chores',
-        title: templatesToAssign.length > 1 ? 'New chores assigned' : 'New chore assigned',
-        message: notificationMessage,
-        deepLink: '/chores',
-        sourceType: 'chore-assignment',
-        sourceId: templatesToAssign.map(template => template.id).join(','),
-        targetUser: user,
-    });
-
+    const assignedToDisplayName = memberName(user);
+    const batch = writeBatch(db);
     if (schedule.type === 'recurring') {
-        for (const template of templatesToAssign) {
-            const templateRef = doc(templatesCollection, template.id);
-            const recurrenceData: Recurrence = { ...schedule.recurrence, assignedToEmail: assignment.assignedToEmail };
-            batch.set(templateRef, { recurrence: recurrenceData, assignedToEmail: assignment.assignedToEmail }, { merge: true });
-        }
+      for (const template of templatesToAssign) {
+        const recurrence: Recurrence = { ...schedule.recurrence, assignedToEmail: assignment.assignedToEmail };
+        batch.set(doc(templatesCollection, template.id), { recurrence, assignedToEmail: assignment.assignedToEmail }, { merge: true });
+      }
     } else {
-        for (const template of templatesToAssign) {
-            const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
-            const roomsToAssign = assignment.roomIds.length > 0 ? assignment.roomIds : (template.roomIds && template.roomIds.length > 0 ? template.roomIds : ['general']);
-
-            roomsToAssign.forEach(roomId => {
-                const choreId = stableSlugify(`${template.id}-${roomId}-${originalDueDate}-${assignment.assignedToEmail}`);
-                const newChore: Omit<Chore, 'id'> = {
-                    task: template.task,
-                    assignedToEmail: assignment.assignedToEmail,
-                    assignedToDisplayName: assignedToDisplayName,
-                    dueDate: schedule.dueDate.toISOString(),
-                    isCompleted: false,
-                    notes: template.notes || '',
-                    subTasks: template.subTasks || [],
-                    completedSubTasks: [],
-                    templateId: template.id,
-                    originalDueDate: originalDueDate,
-                    roomIds: roomId === 'general' ? [] : [roomId],
-                };
-                batch.set(doc(choresCollection, choreId), newChore);
-            })
-        }
+      const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
+      for (const template of templatesToAssign) {
+        const roomsToAssign = assignment.roomIds.length > 0 ? assignment.roomIds : (template.roomIds && template.roomIds.length > 0 ? template.roomIds : ['general']);
+        roomsToAssign.forEach(roomId => {
+          const choreId = stableSlugify(`${template.id}-${roomId}-${originalDueDate}-${assignment.assignedToEmail}`);
+          batch.set(doc(choresCollection, choreId), {
+            task: template.task,
+            assignedToEmail: assignment.assignedToEmail,
+            assignedToDisplayName,
+            dueDate: schedule.dueDate.toISOString(),
+            isCompleted: false,
+            notes: template.notes || '',
+            subTasks: template.subTasks || [],
+            completedSubTasks: [],
+            templateId: template.id,
+            originalDueDate,
+            roomIds: roomId === 'general' ? [] : [roomId],
+          });
+        });
+      }
     }
-    
     try {
-        await batch.commit();
+      await batch.commit();
+      if (shouldNotify(assignment.assignedToEmail)) {
         try {
-            await setDoc(doc(collection(db, 'households', currentUser.householdId, 'notifications')), newNotification);
+          await setDoc(doc(collection(db, 'households', currentUser.householdId, 'notifications')), buildNotificationDocument({
+            householdId: currentUser.householdId,
+            category: 'chores',
+            title: templatesToAssign.length > 1 ? 'New chores assigned' : 'New chore assigned',
+            message: templatesToAssign.length > 1 ? `You have been assigned ${templatesToAssign.length} new chores.` : `You have a new chore: ${templatesToAssign[0].task}.`,
+            deepLink: '/chores',
+            sourceType: 'chore-assignment',
+            sourceId: templatesToAssign.map(template => template.id).join(','),
+            targetUser: user,
+          }));
         } catch (notificationError) {
-            console.warn('Chore assignment saved, but notification creation failed:', notificationError instanceof Error ? notificationError.message : String(notificationError));
+          console.warn('Chore assignment saved, but notification creation failed:', notificationError instanceof Error ? notificationError.message : String(notificationError));
         }
-        if (schedule.type === 'recurring') {
-            toast({ title: 'Recurring Chores Set!', description: `These chores will now be assigned automatically.` });
-        } else {
-            toast({ title: 'Chores Assigned!', description: `${templatesToAssign.length} chore(s) have been added to the chart.` });
-        }
-        await fetchAllData();
-    } catch(error) {
-        console.error("Error assigning chores:", error);
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not assign chores.' });
+      }
+      toast(schedule.type === 'recurring'
+        ? { title: 'Repeating chores set', description: 'They will show up on schedule by themselves.' }
+        : { title: 'Chores assigned', description: `${templatesToAssign.length === 1 ? templatesToAssign[0].task : `${templatesToAssign.length} chores`} added to the chart.` });
+      await fetchAllData();
+      return true;
+    } catch (error) {
+      toastError(error, "Couldn't assign");
+      return false;
     }
+  }, [currentUser, getCollectionRef, householdUsers, templatesToAssign, shouldNotify, toast, toastError, fetchAllData]);
 
-  }, [currentUser, getCollectionRef, householdUsers, templatesToAssign, toast, fetchAllData]);
+  /* ---------------------------------------------------------------------- */
+  /* Rooms and repeating chores                                              */
+  /* ---------------------------------------------------------------------- */
 
-
-  const handleSaveRoom = async (roomData: { name: string, icon: string }, id?: string) => {
+  const handleSaveRoom = async (roomData: { name: string; icon: string }, id?: string) => {
     const roomsCollection = getCollectionRef('rooms');
-    if (!roomsCollection) return;
-    const roomId = id || stableSlugify(roomData.name);
+    if (!roomsCollection) return false;
+    const roomId = id || uniqueTemplateId(stableSlugify(roomData.name), new Set(rooms.map(r => r.id)));
     try {
-        await setDoc(doc(roomsCollection, roomId), roomData);
-        toast({ title: id ? 'Room Updated' : 'Room Added' });
-        await fetchAllData();
-    } catch {
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not save room.' });
+      await setDoc(doc(roomsCollection, roomId), roomData);
+      toast({ title: id ? 'Room updated' : 'Room added' });
+      await fetchAllData();
+      return true;
+    } catch (error) {
+      toastError(error, "Couldn't save the room");
+      return false;
     }
-  }
+  };
 
   const handleDeleteRoom = async (id: string) => {
     const roomsCollection = getCollectionRef('rooms');
     const templatesCollection = getCollectionRef('chore-templates');
     if (!roomsCollection || !templatesCollection) return;
     try {
-        await runTransaction(db, async (transaction) => {
-            transaction.delete(doc(roomsCollection, id));
-            const templatesToUpdate = choreTemplates.filter(t => t.roomIds?.includes(id));
-            for (const template of templatesToUpdate) {
-                const templateRef = doc(templatesCollection, template.id);
-                const newRoomIds = template.roomIds?.filter(roomId => roomId !== id);
-                transaction.update(templateRef, { roomIds: newRoomIds });
-            }
+      await runTransaction(db, async (transaction) => {
+        transaction.delete(doc(roomsCollection, id));
+        choreTemplates.filter(t => t.roomIds?.includes(id)).forEach(template => {
+          transaction.update(doc(templatesCollection, template.id), { roomIds: template.roomIds?.filter(roomId => roomId !== id) });
         });
-        toast({ title: 'Room Deleted', description: "The room was deleted and unassigned from chores."});
-        await fetchAllData();
-    } catch {
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not delete room.' });
-    }
-  }
-  
-  const handleUpdateRecurringTask = async (choreId: string, assignedToEmail: string, recurrence: Recurrence) => {
-    const templatesCollection = getCollectionRef('chore-templates');
-    const choresCollection = getCollectionRef('chores');
-    if (!templatesCollection || !choresCollection) return;
-
-    try {
-        await runTransaction(db, async (transaction) => {
-            const templateRef = doc(templatesCollection, choreId);
-            transaction.update(templateRef, { assignedToEmail, recurrence });
-            const q = query(choresCollection, where('templateId', '==', choreId), where('isCompleted', '==', false));
-            const existingChoresSnap = await getDocs(q);
-            existingChoresSnap.forEach(choreDoc => {
-                transaction.delete(choreDoc.ref);
-            });
-        });
-        toast({ title: 'Recurring Task Updated' });
-        await fetchAllData();
-    } catch(error) {
-        console.error("Error updating recurring task:", error);
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not update recurring task.' });
+      });
+      toast({ title: 'Room deleted' });
+      await fetchAllData();
+    } catch (error) {
+      toastError(error, "Couldn't delete the room");
     }
   };
+
+  const replaceRecurrence = async (choreId: string, update: DocumentData, title: string, failure: string) => {
+    const templatesCollection = getCollectionRef('chore-templates');
+    const choresCollection = getCollectionRef('chores');
+    if (!templatesCollection || !choresCollection) return false;
+    try {
+      await runTransaction(db, async (transaction) => {
+        const openChores = await getDocs(query(choresCollection, where('templateId', '==', choreId), where('isCompleted', '==', false)));
+        transaction.update(doc(templatesCollection, choreId), update);
+        openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
+      });
+      toast({ title });
+      await fetchAllData();
+      return true;
+    } catch (error) {
+      toastError(error, failure);
+      return false;
+    }
+  };
+
+  const handleUpdateRecurringTask = (choreId: string, assignedToEmail: string, recurrence: Recurrence) =>
+    replaceRecurrence(choreId, { assignedToEmail, recurrence }, 'Repeating chore updated', "Couldn't update the schedule");
 
   const handleDeleteRecurringTask = async (choreId: string) => {
-    const templatesCollection = getCollectionRef('chore-templates');
-    const choresCollection = getCollectionRef('chores');
-    if (!templatesCollection || !choresCollection) return;
-
-    try {
-        await runTransaction(db, async (transaction) => {
-            const templateRef = doc(templatesCollection, choreId);
-            transaction.update(templateRef, { recurrence: null, assignedToEmail: null });
-            const q = query(choresCollection, where('templateId', '==', choreId), where('isCompleted', '==', false));
-            const existingChoresSnap = await getDocs(q);
-            existingChoresSnap.forEach(choreDoc => {
-                transaction.delete(choreDoc.ref);
-            });
-        });
-
-        toast({ title: 'Recurring Task Canceled' });
-        await fetchAllData();
-    } catch(error) {
-        console.error("Error deleting recurring task:", error);
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not cancel recurring task.' });
-    }
+    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: null }, 'Stopped repeating', "Couldn't stop the schedule");
   };
 
+  /* ---------------------------------------------------------------------- */
+  /* Completing (H05)                                                        */
+  /* ---------------------------------------------------------------------- */
 
-  const completeChore = async (chore: Chore, completeAllSubtasks = false) => {
+  const today = dayKey(new Date());
+
+  const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
+    if (!currentUser?.householdId) return;
+    const hadDue = !isToDoClear(before, today);
+    if (!hadDue || !isToDoClear(after, today)) return;
+    const key = houseCleanKey(currentUser.householdId, today);
+    if (readFlag(key)) return;
+    writeFlag(key);
+    const doneToday = after.filter(chore => {
+      const instant = completionInstant(chore);
+      return instant && dayKey(instant) === today;
+    });
+    const roomIds = [...new Set(doneToday.flatMap(chore => chore.roomIds || []))];
+    const cleanRooms = roomIds.map(id => roomsById.get(id)).filter(Boolean).map(room => ({ id: room!.id, name: room!.name, icon: room!.icon }));
+    setHouseClean(cleanRooms);
+    playFeedback('celebrate');
+  }, [currentUser?.householdId, today, roomsById]);
+
+  const undoCompletion = useCallback(async (snapshots: Map<string, CompletionSnapshot>) => {
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection) return false;
-
-    const choreRef = doc(choresCollection, chore.id);
-    const updates: Partial<Chore> = { isCompleted: true, completedAt: new Date().toISOString() };
-    if (completeAllSubtasks) {
-        updates.completedSubTasks = chore.subTasks || [];
-    }
-
+    if (!choresCollection) return;
+    const batch = writeBatch(db);
+    const locals = new Map<string, ReturnType<typeof undoCompletionUpdate>['local']>();
+    snapshots.forEach((snapshot, id) => {
+      const { update, local } = undoCompletionUpdate(snapshot);
+      batch.update(doc(choresCollection, id), update);
+      locals.set(id, local);
+    });
+    const previous = choresRef.current;
+    patchChores([...snapshots.keys()], chore => ({ ...chore, ...locals.get(chore.id) }));
     try {
-        await updateDoc(choreRef, updates);
-        setAssignedChores(prevChores => 
-            prevChores.map(c => 
-                c.id === chore.id 
-                ? { ...c, ...updates }
-                : c
-            )
-        );
-        return true;
-    } catch {
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not update chore.' });
-        return false;
+      await batch.commit();
+    } catch (error) {
+      setAssignedChores(previous);
+      toastError(error, "Couldn't undo");
     }
-  }
+  }, [getCollectionRef, patchChores, toastError]);
 
-  const getIncompleteSubtaskCount = (chore: Chore) => {
-    return (chore.subTasks || []).filter(subTask => !(chore.completedSubTasks || []).includes(subTask)).length;
-  };
+  const completeChores = useCallback(async (chores: readonly ChoreRecord[], origin: DOMRect | null) => {
+    const choresCollection = getCollectionRef('chores');
+    if (!choresCollection || chores.length === 0) return;
+    const snapshots = new Map<string, CompletionSnapshot>();
+    const locals = new Map<string, Partial<ChoreRecord>>();
+    const batch = writeBatch(db);
+    for (const chore of chores) {
+      snapshots.set(chore.id, completionSnapshot(chore));
+      // One tap completes, including any open steps; Undo restores them exactly.
+      const { update, local } = completionUpdate(chore, openSubTasks(chore).length > 0);
+      batch.update(doc(choresCollection, chore.id), update);
+      locals.set(chore.id, local);
+    }
+    const before = choresRef.current;
+    const after = before.map(chore => (locals.has(chore.id) ? { ...chore, ...locals.get(chore.id) } as ChoreRecord : chore));
+    setAssignedChores(after);
+    setSelectedChoreIds(previous => previous.filter(id => !locals.has(id)));
+    try {
+      await batch.commit();
+    } catch (error) {
+      setAssignedChores(before);
+      toastError(error, chores.length === 1 ? "Couldn't complete the chore" : "Couldn't complete the chores");
+      return;
+    }
 
-  const hasIncompleteSubtasks = (chore: Chore) => getIncompleteSubtaskCount(chore) > 0;
+    playFeedback('complete');
+    const fresh = chores.filter(chore => !celebrated.current.has(chore.id));
+    fresh.forEach(chore => celebrated.current.add(chore.id));
+    if (fresh.length > 0 && origin) {
+      burst(origin, Math.min(40, fresh.reduce((sum, chore) => sum + confettiCount(chore), 0)));
+    }
 
-  const handleChoreSelection = (chore: Chore) => {
-    if (chore.isCompleted) return;
-    setSelectedChoreIds(prev => prev.includes(chore.id) ? prev.filter(id => id !== chore.id) : [...prev, chore.id]);
-  }
+    const label = chores.length === 1 ? chores[0].task : `${chores.length} chores`;
+    const handle = toast({
+      title: chores.length === 1 ? 'Done' : 'Chores done',
+      description: `${label} marked complete.`,
+      duration: UNDO_MS,
+      action: (
+        <ToastAction altText={`Undo completing ${label}`} onClick={() => { handle.dismiss(); void undoCompletion(snapshots); }}>
+          Undo
+        </ToastAction>
+      ),
+    });
+    maybeCelebrateHouse(before, after);
+  }, [getCollectionRef, toast, toastError, burst, undoCompletion, maybeCelebrateHouse]);
+
+  const reopenChore = useCallback(async (chore: ChoreRecord) => {
+    const choresCollection = getCollectionRef('chores');
+    if (!choresCollection) return;
+    const previous = choresRef.current;
+    patchChores([chore.id], c => ({ ...c, isCompleted: false, completedAt: undefined, completedAtServer: undefined }));
+    try {
+      await updateDoc(doc(choresCollection, chore.id), { isCompleted: false, completedAt: deleteField(), completedAtServer: deleteField() });
+    } catch (error) {
+      setAssignedChores(previous);
+      toastError(error, "Couldn't reopen the chore");
+    }
+  }, [getCollectionRef, patchChores, toastError]);
+
+  const handleToggleDone = useCallback((chore: ChoreRecord, origin: HTMLElement | null) => {
+    if (!capabilities.canComplete) return;
+    if (chore.isCompleted) void reopenChore(chore);
+    // Measure now: the row leaves the To Do list before the write finishes.
+    else void completeChores([chore], origin?.getBoundingClientRect() ?? null);
+  }, [capabilities.canComplete, completeChores, reopenChore]);
 
   const selectedChores = assignedChores.filter(chore => selectedChoreIds.includes(chore.id) && !chore.isCompleted);
 
-  const completeSelectedChores = async (chores: Chore[], completeUnfinishedSubtasks: boolean) => {
-    const results = await Promise.all(chores.map(chore => completeChore(chore, completeUnfinishedSubtasks && hasIncompleteSubtasks(chore))));
-    const completedIds = chores.filter((_, index) => results[index]).map(chore => chore.id);
-
-    setSelectedChoreIds(prev => prev.filter(id => !completedIds.includes(id)));
-    setChoresPendingCompletion(null);
-
-    if (completedIds.length > 0) {
-        toast({ title: 'Chores Completed', description: `${completedIds.length} selected chore(s) marked complete.` });
+  const handleCompleteSelected = () => {
+    if (selectedChores.length === 0) {
+      setSelectedChoreIds([]);
+      return;
     }
+    const withOpenSteps = selectedChores.filter(chore => openSubTasks(chore).length > 0);
+    if (withOpenSteps.length > 0) {
+      setChoresPendingCompletion(withOpenSteps);
+      return;
+    }
+    void completeChores(selectedChores, null);
   };
 
-  const handleCompleteSelectedChores = () => {
-    const activeSelections = selectedChores;
-    if (activeSelections.length === 0) {
-        setSelectedChoreIds([]);
-        return;
-    }
-
-    const choresWithOpenSubtasks = activeSelections.filter(hasIncompleteSubtasks);
-    if (choresWithOpenSubtasks.length > 0) {
-        setChoresPendingCompletion(choresWithOpenSubtasks);
-        return;
-    }
-
-    void completeSelectedChores(activeSelections, false);
-  };
-
-  useEffect(() => {
-    setSelectedChoreIds(prev => prev.filter(id => assignedChores.some(chore => chore.id === id && !chore.isCompleted)));
-  }, [assignedChores]);
-
-  const handleSubTaskToggle = async (chore: Chore, subTask: string) => {
+  const handleSubTaskToggle = useCallback(async (chore: ChoreRecord, subTask: string) => {
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection) return;
-
-    const choreRef = doc(choresCollection, chore.id);
-    const currentCompleted = chore.completedSubTasks || [];
-    const isCompleted = currentCompleted.includes(subTask);
-    const newCompletedSubTasks = isCompleted
-      ? currentCompleted.filter((st) => st !== subTask)
-      : [...currentCompleted, subTask];
-    
-    setAssignedChores(prevChores => 
-        prevChores.map(c => 
-            c.id === chore.id 
-            ? { ...c, completedSubTasks: newCompletedSubTasks }
-            : c
-        )
-    );
-
+    if (!choresCollection || !capabilities.canComplete) return;
+    const current = chore.completedSubTasks || [];
+    const next = current.includes(subTask) ? current.filter(st => st !== subTask) : [...current, subTask];
+    patchChores([chore.id], c => ({ ...c, completedSubTasks: next }));
     try {
-        await updateDoc(choreRef, { completedSubTasks: newCompletedSubTasks });
-    } catch {
-      toast({
-        variant: 'destructive',
-        title: 'Error',
-        description: 'Could not update sub-task.',
-      });
-       setAssignedChores(prevChores => 
-            prevChores.map(c => 
-                c.id === chore.id 
-                ? { ...c, completedSubTasks: currentCompleted }
-                : c
-            )
-        );
+      await updateDoc(doc(choresCollection, chore.id), { completedSubTasks: next });
+    } catch (error) {
+      patchChores([chore.id], c => ({ ...c, completedSubTasks: current }));
+      toastError(error, "Couldn't update the step");
     }
-  };
-  
-  const deleteAssignedChore = async (id: string) => {
+  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError]);
+
+  const deleteChores = async (ids: string[], title: string) => {
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection) return;
-    const choreRef = doc(choresCollection, id);
+    if (!choresCollection || ids.length === 0) return;
     try {
-        await deleteDoc(choreRef);
-        toast({ title: 'Chore Removed' });
-        await fetchAllData();
-    } catch {
-        toast({ variant: 'destructive', title: 'Error', description: 'Could not delete chore.' });
+      const batch = writeBatch(db);
+      ids.forEach(id => batch.delete(doc(choresCollection, id)));
+      await batch.commit();
+      toast({ title });
+      setAssignedChores(previous => previous.filter(chore => !ids.includes(chore.id)));
+    } catch (error) {
+      toastError(error, "Couldn't delete");
     }
   };
 
-  const handleReassignChore = async (choreId: string, newEmail: string) => {
-    const choreRef = doc(getCollectionRef('chores')!, choreId);
-    const user = householdUsers.find(u => u.email === newEmail);
-    if (!user) return;
-
-    const updates = {
-      assignedToEmail: newEmail,
-      assignedToDisplayName: user.displayName || newEmail,
-    };
-    
-    setAssignedChores(prev => prev.map(c => c.id === choreId ? {...c, ...updates} : c));
-
+  const handleReassign = useCallback(async (chore: ChoreRecord, email: string) => {
+    const choresCollection = getCollectionRef('chores');
+    const user = householdUsers.find(u => u.email === email);
+    if (!choresCollection || !user || email === chore.assignedToEmail) return;
+    const updates = { assignedToEmail: email, assignedToDisplayName: memberName(user) };
+    const previous = { assignedToEmail: chore.assignedToEmail, assignedToDisplayName: chore.assignedToDisplayName };
+    patchChores([chore.id], c => ({ ...c, ...updates }));
     try {
-      await updateDoc(choreRef, updates);
-      toast({ title: 'Chore Reassigned' });
-    } catch {
-      toast({ variant: 'destructive', title: 'Reassignment Failed' });
-      fetchAllData();
+      await updateDoc(doc(choresCollection, chore.id), updates);
+      toast({ title: 'Chore reassigned', description: `${chore.task} is now ${memberName(user)}'s.` });
+    } catch (error) {
+      patchChores([chore.id], c => ({ ...c, ...previous }));
+      toastError(error, "Couldn't reassign");
     }
-  };
+  }, [getCollectionRef, householdUsers, patchChores, toast, toastError]);
+
+  const closeHouseClean = useCallback(() => setHouseClean(null), []);
+
+  const toggleOpen = useCallback((id: string) => {
+    setOpenIds(previous => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelect = useCallback((chore: ChoreRecord) => {
+    if (chore.isCompleted) return;
+    setSelectedChoreIds(previous => previous.includes(chore.id) ? previous.filter(id => id !== chore.id) : [...previous, chore.id]);
+  }, []);
+
+  /* ---------------------------------------------------------------------- */
+  /* Derived data                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  const statsMembers = useMemo(() => householdUsers.map(user => ({
+    email: user.email, uid: user.uid || user.email, name: memberName(user), role: user.memberRole,
+  })), [householdUsers]);
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, new Date()), [assignedChores, statsMembers]);
+  const photos = useMemo(() => new Map(householdUsers.map(user => [user.email, user.avatarUrl])), [householdUsers]);
 
   if (loading || !isMounted) {
     return (
-        <div className="space-y-8">
-            <Card>
-                <CardHeader>
-                    <Skeleton className="h-8 w-1/2" />
-                    <Skeleton className="h-4 w-3/4" />
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    <Skeleton className="h-10 w-full" />
-                    <Skeleton className="h-10 w-full" />
-                    <Skeleton className="h-10 w-full" />
-                </CardContent>
-            </Card>
-        </div>
-    )
+      <div className="space-y-8">
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-8 w-1/2" />
+            <Skeleton className="h-4 w-3/4" />
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
-  
+
   if (!currentUser) {
-    return <p className="text-center py-8 text-sm">Please log in to manage chores.</p>;
+    return <p className="py-8 text-sm">Please log in to manage chores.</p>;
   }
-  
-  const today = endOfToday();
 
   const filteredChores = assignedChores.filter(chore => {
     if (filterRoomId === 'all') return true;
@@ -1980,430 +675,357 @@ export function ChoreChartClient() {
     return chore.roomIds?.includes(filterRoomId);
   });
 
-  const upcomingChores = filteredChores
-    .filter(c => !c.isCompleted && !isAfter(choreDueDay(c), today))
-    .sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-    
-  const futureChores = filteredChores
-    .filter(c => !c.isCompleted && isAfter(choreDueDay(c), today))
-    .sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-
-  const seventyTwoHoursAgo = sub(today, { hours: 72 });
-  const sevenDaysFromNow = add(today, { days: 7 });
-
+  const byDue = (a: ChoreRecord, b: ChoreRecord) => choreDueKey(a).localeCompare(choreDueKey(b)) || a.task.localeCompare(b.task);
+  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue));
+  const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
+  const weekAhead = addDaysToKey(today, 7);
+  const visibleFutureChores = showFullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
+  const recentFrom = addDaysToKey(today, -3);
   const completedChores = filteredChores
-    .filter(c => c.isCompleted && c.completedAt)
-    .sort((a, b) => new Date(b.completedAt!).getTime() - new Date(a.completedAt!).getTime());
-
-  const visibleCompletedChores = showFullHistory 
-    ? completedChores 
-    : completedChores.filter(c => isAfter(parseISO(c.completedAt!), seventyTwoHoursAgo));
-    
-  const visibleFutureChores = showFullFuture
-    ? futureChores
-    : futureChores.filter(c => !isAfter(choreDueDay(c), sevenDaysFromNow));
-    
+    .filter(c => c.isCompleted && completionInstant(c))
+    .sort((a, b) => completionInstant(b)!.getTime() - completionInstant(a)!.getTime());
+  const visibleCompletedChores = showFullHistory ? completedChores : completedChores.filter(c => dayKey(completionInstant(c)!) >= recentFrom);
+  const completedToday = completedChores.filter(c => dayKey(completionInstant(c)!) === today).length;
   const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
+  const isEmptyHousehold = assignedChores.length === 0 && choreTemplates.length === 0;
 
+  const groupByRoom = (entries: ToDoEntry[]) => {
+    const grouped = new Map<string, { name: string; icon: string; entries: ToDoEntry[] }>();
+    for (const entry of entries) {
+      const roomIds = entry.chore.roomIds && entry.chore.roomIds.length > 0 ? entry.chore.roomIds : ['general'];
+      for (const roomId of roomIds) {
+        const room = roomId === 'general' ? { name: 'General', icon: 'Home' } : (roomsById.get(roomId) || { name: 'Unknown Room', icon: 'Home' });
+        const group = grouped.get(room.name) || { name: room.name, icon: room.icon, entries: [] };
+        group.entries.push(entry);
+        grouped.set(room.name, group);
+      }
+    }
+    return [...grouped.values()].sort((a, b) => (a.name === 'General' ? 1 : b.name === 'General' ? -1 : a.name.localeCompare(b.name)));
+  };
+  const asEntries = (chores: ChoreRecord[]): ToDoEntry[] => chores.map(chore => ({ chore, missed: [] }));
 
-  const groupChoresByRoom = (chores: Chore[]) => {
-    const grouped = chores.reduce((acc, chore) => {
-        if (chore.roomIds && chore.roomIds.length > 0) {
-            chore.roomIds.forEach(roomId => {
-                const room = roomsById.get(roomId) || { name: 'Unknown Room', icon: 'HelpCircle' };
-                if (!acc[room.name]) acc[room.name] = { icon: room.icon, chores: [] };
-                acc[room.name].chores.push(chore);
-            });
-        } else {
-            if (!acc['General']) acc['General'] = { icon: 'Home', chores: [] };
-            acc['General'].chores.push(chore);
-        }
-        return acc;
-    }, {} as Record<string, { icon: string, chores: Chore[] }>);
-
-    return Object.entries(grouped).sort(([a], [b]) => {
-        if (a === 'General') return 1;
-        if (b === 'General') return -1;
-        return a.localeCompare(b);
-    });
+  const listProps = {
+    today,
+    usersByEmail,
+    users: householdUsers as HomeHubUser[],
+    colors: memberColors,
+    capabilities,
+    selectMode,
+    selectedIds: new Set(selectedChoreIds),
+    openIds,
+    onToggleOpen: toggleOpen,
+    onToggleDone: handleToggleDone,
+    onToggleSelect: toggleSelect,
+    onSubTaskToggle: (chore: ChoreRecord, subTask: string) => void handleSubTaskToggle(chore, subTask),
+    onReassign: (chore: ChoreRecord, email: string) => void handleReassign(chore, email),
+    onDelete: (chore: ChoreRecord) => setChoreToDelete(chore),
+    onClearMissed: (entry: ToDoEntry) => void deleteChores(entry.missed.map(c => c.id), `Cleared ${entry.missed.length} missed`),
   };
 
-  const ChoreList = ({ chores }: { chores: Chore[] }) => (
-    <div className="space-y-2 pl-2 md:pl-4">
-        <Accordion 
-            type="multiple" 
-            className="w-full"
-            value={openChoreAccordions}
-            onValueChange={setOpenChoreAccordions}
-        >
-            {chores.map((chore) => {
-                const isOverdue = isPast(choreDueDay(chore)) && !isToday(choreDueDay(chore));
-                const isCompleted = chore.isCompleted;
-                const hasDetails = chore.notes || (chore.subTasks && chore.subTasks.length > 0);
+  const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
+    const groups = groupByRoom(entries);
+    return (
+      <Accordion type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
+        {groups.map(group => (
+          <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
+            <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
+              <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /> {group.name} ({group.entries.length})</span>
+            </AccordionTrigger>
+            <AccordionContent>
+              <ChoreList entries={group.entries} {...listProps} />
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
+    );
+  };
 
-                return (
-                <div key={chore.id} className={cn("border rounded-lg bg-secondary/30", isOverdue && !isCompleted && "border-destructive/50 bg-destructive/10")}>
-                    <AccordionItem value={chore.id} className="border-b-0">
-                        <div className="flex items-center gap-2 px-2 py-1 md:px-4 md:py-3">
-                             <Checkbox 
-                                id={`chore-${chore.id}`} 
-                                checked={isCompleted || selectedChoreIds.includes(chore.id)}
-                                onCheckedChange={() => handleChoreSelection(chore)}
-                                disabled={isCompleted}
-                                aria-label={isCompleted ? `${chore.task} is completed` : `Select ${chore.task}`}
-                                className="h-4 w-4 md:h-5 md:w-5 shrink-0 ml-1"
-                             />
-                             
-                             <AccordionPrimitive.Header className="flex flex-1 min-w-0">
-                                <AccordionPrimitive.Trigger asChild>
-                                    <button 
-                                        className="flex flex-1 flex-col text-left items-start min-w-0 bg-transparent border-0 cursor-pointer py-2 md:py-0"
-                                        aria-label={`Show details for ${chore.task}`}
-                                    >
-                                        <span className={cn("font-medium text-xs md:text-base block truncate w-full", isOverdue && !isCompleted && "text-destructive", isCompleted && "text-muted-foreground line-through")}>
-                                            {chore.task}
-                                        </span>
-                                        <div className={cn("text-[9px] md:text-xs text-muted-foreground", isCompleted && "line-through")}>
-                                            {format(choreDueDay(chore), 'MMM d')}
-                                        </div>
-                                    </button>
-                                </AccordionPrimitive.Trigger>
-                             </AccordionPrimitive.Header>
-
-                             <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                    <button className={cn("flex items-center justify-start text-[9px] md:text-xs h-auto p-1 text-muted-foreground hover:bg-accent rounded-md min-w-[80px] shrink-0", isCompleted && "line-through")}>
-                                        <UserIcon className="mr-1 h-2.5 w-2.5 md:h-3 md:w-3" /> {chore.assignedToDisplayName} <ChevronDown className="ml-0.5 h-2.5 w-2.5 md:h-3 md:w-3" />
-                                    </button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end" className="w-[180px]">
-                                    <DropdownMenuRadioGroup value={chore.assignedToEmail} onValueChange={(email) => handleReassignChore(chore.id, email)}>
-                                    {householdUsers.map(user => (
-                                        <DropdownMenuRadioItem key={user.email} value={user.email}>
-                                            {user.displayName}
-                                        </DropdownMenuRadioItem>
-                                    ))}
-                                    </DropdownMenuRadioGroup>
-                                </DropdownMenuContent>
-                             </DropdownMenu>
-
-                             <div className="flex items-center gap-1 shrink-0">
-                                {hasDetails && (
-                                    <AccordionPrimitive.Trigger asChild>
-                                        <button className="flex items-center justify-center h-7 w-7 md:h-8 md:w-8 rounded-md hover:bg-accent [&[data-state=open]>svg]:-rotate-180 transition-transform">
-                                            <ChevronDown className="h-3.5 w-3.5 md:h-4 md:w-4" />
-                                            <span className="sr-only">Toggle Details</span>
-                                        </button>
-                                    </AccordionPrimitive.Trigger>
-                                )}
-                                <button
-                                  className="flex items-center justify-center h-7 w-7 md:h-8 md:w-8 rounded-md hover:bg-accent"
-                                  aria-label={`Delete ${chore.task}`}
-                                  onClick={() => setChoreToDelete(chore)}
-                                >
-                                    <Trash2 className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
-                                    <span className="sr-only">Delete Chore</span>
-                                </button>
-                             </div>
-                        </div>
-                        <AccordionContent className="px-4 pb-4">
-                            {chore.notes && <p className="text-[10px] md:text-xs text-muted-foreground mb-3 pt-2 border-t whitespace-pre-wrap">{chore.notes}</p>}
-                            {(chore.subTasks && chore.subTasks.length > 0) && (
-                            <div className="space-y-1.5 pt-2 border-t">
-                                <h4 className="font-semibold text-[10px] md:text-xs">Sub-Tasks</h4>
-                                {chore.subTasks.map(subTask => (
-                                <div key={subTask} className="flex items-center gap-2">
-                                    <Checkbox
-                                    id={`subtask-${chore.id}-${stableSlugify(subTask)}`}
-                                    checked={(chore.completedSubTasks || []).includes(subTask)}
-                                    onCheckedChange={() => handleSubTaskToggle(chore, subTask)}
-                                    disabled={isCompleted}
-                                    className="h-3 w-3 md:h-3.5 md:w-3.5"
-                                    />
-                                    <Label htmlFor={`subtask-${chore.id}-${stableSlugify(subTask)}`} className={cn("text-[10px] md:text-xs font-normal", isCompleted && "text-muted-foreground line-through")}>
-                                    {subTask}
-                                    </Label>
-                                </div>
-                                ))}
-                            </div>
-                            )}
-                        </AccordionContent>
-                    </AccordionItem>
-                </div>
-                );
-            })}
-        </Accordion>
-    </div>
-  );
+  const nextUp = futureChores[0];
+  const openAdd = () => setIsAddOpen(true);
+  const openCreateRoom = () => setRoomsDialog({ open: true, startNew: true });
+  const showLeaderboard = settings.leaderboardEnabled && householdUsers.length > 0 && !isEmptyHousehold;
 
   return (
     <>
-        <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
-            <AlertDialogContent>
-                <AlertDialogHeader>
-                    <AlertDialogTitle>Delete {choreToDelete?.task}?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                        This permanently removes this {choreToDelete?.isCompleted ? 'completed' : 'active'} chore. This action cannot be undone.
-                    </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      className={buttonVariants({ variant: 'destructive' })}
-                      onClick={() => {
-                        if (!choreToDelete) return;
-                        void deleteAssignedChore(choreToDelete.id);
-                        setChoreToDelete(null);
-                      }}
-                    >
-                      Delete Chore
-                    </AlertDialogAction>
-                </AlertDialogFooter>
-            </AlertDialogContent>
-        </AlertDialog>
-        <AlertDialog open={!!choresPendingCompletion} onOpenChange={(open) => !open && setChoresPendingCompletion(null)}>
-            <AlertDialogContent className="max-h-[90vh] max-w-lg">
-                <AlertDialogHeader>
-                    <AlertDialogTitle>Complete chores with unfinished subtasks?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                        {choresPendingCompletion?.length || 0} selected chore(s) still have open subtasks. Completing them will mark those subtasks done too.
-                    </AlertDialogDescription>
-                </AlertDialogHeader>
-                <ScrollArea className="max-h-[42vh] rounded-md border">
-                    <div className="space-y-2 p-3">
-                        {choresPendingCompletion?.map(chore => (
-                            <div key={chore.id} className="rounded-md bg-muted/50 p-2">
-                                <p className="text-sm font-medium leading-tight">{chore.task}</p>
-                                <p className="text-xs text-muted-foreground">{getIncompleteSubtaskCount(chore)} unfinished subtask(s)</p>
-                            </div>
-                        ))}
-                    </div>
-                </ScrollArea>
-                <AlertDialogFooter>
-                    <AlertDialogCancel>Review Selection</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void completeSelectedChores(selectedChores, true)}>
-                        Complete Anyway
-                    </AlertDialogAction>
-                </AlertDialogFooter>
-            </AlertDialogContent>
-        </AlertDialog>
+      {confettiLayer}
+      <HouseCleanMoment open={!!houseClean} rooms={houseClean || []} onDone={closeHouseClean} />
 
+      <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {choreToDelete?.task}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes this {choreToDelete?.isCompleted ? 'completed' : 'active'} chore. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: 'destructive' })}
+              onClick={() => {
+                if (!choreToDelete) return;
+                void deleteChores([choreToDelete.id], 'Chore removed');
+                setChoreToDelete(null);
+              }}
+            >
+              Delete Chore
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-        <ManageChoresDialog
-            isOpen={isChoreTemplatesOpen}
-            onOpenChange={setIsChoreTemplatesOpen}
-            choreTemplates={choreTemplates}
-            rooms={rooms}
-            onChoreTemplateSave={handleSaveChoreTemplate}
-            onChoreTemplateDelete={handleDeleteChoreTemplate}
-            onAssignChores={handleOpenAssignDialog}
-        />
-        
-        <AssignChoresDialog 
-            isOpen={isAssignDialogOpen}
-            onOpenChange={setIsAssignDialogOpen}
-            users={householdUsers}
-            rooms={rooms}
-            templatesToAssign={templatesToAssign}
-            onAssign={handleAssignChores}
-        />
-
-        <TemporaryTaskDialog
-            isOpen={isTemporaryTaskOpen}
-            onOpenChange={setIsTemporaryTaskOpen}
-            users={householdUsers}
-            rooms={rooms}
-            onCreate={handleCreateTemporaryTask}
-        />
-
-        <ManageRoomsDialog 
-            isOpen={isManageRoomsOpen}
-            onOpenChange={setIsManageRoomsOpen}
-            rooms={rooms}
-            onRoomSave={handleSaveRoom}
-            onRoomDelete={handleDeleteRoom}
-        />
-
-        <ManageRecurringTasksDialog
-             isOpen={isRecurringTasksOpen}
-             onOpenChange={setIsRecurringTasksOpen}
-             recurringChores={recurringChores}
-             users={householdUsers}
-             onUpdate={handleUpdateRecurringTask}
-             onDelete={handleDeleteRecurringTask}
-        />
-        
-        <div className="flex flex-col justify-center items-center mb-6 md:mb-8 text-center">
-            <div className="mb-4">
-                <h1 className="font-headline text-xl md:text-3xl font-bold tracking-tight">Chore Chart</h1>
-                <p className="text-muted-foreground text-[10px] md:text-sm">Manage household tasks and responsibilities.</p>
-            </div>
-             <div className="flex flex-wrap justify-center gap-2">
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="default" className="h-8 px-2 md:h-11 md:px-8 text-[10px] md:text-sm">
-                            <Filter className="mr-1 h-3 w-3 md:mr-2 md:h-4 md:w-4" /> 
-                            {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'general' ? 'General' : rooms.find(r => r.id === filterRoomId)?.name || 'Filter')}
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                        <DropdownMenuLabel>Filter by Room</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuRadioGroup value={filterRoomId} onValueChange={setFilterRoomId}>
-                            <DropdownMenuRadioItem value="all">All Rooms</DropdownMenuRadioItem>
-                            <DropdownMenuRadioItem value="general">General</DropdownMenuRadioItem>
-                            {rooms.length > 0 ? rooms.map(room => (
-                                <DropdownMenuRadioItem key={room.id} value={room.id}>
-                                    <div className="flex items-center gap-2">
-                                        {renderIcon(room.icon, { className: 'h-3 w-3' })}
-                                        {room.name}
-                                    </div>
-                                </DropdownMenuRadioItem>
-                            )) : (
-                                <DropdownMenuItem disabled className="text-center italic">No rooms created yet</DropdownMenuItem>
-                            )}
-                        </DropdownMenuRadioGroup>
-                    </DropdownMenuContent>
-                </DropdownMenu>
-                <ChoreCalendar chores={assignedChores} />
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button size="default" className="h-8 px-2 md:h-11 md:px-8 text-[10px] md:text-sm"><MoreVertical className="mr-1 h-3 w-3 md:mr-2 md:h-4 md:w-4" /> Chore Manager</Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                         <DropdownMenuItem onSelect={() => setIsChoreTemplatesOpen(true)}>
-                            <BookUser className="mr-2 h-4 w-4"/> Chores
-                         </DropdownMenuItem>
-                         <DropdownMenuItem onSelect={() => setIsTemporaryTaskOpen(true)}>
-                            <PlusCircle className="mr-2 h-4 w-4"/> Temporary Task
-                         </DropdownMenuItem>
-                         <DropdownMenuItem onSelect={() => setIsManageRoomsOpen(true)}>
-                            <Home className="mr-2 h-4 w-4"/> Manage Rooms
-                         </DropdownMenuItem>
-                         <DropdownMenuItem onSelect={() => setIsRecurringTasksOpen(true)}>
-                           <Repeat className="mr-2 h-4 w-4"/> Manage Recurring Tasks
-                         </DropdownMenuItem>
-                    </DropdownMenuContent>
-                </DropdownMenu>
-            </div>
-        </div>
-
-        {selectedChores.length > 0 && (
-            <div className="sticky top-2 z-10 mb-3 rounded-lg border bg-background/95 p-3 shadow-sm backdrop-blur">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                        <p className="text-sm font-medium">{selectedChores.length} chore(s) selected</p>
-                        <p className="text-xs text-muted-foreground">Selected checkboxes are ready for a bulk action.</p>
-                    </div>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                        <Button variant="outline" size="sm" onClick={() => setSelectedChoreIds([])}>Clear</Button>
-                        <Button size="sm" onClick={handleCompleteSelectedChores}>Complete selected</Button>
-                    </div>
+      <AlertDialog open={!!choresPendingCompletion} onOpenChange={(open) => !open && setChoresPendingCompletion(null)}>
+        <AlertDialogContent className="max-h-[90vh] max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Complete chores with unfinished steps?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {choresPendingCompletion?.length || 0} selected chore(s) still have open steps. Completing them marks those steps done too.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ScrollArea className="max-h-[42vh] rounded-md border">
+            <div className="space-y-2 p-3">
+              {choresPendingCompletion?.map(chore => (
+                <div key={chore.id} className="rounded-md bg-muted/50 p-2">
+                  <p className="text-sm font-medium leading-tight">{chore.task}</p>
+                  <p className="text-xs text-muted-foreground">{openSubTasks(chore).length} unfinished step(s)</p>
                 </div>
+              ))}
             </div>
-        )}
+          </ScrollArea>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Review Selection</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setChoresPendingCompletion(null); void completeChores(selectedChores, null); }}>
+              Complete Anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-        <div className="space-y-3 md:space-y-4">
-             <Accordion type="multiple" defaultValue={['todo']} className="w-full space-y-3 md:space-y-4">
-                 <AccordionItem value="todo" className="border rounded-lg px-3 md:px-4 bg-background">
-                     <AccordionTrigger className="hover:no-underline font-headline text-sm md:text-xl py-2 md:py-3">To Do ({upcomingChores.length})</AccordionTrigger>
-                     <AccordionContent className="pt-1">
-                        {upcomingChores.length > 0 ? (
-                           <Accordion type="multiple" className="w-full space-y-2" defaultValue={groupChoresByRoom(upcomingChores).map(([roomName]) => `todo-${roomName}`)}>
-                            {groupChoresByRoom(upcomingChores).map(([roomName, {icon, chores}]) => (
-                                <AccordionItem value={`todo-${roomName}`} key={`todo-${roomName}`} className="border rounded-lg px-2 md:px-4 bg-background">
-                                    <AccordionTrigger className="hover:no-underline text-[11px] md:text-base font-semibold py-1.5 md:py-2">
-                                       <div className="flex items-center gap-2">
-                                          {renderIcon(icon, { className: 'h-3.5 w-3.5 md:h-4 md:w-4' })} {roomName} ({chores.length})
-                                       </div>
-                                    </AccordionTrigger>
-                                    <AccordionContent>
-                                        <ChoreList chores={chores} />
-                                    </AccordionContent>
-                                </AccordionItem>
-                            ))}
-                           </Accordion>
-                        ) : (
-                           <p className="text-center text-muted-foreground py-6 text-[10px] md:text-sm">All caught up!</p>
-                        )}
-                    </AccordionContent>
-                 </AccordionItem>
+      <AddChoreDialog
+        isOpen={isAddOpen}
+        onOpenChange={setIsAddOpen}
+        users={householdUsers}
+        rooms={rooms}
+        currentUserEmail={currentUser.email}
+        capabilities={capabilities}
+        onCreateRoom={openCreateRoom}
+        onCreate={handleCreateChore}
+      />
+      <ChoreLibraryDialog
+        isOpen={isLibraryOpen}
+        onOpenChange={setIsLibraryOpen}
+        choreTemplates={choreTemplates}
+        rooms={rooms}
+        capabilities={capabilities}
+        onChoreTemplateSave={handleSaveChoreTemplate}
+        onChoreTemplateDelete={handleDeleteChoreTemplate}
+        onAssignChores={handleOpenAssignDialog}
+        onCreateRoom={openCreateRoom}
+      />
+      <AssignChoresDialog
+        isOpen={isAssignOpen}
+        onOpenChange={setIsAssignOpen}
+        users={householdUsers}
+        rooms={rooms}
+        templatesToAssign={templatesToAssign}
+        currentUserEmail={currentUser.email}
+        capabilities={capabilities}
+        onAssign={handleAssignChores}
+      />
+      <ManageRoomsDialog
+        isOpen={roomsDialog.open}
+        onOpenChange={(open) => setRoomsDialog({ open, startNew: false })}
+        startWithNewRoom={roomsDialog.startNew}
+        rooms={rooms}
+        capabilities={capabilities}
+        onRoomSave={handleSaveRoom}
+        onRoomDelete={handleDeleteRoom}
+      />
+      <RecurringChoresDialog
+        isOpen={isRecurringOpen}
+        onOpenChange={setIsRecurringOpen}
+        recurringChores={recurringChores}
+        users={householdUsers}
+        currentUserEmail={currentUser.email}
+        capabilities={capabilities}
+        onUpdate={handleUpdateRecurringTask}
+        onDelete={handleDeleteRecurringTask}
+      />
 
-                 <AccordionItem value="future" className="border rounded-lg px-3 md:px-4 bg-background">
-                     <div className="flex items-center justify-between border-b-0">
-                        <AccordionPrimitive.Header className="flex flex-1">
-                            <AccordionPrimitive.Trigger asChild>
-                                <button className="flex flex-1 items-center justify-between py-2 md:py-3 font-headline text-sm md:text-xl text-left hover:no-underline hover:opacity-80 transition-opacity">
-                                    Future ({visibleFutureChores.length})
-                                    <ChevronDown className="h-4 w-4 md:h-5 md:w-5 shrink-0 transition-transform duration-200" />
-                                </button>
-                            </AccordionPrimitive.Trigger>
-                        </AccordionPrimitive.Header>
-                        <div className="flex items-center space-x-2 ml-4 mr-2 md:mr-4 shrink-0">
-                            <Switch id="show-full-future" checked={showFullFuture} onCheckedChange={setShowFullFuture}/>
-                            <Label htmlFor="show-full-future" className="text-[9px] md:text-sm cursor-pointer">Show All</Label>
-                        </div>
-                     </div>
-                     <AccordionContent className="pt-1">
-                        {visibleFutureChores.length > 0 ? (
-                            <Accordion type="multiple" className="w-full space-y-2" defaultValue={groupChoresByRoom(visibleFutureChores).map(([roomName]) => `future-${roomName}`)}>
-                                {groupChoresByRoom(visibleFutureChores).map(([roomName, {icon, chores}]) => (
-                                <AccordionItem value={`future-${roomName}`} key={`future-${roomName}`} className="border rounded-lg px-2 md:px-4 bg-background">
-                                     <AccordionTrigger className="hover:no-underline text-[11px] md:text-base font-semibold py-1.5 md:py-2">
-                                       <div className="flex items-center gap-2">
-                                          {renderIcon(icon, { className: 'h-3.5 w-3.5 md:h-4 md:w-4' })} {roomName} ({chores.length})
-                                       </div>
-                                    </AccordionTrigger>
-                                    <AccordionContent>
-                                        <ChoreList chores={chores} />
-                                    </AccordionContent>
-                                </AccordionItem>
-                            ))}
-                           </Accordion>
-                        ) : (
-                            <p className="text-center text-muted-foreground py-6 text-[10px] md:text-sm">No chores scheduled soon.</p>
-                        )}
-                    </AccordionContent>
-                 </AccordionItem>
-
-                 <AccordionItem value="completed" className="border rounded-lg px-3 md:px-4 bg-background">
-                     <div className="flex items-center justify-between border-b-0">
-                        <AccordionPrimitive.Header className="flex flex-1">
-                            <AccordionPrimitive.Trigger asChild>
-                                <button className="flex flex-1 items-center justify-between py-2 md:py-3 font-headline text-sm md:text-xl text-left hover:no-underline hover:opacity-80 transition-opacity">
-                                    Completed ({visibleCompletedChores.length})
-                                    <ChevronDown className="h-4 w-4 md:h-5 md:w-5 shrink-0 transition-transform duration-200" />
-                                </button>
-                            </AccordionPrimitive.Trigger>
-                        </AccordionPrimitive.Header>
-                        <div className="flex items-center space-x-2 ml-4 mr-2 md:mr-4 shrink-0">
-                            <Switch id="show-full-history" checked={showFullHistory} onCheckedChange={setShowFullHistory}/>
-                            <Label htmlFor="show-full-history" className="text-[9px] md:text-sm cursor-pointer">History</Label>
-                        </div>
-                     </div>
-                     <AccordionContent className="pt-1">
-                        {visibleCompletedChores.length > 0 ? (
-                            <Accordion type="multiple" className="w-full space-y-2">
-                                {groupChoresByRoom(visibleCompletedChores).map(([roomName, {icon, chores}]) => (
-                                <AccordionItem value={`completed-${roomName}`} key={`completed-${roomName}`} className="border rounded-lg px-2 md:px-4 bg-background">
-                                    <AccordionTrigger className="hover:no-underline text-[11px] md:text-base font-semibold py-1.5 md:py-2">
-                                       <div className="flex items-center gap-2">
-                                          {renderIcon(icon, { className: 'h-3.5 w-3.5 md:h-4 md:w-4' })} {roomName} ({chores.length})
-                                       </div>
-                                    </AccordionTrigger>
-                                    <AccordionContent>
-                                        <ChoreList chores={chores} />
-                                    </AccordionContent>
-                                </AccordionItem>
-                            ))}
-                           </Accordion>
-                        ) : (
-                            <p className="text-center text-muted-foreground py-6 text-[10px] md:text-sm">No chores completed recently.</p>
-                        )}
-                    </AccordionContent>
-                 </AccordionItem>
-             </Accordion>
+      {/* Header: left-aligned with actions in the header row, like the other modules. */}
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="font-headline text-3xl font-bold tracking-tight">Chore Chart</h1>
+          <p className="text-muted-foreground">Who does what, and what&apos;s due today.</p>
         </div>
+        <div className="flex flex-wrap gap-2">
+          {capabilities.canCreate && (
+            <Button onClick={openAdd}><Plus className="mr-2 h-4 w-4" /> Add Chore</Button>
+          )}
+          <Button variant="outline" asChild>
+            <Link href="/calendar"><CalendarDays className="mr-2 h-4 w-4" /> Calendar</Link>
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline"><MoreVertical className="mr-2 h-4 w-4" /> Chore Manager</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-60">
+              <DropdownMenuItem onSelect={() => setIsLibraryOpen(true)}>
+                <ListChecks className="mr-2 h-4 w-4" /> Chore library
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setIsRecurringOpen(true)}>
+                <Repeat className="mr-2 h-4 w-4" /> Repeating chores
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRoomsDialog({ open: true, startNew: false })}>
+                <Home className="mr-2 h-4 w-4" /> Rooms
+              </DropdownMenuItem>
+              {isManager && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuCheckboxItem
+                    checked={settings.leaderboardEnabled}
+                    onCheckedChange={(checked) => {
+                      setLeaderboardEnabled(Boolean(checked)).catch(error => toastError(error, "Couldn't change the setting"));
+                    }}
+                  >
+                    <Trophy className="mr-2 h-4 w-4" /> Show leaderboard
+                  </DropdownMenuCheckboxItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      {isEmptyHousehold ? (
+        <div className="rounded-xl border bg-card shadow-raised">
+          <EmptyState
+            kind="chores"
+            title="No chores yet"
+            description={capabilities.canCreate ? 'Add your first chore. Name it, pick who does it, done.' : 'Chores show up here once someone in your household adds them.'}
+            action={capabilities.canCreate ? { label: 'Add your first chore', icon: <Plus className="h-4 w-4" />, onClick: openAdd } : undefined}
+            secondaryAction={capabilities.canEdit && rooms.length === 0 ? { label: 'Set up rooms', onClick: openCreateRoom } : undefined}
+          />
+        </div>
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+          <div className="min-w-0 space-y-3 md:space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Filter className="mr-2 h-4 w-4" />
+                    {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'general' ? 'General' : roomsById.get(filterRoomId)?.name || 'Filter')}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-56">
+                  <DropdownMenuLabel>Filter by room</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuRadioGroup value={filterRoomId} onValueChange={setFilterRoomId}>
+                    <DropdownMenuRadioItem value="all">All Rooms</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="general">General</DropdownMenuRadioItem>
+                    {rooms.map(room => (
+                      <DropdownMenuRadioItem key={room.id} value={room.id}>
+                        <span className="flex items-center gap-2"><RoomIcon name={room.icon} className="h-3 w-3" />{room.name}</span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {capabilities.canComplete && (
+                <Button
+                  variant={selectMode ? 'secondary' : 'ghost'}
+                  size="sm"
+                  aria-pressed={selectMode}
+                  onClick={() => { setSelectMode(mode => !mode); setSelectedChoreIds([]); }}
+                >
+                  <CheckSquare className="mr-2 h-4 w-4" /> {selectMode ? 'Done selecting' : 'Select'}
+                </Button>
+              )}
+            </div>
+
+            {selectMode && selectedChores.length > 0 && (
+              <div className="sticky top-2 z-10 rounded-lg border bg-popover p-3 shadow-overlay">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm font-medium">{selectedChores.length} chore(s) selected</p>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setSelectedChoreIds([])}>Clear</Button>
+                    <Button size="sm" onClick={handleCompleteSelected}>Complete selected</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <Accordion type="multiple" defaultValue={['todo']} className="w-full space-y-3 md:space-y-4">
+              <AccordionItem value="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
+                <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl">To Do ({todoEntries.length})</AccordionTrigger>
+                <AccordionContent className="pt-1">
+                  {todoEntries.length > 0 ? roomGroups('todo', todoEntries, true) : (
+                    <EmptyState
+                      kind="chores"
+                      compact
+                      headingLevel={3}
+                      title={completedToday > 0 ? 'All done for today' : 'Nothing due today'}
+                      description={nextUp ? `Next up: ${nextUp.task}, ${format(new Date(`${choreDueKey(nextUp)}T12:00:00`), 'EEE, MMM d')}.` : 'Nothing is scheduled. Add a chore when something comes up.'}
+                      action={capabilities.canCreate ? { label: 'Add Chore', icon: <Plus className="h-4 w-4" />, onClick: openAdd } : undefined}
+                    />
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+
+              <AccordionItem value="future" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
+                <div className="flex items-center justify-between">
+                  <AccordionPrimitive.Header className="flex flex-1">
+                    <AccordionPrimitive.Trigger asChild>
+                      <button className="flex flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
+                        Future ({visibleFutureChores.length})
+                        <ChevronDown aria-hidden className="h-4 w-4 shrink-0 transition-transform duration-200 md:h-5 md:w-5" />
+                      </button>
+                    </AccordionPrimitive.Trigger>
+                  </AccordionPrimitive.Header>
+                  <div className="ml-4 mr-1 flex shrink-0 items-center gap-2">
+                    <Switch id="show-full-future" checked={showFullFuture} onCheckedChange={setShowFullFuture} />
+                    <Label htmlFor="show-full-future" className="cursor-pointer text-xs md:text-sm">Show All</Label>
+                  </div>
+                </div>
+                <AccordionContent className="pt-1">
+                  {visibleFutureChores.length > 0 ? roomGroups('future', asEntries(visibleFutureChores), true) : (
+                    <p className="py-6 text-center text-sm text-muted-foreground">Nothing scheduled in the next 7 days.</p>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+
+              <AccordionItem value="completed" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
+                <div className="flex items-center justify-between">
+                  <AccordionPrimitive.Header className="flex flex-1">
+                    <AccordionPrimitive.Trigger asChild>
+                      <button className="flex flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
+                        Completed ({visibleCompletedChores.length})
+                        <ChevronDown aria-hidden className="h-4 w-4 shrink-0 transition-transform duration-200 md:h-5 md:w-5" />
+                      </button>
+                    </AccordionPrimitive.Trigger>
+                  </AccordionPrimitive.Header>
+                  <div className="ml-4 mr-1 flex shrink-0 items-center gap-2">
+                    <Switch id="show-full-history" checked={showFullHistory} onCheckedChange={setShowFullHistory} />
+                    <Label htmlFor="show-full-history" className="cursor-pointer text-xs md:text-sm">History</Label>
+                  </div>
+                </div>
+                <AccordionContent className="pt-1">
+                  {visibleCompletedChores.length > 0 ? roomGroups('completed', asEntries(visibleCompletedChores), false) : (
+                    <p className="py-6 text-center text-sm text-muted-foreground">No chores completed in the last 3 days.</p>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
+          </div>
+
+          {showLeaderboard && (
+            <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
+              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} showPodium={isPodiumDay(new Date())} />
+            </aside>
+          )}
+        </div>
+      )}
     </>
   );
 }

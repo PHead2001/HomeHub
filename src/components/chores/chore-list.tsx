@@ -1,0 +1,231 @@
+'use client';
+
+import { useId, useRef } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { ChevronDown, Trash2 } from 'lucide-react';
+import { format } from 'date-fns';
+import type { User as HomeHubUser } from '@/lib/types';
+import { Checkbox } from '@/components/ui/checkbox';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Label } from '@/components/ui/label';
+import { MemberAvatar } from '@/components/member-avatar';
+import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
+import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chores/list';
+import type { MemberColor } from '@/lib/member-colors';
+import { SPRING_UI } from '@/lib/motion';
+import { cn, stableSlugify } from '@/lib/utils';
+import { memberName } from './assignee-select';
+import { CompletionCheck } from './completion-check';
+
+export type ChoreListHandlers = {
+  onToggleDone: (chore: ChoreRecord, origin: HTMLElement | null) => void;
+  onToggleSelect: (chore: ChoreRecord) => void;
+  onSubTaskToggle: (chore: ChoreRecord, subTask: string) => void;
+  onReassign: (chore: ChoreRecord, email: string) => void;
+  onDelete: (chore: ChoreRecord) => void;
+  onClearMissed: (entry: ToDoEntry) => void;
+};
+
+type ChoreListProps = ChoreListHandlers & {
+  entries: ToDoEntry[];
+  today: string;
+  usersByEmail: Map<string, HomeHubUser>;
+  users: HomeHubUser[];
+  colors: Map<string, MemberColor>;
+  capabilities: ChoreCapabilities;
+  selectMode: boolean;
+  selectedIds: ReadonlySet<string>;
+  openIds: ReadonlySet<string>;
+  onToggleOpen: (id: string) => void;
+};
+
+function dueLabel(day: string, today: string): string {
+  if (!day) return '';
+  if (day === today) return 'Today';
+  if (day === addDaysToKey(today, 1)) return 'Tomorrow';
+  if (day === addDaysToKey(today, -1)) return 'Yesterday';
+  return format(dayFromKey(day), 'EEE, MMM d');
+}
+
+function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps }) {
+  const { chore, missed } = entry;
+  const detailsId = useId();
+  const checkRef = useRef<HTMLButtonElement>(null);
+  const { capabilities, today } = props;
+  const due = choreDueKey(chore);
+  const isCompleted = chore.isCompleted;
+  const isOverdue = !isCompleted && due !== '' && due < today;
+  const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
+  const isOpen = props.openIds.has(chore.id);
+  const user = props.usersByEmail.get(chore.assignedToEmail);
+  const name = user ? memberName(user) : (chore.assignedToDisplayName || chore.assignedToEmail || 'Unassigned');
+  const uid = user?.uid || chore.assignedToEmail || chore.id;
+  const remaining = openSubTasks(chore).length;
+  const total = chore.subTasks?.length || 0;
+  const completedAt = completionInstant(chore);
+
+  const avatar = (
+    <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size="sm" decorative />
+  );
+
+  return (
+    <motion.li
+      layout="position"
+      initial={false}
+      exit={{ opacity: 0, y: 12, transition: { duration: 0.18 } }}
+      transition={SPRING_UI}
+      className={cn(
+        'rounded-lg border bg-card',
+        isOverdue && 'border-l-4 border-l-destructive',
+        props.selectedIds.has(chore.id) && 'border-primary',
+      )}
+      data-chore-id={chore.id}
+    >
+      <div className="flex items-start gap-1 p-1 md:gap-2 md:p-1.5">
+        {props.selectMode && !isCompleted ? (
+          <span className="grid h-10 w-10 shrink-0 place-items-center">
+            <Checkbox
+              checked={props.selectedIds.has(chore.id)}
+              onCheckedChange={() => props.onToggleSelect(chore)}
+              aria-label={`Select ${chore.task}`}
+              className="h-5 w-5"
+            />
+          </span>
+        ) : (
+          <CompletionCheck
+            ref={checkRef}
+            checked={isCompleted}
+            disabled={!capabilities.canComplete}
+            label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
+            onToggle={() => props.onToggleDone(chore, checkRef.current)}
+          />
+        )}
+
+        <div className="min-w-0 flex-1 py-1.5">
+          {hasDetails ? (
+            <button
+              type="button"
+              className="group flex w-full items-start gap-1 rounded-sm text-left"
+              aria-expanded={isOpen}
+              aria-controls={detailsId}
+              onClick={() => props.onToggleOpen(chore.id)}
+            >
+              <span className={cn('line-clamp-2 min-w-0 flex-1 break-words text-sm font-medium md:text-base', isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
+                {chore.task}
+              </span>
+              <ChevronDown aria-hidden className={cn('mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-150', isOpen && 'rotate-180')} />
+              <span className="sr-only">{isOpen ? 'Hide details' : 'Show details'}</span>
+            </button>
+          ) : (
+            <span className={cn('line-clamp-2 break-words text-sm font-medium md:text-base', isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
+              {chore.task}
+            </span>
+          )}
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            {isCompleted && completedAt ? <span>Done {format(completedAt, 'MMM d')}</span> : <span>{dueLabel(due, today)}</span>}
+            {isOverdue && <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 font-medium text-destructive">Overdue</span>}
+            {total > 0 && !isCompleted && <span>{total - remaining}/{total} steps</span>}
+            {missed.length > 0 && (
+              <span className="flex items-center gap-1 font-medium text-foreground">
+                +{missed.length} earlier missed
+                {capabilities.canDelete && (
+                  <button
+                    type="button"
+                    className="rounded px-1 font-medium text-primary underline-offset-2 hover:underline"
+                    aria-label={`Clear ${missed.length} earlier missed ${chore.task}`}
+                    onClick={() => props.onClearMissed(entry)}
+                  >
+                    Clear
+                  </button>
+                )}
+              </span>
+            )}
+            <span className="sm:hidden">· {name}</span>
+          </span>
+        </div>
+
+        {capabilities.canEdit && capabilities.canAssign && !isCompleted ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent sm:px-2"
+                aria-label={`Assigned to ${name}. Reassign ${chore.task}`}
+              >
+                {avatar}
+                <span className="hidden max-w-[8rem] truncate sm:inline">{name}</span>
+                <ChevronDown aria-hidden className="hidden h-3 w-3 sm:block" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel>Assign to</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={chore.assignedToEmail} onValueChange={(email) => props.onReassign(chore, email)}>
+                {props.users.map(member => (
+                  <DropdownMenuRadioItem key={member.email} value={member.email}>
+                    <span className="flex items-center gap-2">
+                      <MemberAvatar uid={member.uid || member.email} name={memberName(member)} photoUrl={member.avatarUrl} color={props.colors.get(member.uid || member.email)} size="sm" decorative />
+                      {memberName(member)}
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <span className="flex h-10 shrink-0 items-center gap-1.5 px-1.5 text-xs text-muted-foreground sm:px-2">
+            {avatar}
+            <span className="hidden max-w-[8rem] truncate sm:inline">{name}</span>
+            <span className="sr-only sm:hidden">Assigned to {name}</span>
+          </span>
+        )}
+
+        {capabilities.canDelete && (
+          <button
+            type="button"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
+            aria-label={`Delete ${chore.task}`}
+            onClick={() => props.onDelete(chore)}
+          >
+            <Trash2 aria-hidden className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {hasDetails && isOpen && (
+        <div id={detailsId} className="space-y-3 border-t px-4 pb-3 pt-2 md:pl-14">
+          {chore.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{chore.notes}</p>}
+          {total > 0 && (
+            <div className="space-y-1.5">
+              <h4 className="text-xs font-semibold text-foreground">Steps</h4>
+              {chore.subTasks!.map(subTask => {
+                const id = `subtask-${chore.id}-${stableSlugify(subTask)}`;
+                return (
+                  <div key={subTask} className="flex items-center gap-2">
+                    <Checkbox
+                      id={id}
+                      checked={(chore.completedSubTasks || []).includes(subTask)}
+                      onCheckedChange={() => props.onSubTaskToggle(chore, subTask)}
+                      disabled={isCompleted || !capabilities.canComplete}
+                    />
+                    <Label htmlFor={id} className={cn('text-sm font-normal', isCompleted && 'text-muted-foreground line-through')}>{subTask}</Label>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </motion.li>
+  );
+}
+
+/** Chore rows for one room group. Completed rows leave with a short slide. */
+export function ChoreList(props: ChoreListProps) {
+  return (
+    <ul className="space-y-2">
+      <AnimatePresence initial={false}>
+        {props.entries.map(entry => <ChoreRow key={entry.chore.id} entry={entry} props={props} />)}
+      </AnimatePresence>
+    </ul>
+  );
+}
