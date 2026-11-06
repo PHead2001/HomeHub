@@ -174,6 +174,12 @@ TypeScript-only checking is also available:
 npm run typecheck
 ```
 
+Run the design-foundation unit tests (theme preset WCAG contrast, the pre-paint theme script, member colors, feedback, motion tokens):
+
+```bash
+npm run test:unit
+```
+
 Validate the module documentation registry, links, and required headings:
 
 ```bash

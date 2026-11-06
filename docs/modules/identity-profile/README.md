@@ -9,7 +9,8 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 - Sign in with Google from the header login dialog.
 - Cancel sign-in and return to an idle login state.
 - View and edit personal profile fields at `/profile`.
-- Upload an avatar and select personal theme colors.
+- Upload an avatar.
+- Choose appearance in Profile > Appearance: theme mode (Dark, Light, System), a dark preset (Midnight, Hearth, Forest) and a light preset (Light, Sunrise), Reduce motion, Sound effects (with a sample button) and Haptics (shown only where `navigator.vibrate` exists). Changes apply immediately; there is no save button.
 - Configure chore reminder time/enabled state.
 - Manage browser push-notification subscription.
 - Log out.
@@ -22,7 +23,8 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 - `src/app/profile/page.tsx`
 - `src/components/profile-client.tsx`
 - `src/components/image-upload.tsx`
-- `src/components/theme-injector.tsx`
+- `src/components/appearance-settings.tsx` (Profile > Appearance card)
+- `src/components/appearance-provider.tsx` and `src/lib/theme/appearance.ts` (preference store, profile sync)
 - `src/components/force-password-change-dialog.tsx`
 - `src/app/api/e2e/auth-token/route.ts`
 - `src/app/e2e-login/page.tsx`
@@ -35,6 +37,10 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 Popup cancellation produces `Login canceled.` and clears loading in `finally`.
 
+`updateUser(data, newPassword?, { silent: true })` skips the global loading state and the success toast; it is used for background preference sync (a failed write still shows the error toast).
+
+Appearance: `AppearanceSettings` calls `useAppearance().setPreferences(...)`. The provider writes all preferences to `localStorage["homehub.appearance"]` (read by the pre-paint theme script) and, for a signed-in member, writes the synced part to the profile with a silent `updateUser({ theme })` when the mode, a preset or Reduce motion changes. On each sign-in the profile's synced values (when present) replace this device's copy once; Sound and Haptics never leave the device. Theme changes reveal in a circle from the chosen option (instant under reduced motion). The Reduce motion switch shows as on and disabled when the device already requests reduced motion.
+
 For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for an allowlisted fake test identity and `/e2e-login` exchanges it with `signInWithCustomToken`. The default remains `e2e-owner-uid`; limited, legacy, and Household B identities support isolation tests. Both paths are guarded by explicit emulator mode, the exact demo project, loopback Auth/Firestore hosts, and non-production runtime; normal and production authentication remain Google-only.
 
 ## Data Model and Persistence
@@ -42,6 +48,7 @@ For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for a
 - Profile: `users/{email}`.
 - Avatar objects: `users/{email}/avatars/{uuid}.{extension}`.
 - `User` includes Auth `uid`, email/name fields, avatar, role and permission compatibility fields, `householdId`, theme, chore settings, birthday, gender, force-password-change state, and `fcmTokens`.
+- `theme` (an existing allow-listed field) holds `{ version: 2, mode: 'dark' | 'light' | 'system', darkPreset: 'midnight' | 'hearth' | 'forest', lightPreset: 'light' | 'sunrise', reduceMotion: boolean }`. Older profiles may still hold the legacy free-color shape `{ background, accent, backgroundHex, accentHex }`; it is ignored (curated presets replace free colors) and overwritten the next time the member changes appearance. No new profile keys or rules changes were needed.
 - New profiles default to `role: member` and `householdId: null`.
 - `timeZone` (IANA name, at most 64 characters) is taken from the browser: whenever the profile loads and the browser's zone differs from the stored one, `AuthProvider` overwrites it (best effort; a failed write is ignored). Server-side upkeep uses it to decide when this person's overdue alert (after 07:00) and daily chore reminder fire; if it is missing or invalid, the household timezone is used.
 
@@ -82,7 +89,7 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after identity/profile changes.
 - Run `npm.cmd run test:e2e:local` to verify emulator custom-token sign-in and persisted authenticated state.
-- Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, theme application, push subscription, and logout (in a production build, confirm the page reloads to `/` and DevTools > Application shows no `firestore/` IndexedDB database afterwards).
+- Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, Profile > Appearance (mode, presets, Reduce motion, Sound, Haptics; reload without flash; sync to a second browser after sign-in), push subscription, and logout (in a production build, confirm the page reloads to `/` and DevTools > Application shows no `firestore/` IndexedDB database afterwards).
 - Verify self-profile updates reject membership-field spoofing and unrelated users cannot list profiles.
 
 ## When This Document Must Be Updated

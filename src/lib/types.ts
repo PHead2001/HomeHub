@@ -1,3 +1,4 @@
+import type { ProfileAppearance } from './theme/appearance';
 
 
 
@@ -370,6 +371,13 @@ export type BarcodeLibraryItem = {
 };
 
 
+export type LegacyProfileTheme = {
+  background?: string;
+  accent?: string;
+  backgroundHex?: string;
+  accentHex?: string;
+};
+
 export type User = {
   uid: string; // From Firebase Auth
   email: string;
@@ -385,12 +393,12 @@ export type User = {
   householdId: string | null;
   gender?: string;
   birthday?: string;
-  theme?: {
-    background?: string;
-    accent?: string;
-    backgroundHex?: string;
-    accentHex?: string;
-  } | null;
+  /**
+   * Appearance (Profile → Appearance). Version 2 stores curated preset choices;
+   * the legacy free-color shape `{ background, accent, backgroundHex, accentHex }`
+   * may still exist on old profiles and is ignored.
+   */
+  theme?: ProfileAppearance | LegacyProfileTheme | null;
   choreSettings?: {
     reminderTime: string; // e.g. "17:00"
     reminderEnabled: boolean;

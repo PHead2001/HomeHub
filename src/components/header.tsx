@@ -3,6 +3,12 @@
 
 import { User, LogOut, ScanBarcode, Home } from 'lucide-react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { motion } from 'motion/react';
+import { cn } from '@/lib/utils';
+import { isActiveRoute } from '@/lib/navigation';
+import { SPRING_SNAPPY } from '@/lib/motion';
+import type { HouseholdPermission } from '@/lib/types';
 import { Button } from './ui/button';
 import { useAuth } from '@/hooks/use-auth';
 import { LoginDialog } from './login-dialog';
@@ -19,23 +25,52 @@ import { NotificationBell } from './notification-bell';
 import { Logo } from './brand/logo';
 
 
+const NAV_LINKS: Array<{ href: string; label: string; permission: HouseholdPermission }> = [
+  { href: '/shopping', label: 'Shopping', permission: 'shopping.view' },
+  { href: '/pets', label: 'Pets', permission: 'pets.view' },
+  { href: '/maintenance', label: 'Maintenance', permission: 'maintenance.view' },
+  { href: '/chores', label: 'Chores', permission: 'chores.view' },
+  { href: '/automation', label: 'Automation', permission: 'automation.view' },
+];
+
 export function Header() {
   const { currentUser, currentMember, permissions, logout } = useAuth();
+  const pathname = usePathname() || '/';
   const isPendingNewUser = currentMember?.role === 'newuser';
-  
+
   return (
-    <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="surface-glass sticky top-0 z-50 w-full border-b border-border-subtle">
       <div className="container mx-auto flex h-14 items-center px-4">
         <Link href="/" className="flex items-center gap-2 mr-6">
           <Logo size={24} animated />
           <span className="font-headline text-xl font-bold">HomeHub</span>
         </Link>
-        <nav className="hidden md:flex items-center gap-4 text-sm">
-           {permissions['shopping.view'] && <Link href="/shopping" className="text-muted-foreground transition-colors hover:text-foreground">Shopping</Link>}
-           {permissions['pets.view'] && <Link href="/pets" className="text-muted-foreground transition-colors hover:text-foreground">Pets</Link>}
-           {permissions['maintenance.view'] && <Link href="/maintenance" className="text-muted-foreground transition-colors hover:text-foreground">Maintenance</Link>}
-           {permissions['chores.view'] && <Link href="/chores" className="text-muted-foreground transition-colors hover:text-foreground">Chores</Link>}
-           {permissions['automation.view'] && <Link href="/automation" className="text-muted-foreground transition-colors hover:text-foreground">Automation</Link>}
+        <nav aria-label="Main" className="hidden md:flex items-center gap-1 text-sm">
+          {NAV_LINKS.filter((link) => permissions[link.permission]).map((link) => {
+            const active = isActiveRoute(pathname, link.href);
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                aria-current={active ? 'page' : undefined}
+                className={cn(
+                  'relative rounded-md px-2.5 py-1.5 transition-colors',
+                  active ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {link.label}
+                {active && (
+                  // Slides between links (shared layoutId); instant under reduced motion.
+                  <motion.span
+                    layoutId="header-nav-underline"
+                    aria-hidden
+                    className="absolute inset-x-2.5 -bottom-3 h-0.5 rounded-full bg-primary"
+                    transition={SPRING_SNAPPY}
+                  />
+                )}
+              </Link>
+            );
+          })}
         </nav>
         <div className="flex flex-1 items-center justify-end gap-2">
             {currentUser ? (
@@ -43,7 +78,7 @@ export function Header() {
                  {permissions['notifications.view'] && !isPendingNewUser && <NotificationBell />}
                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+                    <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="Account menu">
                       <Avatar className="h-9 w-9">
                          <AvatarImage src={currentUser.avatarUrl ?? undefined} alt={currentUser.displayName} />
                         <AvatarFallback>{currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U'}</AvatarFallback>
