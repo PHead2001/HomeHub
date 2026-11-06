@@ -30,6 +30,8 @@ const chores = [
   { id: 'bins', task: 'Take bins to curb', assignedToEmail: 'morgan@example.test', dueDate: '2026-07-31', isCompleted: true, completedAt: '2026-07-31T20:10:00.000Z', roomIds: ['garage'] },
   { id: 'late', task: 'Clean gutters', assignedToEmail: viewer.email, dueDate: '2026-07-29', isCompleted: false, roomIds: ['garage'] },
   { id: 'nowhere', task: 'Water plants', assignedToEmail: viewer.email, dueDate: '2026-08-03', isCompleted: false },
+  // A generated occurrence weeks away: not "open for you" today and not "coming up" this week.
+  { id: 'far', task: 'Deep clean oven', assignedToEmail: viewer.email, dueDate: '2026-09-15', isCompleted: false },
 ];
 
 describe('dashboard dates', () => {
@@ -44,8 +46,8 @@ describe('dashboard dates', () => {
 describe('computeChoreFacts', () => {
   const facts = computeChoreFacts(chores, rooms, viewer, now);
 
-  it('counts the viewer’s open, overdue and due-today chores', () => {
-    assert.equal(facts.mineOpen, 3);
+  it('counts the viewer’s open (overdue + due today), overdue and due-today chores', () => {
+    assert.equal(facts.mineOpen, 2);
     assert.equal(facts.mineOverdue, 1);
     assert.equal(facts.mineDueToday, 1);
     assert.equal(facts.overdueTotal, 1);

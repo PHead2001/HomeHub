@@ -163,6 +163,9 @@ export function recurringTemplateIdsFrom(templates: RawDoc[], today: string): Se
  * older missed instance of a series that has a newer one due counts once, as on
  * the Chores page.
  */
+/** How far ahead a room's "coming up" count looks. */
+export const UPCOMING_DAYS = 7;
+
 export function computeChoreFacts(
   chores: RawDoc[],
   rooms: RawDoc[],
@@ -229,13 +232,16 @@ export function computeChoreFacts(
       }
       if (days !== null && days < 0) room.overdue += 1;
       else if (days === 0) room.dueToday += 1;
-      else room.upcoming += 1;
+      // "Coming up" means the next week: the server generates 30 occurrences of each
+      // repeating chore ahead of time, which are not work anyone needs to see yet.
+      else if (days !== null && days <= UPCOMING_DAYS) room.upcoming += 1;
       room.chores.push({ id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0 });
     }
 
     if (completed) continue;
     if (mine) {
-      mineOpen += 1;
+      // Open for you today: overdue or due today, not future generated occurrences.
+      if (days !== null && days <= 0) mineOpen += 1;
       if (days !== null && days < 0) mineOverdue += 1;
       if (days === 0) mineDueToday += 1;
     }
