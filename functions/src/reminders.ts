@@ -77,22 +77,37 @@ export const runHouseholdReminders = async (
   // Each chore is also re-read: a generated chore is created only if it is
   // still absent (an overlapping run may have created it and someone may have
   // completed it since), and a purge happens only if the chore is unchanged.
+  // Each source template is re-read too: instances are created only if their
+  // template is unchanged since this run read it, so an edit or cancellation
+  // in between (which removes its incomplete instances) is never undone.
   type Ref = DocumentReference;
   type ChoreOp =
-    {kind: "create"; ref: Ref; data: Record<string, unknown>} |
+    {
+      kind: "create"; ref: Ref; data: Record<string, unknown>;
+      template: Ref; templateVersion: FirestoreTimestamp | undefined;
+    } |
     {kind: "purge"; ref: Ref; completedAt: unknown};
   const commitGuarded = (ops: ChoreOp[]):
     Promise<{created: number; purged: number} | null> =>
     db.runTransaction(async (tx) => {
-      const [home, ...current] =
-        await tx.getAll(house, ...ops.map((op) => op.ref));
+      const templateRefs = [...new Map(ops.flatMap((op) =>
+        op.kind === "create" ? [[op.template.path, op.template]] : []))
+        .values()];
+      const [home, ...rest] = await tx.getAll(
+        house, ...templateRefs, ...ops.map((op) => op.ref));
       if (!home.exists || home.get("deletingAt")) return null;
+      const templates = new Map(templateRefs.map((ref, index) =>
+        [ref.path, rest[index]]));
+      const current = rest.slice(templateRefs.length);
       let created = 0;
       let purged = 0;
       ops.forEach((op, index) => {
         const snap = current[index];
         if (op.kind === "create") {
-          if (!snap.exists) {
+          const template = templates.get(op.template.path);
+          const unchanged = Boolean(template?.exists && op.templateVersion &&
+            template.updateTime?.isEqual(op.templateVersion));
+          if (unchanged && !snap.exists) {
             tx.create(op.ref, op.data);
             created++;
           }
@@ -160,7 +175,10 @@ export const runHouseholdReminders = async (
           originalDueDate: day,
           roomIds: roomId === "general" ? [] : [roomId],
         };
-        choreOps.push({kind: "create", ref: choreRef, data: chore});
+        choreOps.push({
+          kind: "create", ref: choreRef, data: chore,
+          template: templateDoc.ref, templateVersion: templateDoc.updateTime,
+        });
         if (choreOps.length >= 450) {
           const done = await commitGuarded(choreOps);
           if (!done) return stopped;

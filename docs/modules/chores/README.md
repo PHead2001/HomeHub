@@ -73,7 +73,7 @@ The homepage AI Overview includes only incomplete chores assigned to the verifie
 - Retention: completed chores older than 90 days (household-local) are deleted by the server step.
 - Room deletion updates templates but not existing chore instances; unresolved room IDs can disappear from grouped views.
 - Generation and reminders no longer depend on anyone opening the app.
-- Generation is create-only and retention re-checks: inside each upkeep transaction a generated instance is written only if it is still absent, and a completed chore is purged only if it is still completed with the same `completedAt`, so overlapping hourly and on-demand runs never reset or remove work done in between.
+- Generation is create-only and retention re-checks: inside each upkeep transaction a generated instance is written only if it is still absent, and a completed chore is purged only if it is still completed with the same `completedAt`, so overlapping hourly and on-demand runs never reset or remove work done in between. Instances are also created only if their source template is unchanged since the run read it (same update time), so editing or cancelling a recurrence while a run is in flight is never undone.
 - Best-effort notification failures do not roll back chore writes.
 - Assignment forms show one-time date controls or recurring controls, never both; switching modes retains the unsaved recurrence state for that dialog session.
 - Active and completed chore instances use the same confirmation contract before permanent deletion.

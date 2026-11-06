@@ -10,8 +10,8 @@ const ts = (d: Date) => Timestamp.fromDate(d) as never;
 const run = (now: Date) => runHouseholdReminders(adminDb as never, HOUSE, now, ts);
 const house = () => adminDb.collection('households').doc(HOUSE);
 
-// The real database, except that listing this household's chores returns nothing:
-// the view of a run that read chores before an overlapping run committed.
+// The real database, except that listing one of this household's subcollections
+// returns a stale result: the view of a run that read before someone else committed.
 const bind = <T extends object>(target: T, override: (key: PropertyKey) => unknown) =>
   new Proxy(target, {
     get(obj, key) {
@@ -21,15 +21,16 @@ const bind = <T extends object>(target: T, override: (key: PropertyKey) => unkno
       return typeof value === 'function' ? value.bind(obj) : value;
     },
   });
-const staleChoresDb = () => bind(adminDb, key => key === 'collection'
+const staleListingDb = (staleSub: string, listing: unknown) => bind(adminDb, key => key === 'collection'
   ? (name: string) => bind(adminDb.collection(name), k => k === 'doc'
     ? (id: string) => bind(adminDb.collection(name).doc(id), d => d === 'collection'
-      ? (sub: string) => sub === 'chores'
-        ? bind(adminDb.collection(name).doc(id).collection(sub), c => c === 'get' ? async () => ({ docs: [] }) : undefined)
+      ? (sub: string) => sub === staleSub
+        ? bind(adminDb.collection(name).doc(id).collection(sub), c => c === 'get' ? async () => listing : undefined)
         : adminDb.collection(name).doc(id).collection(sub)
       : undefined)
     : undefined)
   : undefined);
+const staleChoresDb = () => staleListingDb('chores', { docs: [] });
 
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());
@@ -117,6 +118,31 @@ describe('household upkeep', () => {
     const after = (await thursday.ref.get()).data();
     assert.equal(after?.isCompleted, true);
     assert.equal(after?.completedAt, '2026-11-05T15:05:00.000Z');
+  });
+
+  test('a run with a stale template never recreates a cancelled or edited recurrence', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    const trash = () => house().collection('chores').where('templateId', '==', 'trash').get();
+    // Cancelled after the run read the templates.
+    let stale = await house().collection('chore-templates').get();
+    await house().collection('chore-templates').doc('trash').delete();
+    let result = await runHouseholdReminders(staleListingDb('chore-templates', stale) as never, HOUSE, now, ts);
+    assert.equal(result.generatedChores, 0);
+    assert.equal((await trash()).size, 0, 'a cancelled recurrence is not repopulated');
+    // Edited (reassigned) after the run read the templates.
+    await house().collection('chore-templates').doc('trash').set({
+      task: 'Trash', assignedToEmail: 'owner@example.test', roomIds: [],
+      recurrence: { frequency: 'weekly', weeklyOptions: { daysOfWeek: [4] }, assignedToEmail: 'owner@example.test' },
+    });
+    stale = await house().collection('chore-templates').get();
+    await house().collection('chore-templates').doc('trash').update({ task: 'Trash and recycling' });
+    result = await runHouseholdReminders(staleListingDb('chore-templates', stale) as never, HOUSE, now, ts);
+    assert.equal((await trash()).size, 0, 'nothing generated from the pre-edit template');
+    // The next run sees the current template and generates from it.
+    await run(now);
+    const fresh = await trash();
+    assert.equal(fresh.size, 30);
+    assert.ok(fresh.docs.every(d => d.data().task === 'Trash and recycling'));
   });
 
   test('a household being deleted gets no upkeep writes', async () => {
