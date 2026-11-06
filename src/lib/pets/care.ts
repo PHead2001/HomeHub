@@ -2,7 +2,7 @@
  * Pure helpers for the living pet cards and the pet detail page (H09, D17 and the
  * section 3 Pets items). No Firebase or React imports, so they are unit tested.
  */
-import type { LoggedBy, PetMedicationLog, PetProfile, PortionUnit } from './types';
+import { FOOD_TYPES, type FoodType, type LoggedBy, type PetMedicationLog, type PetProfile, type PortionUnit } from './types';
 
 /* ------------------------------------------------------------------------- */
 /* Species and photos                                                         */
@@ -110,10 +110,30 @@ export function parsePortion(schedule?: string | null): { amount: number; unit: 
   // decimals (".5 cups") are read whole, so a portion is never misread tenfold.
   const match = text.match(/(?<![\w.])(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d*\.\d+|\d+(?:\.\d+)?|\ba\b|\ban\b|\bone\b|\bhalf\b|\btwo\b|\bthree\b|\bfour\b)\s*(?:a\s+)?(cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/);
   if (!match) return null;
-  const amount = toNumber(match[1]);
-  if (!amount) return null;
+  const raw = toNumber(match[1]);
+  // Same bounds as every portion input: above 0, at most PORTION_MAX, two decimals.
+  const amount = raw ? roundPortion(raw) : 0;
+  if (!amount || amount > PORTION_MAX) return null;
   const unit = UNIT_WORDS.find(([, pattern]) => pattern.test(match[2]))?.[0] ?? 'Other';
   return { amount, unit };
+}
+
+/** Largest portion any form or parser accepts. */
+export const PORTION_MAX = 50;
+
+/** Portions are kept to two decimals ("1/3 cup" → 0.33), never rounded to 0. */
+export function roundPortion(value: number): number {
+  return Math.max(0.01, Math.round(value * 100) / 100);
+}
+
+/** True when an amount is accepted by every portion input (feeding form, pet form, parser). */
+export function isValidPortion(value: number): boolean {
+  return Number.isFinite(value) && value > 0 && value <= PORTION_MAX;
+}
+
+/** A stored food type the forms accept, or undefined for legacy/unknown values. */
+export function knownFoodType(value: unknown): FoodType | undefined {
+  return (FOOD_TYPES as readonly unknown[]).includes(value) ? (value as FoodType) : undefined;
 }
 
 export type FeedingPlan = {
@@ -306,21 +326,32 @@ export function nextMedication(
  * among the latest dated entry of each medication. Any entry that supersedes one
  * of those is newer, so loading every entry from here on (plus the dated entries)
  * is enough, however many unrelated doses were logged since. Null when nothing is
- * pending. Medication dates are ISO strings, so they compare as text.
+ * pending. Dates may be ISO strings or Firestore timestamps (legacy shapes).
  */
 export function pendingWindowStart(
-  datedLogs: Pick<PetMedicationLog, 'date' | 'medication' | 'nextDueDate'>[],
-): string | null {
-  const latest = new Map<string, string>();
+  datedLogs: { date: unknown; medication?: string; nextDueDate?: string }[],
+): Date | null {
+  const latest = new Map<string, Date>();
   for (const log of datedLogs) {
     const key = (log.medication ?? '').trim().toLowerCase();
-    if (!key || typeof log.date !== 'string' || !parseLocalDate(log.nextDueDate)) continue;
+    const date = toDate(log.date);
+    if (!key || !date || !parseLocalDate(log.nextDueDate)) continue;
     const current = latest.get(key);
-    if (!current || log.date > current) latest.set(key, log.date);
+    if (!current || date > current) latest.set(key, date);
   }
-  let start: string | null = null;
+  let start: Date | null = null;
   for (const date of latest.values()) if (!start || date < start) start = date;
   return start;
+}
+
+/**
+ * Newest-first merge of entries whose `date` may be a Timestamp, Date or string
+ * (Firestore orders different types separately, so each shape is queried on its
+ * own and merged here). Entries without a readable date go last. Deduplicates by id.
+ */
+export function newestFirst<T extends { id: string; date: unknown }>(lists: T[][], max: number): T[] {
+  const time = (entry: T) => toDate(entry.date)?.getTime() ?? Number.NEGATIVE_INFINITY;
+  return mergeById(...lists).sort((a, b) => time(b) - time(a)).slice(0, max);
 }
 
 /** Merges entry lists by id (later lists win), for `nextMedication` over two queries. */
@@ -384,7 +415,7 @@ export function validatePetForm(values: PetFormValues, existingNames: string[] =
   }
   if (values.portionAmount.trim()) {
     const amount = Number(values.portionAmount);
-    if (!Number.isFinite(amount) || amount <= 0 || amount > 50) errors.portionAmount = 'Use an amount above 0 and up to 50.';
+    if (!isValidPortion(amount)) errors.portionAmount = `Use an amount above 0 and up to ${PORTION_MAX}.`;
   }
   return errors;
 }

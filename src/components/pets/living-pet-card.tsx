@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   feedingCountLabel,
+  knownFoodType,
   feedingHeadline,
   feedingPlan,
   feedingStatus,
@@ -21,7 +22,7 @@ import {
   SPECIES_ART_LABEL,
   speciesArt,
 } from '@/lib/pets/care';
-import type { FoodType, PetFeedingLog, PetProfile } from '@/lib/pets/types';
+import type { PetFeedingLog, PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { FeedingRing } from './feeding-ring';
 import { MedicationChip } from './medication-chip';
@@ -61,7 +62,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
   const plan = feedingPlan(pet);
   const status = feedingStatus(feedings.logs, plan, now);
   const due = nextMedication(medications.logs, now);
-  const lastFoodType = feedings.logs[0]?.foodType as FoodType | undefined;
+  const lastFoodType = knownFoodType(feedings.logs[0]?.foodType);
   const href = `/pets/${pet.id}`;
 
   return (

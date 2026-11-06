@@ -10,13 +10,14 @@ import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import {
   feedingCountLabel,
+  knownFoodType,
   feedingHeadline,
   feedingPlan,
   feedingStatus,
   formatPortion,
   nextMedication,
 } from '@/lib/pets/care';
-import type { FoodType, PetFeedingLog, PetProfile } from '@/lib/pets/types';
+import type { PetFeedingLog, PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -79,7 +80,7 @@ function PetSummary({ pet, householdId }: { pet: PetProfile; householdId: string
         petName={pet.name}
         plan={plan}
         status={status}
-        foodType={feedings.logs[0]?.foodType as FoodType | undefined}
+        foodType={knownFoodType(feedings.logs[0]?.foodType)}
         variant={status.complete ? 'secondary' : 'default'}
         className="w-full"
       />

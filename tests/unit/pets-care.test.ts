@@ -12,7 +12,10 @@ import {
   hasRealPhoto,
   loggerName,
   medicationState,
+  isValidPortion,
   mergeById,
+  newestFirst,
+  PORTION_MAX,
   pendingWindowStart,
   nextMedication,
   parseFeedingsPerDay,
@@ -81,6 +84,20 @@ describe('feeding plan', () => {
     assert.deepEqual(parsePortion('0.75 scoops'), { amount: 0.75, unit: 'Scoops' });
     assert.deepEqual(parsePortion('1.25 cups'), { amount: 1.25, unit: 'Cups' });
     assert.equal(parsePortion('x5 cups'), null);
+  });
+
+  it('only produces portions every portion input accepts', () => {
+    // Fractions round to two decimals and stay above 0 (feeding form uses step="any").
+    assert.deepEqual(parsePortion('1/3 cup twice daily'), { amount: 0.33, unit: 'Cups' });
+    assert.deepEqual(parsePortion('1/8 cup'), { amount: 0.13, unit: 'Cups' });
+    assert.equal(parsePortion('100 cups'), null);
+    for (const text of ['1/3 cup', '1/8 cup', '.5 cups', '2 1/2 scoops', 'half a cup', '50 cups', '0.01 cups']) {
+      const portion = parsePortion(text);
+      assert.ok(portion && isValidPortion(portion.amount), `${text} -> ${portion?.amount}`);
+      assert.deepEqual(validatePetForm({ name: 'X', foodSchedule: text, feedingsPerDay: '', portionAmount: String(portion!.amount) }), {});
+    }
+    assert.equal(isValidPortion(0), false);
+    assert.equal(isValidPortion(PORTION_MAX + 0.01), false);
     assert.deepEqual(feedingPlan({ foodSchedule: '.5 cups twice daily' }), { perDay: 2, amount: 0.5, unit: 'Cups' });
   });
 
@@ -182,8 +199,8 @@ describe('medication countdown', () => {
       id: `d${i}`, date: new Date(Date.UTC(2026, 6, 6) + i * 12 * 3_600_000).toISOString(), medication: 'Antibiotic', dosage: '1 pill',
     }));
     const since = pendingWindowStart([monthly]);
-    assert.equal(since, monthly.date);
-    const recent = daily.filter((log) => log.date >= since!);
+    assert.equal(since?.toISOString(), monthly.date);
+    const recent = daily.filter((log) => new Date(log.date) >= since!);
     const due = nextMedication(mergeById([monthly], recent), now);
     assert.equal(due?.medication, 'Flea prevention');
     assert.equal(due?.label, 'Due in 3 days');
@@ -195,7 +212,7 @@ describe('medication countdown', () => {
     const dated = [{ id: 'a', date: '2026-07-01T09:00:00.000Z', medication: 'Heartworm', dosage: '1 chew', nextDueDate: '2026-07-31' }];
     const since = pendingWindowStart(dated);
     const recent = [...dated, { id: 'b', date: '2026-07-31T09:00:00.000Z', medication: 'heartworm', dosage: '1 chew' }];
-    assert.ok(recent.every((log) => log.date >= since!));
+    assert.ok(recent.every((log) => new Date(log.date) >= since!));
     assert.equal(nextMedication(mergeById(dated, recent), now), null);
   });
 
@@ -207,8 +224,13 @@ describe('medication countdown', () => {
         { date: '2026-06-01T00:00:00.000Z', medication: 'A', nextDueDate: '2026-07-01' },
         { date: '2026-07-01T00:00:00.000Z', medication: 'a', nextDueDate: '2026-08-01' },
         { date: '2026-07-10T00:00:00.000Z', medication: 'B', nextDueDate: '2026-08-10' },
-      ]),
+      ])?.toISOString(),
       '2026-07-01T00:00:00.000Z',
+    );
+    // Legacy Timestamp-shaped dates count too.
+    assert.equal(
+      pendingWindowStart([{ date: { toDate: () => new Date('2026-06-15T00:00:00.000Z') }, medication: 'C', nextDueDate: '2026-07-15' }])?.toISOString(),
+      '2026-06-15T00:00:00.000Z',
     );
   });
 
@@ -217,6 +239,27 @@ describe('medication countdown', () => {
     assert.equal(parseLocalDate('2026-02-30'), null);
     assert.equal(parseLocalDate('next week'), null);
     assert.equal(toDate('not a date'), null);
+  });
+});
+
+describe('mixed date shapes', () => {
+  it('orders Timestamp, Date and ISO-string entries chronologically and applies the limit after merging', () => {
+    // 20 legacy ISO-string feedings, all older than one new Timestamp feeding.
+    const legacy = Array.from({ length: 20 }, (_, i) => ({ id: `s${i}`, date: new Date(Date.UTC(2026, 5, 1 + i)).toISOString() }));
+    const fresh = [{ id: 't1', date: { toDate: () => new Date('2026-08-01T11:00:00.000Z') } }];
+    const merged = newestFirst<{ id: string; date: unknown }>([fresh, legacy], 20);
+    assert.equal(merged.length, 20);
+    assert.equal(merged[0].id, 't1');
+    assert.equal(merged[1].id, 's19');
+    assert.equal(merged.at(-1)?.id, 's1');
+  });
+
+  it('dedupes by id and puts unreadable dates last', () => {
+    const merged = newestFirst<{ id: string; date: unknown }>([
+      [{ id: 'a', date: 'not a date' }, { id: 'b', date: new Date('2026-07-01') }],
+      [{ id: 'b', date: new Date('2026-07-01') }, { id: 'c', date: '2026-07-02T00:00:00.000Z' }],
+    ], 10);
+    assert.deepEqual(merged.map((entry) => entry.id), ['c', 'b', 'a']);
   });
 });
 

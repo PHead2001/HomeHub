@@ -13,7 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { formatPortion, loggerName, type FeedingPlan } from '@/lib/pets/care';
+import { formatPortion, isValidPortion, knownFoodType, loggerName, PORTION_MAX, type FeedingPlan } from '@/lib/pets/care';
 import { FOOD_TYPES, PORTION_UNITS, type FoodType, type PetFeedingLog } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { Skeleton } from './ui/skeleton';
@@ -31,7 +31,10 @@ const logSchema = z.object({
   date: z.date(),
   time: z.string().regex(/^(0?[1-9]|1[0-2]):[0-5][0-9]$/, "Use the hh:mm format, e.g. 7:30."),
   ampm: z.enum(['AM', 'PM']),
-  cups: z.coerce.number({ invalid_type_error: 'Enter an amount.' }).min(0.25, 'Use at least 0.25.').max(50, 'Use 50 or less.'),
+  // Accepts every planned portion (e.g. "1/3 cup" → 0.33), so the default always validates.
+  cups: z.coerce
+    .number({ invalid_type_error: 'Enter an amount.' })
+    .refine(isValidPortion, `Use an amount above 0 and up to ${PORTION_MAX}.`),
   foodAmountType: z.enum(PORTION_UNITS),
   foodType: z.enum(FOOD_TYPES),
   comments: z.string().max(500, 'Keep comments under 500 characters.').optional(),
@@ -68,7 +71,7 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
   const [useCurrentTime, setUseCurrentTime] = useState(true);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
-  const lastFoodType = logs[0]?.foodType as FoodType | undefined;
+  const lastFoodType = knownFoodType(logs[0]?.foodType);
 
   const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),
@@ -227,7 +230,7 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
                     <FormItem>
                       <FormLabel>Amount</FormLabel>
                       <FormControl>
-                        <Input type="number" inputMode="decimal" min={0.25} max={50} step={0.25} {...field} />
+                        <Input type="number" inputMode="decimal" min={0.01} max={PORTION_MAX} step="any" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

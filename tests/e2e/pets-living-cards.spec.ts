@@ -28,6 +28,8 @@ async function restorePetsSeed() {
   }
   await household.collection('pets').doc('pixel').collection('medication-logs').doc('flea-prevention')
     .update({ nextDueDate: FieldValue.delete() }).catch(() => undefined);
+  const testPetLogs = await household.collection('pets').doc(TEST_PET).collection('feeding-logs').get();
+  await Promise.all(testPetLogs.docs.map((entry) => entry.ref.delete()));
   await household.collection('pets').doc(TEST_PET).delete();
 }
 
@@ -79,6 +81,44 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     // Radix also mirrors the toast into its own live region; target the visible title.
     await expect(page.getByText('Pixel is all fed for today', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('All fed today');
+  });
+
+  test('new feedings show up even behind many legacy ISO-string feedings', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Legacy entries stored the date as an ISO string; Firestore orders strings
+    // apart from timestamps, so a single ordered, limited query would hide new ones.
+    const logs = household.collection('pets').doc('pixel').collection('feeding-logs');
+    await Promise.all(Array.from({ length: 25 }, (_, i) => logs.doc(`legacy-${i}`).set({
+      date: new Date(Date.UTC(2026, 6, 1 + i, 8)).toISOString(), cups: 1, foodType: 'Wet', foodAmountType: 'Cans', comments: '', ampm: 'AM',
+    })));
+    await openPets(page);
+    const pixel = page.getByTestId('pet-card-pixel');
+    await expect(pixel).toContainText('0 of 2 today');
+    await pixel.getByRole('button', { name: 'Feed Pixel, 1 can' }).click();
+    await expect(pixel).toContainText('Fed just now by Alex');
+    await expect(pixel).toContainText('1 of 2 today');
+
+    await page.goto('/pets/pixel');
+    await expect(page.getByText('by Alex').first()).toBeVisible();
+  });
+
+  test('the detailed feeding form saves a fractional planned portion', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await household.collection('pets').doc(TEST_PET).set({
+      name: 'Tweety', type: 'Bird', photoUrl: 'https://placehold.co/300x300.png', dataAiHint: 'bird', foodSchedule: '1/3 cup twice daily',
+    });
+    await page.clock.setFixedTime(fixedNow);
+    await page.goto(`/pets/${TEST_PET}`);
+    await page.getByRole('button', { name: 'Log with details' }).click();
+    const form = page.getByRole('form', { name: 'Log a feeding with details' });
+    await expect(form.getByLabel('Amount')).toHaveValue('0.33');
+    await form.getByLabel('Comments (Optional)').fill('Fractional portion');
+    await form.getByRole('button', { name: 'Save feeding' }).click();
+    await expect(page.getByText('Feeding logged', { exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const saved = await household.collection('pets').doc(TEST_PET).collection('feeding-logs').get();
+      return saved.docs.map((entry) => entry.data().cups);
+    }).toEqual([0.33]);
   });
 
   test('the next medication shows a countdown chip', async ({ page }, testInfo) => {

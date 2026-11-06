@@ -10,6 +10,7 @@ import { ImageUpload } from '@/components/image-upload';
 import {
   FOOD_SCHEDULE_MAX,
   PET_NAME_MAX,
+  PORTION_MAX,
   parseFeedingsPerDay,
   parsePortion,
   type PetFormErrors,
@@ -151,9 +152,9 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
             <Input
               type="number"
               inputMode="decimal"
-              min={0.25}
-              max={50}
-              step={0.25}
+              min={0.01}
+              max={PORTION_MAX}
+              step="any"
               value={values.portionAmount}
               onChange={(event) => onChange({ portionAmount: event.target.value })}
               placeholder={parsedPortion ? String(parsedPortion.amount) : '1'}

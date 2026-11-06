@@ -11,11 +11,14 @@ import {
   orderBy,
   query,
   where,
+  Timestamp,
   type CollectionReference,
+  type Query,
+  type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { db } from '@/lib/firebase';
-import { mergeById, pendingWindowStart, toDate } from '@/lib/pets/care';
+import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { FoodType, LoggedBy, PetCareLog, PetFeedingLog, PetMedicationLog, PortionUnit } from '@/lib/pets/types';
 
 export type PetLogKind = 'feeding-logs' | 'medication-logs' | 'care-logs';
@@ -60,11 +63,81 @@ export function addFeedingLog(householdId: string, petId: string, feeding: NewFe
 }
 
 type LiveLogs<T> = { logs: T[]; loading: boolean; error: unknown };
+type KeyedLogs<T> = { key: string | null; logs: T[]; error: unknown };
+const EMPTY_KEYED = { key: null, logs: [], error: null };
 
 /**
- * Live, newest-first log entries for one pet. Feeding dates may be Firestore
- * timestamps or ISO strings; they are normalized to `Date`.
+ * Log `date` values exist in two shapes: Firestore timestamps (feedings written by
+ * this app) and ISO strings (medication and care entries, and legacy feedings).
+ * Firestore orders different types separately, so a single `orderBy('date')` with
+ * a limit can drop every entry of one shape. Each shape is queried on its own with
+ * the same order and limit, then merged chronologically (no migration needed).
  */
+const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000); // 0001-01-01
+
+function dateShapeQueries(ref: CollectionReference, since: Date | null, max?: number): Query[] {
+  const stringFloor = since ? new Date(since.getTime() - 24 * 3_600_000).toISOString().slice(0, 10) : '';
+  const shapes: Query[] = [
+    query(ref, where('date', '>=', since ? Timestamp.fromDate(since) : MIN_TIMESTAMP), orderBy('date', 'desc')),
+    // Date-only or differently formatted ISO strings compare as text; a one-day
+    // margin keeps them in range (extra entries are harmless to the callers).
+    query(ref, where('date', '>=', stringFloor), orderBy('date', 'desc')),
+  ];
+  return max ? shapes.map((shape) => query(shape, limitTo(max))) : shapes;
+}
+
+/** Feeding dates become `Date`; other kinds keep ISO strings (timestamps are converted). */
+function normalizeEntry(kind: PetLogKind, entry: QueryDocumentSnapshot): { id: string; date: unknown } & Record<string, unknown> {
+  const data = entry.data();
+  const date = toDate(data.date);
+  if (kind === 'feeding-logs') return { id: entry.id, ...data, date: date ?? new Date(0) };
+  return { id: entry.id, ...data, date: typeof data.date === 'string' ? data.date : (date?.toISOString() ?? '') };
+}
+
+type UnionSpec = {
+  key: string | null;
+  householdId: string | null | undefined;
+  petId: string;
+  kind: PetLogKind;
+  /** `shapes`: both date shapes (optionally from `sinceMs`, limited to `max`); `dated`: entries with a next due date. */
+  mode: 'shapes' | 'dated';
+  sinceMs?: number | null;
+  max?: number;
+};
+
+/** Subscribes to one or more queries; resolves once each has answered, keyed so stale results never show. */
+function useLiveUnion({ key, householdId, petId, kind, mode, sinceMs, max }: UnionSpec) {
+  const [state, setState] = useState<KeyedLogs<Record<string, unknown>[]>>(EMPTY_KEYED);
+
+  useEffect(() => {
+    if (!key || !householdId) return;
+    const ref = petLogsCollection(householdId, petId, kind);
+    const queries = mode === 'dated'
+      ? [query(ref, where('nextDueDate', '>=', ''))]
+      : dateShapeQueries(ref, sinceMs == null ? null : new Date(sinceMs), max);
+    const results: (Record<string, unknown>[] | undefined)[] = queries.map(() => undefined);
+    let failed = false;
+    const unsubscribes = queries.map((shape, index) =>
+      onSnapshot(
+        shape,
+        (snapshot) => {
+          results[index] = snapshot.docs.map((entry) => normalizeEntry(kind, entry));
+          if (!failed && results.every(Boolean)) setState({ key, logs: results as Record<string, unknown>[][], error: null });
+        },
+        (error) => {
+          failed = true;
+          console.error(`Error loading ${kind}:`, error);
+          setState({ key, logs: [], error });
+        },
+      ),
+    );
+    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+  }, [key, householdId, petId, kind, mode, sinceMs, max]);
+
+  return state;
+}
+
+/** Live, newest-first log entries for one pet, correct across both date shapes. */
 export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareLog>(
   householdId: string | null | undefined,
   petId: string,
@@ -72,86 +145,40 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
   max = 50,
 ): LiveLogs<T> {
   const key = householdId ? `${householdId}/${petId}/${kind}/${max}` : null;
-  const [state, setState] = useState<{ key: string | null; logs: T[]; error: unknown }>({ key: null, logs: [], error: null });
-
-  useEffect(() => {
-    if (!householdId || !key) return;
-    const q = query(petLogsCollection(householdId, petId, kind), orderBy('date', 'desc'), limitTo(max));
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const logs = snapshot.docs.map((entry) => {
-          const data = entry.data();
-          if (kind === 'feeding-logs') {
-            return { id: entry.id, ...data, date: toDate(data.date) ?? new Date(0) } as unknown as T;
-          }
-          return { id: entry.id, ...data } as unknown as T;
-        });
-        setState({ key, logs, error: null });
-      },
-      (error) => {
-        console.error(`Error loading ${kind}:`, error);
-        setState({ key, logs: [], error });
-      },
-    );
-  }, [householdId, petId, kind, max, key]);
+  const state = useLiveUnion({ key, householdId, petId, kind, mode: 'shapes', max });
 
   if (!key) return { logs: [], loading: false, error: null };
-  // Until the current subscription answers, show loading (never another pet's logs).
-  const ready = state.key === key;
-  return { logs: ready ? state.logs : [], loading: !ready, error: ready ? state.error : null };
+  // Until the current subscriptions answer, show loading (never another pet's logs).
+  if (state.key !== key) return { logs: [], loading: true, error: null };
+  if (state.error) return { logs: [], loading: false, error: state.error };
+  const lists = state.logs as unknown as (T & { id: string; date: unknown })[][];
+  return { logs: newestFirst(lists, max) as T[], loading: false, error: null };
 }
-
-type KeyedLogs<T> = { key: string | null; logs: T[]; error: unknown };
-const EMPTY_KEYED = { key: null, logs: [], error: null };
 
 /**
  * Medication entries needed for the next-dose countdown, independent of any
- * history window: every entry with a `nextDueDate` (live), plus every entry from
- * the oldest pending medication's latest dated dose onward (live), so a monthly
- * dose stays visible however many daily doses are logged, and a later dose of the
- * same medication still supersedes it. Both queries use single-field indexes.
+ * history window: every entry with a `nextDueDate`, plus every entry (in both
+ * date shapes) from the oldest pending medication's latest dated dose onward, so a
+ * monthly dose stays visible however many daily doses are logged, and a later
+ * dose of the same medication still supersedes it. All queries are live and use
+ * single-field indexes.
  */
 export function useMedicationCountdownLogs(householdId: string | null | undefined, petId: string): LiveLogs<PetMedicationLog> {
   const key = householdId ? `${householdId}/${petId}` : null;
-  const [dated, setDated] = useState<KeyedLogs<PetMedicationLog>>(EMPTY_KEYED);
+  const dated = useLiveUnion({ key, householdId, petId, kind: 'medication-logs', mode: 'dated' });
 
-  useEffect(() => {
-    if (!householdId || !key) return;
-    const q = query(petLogsCollection(householdId, petId, 'medication-logs'), where('nextDueDate', '>=', ''));
-    return onSnapshot(
-      q,
-      (snapshot) => setDated({ key, logs: snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetMedicationLog), error: null }),
-      (error) => {
-        console.error('Error loading medication due dates:', error);
-        setDated({ key, logs: [], error });
-      },
-    );
-  }, [householdId, petId, key]);
-
-  const datedReady = dated.key === key;
-  const since = datedReady ? pendingWindowStart(dated.logs) : null;
-  const sinceKey = key && since ? `${key}@${since}` : null;
-  const [recent, setRecent] = useState<KeyedLogs<PetMedicationLog>>(EMPTY_KEYED);
-
-  useEffect(() => {
-    if (!householdId || !since || !sinceKey) return;
-    const q = query(petLogsCollection(householdId, petId, 'medication-logs'), where('date', '>=', since));
-    return onSnapshot(
-      q,
-      (snapshot) => setRecent({ key: sinceKey, logs: snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetMedicationLog), error: null }),
-      (error) => {
-        console.error('Error loading recent medication:', error);
-        setRecent({ key: sinceKey, logs: [], error });
-      },
-    );
-  }, [householdId, petId, since, sinceKey]);
+  const datedReady = dated.key === key && !dated.error;
+  const datedLogs = datedReady ? ((dated.logs as unknown as PetMedicationLog[][])[0] ?? []) : [];
+  const since = datedReady ? pendingWindowStart(datedLogs) : null;
+  const sinceKey = key && since ? `${key}@${since.toISOString()}` : null;
+  const recent = useLiveUnion({ key: sinceKey, householdId, petId, kind: 'medication-logs', mode: 'shapes', sinceMs: since?.getTime() ?? null });
 
   if (!key) return { logs: [], loading: false, error: null };
-  if (!datedReady) return { logs: [], loading: true, error: null };
+  if (dated.key !== key) return { logs: [], loading: true, error: null };
   if (dated.error) return { logs: [], loading: false, error: dated.error };
   if (!sinceKey) return { logs: [], loading: false, error: null };
   if (recent.key !== sinceKey) return { logs: [], loading: true, error: null };
   if (recent.error) return { logs: [], loading: false, error: recent.error };
-  return { logs: mergeById(dated.logs, recent.logs), loading: false, error: null };
+  const recentLogs = (recent.logs as unknown as PetMedicationLog[][]).flat();
+  return { logs: mergeById(datedLogs, recentLogs), loading: false, error: null };
 }
