@@ -11,7 +11,7 @@ const result = spawnSync(process.execPath, [
   '--project',
   E2E_PROJECT_ID,
   '--only',
-  'firestore,auth',
+  'firestore,auth,storage',
   'node --conditions=react-server --import tsx --test --test-concurrency=1 tests/server/household-membership.test.ts tests/server/home-assistant.test.ts tests/server/push-policy.test.ts',
 ], {
   cwd: process.cwd(),

@@ -7,6 +7,7 @@ import {
   useEffect,
   type ReactNode,
   useCallback,
+  useMemo,
 } from 'react';
 import {
   onAuthStateChanged,
@@ -559,7 +560,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [currentUser?.householdId, household, resetHouseholdState, toast]);
 
-  const permissions = getMemberPermissions(currentMember);
+  // Stable identity: consumers list permissions in effect and callback dependencies.
+  const permissions = useMemo(() => getMemberPermissions(currentMember), [currentMember]);
 
   const value = {
     currentUser,
