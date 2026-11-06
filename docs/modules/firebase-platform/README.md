@@ -35,7 +35,7 @@ The `Authenticated E2E Smoke` GitHub Actions workflow runs project validation, a
 
 App Hosting serves the Next.js app. `apphosting.yaml` maps runtime-only `OPENAI_API_KEY` to Secret Manager secret `openaiApiKey` and supplies non-secret OpenAI model defaults, including the Luna overview model. AI model calls do not run during build. Firestore document creation under household notifications triggers the Node 24 Functions codebase for FCM delivery.
 
-No explicit Firestore offline persistence, Auth persistence override, App Check, or custom local-cache policy is configured.
+No explicit Firestore offline persistence, Auth persistence override, or custom local-cache policy is configured. App Check starts in `src/lib/firebase.ts` in the browser only (never in emulator mode) when `NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY` is set: a reCAPTCHA Enterprise score-based key (`HomeHub web App Check`) limited to `studio--homehub-j91jb.us-central1.hosted.app`, `homehub-j91jb.web.app` and `homehub-j91jb.firebaseapp.com`, registered as the App Check provider for web app `1:562837692805:web:a21c3805ca4921564d24ec` (token TTL 1 hour, auto-refresh). The public site key is set in `apphosting.yaml` for build and runtime. `localhost` is not an allowed domain; local development against the real project sets `NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN` to a debug token registered in the console.
 
 ## Data Model and Persistence
 
@@ -74,7 +74,7 @@ Firestore rules explicitly map known household collections to the closest role/p
 
 Protected AI, overview, and barcode server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before any Admin aggregation, public fallback, or OpenAI request. Authority comes only from the caller's approved `members/{uid}` record (`src/ai/household-authority.ts`); legacy email listings, owner email/UID fields and profile role/overrides grant nothing. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
 
-No App Check enforcement is configured.
+App Check is registered but not enforced for Firestore, Storage or Auth. Enforcement is turned on only after the App Check metrics show production requests arriving with valid tokens, so legitimate clients are not cut off. Server-side code uses the Admin SDK, which App Check does not gate.
 
 ## Integrations and Background Processing
 

@@ -36,3 +36,11 @@ env:
     value: gpt-5.6-luna
     availability:
       - RUNTIME
+
+  # App Check (reCAPTCHA Enterprise). Site keys are public; the key only works on
+  # HomeHub's own domains. Needed at build time because NEXT_PUBLIC_* is inlined.
+  - variable: NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY
+    value: 6LelURMuAAAAAGp_BMQ-5nXZu2EVl8NPtKtvlebO
+    availability:
+      - BUILD
+      - RUNTIME

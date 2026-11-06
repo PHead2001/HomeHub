@@ -4,6 +4,7 @@ import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { getMessaging, isSupported } from "firebase/messaging";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 
 export const firebaseConfig: FirebaseOptions = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -21,6 +22,30 @@ export const auth = getAuth(app);
 export const storage = getStorage(app);
 
 export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
+
+type AppCheckState = typeof globalThis & {
+  FIREBASE_APPCHECK_DEBUG_TOKEN?: string | boolean;
+  __homeHubAppCheckStarted?: boolean;
+};
+
+// App Check: the browser proves it is the real HomeHub web app (reCAPTCHA Enterprise,
+// key limited to HomeHub's domains) before Firestore, Storage and Auth accept its
+// requests once enforcement is on. Browser only; never against the emulators.
+// Local development against the real project registers a debug token instead,
+// because localhost is not an allowed domain for the key.
+const appCheckSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY;
+if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
+  const appCheckState = globalThis as AppCheckState;
+  if (!appCheckState.__homeHubAppCheckStarted) {
+    const debugToken = process.env.NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN;
+    if (debugToken) appCheckState.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
+    initializeAppCheck(app, {
+      provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+      isTokenAutoRefreshEnabled: true,
+    });
+    appCheckState.__homeHubAppCheckStarted = true;
+  }
+}
 
 type EmulatorConnectionState = typeof globalThis & {
   __homeHubFirebaseEmulatorsConnected?: boolean;
