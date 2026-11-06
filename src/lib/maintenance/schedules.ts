@@ -138,11 +138,18 @@ export const quickCompletionValues = (target: ScheduleCompletionTarget, today: s
 };
 
 /** The schedule after completion (same advancement as the completion dialog). */
+/** Completion always ends a snooze, even if the new cycle lands on the snoozed date. */
+const withoutSnooze = <T extends { snoozedUntil?: string }>(schedule: T): T => {
+  const copy = { ...schedule };
+  delete copy.snoozedUntil;
+  return copy;
+};
+
 export const completedAssetSchedule = (
   schedule: HomeAssetSchedule,
   values: { completedDate: string; nextDueDate?: string },
 ): HomeAssetSchedule => ({
-  ...schedule,
+  ...withoutSnooze(schedule),
   lastCompletedDate: values.completedDate,
   nextDueDate: values.nextDueDate || calculateNextAssetDueDate(schedule, values.completedDate),
 });
@@ -151,7 +158,7 @@ export const completedVehicleSchedule = (
   schedule: VehicleServiceSchedule,
   values: { completedDate: string; mileage?: number; nextDueDate?: string; nextDueMileage?: number },
 ): VehicleServiceSchedule => ({
-  ...schedule,
+  ...withoutSnooze(schedule),
   lastCompletedMileage: values.mileage,
   lastCompletedDate: values.completedDate,
   nextDueMileage: values.nextDueMileage || calculateNextVehicleMileage(schedule, values.mileage),
