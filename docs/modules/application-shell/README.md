@@ -113,7 +113,7 @@ Header and phone tab bar navigation derive visibility from effective permissions
 
 ### Command palette and shortcuts
 
-`CommandCenter` renders only for approved household members. It handles Ctrl/Cmd+K anywhere, and other shortcut keys only when focus is not in a text field and no dialog or menu is open (`matchShortcut` and `isTypingTarget` in `src/lib/dashboard/shortcuts.ts`); `G` waits 1.2 s for its second key. Shortcuts for modules the member cannot use are neither handled nor listed. Other components open the palette or the cheat sheet through window events (`openCommandPalette`, `openShortcutHelp` in `src/components/command/events.ts`).
+`CommandCenter` renders only for approved household members. It handles Ctrl/Cmd+K anywhere, and other shortcut keys only when focus is not in a text field and no dialog or menu is visibly open; closed overlays that stay in the DOM (the tab bar's aria-hidden quick-add fan, or the whole tab bar on desktop) don't count (`matchShortcut` and `isTypingTarget` in `src/lib/dashboard/shortcuts.ts`); `G` waits 1.2 s for its second key. Shortcuts for modules the member cannot use are neither handled nor listed. Other components open the palette or the cheat sheet through window events (`openCommandPalette`, `openShortcutHelp` in `src/components/command/events.ts`).
 
 `CommandPalette` is a dialog titled "Search or quick add" with a combobox input and a listbox (the project has no cmdk dependency). Each open remounts it and loads a read-only index (members, lists, needed items, open chores, pets, assets, vehicles) for permitted sections. Results are grouped: Quick add, Chores, Shopping, Pets, Maintenance, then Go to (pages filtered by permission, with `G` hints).
 

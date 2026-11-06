@@ -17,6 +17,22 @@ import { PALETTE_EVENT, SHORTCUT_HELP_EVENT, type PaletteRequest } from './event
 
 const GO_TIMEOUT_MS = 1200;
 
+// An overlay counts only while it is actually shown. Some menus stay in the DOM while
+// closed (the tab bar's quick-add fan is aria-hidden and visibility:hidden, and the
+// whole tab bar is display:none on desktop), so a bare role query would block every
+// shortcut all the time.
+function hasOpenOverlay(): boolean {
+  const overlays = document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"], [role="menu"]');
+  for (const element of overlays) {
+    if (element.closest('[aria-hidden="true"]')) continue;
+    const visible = typeof element.checkVisibility === 'function'
+      ? element.checkVisibility({ checkVisibilityCSS: true } as CheckVisibilityOptions)
+      : element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
+    if (visible) return true;
+  }
+  return false;
+}
+
 export function CommandCenter() {
   const router = useRouter();
   const { currentUser, currentMember, permissions } = useAuth();
@@ -60,7 +76,7 @@ export function CommandCenter() {
       if (event.defaultPrevented || event.isComposing || event.repeat) return;
       const commandKey = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
       // Letters never fire while typing or while another dialog is open; Ctrl/Cmd+K always works.
-      if (!commandKey && (isTypingTarget(event.target) || document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]'))) return;
+      if (!commandKey && (isTypingTarget(event.target) || hasOpenOverlay())) return;
       const result = matchShortcut(event, pendingGo.current, allowed);
       pendingGo.current = result.pendingGo;
       if (goTimer.current !== null) window.clearTimeout(goTimer.current);
