@@ -41,7 +41,8 @@ test.describe('chores wave 2', () => {
     const heading = page.getByRole('heading', { name: 'Chore Chart', exact: true });
     expect(await heading.evaluate((el) => getComputedStyle(el).textAlign)).not.toBe('center');
     await expect(page.getByRole('button', { name: 'Add Chore' }).first()).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Calendar' })).toHaveAttribute('href', '/calendar');
+    // The page's own link (the header nav also has one once the dashboard PR lands).
+    await expect(page.getByRole('main').getByRole('link', { name: 'Calendar' })).toHaveAttribute('href', '/calendar');
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
   });
 
