@@ -30,7 +30,7 @@ This module owns household creation and recovery, membership, roles, permission 
 
 `AuthProvider` creates, joins, leaves, and recovers household membership. `HouseholdManager` chooses the onboarding or pending-approval overlay. `HouseholdManagementClient` performs management operations with Firestore batches/transactions and writes audit/system notification records.
 
-Legacy users are resolved through `users/{email}.householdId` and `households.memberEmails`; missing UID member documents are backfilled best-effort. Only household-owned owner UID/email evidence grants owner. Every other legacy email member is normalized to `member` with no profile-derived permission overrides, even when `users/{email}.role` contains an old elevated value.
+`households/{householdId}/members/{uid}` is the only authority for household access in Firestore rules, Storage rules and server actions. `households.memberEmails`, `households.ownerEmail` and `users/{email}.{householdId,role,permissions}` are display/compatibility data and never grant access; a user listed only in `memberEmails` has no access and cannot create their own membership record. `households.ownerUid` must always point at an active `owner` membership record (enforced by rules); legacy households without `ownerUid` must be backfilled from their verified owner record before owner edits work.
 
 The emulator E2E seed creates Household A and Household B, matching fake identities, a limited member, and a legacy profile-elevation fixture. Cross-household and conservative fallback checks complement the primary owner/admin/member/pending membership path.
 
@@ -49,9 +49,11 @@ Household IDs are slugified names plus a four-character suffix. Invite codes use
 
 Roles are `owner`, `admin`, `member`, `child`, `guest`, and system-only `newuser`. Legacy `super-admin` normalizes to owner and `user` to member. Permission presets and per-member overrides are defined in `src/lib/permissions.ts`.
 
-Rules restrict member listing/management to owner/admin paths, prevent admins from changing/removing owners through the normal rule branch, and validate self-join identity against Auth. Pending users can read their own membership/waiting state but not ordinary household subcollections. Legacy `memberEmails` membership remains accepted.
+Rules let approved members list memberships, let owners manage every membership and admins manage non-owner memberships, and block identity (`uid`/`email`) rewrites. The only client-created membership is the creator's `owner` record written in the same batch as a brand-new household; joining an existing household is a server operation. Pending users can read their own membership and the household document (for the waiting screen) but no household subcollections. Deleting your own record removes access; it never grants it.
 
-Exactly-one-owner is enforced by current UI helpers and workflows, not comprehensively by Firestore rules.
+Ownership invariants are enforced by rules: a membership has role `owner` exactly when `households.ownerUid` points at it, so the last owner cannot demote or remove themselves, and ownership moves only through a single batch that updates `ownerUid` and both membership records.
+
+Invite codes are created, listed and revoked by owners/admins (`useCount` must start at 0, `maxUses` 1–10). Clients can no longer read or redeem invites; redemption (expiry, revocation, use count) is a server operation. Owners/admins may update only the role/permissions of profiles that already point at their household, or clear that household; they cannot point another user's profile at a household.
 
 ## Integrations and Background Processing
 
@@ -81,7 +83,7 @@ Exactly-one-owner is enforced by current UI helpers and workflows, not comprehen
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after governance changes.
 - Run `npm.cmd run test:e2e:local` for authenticated owner loading and Household Manager fixture coverage.
 - Manually test household creation collisions, legacy recovery/backfill, invite creation/expiry/revocation/use, pending approval, each role preset, overrides, admin-vs-owner protections, removal, leave, ownership transfer, audit records, and chore reassignment.
-- Use Firestore Emulator rules tests when available; no automated rules suite currently exists.
+- Run `npm run test:rules`: the Firestore/Storage emulator matrix covers unauthenticated callers, other households, pending users, every role, permission overrides, legacy `memberEmails`-only identities, self-deletion, ownership transfer, invite tampering, profile re-pointing, notification targeting and audit forgery.
 
 ## When This Document Must Be Updated
 

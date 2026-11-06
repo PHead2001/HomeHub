@@ -36,7 +36,7 @@ A Firestore create trigger resolves recipients, sends FCM, and removes invalid r
 
 - Notifications: `households/{householdId}/notifications/{notificationId}`.
 - Push tokens: `users/{email}.fcmTokens`.
-- Legacy rules remain for `users/{email}/notifications/{notificationId}`, but no current writer was found.
+- `users/{email}/notifications/{notificationId}` is a legacy inbox: its owner may read, update and delete it, and rules deny creation by anyone.
 
 `Notification`, `NotificationCategory`, `NotificationUserAction`, and `NotificationUserActionMap` define categories, source/deep-link fields, optional `stateKey`, targeting, UID-keyed `readBy`/`dismissedBy`, and optional resolution metadata. `expiresAt` defaults to seven days after `createdAt`; parsing supplies that fallback for older records.
 
@@ -46,7 +46,7 @@ Approved household members can read household notification documents. Rule updat
 
 `notifications.view` controls navigation, but `notifications.dismiss` is not checked by the notification UI/rules. Action-map keys are UID-restricted, but rules do not validate email/display-name values inside the action object.
 
-Creation rules do not verify that optional target UID/email belongs to the household. The Admin SDK push function trusts targeting fields.
+Creation rules require an approved sender, the household's own `householdId`, Timestamp `createdAt`/`expiresAt`, a known category, bounded title/message, an allow-listed set of fields, a `/`-relative `deepLink` (no scheme, no `//`), and targets that belong to the household (a `targetUserUid` membership record; a `targetUserEmail` profile pointing at the household). The Admin SDK push function still trusts targeting fields until it re-validates them server-side.
 
 ## Integrations and Background Processing
 

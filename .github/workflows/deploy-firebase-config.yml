@@ -1,0 +1,91 @@
+name: Deploy Firebase security configuration
+
+# App Hosting deploys the Next.js app on merge, but it never deploys rules or
+# indexes. This workflow is the release path for those: it re-runs the rules
+# test matrix, deploys to homehub-j91jb, then reads the live rulesets back and
+# fails unless they match the merged files exactly.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - firestore.rules
+      - storage.rules
+      - firestore.indexes.json
+      - firebase.json
+      - scripts/deploy/**
+      - .github/workflows/deploy-firebase-config.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-firebase-config
+  cancel-in-progress: false
+
+env:
+  FIREBASE_PROJECT: homehub-j91jb
+
+jobs:
+  deploy:
+    name: Test, deploy and verify rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Load demo emulator environment
+        shell: bash
+        run: |
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "$line" >> "$GITHUB_ENV"
+            fi
+          done < .env.e2e.example
+
+      - name: Security rules test matrix
+        run: npm run test:rules
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy rules and indexes
+        shell: bash
+        run: |
+          # The emulator variables above must not leak into the production deploy.
+          unset FIRESTORE_EMULATOR_HOST FIREBASE_AUTH_EMULATOR_HOST FIREBASE_STORAGE_EMULATOR_HOST
+          npx firebase deploy \
+            --only firestore:rules,firestore:indexes,storage \
+            --project "$FIREBASE_PROJECT" \
+            --non-interactive
+
+      - name: Verify live rulesets match this commit
+        shell: bash
+        run: |
+          unset FIRESTORE_EMULATOR_HOST FIREBASE_AUTH_EMULATOR_HOST FIREBASE_STORAGE_EMULATOR_HOST
+          node scripts/deploy/verify-live-rules.mjs --project "$FIREBASE_PROJECT"

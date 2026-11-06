@@ -63,6 +63,12 @@ jobs:
       - name: Validate module documentation
         run: npm run docs:check
 
+      - name: Server authorization and AI unit tests
+        run: npm run test:ai
+
+      - name: Firestore and Storage security rules
+        run: npm run test:rules
+
       - name: Build application
         run: npm run build
 

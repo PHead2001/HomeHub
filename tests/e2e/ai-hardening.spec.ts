@@ -78,11 +78,12 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     });
   });
 
-  test('legacy authority remains member-level and barcode fixtures map only supported quantities', async ({ request }) => {
+  test('a memberEmails-only identity has no AI authority and barcode fixtures map only supported quantities', async ({ request }) => {
+    // Membership records are the only authority (matches firestore.rules); a legacy
+    // email listing without a record is refused, not downgraded to member.
     const legacyToken = await emulatorIdToken(request, 'e2e-legacy-uid');
     const legacyOverview = await probe(request, legacyToken, { operation: 'overview', householdId: householdA });
-    expect(legacyOverview.ok).toBe(true);
-    expect(legacyOverview.data.facts.household).toBeUndefined();
+    expect(legacyOverview).toMatchObject({ ok: false, error: { code: 'forbidden' } });
 
     const ownerToken = await emulatorIdToken(request, 'e2e-owner-uid');
     const cases = [

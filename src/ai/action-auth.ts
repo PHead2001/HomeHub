@@ -54,9 +54,7 @@ export const authorizeHouseholdAction = async (
 
   if (!householdSnapshot.exists) throw new HomeHubAiError('forbidden');
 
-  const household = householdSnapshot.data() || {};
-  const member = memberSnapshot.data();
-  const authority = resolveHouseholdAuthority({ uid: decodedToken.uid, email, household, member });
+  const authority = resolveHouseholdAuthority({ uid: decodedToken.uid, member: memberSnapshot.data() });
   if (permission && !authority.permissions[permission]) throw new HomeHubAiError('forbidden');
 
   return { uid: decodedToken.uid, email, householdId: context.householdId, ...authority };
