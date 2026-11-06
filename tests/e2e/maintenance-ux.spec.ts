@@ -154,21 +154,6 @@ test.describe('maintenance center UX', () => {
       .toBe('2026-08-08');
     // The snooze is recorded so the hourly job stays quiet until that due date.
     expect((await household.collection('home-assets').doc('dishwasher').get()).get('schedules')?.[0]?.snoozedUntil).toBe('2026-08-08');
-
-    // An unrelated edit of the asset keeps the snooze (the schedule is rebuilt from the form).
-    const dishwasherDoc = household.collection('home-assets').doc('dishwasher');
-    const originalNotes = (await dishwasherDoc.get()).get('notes') ?? null;
-    try {
-      await page.goto('/maintenance?asset=dishwasher');
-      await page.getByRole('tabpanel', { name: 'Home Assets' }).getByRole('button', { name: 'Edit home asset Kitchen Dishwasher' }).click();
-      const editDialog = page.getByRole('dialog', { name: 'Edit Home Asset' });
-      await editDialog.getByLabel('Notes').fill('E2E unrelated edit');
-      await editDialog.getByRole('button', { name: 'Save Asset' }).click();
-      await expect.poll(async () => (await dishwasherDoc.get()).get('notes')).toBe('E2E unrelated edit');
-      expect((await dishwasherDoc.get()).get('schedules')?.[0]).toMatchObject({ nextDueDate: '2026-08-08', snoozedUntil: '2026-08-08' });
-    } finally {
-      await dishwasherDoc.update({ notes: originalNotes });
-    }
     await expect(overdue.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' })).toHaveCount(0);
     // Still on the Reminders tab: the action happened in place.
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
@@ -184,6 +169,22 @@ test.describe('maintenance center UX', () => {
       .toBe(true);
     await expect(page.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
+
+    // Last: an unrelated edit of the snoozed asset keeps the snooze (the edit form rebuilds the
+    // schedule). It navigates to Home Assets, so it runs after the in-place checks above.
+    const dishwasherDoc = household.collection('home-assets').doc('dishwasher');
+    const originalNotes = (await dishwasherDoc.get()).get('notes') ?? null;
+    try {
+      await page.goto('/maintenance?asset=dishwasher');
+      await page.getByRole('tabpanel', { name: 'Home Assets' }).getByRole('button', { name: 'Edit home asset Kitchen Dishwasher' }).click();
+      const editDialog = page.getByRole('dialog', { name: 'Edit Home Asset' });
+      await editDialog.getByLabel('Notes').fill('E2E unrelated edit');
+      await editDialog.getByRole('button', { name: 'Save Asset' }).click();
+      await expect.poll(async () => (await dishwasherDoc.get()).get('notes')).toBe('E2E unrelated edit');
+      expect((await dishwasherDoc.get()).get('schedules')?.[0]).toMatchObject({ nextDueDate: '2026-08-08', snoozedUntil: '2026-08-08' });
+    } finally {
+      await dishwasherDoc.update({ notes: originalNotes });
+    }
   });
 
   test('D15: the detail panel hides empty fields and keeps one action row', async ({ page }, testInfo) => {
