@@ -48,14 +48,16 @@ const dbFor = (user: Identity) => environment
 
 const now = () => Timestamp.fromDate(new Date('2026-08-01T12:00:00.000Z'));
 const later = () => Timestamp.fromDate(new Date('2026-08-08T12:00:00.000Z'));
+// Notifications and invites are checked against the real request time.
+const inMinutes = (minutes: number) => Timestamp.fromMillis(Date.now() + minutes * 60_000);
 
 const notification = (overrides: Record<string, unknown> = {}) => ({
   householdId: householdA,
   category: 'chores',
   title: 'New chore assigned',
   message: 'You have a new chore.',
-  createdAt: now(),
-  expiresAt: later(),
+  createdAt: inMinutes(0),
+  expiresAt: inMinutes(7 * 24 * 60),
   deepLink: '/chores',
   readBy: {},
   dismissedBy: {},
@@ -375,11 +377,89 @@ describe('roles and ownership', () => {
   });
 });
 
+describe('independent review regressions', () => {
+  test('an admin cannot edit their own record or lift restrictions', async () => {
+    const db = dbFor(users.admin);
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), { permissions: {} }));
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), {
+      permissions: { 'household.delete': true },
+    }));
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), {
+      permissions: { 'household.transferOwnership': true },
+    }));
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), { uid: 'x', role: 'member' }));
+    await assertSucceeds(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), {
+      permissions: { 'shopping.edit': false },
+    }));
+  });
+
+  test('owners cannot grant owner-only permissions or invent fields', async () => {
+    const db = dbFor(users.owner);
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), {
+      permissions: { 'household.delete': true },
+    }));
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), { superPower: true }));
+  });
+
+  test('ownership cannot end up with two owners or a pending owner', async () => {
+    const db = dbFor(users.owner);
+    const twoOwners = writeBatch(db);
+    twoOwners.update(doc(db, 'households', householdA), { ownerUid: users.admin.uid, ownerEmail: users.admin.email });
+    twoOwners.update(doc(db, 'households', householdA, 'members', users.admin.uid), { role: 'owner', status: 'active' });
+    await assertFails(twoOwners.commit());
+    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.owner.uid), { status: 'pending' }));
+  });
+
+  test('households cannot be deleted from the client', async () => {
+    await assertFails(deleteDoc(doc(dbFor(users.owner), 'households', householdA)));
+  });
+
+  test('notifications are limited by what the sender may do and pinned to now', async () => {
+    const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'notifications');
+    await assertFails(addDoc(col(users.guest), notification({ category: 'system', deepLink: '/household?tab=members' })));
+    await assertFails(addDoc(col(users.child), notification({ category: 'chores' })));
+    await assertFails(addDoc(col(users.member), notification({ category: 'system' })));
+    await assertSucceeds(addDoc(col(users.admin), notification({ category: 'system' })));
+    await assertFails(addDoc(col(users.member), notification({ createdAt: inMinutes(60 * 24) })));
+    await assertFails(addDoc(col(users.member), notification({ expiresAt: inMinutes(60 * 24 * 30) })));
+    await assertFails(addDoc(col(users.member), notification({ createdByUid: users.owner.uid })));
+    await assertSucceeds(addDoc(col(users.member), notification({ createdByUid: users.member.uid })));
+  });
+
+  test('a Google sign-up profile without householdId can be created', async () => {
+    const newcomer = { uid: 'google-newcomer', email: 'google.newcomer@example.test' };
+    await assertSucceeds(setDoc(doc(dbFor(newcomer), 'users', newcomer.email), {
+      email: newcomer.email, displayName: 'New', role: 'member', forcePasswordChange: false,
+    }));
+  });
+
+  test('invites need a real expiry within two hours', async () => {
+    const base = {
+      householdId: householdA, createdByUid: users.owner.uid, createdByEmail: users.owner.email,
+      createdAt: 'x', maxUses: 1, useCount: 0,
+    };
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(doc(db, 'inviteCodes', 'STRG-EXPI-RE'), { ...base, code: 'STRG-EXPI-RE', expiresAt: '2099-01-01' }));
+    await assertFails(setDoc(doc(db, 'inviteCodes', 'LONG-EXPI-RE'), { ...base, code: 'LONG-EXPI-RE', expiresAt: inMinutes(60 * 24) }));
+    await assertFails(setDoc(doc(db, 'inviteCodes', 'PAST-EXPI-RE'), { ...base, code: 'PAST-EXPI-RE', expiresAt: inMinutes(-1) }));
+    await assertSucceeds(setDoc(doc(db, 'inviteCodes', 'GOOD-EXPI-RE'), { ...base, code: 'GOOD-EXPI-RE', expiresAt: inMinutes(30) }));
+  });
+
+  test('owners can check that a new code is free inside the generation transaction', async () => {
+    await assertSucceeds(getDoc(doc(dbFor(users.owner), 'inviteCodes', 'FREE-CODE-00')));
+    await assertFails(getDoc(doc(dbFor(users.member), 'inviteCodes', 'AAAA-BBBB-CC')));
+  });
+
+  test('reading a missing profile is a plain denial', async () => {
+    await assertFails(getDoc(doc(dbFor(users.member), 'users', 'nobody@example.test')));
+  });
+});
+
 describe('invite codes', () => {
   test('owners and admins create and revoke invites; others cannot', async () => {
     const invite = {
       code: 'ZZZZ-YYYY-XX', householdId: householdA, createdByUid: users.admin.uid, createdByEmail: users.admin.email,
-      createdAt: 'x', expiresAt: 'y', maxUses: 1, useCount: 0,
+      createdAt: 'x', expiresAt: inMinutes(30), maxUses: 1, useCount: 0,
     };
     await assertSucceeds(setDoc(doc(dbFor(users.admin), 'inviteCodes', 'ZZZZ-YYYY-XX'), invite));
     await assertFails(setDoc(doc(dbFor(users.member), 'inviteCodes', 'MMMM-MMMM-MM'), {
@@ -395,7 +475,7 @@ describe('invite codes', () => {
     const db = dbFor(users.owner);
     await assertFails(setDoc(doc(db, 'inviteCodes', 'PPPP-PPPP-PP'), {
       code: 'PPPP-PPPP-PP', householdId: householdA, createdByUid: users.owner.uid, createdByEmail: users.owner.email,
-      createdAt: 'x', expiresAt: 'y', maxUses: 1000, useCount: 0,
+      createdAt: 'x', expiresAt: inMinutes(30), maxUses: 1000, useCount: 0,
     }));
   });
 
@@ -510,11 +590,22 @@ describe('notifications', () => {
 });
 
 describe('audit log', () => {
-  test('approved members write entries as themselves only', async () => {
+  test('owners and admins write known actions as themselves; others cannot write at all', async () => {
     const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'auditLogs');
-    await assertSucceeds(addDoc(col(users.member), {
-      actorUid: users.member.uid, actorEmail: users.member.email, action: 'chore.completed', createdAt: 'x',
+    await assertSucceeds(addDoc(col(users.admin), {
+      actorUid: users.admin.uid, actorEmail: users.admin.email, action: 'invite.generated', createdAt: 'x',
     }));
+    await assertFails(addDoc(col(users.owner), {
+      actorUid: users.owner.uid, actorEmail: users.owner.email, action: 'anything.else', createdAt: 'x',
+    }));
+    await assertFails(addDoc(col(users.owner), {
+      actorUid: users.owner.uid, actorEmail: users.owner.email, action: 'member.removed', createdAt: 'x', extra: true,
+    }));
+    for (const user of [users.member, users.child, users.guest]) {
+      await assertFails(addDoc(col(user), {
+        actorUid: user.uid, actorEmail: user.email, action: 'ownership.transferred', createdAt: '2020-01-01',
+      }));
+    }
     await assertFails(addDoc(col(users.member), {
       actorUid: users.owner.uid, actorEmail: users.owner.email, action: 'member.removed', createdAt: 'x',
     }));

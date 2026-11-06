@@ -130,6 +130,15 @@ service cloud.firestore {
         getAfter(memberPath(householdId, ownerUid)).data.get('status', 'active') == 'active';
     }
 
+    function previousOwnerDemotedIfMoved(householdId) {
+      let before = resource.data.get('ownerUid', '');
+      let after = request.resource.data.get('ownerUid', '');
+      return before == after ||
+        !(before is string && before.size() > 0) ||
+        !existsAfter(memberPath(householdId, before)) ||
+        getAfter(memberPath(householdId, before)).data.role != 'owner';
+    }
+
     function validHouseholdName() {
       return !('name' in request.resource.data) ||
         (request.resource.data.name is string &&
@@ -148,6 +157,19 @@ service cloud.firestore {
 
     // Only the household owner record may hold role 'owner', and the record
     // that household.ownerUid points at must stay an active owner.
+    function memberUpdateFieldsAllowed() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'role', 'status', 'permissions', 'approvedAt', 'approvedByUid',
+        'lastNewUserReminderAt', 'displayName', 'avatarUrl'
+      ]);
+    }
+
+    function noOwnerOnlyOverrides() {
+      let overrides = request.resource.data.get('permissions', {});
+      return overrides.get('household.delete', false) == false &&
+        overrides.get('household.transferOwnership', false) == false;
+    }
+
     function ownerRoleChangeIsConsistent(householdId, memberUid) {
       let ownerUidAfter = getAfter(householdPath(householdId)).data.get('ownerUid', '');
       return (request.resource.data.role == 'owner') == (ownerUidAfter == memberUid);
@@ -210,7 +232,8 @@ service cloud.firestore {
 
     function canReadProfile(userEmail) {
       return isProfileOwner(userEmail) ||
-        (resource.data.get('householdId', null) is string &&
+        (resource != null &&
+          resource.data.get('householdId', null) is string &&
           isApprovedMember(resource.data.householdId));
     }
 
@@ -232,15 +255,31 @@ service cloud.firestore {
             get(/databases/$(database)/documents/users/$(data.targetUserEmail)).data.get('householdId', null) == householdId));
     }
 
+    function canSendCategory(householdId, category) {
+      return (category == 'chores' && (hasHouseholdPermission(householdId, 'chores.assign') ||
+          hasHouseholdPermission(householdId, 'chores.create') || hasHouseholdPermission(householdId, 'chores.edit'))) ||
+        (category == 'maintenance' && (hasHouseholdPermission(householdId, 'maintenance.createLogs') ||
+          hasHouseholdPermission(householdId, 'maintenance.edit'))) ||
+        (category == 'shopping' && hasHouseholdPermission(householdId, 'shopping.edit')) ||
+        (category == 'pets' && hasHouseholdPermission(householdId, 'pets.addLogs')) ||
+        (category == 'automation' && hasHouseholdPermission(householdId, 'automation.manage')) ||
+        (category in ['system', 'general'] && isOwnerOrAdmin(householdId));
+    }
+
     function validNewNotification(householdId) {
       let data = request.resource.data;
-      return isApprovedMemberAfter(householdId) &&
+      return isApprovedMember(householdId) &&
+        canSendCategory(householdId, data.category) &&
+        data.createdAt > request.time - duration.value(10, 'm') &&
+        data.createdAt < request.time + duration.value(2, 'm') &&
+        data.expiresAt <= request.time + duration.value(8, 'd') &&
+        (!('createdByUid' in data) || data.createdByUid == request.auth.uid) &&
         data.householdId == householdId &&
         data.keys().hasAll(['householdId', 'category', 'message', 'createdAt', 'expiresAt', 'readBy', 'dismissedBy']) &&
         data.keys().hasOnly([
           'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
           'deepLink', 'sourceType', 'sourceId', 'stateKey',
-          'targetUserUid', 'targetUserEmail', 'readBy', 'dismissedBy'
+          'targetUserUid', 'targetUserEmail', 'readBy', 'dismissedBy', 'createdByUid'
         ]) &&
         data.category in ['chores', 'shopping', 'pets', 'maintenance', 'automation', 'system', 'general'] &&
         data.message is string && data.message.size() > 0 && data.message.size() <= 500 &&
@@ -271,7 +310,14 @@ service cloud.firestore {
 
     function validNewAuditEntry(householdId) {
       let data = request.resource.data;
+      let after = getAfter(memberPath(householdId, request.auth.uid)).data;
       return isApprovedMemberAfter(householdId) &&
+        after.role in ['owner', 'admin'] &&
+        data.keys().hasOnly(['actorUid', 'actorEmail', 'actorName', 'action', 'targetUid', 'targetEmail',
+          'targetName', 'createdAt', 'details']) &&
+        data.action in ['household.created', 'household.renamed', 'invite.generated', 'invite.revoked',
+          'invite.revoked_all', 'member.role_changed', 'member.permissions_changed', 'member.removed',
+          'member.approved', 'ownership.transferred'] &&
         data.actorUid == request.auth.uid &&
         data.actorEmail == request.auth.token.email &&
         data.action is string && data.action.size() <= 80 &&
@@ -311,11 +357,12 @@ service cloud.firestore {
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'name', 'memberEmails', 'updatedAt', 'ownerUid', 'ownerEmail', 'inviteCode'
             ]) &&
-            ownerPointerStaysValid(householdId)) ||
+            ownerPointerStaysValid(householdId) &&
+            previousOwnerDemotedIfMoved(householdId)) ||
           (isAdminRole(householdId) &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'memberEmails', 'updatedAt']))
         );
-      allow delete: if isOwnerRole(householdId);
+      allow delete: if false;
 
       match /members/{memberUid} {
         allow get: if isApprovedMember(householdId) || (signedIn() && request.auth.uid == memberUid);
@@ -334,12 +381,16 @@ service cloud.firestore {
           request.resource.data.get('permissions', {}) == {};
 
         allow update: if memberIdentityUnchanged() &&
+          memberUpdateFieldsAllowed() &&
           ownerRoleChangeIsConsistent(householdId, memberUid) &&
           request.resource.data.role in ['owner', 'admin', 'member', 'child', 'guest', 'newuser'] &&
           request.resource.data.get('status', 'active') in ['active', 'pending'] &&
+          (request.resource.data.role != 'owner' || request.resource.data.get('status', 'active') == 'active') &&
+          (request.resource.data.role == 'owner' || noOwnerOnlyOverrides()) &&
           (
             isOwnerRole(householdId) ||
             (isAdminRole(householdId) &&
+              memberUid != request.auth.uid &&
               resource.data.role != 'owner' &&
               request.resource.data.role != 'owner' &&
               request.resource.data.role != 'newuser')
@@ -490,7 +541,10 @@ service cloud.firestore {
     // ---------------------------------------------------------------------
 
     match /inviteCodes/{code} {
-      allow get: if resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId);
+      // Reading a code that does not exist only reveals that it is free, which owners
+      // and admins need for collision checks while generating a new code.
+      allow get: if signedIn() &&
+        (resource == null || (resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId)));
       allow list: if resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId);
       allow create: if request.resource.data.householdId is string &&
         isOwnerOrAdmin(request.resource.data.householdId) &&
@@ -498,6 +552,9 @@ service cloud.firestore {
         request.resource.data.createdByUid == request.auth.uid &&
         request.resource.data.createdByEmail == request.auth.token.email &&
         request.resource.data.useCount == 0 &&
+        request.resource.data.expiresAt is timestamp &&
+        request.resource.data.expiresAt > request.time &&
+        request.resource.data.expiresAt <= request.time + duration.value(2, 'h') &&
         request.resource.data.maxUses is int &&
         request.resource.data.maxUses >= 1 &&
         request.resource.data.maxUses <= 10;
@@ -516,7 +573,7 @@ service cloud.firestore {
       allow list: if false;
       allow create: if isProfileOwner(userEmail) &&
         request.resource.data.email == userEmail &&
-        request.resource.data.householdId == null &&
+        request.resource.data.get('householdId', null) == null &&
         request.resource.data.role in ['member', 'user'] &&
         (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid);
       allow update: if updatesOwnProfileOnly(userEmail) ||
