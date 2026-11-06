@@ -9,6 +9,7 @@ import {
   normalizeHomeAssistantUrl,
   type HomeAssistantEntitySummary,
 } from '@/lib/server/home-assistant';
+import { persistCredentials } from '@/lib/server/home-assistant-store';
 import type { HouseholdPermission } from '@/lib/types';
 
 // Every call derives identity from a verified ID token and authorizes against the
@@ -18,6 +19,7 @@ type Result<T> = { ok: true; data: T } | { ok: false; message: string };
 
 const credentialsRef = (householdId: string) =>
   adminDb.collection('households').doc(householdId).collection('home-automation').doc('credentials');
+
 
 const run = async <T>(context: Context, permission: HouseholdPermission, task: (householdId: string, uid: string) => Promise<T>): Promise<Result<T>> => {
   try {
@@ -75,7 +77,7 @@ export async function saveHomeAssistantConnection(
     const url = await normalizeHomeAssistantUrl(input.url);
     // Only store credentials that actually work.
     const entities = await fetchHomeAssistantStates(url, token);
-    await credentialsRef(householdId).set({ url, accessToken: token, updatedAt: new Date().toISOString(), updatedByUid: uid });
+    await persistCredentials(householdId, uid, { url, accessToken: token, updatedAt: new Date().toISOString(), updatedByUid: uid });
     return { host: new URL(url).host, entityCount: entities.length };
   });
 }

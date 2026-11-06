@@ -21,7 +21,7 @@ This module owns Home Assistant credentials, connection checks, and read-only en
 
 ## Architecture and Data Flow
 
-Every action (`getHomeAssistantStatus`, `getHomeAssistantEntities`, `saveHomeAssistantConnection`, `disconnectHomeAssistant`) receives the caller's Firebase ID token and household ID, verifies the token with the Admin SDK and authorizes against the caller's membership record (`automation.view` to read, `automation.manage` to change). Credentials are read and written only with the Admin SDK. Requests go to `GET {url}/api/states` with an 8 s timeout, `redirect: manual` and `cache: no-store`; responses are trimmed to entity ID, state, friendly name, unit and device class (max 1000) and are not persisted.
+Every action (`getHomeAssistantStatus`, `getHomeAssistantEntities`, `saveHomeAssistantConnection`, `disconnectHomeAssistant`) receives the caller's Firebase ID token and household ID, verifies the token with the Admin SDK and authorizes against the caller's membership record (`automation.view` to read, `automation.manage` to change). Credentials are read and written only with the Admin SDK. Saving tests the connection first, then writes in a transaction that re-checks that the household still exists, is not being deleted, and that the caller still has `automation.manage` (`src/lib/server/home-assistant-store.ts`), so a household deleted during a slow connection test never gets its token back. Requests go to `GET {url}/api/states` with an 8 s timeout, `redirect: manual` and `cache: no-store`; responses are trimmed to entity ID, state, friendly name, unit and device class (max 1000) and are not persisted.
 
 ## Data Model and Persistence
 
