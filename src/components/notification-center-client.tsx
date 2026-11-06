@@ -74,13 +74,13 @@ function NotificationCenterItem({
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!event.isPrimary || isDismissed || (event.target as HTMLElement).closest('button')) return;
+    // Swipe-to-dismiss is a touch gesture; mouse users have the dismiss button.
+    if (!event.isPrimary || event.pointerType === 'mouse' || isDismissed || (event.target as HTMLElement).closest('button')) return;
 
     wasDraggedRef.current = false;
     setIsDragging(true);
     startXRef.current = event.clientX;
     dragXRef.current = 0;
-    itemRef.current?.setPointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = "none";
   };
 
@@ -88,7 +88,12 @@ function NotificationCenterItem({
     if (!isDragging || !event.isPrimary) return;
 
     const deltaX = event.clientX - startXRef.current;
-    if (Math.abs(deltaX) > 5) wasDraggedRef.current = true;
+    if (Math.abs(deltaX) > 5 && !wasDraggedRef.current) {
+      wasDraggedRef.current = true;
+      // Capture only once a swipe has started; capturing on press retargets
+      // the click away from the card's link and breaks navigation.
+      itemRef.current?.setPointerCapture(event.pointerId);
+    }
     if (wasDraggedRef.current) event.preventDefault();
     if (deltaX < 50) updateDragX(deltaX < 0 ? deltaX : deltaX / 5);
   };
@@ -97,7 +102,7 @@ function NotificationCenterItem({
     if (!isDragging || !event.isPrimary) return;
 
     setIsDragging(false);
-    itemRef.current?.releasePointerCapture(event.pointerId);
+    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = "transform 0.2s ease-out";
 
     if (wasDraggedRef.current && dragXRef.current < SWIPE_THRESHOLD) {
@@ -112,7 +117,7 @@ function NotificationCenterItem({
     if (!isDragging) return;
     setIsDragging(false);
     wasDraggedRef.current = false;
-    itemRef.current?.releasePointerCapture(event.pointerId);
+    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = "transform 0.2s ease-out";
     updateDragX(0);
   };

@@ -451,6 +451,52 @@ describe('independent review regressions', () => {
     await assertFails(setDoc(doc(db, 'inviteCodes', 'LONG-EXPI-RE'), { ...base, code: 'LONG-EXPI-RE', expiresAt: inMinutes(60 * 24) }));
     await assertFails(setDoc(doc(db, 'inviteCodes', 'PAST-EXPI-RE'), { ...base, code: 'PAST-EXPI-RE', expiresAt: inMinutes(-1) }));
     await assertSucceeds(setDoc(doc(db, 'inviteCodes', 'GOOD-EXPI-RE'), { ...base, code: 'GOOD-EXPI-RE', expiresAt: inMinutes(30) }));
+    // The deployed client writes ISO strings; accepted, and the server caps every invite
+    // at two hours from Firestore's own create time.
+    await assertSucceeds(setDoc(doc(db, 'inviteCodes', 'ISOS-TRIN-GG'), { ...base, code: 'ISOS-TRIN-GG', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }));
+    await assertFails(setDoc(doc(db, 'inviteCodes', 'JUNK-STRI-NG'), { ...base, code: 'JUNK-STRI-NG', expiresAt: 'tomorrow' }));
+  });
+
+  test('a member may remind themselves about chores, and only themselves', async () => {
+    const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'notifications');
+    const reminder = (target: string) => notification({ sourceType: 'chore-reminder', sourceId: 'reminder-x', targetUserUid: target, targetUserEmail: users.child.email });
+    await assertSucceeds(addDoc(col(users.child), reminder(users.child.uid)));
+    await assertFails(addDoc(col(users.child), { ...reminder(users.member.uid), targetUserEmail: users.member.email }));
+    await assertFails(addDoc(col(users.child), notification({ sourceType: 'chore-assignment', targetUserUid: users.child.uid })));
+    // Long temporary-task names still fit; unbounded text does not.
+    await assertSucceeds(addDoc(col(users.member), notification({ message: 'x'.repeat(900) })));
+    await assertFails(addDoc(col(users.member), notification({ message: 'x'.repeat(1001) })));
+  });
+
+  test('a leaving member records their own departure in the same batch', async () => {
+    const leave = (user: Identity, extra: (batch: ReturnType<typeof writeBatch>, db: ReturnType<typeof dbFor>) => void) => {
+      const db = dbFor(user);
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'households', householdA, 'members', user.uid));
+      extra(batch, db);
+      return batch.commit();
+    };
+    const audit = (user: Identity) => ({
+      actorUid: user.uid, actorEmail: user.email, actorName: 'X', action: 'member.left',
+      targetUid: user.uid, targetEmail: user.email, targetName: 'X', createdAt: 'x',
+    });
+    const notice = (user: Identity) => notification({
+      category: 'system', title: 'Member left household', message: 'X left the household.',
+      deepLink: '/household?tab=members', sourceType: 'household-member-left', sourceId: user.uid,
+    });
+    // Without leaving, nobody may write a departure record.
+    await assertFails(addDoc(collection(dbFor(users.member), 'households', householdA, 'auditLogs'), audit(users.member)));
+    await assertFails(addDoc(collection(dbFor(users.member), 'households', householdA, 'notifications'), notice(users.member)));
+    // Departure records must describe the leaver.
+    await assertFails(leave(users.member, (b, db) => b.set(doc(collection(db, 'households', householdA, 'auditLogs')), { ...audit(users.member), targetUid: users.owner.uid })));
+    await assertSucceeds(leave(users.admin, (b, db) => {
+      b.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(users.admin));
+      b.set(doc(collection(db, 'households', householdA, 'notifications')), notice(users.admin));
+    }));
+    await assertSucceeds(leave(users.member, (b, db) => {
+      b.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(users.member));
+      b.set(doc(collection(db, 'households', householdA, 'notifications')), notice(users.member));
+    }));
   });
 
   test('owners can check that a new code is free inside the generation transaction', async () => {
@@ -626,8 +672,11 @@ describe('audit log', () => {
 });
 
 describe('Home Assistant credentials', () => {
-  test('no client can read the stored token', async () => {
-    for (const user of [users.owner, users.admin, users.member, users.guest]) {
+  test('only automation managers can read the stored token', async () => {
+    for (const user of [users.owner, users.admin]) {
+      await assertSucceeds(getDoc(doc(dbFor(user), 'households', householdA, 'home-automation', 'credentials')));
+    }
+    for (const user of [users.member, users.child, users.guest, users.pending]) {
       await assertFails(getDoc(doc(dbFor(user), 'households', householdA, 'home-automation', 'credentials')));
     }
   });

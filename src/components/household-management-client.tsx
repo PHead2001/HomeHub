@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   arrayRemove,
   collection,
@@ -9,6 +10,7 @@ import {
   getDocs,
   query,
   runTransaction,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
@@ -65,7 +67,8 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cn } from '@/lib/utils';
+import { cn, copyText } from '@/lib/utils';
+import { inviteDateToIso } from '@/lib/invite-codes';
 
 const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const INVITE_TTL_MINUTES = 30;
@@ -101,10 +104,23 @@ const roleLabel = (role: HouseholdRole) => role.charAt(0).toUpperCase() + role.s
 
 const hasOverrides = (member: HouseholdMember) => Object.keys(member.permissions || {}).length > 0;
 
+const householdTabs = ['overview', 'invites', 'members', 'roles', 'activity', 'danger'];
+
 export function HouseholdManagementClient() {
-  const { currentUser, household, currentMember, permissions, leaveHousehold } = useAuth();
+  const { currentUser, household, currentMember, permissions, leaveHousehold, deleteHousehold } = useAuth();
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState('overview');
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(() =>
+    requestedTab && householdTabs.includes(requestedTab) ? requestedTab : 'overview');
+  // A notification link to ?tab=… while this page is already open changes the URL without
+  // remounting; follow it. Manual tab clicks are not overridden until the URL changes again.
+  useEffect(() => {
+    if (requestedTab && householdTabs.includes(requestedTab)) setActiveTab(requestedTab);
+  }, [requestedTab]);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -153,7 +169,7 @@ export function HouseholdManagementClient() {
 
       const nextInvites = invitesResult.status === 'fulfilled'
         ? invitesResult.value.docs
-          .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }) as InviteCode)
+          .map(snapshot => ({ id: snapshot.id, ...snapshot.data(), expiresAt: inviteDateToIso(snapshot.data().expiresAt) }) as InviteCode)
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         : [];
       const nextAudit = auditResult.status === 'fulfilled'
@@ -259,7 +275,7 @@ export function HouseholdManagementClient() {
         try {
           await runTransaction(db, async (transaction) => {
             const existing = await transaction.get(inviteRef);
-            if (existing.exists() && isActiveInvite({ id: existing.id, ...existing.data() } as InviteCode)) {
+            if (existing.exists() && isActiveInvite({ id: existing.id, ...existing.data(), expiresAt: inviteDateToIso(existing.data().expiresAt) } as InviteCode)) {
               throw new Error('Invite code collision.');
             }
             const now = new Date();
@@ -276,7 +292,8 @@ export function HouseholdManagementClient() {
               maxUses: 1,
               useCount: 0,
             };
-            transaction.set(inviteRef, createdInvite);
+            // Rules require a real Timestamp expiry no more than two hours ahead.
+            transaction.set(inviteRef, { ...createdInvite, expiresAt: Timestamp.fromDate(expiresAt) });
             transaction.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
               actorUid: currentUser.uid,
               actorEmail: currentUser.email,
@@ -294,9 +311,17 @@ export function HouseholdManagementClient() {
       }
 
       if (!createdInviteCode) throw new Error('Could not generate a unique invite code.');
-      await navigator.clipboard.writeText(createdInviteCode);
-      toast({ title: 'Invite Generated', description: 'The temporary invite code was copied to your clipboard.' });
-      await fetchHouseholdData();
+      // The code exists now; refreshing and copying are conveniences that must not
+      // turn a successful invite into a reported failure (iOS often blocks clipboard
+      // writes after an await).
+      await fetchHouseholdData().catch(refreshError => console.warn('Invite list refresh failed', refreshError));
+      const copied = await copyText(createdInviteCode);
+      toast({
+        title: 'Invite code ready',
+        description: copied
+          ? `${createdInviteCode} is copied. Share it within ${INVITE_TTL_MINUTES} minutes.`
+          : `Share ${createdInviteCode} within ${INVITE_TTL_MINUTES} minutes. It is also listed below.`,
+      });
     } catch (error) {
       console.error('Failed to generate invite', error);
       toast({ variant: 'destructive', title: 'Invite Failed', description: 'Could not generate an invite code.' });
@@ -626,7 +651,7 @@ export function HouseholdManagementClient() {
             <Card>
               <CardHeader>
                 <CardTitle>Temporary Invite Codes</CardTitle>
-                <CardDescription>Invite codes expire after {INVITE_TTL_MINUTES} minutes and place joiners into the newuser approval state.</CardDescription>
+                <CardDescription>Codes last {INVITE_TTL_MINUTES} minutes and work once. New people wait for you to choose their role before they see anything.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex flex-col gap-2 sm:flex-row">
@@ -656,7 +681,10 @@ export function HouseholdManagementClient() {
                           </p>
                         </div>
                         <div className="flex gap-2">
-                          <Button variant="outline" size="icon" aria-label={`Copy invite code ${invite.code}`} onClick={() => navigator.clipboard.writeText(invite.code)}>
+                          <Button variant="outline" size="icon" aria-label={`Copy invite code ${invite.code}`} onClick={async () => {
+                            const copied = await copyText(invite.code);
+                            toast(copied ? { title: 'Copied', description: invite.code } : { title: 'Copy not available', description: `Share ${invite.code} manually.` });
+                          }}>
                             <Copy className="h-4 w-4" />
                           </Button>
                           <Button variant="outline" onClick={() => revokeInvite(invite)} disabled={!canManageInvites || !isActiveInvite(invite)}>
@@ -779,15 +807,54 @@ export function HouseholdManagementClient() {
                 <div className="rounded-md border border-destructive/40 p-4">
                   <h3 className="font-semibold">Delete Household</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Full recursive household deletion needs a server-side Firebase Function to verify ownership and delete subcollections/storage safely. This PR intentionally does not ship a client-side delete button.
+                    Permanently deletes {household.name}: every chore, list, pet, maintenance record, photo and invite. Members keep their accounts. This cannot be undone.
                   </p>
-                  <Button variant="destructive" className="mt-3" disabled>Server-side delete deferred</Button>
+                  <Button variant="destructive" className="mt-3" disabled={!isOwner} onClick={() => setIsDeleteOpen(true)}>
+                    Delete Household
+                  </Button>
+                  {!isOwner && <p className="mt-2 text-sm text-muted-foreground">Only the owner can delete the household.</p>}
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
         </Tabs>
       )}
+
+      <Dialog open={isDeleteOpen} onOpenChange={(open) => { setIsDeleteOpen(open); if (!open) setDeleteConfirm(''); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete {household?.name}?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes the household and everything in it for every member. Type the household name to confirm.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (deleteConfirm.trim() !== household?.name || isDeleting) return;
+              setIsDeleting(true);
+              const deleted = await deleteHousehold(deleteConfirm);
+              setIsDeleting(false);
+              if (deleted) setIsDeleteOpen(false);
+            }}
+          >
+            <Input
+              aria-label="Household name"
+              value={deleteConfirm}
+              onChange={(event) => setDeleteConfirm(event.target.value)}
+              placeholder={household?.name}
+              autoComplete="off"
+            />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setIsDeleteOpen(false)}>Keep household</Button>
+              <Button type="submit" variant="destructive" disabled={deleteConfirm.trim() !== household?.name || isDeleting}>
+                {isDeleting ? 'Deleting…' : 'Delete forever'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!permissionsMember} onOpenChange={(open) => !open && setPermissionsMember(null)}>
         <DialogContent className="max-h-[90vh] max-w-2xl">

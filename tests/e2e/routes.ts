@@ -5,7 +5,7 @@ export const authenticatedRoutes = [
   { path: "/shopping", heading: "Shopping Center", content: "Weekly Groceries" },
   { path: "/pets", heading: "Your Pets", content: "Maple" },
   { path: "/maintenance", heading: "Maintenance Center", content: "Main HVAC System" },
-  { path: "/automation", heading: "House Automation", content: "Home Assistant Setup" },
+  { path: "/automation", heading: "House Automation", content: "Connect Home Assistant" },
   { path: "/notifications", heading: "Notification Center", content: "HVAC filter due today" },
   { path: "/profile", heading: "Your Profile", content: "Personal Information" },
   { path: "/library", heading: "Barcode Library", content: "E2E Oat Cereal" },

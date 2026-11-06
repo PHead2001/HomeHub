@@ -6,22 +6,22 @@ This module owns Home Assistant credentials, connection checks, and read-only en
 
 ## User-Facing Capabilities
 
-- Configure a Home Assistant URL and long-lived access token at `/automation`.
-- Test the stored connection.
-- List entity IDs, friendly names, and current states.
-- Disconnect by deleting the stored credentials.
+- Owners/admins (`automation.manage`) connect a public https Home Assistant address and long-lived token at `/automation`; the connection is tested before it is stored.
+- Members with `automation.view` see devices grouped by type, with search, friendly names, states and units, and can refresh.
+- Managers disconnect, which deletes the stored credentials.
+- People without `automation.manage` see an explanation instead of the setup form.
 
 ## Entry Points
 
 - `src/app/automation/page.tsx`
 - `src/components/automation-client.tsx`
 - `src/app/automation/actions.ts`
-- Credential save/delete methods in `src/contexts/auth-context.tsx`
-- `HomeAssistantCredentials` and `HomeAssistantEntity` in `src/lib/types.ts`
+- `src/lib/server/home-assistant.ts` (address safety and state fetch)
+- `tests/server/home-assistant.test.ts`
 
 ## Architecture and Data Flow
 
-The client saves credentials in Firestore through auth context. The server action reads those credentials, then sends `GET {url}/api/states` with a Bearer token and `cache: no-store`. Returned entity state is rendered but not persisted.
+Every action (`getHomeAssistantStatus`, `getHomeAssistantEntities`, `saveHomeAssistantConnection`, `disconnectHomeAssistant`) receives the caller's Firebase ID token and household ID, verifies the token with the Admin SDK and authorizes against the caller's membership record (`automation.view` to read, `automation.manage` to change). Credentials are read and written only with the Admin SDK. Saving tests the connection first, then writes in a transaction that re-checks that the household still exists, is not being deleted, and that the caller still has `automation.manage` (`src/lib/server/home-assistant-store.ts`), so a household deleted during a slow connection test never gets its token back. Requests go to `GET {url}/api/states` with an 8 s timeout, `redirect: manual` and `cache: no-store`; responses are trimmed to entity ID, state, friendly name, unit and device class (max 1000) and are not persisted.
 
 ## Data Model and Persistence
 
@@ -31,9 +31,7 @@ The client saves credentials in Firestore through auth context. The server actio
 
 ## Authentication, Roles, and Security
 
-Navigation uses `automation.view`, but the route/client only require a signed-in user with a household. Firestore rules make `home-automation/*` write-only for clients holding `automation.manage`; no client role, including the owner, can read the stored token.
-
-The server action still accepts caller-provided email and household ID and reads credentials through the web client SDK without a signed-in user, so it is denied by rules and cannot connect in production. It must move to the Admin SDK behind verified ID-token authorization (tracked as audit B2).
+Firestore rules let only members with `automation.manage` (owners and admins by default, who could replace the token anyway) read `home-automation/*`; every other role, including members, children, guests and pending members, is denied. This read exists for compatibility with the older client, which checked setup by reading the document directly; this app reads and writes credentials only through the server actions above. Addresses must be `https`, without embedded credentials, and must resolve only to public IP addresses (loopback, private, link-local/metadata, CGNAT, unique-local and multicast ranges are refused); `.local`, `.lan`, `.internal` and `.home.arpa` names are refused. The URL is re-validated on every request, so stored legacy `http://…local` addresses fail safely with a clear message. Residual risk: DNS can change between validation and the request; redirects are not followed.
 
 ## Integrations and Background Processing
 

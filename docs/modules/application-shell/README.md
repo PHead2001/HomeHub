@@ -49,7 +49,7 @@ Theme values are persisted by the identity/profile module and injected as CSS va
 - Members with role `newuser` receive a waiting-for-approval overlay on routes other than `/profile`.
 - Desktop navigation uses `hasPermission`; direct routes and dashboard links still depend on feature code and Firebase rules.
 
-The overlays visually cover child routes but do not unmount them, so child effects can still execute. Security must be enforced by rules and module code, not by the overlay alone.
+While either overlay is shown, `HouseholdManager` renders only the overlay: the header and child routes are not mounted, so their effects do not run. Children do render while household state is still loading and for logged-out users. Security must be enforced by rules and module code, not by the overlay alone.
 
 ## Integrations and Background Processing
 
@@ -69,7 +69,7 @@ Authenticated emulator tests enter through `/e2e-login`; that route is rendered 
 - Global providers must remain ordered so all consumers are inside `AuthProvider`.
 - Dashboard links may expose navigation that the header hides; destination security is authoritative.
 - Firebase errors are converted to global toasts through the error emitter/listener pair.
-- Shell loading and household overlays must not be treated as proof that route effects did not run.
+- The household overlays replace child routes, but shell loading does not: children mount while household state is resolving, so loading must not be treated as proof that route effects did not run.
 - At 360 px and wider supported mobile viewports, dashboard carousel overflow must remain component-local and the document must not scroll horizontally.
 
 ## Validation

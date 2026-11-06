@@ -68,7 +68,7 @@ Direct temporary chores use the existing `chores` path with optional `templateId
 
 Rules use Firebase Auth UID/email and UID membership documents only; `households.memberEmails` and profile household fields grant nothing. Pending `newuser` members are blocked from ordinary household subcollections. Storage rules read the same membership records through cross-service `firestore.get()`, apply the same role presets and overrides, and enforce image-only uploads (5–10 MB) for pets, barcode images and avatars and a 15 MB document/image allowlist for maintenance attachments; every other path is denied. Cross-service reads require the Storage service agent to hold `roles/firebaserules.firestoreServiceAgent` (granted on `homehub-j91jb` 2026-11-06).
 
-Home Assistant credentials under `home-automation/*` are write-only for clients with `automation.manage`; no client can read the token back.
+Home Assistant credentials under `home-automation/*` can be read and written only by members with `automation.manage`; every other role is denied. The app itself reads and writes them through authorized server actions.
 
 Firestore rules explicitly map known household collections to the closest role/permission operation: chores/templates/rooms, shopping lists/items/config, pantry, barcode library, pets/logs, assets, vehicles, maintenance logs/attachments, notifications, audit logs, and automation configuration. Member-document permission overrides are honored, pending users are denied, and unknown household paths deny by default. Where one update can represent multiple product actions, rules use the narrowest existing permission without field-level semantic inference.
 
@@ -97,7 +97,7 @@ Every application module depends on this platform. [Notifications](../notificati
 - Unknown household subcollections have no permissive fallback.
 - Notification deletion is denied; logical expiration needs manual TTL configuration.
 - Functions remove invalid FCM tokens after failed sends.
-- UID-only push targeting depends on a `users.uid` query, but profile creation does not consistently store that field.
+- Push recipients are resolved from membership records (approved members only; targeted notifications reach only their target), and each recipient's profile is read directly by email for FCM tokens. No `users.uid` query is used.
 - Creation rules require notification targets to be household members (UID membership record, or a profile pointing at the household), allow only `/`-relative deep links, and reject unknown fields.
 - The E2E seed and Playwright config refuse non-loopback emulator hosts; the seed additionally requires the exact `demo-homehub-e2e` project.
 - The emulator-only custom token route has no service-account secret and returns 404 unless emulator safety gates pass.

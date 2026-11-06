@@ -231,3 +231,17 @@ export const canChangeRole = (actor?: HouseholdMember | null, target?: Household
 export const canTransferOwnership = (actor?: HouseholdMember | null, target?: HouseholdMember | null) => {
   return Boolean(actor && target && actor.role === 'owner' && actor.uid !== target.uid && target.role !== 'newuser');
 };
+
+const approvedMemberRoles: HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest'];
+
+// Client permissions come only from the caller's approved membership record,
+// matching firestore.rules. The users/{email} profile cache never grants anything,
+// so nothing (e.g. a live listener) starts before the record has loaded.
+export const getMemberPermissions = (member?: Pick<HouseholdMember, 'role' | 'status' | 'permissions'> | null) => {
+  const approved = Boolean(member)
+    && approvedMemberRoles.includes(member!.role as HouseholdRole)
+    && (member!.status || 'active') === 'active';
+  return approved
+    ? getEffectivePermissions(member!.role, member!.permissions)
+    : getRolePresetPermissions('newuser');
+};

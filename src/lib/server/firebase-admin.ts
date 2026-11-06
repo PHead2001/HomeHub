@@ -3,6 +3,7 @@ import 'server-only';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 
 const projectId = process.env.GCLOUD_PROJECT
   || process.env.GOOGLE_CLOUD_PROJECT
@@ -16,3 +17,8 @@ const adminApp = getApps()[0] || initializeApp(projectId ? { projectId } : undef
 
 export const adminAuth = getAuth(adminApp);
 export const adminDb = getFirestore(adminApp);
+
+export const adminStorageBucket = () => {
+  const bucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
+  return bucket ? getStorage(adminApp).bucket(bucket) : null;
+};

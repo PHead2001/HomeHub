@@ -13,6 +13,7 @@
     "docs:check": "node scripts/check-module-docs.mjs",
     "test:ai": "node --import tsx --test tests/ai/deterministic-flows.test.ts tests/ai/security-and-barcode.test.ts",
     "test:rules": "node scripts/e2e/run-rules.mjs",
+    "test:server": "node scripts/e2e/run-server.mjs",
     "test:ai:openai:live": "tsx scripts/ai/openai-live-smoke.ts",
     "test:e2e:seed": "node scripts/e2e/seed.mjs",
     "test:e2e": "playwright test tests/e2e/smoke.spec.ts tests/e2e/verification-findings.spec.ts tests/e2e/temporary-chores-maintenance-ui.spec.ts tests/e2e/ai-openai.spec.ts tests/e2e/ai-hardening.spec.ts",

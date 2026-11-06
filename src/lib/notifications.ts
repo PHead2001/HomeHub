@@ -144,7 +144,9 @@ export const getDeterministicNotificationId = ({
 
 const getNotificationSemanticKey = (notification: Notification) => {
   if (!notification.sourceType || !notification.sourceId) return `document:${notification.id}`;
-  return `${notification.sourceType}|${notification.sourceId}|${notification.stateKey || 'legacy'}`;
+  // Recipient is part of the identity: per-person copies of one event must not merge.
+  const recipient = notification.targetUserUid || notification.targetUserEmail || 'everyone';
+  return `${notification.sourceType}|${notification.sourceId}|${notification.stateKey || 'legacy'}|${recipient}`;
 };
 
 export const deduplicateNotifications = (notifications: Notification[]) => {

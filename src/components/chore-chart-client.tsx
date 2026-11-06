@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Armchair, Baby, Bath, BedDouble, Bike, Car, Cat, Dog, Gamepad2, Hammer, Home, Loader2, Microwave, Paintbrush, PlusCircle, Refrigerator, Sofa, Trash2, TreeDeciduous, Edit, MoreVertical, X, Calendar as CalendarIcon, BookUser, Repeat, User as UserIcon, ChevronDown, Filter, Tv, Utensils, Warehouse, WashingMachine } from 'lucide-react';
 import type { LucideIcon, LucideProps } from 'lucide-react';
-import type { Chore, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
+import type { Chore, HouseholdMember, User as HomeHubUser, ChoreTemplate, Room, Recurrence, RecurrenceFrequency, MonthlyNthWeekday, MonthlyRecurrenceMode } from '@/lib/types';
 import { format, addDays, parseISO, add, sub, isPast, isToday, startOfToday, isAfter, getDay, endOfToday, differenceInCalendarDays, isValid } from 'date-fns';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
@@ -1414,7 +1414,7 @@ function ChoreCalendar({ chores }: { chores: Chore[] }) {
 }
 
 export function ChoreChartClient() {
-  const { currentUser } = useAuth();
+  const { currentUser, permissions } = useAuth();
   const { toast } = useToast();
   
   const [assignedChores, setAssignedChores] = useState<Chore[]>([]);
@@ -1463,12 +1463,24 @@ export function ChoreChartClient() {
         if (!householdDocSnap.exists()) {
             throw new Error("Household document not found.");
         }
-        const memberEmails = householdDocSnap.data().memberEmails || [];
-        const userPromises = memberEmails.map((email: string) => getDoc(doc(db, 'users', email)));
-        const userDocsSnap = await Promise.all(userPromises);
-        const usersData: HomeHubUser[] = userDocsSnap
-            .filter(snap => snap.exists())
-            .map(snap => ({ ...(snap.data() as HomeHubUser) }));
+        // Assignees come from approved membership records (the authority), enriched
+        // with profile details where readable. One unreadable profile must not break the page.
+        const membersSnap = await getDocs(collection(db, 'households', currentUser.householdId, 'members'));
+        const approvedMembers = membersSnap.docs
+            .map(snap => snap.data() as HouseholdMember)
+            .filter(member => member.email && member.role !== 'newuser' && (member.status || 'active') === 'active');
+        const profileResults = await Promise.allSettled(approvedMembers.map(member => getDoc(doc(db, 'users', member.email))));
+        const usersData: HomeHubUser[] = approvedMembers.map((member, index) => {
+            const result = profileResults[index];
+            const profile = result.status === 'fulfilled' && result.value.exists() ? result.value.data() as HomeHubUser : null;
+            return {
+                ...(profile || {}),
+                uid: member.uid,
+                email: member.email,
+                displayName: profile?.displayName || member.displayName || member.email,
+                avatarUrl: profile?.avatarUrl || member.avatarUrl,
+            } as HomeHubUser;
+        });
         setHouseholdUsers(usersData);
 
         const choresCollection = getCollectionRef('chores');
@@ -1500,8 +1512,10 @@ export function ChoreChartClient() {
             }
         });
         
-        if (purgedCount > 0) {
-            await purgeBatch.commit();
+        // Retention: completed chores older than 90 days are removed. Only people who
+        // may delete chores run it, and a failure never blocks viewing.
+        if (purgedCount > 0 && permissions['chores.delete']) {
+            await purgeBatch.commit().catch(purgeError => console.warn('Old completed chores were not purged.', purgeError));
         }
 
         const templatesData: ChoreTemplate[] = templatesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ChoreTemplate));
@@ -1564,8 +1578,14 @@ export function ChoreChartClient() {
             }
         }
 
-        if (generatedInThisPass > 0) {
-            await generationBatch.commit();
+        let generated = false;
+        if (generatedInThisPass > 0 && permissions['chores.create']) {
+            generated = await generationBatch.commit().then(() => true, generationError => {
+                console.warn('Upcoming recurring chores were not generated.', generationError);
+                return false;
+            });
+        }
+        if (generated) {
             const finalChoresSnapshot = await getDocs(query(choresCollection));
             const finalChoresData: Chore[] = finalChoresSnapshot.docs.map(doc => {
                 const chore = { id: doc.id, ...doc.data() } as Chore;
@@ -1592,7 +1612,7 @@ export function ChoreChartClient() {
     } finally {
         setLoading(false);
     }
-  }, [getCollectionRef, currentUser, toast]);
+  }, [getCollectionRef, currentUser, permissions, toast]);
 
   useEffect(() => {
     if (currentUser?.householdId) {

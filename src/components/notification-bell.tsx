@@ -52,12 +52,13 @@ function NotificationItem({
   const SWIPE_THRESHOLD = -60;
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!event.isPrimary) return;
+    // Swipe-to-dismiss is a touch gesture; capturing on a mouse press would
+    // retarget the click away from the item's link.
+    if (!event.isPrimary || event.pointerType === 'mouse') return;
 
     wasDraggedRef.current = false;
     setIsDragging(true);
     startXRef.current = event.clientX;
-    itemRef.current?.setPointerCapture(event.pointerId);
     if (itemRef.current) {
       itemRef.current.style.transition = 'none';
     }
@@ -67,6 +68,9 @@ function NotificationItem({
     if (!isDragging || !event.isPrimary) return;
 
     const deltaX = event.clientX - startXRef.current;
+    if (Math.abs(deltaX) > 5 && !wasDraggedRef.current) {
+      itemRef.current?.setPointerCapture(event.pointerId);
+    }
     if (Math.abs(deltaX) > 5) {
       wasDraggedRef.current = true;
     }
@@ -84,7 +88,7 @@ function NotificationItem({
     if (!isDragging || !event.isPrimary) return;
 
     setIsDragging(false);
-    itemRef.current?.releasePointerCapture(event.pointerId);
+    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
     if (itemRef.current) {
       itemRef.current.style.transition = 'transform 0.2s ease-out';
     }
@@ -102,7 +106,7 @@ function NotificationItem({
 
     setIsDragging(false);
     wasDraggedRef.current = false;
-    itemRef.current?.releasePointerCapture(event.pointerId);
+    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
     if (itemRef.current) itemRef.current.style.transition = 'transform 0.2s ease-out';
     setDragX(0);
   };

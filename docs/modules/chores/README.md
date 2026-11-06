@@ -21,11 +21,11 @@ This module owns rooms, chore templates, one-time and recurring assignments, gen
 - `src/components/chore-chart-client.tsx`
 - Chore/recurrence types in `src/lib/types.ts`
 - Notification helpers in `src/lib/notifications.ts`
-- Member departure cleanup in `src/contexts/auth-context.tsx` and `src/components/household-management-client.tsx`
+- Member departure cleanup in `src/lib/server/household-membership.ts` (leaving) and `src/components/household-management-client.tsx` (removal)
 
 ## Architecture and Data Flow
 
-`ChoreChartClient` loads rooms, templates, chore instances, and legacy household users. Recurring templates are normalized and expanded client-side when data loads. Generation starts at today and creates 30 valid occurrences with deterministic IDs derived from template, room, date, and assignee.
+`ChoreChartClient` loads rooms, templates, chore instances, and assignees. Assignees are the household's approved membership records (`households/{householdId}/members`: not `newuser`, status `active`), enriched with `users/{email}` profiles where readable; a profile that cannot be read falls back to the member record's name and avatar, so one unreadable profile never breaks the page. Recurring templates are normalized and expanded client-side when data loads, but only for members with `chores.create`; a failed generation write is logged and never blocks viewing. Generation starts at today and creates 30 valid occurrences with deterministic IDs derived from template, room, date, and assignee.
 
 Completion updates chore instances. Editing or canceling a recurrence removes incomplete generated instances and regenerates from the template; completed history remains.
 
@@ -46,7 +46,7 @@ Biweekly schedules use `startDate` as an anchor. Monthly day-of-month is limited
 
 ## Authentication, Roles, and Security
 
-The page requires an authenticated user and uses that user's household ID. Assignee discovery still reads `households.memberEmails` and `users/{email}` rather than relying exclusively on UID membership documents.
+The page requires an authenticated user and uses that user's household ID. Assignee discovery uses UID membership records only; `households.memberEmails` is not consulted.
 
 Navigation uses `chores.view`. Firestore's broad approved-member rule does not enforce granular `chores.complete/create/edit/delete/assign` permissions, so role restrictions are primarily UI-level. Pending `newuser` members are denied by rules.
 
@@ -70,9 +70,9 @@ The homepage AI Overview includes only incomplete chores assigned to the verifie
 ## Invariants and Failure Behavior
 
 - Defensive normalization supplies defaults for old recurrence records missing interval, weekdays, anchors, monthly mode, or day.
-- Completed chores older than 90 days are deleted during chore-page loading.
+- Completed chores older than 90 days are deleted during chore-page loading, only when the viewer has `chores.delete`; a failed purge is logged and never blocks viewing.
 - Room deletion updates templates but not existing chore instances; unresolved room IDs can disappear from grouped views.
-- Client-only generation means recurring instances and reminders are not advanced while nobody opens the chore page.
+- Client-only generation means recurring instances and reminders are not advanced while nobody with `chores.create` (generation) or `chores.delete` (retention) opens the chore page.
 - Best-effort notification failures do not roll back chore writes.
 - Assignment forms show one-time date controls or recurring controls, never both; switching modes retains the unsaved recurrence state for that dialog session.
 - Active and completed chore instances use the same confirmation contract before permanent deletion.

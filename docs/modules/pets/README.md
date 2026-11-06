@@ -41,11 +41,11 @@ The pet list reads the household pet collection. The detail route reads one pet 
 
 ## Authentication, Roles, and Security
 
-Pages require an authenticated current user and scope all paths with that user's `householdId`. Firestore and Storage rules allow approved household members and legacy `memberEmails` members while excluding pending `newuser` members.
+Pages require an authenticated current user and scope all paths with that user's `householdId`. Firestore and Storage rules treat `households/{householdId}/members/{uid}` as the only membership authority: the caller needs an approved member record (role `owner`, `admin`, `member`, `child`, or `guest` with `status` `active`), and `households.memberEmails` or user-profile fields never grant access. Pending `newuser` members are blocked.
 
-The role preset includes `pets.view`, `pets.addLogs`, `pets.editProfiles`, and `pets.deleteLogs`, but the broad Firestore rule and feature clients do not enforce each mutation permission. Direct-route writes may therefore exceed the role preset's intended restrictions.
+Firestore rules enforce each pet permission (role preset plus per-member overrides; owners hold every permission): `pets.view` to read pets and logs, `pets.editProfiles` to create, update, or delete pet documents, `pets.addLogs` to create or update feeding, medication, and care logs, and `pets.deleteLogs` to delete logs. Feature clients do not hide controls by these permissions, so a disallowed write is rejected by the rules rather than prevented in the UI.
 
-Pet Storage rules are household-scoped but do not enforce server-side file size or content type.
+Pet Storage rules require `pets.view` to read and `pets.editProfiles` to upload, replace, or delete photos. Uploads must be 10 MB or smaller with content type `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/heic`, `image/heif`, or `image/avif`.
 
 ## Integrations and Background Processing
 
