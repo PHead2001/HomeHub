@@ -773,3 +773,26 @@ describe('chore completion stamps and chore settings', () => {
     await assertFails(getDoc(doc(dbFor(users.ownerB), 'households', householdA, 'chore-settings', 'preferences')));
   });
 });
+
+describe('yearly chore stats', () => {
+  const stats = (user: Identity, household = householdA) => doc(dbFor(user), 'households', household, 'stats', 'chores-2026');
+
+  test('members who can view chores read stats; nobody else does and no client writes', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'stats', 'chores-2026'), {
+        year: 2026, completed: 3, byAssignee: { member_a_x: 3 }, names: { member_a_x: 'Member A' },
+      });
+    });
+    await assertSucceeds(getDoc(stats(users.member)));
+    await assertSucceeds(getDoc(stats(users.child)));
+    await assertFails(getDoc(stats(users.pending)));
+    await assertFails(getDoc(stats(users.ownerB)));
+    await assertFails(getDoc(doc(environment.unauthenticatedContext().firestore(), 'households', householdA, 'stats', 'chores-2026')));
+    for (const user of [users.owner, users.admin, users.member]) {
+      await assertFails(setDoc(stats(user), { year: 2026, completed: 999 }));
+      await assertFails(updateDoc(stats(user), { completed: 0 }));
+      await assertFails(deleteDoc(stats(user)));
+    }
+    await assertFails(setDoc(doc(dbFor(users.owner), 'households', householdA, 'stats', 'anything-else'), { completed: 1 }));
+  });
+});

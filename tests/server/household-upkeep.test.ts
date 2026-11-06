@@ -3,6 +3,7 @@ import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
+import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -174,6 +175,32 @@ describe('household upkeep', () => {
     const result = await run(new Date('2026-11-05T15:00:00Z'));
     assert.equal(result.purgedChores, 1);
     assert.equal((await house().collection('chores').doc('old').get()).exists, false);
+    assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
+  });
+
+  test("a purged chore is added to its year's stats exactly once, even when upkeep runs twice", async () => {
+    const chores = house().collection('chores');
+    await chores.doc('old-sam').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToEmail: 'Sam.Member@example.test', assignedToDisplayName: 'Sam Member' });
+    await chores.doc('old-sam-2').set({ task: 'Older', isCompleted: true, completedAt: '2026-06-01T12:00:00.000Z', assignedToEmail: 'sam.member@example.test', assignedToDisplayName: 'Sam Member' });
+    // Completed just after New Year in UTC, but still Dec 31 in the household's timezone (Chicago).
+    await chores.doc('new-year').set({ task: 'Party', isCompleted: true, completedAt: '2026-01-01T03:00:00.000Z', assignedToEmail: 'owner@example.test' });
+    await chores.doc('recent').set({ task: 'Recent', isCompleted: true, completedAt: '2026-10-30T12:00:00.000Z', assignedToEmail: 'owner@example.test' });
+    const key = choreStatsAssigneeKey('sam.member@example.test');
+
+    const first = await run(new Date('2026-11-05T15:00:00Z'));
+    assert.equal(first.purgedChores, 3);
+    const stats2026 = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats2026?.year, 2026);
+    assert.equal(stats2026?.completed, 2);
+    assert.deepEqual(stats2026?.byAssignee, { [key]: 2 });
+    assert.equal(stats2026?.names?.[key], 'Sam Member');
+    const stats2025 = (await house().collection('stats').doc('chores-2025').get()).data();
+    assert.equal(stats2025?.completed, 1);
+
+    // Nothing left to purge: a second run counts nothing again.
+    const second = await run(new Date('2026-11-05T16:00:00Z'));
+    assert.equal(second.purgedChores, 0);
+    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 2);
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
   });
 });

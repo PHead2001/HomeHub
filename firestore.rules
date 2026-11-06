@@ -535,6 +535,13 @@ service cloud.firestore {
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
       }
 
+      // Yearly chore totals (stats/chores-{year}), written only by server upkeep when
+      // it removes old completed chores. Read-only for members who can view chores.
+      match /stats/{statId} {
+        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow write: if false;
+      }
+
       match /shopping-lists/{listId} {
         allow read: if hasHouseholdPermission(householdId, 'shopping.view');
         allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');

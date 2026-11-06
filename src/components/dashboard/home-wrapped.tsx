@@ -8,7 +8,8 @@
  * system share sheet, or saves the image where sharing files is not supported.
  */
 import { useRef, useState } from 'react';
-import { collection, getCountFromServer, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getCountFromServer, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { choreStatsDocId } from '@functions/shared/chore-stats';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronLeft, ChevronRight, Gift, Loader2, Share2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -27,7 +28,13 @@ const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'curr
 function buildCards(summary: WrappedSummary, householdName: string, unavailable: readonly string[] = []): Card[] {
   const cards: Card[] = [{ eyebrow: `${summary.year} at home`, headline: householdName, detail: 'Here is your year, wrapped.' }];
   if (summary.choresDone !== null) {
-    cards.push({ eyebrow: 'Chores done', headline: String(summary.choresDone), detail: summary.choresDone === 0 ? 'A quiet year. Plenty of time for next year.' : 'Every one of them ticked off by someone in this house.' });
+    cards.push({
+      eyebrow: summary.choresWindow === 'last90days' ? 'Chores done (last 90 days)' : 'Chores done',
+      headline: String(summary.choresDone),
+      detail: summary.choresWindow === 'last90days'
+        ? 'Counts from the last 90 days: older completions from before yearly totals were kept are not included.'
+        : summary.choresDone === 0 ? 'A quiet year. Plenty of time for next year.' : 'Every one of them ticked off by someone in this house.',
+    });
   }
   if (summary.champion) {
     cards.push({ eyebrow: 'Chore champion', headline: summary.champion.name, detail: `${summary.champion.count} ${summary.champion.count === 1 ? 'chore' : 'chores'} finished.` });
@@ -120,8 +127,17 @@ export function HomeWrapped() {
           const data = member.data() as { email?: unknown; displayName?: unknown };
           return typeof data.email === 'string' && typeof data.displayName === 'string' ? [[data.email.trim().toLowerCase(), data.displayName] as const] : [];
         }));
-        section('Chores', getDocs(query(base('chores'), where('isCompleted', '==', true))).then((snapshot) => {
-          Object.assign(summary, summarizeChores(docs(snapshot), year, names));
+        section('Chores', Promise.all([
+          getDocs(query(base('chores'), where('isCompleted', '==', true))),
+          // Completions upkeep already removed (kept 90 days) are counted here.
+          // A missing or unreadable document falls back to the last 90 days, said on the card.
+          getDoc(doc(db, 'households', householdId, 'stats', choreStatsDocId(year))).catch(() => null),
+        ]).then(([snapshot, stats]) => {
+          Object.assign(summary, summarizeChores(docs(snapshot), year, {
+            names,
+            stats: stats?.exists() ? stats.data() : undefined,
+            timeZone: household?.timeZone,
+          }));
         }));
       }
       if (permissions['shopping.view']) {

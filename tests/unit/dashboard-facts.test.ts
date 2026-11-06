@@ -12,6 +12,8 @@ import {
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import { maintenanceSpend, summarizeChores, topPurchasedItem, firstNameOnly } from '../../src/lib/dashboard/wrapped';
+import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
+import { addPurgedChores, choreStatsDocId, completionYear, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { dayKey, daysBetween, toDateValue } from '../../src/lib/dashboard/dates';
 
 // Local noon on 2026-08-01 (matches the E2E seed's day in any time zone).
@@ -252,8 +254,9 @@ describe('Home Wrapped aggregation', () => {
       { id: '2', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam Member' },
       { id: '3', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToEmail: 'morgan.admin@example.test' },
       { id: '4', isCompleted: true, completedAt: '2025-12-30T10:00:00Z', assignedToEmail: 'old@example.test', assignedToDisplayName: 'Old Year' },
-    ], 2026);
+    ], 2026, { timeZone: 'UTC' });
     assert.equal(summary.choresDone, 3);
+    assert.equal(summary.choresWindow, 'last90days', 'no stats document: only retained chores');
     assert.deepEqual(summary.champion, { name: 'Sam', count: 2 });
     assert.equal(firstNameOnly('morgan.admin@example.test'), 'Morgan');
   });
@@ -264,11 +267,46 @@ describe('Home Wrapped aggregation', () => {
       ...['a', 'b', 'c'].map((id) => done(`s1${id}`, 'sam.one@example.test', 'Sam One')),
       ...['a', 'b', 'c'].map((id) => done(`s2${id}`, 'sam.two@example.test', 'Sam Two')),
       ...['a', 'b', 'c', 'd', 'e'].map((id) => done(`al${id}`, 'alex@example.test', 'Alex')),
-    ], 2026, new Map([['alex@example.test', 'Alex Owner']]));
+    ], 2026, { names: new Map([['alex@example.test', 'Alex Owner']]), timeZone: 'UTC' });
     assert.deepEqual(summary.champion, { name: 'Alex', count: 5 });
     // A renamed member keeps one score.
-    const renamed = summarizeChores([done('1', 'jo@example.test', 'Jo'), done('2', 'jo@example.test', 'Joanna')], 2026);
+    const renamed = summarizeChores([done('1', 'jo@example.test', 'Jo'), done('2', 'jo@example.test', 'Joanna')], 2026, { timeZone: 'UTC' });
     assert.deepEqual(renamed.champion, { name: 'Jo', count: 2 });
+  });
+
+  it('adds chores upkeep already removed (yearly stats) to the retained ones, with no double counting', () => {
+    const sam = choreStatsAssigneeKey('sam@example.test');
+    const alex = choreStatsAssigneeKey('alex@example.test');
+    // Upkeep removed 40 of Sam's and 2 of Alex's completions earlier in the year.
+    const stats = { year: 2026, completed: 42, byAssignee: { [sam]: 40, [alex]: 2 }, names: { [sam]: 'Sam Member', [alex]: 'Alex Owner' } };
+    const retained = [
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `a${i}`, isCompleted: true, completedAt: '2026-10-01T10:00:00Z', assignedToEmail: 'alex@example.test', assignedToDisplayName: 'Alex Owner' })),
+      { id: 's1', isCompleted: true, completedAt: '2026-10-02T10:00:00Z', assignedToEmail: 'Sam@Example.test', assignedToDisplayName: 'Sam Member' },
+    ];
+    const summary = summarizeChores(retained, 2026, { stats, timeZone: 'UTC' });
+    assert.equal(summary.choresWindow, 'year');
+    assert.equal(summary.choresDone, 48, '42 removed + 6 retained');
+    assert.deepEqual(summary.champion, { name: 'Sam', count: 41 }, 'merged per assignee key, case-insensitive email');
+  });
+
+  it('counts a completion in the household’s year, like the stats', () => {
+    // 03:00 UTC on Jan 1 is still Dec 31 in Chicago.
+    const chore = { id: 'ny', isCompleted: true, completedAt: '2026-01-01T03:00:00Z', assignedToEmail: 'sam@example.test' };
+    assert.equal(summarizeChores([chore], 2025, { timeZone: 'America/Chicago' }).choresDone, 1);
+    assert.equal(summarizeChores([chore], 2026, { timeZone: 'America/Chicago' }).choresDone, 0);
+  });
+
+  it('upkeep stats helpers: stable keys, merging and defensive reads', () => {
+    assert.equal(choreStatsAssigneeKey('Sam.Member@Example.test'), choreStatsAssigneeKey(' sam.member@example.test '));
+    assert.doesNotMatch(choreStatsAssigneeKey('sam.member@example.test'), /[.@/]/);
+    assert.notEqual(choreStatsAssigneeKey('sam.one@example.test'), choreStatsAssigneeKey('sam.two@example.test'));
+    assert.equal(choreStatsDocId(2026), 'chores-2026');
+    assert.equal(completionYear('2026-01-01T03:00:00.000Z', 'America/Chicago'), 2025);
+    const next = addPurgedChores(readChoreStats({ completed: 'x', byAssignee: { bad: -1 } }, 2026), [
+      { assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: '2026-02-01T00:00:00Z' },
+      { completedAt: '2026-02-01T00:00:00Z' },
+    ]);
+    assert.deepEqual(next, { year: 2026, completed: 2, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 1 }, names: { [choreStatsAssigneeKey('sam@example.test')]: 'Sam' } });
   });
 
   it('merges purchased items case-insensitively and sums upkeep spend', () => {

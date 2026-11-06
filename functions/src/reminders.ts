@@ -11,6 +11,10 @@ import {
   addDays, localDay, safeTimeZone, zonedMidnightIso,
 } from "./shared/calendar";
 import {choreNotificationsFor, type ChoreInput} from "./shared/chore-reminders";
+import {
+  addPurgedChores, choreStatsDocId, completionYear, readChoreStats,
+  type PurgedChore,
+} from "./shared/chore-stats";
 import {deterministicNotificationId, recurringChoreId} from "./shared/ids";
 import {
   actionableReminders, buildMaintenanceReminders,
@@ -92,19 +96,28 @@ export const runHouseholdReminders = async (
       kind: "create"; ref: Ref; data: Record<string, unknown>;
       template: Ref; templateVersion: FirestoreTimestamp | undefined;
     } |
-    {kind: "purge"; ref: Ref; completedAt: unknown};
+    {kind: "purge"; ref: Ref; completedAt: string; year: number};
   const commitGuarded = (ops: ChoreOp[]):
     Promise<{created: number; purged: number} | null> =>
     db.runTransaction(async (tx) => {
       const templateRefs = [...new Map(ops.flatMap((op) =>
         op.kind === "create" ? [[op.template.path, op.template]] : []))
         .values()];
+      // Yearly chore stats for every year a purge may touch: a purged chore
+      // is added to them in this same transaction (read before any write).
+      const statsYears = [...new Set(ops.flatMap((op) =>
+        op.kind === "purge" ? [op.year] : []))];
+      const statsRefs = statsYears.map((year) =>
+        house.collection("stats").doc(choreStatsDocId(year)));
       const [home, ...rest] = await tx.getAll(
-        house, ...templateRefs, ...ops.map((op) => op.ref));
+        house, ...templateRefs, ...ops.map((op) => op.ref), ...statsRefs);
       if (!home.exists || home.get("deletingAt")) return null;
       const templates = new Map(templateRefs.map((ref, index) =>
         [ref.path, rest[index]]));
-      const current = rest.slice(templateRefs.length);
+      const current = rest.slice(templateRefs.length,
+        templateRefs.length + ops.length);
+      const statsSnaps = rest.slice(templateRefs.length + ops.length);
+      const purgedByYear = new Map<number, PurgedChore[]>();
       let created = 0;
       let purged = 0;
       ops.forEach((op, index) => {
@@ -121,7 +134,23 @@ export const runHouseholdReminders = async (
             snap.get("completedAt") === op.completedAt) {
           tx.delete(op.ref);
           purged++;
+          // Counted only when actually deleted, so repeated or overlapping
+          // runs never count a chore twice.
+          const list = purgedByYear.get(op.year) ?? [];
+          list.push({
+            assignedToEmail: snap.get("assignedToEmail"),
+            assignedToDisplayName: snap.get("assignedToDisplayName"),
+            completedAt: op.completedAt,
+          });
+          purgedByYear.set(op.year, list);
         }
+      });
+      statsYears.forEach((year, index) => {
+        const chores = purgedByYear.get(year);
+        if (!chores || chores.length === 0) return;
+        const stats = addPurgedChores(
+          readChoreStats(statsSnaps[index]?.data(), year), chores);
+        tx.set(statsRefs[index], {...stats, updatedAt: ts(now)});
       });
       return {created, purged};
     });
@@ -198,15 +227,20 @@ export const runHouseholdReminders = async (
 
   // Retention: completed chores older than 90 days are removed (existing
   // product policy, previously run from whichever browser opened Chores).
+  // Each removed chore is first added to households/{id}/stats/chores-{year}
+  // (year of its completion in the household timezone), so yearly totals
+  // such as Home Wrapped keep counting it.
   const purgeBefore = addDays(today, -COMPLETED_CHORE_RETENTION_DAYS);
   for (const choreDoc of choresSnap.docs) {
     const chore = choreDoc.data();
     const completedAt = typeof chore.completedAt === "string" ?
       localDay(new Date(chore.completedAt), timeZone) : null;
-    if (chore.isCompleted && completedAt && completedAt < purgeBefore &&
-        choreOps.length < 450) {
+    const year = completedAt ?
+      completionYear(chore.completedAt, timeZone) : null;
+    if (chore.isCompleted && completedAt && year !== null &&
+        completedAt < purgeBefore && choreOps.length < 450) {
       choreOps.push({
-        kind: "purge", ref: choreDoc.ref, completedAt: chore.completedAt,
+        kind: "purge", ref: choreDoc.ref, completedAt: chore.completedAt, year,
       });
     }
   }

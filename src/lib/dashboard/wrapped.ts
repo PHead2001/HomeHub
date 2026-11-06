@@ -5,10 +5,15 @@
 import { toDateValue } from './dates';
 import { completionInstant, type ChoreRecord } from '../chores/dates';
 import type { RawDoc } from './facts';
+import { localDay, safeTimeZone } from '../../../functions/src/shared/calendar';
+import { choreStatsAssigneeKey } from '../../../functions/src/shared/ids';
+import { readChoreStats } from '../../../functions/src/shared/chore-stats';
 
 export type WrappedSummary = {
   year: number;
   choresDone: number | null;
+  /** `'year'` when removed chores were included (stats document found), else only the last 90 days. */
+  choresWindow?: 'year' | 'last90days';
   champion: { name: string; count: number } | null;
   topItem: { name: string; count: number } | null;
   feedings: number | null;
@@ -27,25 +32,54 @@ export const firstNameOnly = (value: unknown): string | null => {
 const inYear = (value: unknown, year: number) => toDateValue(value)?.getFullYear() === year;
 
 /**
- * Chores completed in `year` (the Chores module's `completionInstant`: the server
- * stamp when present, else `completedAt`) and the champion. Scores are grouped by
- * the assignee's email, the stable identity, so two members who share a first name
- * never pool their chores and a renamed member keeps one score; the first name is
- * applied only to the winner's label (preferring `names`, then the chore's
- * display name, then the email).
+ * Chores completed in `year`, including the ones server upkeep has already
+ * removed (completed chores are kept 90 days). Removed completions live in
+ * `households/{id}/stats/chores-{year}` (`stats`), which upkeep fills in the same
+ * transaction that deletes each chore, so a chore is counted either there or in
+ * `chores` (still stored), never both. Retained completions use the Chores
+ * module's `completionInstant`, read in the household's timezone, like the stats.
+ *
+ * Scores are grouped by the stable assignee key (`choreStatsAssigneeKey` of the
+ * email), so two members who share a first name never pool their chores and a
+ * renamed member keeps one score; only the winner's label is shortened to a first
+ * name (member record, then the chore's display name, then the stats' name).
+ *
+ * Without a stats document (older households, or a failed read) only retained
+ * chores can be counted: `choresWindow` is then `'last90days'` and the card says so.
  */
-export function summarizeChores(chores: RawDoc[], year: number, names: ReadonlyMap<string, string> = new Map()): Pick<WrappedSummary, 'choresDone' | 'champion'> {
-  const done = chores.filter((chore) => completionInstant(chore as unknown as ChoreRecord)?.getFullYear() === year);
-  const counts = new Map<string, { count: number; displayName: unknown }>();
-  done.forEach((chore) => {
-    const email = typeof chore.assignedToEmail === 'string' ? chore.assignedToEmail.trim().toLowerCase() : '';
-    if (!email) return;
-    const current = counts.get(email);
-    counts.set(email, { count: (current?.count ?? 0) + 1, displayName: current?.displayName ?? chore.assignedToDisplayName });
-  });
-  const winner = [...counts.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))[0];
-  const label = winner ? (firstNameOnly(names.get(winner[0])) ?? firstNameOnly(winner[1].displayName) ?? firstNameOnly(winner[0])) : null;
-  return { choresDone: done.length, champion: winner && label ? { name: label, count: winner[1].count } : null };
+export function summarizeChores(
+  chores: RawDoc[],
+  year: number,
+  options: { names?: ReadonlyMap<string, string>; stats?: unknown; timeZone?: string | null } = {},
+): Pick<WrappedSummary, 'choresDone' | 'champion' | 'choresWindow'> {
+  const zone = safeTimeZone(options.timeZone);
+  const yearOf = (date: Date | null) => (date ? Number(localDay(date, zone).slice(0, 4)) : null);
+  const stats = options.stats ? readChoreStats(options.stats, year) : null;
+  const names = new Map<string, string>();
+  options.names?.forEach((name, email) => names.set(choreStatsAssigneeKey(email), name));
+
+  const counts = new Map<string, number>(Object.entries(stats?.byAssignee ?? {}));
+  const labels = new Map<string, unknown>(Object.entries(stats?.names ?? {}));
+  const emails = new Map<string, string>();
+  let retained = 0;
+  for (const chore of chores) {
+    if (yearOf(completionInstant(chore as unknown as ChoreRecord)) !== year) continue;
+    retained += 1;
+    if (typeof chore.assignedToEmail !== 'string' || !chore.assignedToEmail.trim()) continue;
+    const key = choreStatsAssigneeKey(chore.assignedToEmail);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!labels.has(key) && typeof chore.assignedToDisplayName === 'string' && chore.assignedToDisplayName.trim()) labels.set(key, chore.assignedToDisplayName);
+    if (!emails.has(key)) emails.set(key, chore.assignedToEmail);
+  }
+  const winner = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  const label = winner
+    ? (firstNameOnly(names.get(winner[0])) ?? firstNameOnly(labels.get(winner[0])) ?? firstNameOnly(emails.get(winner[0])))
+    : null;
+  return {
+    choresDone: (stats?.completed ?? 0) + retained,
+    champion: winner && label ? { name: label, count: winner[1] } : null,
+    choresWindow: stats ? 'year' : 'last90days',
+  };
 }
 
 export function topPurchasedItem(items: RawDoc[]): WrappedSummary['topItem'] {
