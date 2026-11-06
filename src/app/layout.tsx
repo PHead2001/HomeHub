@@ -32,6 +32,15 @@ const spaceGrotesk = localFont({
 export const metadata: Metadata = {
   title: 'HomeHub',
   description: 'Your all-in-one home management dashboard.',
+  // The manifest link and icon tags come from src/app/manifest.ts, icon.svg,
+  // favicon.ico and apple-icon.png (Next file conventions).
+  applicationName: 'HomeHub',
+  appleWebApp: {
+    capable: true,
+    title: 'HomeHub',
+    statusBarStyle: 'black-translucent',
+  },
+  formatDetection: { telephone: false },
 };
 
 // viewport-fit=cover lets the phone tab bar sit above the home indicator via safe-area insets.

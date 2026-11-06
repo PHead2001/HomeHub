@@ -97,6 +97,8 @@ export type ShoppingListItem = {
   status: 'needed' | 'purchased';
   imageUrl?: string;
   barcode?: string;
+  /** Link saved with an item shared into HomeHub (recipe or product page). http(s) only. */
+  sourceUrl?: string;
 };
 
 export type ShoppingListCategory = string;

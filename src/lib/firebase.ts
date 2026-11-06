@@ -1,6 +1,13 @@
 // src/lib/firebase.ts
 import { initializeApp, getApps, getApp, type FirebaseOptions } from "firebase/app";
-import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import {
+  connectFirestoreEmulator,
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  type Firestore,
+} from "firebase/firestore";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { getMessaging, isSupported } from "firebase/messaging";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
@@ -17,7 +24,26 @@ export const firebaseConfig: FirebaseOptions = {
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-export const db = getFirestore(app);
+// In the browser Firestore keeps a persistent IndexedDB cache shared by every
+// open tab, so shopping lists (and other already-loaded data) open offline and
+// queued writes such as ticked items survive reloads and sync on reconnect.
+// Server code (route handlers, server actions) keeps the default memory cache.
+// NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE=true opts a build out of persistence.
+const createFirestore = (): Firestore => {
+  if (typeof window === "undefined" || process.env.NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE === "true") {
+    return getFirestore(app);
+  }
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    // Already initialized (development hot reload) or the cache cannot be created.
+    return getFirestore(app);
+  }
+};
+
+export const db = createFirestore();
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
