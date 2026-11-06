@@ -22,6 +22,9 @@ import {
   productPhotoForName,
 } from '../../src/lib/shopping/pantry';
 import { isListTint, listTint, listTintIndex, resolveListIconName } from '../../src/lib/shopping/list-style';
+import { parseShoppingUrlState, shoppingHref } from '../../src/lib/shopping/url-state';
+import { quantityIncrement } from '../../src/lib/shopping/item-writes';
+import { increment } from 'firebase/firestore';
 
 describe('item names and duplicates', () => {
   test('normalizes spacing and capitalises all-lower-case names only', () => {
@@ -155,6 +158,48 @@ describe('pantry handoff is concurrency-safe', () => {
   test('the writer applies increments with Firestore increment(), which also queues offline', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
     assert.match(source, /quantity: increment\(plan\.add\)/);
+  });
+});
+
+describe('shopping quantity merges are atomic', () => {
+  test('a merge writes increment(added), never a locally computed total', () => {
+    const update = quantityIncrement(2);
+    assert.deepEqual(Object.keys(update), ['quantity']);
+    assert.ok(update.quantity.isEqual(increment(2)));
+  });
+
+  test('no shopping code writes a quantity total computed from a read', () => {
+    const files = ['components/shopping-list-client.tsx', 'components/pantry-inventory-client.tsx', 'components/share-target-client.tsx', 'lib/shopping/pantry-writes.ts'];
+    for (const file of files) {
+      const source = readFileSync(join(__dirname, '..', '..', 'src', ...file.split('/')), 'utf8');
+      assert.doesNotMatch(source, /quantity\)\s*\|\|\s*0\)\s*\+/, `${file} adds to a read quantity`);
+      assert.doesNotMatch(source, /(?:updateDoc|batch\.update)\([^)]*\)?,\s*\{\s*quantity\s*\}/, `${file} writes a bare quantity total`);
+    }
+  });
+});
+
+describe('shopping URL state', () => {
+  const params = (search: string) => new URLSearchParams(search);
+
+  test('parses tab, list and the quick-add request', () => {
+    assert.deepEqual(parseShoppingUrlState(params('')), { tab: 'lists', listId: null, quickAdd: false });
+    assert.deepEqual(parseShoppingUrlState(params('list=weekly-groceries')), { tab: 'lists', listId: 'weekly-groceries', quickAdd: false });
+    assert.deepEqual(parseShoppingUrlState(params('tab=pantry&list=x')), { tab: 'inventory', listId: null, quickAdd: false });
+    assert.deepEqual(parseShoppingUrlState(params('quickAdd=1')), { tab: 'lists', listId: null, quickAdd: true });
+    assert.deepEqual(parseShoppingUrlState(null), { tab: 'lists', listId: null, quickAdd: false });
+  });
+
+  test('builds hrefs that keep unrelated params and drop the one-shot quick-add', () => {
+    assert.equal(shoppingHref('/shopping', params('quickAdd=1&utm=a'), { tab: 'lists', listId: 'groceries' }), '/shopping?utm=a&list=groceries');
+    assert.equal(shoppingHref('/shopping', params('list=a'), { tab: 'inventory', listId: null }), '/shopping?tab=pantry');
+    assert.equal(shoppingHref('/shopping', params('tab=pantry'), { tab: 'lists', listId: null }), '/shopping');
+  });
+
+  test('the Shopping Center derives its state from useSearchParams, not a one-time read', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-center-client.tsx'), 'utf8');
+    assert.match(source, /useSearchParams\(\)/);
+    assert.doesNotMatch(source, /useState<ShoppingUrlState>/);
+    assert.doesNotMatch(source, /addEventListener\('popstate'/);
   });
 });
 

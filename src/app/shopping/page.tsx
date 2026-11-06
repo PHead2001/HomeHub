@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { ShoppingCenterClient } from "@/components/shopping-center-client";
 import { EmptyState } from "@/components/empty-state";
@@ -41,7 +42,10 @@ export default function ShoppingPage() {
             )}
 
             {currentUser && canView && (
-                <ShoppingCenterClient />
+                // ShoppingCenterClient reads useSearchParams (URL-driven tab and list).
+                <Suspense fallback={null}>
+                    <ShoppingCenterClient />
+                </Suspense>
             )}
         </div>
     );

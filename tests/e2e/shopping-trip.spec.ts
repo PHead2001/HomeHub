@@ -85,6 +85,45 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('undoing a delete from a list that is no longer open restores it there only', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const apples = groceryItems.doc('apples');
+    const original = (await apples.get()).data()!;
+    try {
+      await open(page, '/shopping');
+      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      await page.getByRole('button', { name: /^Delete Honeycrisp apples$/ }).click();
+      await expect.poll(async () => (await apples.get()).exists).toBe(false);
+
+      await page.getByRole('button', { name: 'Back to all lists' }).click();
+      await page.getByRole('button', { name: 'Open Hardware Run' }).click();
+      await expect(page.getByRole('heading', { name: 'Hardware Run', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Undo' }).click();
+
+      await expect.poll(async () => (await apples.get()).exists).toBe(true);
+      await expect(page.getByRole('checkbox', { name: /HVAC filters/ })).toBeVisible();
+      await expect(page.locator('#item-needed-apples, #item-purchased-apples')).toHaveCount(0);
+    } finally {
+      await apples.set(original);
+    }
+  });
+
+  test('header navigation to /shopping resets the open tab and list to match the URL', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/shopping?tab=pantry');
+    await expect(page.getByRole('tab', { name: 'Pantry Inventory' })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('banner').getByRole('link', { name: 'Shopping', exact: true }).click();
+    await expect(page).toHaveURL(/\/shopping$/);
+    await expect(page.getByRole('tab', { name: 'Shopping Lists' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
+    await page.getByRole('banner').getByRole('link', { name: 'Shopping', exact: true }).click();
+    await expect(page).toHaveURL(/\/shopping$/);
+    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+  });
+
   test('quick-add takes several items and merges duplicates into one item', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const name = 'E2E quick bread';

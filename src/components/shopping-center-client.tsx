@@ -1,87 +1,68 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ShoppingListClient } from './shopping-list-client';
 import { PantryInventoryClient } from '@/components/pantry-inventory-client';
 import { ClipboardList, Archive } from 'lucide-react';
-
-type ShoppingTab = 'lists' | 'inventory';
-
-type ShoppingUrlState = { tab: ShoppingTab; listId: string | null };
-
-/** Reads `?tab=pantry` and `?list=<id>` from the address bar. */
-function readUrlState(): ShoppingUrlState {
-  const params = new URLSearchParams(window.location.search);
-  const tab: ShoppingTab = params.get('tab') === 'pantry' ? 'inventory' : 'lists';
-  const list = params.get('list');
-  return { tab, listId: tab === 'lists' && list ? list : null };
-}
-
-function urlFor(state: ShoppingUrlState): string {
-  const params = new URLSearchParams(window.location.search);
-  params.delete('tab');
-  params.delete('list');
-  if (state.tab === 'inventory') params.set('tab', 'pantry');
-  else if (state.listId) params.set('list', state.listId);
-  const search = params.toString();
-  return `${window.location.pathname}${search ? `?${search}` : ''}`;
-}
+import { parseShoppingUrlState, shoppingHref, type ShoppingTab } from '@/lib/shopping/url-state';
 
 /**
  * The Shopping Center: Shopping Lists and Pantry Inventory tabs. The open tab and
  * list live in the URL (`/shopping?list=weekly-groceries`, `/shopping?tab=pantry`),
  * so refresh keeps your place, Back returns to the overview, and a list can be
- * linked. Ticking an item never switches tabs; the pantry is offered at the end
- * of a trip or when clearing purchased items.
+ * linked. The screen is derived from `useSearchParams()` on every render (never a
+ * one-time read), so Back/Forward, Next.js `<Link>` navigation (the header and tab
+ * bar "Shopping" links) and our own shallow `history` updates all stay in sync.
+ * Ticking an item never switches tabs; the pantry is offered at the end of a trip
+ * or when clearing purchased items.
  */
 export function ShoppingCenterClient() {
-  // Rendered only client-side (after sign-in), so the URL can seed the first render.
-  const [state, setState] = useState<ShoppingUrlState>(() => (typeof window === 'undefined' ? { tab: 'lists', listId: null } : readUrlState()));
+  const searchParams = useSearchParams();
+  const pathname = usePathname() || '/shopping';
+  const state = parseShoppingUrlState(searchParams);
 
-  // True while the current history entry is a list this component pushed, so
-  // "Back to all lists" can step back instead of stacking another entry.
-  const pushedListRef = useRef(false);
+  // The list id this component last pushed onto history, so "Back to all lists"
+  // can step back (instead of stacking another entry) when that entry is current.
+  const pushedListRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    const onPopState = () => {
-      pushedListRef.current = false;
-      setState(readUrlState());
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
-
-  const navigate = useCallback((next: ShoppingUrlState, mode: 'push' | 'replace') => {
-    setState(next);
-    const url = urlFor(next);
-    if (url === `${window.location.pathname}${window.location.search}`) return;
-    // Next.js keeps its router in sync with these calls (shallow URL updates).
-    if (mode === 'push') window.history.pushState(null, '', url);
-    else window.history.replaceState(null, '', url);
-  }, []);
+  // Shallow URL updates: Next.js syncs useSearchParams with history.pushState/replaceState.
+  const go = useCallback((next: { tab: ShoppingTab; listId: string | null }, mode: 'push' | 'replace') => {
+    const href = shoppingHref(pathname, new URLSearchParams(window.location.search), next);
+    if (href === `${window.location.pathname}${window.location.search}`) return;
+    if (mode === 'push') window.history.pushState(null, '', href);
+    else window.history.replaceState(null, '', href);
+  }, [pathname]);
 
   // Opening a list adds a history entry (Back returns to the overview); leaving one replaces it.
   const handleSelectList = useCallback((listId: string | null) => {
-    if (!listId && pushedListRef.current) {
-      pushedListRef.current = false;
-      setState({ tab: 'lists', listId: null });
+    const current = parseShoppingUrlState(new URLSearchParams(window.location.search));
+    if (!listId && current.listId && pushedListRef.current === current.listId) {
+      pushedListRef.current = null;
       window.history.back();
       return;
     }
-    navigate({ tab: 'lists', listId }, listId ? 'push' : 'replace');
-    if (listId) pushedListRef.current = true;
-  }, [navigate]);
+    go({ tab: 'lists', listId }, listId ? 'push' : 'replace');
+    pushedListRef.current = listId;
+  }, [go]);
 
   const handleTabChange = useCallback((value: string) => {
-    pushedListRef.current = false;
-    navigate(value === 'inventory' ? { tab: 'inventory', listId: null } : { tab: 'lists', listId: null }, 'replace');
-  }, [navigate]);
+    pushedListRef.current = null;
+    go(value === 'inventory' ? { tab: 'inventory', listId: null } : { tab: 'lists', listId: null }, 'replace');
+  }, [go]);
 
   const openPantry = useCallback(() => {
-    pushedListRef.current = false;
-    navigate({ tab: 'inventory', listId: null }, 'push');
-  }, [navigate]);
+    pushedListRef.current = null;
+    go({ tab: 'inventory', listId: null }, 'push');
+  }, [go]);
+
+  // The one-shot `?quickAdd=1` request is consumed by replacing the entry, so Back
+  // never reopens the dialog.
+  const handleQuickAddHandled = useCallback((listId: string | null) => {
+    pushedListRef.current = null;
+    go({ tab: 'lists', listId }, 'replace');
+  }, [go]);
 
   return (
     <Tabs value={state.tab} onValueChange={handleTabChange} className="w-full">
@@ -95,6 +76,8 @@ export function ShoppingCenterClient() {
           selectedListId={state.listId}
           onSelectList={handleSelectList}
           onOpenPantry={openPantry}
+          quickAddRequested={state.quickAdd}
+          onQuickAddHandled={handleQuickAddHandled}
         />
       </TabsContent>
       <TabsContent value="inventory" className="min-h-[24rem]">

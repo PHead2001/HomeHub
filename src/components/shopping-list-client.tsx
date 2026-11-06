@@ -42,6 +42,7 @@ import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, type 
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
+import { quantityIncrement } from '@/lib/shopping/item-writes';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
 import { ListCard, type ListCounts } from './shopping/list-card';
@@ -75,7 +76,7 @@ function useOnline() {
   return online;
 }
 
-function ManageCategoriesDialog({ categories, setCategories, householdId, listId, onUpdate }: { categories: ShoppingListCategory[], setCategories: React.Dispatch<React.SetStateAction<ShoppingListCategory[]>>, householdId: string, listId: string, onUpdate: () => void }) {
+function ManageCategoriesDialog({ categories, setCategories, householdId, listId, isListOpen, onUpdate }: { categories: ShoppingListCategory[], setCategories: React.Dispatch<React.SetStateAction<ShoppingListCategory[]>>, householdId: string, listId: string, /** False once another list is open, so a late save never overwrites its categories. */ isListOpen: () => boolean, onUpdate: () => void }) {
   const { toastError } = useToast();
   const [newCategory, setNewCategory] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +102,7 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
     const updatedCategories = [...categories, name].sort((a, b) => a.localeCompare(b));
     try {
       await setDoc(categoriesDocRef, { list: updatedCategories });
-      setCategories(updatedCategories);
+      if (isListOpen()) setCategories(updatedCategories);
       setNewCategory('');
       onUpdate();
     } catch (cause) {
@@ -114,7 +115,7 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
     const updatedCategories = categories.filter(c => c !== categoryToRemove);
     try {
       await setDoc(categoriesDocRef, { list: updatedCategories });
-      setCategories(updatedCategories);
+      if (isListOpen()) setCategories(updatedCategories);
       onUpdate();
     } catch (cause) {
       toastError(cause, 'Could not remove the category');
@@ -185,12 +186,18 @@ export function ShoppingListClient({
   selectedListId,
   onSelectList,
   onOpenPantry,
+  quickAddRequested = false,
+  onQuickAddHandled,
 }: {
   /** The open list's id (from `?list=`), or null for the overview. */
   selectedListId: string | null;
   onSelectList: (listId: string | null) => void;
   /** Switches to the Pantry tab (used by the "View pantry" toast action). */
   onOpenPantry?: () => void;
+  /** `?quickAdd=1` is in the URL (home-screen shortcut or an in-app link). */
+  quickAddRequested?: boolean;
+  /** Consumes the quick-add request (removes it from the URL), opening `listId` if given. */
+  onQuickAddHandled?: (listId: string | null) => void;
 }) {
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
@@ -217,7 +224,6 @@ export function ShoppingListClient({
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [handoffMode, setHandoffMode] = useState<null | 'pantry' | 'then-clear'>(null);
 
-  const quickAddHandledRef = useRef(false);
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
@@ -377,24 +383,19 @@ export function ShoppingListClient({
 
   // The home-screen shortcut "Add to shopping" opens /shopping?quickAdd=1: open
   // the add-item dialog on the only list, or else on the first Grocery list.
+  // The request comes from the URL on every render (useSearchParams), so it works
+  // for a fresh load and for in-app navigation alike; handling it removes it.
   useEffect(() => {
-    if (loading || quickAddHandledRef.current) return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('quickAdd') !== '1') return;
-    quickAddHandledRef.current = true;
-    params.delete('quickAdd');
-    const remaining = params.toString();
-    window.history.replaceState(window.history.state, '', `${window.location.pathname}${remaining ? `?${remaining}` : ''}`);
-
+    if (loading || !quickAddRequested) return;
+    const target = canEdit ? (lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery')) : undefined;
+    onQuickAddHandled?.(target ? target.id : selectedListId);
     if (!canEdit) return;
-    const target = lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery');
     if (target) {
-      onSelectList(target.id);
       setIsAddItemDialogOpen(true);
     } else if (lists.length > 0) {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
     }
-  }, [loading, lists, onSelectList, toast, canEdit]);
+  }, [loading, quickAddRequested, lists, onQuickAddHandled, selectedListId, toast, canEdit]);
 
   // --- List CRUD ---
 
@@ -463,8 +464,9 @@ export function ShoppingListClient({
     const results = await Promise.all(entries.map(async (entry): Promise<AddResult> => {
       const target = findMergeTarget(listItemsRef.current, entry.name);
       if (target) {
-        const quantity = (Number(target.quantity) || 0) + entry.quantity;
-        const write = updateDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', target.id), { quantity });
+        // Atomic: another member adding the same item at the same time (or a device
+        // whose list is stale) still adds up, and the increment queues offline.
+        const write = updateDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', target.id), quantityIncrement(entry.quantity));
         const saved = await awaitWriteUnlessOffline(write, onLateError(target.name));
         return { name: target.name, merged: true, saved, usedFallback: false, category: target.category };
       }
@@ -671,7 +673,11 @@ export function ShoppingListClient({
         <ToastAction
           altText={`Undo removing ${item.name}`}
           onClick={() => {
-            setListItems(prev => (prev.some(listItem => listItem.id === item.id) ? prev : [...prev, item]));
+            // The restore always writes to the item's own list; the screen is only
+            // touched if that list is still the open one.
+            if (selectedListIdRef.current === list.id) {
+              setListItems(prev => (prev.some(listItem => listItem.id === item.id) ? prev : [...prev, item]));
+            }
             awaitWriteUnlessOffline(setDoc(itemRef, data), (error) => {
               toastError(error, `Could not restore ${item.name}`);
               reconcileWithServer(list.id);
@@ -691,6 +697,9 @@ export function ShoppingListClient({
 
   const clearPurchasedItems = async () => {
     if (!currentUser?.householdId || !selectedList) return;
+    // Only clear the list that is on screen: the purchased items below are read from it.
+    if (selectedListIdRef.current !== selectedList.id) return;
+    const list = selectedList;
     const householdId = currentUser.householdId;
     const purchased = listItemsRef.current.filter(i => i.status === 'purchased');
     setIsClearAlertOpen(false);
@@ -700,19 +709,21 @@ export function ShoppingListClient({
     }
     const batch = writeBatch(db);
     purchased.forEach(item => {
-      batch.delete(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', item.id));
+      batch.delete(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id));
     });
     try {
       await batch.commit();
       toast({ title: 'Purchased items cleared' });
+      // Another list may have been opened while the batch ran: leave its screen alone.
+      if (selectedListIdRef.current !== list.id) return;
       setIsReceiptOpen(false);
       const remainingItems = listItemsRef.current.filter(i => i.status === 'needed');
       if (remainingItems.length === 0) {
         setListItems([]);
-        setListToDelete(selectedList);
+        setListToDelete(list);
         setIsArchiveAlertOpen(true);
       } else {
-        await fetchItemsAndCategories(selectedList.id);
+        await fetchItemsAndCategories(list.id);
       }
     } catch (error) {
       toastError(error, 'Could not clear purchased items');
@@ -735,6 +746,7 @@ export function ShoppingListClient({
         action: onOpenPantry ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
       });
       setIsReceiptOpen(false);
+      // clearPurchasedItems itself only clears the list that is still on screen.
       if (thenClear) await clearPurchasedItems();
       return true;
     } catch (error) {
@@ -852,7 +864,7 @@ export function ShoppingListClient({
                     </div>
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
-                        {currentUser?.householdId && <ManageCategoriesDialog categories={categories} setCategories={setCategories} householdId={currentUser.householdId} listId={selectedList.id} onUpdate={() => fetchItemsAndCategories(selectedList.id, { silent: true })}/>}
+                        {currentUser?.householdId && <ManageCategoriesDialog categories={categories} setCategories={setCategories} householdId={currentUser.householdId} listId={selectedList.id} isListOpen={() => selectedListIdRef.current === selectedList.id} onUpdate={() => fetchItemsAndCategories(selectedList.id, { silent: true })}/>}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <DialogTrigger asChild>
                             <Button className="w-full sm:w-auto"><PlusCircle className="mr-2" aria-hidden /> Add Item</Button>
