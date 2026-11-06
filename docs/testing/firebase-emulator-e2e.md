@@ -127,7 +127,7 @@ Firebase Auth persistence is saved once per run at `playwright/.auth/e2e-owner.j
 
 ## GitHub Actions Smoke CI
 
-`.github/workflows/e2e-smoke.yml` runs on pull requests targeting `main` and on manual dispatch. The Linux job uses Node 20, Temurin Java 21, npm's cache through `actions/setup-node`, and `npx playwright install --with-deps chromium`. It loads only fake values from `.env.e2e.example`, runs lint, type-checking, module-documentation validation, and a production build, then invokes `npm run test:e2e:ci`.
+`.github/workflows/e2e-smoke.yml` runs on pull requests targeting `main` and on manual dispatch. The Linux job uses Node 24, Temurin Java 21, npm's cache through `actions/setup-node`, and `npx playwright install --with-deps chromium`. It loads only fake values from `.env.e2e.example`, runs lint, type-checking, module-documentation validation, and a production build, then invokes `npm run test:e2e:ci`.
 
 The CI command starts owned Auth, Firestore, and Storage emulator processes, seeds the fixed fake household, and runs authenticated route smoke plus focused regression coverage in desktop and mobile Chromium. Failures retain Playwright traces, screenshots, and videos through `test-results/`; the HTML report and Firebase emulator logs are also uploaded for 10 days. `playwright/.auth/` is deliberately excluded from artifacts.
 
