@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { getDeterministicNotificationId } from '../../src/lib/notifications';
 import { fixedNow } from './test-helpers';
 
@@ -23,22 +23,55 @@ const DISHWASHER_SCHEDULES = [{
   id: 'dishwasher-filter-e2e', mode: 'scheduled', scheduleName: 'Clean filter', frequencyType: 'months',
   intervalValue: 1, nextDueDate: '2026-08-08',
 }];
+const SUV_SCHEDULES = [
+  {
+    id: 'tire-rotation-e2e', mode: 'scheduled', serviceName: 'Tire rotation', intervalMiles: 6000,
+    lastCompletedMileage: 43000, lastCompletedDate: '2026-04-15', nextDueMileage: 49000, nextDueDate: '2026-08-15',
+  },
+  {
+    id: 'brake-fluid-e2e', mode: 'scheduled', serviceName: 'Brake fluid inspection', intervalMonths: 24,
+    lastCompletedDate: '2024-08-20', nextDueDate: '2026-08-20',
+  },
+];
+/** Log documents in the seed (scripts/e2e/seed.mjs); anything else linked to a seeded record was left by a test. */
+const SEEDED_LOG_IDS = new Set(['oil-change', 'hvac-inspection', 'gutter-cleaning']);
+const SEEDED_TARGETS = new Set(['hvac-main', 'dishwasher', 'family-suv']);
 const HVAC_NOTIFICATION = getDeterministicNotificationId({
   sourceType: 'maintenance_asset_schedule', sourceId: 'hvac-main:asset-filter-e2e', stateKey: 'due_today|2026-08-01',
 });
 
+/**
+ * Puts the maintenance records this spec reads back to the seed exactly: schedules, mileage, the HVAC
+ * reminder notification, no extra photo, and no logs linked to seeded assets/vehicles except the
+ * seeded ones. Runs before each test too, because other specs (verification-findings' completion
+ * test) leave a completion log behind, and the health score counts recent logs.
+ */
 async function restoreMaintenanceSeed() {
-  const createdLogs = await household.collection('maintenance').where('date', '==', '2026-08-01').get();
-  const photos = await household.collection('maintenance-attachments').where('fileName', '==', 'maintenance-ux-photo.png').get();
+  const [logs, photos] = await Promise.all([
+    household.collection('maintenance').get(),
+    household.collection('maintenance-attachments').where('fileName', '==', 'maintenance-ux-photo.png').get(),
+  ]);
+  const strayLogs = logs.docs.filter((log) => !SEEDED_LOG_IDS.has(log.id)
+    && (SEEDED_TARGETS.has(log.get('assetId')) || SEEDED_TARGETS.has(log.get('vehicleId'))));
   await Promise.all([
     household.collection('home-assets').doc('hvac-main').update({ schedules: HVAC_SCHEDULES }),
     household.collection('home-assets').doc('dishwasher').update({ schedules: DISHWASHER_SCHEDULES }),
-    household.collection('notifications').doc(HVAC_NOTIFICATION).update({
-      resolvedAt: FieldValue.delete(), resolvedBy: FieldValue.delete(),
-    }).catch(() => undefined),
-    ...createdLogs.docs
-      .filter((log) => ['Replace air filter', 'Clean filter'].includes(log.get('title')))
-      .map((log) => log.ref.delete()),
+    household.collection('vehicles').doc('family-suv').update({ serviceSchedules: SUV_SCHEDULES, currentMileage: 48750 }),
+    household.collection('notifications').doc(HVAC_NOTIFICATION).set({
+      householdId,
+      category: 'maintenance',
+      title: 'HVAC filter due today',
+      message: 'Replace the Main HVAC System air filter.',
+      createdAt: Timestamp.fromDate(new Date('2026-08-01T08:00:00.000Z')),
+      expiresAt: Timestamp.fromDate(new Date('2026-08-08T08:00:00.000Z')),
+      deepLink: '/maintenance?asset=hvac-main&schedule=hvac-main%3Aasset-filter-e2e',
+      sourceType: 'maintenance_asset_schedule',
+      sourceId: 'hvac-main:asset-filter-e2e',
+      stateKey: 'due_today|2026-08-01',
+      readBy: {},
+      dismissedBy: {},
+    }),
+    ...strayLogs.map((log) => log.ref.delete()),
     ...photos.docs.map((photo) => photo.ref.delete()),
   ]);
 }
@@ -50,34 +83,38 @@ async function open(page: Page, path: string) {
 }
 
 test.describe('maintenance center UX', () => {
-  test.afterEach(async ({}, testInfo) => {
-    if (testInfo.project.name === 'desktop-chromium') await restoreMaintenanceSeed();
-  });
+  // Every project: the spec must start from the seed whatever ran before it, and leave it as found.
+  test.beforeEach(async () => { await restoreMaintenanceSeed(); });
+  test.afterEach(async () => { await restoreMaintenanceSeed(); });
 
   test('H10: overview shows the home health score with its reasons, linked to the items', async ({ page }) => {
     await open(page, '/maintenance');
     const panel = page.getByTestId('maintenance-health');
-    // Seed deductions: HVAC flagged (−10), filter due today (−5), warranty ending (−2); dishwasher filter
-    // due soon (−2); SUV tire rotation, registration and inspection due soon (−2 each) = −25. The bonus
-    // depends on how many linked logs other specs have left in the last 90 days (2 in the seed, +2 each,
-    // at most +10), so the score is 79-85 rather than one exact value.
-    const dial = panel.getByRole('img', { name: /^Home health \d+ out of 100, / });
+    // Seed: HVAC flagged (−10), filter due today (−5), warranty ending (−2); dishwasher filter due soon (−2);
+    // SUV tire rotation, registration and inspection due soon (−2 each); two logs in 90 days (+4) = 79.
+    const dial = panel.getByRole('img', { name: 'Home health 79 out of 100, needs some care.' });
     await expect(dial).toBeVisible();
-    const label = (await dial.getAttribute('aria-label')) || '';
-    const score = Number(/Home health (\d+)/.exec(label)?.[1]);
-    expect(score).toBeGreaterThanOrEqual(79);
-    expect(score).toBeLessThanOrEqual(85);
-    await expect(panel.getByText(score >= 85 ? 'In good shape' : 'Needs some care', { exact: true })).toBeVisible();
-    // The ticker settles on the same number the label announces.
-    await expect(dial).toContainText(String(score));
-    await expect(panel.getByRole('list', { name: 'Score deductions' }).getByRole('listitem')).toHaveCount(5);
-    await expect(panel.getByRole('button', { name: 'Show 2 more' })).toBeVisible();
+    await expect(dial).toContainText('79');
+    await expect(panel.getByText('Needs some care', { exact: true })).toBeVisible();
+    const reasons = panel.getByRole('list', { name: 'Score deductions' }).getByRole('listitem');
+    await expect(reasons).toHaveText([
+      /^−10Main HVAC System: flagged as needing attention/,
+      /^−5Main HVAC System: Replace air filter is due today/,
+      /^−2Family SUV: Inspection expires in 4 days/,
+      /^−2Family SUV: Registration expires in 11 days/,
+      /^−2Family SUV: Tire rotation is due in 2 weeks/,
+    ]);
+    await panel.getByRole('button', { name: 'Show 2 more' }).click();
+    await expect(reasons).toHaveCount(7);
+    await expect(reasons.filter({ hasText: 'Kitchen Dishwasher: Clean filter is due in 7 days' })).toHaveCount(1);
+    await expect(reasons.filter({ hasText: 'Main HVAC System: warranty ends in 9 days' })).toHaveCount(1);
+    await expect(panel.getByText('2 logs in the last 90 days')).toBeVisible();
     const deduction = panel.getByRole('button', { name: /Main HVAC System: flagged as needing attention/ });
     await expect(deduction).toContainText('−10');
     await deduction.click();
     await expect(page.getByRole('tab', { name: 'Home Assets' })).toHaveAttribute('aria-selected', 'true');
     await expect(page).toHaveURL(/\?asset=hvac-main$/);
-    await expect(page.getByRole('img', { name: /^Main HVAC System health \d+ out of 100/ }).first()).toBeVisible();
+    await expect(page.getByRole('img', { name: /^Main HVAC System health 85 out of 100/ }).first()).toBeVisible();
   });
 
   test('tabs are linkable with ?tab= and choosing a tab updates the URL', async ({ page }) => {
