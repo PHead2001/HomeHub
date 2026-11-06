@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from 'react';
-import { buildMaintenanceReminders } from '@functions/shared/maintenance-reminders';
+import { buildMaintenanceReminders, type MaintenanceReminder } from '@functions/shared/maintenance-reminders';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { add, format, isAfter, isValid, parseISO, subDays } from 'date-fns';
+import { format, isAfter, isValid, parseISO, subDays } from 'date-fns';
 import {
   AlertCircle,
   CalendarDays,
@@ -19,13 +19,14 @@ import {
   FileText,
   Home,
   Loader2,
+  PencilLine,
   Plus,
   Sparkles,
   Trash2,
   Wrench,
 } from 'lucide-react';
 import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
-import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
+import { AiClientError, getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import type {
   HomeAsset,
   HomeAssetCategory,
@@ -45,6 +46,12 @@ import {
   createNotificationAction,
   parseNotificationDoc,
 } from '@/lib/notifications';
+import { EmptyState } from '@/components/empty-state';
+import { FieldError, fieldErrorProps } from '@/components/field-error';
+import { AssetCard } from '@/components/maintenance/asset-card';
+import { HealthPanel } from '@/components/maintenance/health-panel';
+import { HealthRing } from '@/components/maintenance/health-ring';
+import { ReminderList, type ReminderBusy } from '@/components/maintenance/reminder-list';
 import { Badge } from '@/components/ui/badge';
 import {
   AlertDialog,
@@ -75,6 +82,23 @@ import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
+import { playFeedback } from '@/lib/feedback';
+import { pickAssetPhoto, presentFields, shouldOfferAiSummary } from '@/lib/maintenance/display';
+import { computeHomeHealth, healthKey, type HealthDeduction, type HealthResult } from '@/lib/maintenance/health';
+import {
+  calculateNextAssetDueDate,
+  calculateNextVehicleDueDate,
+  calculateNextVehicleMileage,
+  completedAssetSchedule,
+  completedVehicleSchedule,
+  findReminderSchedule,
+  getAssetScheduleMode,
+  getVehicleScheduleMode,
+  quickCompletionValues,
+  scheduleKeyFor,
+  snoozedDueDate,
+  type ScheduleCompletionTarget,
+} from '@/lib/maintenance/schedules';
 import { cn, slugify, stableSlugify } from '@/lib/utils';
 import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
@@ -200,43 +224,6 @@ type VehicleScheduleForm = {
   nextDueDate: string;
 };
 
-type ScheduleCompletionTarget =
-  | {
-      targetType: 'home_asset';
-      asset: HomeAsset;
-      scheduleIndex: number;
-      schedule: HomeAssetSchedule;
-    }
-  | {
-      targetType: 'vehicle';
-      vehicle: Vehicle;
-      scheduleIndex: number;
-      schedule: VehicleServiceSchedule;
-    };
-
-type MaintenanceReminderStatus = 'upcoming' | 'due_soon' | 'due_today' | 'overdue';
-type MaintenanceReminderGroup = 'scheduled' | 'warranty' | 'vehicle_service' | 'vehicle_document';
-
-type MaintenanceReminder = {
-  id: string;
-  group: MaintenanceReminderGroup;
-  status: MaintenanceReminderStatus;
-  title: string;
-  relatedName: string;
-  targetType: 'home_asset' | 'vehicle';
-  targetId: string;
-  sourceType: string;
-  sourceId: string;
-  stateKey: string;
-  scheduleKey?: string;
-  legacySourceId?: string;
-  dueDate?: string;
-  dueMileage?: number;
-  currentMileage?: number;
-  message: string;
-  deepLink: string;
-};
-
 const todayInputValue = () => format(new Date(), 'yyyy-MM-dd');
 
 const emptyAssetForm: AssetFormValues = {
@@ -307,22 +294,6 @@ const emptyScheduleCompletionForm = (): ScheduleCompletionFormValues => ({
 });
 
 const createLocalId = () => Math.random().toString(36).slice(2, 10);
-
-const isActionableAssetSchedule = (schedule: Pick<HomeAssetSchedule, 'frequencyType' | 'intervalValue' | 'nextDueDate'>) => {
-  return Boolean((schedule.frequencyType && schedule.intervalValue) || schedule.nextDueDate);
-};
-
-const isActionableVehicleSchedule = (schedule: Pick<VehicleServiceSchedule, 'intervalMiles' | 'intervalMonths' | 'nextDueMileage' | 'nextDueDate'>) => {
-  return Boolean(schedule.intervalMiles || schedule.intervalMonths || schedule.nextDueMileage || schedule.nextDueDate);
-};
-
-const getAssetScheduleMode = (schedule: HomeAssetSchedule): MaintenanceScheduleMode => {
-  return schedule.mode || (isActionableAssetSchedule(schedule) ? 'scheduled' : 'checklist');
-};
-
-const getVehicleScheduleMode = (schedule: VehicleServiceSchedule): MaintenanceScheduleMode => {
-  return schedule.mode || (isActionableVehicleSchedule(schedule) ? 'scheduled' : 'checklist');
-};
 
 const assetScheduleToForm = (schedule?: HomeAssetSchedule): AssetScheduleForm => ({
   id: schedule?.id || createLocalId(),
@@ -399,30 +370,14 @@ const formatDate = (date?: string) => {
   return format(parseLogDate(date), 'MMM d, yyyy');
 };
 
-const calculateNextAssetDueDate = (schedule: HomeAssetSchedule, completedDate: string) => {
-  if (!schedule.frequencyType || !schedule.intervalValue) return undefined;
-  const completed = parseLogDate(completedDate);
-  const interval = schedule.intervalValue;
+/** For detail fields: undefined (hidden) when there is no value. */
+const optionalDate = (date?: string) => (date ? formatDate(date) : undefined);
+const optionalCurrency = (value?: number) => (typeof value === 'number' ? formatCurrency(value) : undefined);
 
-  const nextDue = add(completed, {
-    days: schedule.frequencyType === 'days' ? interval : 0,
-    weeks: schedule.frequencyType === 'weeks' ? interval : 0,
-    months: schedule.frequencyType === 'months' ? interval : 0,
-    years: schedule.frequencyType === 'years' ? interval : 0,
-  });
-
-  return format(nextDue, 'yyyy-MM-dd');
-};
-
-const calculateNextVehicleDueDate = (schedule: VehicleServiceSchedule, completedDate: string) => {
-  if (!schedule.intervalMonths) return undefined;
-  return format(add(parseLogDate(completedDate), { months: schedule.intervalMonths }), 'yyyy-MM-dd');
-};
-
-const calculateNextVehicleMileage = (schedule: VehicleServiceSchedule, completedMileage?: number) => {
-  if (!schedule.intervalMiles || typeof completedMileage !== 'number') return undefined;
-  return completedMileage + schedule.intervalMiles;
-};
+const MAINTENANCE_TABS = ['overview', 'assets', 'vehicles', 'reminders', 'logs'] as const;
+type MaintenanceTab = typeof MAINTENANCE_TABS[number];
+const isMaintenanceTab = (value: string | null): value is MaintenanceTab =>
+  Boolean(value && (MAINTENANCE_TABS as readonly string[]).includes(value));
 
 const humanizeLabel = (status: string) => {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -472,15 +427,6 @@ const getAttachmentsForTarget = (
 };
 
 
-
-
-const getReminderBadgeVariant = (status: MaintenanceReminderStatus) => {
-  if (status === 'overdue') return 'destructive';
-  if (status === 'due_today') return 'default';
-  return 'secondary';
-};
-
-
 function SummaryCard({
   title,
   value,
@@ -506,21 +452,19 @@ function SummaryCard({
   );
 }
 
-function EmptyState({ title, description }: { title: string; description: string }) {
+/** Detail fields that have a value; empty ones are left out instead of saying "Not recorded" (D15). */
+function DetailGrid({ fields }: { fields: Array<{ label: string; value?: string | number | null }> }) {
+  const present = presentFields(fields);
+  if (present.length === 0) return null;
   return (
-    <div className="rounded-lg border border-dashed p-8 text-center">
-      <p className="font-medium">{title}</p>
-      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value?: string | number }) {
-  return (
-    <div>
-      <p className="text-xs uppercase text-muted-foreground">{label}</p>
-      <p className="text-sm">{value || 'Not recorded'}</p>
-    </div>
+    <dl className="grid gap-3 sm:grid-cols-2">
+      {present.map((field) => (
+        <div key={field.label}>
+          <dt className="text-xs uppercase text-muted-foreground">{field.label}</dt>
+          <dd className="text-sm">{field.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -531,6 +475,8 @@ function AttachmentPanel({
   targetId,
   uploading,
   deletingId,
+  canUpload,
+  canDelete,
   onUpload,
   onDelete,
 }: {
@@ -540,6 +486,8 @@ function AttachmentPanel({
   targetId: string;
   uploading: boolean;
   deletingId?: string | null;
+  canUpload: boolean;
+  canDelete: boolean;
   onUpload: (targetType: MaintenanceAttachmentTargetType, targetId: string, category: MaintenanceAttachmentCategory, file: File) => void;
   onDelete: (attachment: MaintenanceAttachment) => void;
 }) {
@@ -552,7 +500,7 @@ function AttachmentPanel({
           <FileText className="h-4 w-4 text-muted-foreground" />
           <h3 className="font-headline font-semibold">{title}</h3>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        {canUpload && <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Select value={category} onValueChange={(value) => setCategory(value as MaintenanceAttachmentCategory)}>
             <SelectTrigger className="w-full sm:w-44">
               <SelectValue />
@@ -580,7 +528,7 @@ function AttachmentPanel({
               />
             </label>
           </Button>
-        </div>
+        </div>}
       </div>
 
       {attachments.length === 0 ? (
@@ -610,7 +558,7 @@ function AttachmentPanel({
                     </a>
                   </Button>
                 )}
-                <Button
+                {canDelete && <Button
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-destructive hover:text-destructive"
@@ -620,55 +568,12 @@ function AttachmentPanel({
                 >
                   {deletingId === attachment.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                   <span className="sr-only">Delete attachment</span>
-                </Button>
+                </Button>}
               </div>
             </div>
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function ReminderList({
-  reminders,
-  emptyTitle,
-  emptyDescription,
-  onOpen,
-}: {
-  reminders: MaintenanceReminder[];
-  emptyTitle: string;
-  emptyDescription: string;
-  onOpen: (reminder: MaintenanceReminder) => void;
-}) {
-  if (reminders.length === 0) {
-    return <EmptyState title={emptyTitle} description={emptyDescription} />;
-  }
-
-  return (
-    <div className="space-y-3">
-      {reminders.map((reminder) => (
-        <Card key={reminder.id}>
-          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-headline text-base font-semibold">{reminder.title}</h3>
-                <Badge variant={getReminderBadgeVariant(reminder.status)}>{humanizeLabel(reminder.status)}</Badge>
-                <Badge variant="outline">{reminder.relatedName}</Badge>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">{reminder.message}</p>
-              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                {reminder.dueDate && <span>Due date: {formatDate(reminder.dueDate)}</span>}
-                {typeof reminder.dueMileage === 'number' && <span>Due mileage: {reminder.dueMileage.toLocaleString()}</span>}
-                {typeof reminder.currentMileage === 'number' && <span>Current mileage: {reminder.currentMileage.toLocaleString()}</span>}
-              </div>
-            </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => onOpen(reminder)}>
-              Open Related
-            </Button>
-          </CardContent>
-        </Card>
-      ))}
     </div>
   );
 }
@@ -722,7 +627,15 @@ function LogList({
   onUploadAttachment,
   onDeleteAttachment,
   highlightedLogId,
+  canEdit,
+  canDelete,
+  emptyTitle = 'No logs yet',
+  emptyDescription = 'Record repairs, service and inspections here as they happen.',
 }: {
+  canEdit: boolean;
+  canDelete: boolean;
+  emptyTitle?: string;
+  emptyDescription?: string;
   logs: MaintenanceLog[];
   assets: HomeAsset[];
   vehicles: Vehicle[];
@@ -739,7 +652,7 @@ function LogList({
   highlightedLogId?: string | null;
 }) {
   if (logs.length === 0) {
-    return <EmptyState title="No logs yet" description="Maintenance records will appear here after they are added." />;
+    return <EmptyState compact headingLevel={3} title={emptyTitle} description={emptyDescription} />;
   }
 
   return (
@@ -765,12 +678,18 @@ function LogList({
                 {typeof log.cost === 'number' && (
                   <Badge variant="outline" className="w-fit">{formatCurrency(log.cost)}</Badge>
                 )}
-                <Button variant="ghost" size="icon" aria-label={`Edit maintenance log ${log.title}`} className="h-8 w-8" onClick={() => onEdit(log)}>
-                  <Edit className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="icon" aria-label={`Delete maintenance log ${log.title}`} className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(log)}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                {/* Edit and Delete are kept apart by a divider so a slip cannot hit Delete; Delete still confirms. */}
+                {canEdit && (
+                  <Button variant="ghost" size="icon" aria-label={`Edit maintenance log ${getLogTitle(log)}`} className="h-8 w-8" onClick={() => onEdit(log)}>
+                    <Edit className="h-4 w-4" />
+                  </Button>
+                )}
+                {canEdit && canDelete && <span aria-hidden className="mx-1 h-5 w-px bg-border" />}
+                {canDelete && (
+                  <Button variant="ghost" size="icon" aria-label={`Delete maintenance log ${getLogTitle(log)}`} className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(log)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -792,7 +711,7 @@ function LogList({
               </div>
             )}
 
-            {log.notes && (
+            {shouldOfferAiSummary(log.notes) && (
               <Button
                 variant="outline"
                 size="sm"
@@ -816,6 +735,8 @@ function LogList({
                 targetId={log.id}
                 uploading={uploadingAttachmentTarget === `maintenance_log:${log.id}`}
                 deletingId={deletingAttachmentId}
+                canUpload={canEdit}
+                canDelete={canDelete}
                 onUpload={onUploadAttachment}
                 onDelete={onDeleteAttachment}
               />
@@ -828,15 +749,24 @@ function LogList({
 }
 
 export function MaintenanceLogClient() {
-  const { currentUser, household } = useAuth();
-  const { toast } = useToast();
+  const { currentUser, currentMember, household, permissions } = useAuth();
+  const { toast, toastError } = useToast();
+  const canEdit = permissions['maintenance.edit'];
+  const canCreateLogs = permissions['maintenance.createLogs'];
+  const canDelete = permissions['maintenance.delete'];
+  // Completing a schedule writes a log and the schedule, so it needs both.
+  const canComplete = canEdit && canCreateLogs;
+  // Only decided once the membership has loaded, so nobody sees a flash of "no access".
+  const accessDenied = Boolean(currentMember) && !permissions['maintenance.view'];
   const [assets, setAssets] = useState<HomeAsset[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [logs, setLogs] = useState<MaintenanceLog[]>([]);
   const [attachments, setAttachments] = useState<MaintenanceAttachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState<MaintenanceTab>('overview');
+  const appliedSearch = useRef<string | null>(null);
+  const [reminderBusy, setReminderBusy] = useState<ReminderBusy>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
@@ -891,7 +821,9 @@ export function MaintenanceLogClient() {
     return collection(db, 'households', currentUser.householdId, collectionName);
   }, [currentUser?.householdId]);
 
-  const fetchMaintenanceData = useCallback(async () => {
+  // `silent` refreshes after a change keep the page on screen (no skeleton), so
+  // in-place actions stay in place; a failed silent refresh only toasts.
+  const fetchMaintenanceData = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     const assetsCollection = getCollectionRef('home-assets');
     const vehiclesCollection = getCollectionRef('vehicles');
     const logsCollection = getCollectionRef('maintenance');
@@ -906,8 +838,10 @@ export function MaintenanceLogClient() {
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
 
     try {
       const [assetSnap, vehicleSnap, logSnap, attachmentSnap] = await Promise.all([
@@ -923,15 +857,21 @@ export function MaintenanceLogClient() {
       setAttachments(attachmentSnap.docs.map((attachmentDoc) => ({ id: attachmentDoc.id, ...attachmentDoc.data() } as MaintenanceAttachment)));
     } catch (fetchError) {
       console.error('Error fetching maintenance data:', fetchError);
-      setError('Could not load maintenance data.');
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch maintenance data.' });
+      if (silent) {
+        toastError(fetchError, 'Could not refresh maintenance');
+      } else {
+        setError('Could not load maintenance data.');
+        toastError(fetchError, 'Could not load maintenance');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [getCollectionRef, toast]);
+  }, [getCollectionRef, toastError]);
+
+  const refreshMaintenanceData = useCallback(() => fetchMaintenanceData({ silent: true }), [fetchMaintenanceData]);
 
   useEffect(() => {
-    if (currentUser?.householdId) {
+    if (currentUser?.householdId && !accessDenied) {
       void fetchMaintenanceData();
     } else {
       setAssets([]);
@@ -940,7 +880,7 @@ export function MaintenanceLogClient() {
       setAttachments([]);
       setLoading(false);
     }
-  }, [currentUser?.householdId, fetchMaintenanceData]);
+  }, [accessDenied, currentUser?.householdId, fetchMaintenanceData]);
 
   useEffect(() => {
     const syncLocation = () => setLocationSearch(window.location.search);
@@ -949,8 +889,13 @@ export function MaintenanceLogClient() {
     return () => window.removeEventListener('popstate', syncLocation);
   }, []);
 
+  // Deep links are applied once per URL, after data loads. Later refreshes (for
+  // example after Mark done on the Reminders tab) must not pull the page back to
+  // the linked record.
   useEffect(() => {
     if (loading) return;
+    if (appliedSearch.current === locationSearch) return;
+    appliedSearch.current = locationSearch;
     if (!locationSearch) {
       setDeepLinkNotice(null);
       setHighlightedLogId(null);
@@ -958,6 +903,7 @@ export function MaintenanceLogClient() {
       return;
     }
     const searchParams = new URLSearchParams(locationSearch);
+    const tab = searchParams.get('tab');
     const assetId = searchParams.get('asset') || (searchParams.get('targetType') === 'home_asset' ? searchParams.get('targetId') : null);
     const vehicleId = searchParams.get('vehicle') || (searchParams.get('targetType') === 'vehicle' ? searchParams.get('targetId') : null);
     const logId = searchParams.get('log');
@@ -997,14 +943,41 @@ export function MaintenanceLogClient() {
       } else {
         setDeepLinkNotice('The requested maintenance log is no longer available.');
       }
+      return;
     }
+
+    if (isMaintenanceTab(tab)) setActiveTab(tab);
   }, [assets, loading, locationSearch, logs, vehicles]);
 
-  // Same rules as the scheduled reminders, in the household's timezone.
-  const reminders = useMemo(() => {
-    const timeZone = safeTimeZone(household?.timeZone);
-    return buildMaintenanceReminders(assets, vehicles, localDay(new Date(), timeZone), timeZone) as MaintenanceReminder[];
-  }, [assets, vehicles, household?.timeZone]);
+  // Tabs are linkable (`/maintenance?tab=reminders`). Choosing a tab replaces the
+  // URL so a refresh or Back keeps the tab, and drops any record link.
+  const changeTab = (value: string) => {
+    if (!isMaintenanceTab(value)) return;
+    setActiveTab(value);
+    const search = value === 'overview' ? '' : `?tab=${value}`;
+    if (window.location.search !== search) {
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${search}`);
+      appliedSearch.current = search;
+      setLocationSearch(search);
+      setDeepLinkNotice(null);
+    }
+  };
+
+  // Same rules as the scheduled reminders, in the household's timezone. "Today"
+  // is re-read whenever the data changes (every load and every save).
+  const timeZone = safeTimeZone(household?.timeZone);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- recomputed with the data on purpose
+  const today = useMemo(() => localDay(new Date(), timeZone), [timeZone, assets, vehicles, logs]);
+  const reminders = useMemo(
+    () => buildMaintenanceReminders(assets, vehicles, today, timeZone),
+    [assets, vehicles, today, timeZone],
+  );
+  const health = useMemo(
+    () => computeHomeHealth({ assets, vehicles, logs, today, timeZone }),
+    [assets, vehicles, logs, today, timeZone],
+  );
+  const healthFor = (targetType: 'home_asset' | 'vehicle', id: string): HealthResult | undefined =>
+    health.targets[healthKey(targetType, id)];
 
   const dueSoonReminders = useMemo(() => {
     return reminders.filter((reminder) => reminder.status === 'due_soon' || reminder.status === 'due_today');
@@ -1048,18 +1021,29 @@ export function MaintenanceLogClient() {
     return logs.filter((log) => getLogTargetType(log) === 'vehicle' && log.vehicleId === selectedVehicle.id);
   }, [logs, selectedVehicle]);
 
-  const openReminderTarget = (reminder: MaintenanceReminder) => {
-    window.history.pushState({}, '', reminder.deepLink);
-    setLocationSearch(new URL(reminder.deepLink, window.location.origin).search);
-    setHighlightedScheduleKey(reminder.scheduleKey || null);
-    if (reminder.targetType === 'home_asset') {
-      setSelectedAssetId(reminder.targetId);
+  const openTarget = (target: { targetType: 'home_asset' | 'vehicle'; targetId: string; deepLink: string; scheduleKey?: string }) => {
+    window.history.pushState({}, '', target.deepLink);
+    const search = new URL(target.deepLink, window.location.origin).search;
+    appliedSearch.current = search;
+    setLocationSearch(search);
+    setDeepLinkNotice(null);
+    setHighlightedLogId(null);
+    setHighlightedScheduleKey(target.scheduleKey || null);
+    if (target.targetType === 'home_asset') {
+      setSelectedAssetId(target.targetId);
       setActiveTab('assets');
     } else {
-      setSelectedVehicleId(reminder.targetId);
+      setSelectedVehicleId(target.targetId);
       setActiveTab('vehicles');
     }
+    if (target.scheduleKey) {
+      const elementId = `maintenance-schedule-${stableSlugify(target.scheduleKey)}`;
+      requestAnimationFrame(() => document.getElementById(elementId)?.scrollIntoView({ block: 'center' }));
+    }
   };
+
+  const openReminderTarget = (reminder: MaintenanceReminder) => openTarget(reminder);
+  const openHealthDeduction = (deduction: HealthDeduction) => openTarget(deduction);
 
   // Maintenance reminder notifications are created by the server on a schedule
   // (functions/src/reminders.ts), not by whoever has this page open.
@@ -1102,10 +1086,10 @@ export function MaintenanceLogClient() {
 
       await setDoc(doc(attachmentsCollection, attachmentId), cleanForFirestore(attachmentData));
       toast({ title: 'Attachment uploaded' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (uploadError) {
       console.error('Error uploading maintenance attachment:', uploadError);
-      toast({ variant: 'destructive', title: 'Upload failed', description: 'Could not upload the attachment.' });
+      toastError(uploadError, 'Upload failed');
     } finally {
       setUploadingAttachmentTarget(null);
     }
@@ -1133,10 +1117,10 @@ export function MaintenanceLogClient() {
       await deleteDoc(doc(attachmentsCollection, attachment.id));
       setAttachmentToDelete(null);
       toast({ title: 'Attachment deleted' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (deleteError) {
       console.error('Error deleting maintenance attachment:', deleteError);
-      toast({ variant: 'destructive', title: 'Delete failed', description: 'The attachment could not be fully deleted.' });
+      toastError(deleteError, 'Could not delete the attachment');
     } finally {
       setDeletingAttachmentId(null);
     }
@@ -1344,6 +1328,12 @@ export function MaintenanceLogClient() {
     setScheduleCompletionTarget(target);
   };
 
+  // Moves focus to the first schedule with a problem (its name field) on submit.
+  const focusScheduleField = (kind: 'asset' | 'vehicle', scheduleId?: string) => {
+    if (!scheduleId) return;
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-schedule-name="${kind}-${CSS.escape(scheduleId)}"]`)?.focus());
+  };
+
   const saveAsset = async (values: AssetFormValues) => {
     if (!currentUser?.householdId) return;
     const assetsCollection = getCollectionRef('home-assets');
@@ -1361,7 +1351,7 @@ export function MaintenanceLogClient() {
     }));
     if (Object.keys(nextAssetScheduleErrors).length > 0) {
       setAssetScheduleErrors(nextAssetScheduleErrors);
-      toast({ variant: 'destructive', title: 'Check maintenance schedules', description: 'Complete the highlighted schedule fields before saving.' });
+      focusScheduleField('asset', Object.keys(nextAssetScheduleErrors)[0]);
       return;
     }
     const schedules = assetScheduleForms.reduce<HomeAssetSchedule[]>((nextSchedules, schedule) => {
@@ -1403,10 +1393,10 @@ export function MaintenanceLogClient() {
       setAssetDialogOpen(false);
       setSelectedAssetId(assetId);
       toast({ title: editingAsset ? 'Asset updated' : 'Asset added' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (saveError) {
       console.error('Error saving asset:', saveError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not save home asset.' });
+      toastError(saveError, 'Could not save the home asset');
     }
   };
 
@@ -1431,7 +1421,7 @@ export function MaintenanceLogClient() {
     }));
     if (Object.keys(nextVehicleScheduleErrors).length > 0) {
       setVehicleScheduleErrors(nextVehicleScheduleErrors);
-      toast({ variant: 'destructive', title: 'Check service schedules', description: 'Complete the highlighted schedule fields before saving.' });
+      focusScheduleField('vehicle', Object.keys(nextVehicleScheduleErrors)[0]);
       return;
     }
     const serviceSchedules = vehicleScheduleForms.reduce<VehicleServiceSchedule[]>((schedules, schedule) => {
@@ -1478,10 +1468,10 @@ export function MaintenanceLogClient() {
       setVehicleDialogOpen(false);
       setSelectedVehicleId(vehicleId);
       toast({ title: editingVehicle ? 'Vehicle updated' : 'Vehicle added' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (saveError) {
       console.error('Error saving vehicle:', saveError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not save vehicle.' });
+      toastError(saveError, 'Could not save the vehicle');
     }
   };
 
@@ -1490,13 +1480,14 @@ export function MaintenanceLogClient() {
     const logsCollection = getCollectionRef('maintenance');
     if (!logsCollection) return;
 
+    // Field problems are shown under the field (FormMessage), never as a toast.
     if (values.targetType === 'home_asset' && !values.assetId) {
-      toast({ variant: 'destructive', title: 'Missing home asset', description: 'Choose a home asset or switch the log to general.' });
+      logForm.setError('assetId', { message: 'Choose a home asset or switch the log to general.' }, { shouldFocus: true });
       return;
     }
 
     if (values.targetType === 'vehicle' && !values.vehicleId) {
-      toast({ variant: 'destructive', title: 'Missing vehicle', description: 'Choose a vehicle or switch the log to general.' });
+      logForm.setError('vehicleId', { message: 'Choose a vehicle or switch the log to general.' }, { shouldFocus: true });
       return;
     }
 
@@ -1527,104 +1518,188 @@ export function MaintenanceLogClient() {
       setLogDialogOpen(false);
       setEditingLog(null);
       toast({ title: editingLog ? 'Maintenance log updated' : 'Maintenance log added' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (saveError) {
       console.error('Error saving maintenance log:', saveError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not save maintenance log.' });
+      toastError(saveError, 'Could not save the maintenance log');
     }
   };
 
-  const completeScheduledMaintenance = async (values: ScheduleCompletionFormValues) => {
-    if (!scheduleCompletionTarget || !currentUser?.householdId) return;
+  const scheduleSourceFor = (target: ScheduleCompletionTarget) => {
+    const ownerId = target.targetType === 'home_asset' ? target.asset.id : target.vehicle.id;
+    return {
+      sourceType: target.targetType === 'home_asset' ? 'maintenance_asset_schedule' : 'maintenance_vehicle_service',
+      sourceId: scheduleKeyFor(ownerId, target.schedule, target.scheduleIndex, target.targetType),
+      legacySourceId: `${ownerId}-${target.scheduleIndex}`,
+    };
+  };
 
+  /**
+   * Records a completion: a routine log, the advanced schedule, and the current
+   * reminder cycle resolved (the server then creates the next cycle's reminder
+   * when it comes due). Shared by the completion dialog and one-tap Mark done.
+   */
+  const applyScheduleCompletion = async (
+    target: ScheduleCompletionTarget,
+    values: { completedDate: string; mileage?: number; nextDueDate?: string; nextDueMileage?: number; notes?: string },
+  ) => {
+    const householdId = currentUser?.householdId;
     const logsCollection = getCollectionRef('maintenance');
     const assetsCollection = getCollectionRef('home-assets');
     const vehiclesCollection = getCollectionRef('vehicles');
-    if (!logsCollection || !assetsCollection || !vehiclesCollection) return;
+    if (!householdId || !logsCollection || !assetsCollection || !vehiclesCollection) return false;
 
     const now = new Date().toISOString();
-    const scheduleName = getScheduleCompletionName(scheduleCompletionTarget);
-    const completedDate = values.completedDate;
-    const completedMileage = scheduleCompletionTarget.targetType === 'vehicle' ? toNumber(values.mileage) : undefined;
-    const logId = `${slugify(`${scheduleName}-${completedDate}`)}-${Date.now()}`;
+    const scheduleName = getScheduleCompletionName(target);
+    const logId = `${slugify(`${scheduleName}-${values.completedDate}`)}-${Date.now()}`;
     const logData: Omit<MaintenanceLog, 'id'> = {
-      householdId: currentUser.householdId,
-      targetType: scheduleCompletionTarget.targetType,
-      assetId: scheduleCompletionTarget.targetType === 'home_asset' ? scheduleCompletionTarget.asset.id : undefined,
-      vehicleId: scheduleCompletionTarget.targetType === 'vehicle' ? scheduleCompletionTarget.vehicle.id : undefined,
+      householdId,
+      targetType: target.targetType,
+      assetId: target.targetType === 'home_asset' ? target.asset.id : undefined,
+      vehicleId: target.targetType === 'vehicle' ? target.vehicle.id : undefined,
       title: scheduleName,
       item: scheduleName,
-      date: completedDate,
+      date: values.completedDate,
       type: 'routine',
       notes: trimOptional(values.notes),
-      mileage: scheduleCompletionTarget.targetType === 'vehicle' ? completedMileage : undefined,
+      mileage: target.targetType === 'vehicle' ? values.mileage : undefined,
       createdAt: now,
       updatedAt: now,
     };
+    const source = scheduleSourceFor(target);
 
+    if (target.targetType === 'home_asset') {
+      const { asset, scheduleIndex, schedule } = target;
+      const { id, ...assetFields } = asset;
+      const schedules = [...(asset.schedules || [])];
+      schedules[scheduleIndex] = completedAssetSchedule(schedule, values);
+      await Promise.all([
+        setDoc(doc(logsCollection, logId), cleanForFirestore(logData)),
+        setDoc(doc(assetsCollection, id), cleanForFirestore({
+          ...assetFields,
+          householdId,
+          schedules,
+          updatedAt: now,
+        })),
+        resolveMaintenanceNotifications(source.sourceType, source.sourceId, source.legacySourceId),
+      ]);
+    } else {
+      const { vehicle, scheduleIndex, schedule } = target;
+      const { id, ...vehicleFields } = vehicle;
+      const schedules = [...(vehicle.serviceSchedules || [])];
+      schedules[scheduleIndex] = completedVehicleSchedule(schedule, values);
+      await Promise.all([
+        setDoc(doc(logsCollection, logId), cleanForFirestore(logData)),
+        setDoc(doc(vehiclesCollection, id), cleanForFirestore({
+          ...vehicleFields,
+          householdId,
+          currentMileage: typeof values.mileage === 'number' ? values.mileage : vehicle.currentMileage,
+          serviceSchedules: schedules,
+          updatedAt: now,
+        })),
+        resolveMaintenanceNotifications(source.sourceType, source.sourceId, source.legacySourceId),
+      ]);
+    }
+    return true;
+  };
+
+  const completeScheduledMaintenance = async (values: ScheduleCompletionFormValues) => {
+    if (!scheduleCompletionTarget) return;
+    const target = scheduleCompletionTarget;
     try {
-      if (scheduleCompletionTarget.targetType === 'home_asset') {
-        const { asset, scheduleIndex, schedule } = scheduleCompletionTarget;
-        const { id, ...assetFields } = asset;
-        const schedules = [...(asset.schedules || [])];
-        schedules[scheduleIndex] = {
-          ...schedule,
-          lastCompletedDate: completedDate,
-          nextDueDate: trimOptional(values.nextDueDate) || calculateNextAssetDueDate(schedule, completedDate),
-        };
-
-        await Promise.all([
-          setDoc(doc(logsCollection, logId), cleanForFirestore(logData)),
-          setDoc(doc(assetsCollection, id), cleanForFirestore({
-            ...assetFields,
-            householdId: currentUser.householdId,
-            schedules,
-            updatedAt: now,
-          })),
-          resolveMaintenanceNotifications(
-            'maintenance_asset_schedule',
-            `${id}:${schedule.id || `legacy-${scheduleIndex}-${stableSlugify(schedule.scheduleName || 'scheduled-maintenance')}`}`,
-            `${id}-${scheduleIndex}`
-          ),
-        ]);
-        setSelectedAssetId(id);
-      } else {
-        const { vehicle, scheduleIndex, schedule } = scheduleCompletionTarget;
-        const { id, ...vehicleFields } = vehicle;
-        const schedules = [...(vehicle.serviceSchedules || [])];
-        schedules[scheduleIndex] = {
-          ...schedule,
-          lastCompletedMileage: completedMileage,
-          lastCompletedDate: completedDate,
-          nextDueMileage: toNumber(values.nextDueMileage) || calculateNextVehicleMileage(schedule, completedMileage),
-          nextDueDate: trimOptional(values.nextDueDate) || calculateNextVehicleDueDate(schedule, completedDate),
-        };
-
-        await Promise.all([
-          setDoc(doc(logsCollection, logId), cleanForFirestore(logData)),
-          setDoc(doc(vehiclesCollection, id), cleanForFirestore({
-            ...vehicleFields,
-            householdId: currentUser.householdId,
-            currentMileage: typeof completedMileage === 'number' ? completedMileage : vehicle.currentMileage,
-            serviceSchedules: schedules,
-            updatedAt: now,
-          })),
-          resolveMaintenanceNotifications(
-            'maintenance_vehicle_service',
-            `${id}:${schedule.id || `legacy-${scheduleIndex}-${stableSlugify(schedule.serviceName || 'scheduled-service')}`}`,
-            `${id}-${scheduleIndex}`
-          ),
-        ]);
-        setSelectedVehicleId(id);
-      }
-
+      const done = await applyScheduleCompletion(target, {
+        completedDate: values.completedDate,
+        mileage: target.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
+        nextDueDate: trimOptional(values.nextDueDate),
+        nextDueMileage: toNumber(values.nextDueMileage),
+        notes: values.notes,
+      });
+      if (!done) return;
+      if (target.targetType === 'home_asset') setSelectedAssetId(target.asset.id);
+      else setSelectedVehicleId(target.vehicle.id);
       setScheduleCompletionTarget(null);
       scheduleCompletionForm.reset(emptyScheduleCompletionForm());
+      playFeedback('complete');
       toast({ title: 'Scheduled maintenance completed' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (saveError) {
       console.error('Error completing scheduled maintenance:', saveError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not complete scheduled maintenance.' });
+      toastError(saveError, 'Could not complete maintenance');
+    }
+  };
+
+  /**
+   * One-tap Mark done from a reminder card. When the next due date or mileage
+   * cannot be worked out (no interval, or no recorded mileage), the completion
+   * dialog opens instead so nothing is guessed.
+   */
+  const markReminderDone = async (reminder: MaintenanceReminder) => {
+    if (reminderBusy || !canComplete) return;
+    const target = findReminderSchedule(reminder, assets, vehicles);
+    if (!target) {
+      openReminderTarget(reminder);
+      return;
+    }
+    const values = quickCompletionValues(target, today);
+    if (!values) {
+      openScheduleCompletionDialog(target);
+      return;
+    }
+    setReminderBusy({ id: reminder.id, action: 'done' });
+    try {
+      const done = await applyScheduleCompletion(target, values);
+      if (!done) return;
+      playFeedback('complete');
+      toast({
+        title: 'Marked done',
+        description: `${reminder.title} for ${reminder.relatedName} is logged.${values.nextDueDate ? ` Next due ${formatDate(values.nextDueDate)}.` : ''}`,
+      });
+      await refreshMaintenanceData();
+    } catch (saveError) {
+      console.error('Error completing maintenance from a reminder:', saveError);
+      toastError(saveError, 'Could not mark it done');
+    } finally {
+      setReminderBusy(null);
+    }
+  };
+
+  /**
+   * Snooze moves the schedule's next due date a week past the later of today and
+   * the current due date. It is an ordinary schedule edit (maintenance.edit), so
+   * the hourly server job and every device see the new date; the current
+   * reminder cycle is resolved like a completion.
+   */
+  const snoozeReminder = async (reminder: MaintenanceReminder) => {
+    if (reminderBusy || !canEdit) return;
+    const target = findReminderSchedule(reminder, assets, vehicles);
+    const assetsCollection = getCollectionRef('home-assets');
+    const vehiclesCollection = getCollectionRef('vehicles');
+    if (!target || !assetsCollection || !vehiclesCollection) return;
+    const nextDueDate = snoozedDueDate(target.schedule.nextDueDate, today);
+    const now = new Date().toISOString();
+    setReminderBusy({ id: reminder.id, action: 'snooze' });
+    try {
+      if (target.targetType === 'home_asset') {
+        const schedules = [...(target.asset.schedules || [])];
+        schedules[target.scheduleIndex] = { ...target.schedule, nextDueDate };
+        await updateDoc(doc(assetsCollection, target.asset.id), cleanForFirestore({ schedules, updatedAt: now }));
+      } else {
+        const serviceSchedules = [...(target.vehicle.serviceSchedules || [])];
+        serviceSchedules[target.scheduleIndex] = { ...target.schedule, nextDueDate };
+        await updateDoc(doc(vehiclesCollection, target.vehicle.id), cleanForFirestore({ serviceSchedules, updatedAt: now }));
+      }
+      const source = scheduleSourceFor(target);
+      // Best effort: the schedule change is what matters, and the new due date
+      // has its own reminder identity anyway.
+      await resolveMaintenanceNotifications(source.sourceType, source.sourceId, source.legacySourceId)
+        .catch((resolveError) => console.error('Could not resolve snoozed reminder notifications:', resolveError));
+      toast({ title: 'Snoozed for a week', description: `${reminder.title} for ${reminder.relatedName} is now due ${formatDate(nextDueDate)}.` });
+      await refreshMaintenanceData();
+    } catch (snoozeError) {
+      console.error('Error snoozing maintenance reminder:', snoozeError);
+      toastError(snoozeError, 'Could not snooze');
+    } finally {
+      setReminderBusy(null);
     }
   };
 
@@ -1652,10 +1727,10 @@ export function MaintenanceLogClient() {
       });
       setLogToDelete(null);
       toast({ title: 'Maintenance log deleted' });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (deleteError) {
       console.error('Error deleting maintenance log:', deleteError);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not delete maintenance log.' });
+      toastError(deleteError, 'Could not delete the maintenance log');
     } finally {
       setDeletingRecord(null);
     }
@@ -1743,10 +1818,10 @@ export function MaintenanceLogClient() {
           ? `${linkedLogs.length} historical ${linkedLogs.length === 1 ? 'log was' : 'logs were'} preserved as general maintenance.`
           : undefined,
       });
-      await fetchMaintenanceData();
+      await refreshMaintenanceData();
     } catch (deleteError) {
       console.error(`Error deleting ${targetType}:`, deleteError);
-      toast({ variant: 'destructive', title: 'Error', description: `Could not delete the ${targetType === 'home_asset' ? 'home asset' : 'vehicle'}.` });
+      toastError(deleteError, `Could not delete the ${targetType === 'home_asset' ? 'home asset' : 'vehicle'}`);
     } finally {
       setDeletingRecord(null);
     }
@@ -1773,11 +1848,13 @@ export function MaintenanceLogClient() {
       setSummaries(prev => ({ ...prev, [log.id]: result.summary }));
     } catch (summaryError) {
       console.error('Maintenance summary failed', summaryError instanceof Error ? summaryError.message : 'unknown');
-      toast({
-        variant: 'destructive',
-        title: 'Summary unavailable',
-        description: summaryError instanceof Error ? summaryError.message : 'Failed to generate summary.',
-      });
+      // AI errors carry messages already written for people by the AI module;
+      // anything else goes through friendlyError.
+      if (summaryError instanceof AiClientError) {
+        toast({ variant: 'destructive', title: 'Summary unavailable', description: summaryError.message });
+      } else {
+        toastError(summaryError, 'Summary unavailable');
+      }
     } finally {
       setLoadingSummaries(prev => ({ ...prev, [log.id]: false }));
     }
@@ -1785,6 +1862,20 @@ export function MaintenanceLogClient() {
 
   if (!currentUser) {
     return <p className="py-8 text-center">Please log in to manage maintenance.</p>;
+  }
+
+  if (accessDenied) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <EmptyState
+            kind="assets"
+            title="Maintenance isn't shared with you"
+            description="Ask a household owner or admin for access to the Maintenance Center."
+          />
+        </CardContent>
+      </Card>
+    );
   }
 
   if (loading) {
@@ -1821,6 +1912,105 @@ export function MaintenanceLogClient() {
     );
   }
 
+  const logListProps = {
+    assets,
+    vehicles,
+    attachments,
+    summaries,
+    loadingSummaries,
+    uploadingAttachmentTarget,
+    deletingAttachmentId,
+    canEdit,
+    canDelete,
+    onSummarize: handleSummarize,
+    onEdit: (log: MaintenanceLog) => openLogDialog(undefined, log),
+    onDelete: setLogToDelete,
+    onUploadAttachment: uploadAttachment,
+    onDeleteAttachment: setAttachmentToDelete,
+  };
+
+  const reminderListProps = {
+    today,
+    canComplete,
+    canSnooze: canEdit,
+    busy: reminderBusy,
+    onOpen: openReminderTarget,
+    onMarkDone: (reminder: MaintenanceReminder) => void markReminderDone(reminder),
+    onSnooze: (reminder: MaintenanceReminder) => void snoozeReminder(reminder),
+  };
+
+  const flaggedAssets = assets.filter((asset) => asset.status === 'needs_attention');
+  const flaggedVehicles = vehicles.filter((vehicle) => vehicle.status === 'needs_attention');
+
+  const assetFields = (asset: HomeAsset) => [
+    { label: 'Status', value: humanizeLabel(asset.status) },
+    { label: 'Location', value: asset.location },
+    { label: 'Brand', value: asset.brand },
+    { label: 'Model', value: asset.model },
+    { label: 'Serial Number', value: asset.serialNumber },
+    { label: 'Purchase Price', value: optionalCurrency(asset.purchasePrice) },
+    { label: 'Purchase Date', value: optionalDate(asset.purchaseDate) },
+    { label: 'Warranty Ends', value: optionalDate(asset.warrantyExpiration) },
+    { label: 'Warranty Provider', value: asset.warrantyProvider },
+  ];
+
+  const vehicleFields = (vehicle: Vehicle) => [
+    { label: 'Status', value: humanizeLabel(vehicle.status) },
+    { label: 'Mileage', value: typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage.toLocaleString() : undefined },
+    { label: 'VIN', value: vehicle.vin },
+    { label: 'License Plate', value: vehicle.licensePlate },
+    { label: 'Insurance', value: vehicle.insuranceProvider },
+    { label: 'Purchase Price', value: optionalCurrency(vehicle.purchasePrice) },
+    { label: 'Purchase Date', value: optionalDate(vehicle.purchaseDate) },
+    { label: 'Registration Expires', value: optionalDate(vehicle.registrationExpiration) },
+    { label: 'Inspection Expires', value: optionalDate(vehicle.inspectionExpiration) },
+  ];
+
+  const missingCount = (fields: Array<{ label: string; value?: string | number | null }>) => fields.length - presentFields(fields).length;
+
+  /** One action row for a detail panel (D15): Edit and Add details on the left, Delete apart on the right. */
+  const detailActions = ({
+    name,
+    kind,
+    missing,
+    onEdit,
+    onDelete,
+  }: {
+    name: string;
+    kind: 'home asset' | 'vehicle';
+    missing: number;
+    onEdit: () => void;
+    onDelete: () => void;
+  }) => (canEdit || canDelete) && (
+    <div className="flex flex-wrap items-center gap-2 border-t pt-4">
+      {canEdit && (
+        <Button aria-label={`Edit ${kind} ${name}`} variant="outline" size="sm" onClick={onEdit}>
+          <Edit className="mr-2 h-4 w-4" />
+          Edit
+        </Button>
+      )}
+      {canEdit && missing > 0 && (
+        <Button variant="ghost" size="sm" onClick={onEdit}>
+          <PencilLine className="mr-2 h-4 w-4" />
+          Add details
+          <span className="ml-1 text-muted-foreground">({missing} empty)</span>
+        </Button>
+      )}
+      {canDelete && (
+        <Button
+          aria-label={`Delete ${kind} ${name}`}
+          variant="ghost"
+          size="sm"
+          className="ml-auto text-destructive hover:text-destructive"
+          onClick={onDelete}
+        >
+          <Trash2 className="mr-2 h-4 w-4" />
+          Delete
+        </Button>
+      )}
+    </div>
+  );
+
   return (
     <>
       <div className="space-y-6">
@@ -1829,13 +2019,15 @@ export function MaintenanceLogClient() {
             <h1 className="font-headline text-3xl font-bold tracking-tight">Maintenance Center</h1>
             <p className="text-muted-foreground">Track home assets, vehicles, service history, and repair notes.</p>
           </div>
-          <Button onClick={() => openLogDialog()}>
-            <Plus className="mr-2 h-4 w-4" />
-            Add Log
-          </Button>
+          {canCreateLogs && (
+            <Button onClick={() => openLogDialog()}>
+              <Plus className="mr-2 h-4 w-4" />
+              Add Log
+            </Button>
+          )}
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <Tabs value={activeTab} onValueChange={changeTab} className="w-full">
           <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-5">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="assets">Home Assets</TabsTrigger>
@@ -1852,36 +2044,37 @@ export function MaintenanceLogClient() {
           )}
 
           <TabsContent value="overview" className="space-y-6 pt-4">
+            {health.overall && <HealthPanel health={health.overall} onOpen={openHealthDeduction} />}
+            {assets.length === 0 && vehicles.length === 0 && (
+              <Card>
+                <CardContent className="p-6">
+                  <EmptyState
+                    kind="assets"
+                    title="Start your home registry"
+                    description="Add the furnace, the fridge or the family car, and HomeHub keeps track of when each needs care."
+                    action={canEdit ? { label: 'Add home asset', icon: <Plus className="h-4 w-4" />, onClick: () => { changeTab('assets'); openAssetDialog(); } } : undefined}
+                    secondaryAction={canEdit ? { label: 'Add vehicle', icon: <Car className="h-4 w-4" />, onClick: () => { changeTab('vehicles'); openVehicleDialog(); } } : undefined}
+                  />
+                </CardContent>
+              </Card>
+            )}
+
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <SummaryCard title="Home Assets" value={assets.length.toString()} detail="Registered household assets" icon={Home} />
               <SummaryCard title="Vehicles" value={vehicles.length.toString()} detail="Registered vehicles" icon={Car} />
-              <SummaryCard title="Recent Logs" value={summary.recentLogs.length.toString()} detail="Logged in the last 30 days" icon={ClipboardList} />
+              <SummaryCard title="Logged, Last 30 Days" value={summary.recentLogs.length.toString()} detail="Logs dated in the last 30 days" icon={ClipboardList} />
               <SummaryCard title="Needs Attention" value={summary.needingAttention.toString()} detail="Assets or vehicles flagged" icon={AlertCircle} />
-              <SummaryCard title="Recent Costs" value={formatCurrency(summary.recentCost)} detail="Recorded in the last 30 days" icon={DollarSign} />
+              <SummaryCard title="Spent, Last 30 Days" value={formatCurrency(summary.recentCost)} detail="Costs on logs from the last 30 days" icon={DollarSign} />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
               <Card>
                 <CardHeader>
-                  <CardTitle className="font-headline">Recent Maintenance</CardTitle>
-                  <CardDescription>Latest household maintenance activity.</CardDescription>
+                  <CardTitle className="font-headline">Latest Logs</CardTitle>
+                  <CardDescription>The five most recent entries, whatever their date.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <LogList
-                    logs={logs.slice(0, 5)}
-                    assets={assets}
-                    vehicles={vehicles}
-                    attachments={attachments}
-                    summaries={summaries}
-                    loadingSummaries={loadingSummaries}
-                    uploadingAttachmentTarget={uploadingAttachmentTarget}
-                    deletingAttachmentId={deletingAttachmentId}
-                    onSummarize={handleSummarize}
-                    onEdit={(log) => openLogDialog(undefined, log)}
-                    onDelete={setLogToDelete}
-                    onUploadAttachment={uploadAttachment}
-                    onDeleteAttachment={setAttachmentToDelete}
-                  />
+                  <LogList {...logListProps} logs={logs.slice(0, 5)} />
                 </CardContent>
               </Card>
 
@@ -1891,21 +2084,31 @@ export function MaintenanceLogClient() {
                   <CardDescription>Items currently marked as needing attention.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {[...assets.filter(asset => asset.status === 'needs_attention'), ...vehicles.filter(vehicle => vehicle.status === 'needs_attention')].length === 0 ? (
-                    <EmptyState title="Nothing flagged" description="Mark assets or vehicles as needing attention when they need follow-up." />
+                  {flaggedAssets.length + flaggedVehicles.length === 0 ? (
+                    <EmptyState compact headingLevel={3} title="Nothing flagged" description="Mark assets or vehicles as needing attention when they need follow-up." />
                   ) : (
                     <>
-                      {assets.filter(asset => asset.status === 'needs_attention').map(asset => (
-                        <div key={asset.id} className="rounded-lg border p-3">
+                      {flaggedAssets.map(asset => (
+                        <button
+                          key={asset.id}
+                          type="button"
+                          className="w-full rounded-lg border p-3 text-left transition-ui hover:bg-accent"
+                          onClick={() => openTarget({ targetType: 'home_asset', targetId: asset.id, deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}` })}
+                        >
                           <p className="font-medium">{asset.name}</p>
-                          <p className="text-sm text-muted-foreground">{asset.category} {asset.location ? `- ${asset.location}` : ''}</p>
-                        </div>
+                          <p className="text-sm text-muted-foreground">{[asset.category, asset.location].filter(Boolean).join(' · ')}</p>
+                        </button>
                       ))}
-                      {vehicles.filter(vehicle => vehicle.status === 'needs_attention').map(vehicle => (
-                        <div key={vehicle.id} className="rounded-lg border p-3">
+                      {flaggedVehicles.map(vehicle => (
+                        <button
+                          key={vehicle.id}
+                          type="button"
+                          className="w-full rounded-lg border p-3 text-left transition-ui hover:bg-accent"
+                          onClick={() => openTarget({ targetType: 'vehicle', targetId: vehicle.id, deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}` })}
+                        >
                           <p className="font-medium">{vehicle.nickname}</p>
                           <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
-                        </div>
+                        </button>
                       ))}
                     </>
                   )}
@@ -1915,155 +2118,136 @@ export function MaintenanceLogClient() {
           </TabsContent>
 
           <TabsContent value="assets" className="space-y-4 pt-4">
-            <div className="flex justify-end">
-              <Button onClick={() => openAssetDialog()}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Home Asset
-              </Button>
-            </div>
+            {canEdit && assets.length > 0 && (
+              <div className="flex justify-end">
+                <Button onClick={() => openAssetDialog()}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Home Asset
+                </Button>
+              </div>
+            )}
 
             {assets.length === 0 ? (
-              <EmptyState title="No home assets yet" description="Add HVAC, appliances, tools, and other assets to build your registry." />
+              <EmptyState
+                kind="assets"
+                title="No home assets yet"
+                description="Add HVAC, appliances, tools and other things you look after to build your registry."
+                action={canEdit ? { label: 'Add Home Asset', icon: <Plus className="h-4 w-4" />, onClick: () => openAssetDialog() } : undefined}
+              />
             ) : (
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+                {/* content-start: cards keep their own height instead of stretching to the detail panel (B7). */}
                 <div className="grid content-start gap-3 sm:grid-cols-2">
                   {assets.map((asset) => (
-                    <button
+                    <AssetCard
                       key={asset.id}
-                      type="button"
-                      onClick={() => setSelectedAssetId(asset.id)}
-                      className={cn(
-                        'glow-card rounded-lg border bg-card p-4 text-left shadow-raised transition-colors hover:bg-accent',
-                        selectedAsset?.id === asset.id && 'border-primary'
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="font-headline font-semibold">{asset.name}</p>
-                          <p className="text-sm text-muted-foreground">{asset.category}</p>
-                        </div>
-                        <Badge variant={asset.status === 'needs_attention' ? 'destructive' : 'outline'}>{humanizeLabel(asset.status)}</Badge>
-                      </div>
-                      <p className="mt-3 text-sm text-muted-foreground">{asset.location || 'No room recorded'}</p>
-                    </button>
+                      asset={asset}
+                      photo={pickAssetPhoto(attachments, asset.id)}
+                      health={healthFor('home_asset', asset.id)}
+                      selected={selectedAsset?.id === asset.id}
+                      onSelect={() => setSelectedAssetId(asset.id)}
+                    />
                   ))}
                 </div>
 
                 {selectedAsset && (
-                  <Card>
-                    <CardHeader className="flex flex-row items-start justify-between gap-3">
-                      <div>
+                  <Card className="min-w-0">
+                    <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                      <div className="min-w-0">
                         <CardTitle className="font-headline">{selectedAsset.name}</CardTitle>
                         <CardDescription>{selectedAsset.category}</CardDescription>
                       </div>
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <Button aria-label={`Edit home asset ${selectedAsset.name}`} variant="outline" size="sm" onClick={() => openAssetDialog(selectedAsset)}>
-                          <Edit className="mr-2 h-4 w-4" />
-                          Edit
-                        </Button>
-                        <Button
-                          aria-label={`Delete home asset ${selectedAsset.name}`}
-                          variant="outline"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => setAssetToDelete(selectedAsset)}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </Button>
-                      </div>
+                      {healthFor('home_asset', selectedAsset.id) && (
+                        <HealthRing
+                          score={healthFor('home_asset', selectedAsset.id)!.score}
+                          band={healthFor('home_asset', selectedAsset.id)!.band}
+                          label={`${selectedAsset.name} health`}
+                        />
+                      )}
                     </CardHeader>
                     <CardContent className="space-y-5">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <DetailRow label="Status" value={humanizeLabel(selectedAsset.status)} />
-                        <DetailRow label="Location" value={selectedAsset.location} />
-                        <DetailRow label="Brand" value={selectedAsset.brand} />
-                        <DetailRow label="Model" value={selectedAsset.model} />
-                        <DetailRow label="Serial Number" value={selectedAsset.serialNumber} />
-                        <DetailRow label="Purchase Price" value={formatCurrency(selectedAsset.purchasePrice)} />
-                        <DetailRow label="Purchase Date" value={formatDate(selectedAsset.purchaseDate)} />
-                        <DetailRow label="Warranty Ends" value={formatDate(selectedAsset.warrantyExpiration)} />
-                        <DetailRow label="Warranty Provider" value={selectedAsset.warrantyProvider} />
-                      </div>
+                      <DetailGrid fields={assetFields(selectedAsset)} />
                       {selectedAsset.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedAsset.notes}</p>}
+                      {detailActions({
+                        name: selectedAsset.name,
+                        kind: 'home asset',
+                        missing: missingCount(assetFields(selectedAsset)),
+                        onEdit: () => openAssetDialog(selectedAsset),
+                        onDelete: () => setAssetToDelete(selectedAsset),
+                      })}
                       <AttachmentPanel
                         attachments={getAttachmentsForTarget(attachments, 'home_asset', selectedAsset.id)}
                         targetType="home_asset"
                         targetId={selectedAsset.id}
                         uploading={uploadingAttachmentTarget === `home_asset:${selectedAsset.id}`}
                         deletingId={deletingAttachmentId}
+                        canUpload={canEdit}
+                        canDelete={canDelete}
                         onUpload={uploadAttachment}
                         onDelete={setAttachmentToDelete}
                       />
                       {selectedAsset.schedules && selectedAsset.schedules.length > 0 && (
                         <div className="space-y-2">
                           <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
-                          {selectedAsset.schedules.map((schedule, index) => (
-                            <div
-                              key={`${schedule.scheduleName}-${index}`}
-                              id={`maintenance-schedule-${stableSlugify(`${selectedAsset.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.scheduleName || 'scheduled-maintenance')}`}`)}`}
-                              data-testid={`asset-schedule-${schedule.id || index}`}
-                              className={cn(
-                                'rounded-lg border p-3',
-                                highlightedScheduleKey === `${selectedAsset.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.scheduleName || 'scheduled-maintenance')}`}` && 'ring-2 ring-primary'
-                              )}
-                            >
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                  <p className="text-sm font-medium">{schedule.scheduleName || 'Scheduled maintenance'}</p>
-                                  {getAssetScheduleMode(schedule) === 'checklist' ? (
-                                    <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
-                                  ) : (
-                                    <>
-                                      <p className="text-sm text-muted-foreground">
-                                        {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'Next date will be set when completed'}
-                                      </p>
-                                      {schedule.frequencyType && schedule.intervalValue && (
-                                        <p className="text-xs text-muted-foreground">
-                                          Every {schedule.intervalValue} {schedule.frequencyType}
+                          {selectedAsset.schedules.map((schedule, index) => {
+                            const key = scheduleKeyFor(selectedAsset.id, schedule, index, 'home_asset');
+                            return (
+                              <div
+                                key={`${schedule.scheduleName}-${index}`}
+                                id={`maintenance-schedule-${stableSlugify(key)}`}
+                                data-testid={`asset-schedule-${schedule.id || index}`}
+                                className={cn('rounded-lg border p-3', highlightedScheduleKey === key && 'ring-2 ring-primary')}
+                              >
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <p className="text-sm font-medium">{schedule.scheduleName || 'Scheduled maintenance'}</p>
+                                    {getAssetScheduleMode(schedule) === 'checklist' ? (
+                                      <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
+                                    ) : (
+                                      <>
+                                        <p className="text-sm text-muted-foreground">
+                                          {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'Next date will be set when completed'}
                                         </p>
-                                      )}
-                                    </>
-                                  )}
+                                        {schedule.frequencyType && schedule.intervalValue && (
+                                          <p className="text-xs text-muted-foreground">
+                                            Every {schedule.intervalValue} {schedule.frequencyType}
+                                          </p>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                  {canComplete && getAssetScheduleMode(schedule) === 'scheduled' && <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => openScheduleCompletionDialog({
+                                      targetType: 'home_asset',
+                                      asset: selectedAsset,
+                                      scheduleIndex: index,
+                                      schedule,
+                                    })}
+                                  >
+                                    Complete
+                                  </Button>}
                                 </div>
-                                {getAssetScheduleMode(schedule) === 'scheduled' && <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => openScheduleCompletionDialog({
-                                    targetType: 'home_asset',
-                                    asset: selectedAsset,
-                                    scheduleIndex: index,
-                                    schedule,
-                                  })}
-                                >
-                                  Complete
-                                </Button>}
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                       <div className="flex justify-between gap-2">
                         <h3 className="font-headline font-semibold">Linked Logs</h3>
-                        <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'home_asset', assetId: selectedAsset.id })}>
-                          Add Log
-                        </Button>
+                        {canCreateLogs && (
+                          <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'home_asset', assetId: selectedAsset.id })}>
+                            Add Log
+                          </Button>
+                        )}
                       </div>
                       <LogList
+                        {...logListProps}
                         logs={assetLogs}
-                        assets={assets}
-                        vehicles={vehicles}
-                        attachments={attachments}
-                        summaries={summaries}
-                        loadingSummaries={loadingSummaries}
-                        uploadingAttachmentTarget={uploadingAttachmentTarget}
-                        deletingAttachmentId={deletingAttachmentId}
-                        onSummarize={handleSummarize}
-                        onEdit={(log) => openLogDialog(undefined, log)}
-                        onDelete={setLogToDelete}
-                        onUploadAttachment={uploadAttachment}
-                        onDeleteAttachment={setAttachmentToDelete}
+                        emptyTitle="No logs for this asset"
+                        emptyDescription="Repairs, service and inspections for it will show up here."
                       />
                     </CardContent>
                   </Card>
@@ -2073,45 +2257,57 @@ export function MaintenanceLogClient() {
           </TabsContent>
 
           <TabsContent value="vehicles" className="space-y-4 pt-4">
-            <div className="flex justify-end">
-              <Button onClick={() => openVehicleDialog()}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Vehicle
-              </Button>
-            </div>
+            {canEdit && vehicles.length > 0 && (
+              <div className="flex justify-end">
+                <Button onClick={() => openVehicleDialog()}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Vehicle
+                </Button>
+              </div>
+            )}
 
             {vehicles.length === 0 ? (
-              <EmptyState title="No vehicles yet" description="Add household vehicles to track mileage, key dates, and service logs." />
+              <EmptyState
+                kind="assets"
+                title="No vehicles yet"
+                description="Add household vehicles to track mileage, key dates and service."
+                action={canEdit ? { label: 'Add Vehicle', icon: <Plus className="h-4 w-4" />, onClick: () => openVehicleDialog() } : undefined}
+              />
             ) : (
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
                 <div className="space-y-4">
                   {activeVehicles.length > 0 ? (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {activeVehicles.map((vehicle) => (
-                        <button
-                          key={vehicle.id}
-                          type="button"
-                          onClick={() => setSelectedVehicleId(vehicle.id)}
-                          className={cn(
-                            'glow-card rounded-lg border bg-card p-4 text-left shadow-raised transition-colors hover:bg-accent',
-                            selectedVehicle?.id === vehicle.id && 'border-primary'
-                          )}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <p className="font-headline font-semibold">{vehicle.nickname}</p>
-                              <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+                    <div className="grid content-start gap-3 sm:grid-cols-2">
+                      {activeVehicles.map((vehicle) => {
+                        const vehicleHealth = healthFor('vehicle', vehicle.id);
+                        return (
+                          <button
+                            key={vehicle.id}
+                            type="button"
+                            onClick={() => setSelectedVehicleId(vehicle.id)}
+                            aria-current={selectedVehicle?.id === vehicle.id ? 'true' : undefined}
+                            className={cn(
+                              'glow-card rounded-lg border bg-card p-4 text-left shadow-raised transition-ui hover:bg-accent',
+                              selectedVehicle?.id === vehicle.id && 'border-primary'
+                            )}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-headline font-semibold">{vehicle.nickname}</p>
+                                <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+                              </div>
+                              {vehicleHealth && <HealthRing score={vehicleHealth.score} band={vehicleHealth.band} label={`${vehicle.nickname} health`} />}
                             </div>
-                            <Badge variant={vehicle.status === 'needs_attention' ? 'destructive' : 'outline'}>{humanizeLabel(vehicle.status)}</Badge>
-                          </div>
-                          <p className="mt-3 text-sm text-muted-foreground">
-                            {typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString()} miles` : 'Mileage not recorded'}
-                          </p>
-                        </button>
-                      ))}
+                            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                              <span>{typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString()} miles` : 'Mileage not recorded'}</span>
+                              {vehicle.status === 'needs_attention' && <Badge variant="destructive">Needs attention</Badge>}
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : (
-                    <EmptyState title="No active vehicles" description="Sold and retired vehicles are kept out of the main vehicle list." />
+                    <EmptyState compact headingLevel={3} title="No active vehicles" description="Sold and retired vehicles are kept out of the main vehicle list." />
                   )}
 
                   {inactiveVehicles.length > 0 && (
@@ -2120,20 +2316,22 @@ export function MaintenanceLogClient() {
                         type="button"
                         variant="ghost"
                         className="w-full justify-between px-2"
+                        aria-expanded={showInactiveVehicles}
                         onClick={() => setShowInactiveVehicles(prev => !prev)}
                       >
                         <span>Sold / retired vehicles ({inactiveVehicles.length})</span>
                         <span className="text-xs text-muted-foreground">{showInactiveVehicles ? 'Hide' : 'Show'}</span>
                       </Button>
                       {showInactiveVehicles && (
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div className="mt-3 grid content-start gap-3 sm:grid-cols-2">
                           {inactiveVehicles.map((vehicle) => (
                             <button
                               key={vehicle.id}
                               type="button"
                               onClick={() => setSelectedVehicleId(vehicle.id)}
+                              aria-current={selectedVehicle?.id === vehicle.id ? 'true' : undefined}
                               className={cn(
-                                'glow-card rounded-lg border bg-muted/30 p-4 text-left transition-colors hover:bg-accent',
+                                'glow-card rounded-lg border bg-muted/30 p-4 text-left transition-ui hover:bg-accent',
                                 selectedVehicle?.id === vehicle.id && 'border-primary'
                               )}
                             >
@@ -2153,114 +2351,104 @@ export function MaintenanceLogClient() {
                 </div>
 
                 {selectedVehicle && (
-                  <Card>
-                    <CardHeader className="flex flex-row items-start justify-between gap-3">
-                      <div>
+                  <Card className="min-w-0">
+                    <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                      <div className="min-w-0">
                         <CardTitle className="font-headline">{selectedVehicle.nickname}</CardTitle>
                         <CardDescription>{[selectedVehicle.year, selectedVehicle.make, selectedVehicle.model, selectedVehicle.trim].filter(Boolean).join(' ') || 'Vehicle details'}</CardDescription>
                       </div>
-                      <div className="flex gap-2">
-                        <Button aria-label={`Edit vehicle ${selectedVehicle.nickname}`} variant="outline" size="sm" onClick={() => openVehicleDialog(selectedVehicle)}>
-                          <Edit className="mr-2 h-4 w-4" />
-                          Edit
-                        </Button>
-                        <Button aria-label={`Delete vehicle ${selectedVehicle.nickname}`} variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setVehicleToDelete(selectedVehicle)}>
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </Button>
-                      </div>
+                      {healthFor('vehicle', selectedVehicle.id) && (
+                        <HealthRing
+                          score={healthFor('vehicle', selectedVehicle.id)!.score}
+                          band={healthFor('vehicle', selectedVehicle.id)!.band}
+                          label={`${selectedVehicle.nickname} health`}
+                        />
+                      )}
                     </CardHeader>
                     <CardContent className="space-y-5">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <DetailRow label="Status" value={humanizeLabel(selectedVehicle.status)} />
-                        <DetailRow label="Mileage" value={typeof selectedVehicle.currentMileage === 'number' ? selectedVehicle.currentMileage.toLocaleString() : undefined} />
-                        <DetailRow label="VIN" value={selectedVehicle.vin} />
-                        <DetailRow label="License Plate" value={selectedVehicle.licensePlate} />
-                        <DetailRow label="Insurance" value={selectedVehicle.insuranceProvider} />
-                        <DetailRow label="Purchase Price" value={formatCurrency(selectedVehicle.purchasePrice)} />
-                        <DetailRow label="Registration Expires" value={formatDate(selectedVehicle.registrationExpiration)} />
-                        <DetailRow label="Inspection Expires" value={formatDate(selectedVehicle.inspectionExpiration)} />
-                      </div>
+                      <DetailGrid fields={vehicleFields(selectedVehicle)} />
                       {selectedVehicle.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedVehicle.notes}</p>}
+                      {detailActions({
+                        name: selectedVehicle.nickname,
+                        kind: 'vehicle',
+                        missing: missingCount(vehicleFields(selectedVehicle)),
+                        onEdit: () => openVehicleDialog(selectedVehicle),
+                        onDelete: () => setVehicleToDelete(selectedVehicle),
+                      })}
                       <AttachmentPanel
                         attachments={getAttachmentsForTarget(attachments, 'vehicle', selectedVehicle.id)}
                         targetType="vehicle"
                         targetId={selectedVehicle.id}
                         uploading={uploadingAttachmentTarget === `vehicle:${selectedVehicle.id}`}
                         deletingId={deletingAttachmentId}
+                        canUpload={canEdit}
+                        canDelete={canDelete}
                         onUpload={uploadAttachment}
                         onDelete={setAttachmentToDelete}
                       />
                       {selectedVehicle.serviceSchedules && selectedVehicle.serviceSchedules.length > 0 && (
                         <div className="space-y-2">
                           <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
-                          {selectedVehicle.serviceSchedules.map((schedule, index) => (
-                            <div
-                              key={`${schedule.serviceName}-${index}`}
-                              id={`maintenance-schedule-${stableSlugify(`${selectedVehicle.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.serviceName || 'scheduled-service')}`}`)}`}
-                              data-testid={`vehicle-schedule-${schedule.id || index}`}
-                              className={cn(
-                                'rounded-lg border p-3',
-                                highlightedScheduleKey === `${selectedVehicle.id}:${schedule.id || `legacy-${index}-${stableSlugify(schedule.serviceName || 'scheduled-service')}`}` && 'ring-2 ring-primary'
-                              )}
-                            >
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                  <p className="text-sm font-medium">{schedule.serviceName || 'Scheduled maintenance'}</p>
-                                  {getVehicleScheduleMode(schedule) === 'checklist' ? (
-                                    <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
-                                  ) : (
-                                    <>
-                                      <p className="text-sm text-muted-foreground">
-                                        {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'No next date set'}
-                                        {typeof schedule.nextDueMileage === 'number' ? `${schedule.nextDueDate ? ' or ' : 'Next due '}${schedule.nextDueMileage.toLocaleString()} miles` : ''}
-                                      </p>
-                                      <p className="text-xs text-muted-foreground">
-                                        {schedule.intervalMiles ? `Every ${schedule.intervalMiles.toLocaleString()} miles` : ''}
-                                        {schedule.intervalMiles && schedule.intervalMonths ? ' / ' : ''}
-                                        {schedule.intervalMonths ? `Every ${schedule.intervalMonths} months` : ''}
-                                      </p>
-                                    </>
-                                  )}
+                          {selectedVehicle.serviceSchedules.map((schedule, index) => {
+                            const key = scheduleKeyFor(selectedVehicle.id, schedule, index, 'vehicle');
+                            return (
+                              <div
+                                key={`${schedule.serviceName}-${index}`}
+                                id={`maintenance-schedule-${stableSlugify(key)}`}
+                                data-testid={`vehicle-schedule-${schedule.id || index}`}
+                                className={cn('rounded-lg border p-3', highlightedScheduleKey === key && 'ring-2 ring-primary')}
+                              >
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <p className="text-sm font-medium">{schedule.serviceName || 'Scheduled maintenance'}</p>
+                                    {getVehicleScheduleMode(schedule) === 'checklist' ? (
+                                      <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
+                                    ) : (
+                                      <>
+                                        <p className="text-sm text-muted-foreground">
+                                          {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'No next date set'}
+                                          {typeof schedule.nextDueMileage === 'number' ? `${schedule.nextDueDate ? ' or ' : 'Next due '}${schedule.nextDueMileage.toLocaleString()} miles` : ''}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground">
+                                          {schedule.intervalMiles ? `Every ${schedule.intervalMiles.toLocaleString()} miles` : ''}
+                                          {schedule.intervalMiles && schedule.intervalMonths ? ' / ' : ''}
+                                          {schedule.intervalMonths ? `Every ${schedule.intervalMonths} months` : ''}
+                                        </p>
+                                      </>
+                                    )}
+                                  </div>
+                                  {canComplete && getVehicleScheduleMode(schedule) === 'scheduled' && <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => openScheduleCompletionDialog({
+                                      targetType: 'vehicle',
+                                      vehicle: selectedVehicle,
+                                      scheduleIndex: index,
+                                      schedule,
+                                    })}
+                                  >
+                                    Complete
+                                  </Button>}
                                 </div>
-                                {getVehicleScheduleMode(schedule) === 'scheduled' && <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => openScheduleCompletionDialog({
-                                    targetType: 'vehicle',
-                                    vehicle: selectedVehicle,
-                                    scheduleIndex: index,
-                                    schedule,
-                                  })}
-                                >
-                                  Complete
-                                </Button>}
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                       <div className="flex justify-between gap-2">
                         <h3 className="font-headline font-semibold">Service Logs</h3>
-                        <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'vehicle', vehicleId: selectedVehicle.id })}>
-                          Add Log
-                        </Button>
+                        {canCreateLogs && (
+                          <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'vehicle', vehicleId: selectedVehicle.id })}>
+                            Add Log
+                          </Button>
+                        )}
                       </div>
                       <LogList
+                        {...logListProps}
                         logs={vehicleLogs}
-                        assets={assets}
-                        vehicles={vehicles}
-                        attachments={attachments}
-                        summaries={summaries}
-                        loadingSummaries={loadingSummaries}
-                        uploadingAttachmentTarget={uploadingAttachmentTarget}
-                        deletingAttachmentId={deletingAttachmentId}
-                        onSummarize={handleSummarize}
-                        onEdit={(log) => openLogDialog(undefined, log)}
-                        onDelete={setLogToDelete}
-                        onUploadAttachment={uploadAttachment}
-                        onDeleteAttachment={setAttachmentToDelete}
+                        emptyTitle="No service logs yet"
+                        emptyDescription="Oil changes, repairs and inspections for this vehicle will show up here."
                       />
                     </CardContent>
                   </Card>
@@ -2273,67 +2461,67 @@ export function MaintenanceLogClient() {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard title="Due Soon" value={dueSoonReminders.length.toString()} detail={`Within ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles`} icon={CalendarDays} />
               <SummaryCard title="Overdue" value={overdueReminders.length.toString()} detail="Past due date or mileage" icon={AlertCircle} />
-              <SummaryCard title="Warranty Watch" value={warrantyReminders.length.toString()} detail="Expiring warranties" icon={FileText} />
+              <SummaryCard title="Warranty Watch" value={warrantyReminders.length.toString()} detail="Warranties ending or ended" icon={FileText} />
               <SummaryCard title="Vehicle Service" value={vehicleServiceReminders.length.toString()} detail="Service, registration, and inspection" icon={Car} />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <Card>
+              <Card data-testid="reminders-due-soon">
                 <CardHeader>
                   <CardTitle className="font-headline">Due Soon</CardTitle>
                   <CardDescription>Maintenance due today or within the default reminder window.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    {...reminderListProps}
                     reminders={dueSoonReminders}
                     emptyTitle="Nothing due soon"
                     emptyDescription="Date and mileage reminders will appear here when they are close."
-                    onOpen={openReminderTarget}
                   />
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card data-testid="reminders-overdue">
                 <CardHeader>
                   <CardTitle className="font-headline">Overdue</CardTitle>
                   <CardDescription>Items past their date or mileage threshold.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    {...reminderListProps}
                     reminders={overdueReminders}
                     emptyTitle="Nothing overdue"
                     emptyDescription="Overdue scheduled maintenance and vehicle requirements will appear here."
-                    onOpen={openReminderTarget}
                   />
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card data-testid="reminders-warranty">
                 <CardHeader>
                   <CardTitle className="font-headline">Warranty Watch</CardTitle>
-                  <CardDescription>Home asset warranties expiring within the reminder window.</CardDescription>
+                  <CardDescription>Home asset warranties ending soon or already ended.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    {...reminderListProps}
                     reminders={warrantyReminders}
                     emptyTitle="No warranty reminders"
-                    emptyDescription="Warranty expirations within the reminder window will appear here."
-                    onOpen={openReminderTarget}
+                    emptyDescription="Warranties ending within the reminder window will appear here."
                   />
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card data-testid="reminders-vehicle">
                 <CardHeader>
                   <CardTitle className="font-headline">Vehicle Service Due</CardTitle>
                   <CardDescription>Vehicle service, registration, and inspection reminders.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    {...reminderListProps}
                     reminders={vehicleServiceReminders}
                     emptyTitle="No vehicle reminders"
                     emptyDescription="Mileage and date-based vehicle reminders will appear here."
-                    onOpen={openReminderTarget}
                   />
                 </CardContent>
               </Card>
@@ -2341,28 +2529,15 @@ export function MaintenanceLogClient() {
           </TabsContent>
 
           <TabsContent value="logs" className="space-y-4 pt-4">
-            <div className="flex justify-end">
-              <Button onClick={() => openLogDialog()}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Maintenance Log
-              </Button>
-            </div>
-            <LogList
-              logs={logs}
-              assets={assets}
-              vehicles={vehicles}
-              attachments={attachments}
-              summaries={summaries}
-              loadingSummaries={loadingSummaries}
-              uploadingAttachmentTarget={uploadingAttachmentTarget}
-              deletingAttachmentId={deletingAttachmentId}
-              onSummarize={handleSummarize}
-              onEdit={(log) => openLogDialog(undefined, log)}
-              onDelete={setLogToDelete}
-              onUploadAttachment={uploadAttachment}
-              onDeleteAttachment={setAttachmentToDelete}
-              highlightedLogId={highlightedLogId}
-            />
+            {canCreateLogs && (
+              <div className="flex justify-end">
+                <Button onClick={() => openLogDialog()}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Maintenance Log
+                </Button>
+              </div>
+            )}
+            <LogList {...logListProps} logs={logs} highlightedLogId={highlightedLogId} />
           </TabsContent>
         </Tabs>
       </div>
@@ -2448,6 +2623,9 @@ export function MaintenanceLogClient() {
                               <FormControl>
                                 <Input
                                   placeholder="Filter replacement"
+                                  data-schedule-name={`asset-${schedule.id}`}
+                                  aria-invalid={assetScheduleErrors[schedule.id] ? true : undefined}
+                                  aria-describedby={assetScheduleErrors[schedule.id] ? fieldErrorProps(`asset-schedule-${schedule.id}`, true)['aria-describedby'] : undefined}
                                   value={schedule.scheduleName}
                                   onChange={(event) => updateAssetSchedule(schedule.id, 'scheduleName', event.target.value)}
                                 />
@@ -2516,9 +2694,7 @@ export function MaintenanceLogClient() {
                               </>
                             )}
                           </div>
-                          {assetScheduleErrors[schedule.id] && (
-                            <p role="alert" className="mt-3 text-sm font-medium text-destructive">{assetScheduleErrors[schedule.id]}</p>
-                          )}
+                          <FieldError id={`asset-schedule-${schedule.id}`} className="mt-3">{assetScheduleErrors[schedule.id]}</FieldError>
                         </div>
                       ))}
                     </div>
@@ -2624,6 +2800,9 @@ export function MaintenanceLogClient() {
                               <FormControl>
                                 <Input
                                   placeholder="Brake fluid flush"
+                                  data-schedule-name={`vehicle-${schedule.id}`}
+                                  aria-invalid={vehicleScheduleErrors[schedule.id] ? true : undefined}
+                                  aria-describedby={vehicleScheduleErrors[schedule.id] ? fieldErrorProps(`vehicle-schedule-${schedule.id}`, true)['aria-describedby'] : undefined}
                                   value={schedule.serviceName}
                                   onChange={(event) => updateVehicleSchedule(schedule.id, 'serviceName', event.target.value)}
                                 />
@@ -2711,9 +2890,7 @@ export function MaintenanceLogClient() {
                               </>
                             )}
                           </div>
-                          {vehicleScheduleErrors[schedule.id] && (
-                            <p role="alert" className="mt-3 text-sm font-medium text-destructive">{vehicleScheduleErrors[schedule.id]}</p>
-                          )}
+                          <FieldError id={`vehicle-schedule-${schedule.id}`} className="mt-3">{vehicleScheduleErrors[schedule.id]}</FieldError>
                         </div>
                       ))}
                     </div>

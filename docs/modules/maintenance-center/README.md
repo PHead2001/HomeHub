@@ -12,12 +12,18 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 - Create general, asset, or vehicle logs; view, edit, delete, attach files, and request an AI summary.
 - Complete an asset/vehicle schedule by creating a routine log and advancing due values.
 - Upload, open/download, categorize, and delete attachments.
-- Review date/mileage reminders and open related assets or vehicles.
+- Review date/mileage reminders and act on them in place: **Mark done**, **Snooze 1 week**, or **Open** the asset/vehicle (see "Reminder actions").
+- See a 0-100 **home health score** on Overview (dial, band label and the deductions behind it, each linking to its item) and a small health ring on every active asset and vehicle card and detail panel (see "Home health score").
+- Asset cards are photo-first: the newest image attachment fills a fixed band at the top of the card; without one, the category icon on a token gradient.
+- Detail panels list only the fields that have a value (no "Not recorded"); Edit, "Add details (N empty)" and Delete share one action row, with Delete set apart on the right.
+- Controls follow the member's maintenance permissions: Add/Edit/Complete/Snooze/Upload need `maintenance.edit`, Add Log needs `maintenance.createLogs`, Mark done and Complete need both, Delete (records, logs, attachments) needs `maintenance.delete`. A member without `maintenance.view` sees a "not shared with you" state and no queries run.
 
 ## Entry Points
 
 - `src/app/maintenance/page.tsx`
 - `src/components/maintenance-log-client.tsx`
+- `src/components/maintenance/` (`asset-card.tsx`, `health-ring.tsx`, `health-panel.tsx`, `reminder-list.tsx`)
+- `src/lib/maintenance/` (pure: `health.ts` score, `schedules.ts` completion/snooze/schedule keys, `reminder-copy.ts` card copy, `display.ts` summary/photo/field rules)
 - `src/ai/flows/summarize-maintenance-log.ts`
 - Maintenance types in `src/lib/types.ts`
 - Maintenance-specific matches in `firestore.rules` and `storage.rules`
@@ -26,7 +32,45 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 
 `MaintenanceLogClient` loads four collections together: assets, vehicles, logs, and attachment metadata. It does not query notifications on load; it reads them only when deleting a registry record, to resolve that record's active reminders. Assets and vehicles embed schedule arrays. Reminder cards and server notifications share one builder (`functions/src/shared/maintenance-reminders.ts`) evaluated in the household timezone. Retired assets and retired/sold vehicles produce no reminders; warranties and vehicle documents "expire" rather than become "overdue". Notification documents are created by the server, not by opening this page.
 
-Completing a schedule creates a routine log and writes the updated embedded schedule. Vehicle completion can also update current mileage.
+Completing a schedule creates a routine log and writes the updated embedded schedule. Vehicle completion can also update current mileage. The completion dialog and one-tap Mark done share one implementation (`applyScheduleCompletion`, advancement from `src/lib/maintenance/schedules.ts`).
+
+Only the first load shows the loading skeleton. Refreshes after a save, delete, completion or snooze are silent: the page stays on screen (so reminder actions stay in place) and a failed refresh shows a `toastError` toast instead of the error card.
+
+### Reminder actions
+
+Reminder cards show the title, a status badge, the related asset/vehicle and one "when" line (for example "Due Jul 1, 2026 · 4 weeks ago" or "At 49,000 mi · 250 mi to go"); the builder's sentence ("... is overdue") is no longer repeated under the badge. Warranties and vehicle documents read "Expired" / "Expires today" / "Expires soon", never "Overdue".
+
+- **Mark done** (schedules and vehicle services only; needs `maintenance.edit` and `maintenance.createLogs`): completes the schedule today, at the vehicle's recorded mileage, with the next due date/mileage advanced by the schedule's interval. It writes the same routine log, schedule update and notification resolution as the completion dialog. When the next due values cannot be worked out (no interval, or a mileage interval with no recorded mileage) the completion dialog opens instead.
+- **Snooze 1 week** (date-driven schedule and service reminders only; needs `maintenance.edit`): sets the schedule's `nextDueDate` to 7 days after the later of today and the current due date (an `updateDoc` of the schedule array and `updatedAt` only), then resolves the current cycle's notifications (best effort). Vehicle services that are due by mileage, warranties and documents cannot be snoozed, because moving a date would not change them. No new fields are written.
+- **Open**: selects the asset or vehicle and highlights the schedule.
+- A card that leaves a list fades out in 220 ms (instant under reduced motion); Mark done plays the `complete` feedback when the member enabled sound or haptics.
+
+Compatibility with the hourly `householdUpkeep` job: both actions change the schedule's due date, which changes the reminder's `stateKey`, so the next run creates a notification only if the new state is still actionable (for a snooze, usually "due soon" a week out, which may push). The resolved old document is never refreshed because upkeep skips documents with `resolvedAt`. A snoozed item therefore leaves the Overdue list but can still appear under Due Soon. A per-member snooze that also mutes notifications would need the shared builder to honour a snooze field; that is a server change and is not implemented.
+
+### Home health score
+
+`computeHomeHealth` (`src/lib/maintenance/health.ts`) uses the same reminder builder as the Reminders tab and the server, evaluated in the household timezone, over active assets and vehicles (retired assets and retired/sold vehicles are ignored; with none left there is no score and Overview shows the assets empty state).
+
+Deductions per reminder:
+
+| Reminder | Points |
+|---|---|
+| Schedule/service overdue | 10, plus 2 per full 30 days late or per full 500 miles over (whichever is larger), at most 20 |
+| Schedule/service due today | 5 |
+| Schedule/service due soon (14 days / 500 miles) | 2 |
+| Registration/inspection expired | 15 |
+| Registration/inspection expires today | 5 |
+| Registration/inspection expires soon | 2 |
+| Warranty ends today or soon | 2 (an already expired warranty costs nothing) |
+| Asset or vehicle flagged "Needs attention" | 10 |
+
+Bonus: each log linked to the item and dated in the last 90 days adds 2, at most 6 per item.
+
+- Item score = 100 - its deductions + its bonus, clamped to 0-100.
+- Home score = 100 - every deduction + the items' bonuses (at most 10 in total), clamped to 0-100.
+- Bands: 85 and up "In good shape" (success color), 60-84 "Needs some care" (warning), below 60 "Needs attention" (destructive).
+
+The Overview dial uses `NumberTicker` and a ring that sweeps to the value in 550 ms (value only, never blocking); under reduced motion both show the final value at once. Every ring is `role="img"` with a full text equivalent ("Home health 79 out of 100, needs some care."). The "Why this score" list shows the five largest deductions ("−12 Main HVAC System: Replace air filter is 3 months overdue"), with "Show N more", and each row opens its item.
 
 ## Data Model and Persistence
 
@@ -41,7 +85,7 @@ Shared types include `HomeAsset`, `HomeAssetSchedule`, `MaintenanceScheduleMode`
 
 When an asset or vehicle is deleted, linked historical logs are preserved as general maintenance records. The original relationship is retained in optional `formerTargetType` and `formerTargetName` fields while the live `assetId` or `vehicleId` is removed.
 
-Deep links use `/maintenance?asset={id}`, `?vehicle={id}`, or `?log={id}`. Schedule reminders add a URL-encoded `schedule={ownerId}:{scheduleId}`. Valid links select the matching tab/detail and highlight schedules/logs; missing IDs select the relevant list tab and show a non-destructive status message. Legacy `targetType`/`targetId` links remain accepted.
+Deep links use `/maintenance?asset={id}`, `?vehicle={id}`, `?log={id}`, or `?tab={overview|assets|vehicles|reminders|logs}`. Choosing a tab replaces the URL with `?tab=` (Overview has no parameter), so refresh and Back keep the tab. A deep link is applied once per URL after data loads; later refreshes do not pull the page back to the linked record. Schedule reminders add a URL-encoded `schedule={ownerId}:{scheduleId}`. Valid links select the matching tab/detail and highlight schedules/logs; missing IDs select the relevant list tab and show a non-destructive status message. Legacy `targetType`/`targetId` links remain accepted.
 
 ## Authentication, Roles, and Security
 
@@ -49,7 +93,7 @@ Clients derive household paths from the authenticated user. Pending `newuser` me
 
 Attachment metadata creation validates matching `householdId`, target/category values, path prefix, and `uploadedByUid == request.auth.uid`. Storage allows approved members, limits files to under 15 MiB, and accepts images, PDF, plain text, Word, and OpenXML documents.
 
-The header uses `maintenance.view`, but the route and broad Firestore catch-all do not enforce granular create/edit/delete permission overrides for assets, vehicles, and logs.
+Firestore rules enforce the granular permissions (with per-member overrides): reads need `maintenance.view`; asset/vehicle create and update and attachment metadata create need `maintenance.edit`; log create needs `maintenance.createLogs` and log update `maintenance.edit`; deletes need `maintenance.delete`; resolving a maintenance notification needs `maintenance.edit` and may only change `resolvedAt`/`resolvedBy`. The page hides controls a member cannot use (see capabilities); the rules remain the authority. Reminder actions use only these existing writes; no rules changed.
 
 ## Integrations and Background Processing
 
@@ -74,6 +118,10 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 - Scheduled entries require a date/frequency or mileage due mechanism appropriate to their owner. Explicit checklist entries may contain only a name and never show a Complete action.
 - Notification IDs hash stable source type, persisted owner/schedule identity, and a `stateKey` containing due status plus meaningful due date/mileage. Transactions make overlapping synchronization idempotent.
 - Read/dismiss history remains on an existing reminder document. A changed due status/date/mileage produces a new identity; completing a schedule resolves the current cycle and advances the embedded schedule.
+- Asset photos are plain `<img>` elements on the attachment's `downloadUrl` (`alt=""`, the name is printed next to them) inside a fixed 80 px band, so loading never shifts layout; an image that fails to load falls back to the category art. Only image content types (PNG, JPEG, WebP, GIF, AVIF) are used, preferring the `photo` category; SVG and PDFs are ignored.
+- Field problems are shown inline: schedule rows use `FieldError` (focus moves to the first bad schedule name), and the log dialog's missing asset/vehicle uses the form field's message. Failures use `toastError`/`friendlyError`, except AI summary errors, whose messages are already user-safe from the AI module.
+- "Summarize with AI" is offered only for notes with at least two statements (split on `. ! ? ;` or line breaks, each two words or more) or at least 40 words.
+- Overview labels: "Logged, Last 30 Days" counts logs dated in the last 30 days; the "Latest Logs" list shows the five newest entries regardless of date.
 - Home Assets layout: the asset card grid uses `content-start`, so cards keep their content height instead of stretching to the selected asset's detail panel, and the page never scrolls sideways (regression-tested at 1009 px in `tests/e2e/navigation-layout.spec.ts`). The attachment Upload control is a label around a plain visually hidden `<input type="file">` with `relative overflow-hidden`; the shared `Input` component is not used there because its `w-full` overrides `sr-only` and widened the page.
 - Asset and vehicle deletion require confirmation and are blocked while direct attachments exist. Embedded schedules/checklists are deleted with the owning registry document.
 - Maintenance summary requests require verified household membership plus `maintenance.view`; provider failures are sanitized and non-destructive.
@@ -90,8 +138,10 @@ The header uses `maintenance.view`, but the route and broad Firestore catch-all 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes; run a production build for broad UI/data-flow changes.
 - Run functions and rules validation when notification delivery or security changes.
 - Manually test canonical/invalid/deleted-record deep links, legacy logs/name-only schedules, checklist and date/mileage/combined scheduled entries, ten repeated/overlapping reminder syncs, dismissal persistence, completion advancement, partial failures, attachment allow/deny/delete behavior, inactive vehicles, and cross-household denial.
+- `npm run test:unit` should include `tests/unit/maintenance-health.test.ts` (score formula, caps, bands, retired items) and `tests/unit/maintenance-reminders.test.ts` (card copy, schedule matching and legacy keys, Mark done/Snooze eligibility and values, AI-summary rule, field collapsing, photo choice, token-only components).
+- `tests/e2e/maintenance-ux.spec.ts` covers the health dial and its links, `?tab=` links, Snooze and Mark done in place (Firestore writes and notification resolution), collapsed detail fields and the action row, photo and fallback cards at 1009 px, inline validation, and a guest seeing no change controls.
 - For asset/vehicle/log/schedule/checklist/attachment deletion, test cancel and confirm, attachment blocking, persistence after reload, historical-log preservation, related reminder resolution, and unrelated-record survival.
 
 ## When This Document Must Be Updated
 
-Update this README when asset/vehicle/log/schedule/attachment fields or paths, reminder thresholds or generation, completion advancement, delete cleanup, AI summaries, notification integration, permission enforcement, or maintenance security rules change.
+Update this README when asset/vehicle/log/schedule/attachment fields or paths, reminder thresholds or generation, reminder actions, the health score formula, completion advancement, delete cleanup, AI summaries, notification integration, permission enforcement, or maintenance security rules change.
