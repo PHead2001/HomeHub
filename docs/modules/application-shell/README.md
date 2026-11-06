@@ -9,6 +9,7 @@ This module owns the root layout, global providers and overlays, primary navigat
 - View dashboard module cards at `/`.
 - Generate a transient AI Overview whose exact metrics come from authorized household data.
 - Navigate through permission-filtered desktop header links and avatar actions.
+- On phones, navigate with a fixed bottom tab bar (Home, Chores, Shopping, Pets) and a More sheet (Maintenance, Automation, Household, Barcode Library, Profile).
 - Open profile, household management, barcode library, notifications, and logout controls.
 - Receive create/join-household and pending-approval overlays.
 - Apply personal theme settings across the application.
@@ -19,6 +20,7 @@ This module owns the root layout, global providers and overlays, primary navigat
 - `src/app/page.tsx`
 - `src/app/globals.css`
 - `src/components/header.tsx`
+- `src/components/mobile-tab-bar.tsx`
 - `src/components/dashboard-card.tsx`
 - `src/components/household-manager.tsx`
 - `src/components/theme-injector.tsx`
@@ -34,7 +36,11 @@ The root layout installs `AuthProvider`, foreground push handling, Firebase erro
 
 Dashboard card carousels contain their own horizontal movement. Their navigation controls remain inset from the carousel edge at every viewport so neither the carousel nor the document gains horizontal overflow.
 
-Header navigation derives visibility from effective permissions. Dashboard cards are not permission-filtered. Overview metrics and generated sections are filtered by verified server-side effective permissions.
+Below the `md` breakpoint, `MobileTabBar` renders a fixed bottom navigation bar inside `HouseholdManager`, after `<main>`; at `md` and wider it is hidden. Primary tabs are Home, Chores, Shopping, and Pets; a More tab opens a bottom sheet with Maintenance, Automation, Household, Barcode Library, and Profile. The active tab or sheet item is marked with `aria-current="page"`, and More is highlighted when the current route is one of its items. The bar is not rendered for users without a household, without a loaded member record, or with role `newuser`.
+
+The root `viewport` export sets `viewportFit: 'cover'`. The tab bar pads its bottom by `env(safe-area-inset-bottom)` and the More sheet adds the same inset to its bottom padding, so content clears the home indicator. On phones `<main>` reserves `calc(4rem + env(safe-area-inset-bottom))` of bottom padding (the 4rem bar height plus the inset) so page content is not hidden behind the bar; `md:pb-0` removes it on larger screens. This padding applies whenever `<main>` renders on a phone, including when the bar itself is hidden.
+
+Header and phone tab bar navigation derive visibility from effective permissions. Dashboard cards are not permission-filtered. Overview metrics and generated sections are filtered by verified server-side effective permissions.
 
 ## Data Model and Persistence
 
@@ -47,7 +53,7 @@ Theme values are persisted by the identity/profile module and injected as CSS va
 - Logged-out users see normal route content plus login controls.
 - Signed-in users without a household receive the create/join overlay.
 - Members with role `newuser` receive a waiting-for-approval overlay on routes other than `/profile`.
-- Desktop navigation uses `hasPermission`; direct routes and dashboard links still depend on feature code and Firebase rules.
+- Desktop navigation uses `hasPermission`. The phone tab bar and More sheet omit (rather than disable) items whose view permission the member lacks: `chores.view`, `shopping.view`, `pets.view`, `maintenance.view`, `automation.view`, and `household.view`; Home, Barcode Library, and Profile are always listed. Direct routes and dashboard links still depend on feature code and Firebase rules.
 
 The overlays visually cover child routes but do not unmount them, so child effects can still execute. Security must be enforced by rules and module code, not by the overlay alone.
 
