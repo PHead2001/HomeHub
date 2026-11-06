@@ -29,8 +29,11 @@ export function PantryHandoffDialog({
   onOpenChange: (open: boolean) => void;
   items: ShoppingListItem[];
   confirmLabel?: string;
-  /** Resolves true when the pantry was updated (the dialog then closes). */
-  onConfirm: (choices: PantryHandoffChoice[]) => Promise<boolean>;
+  /**
+   * Resolves true when the pantry was updated (the dialog then closes). `shownIds`
+   * are every item listed in the dialog, ticked or not.
+   */
+  onConfirm: (choices: PantryHandoffChoice[], shownIds: string[]) => Promise<boolean>;
 }) {
   // Mounted when opened, so the rows start from the items at that moment.
   const [rows, setRows] = useState<Row[]>(() => [...items]
@@ -44,7 +47,7 @@ export function PantryHandoffDialog({
     if (chosen.length === 0 || saving) return;
     setSaving(true);
     try {
-      const ok = await onConfirm(chosen.map(({ item, location }) => ({ item, location })));
+      const ok = await onConfirm(chosen.map(({ item, location }) => ({ item, location })), rows.map(({ item }) => item.id));
       if (ok) onOpenChange(false);
     } finally {
       setSaving(false);

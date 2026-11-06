@@ -10,6 +10,7 @@ import {
   normalizeItemName,
   parseQuickAdd,
   pluralize,
+  withoutIds,
 } from '../../src/lib/shopping/items';
 import {
   daysUntilExpiry,
@@ -175,6 +176,26 @@ describe('shopping quantity merges are atomic', () => {
       assert.doesNotMatch(source, /quantity\)\s*\|\|\s*0\)\s*\+/, `${file} adds to a read quantity`);
       assert.doesNotMatch(source, /(?:updateDoc|batch\.update)\([^)]*\)?,\s*\{\s*quantity\s*\}/, `${file} writes a bare quantity total`);
     }
+  });
+});
+
+describe('clearing purchased items', () => {
+  test('removes exactly the cleared ids, keeping items ticked meanwhile', () => {
+    const items = [
+      { id: 'a', status: 'purchased' },
+      { id: 'b', status: 'purchased' }, // ticked after the member pressed Clear
+      { id: 'c', status: 'needed' },
+    ];
+    assert.deepEqual(withoutIds(items, ['a']).map((item) => item.id), ['b', 'c']);
+    assert.deepEqual(withoutIds(items, []).length, 3);
+  });
+
+  test('clear and the empty-list prompt never derive from a local status filter', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
+    const clear = source.slice(source.indexOf('const clearPurchasedItems'), source.indexOf('const sendToPantry'));
+    assert.match(clear, /withoutIds\(prev, ids\)/);
+    assert.match(clear, /const confirmed = await fetchItemsAndCategories/);
+    assert.doesNotMatch(clear, /status === '(?:needed|purchased)'/);
   });
 });
 

@@ -15,7 +15,7 @@ This module owns shopping-list metadata, list categories, needed/purchased items
 - Add several items at once with the quick-add field pinned to the bottom of an open list: `milk, eggs, 2 bread` (also `bread x2`, `2x bread`). A name already on the list as needed (ignoring case and spacing) raises that item's quantity instead of adding a duplicate; the same applies to the Add Item dialog. Typed all-lower-case names are capitalized ("milk" becomes "Milk"). An empty entry shows an inline error under the field.
 - Delete an item with five seconds to undo (the item is written back as it was).
 - Finish a trip: ticking the last needed item prints a receipt (list, time, items and totals) that offers **Add to pantry** (Grocery lists) and **Clear purchased**.
-- Clear purchased items and optionally remove an emptied list. On Grocery lists, Clear offers **Add to pantry, then clear**.
+- Clear purchased items and optionally remove an emptied list. Clear deletes exactly the purchased items shown when it was pressed (an item ticked meanwhile stays), and the "Delete Empty List?" prompt appears only when a re-read of the list confirms it is empty (never offline). On Grocery lists, Clear offers **Add to pantry, then clear**, which clears exactly the items listed in the pantry dialog.
 - Send purchased Grocery items to the pantry in one batch: every item starts ticked with a shelf guessed from its category (Dairy goes to the Fridge, Frozen to the Freezer) and can be unticked or moved before confirming.
 - Scan a barcode while adding an item.
 - Open the household barcode catalog from the `Barcode Library` inventory action.

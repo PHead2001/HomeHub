@@ -145,6 +145,12 @@ export function groupItemsByAisle<T extends Pick<ShoppingListItem, 'name' | 'cat
     }));
 }
 
+/** `items` without the given ids (for removing exactly what a write deleted). */
+export function withoutIds<T extends { id: string }>(items: readonly T[], ids: Iterable<string>): T[] {
+  const drop = new Set(ids);
+  return items.filter((item) => !drop.has(item.id));
+}
+
 /** "1 item", "3 items". */
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;

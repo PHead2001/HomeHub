@@ -108,6 +108,35 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('clear purchased removes only the confirmed items and asks to delete the list only when it is really empty', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const listId = 'e2e-clear-list';
+    const listRef = lists.doc(listId);
+    await listRef.set({ name: 'E2E Clear', description: '', icon: 'ShoppingCart', type: 'Custom', color: 'tint-3' });
+    await listRef.collection('items').doc('done').set({ name: 'E2E cleared item', quantity: 1, category: 'Other', status: 'purchased', createdAt: fixedNow });
+    await listRef.collection('items').doc('late').set({ name: 'E2E late item', quantity: 1, category: 'Other', status: 'needed', createdAt: fixedNow });
+    try {
+      await open(page, `/shopping?list=${listId}`);
+      await expect(page.locator('#item-needed-late')).toBeVisible();
+      await page.getByRole('button', { name: 'Clear', exact: true }).click();
+      const confirm = page.getByRole('alertdialog', { name: /Clear 1 purchased item/ });
+      await expect(confirm).toBeVisible();
+      // Another member ticks the remaining item while the dialog is open.
+      await listRef.collection('items').doc('late').update({ status: 'purchased' });
+      await confirm.getByRole('button', { name: 'Clear Purchased' }).click();
+
+      await expect.poll(async () => (await listRef.collection('items').doc('done').get()).exists).toBe(false);
+      // The item ticked meanwhile was not part of the confirmed clear: it stays, and the
+      // list is not empty, so there is no "delete this list" prompt.
+      expect((await listRef.collection('items').doc('late').get()).exists).toBe(true);
+      await expect(page.getByRole('alertdialog', { name: 'Delete Empty List?' })).toHaveCount(0);
+      await expect(page.getByText(/^Purchased \(1\)/)).toBeVisible();
+    } finally {
+      await Promise.all(['done', 'late'].map((id) => listRef.collection('items').doc(id).delete()));
+      await listRef.delete();
+    }
+  });
+
   test('header navigation to /shopping resets the open tab and list to match the URL', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/shopping?tab=pantry');

@@ -38,7 +38,7 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, type QuickAddEntry } from '@/lib/shopping/items';
+import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, withoutIds, type QuickAddEntry } from '@/lib/shopping/items';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
@@ -229,7 +229,7 @@ export function ShoppingListClient({
   const listItemsRef = useRef<ShoppingListItem[]>([]);
   const reconcilingListRef = useRef<string | null>(null);
   const reconcileAgainRef = useRef(false);
-  const fetchItemsRef = useRef<((listId: string, options?: { silent?: boolean }) => Promise<void>) | null>(null);
+  const fetchItemsRef = useRef<((listId: string, options?: { silent?: boolean }) => Promise<ShoppingListItem[] | null>) | null>(null);
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
 
   const selectedList = useMemo(() => lists.find((list) => list.id === selectedListId) ?? null, [lists, selectedListId]);
@@ -310,8 +310,10 @@ export function ShoppingListClient({
     }
   }, [getListsCollectionRef, toastError, fetchCounts]);
 
-  const fetchItemsAndCategories = useCallback(async (listId: string, { silent = false }: { silent?: boolean } = {}) => {
-    if (!currentUser?.householdId) return;
+  // Re-reads a list. Resolves with the items read (the confirmed state, or the local
+  // cache offline), or null when the read failed or another list is now open.
+  const fetchItemsAndCategories = useCallback(async (listId: string, { silent = false }: { silent?: boolean } = {}): Promise<ShoppingListItem[] | null> => {
+    if (!currentUser?.householdId) return null;
     if (!silent) setLoadingItems(true);
     try {
       const itemsCollection = collection(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'items');
@@ -324,7 +326,7 @@ export function ShoppingListClient({
 
       // The member may have opened another list meanwhile (e.g. an Undo toast for list A
       // pressed while list B is open): never render A's items under B's header.
-      if (selectedListIdRef.current !== listId) return;
+      if (selectedListIdRef.current !== listId) return null;
       const itemsData = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
       setListItems(itemsData);
 
@@ -337,8 +339,10 @@ export function ShoppingListClient({
       const storedCategories = categoriesSnapshot.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null;
       // Reset to default if no specific categories are set for this list
       setCategories(storedCategories ?? DEFAULT_SHOPPING_CATEGORIES);
+      return itemsData;
     } catch (error) {
       if (selectedListIdRef.current === listId) toastError(error, 'Could not load list items');
+      return null;
     } finally {
       if (!silent && selectedListIdRef.current === listId) setLoadingItems(false);
     }
@@ -591,6 +595,9 @@ export function ShoppingListClient({
       // different predecessor. Show the confirmed state from Firestore instead.
       const failToggle = () => {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not update item status.' });
+        // The receipt was opened optimistically on the last tick; a rejected tick
+        // means the trip is not complete after all.
+        if (isListOpen()) setIsReceiptOpen(false);
         reconcileWithServer(list.id);
       };
 
@@ -695,42 +702,55 @@ export function ShoppingListClient({
     });
   };
 
-  const clearPurchasedItems = async () => {
+  /**
+   * Deletes exactly `itemIds` (the purchased items the member confirmed, captured
+   * when they pressed Clear), never "whatever is purchased now": an item ticked
+   * while the dialog or the batch is pending stays. Afterwards only those ids leave
+   * the screen, and "the list is empty, delete it?" is decided from a re-read of
+   * the list (the confirmed state), not from a local status filter.
+   */
+  const clearPurchasedItems = async (itemIds: readonly string[]) => {
     if (!currentUser?.householdId || !selectedList) return;
-    // Only clear the list that is on screen: the purchased items below are read from it.
+    // Only clear the list that is on screen: the ids below came from it.
     if (selectedListIdRef.current !== selectedList.id) return;
     const list = selectedList;
     const householdId = currentUser.householdId;
-    const purchased = listItemsRef.current.filter(i => i.status === 'purchased');
+    const ids = [...new Set(itemIds)];
     setIsClearAlertOpen(false);
-    if (purchased.length === 0) {
+    if (ids.length === 0) {
       toast({ title: 'Nothing to clear' });
       return;
     }
     const batch = writeBatch(db);
-    purchased.forEach(item => {
-      batch.delete(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id));
+    ids.forEach(id => {
+      batch.delete(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', id));
     });
     try {
-      await batch.commit();
-      toast({ title: 'Purchased items cleared' });
+      const saved = await awaitWriteUnlessOffline(batch.commit(), (error) => {
+        toastError(error, 'Could not clear purchased items');
+        reconcileWithServer(list.id);
+      });
+      toast({ title: saved === 'queued' ? 'Cleared offline' : 'Purchased items cleared' });
       // Another list may have been opened while the batch ran: leave its screen alone.
       if (selectedListIdRef.current !== list.id) return;
       setIsReceiptOpen(false);
-      const remainingItems = listItemsRef.current.filter(i => i.status === 'needed');
-      if (remainingItems.length === 0) {
-        setListItems([]);
+      setListItems(prev => withoutIds(prev, ids));
+      // Offline the server state cannot be confirmed, so never offer to delete the list.
+      if (saved === 'queued') return;
+      const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
+      if (confirmed && confirmed.length === 0 && selectedListIdRef.current === list.id) {
         setListToDelete(list);
         setIsArchiveAlertOpen(true);
-      } else {
-        await fetchItemsAndCategories(list.id);
       }
     } catch (error) {
       toastError(error, 'Could not clear purchased items');
+      void fetchItemsAndCategories(list.id, { silent: true });
     }
   };
 
-  const sendToPantry = async (choices: PantryHandoffChoice[]): Promise<boolean> => {
+  // `shownIds` are the purchased items listed in the dialog (ticked or not): with
+  // "then clear", exactly those are cleared after the pantry write succeeds.
+  const sendToPantry = async (choices: PantryHandoffChoice[], shownIds: string[]): Promise<boolean> => {
     const householdId = currentUser?.householdId;
     if (!householdId) return false;
     if (isBrowserOffline()) {
@@ -747,7 +767,7 @@ export function ShoppingListClient({
       });
       setIsReceiptOpen(false);
       // clearPurchasedItems itself only clears the list that is still on screen.
-      if (thenClear) await clearPurchasedItems();
+      if (thenClear) await clearPurchasedItems(shownIds);
       return true;
     } catch (error) {
       toastError(error, 'Could not add to the pantry');
@@ -804,7 +824,7 @@ export function ShoppingListClient({
                     </AlertDialogHeader>
                     <AlertDialogFooter className="gap-2">
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void clearPurchasedItems()} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
+                    <AlertDialogAction onClick={() => void clearPurchasedItems(purchasedItems.map(item => item.id))} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
                         {canHandoff ? 'Clear only' : 'Clear Purchased'}
                     </AlertDialogAction>
                     {canHandoff && (
