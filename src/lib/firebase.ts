@@ -85,24 +85,29 @@ export const storage = getStorage(app);
  * Sign-out cleanup: the persistent cache belongs to the browser profile, not the
  * person, so cached household data must not outlive the session on a shared device.
  * Waits briefly for queued writes (e.g. offline ticks) to reach the server, then
- * terminates Firestore and deletes its IndexedDB cache. Firestore cannot be used
- * afterwards, so callers must reload the page. Returns false when the cache could
- * not be cleared (for example another HomeHub tab still has it open).
+ * terminates Firestore and deletes its IndexedDB cache. Returns true once Firestore
+ * has been terminated: it cannot be used again, so the caller must reload the page
+ * even when deleting the cache failed (for example another HomeHub tab still has it
+ * open; that tab's next sign-out clears it).
  */
 export const clearLocalFirestoreCache = async (): Promise<boolean> => {
-  if (typeof window === "undefined") return true;
+  if (typeof window === "undefined") return false;
   try {
     await Promise.race([
       waitForPendingWrites(db),
       new Promise(resolve => setTimeout(resolve, 3000)),
     ]);
     await terminate(db);
-    await clearIndexedDbPersistence(db);
-    return true;
   } catch (error) {
-    console.warn("The offline cache could not be cleared on sign-out.", error);
+    console.warn("Firestore could not be stopped on sign-out.", error);
     return false;
   }
+  try {
+    await clearIndexedDbPersistence(db);
+  } catch (error) {
+    console.warn("The offline cache could not be cleared on sign-out.", error);
+  }
+  return true;
 };
 
 type EmulatorConnectionState = typeof globalThis & {

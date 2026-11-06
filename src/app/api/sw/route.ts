@@ -193,6 +193,8 @@ export async function GET() {
     const handleStatic = async (request, url) => {
       const cache = await caches.open(STATIC_CACHE);
       const cached = await cache.match(request);
+      // Hashed build files never change: a cached copy is final, with no network request.
+      if (cached && url.pathname.startsWith('/_next/static/')) return cached;
       const refresh = fetch(request).then((response) => {
         if (response.ok && response.type === 'basic') {
           cache.put(request, response.clone()).then(() => trimCache(STATIC_CACHE, MAX_STATIC_ENTRIES)).catch(() => undefined);
@@ -200,7 +202,7 @@ export async function GET() {
         return response;
       });
       if (cached) {
-        if (!url.pathname.startsWith('/_next/static/')) refresh.catch(() => undefined);
+        refresh.catch(() => undefined);
         return cached;
       }
       return refresh;

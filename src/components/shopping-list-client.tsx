@@ -40,7 +40,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, doc, updateDoc, deleteDoc, writeBatch, setDoc, query } from 'firebase/firestore';
+import { collection, doc, updateDoc, deleteDoc, writeBatch, setDoc, query, waitForPendingWrites } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
@@ -385,6 +385,9 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
   const [isArchiveAlertOpen, setIsArchiveAlertOpen] = useState(false);
   const quickAddHandledRef = useRef(false);
   const offlineNoticeShownRef = useRef(false);
+  const selectedListIdRef = useRef<string | null>(null);
+  const reconcilingListRef = useRef<string | null>(null);
+  selectedListIdRef.current = selectedList?.id ?? null;
   
   // --- Data Fetching ---
 
@@ -411,9 +414,9 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
     }
   }, [getListsCollectionRef, toast]);
   
-  const fetchItemsAndCategories = useCallback(async (listId: string) => {
+  const fetchItemsAndCategories = useCallback(async (listId: string, { silent = false }: { silent?: boolean } = {}) => {
     if (!currentUser?.householdId) return;
-    setLoadingItems(true);
+    if (!silent) setLoadingItems(true);
     try {
       const itemsCollection = collection(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'items');
       const categoriesDoc = doc(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'config', 'categories');
@@ -426,13 +429,28 @@ export function ShoppingListClient({ onAddItemToPantry, selectedList, onSelectLi
       const itemsData = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
       setListItems(itemsData);
 
+      // Ticks queued offline survive a reload, but the promise that would report a
+      // server rejection does not. When the list shows queued writes, re-read it once
+      // they are acknowledged so a rejected tick is shown rolled back.
+      if (itemsSnapshot.docs.some(item => item.metadata.hasPendingWrites) && reconcilingListRef.current !== listId) {
+        reconcilingListRef.current = listId;
+        waitForPendingWrites(db)
+          .then(() => {
+            if (selectedListIdRef.current === listId) return fetchItemsAndCategories(listId, { silent: true });
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            if (reconcilingListRef.current === listId) reconcilingListRef.current = null;
+          });
+      }
+
       const storedCategories = categoriesSnapshot.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null;
       // Reset to default if no specific categories are set for this list
       setCategories(storedCategories ?? DEFAULT_SHOPPING_CATEGORIES);
     } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch list items.' });
     } finally {
-      setLoadingItems(false);
+      if (!silent) setLoadingItems(false);
     }
   }, [currentUser, toast]);
 
