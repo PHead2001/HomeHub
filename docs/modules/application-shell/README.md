@@ -164,6 +164,7 @@ Authenticated emulator tests enter through `/e2e-login`; that route is rendered 
 - Run `npm.cmd run test:e2e:local` for seeded desktop/mobile shell and route coverage.
 - Manually test desktop/mobile navigation for logged-out, no-household, approved, and pending users.
 - Check each role's header visibility and verify dashboard destinations remain secured.
+- `tests/e2e/appearance.spec.ts` (desktop Chromium) picks a dark preset from Profile > Appearance and checks that the view transition's update callback still sees the old theme (the circular reveal needs the old snapshot), that the choice syncs to `users/{email}.theme` (version 2) and that it is kept on reload.
 - Run `npm.cmd run test:unit` for preset contrast, the pre-paint theme script, member colors, feedback and motion tokens.
 - Verify Dark/Light/System and every preset from Profile > Appearance (no flash on reload, circular reveal, instant with Reduce motion), keyboard focus rings on header links and controls, global toasts, notification bell, and password-change overlay placement.
 - `tests/e2e/pwa-share.spec.ts` checks the manifest fields, icons, shortcuts and share target.
