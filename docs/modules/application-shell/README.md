@@ -59,7 +59,7 @@ While either overlay is shown, `HouseholdManager` renders only the overlay: the 
 
 ## Integrations and Background Processing
 
-The shell mounts foreground Firebase Cloud Messaging handling and links to the notification bell. The overview calls the authenticated AI server module only after `Generate Overview` or `Regenerate Overview`; provider failure leaves exact facts visible. Fonts use `next/font`. No shell-owned Cloud Function or scheduled job exists.
+The shell mounts foreground Firebase Cloud Messaging handling and links to the notification bell. The overview calls the authenticated AI server module only after `Generate Overview` or `Regenerate Overview`; provider failure leaves exact facts visible. Fonts (Inter for body text, Space Grotesk for headings, exposed as `--font-inter` and `--font-space-grotesk`) are bundled at build time from the `@fontsource-variable/inter` and `@fontsource-variable/space-grotesk` packages (Latin subset, variable weights) through `next/font/local` in `src/app/layout.tsx`; builds never download fonts, so a Google Fonts outage cannot fail a build or a deploy. No shell-owned Cloud Function or scheduled job exists.
 
 Authenticated emulator tests enter through `/e2e-login`; that route is rendered only for an explicit demo-project emulator configuration and delegates custom-token sign-in to the identity module.
 
