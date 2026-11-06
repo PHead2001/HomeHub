@@ -96,12 +96,39 @@ const runGuarded = async <T>(
  */
 export const MAX_AI_ACTION_PAYLOAD_BYTES = 64 * 1024;
 
-const payloadBytes = (value: unknown): number => {
-  try {
-    return new TextEncoder().encode(JSON.stringify(value) ?? '').length;
-  } catch {
-    return Number.POSITIVE_INFINITY;
+/**
+ * True when the payload's size (roughly its JSON size) exceeds `budget`. Walks the
+ * value node by node and stops as soon as the running total passes the budget, so
+ * the work is bounded by the budget itself: every node visited adds at least one
+ * unit. Shared references (which Server Actions can transport) and cycles are
+ * counted each time they are reached, as JSON would expand them, but never
+ * materialized, so a tiny request cannot make this check allocate a large string.
+ */
+export const exceedsPayloadBudget = (value: unknown, budget: number): boolean => {
+  let total = 0;
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    total += 1;
+    if (typeof node === 'string') total += node.length;
+    else if (typeof node === 'number' || typeof node === 'bigint') total += 8;
+    else if (node !== null && typeof node === 'object') {
+      if (Array.isArray(node)) {
+        for (let index = node.length - 1; index >= 0; index -= 1) {
+          stack.push(node[index]);
+          if (total + stack.length > budget) return true;
+        }
+      } else {
+        for (const key of Object.keys(node)) {
+          total += key.length + 1;
+          stack.push((node as Record<string, unknown>)[key]);
+          if (total + stack.length > budget) return true;
+        }
+      }
+    }
+    if (total > budget) return true;
   }
+  return false;
 };
 
 export const executeAuthorizedAiAction = async <T>({
@@ -128,7 +155,7 @@ export const executeAuthorizedAiAction = async <T>({
   task: (user: AuthorizedHouseholdUser) => Promise<T>;
 }): Promise<AiActionResult<T>> => {
   try {
-    if (payloadBytes({ context, input }) > MAX_AI_ACTION_PAYLOAD_BYTES) {
+    if (exceedsPayloadBudget({ context, input }, MAX_AI_ACTION_PAYLOAD_BYTES)) {
       throw new HomeHubAiError('invalid_input');
     }
     const user = await authorizeHouseholdAction(context, permission);

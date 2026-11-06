@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { executeAuthorizedAiAction, MAX_AI_ACTION_PAYLOAD_BYTES } from '../../src/ai/action-auth';
+import { exceedsPayloadBudget, executeAuthorizedAiAction, MAX_AI_ACTION_PAYLOAD_BYTES } from '../../src/ai/action-auth';
 
 // Genkit validates AI inputs with its pinned zod 3, which is affected by
 // GHSA-mrhx-c7xc-m3w5 (memory use when validating oversized constrained
@@ -45,5 +45,27 @@ describe('AI action payload limit', () => {
     // A full recipe request: 60 pantry items with long names, units and locations.
     const items = Array.from({ length: 60 }, (_, index) => ({ name: `Pantry item number ${index} with a long name`, quantity: 12, unit: 'items', location: 'Pantry' }));
     assert.ok(JSON.stringify({ context, input: { items } }).length < MAX_AI_ACTION_PAYLOAD_BYTES / 4);
+  });
+  test('shared references cannot blow up the check (bounded work, no expansion)', () => {
+    // Server Actions can transport shared references. 40 doublings would be ~10^12
+    // nodes if expanded; the check must stop at the budget almost immediately.
+    let graph: unknown = 'x';
+    for (let level = 0; level < 40; level += 1) graph = [graph, graph];
+    const started = performance.now();
+    assert.equal(exceedsPayloadBudget({ input: graph }, MAX_AI_ACTION_PAYLOAD_BYTES), true);
+    assert.ok(performance.now() - started < 250, 'the check stays fast');
+  });
+
+  test('cycles are rejected, not looped on', () => {
+    const cyclic: Record<string, unknown> = { name: 'loop' };
+    cyclic.self = cyclic;
+    assert.equal(exceedsPayloadBudget({ input: cyclic }, MAX_AI_ACTION_PAYLOAD_BYTES), true);
+  });
+
+  test('ordinary inputs are measured close to their JSON size', () => {
+    const input = { items: Array.from({ length: 60 }, (_, index) => ({ name: `Item ${index}`, quantity: 2 })) };
+    const json = JSON.stringify(input).length;
+    assert.equal(exceedsPayloadBudget(input, json * 2), false);
+    assert.equal(exceedsPayloadBudget(input, Math.floor(json / 4)), true);
   });
 });
