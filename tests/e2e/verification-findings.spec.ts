@@ -319,7 +319,8 @@ test.describe('verification finding regressions', () => {
     await dialog.getByRole('button', { name: 'Add to List' }).click();
     await expect(page.getByRole('checkbox', { name: /Manual category item/ })).toBeVisible();
 
-    await page.route('**/shopping', async (route) => {
+    // Server actions POST to the page URL, which now carries the open list (/shopping?list=...).
+    await page.route((url) => url.pathname === '/shopping', async (route) => {
       if (route.request().method() === 'POST') await route.abort('failed');
       else await route.continue();
     });

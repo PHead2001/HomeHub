@@ -1,4 +1,3 @@
-
 'use client';
 
 import { BarcodeLibraryClient } from "@/components/barcode-library-client";
@@ -11,18 +10,18 @@ export default function LibraryPage() {
     const { currentUser } = useAuth();
     return (
         <div className="container mx-auto px-4 py-8">
-            <div className="flex justify-between items-start mb-8">
-                 <div>
+            <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                 <div className="min-w-0">
                     <h1 className="font-headline text-3xl font-bold tracking-tight">Barcode Library</h1>
-                    <p className="text-muted-foreground">Manage your custom product information and images.</p>
+                    <p className="text-muted-foreground">Products your household has saved, so a scan fills in the name and photo.</p>
                 </div>
-                <Button asChild variant="outline">
+                <Button asChild variant="outline" className="w-full sm:w-auto">
                     <Link href="/shopping">
-                        <ArrowLeft className="mr-2"/> Back to Shopping
+                        <ArrowLeft className="mr-2" aria-hidden /> Back to Shopping
                     </Link>
                 </Button>
             </div>
-            
+
             {!currentUser && <p className="text-center py-8">Please log in to manage your barcode library.</p>}
 
             {currentUser && (

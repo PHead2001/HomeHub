@@ -1,7 +1,6 @@
-
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -12,24 +11,27 @@ import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage
 import { v4 as uuidv4 } from 'uuid';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
-import { PlusCircle, Edit, Trash2, ScanBarcode, Loader2 } from 'lucide-react';
+import { PlusCircle, ScanBarcode, Loader2, Search } from 'lucide-react';
 import type { BarcodeLibraryItem } from '@/lib/types';
 import { Skeleton } from './ui/skeleton';
 import { BarcodeScanner } from './barcode-scanner';
 import { ImageUpload } from './image-upload';
-import Image from 'next/image';
-import { format } from 'date-fns';
+import { EmptyState } from './empty-state';
+import { FieldError } from './field-error';
+import { ProductCard } from './shopping/product-card';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
+import { pluralize } from '@/lib/shopping/items';
 
 const libraryItemSchema = z.object({
-  id: z.string().min(1, 'Barcode is required.'),
-  name: z.string().min(2, 'Product name is required.'),
+  id: z.string().trim().min(1, 'Barcode is required.').max(64, 'Barcodes are at most 64 characters.')
+    .refine((value) => !value.includes('/'), 'Barcodes cannot contain "/".'),
+  name: z.string().trim().min(2, 'Product name is required.').max(120, 'Keep the name under 120 characters.'),
 });
+
+const PHOTO_REQUIRED = 'Add a photo of the product.';
 
 function LibraryItemDialog({
   isOpen,
@@ -42,9 +44,9 @@ function LibraryItemDialog({
   onSave: (data: z.infer<typeof libraryItemSchema>, photoFile: File | null) => Promise<boolean>;
   itemToEdit: BarcodeLibraryItem | null;
 }) {
-  const { toast } = useToast();
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   const form = useForm<z.infer<typeof libraryItemSchema>>({
@@ -60,21 +62,22 @@ function LibraryItemDialog({
       reset({ id: '', name: '' });
     }
     setPhotoFile(null);
+    setPhotoError(null);
   }, [itemToEdit, isOpen, reset]);
+
+  const needsPhoto = () => !itemToEdit?.imageUrl && !photoFile;
 
   const handleBarcodeScan = (barcode: string) => {
     setValue('id', barcode, { shouldValidate: true });
     setIsScannerOpen(false);
-    toast({ title: 'Barcode Scanned', description: `Code: ${barcode}` });
   };
 
   const handleSubmit = async (data: z.infer<typeof libraryItemSchema>) => {
-    // Manually check for photo file on new items
-    if (!itemToEdit && !photoFile) {
-        toast({ variant: 'destructive', title: 'Missing Image', description: 'Please upload an image for the new item.' });
-        return;
+    // A product needs a photo; the problem is shown inline under the image field.
+    if (needsPhoto()) {
+      setPhotoError(PHOTO_REQUIRED);
+      return;
     }
-
     setIsSaving(true);
     const success = await onSave(data, photoFile);
     if (success) {
@@ -101,7 +104,12 @@ function LibraryItemDialog({
             <DialogDescription>{itemToEdit ? `Update ${itemToEdit.name}.` : 'Save a barcode, product name, and reusable product image.'}</DialogDescription>
           </DialogHeader>
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4 py-4">
+            <form
+              onSubmit={form.handleSubmit(handleSubmit, () => {
+                if (needsPhoto()) setPhotoError(PHOTO_REQUIRED);
+              })}
+              className="space-y-4 py-4"
+            >
               <FormField
                 control={form.control}
                 name="id"
@@ -110,11 +118,11 @@ function LibraryItemDialog({
                     <FormLabel>Barcode (UPC)</FormLabel>
                     <div className="flex gap-2">
                       <FormControl>
-                        <Input placeholder="Scan or type barcode" {...field} disabled={!!itemToEdit} />
+                        <Input placeholder="Scan or type barcode" inputMode="numeric" autoComplete="off" {...field} disabled={!!itemToEdit} />
                       </FormControl>
                       {!itemToEdit && (
                         <Button type="button" variant="outline" size="icon" aria-label="Scan product barcode" onClick={() => setIsScannerOpen(true)}>
-                          <ScanBarcode />
+                          <ScanBarcode aria-hidden />
                         </Button>
                       )}
                     </div>
@@ -129,22 +137,29 @@ function LibraryItemDialog({
                   <FormItem>
                     <FormLabel>Product Name</FormLabel>
                     <FormControl>
-                      <Input placeholder="e.g. Heinz Tomato Ketchup" {...field} />
+                      <Input placeholder="e.g. Heinz Tomato Ketchup" maxLength={120} {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
-              <FormItem>
-                <FormLabel>Product Image</FormLabel>
-                <FormControl>
-                  <ImageUpload onFileChange={setPhotoFile} existingImageUrl={itemToEdit?.imageUrl} previewAlt="Product image preview" />
-                </FormControl>
-                 {!photoFile && !itemToEdit?.imageUrl && <FormMessage>An image is required.</FormMessage>}
-              </FormItem>
+              <div className="space-y-2">
+                <p className="text-sm font-medium" id="library-photo-label">Product Image</p>
+                <div role="group" aria-labelledby="library-photo-label" aria-describedby={photoError ? 'library-photo-error' : undefined}>
+                  <ImageUpload
+                    onFileChange={(file) => {
+                      setPhotoFile(file);
+                      if (file) setPhotoError(null);
+                    }}
+                    existingImageUrl={itemToEdit?.imageUrl}
+                    previewAlt="Product image preview"
+                  />
+                </div>
+                <FieldError id="library-photo">{photoError}</FieldError>
+              </div>
               <DialogFooter>
                 <Button type="submit" disabled={isSaving}>
-                    {isSaving && <Loader2 className="mr-2 animate-spin" />}
+                    {isSaving && <Loader2 className="mr-2 animate-spin" aria-hidden />}
                     Save Item
                 </Button>
               </DialogFooter>
@@ -156,11 +171,22 @@ function LibraryItemDialog({
   );
 }
 
+/**
+ * The household Barcode Library: a photo-first grid of saved products (H30) with
+ * search. Add/Edit appear for `shopping.edit`, Delete for `shopping.delete`;
+ * without `shopping.view` the page explains that the library is not shared.
+ */
 export function BarcodeLibraryClient() {
-  const { currentUser } = useAuth();
-  const { toast } = useToast();
+  const { currentUser, currentMember, permissions, householdLoading } = useAuth();
+  const { toast, toastError } = useToast();
+  const canView = Boolean(permissions['shopping.view']);
+  // Permissions are known once the member record has loaded.
+  const denied = !householdLoading && Boolean(currentMember) && !canView;
+  const canEdit = Boolean(permissions['shopping.edit']);
+  const canDelete = Boolean(permissions['shopping.delete']);
   const [items, setItems] = useState<BarcodeLibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [itemToEdit, setItemToEdit] = useState<BarcodeLibraryItem | null>(null);
 
@@ -171,8 +197,9 @@ export function BarcodeLibraryClient() {
 
   const fetchItems = useCallback(async () => {
     const collectionRef = getLibraryCollectionRef();
-    if (!collectionRef) {
-      setLoading(false);
+    if (!collectionRef || !canView) {
+      // Keep the skeleton until membership (and so permissions) has loaded.
+      if (!householdLoading) setLoading(false);
       return;
     }
     setLoading(true);
@@ -182,16 +209,21 @@ export function BarcodeLibraryClient() {
       const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BarcodeLibraryItem));
       setItems(itemsData);
     } catch (error) {
-      console.error('Error fetching barcode library:', error);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch library items.' });
+      toastError(error, 'Could not load the library');
     } finally {
       setLoading(false);
     }
-  }, [getLibraryCollectionRef, toast]);
+  }, [getLibraryCollectionRef, toastError, canView, householdLoading]);
 
   useEffect(() => {
     fetchItems();
   }, [fetchItems]);
+
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return items;
+    return items.filter(item => item.name.toLowerCase().includes(term) || item.id.toLowerCase().includes(term));
+  }, [items, search]);
 
   const uploadPhoto = async (photoFile: File): Promise<{ imageUrl: string; imagePath: string }> => {
     if (!currentUser?.householdId) throw new Error("User not in a household");
@@ -202,13 +234,9 @@ export function BarcodeLibraryClient() {
     return { imageUrl: await getDownloadURL(storageRef), imagePath: storageRef.fullPath };
   };
 
-
   const handleSave = async (data: z.infer<typeof libraryItemSchema>, photoFile: File | null): Promise<boolean> => {
     const collectionRef = getLibraryCollectionRef();
-    if (!collectionRef) {
-        toast({ variant: 'destructive', title: 'Error', description: 'Cannot find database collection.' });
-        return false;
-    }
+    if (!collectionRef) return false;
 
     try {
         let finalImageUrl = itemToEdit?.imageUrl;
@@ -220,25 +248,22 @@ export function BarcodeLibraryClient() {
             finalImagePath = uploadedImage.imagePath;
         }
 
-        if (!finalImageUrl) {
-            toast({ variant: 'destructive', title: 'Image Required', description: 'A product image is mandatory to save an item.' });
-            return false;
-        }
+        // The dialog checks this inline before saving; never write a product without a photo.
+        if (!finalImageUrl) return false;
 
         const itemData: Omit<BarcodeLibraryItem, 'id'> = {
-            name: data.name,
+            name: data.name.trim(),
             imageUrl: finalImageUrl,
             ...(finalImagePath ? { imagePath: finalImagePath } : {}),
             createdAt: itemToEdit?.createdAt || new Date().toISOString(),
         };
 
-        await setDoc(doc(collectionRef, data.id), itemData);
-        toast({ title: 'Item Saved', description: `${data.name} has been saved to your library.` });
+        await setDoc(doc(collectionRef, data.id.trim()), itemData);
+        toast({ title: 'Item Saved', description: `${itemData.name} has been saved to your library.` });
         await fetchItems();
         return true;
     } catch (error) {
-        console.error('Error saving library item:', error);
-        toast({ variant: 'destructive', title: 'Save Failed', description: 'An unexpected error occurred while saving.' });
+        toastError(error, 'Could not save the product');
         return false;
     }
   };
@@ -262,10 +287,10 @@ export function BarcodeLibraryClient() {
             toast({ title: 'Item deleted; image cleanup pending', description: 'The library record is gone, but its managed image could not be removed.' });
           });
         }
-    } catch {
-        toast({ variant: 'destructive', title: 'Delete Failed' });
+    } catch (error) {
+        toastError(error, `Could not delete ${item.name}`);
     }
-  }
+  };
 
   const openDialogToAdd = () => {
     setItemToEdit(null);
@@ -277,67 +302,82 @@ export function BarcodeLibraryClient() {
     setIsDialogOpen(true);
   };
 
+  if (denied) {
+    return (
+      <EmptyState
+        kind="generic"
+        title="The Barcode Library is not shared with you"
+        description="Ask a household admin for shopping access to see saved products."
+        action={{ label: 'Go home', href: '/' }}
+        className="rounded-xl border border-dashed"
+      />
+    );
+  }
 
   return (
     <>
-      <LibraryItemDialog
-        isOpen={isDialogOpen}
-        onOpenChange={setIsDialogOpen}
-        itemToEdit={itemToEdit}
-        onSave={handleSave}
-      />
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      {canEdit && (
+        <LibraryItemDialog
+          isOpen={isDialogOpen}
+          onOpenChange={setIsDialogOpen}
+          itemToEdit={itemToEdit}
+          onSave={handleSave}
+        />
+      )}
+      <section aria-labelledby="library-heading" className="rounded-xl border bg-card p-4 text-card-foreground shadow-raised sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <CardTitle className="font-headline">Your Library</CardTitle>
-            <CardDescription>You have {items.length} items saved.</CardDescription>
+            <h2 id="library-heading" className="font-headline text-xl font-semibold">Your Library</h2>
+            <p className="text-sm text-muted-foreground">
+              {loading ? 'Loading products…' : `You have ${pluralize(items.length, 'product')} saved.`}
+            </p>
           </div>
-          <Button onClick={openDialogToAdd}><PlusCircle /> Add Item</Button>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-             <Skeleton className="h-48 w-full" />
-          ) : (
-            <Table>
-                <TableHeader>
-                    <TableRow>
-                        <TableHead>Image</TableHead>
-                        <TableHead>Product Name</TableHead>
-                        <TableHead>Barcode</TableHead>
-                        <TableHead>Date Added</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                </TableHeader>
-                <TableBody>
-                    {items.length > 0 ? items.map(item => (
-                        <TableRow key={item.id}>
-                            <TableCell>
-                                {item.imageUrl ? (
-                                  <Image unoptimized src={item.imageUrl} alt={`Product image for ${item.name}`} width={40} height={40} sizes="40px" className="rounded-md object-cover h-10 w-10" />
-                                ) : (
-                                  <div role="img" className="h-10 w-10 rounded-md bg-muted" aria-label={`No product image for ${item.name}`} />
-                                )}
-                            </TableCell>
-                            <TableCell className="font-medium">{item.name}</TableCell>
-                            <TableCell className="font-mono text-xs">{item.id}</TableCell>
-                            <TableCell>{format(new Date(item.createdAt), 'PPP')}</TableCell>
-                            <TableCell className="text-right">
-                                <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} onClick={() => openDialogToEdit(item)}><Edit/></Button>
-                                <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => handleDelete(item)}><Trash2/></Button>
-                            </TableCell>
-                        </TableRow>
-                    )) : (
-                        <TableRow>
-                            <TableCell colSpan={5} className="text-center h-24 text-muted-foreground">
-                                Your library is empty. Add an item to get started.
-                            </TableCell>
-                        </TableRow>
-                    )}
-                </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+          <div className="flex flex-col gap-2 min-[420px]:flex-row min-[420px]:items-center">
+            {items.length > 0 && (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                <Input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search name or barcode"
+                  aria-label="Search the library"
+                  className="pl-8 min-[420px]:w-56"
+                />
+              </div>
+            )}
+            {canEdit && <Button onClick={openDialogToAdd}><PlusCircle className="mr-2 h-4 w-4" aria-hidden /> Add Item</Button>}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4" role="status" aria-label="Loading products">
+            {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="aspect-[3/4] w-full rounded-xl" />)}
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState
+            kind="generic"
+            headingLevel={3}
+            title="No products saved yet"
+            description={canEdit ? 'Save a barcode with a name and photo, and scans will fill them in for everyone.' : 'Products your household saves will show up here.'}
+            action={canEdit ? { label: 'Save a product', icon: <PlusCircle className="mr-2 h-4 w-4" aria-hidden />, onClick: openDialogToAdd } : undefined}
+          />
+        ) : filtered.length === 0 ? (
+          <EmptyState compact kind="generic" headingLevel={3} title="No matches" description={`Nothing in the library matches "${search.trim()}".`} />
+        ) : (
+          <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4" aria-label="Saved products">
+            {filtered.map(item => (
+              <li key={item.id} className="flex [&>article]:flex-1">
+                <ProductCard
+                  item={item}
+                  onEdit={canEdit ? () => openDialogToEdit(item) : undefined}
+                  onDelete={canDelete ? () => void handleDelete(item) : undefined}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </>
   );
 }

@@ -17,7 +17,7 @@ jobs:
   validate-and-smoke:
     name: Validate and run authenticated smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"

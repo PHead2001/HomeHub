@@ -430,6 +430,8 @@ test.describe('temporary chores and maintenance UI regressions', () => {
           expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 0.5);
         }
         await page.getByRole('tab', { name: 'Inventory' }).click();
+        // The pantry opens on the shelves view (H08); the list view keeps the table and phone rows.
+        await page.getByRole('button', { name: 'List view' }).click();
         await expect(page.getByRole('button', { name: /Pantry \(/ })).toBeVisible();
         await expect(page.getByRole('button', { name: /Fridge \(/ })).toBeVisible();
         await expect(page.getByRole('button', { name: /Freezer \(/ })).toBeVisible();
@@ -460,6 +462,7 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     desktopOnly(testInfo);
     await openAuthenticated(page, '/shopping', 'Shopping Center');
     await page.getByRole('tab', { name: 'Inventory' }).click();
+    await page.getByRole('button', { name: 'List view' }).click();
     await page.getByRole('button', { name: 'Add Item' }).click();
     let dialog = page.getByRole('dialog', { name: 'Add New Item' });
     await dialog.getByLabel('Item Name').fill('Inventory CRUD E2E');
