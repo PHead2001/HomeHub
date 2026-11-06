@@ -38,6 +38,7 @@ export function sampleFacts(now: Date): DashboardFacts {
     maintenance: { overdue: 0, dueSoon: 1, needsAttention: 0, next: null, items: [], vehicleDue: false, climateDue: true, vehicles: 1 },
     pets: {
       hungry: 1,
+      unknown: 0,
       pets: [
         { id: 'sample-dog', name: 'Biscuit', type: 'Dog', lastFedAt: hoursAgo(2), lastFedBy: null, fed: true, countLabel: '2 of 2 today', headline: 'Fed 2 h ago' },
         { id: 'sample-cat', name: 'Miso', type: 'Cat', lastFedAt: hoursAgo(14), lastFedBy: null, fed: false, countLabel: '0 of 2 today', headline: 'Fed yesterday' },

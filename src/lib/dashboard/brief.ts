@@ -49,7 +49,8 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
 
   const pets = facts.pets;
   if (pets && pets.pets.length > 0) {
-    const hungry = pets.pets.filter((pet) => !pet.fed);
+    // Only pets known to be unfed; an unavailable history (fed === null) makes no claim.
+    const hungry = pets.pets.filter((pet) => pet.fed === false);
     if (hungry.length === 1) {
       phrases.push([{ text: `${hungry[0].name}'s next meal`, href: petFeedingHref(hungry[0].id) }, { text: ' is due' }]);
     } else if (hungry.length > 1) {
@@ -77,6 +78,7 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
     phrases.push([{ text: `${plural(facts.shopping.neededItems, 'item')} on your lists`, href: '/shopping' }]);
   }
 
+  const incomplete = Boolean(facts.unavailable?.length || facts.pets?.unknown);
   const name = firstName(options.name);
   const opener = `${options.greeting}${name ? `, ${name}` : ''}. `;
   const body: BriefSegment[] = phrases.length > 0
@@ -87,7 +89,11 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
         joined[0] = { ...first, text: first.text.charAt(0).toUpperCase() + first.text.slice(1) };
         return [...joined, { text: '.' }];
       })()
-    : [{ text: 'Nothing needs you right now. Enjoy the quiet.' }];
+    : incomplete
+      ? [{ text: 'Some of your home could not be loaded right now, so there may be more to do.' }]
+      : [{ text: 'Nothing needs you right now. Enjoy the quiet.' }];
+  // A failed read is never summarized as "nothing to do".
+  if (incomplete && phrases.length > 0) body.push({ text: ' Some sections could not be loaded.' });
 
   const segments = [{ text: opener }, ...body];
   return { segments, text: segments.map((segment) => segment.text).join('') };

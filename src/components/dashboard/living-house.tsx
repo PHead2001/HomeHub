@@ -102,7 +102,8 @@ function PetSprite({ pet, index, reduced }: { pet: PetState; index: number; redu
   const longPressed = useRef(false);
   const Icon = pet.type === 'Dog' ? Dog : pet.type === 'Cat' ? Cat : PawPrint;
   // The Pets module's own wording: "1 of 2 today. Fed 2 h ago by Sam".
-  const status = `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`;
+  // Unknown (history unavailable): no claim either way, the Pets module's unavailable line.
+  const status = pet.fed === null ? pet.headline : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`;
 
   // Long-press (H29): a little hop and the "add" chirp, only if sound/haptics are on.
   const startPress = () => {
@@ -123,7 +124,7 @@ function PetSprite({ pet, index, reduced }: { pet: PetState; index: number; redu
       href={petFeedingHref(pet.id)}
       aria-label={`${pet.name}: ${status}`}
       data-testid={`house-pet-${pet.id}`}
-      data-fed={pet.fed ? 'true' : 'false'}
+      data-fed={pet.fed === null ? 'unknown' : String(pet.fed)}
       className="relative flex shrink-0 flex-col items-center gap-0.5 rounded-lg px-1 py-0.5 text-[11px]"
       onPointerDown={startPress}
       onPointerUp={endPress}
@@ -149,13 +150,13 @@ function PetSprite({ pet, index, reduced }: { pet: PetState; index: number; redu
         >
           <Icon aria-hidden className="h-4 w-4" />
         </span>
-        {!pet.fed && (
+        {pet.fed === false && (
           <svg aria-hidden viewBox="0 0 20 10" className="mb-0.5 h-2.5 w-5 text-warning">
             <path d="M1 2h18l-2.5 7h-13z" fill="currentColor" />
           </svg>
         )}
       </span>
-      <span className={cn('max-w-[4.5rem] truncate', pet.fed ? 'text-muted-foreground' : 'font-medium text-warning')}>{pet.name}</span>
+      <span className={cn('max-w-[4.5rem] truncate', pet.fed === false ? 'font-medium text-warning' : 'text-muted-foreground')}>{pet.name}</span>
     </Link>
   );
 }
@@ -281,7 +282,8 @@ export function LivingHouse({
     facts.chores ? (rooms.some((room) => room.status === 'overdue')
       ? `Rooms with overdue chores: ${rooms.filter((room) => room.status === 'overdue').map((room) => room.name).join(', ')}.`
       : 'No room has overdue chores.') : null,
-    facts.pets && pets.length > 0 ? `${pets.filter((pet) => !pet.fed).length} of ${pets.length} pets waiting to be fed.` : null,
+    facts.pets && pets.length > 0 ? `${facts.pets.hungry} of ${pets.length} pets waiting to be fed.${facts.pets.unknown ? ` Feeding status unavailable for ${facts.pets.unknown}.` : ''}` : null,
+    facts.unavailable?.length ? `Unavailable right now: ${facts.unavailable.join(', ')}.` : null,
     maintenance ? (maintenance.overdue + maintenance.dueSoon > 0 ? `${maintenance.overdue + maintenance.dueSoon} maintenance items due soon.` : 'Maintenance is up to date.') : null,
   ].filter(Boolean).join(' ');
 
@@ -326,6 +328,11 @@ export function LivingHouse({
                   <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
                 </p>
               )
+            ) : facts.unavailable?.includes('chores') ? (
+              <p className="px-2 py-4 text-center text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
+                Rooms are unavailable right now.{' '}
+                <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+              </p>
             ) : (
               <p className="px-2 py-4 text-center text-sm text-muted-foreground">Welcome home.</p>
             )}

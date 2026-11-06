@@ -108,17 +108,30 @@ export type PetState = {
   photoUrl?: string;
   lastFedAt: Date | null;
   lastFedBy: string | null;
-  /** Today's feeding target is met (Pets' `feedingStatus(...).complete`). */
-  fed: boolean;
-  /** "1 of 2 today", "Not fed today" (Pets' `feedingCountLabel`). */
+  /**
+   * Today's feeding target is met (Pets' `feedingStatus(...).complete`), or null
+   * when the feeding history could not be read (still loading or a query failed):
+   * then nothing is claimed, neither fed nor hungry.
+   */
+  fed: boolean | null;
+  /** "1 of 2 today", "Not fed today" (Pets' `feedingCountLabel`), or the unavailable line. */
   countLabel: string;
-  /** "Fed 2 h ago by Sam", "No feedings logged yet" (Pets' `feedingHeadline`). */
+  /** "Fed 2 h ago by Sam", "No feedings logged yet" (Pets' `feedingHeadline`), or the unavailable line. */
   headline: string;
 };
 
-export type PetFacts = { pets: PetState[]; hungry: number };
+/** Pets with an unreadable feeding history (`fed === null`) count in neither number. */
+export type PetFacts = { pets: PetState[]; hungry: number; unknown: number };
+
+/** Same wording as the Pets module's `PetCareSummary` when a history cannot be read. */
+export const FEEDING_UNAVAILABLE = 'Feeding status is unavailable right now.';
+
+/** A dashboard section whose data could not be read; it is shown as unavailable, never as empty. */
+export type DashboardSection = 'chores' | 'shopping' | 'pantry' | 'maintenance' | 'pets' | 'notifications';
 
 export type DashboardFacts = {
+  /** Sections whose listener failed. Their facts are absent and the UI says "unavailable". */
+  unavailable?: DashboardSection[];
   chores?: ChoreFacts;
   shopping?: ShoppingFacts;
   pantry?: PantryFacts;
@@ -383,11 +396,26 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
  * the plan). A pet counts as fed when today's target is met, as on its card.
  * `feedings` holds each pet's recent feeding entries in either date shape.
  */
-export function computePetFacts(pets: RawDoc[], feedings: Record<string, FeedingEntry[]>, now: Date): PetFacts {
+export function computePetFacts(pets: RawDoc[], feedings: Record<string, FeedingEntry[] | null | undefined>, now: Date): PetFacts {
   const states = [...pets]
     .sort((a, b) => text(a.name, a.id).localeCompare(text(b.name, b.id)))
     .map<PetState>((pet) => {
-      const status = feedingStatus(feedings[pet.id] ?? [], feedingPlan(pet as unknown as PetProfile), now);
+      const logs = feedings[pet.id];
+      // Missing or null: the history has not loaded or failed. Never read that as "not fed".
+      if (!Array.isArray(logs)) {
+        return {
+          id: pet.id,
+          name: text(pet.name, 'Pet'),
+          type: text(pet.type, 'Other'),
+          photoUrl: typeof pet.photoUrl === 'string' && pet.photoUrl ? pet.photoUrl : undefined,
+          lastFedAt: null,
+          lastFedBy: null,
+          fed: null,
+          countLabel: 'Unavailable',
+          headline: FEEDING_UNAVAILABLE,
+        };
+      }
+      const status = feedingStatus(logs, feedingPlan(pet as unknown as PetProfile), now);
       return {
         id: pet.id,
         name: text(pet.name, 'Pet'),
@@ -400,7 +428,11 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
         headline: feedingHeadline(status, now),
       };
     });
-  return { pets: states, hungry: states.filter((pet) => !pet.fed).length };
+  return {
+    pets: states,
+    hungry: states.filter((pet) => pet.fed === false).length,
+    unknown: states.filter((pet) => pet.fed === null).length,
+  };
 }
 
 /** A room's text summary, used as its link name: "1 overdue, 2 due today", "All clear"... */

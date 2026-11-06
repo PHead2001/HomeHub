@@ -43,6 +43,7 @@ import { DEFAULT_PORTION, formatPortion } from '@/lib/pets/care';
 import type { PortionUnit } from '@/lib/pets/types';
 import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import { friendlyError } from '@/lib/friendly-error';
+import { notifyDataChanged } from '@/lib/data-changed';
 import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, logFeeding } from './quick-add-actions';
@@ -254,6 +255,7 @@ export function CommandPalette({
       if (pending.kind === 'shopping' && pending.list) {
         const outcome = await addShoppingItems(householdId, pending.list, pending.items, lateError);
         if (outcome.saved.length > 0) {
+          notifyDataChanged({ module: 'shopping', householdId, listId: pending.list.id });
           toast({ title: outcome.queued ? 'Saved offline' : 'Added to the list', description: `${outcome.saved.map((item) => item.name).join(', ')} on ${pending.list.name}.` });
           playFeedback('add');
         }
@@ -268,12 +270,14 @@ export function CommandPalette({
       } else if (pending.kind === 'feeding') {
         const portion = feedingPortion(pending);
         await logFeeding(householdId, pending.pet.id, portion.amount, portion.unit, currentUser, lateError);
+        notifyDataChanged({ module: 'pets', householdId, petId: pending.pet.id });
         toast({ title: 'Feeding logged', description: `${pending.pet.name} has been fed.` });
       } else if (pending.kind === 'chore') {
         // Without chores.assign the chore can only be yours (as in the Add Chore dialog).
         const { assignee } = resolveChoreAssignee(choreAssignee ?? pending.assignee, assignable, self);
         if (!assignee) throw new Error('missing-assignee');
-        await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee });
+        const choreId = await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee });
+        notifyDataChanged({ module: 'chores', householdId, choreId });
         toast({ title: 'Chore added', description: `${pending.task} for ${assignee.name}.` });
       }
       playFeedback('add');

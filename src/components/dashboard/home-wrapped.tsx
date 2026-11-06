@@ -24,7 +24,7 @@ type Card = { eyebrow: string; headline: string; detail: string };
 
 const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
 
-function buildCards(summary: WrappedSummary, householdName: string): Card[] {
+function buildCards(summary: WrappedSummary, householdName: string, unavailable: readonly string[] = []): Card[] {
   const cards: Card[] = [{ eyebrow: `${summary.year} at home`, headline: householdName, detail: 'Here is your year, wrapped.' }];
   if (summary.choresDone !== null) {
     cards.push({ eyebrow: 'Chores done', headline: String(summary.choresDone), detail: summary.choresDone === 0 ? 'A quiet year. Plenty of time for next year.' : 'Every one of them ticked off by someone in this house.' });
@@ -45,7 +45,9 @@ function buildCards(summary: WrappedSummary, householdName: string): Card[] {
       detail: `Across ${summary.maintenanceLogs ?? 0} maintenance ${summary.maintenanceLogs === 1 ? 'log' : 'logs'}.`,
     });
   }
-  cards.push({ eyebrow: 'That was the year', headline: 'Nice work, team.', detail: 'Share it with the household.' });
+  // A section that could not be read is named here; it is never shown as a zero.
+  const missing = unavailable.length > 0 ? `${unavailable.join(', ')} could not be loaded, so ${unavailable.length === 1 ? 'it is' : 'they are'} left out. ` : '';
+  cards.push({ eyebrow: 'That was the year', headline: 'Nice work, team.', detail: `${missing}Share it with the household.` });
   return cards;
 }
 
@@ -106,6 +108,11 @@ export function HomeWrapped() {
     try {
       const summary: WrappedSummary = { year, choresDone: null, champion: null, topItem: null, feedings: null, maintenanceSpend: null, maintenanceLogs: null };
       const tasks: Promise<void>[] = [];
+      const unavailable: string[] = [];
+      // Each section loads on its own; a failed one is left out and named, never counted as 0.
+      const section = (name: string, work: Promise<void>) => tasks.push(work.catch(() => {
+        unavailable.push(name);
+      }));
       if (permissions['chores.view']) {
         // Member names label the champion; scores are grouped by email (see summarizeChores).
         const members = await getDocs(base('members')).catch(() => null);
@@ -113,12 +120,12 @@ export function HomeWrapped() {
           const data = member.data() as { email?: unknown; displayName?: unknown };
           return typeof data.email === 'string' && typeof data.displayName === 'string' ? [[data.email.trim().toLowerCase(), data.displayName] as const] : [];
         }));
-        tasks.push(getDocs(query(base('chores'), where('isCompleted', '==', true))).then((snapshot) => {
+        section('Chores', getDocs(query(base('chores'), where('isCompleted', '==', true))).then((snapshot) => {
           Object.assign(summary, summarizeChores(docs(snapshot), year, names));
         }));
       }
       if (permissions['shopping.view']) {
-        tasks.push(getDocs(base('shopping-lists')).then(async (lists) => {
+        section('Shopping', getDocs(base('shopping-lists')).then(async (lists) => {
           const items = await Promise.all(lists.docs.map((list) => getDocs(query(base('shopping-lists', list.id, 'items'), where('status', '==', 'purchased')))));
           summary.topItem = topPurchasedItem(items.flatMap(docs));
         }));
@@ -127,7 +134,7 @@ export function HomeWrapped() {
         // Feeding dates are Timestamps or (older entries) ISO strings; count both shapes.
         const start = new Date(year, 0, 1);
         const end = new Date(year + 1, 0, 1);
-        tasks.push(getDocs(base('pets')).then(async (pets) => {
+        section('Pet meals', getDocs(base('pets')).then(async (pets) => {
           const counts = await Promise.all(pets.docs.flatMap((pet) => {
             const logs = base('pets', pet.id, 'feeding-logs');
             return [
@@ -139,14 +146,14 @@ export function HomeWrapped() {
         }));
       }
       if (permissions['maintenance.view']) {
-        tasks.push(getDocs(base('maintenance')).then((snapshot) => {
+        section('Maintenance', getDocs(base('maintenance')).then((snapshot) => {
           const result = maintenanceSpend(docs(snapshot), year);
           summary.maintenanceSpend = result.spend;
           summary.maintenanceLogs = result.logs;
         }));
       }
       await Promise.all(tasks);
-      setCards(buildCards(summary, household?.name ?? 'Your home'));
+      setCards(buildCards(summary, household?.name ?? 'Your home', unavailable));
     } catch (error) {
       toastError(error, 'Could not build Home Wrapped');
       setOpen(false);

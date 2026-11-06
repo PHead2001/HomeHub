@@ -13,7 +13,7 @@
     "docs:check": "node scripts/check-module-docs.mjs",
     "brand:icons": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/brand/render-icons.mjs",
     "test:ai": "node --import tsx --test tests/ai/deterministic-flows.test.ts tests/ai/security-and-barcode.test.ts tests/ai/firebase-app-id.test.ts tests/unit/pwa-share.test.ts",
-    "test:unit": "node --import tsx --test tests/unit/theme-contrast.test.ts tests/unit/design-foundation.test.ts tests/unit/shared-ui.test.ts tests/unit/dashboard-facts.test.ts tests/unit/dashboard-quick-add.test.ts tests/unit/dashboard-ambience.test.ts tests/unit/pets-care.test.ts tests/unit/household-governance.test.ts tests/unit/maintenance-health.test.ts tests/unit/maintenance-reminders.test.ts tests/unit/shopping-logic.test.ts tests/unit/chores-stats.test.ts tests/unit/chores-calendar.test.ts tests/unit/chores-list.test.ts",
+    "test:unit": "node --import tsx --test tests/unit/theme-contrast.test.ts tests/unit/design-foundation.test.ts tests/unit/shared-ui.test.ts tests/unit/dashboard-facts.test.ts tests/unit/dashboard-quick-add.test.ts tests/unit/dashboard-ambience.test.ts tests/unit/dashboard-assemble.test.ts tests/unit/pets-care.test.ts tests/unit/household-governance.test.ts tests/unit/maintenance-health.test.ts tests/unit/maintenance-reminders.test.ts tests/unit/shopping-logic.test.ts tests/unit/chores-stats.test.ts tests/unit/chores-calendar.test.ts tests/unit/chores-list.test.ts",
     "test:rules": "node scripts/e2e/run-rules.mjs",
     "test:server": "node scripts/e2e/run-server.mjs",
     "test:ai:openai:live": "tsx scripts/ai/openai-live-smoke.ts",

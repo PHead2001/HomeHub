@@ -129,4 +129,5 @@ export async function createOneTimeChore({
     }));
   }
   await batch.commit();
+  return choreRef.id;
 }

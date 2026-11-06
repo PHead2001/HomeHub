@@ -51,6 +51,24 @@ function Tile({
   );
 }
 
+/** A section whose read failed: says so, and never shows an empty or zero state instead. */
+function UnavailableTile({ href, title, icon: Icon, testId, className }: { href: string; title: string; icon: LucideIcon; testId: string; className?: string }) {
+  return (
+    <Link
+      href={href}
+      data-testid={testId}
+      data-unavailable="true"
+      className={cn('flex min-h-[8.5rem] min-w-0 flex-col gap-2 rounded-xl border border-dashed bg-card p-4 text-sm transition-ui', className)}
+    >
+      <span className="flex items-center gap-2 font-medium text-muted-foreground">
+        <Icon aria-hidden className="h-4 w-4" />
+        <span className="truncate">{title}</span>
+      </span>
+      <span className="text-muted-foreground">Unavailable right now. Open to check.</span>
+    </Link>
+  );
+}
+
 function TileSkeleton({ className }: { className?: string }) {
   return <div aria-hidden className={cn('min-h-[8.5rem] animate-pulse rounded-xl border bg-muted/40', className)} />;
 }
@@ -128,7 +146,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           </span>
         )}
       </Tile>
-    ) : failed.has('chores') ? null : loading ? <TileSkeleton key="chores" className="sm:col-span-2 lg:row-span-2" /> : null);
+    ) : failed.has('chores') ? <UnavailableTile key="chores" href="/chores" title="Today's chores" icon={CheckSquare} testId="dashboard-tile-chores" className="sm:col-span-2 lg:row-span-2" /> : loading ? <TileSkeleton key="chores" className="sm:col-span-2 lg:row-span-2" /> : null);
   }
 
   if (permissions['shopping.view']) {
@@ -160,7 +178,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>
         )}
       </Tile>
-    ) : failed.has('shopping') ? null : loading ? <TileSkeleton key="shopping" className="sm:col-span-2" /> : null);
+    ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" className="sm:col-span-2" /> : loading ? <TileSkeleton key="shopping" className="sm:col-span-2" /> : null);
   }
 
   if (permissions['pets.view']) {
@@ -174,7 +192,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
             {pets.pets.slice(0, 3).map((pet) => (
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
-                <span className={cn('shrink-0 text-xs', pet.fed ? 'text-success' : 'text-warning')}>
+                <span className={cn('shrink-0 text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
                   {pet.countLabel}
                 </span>
               </li>
@@ -183,7 +201,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           </ul>
         )}
       </Tile>
-    ) : failed.has('pets') ? null : loading ? <TileSkeleton key="pets" /> : null);
+    ) : failed.has('pets') ? <UnavailableTile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets" /> : loading ? <TileSkeleton key="pets" /> : null);
   }
 
   if (permissions['maintenance.view']) {
@@ -223,7 +241,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           <span className="text-sm text-muted-foreground">Nothing scheduled.</span>
         )}
       </Tile>
-    ) : failed.has('maintenance') ? null : loading ? <TileSkeleton key="maintenance" /> : null);
+    ) : failed.has('maintenance') ? <UnavailableTile key="maintenance" href={MAINTENANCE_REMINDERS_HREF} title="Next maintenance" icon={Wrench} testId="dashboard-tile-maintenance" /> : loading ? <TileSkeleton key="maintenance" /> : null);
   }
 
   if (permissions['shopping.view']) {
@@ -237,10 +255,12 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           <span className="text-sm text-muted-foreground">Nothing close to expiring.</span>
         )}
       </Tile>
-    ) : failed.has('pantry') ? null : loading ? <TileSkeleton key="pantry" /> : null);
+    ) : failed.has('pantry') ? <UnavailableTile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" /> : loading ? <TileSkeleton key="pantry" /> : null);
   }
 
-  if (permissions['notifications.view'] && facts.notifications) {
+  if (permissions['notifications.view'] && failed.has('notifications')) {
+    tiles.push(<UnavailableTile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" />);
+  } else if (permissions['notifications.view'] && facts.notifications) {
     tiles.push(
       <Tile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications">
         <Big value={facts.notifications.unread} suffix="unread" />

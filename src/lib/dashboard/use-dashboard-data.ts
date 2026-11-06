@@ -3,8 +3,9 @@
 /**
  * Live dashboard data. Subscribes (read-only) to the household collections the
  * member is allowed to view and turns them into exact facts with the pure
- * functions in `facts.ts`. Sections the member cannot view are never queried and
- * stay `undefined`, so tiles and the living house simply leave them out.
+ * functions in `facts.ts` (via `assembleDashboardFacts`). Sections the member cannot
+ * view are never queried and are left out; sections whose read failed are listed
+ * in `facts.unavailable` and shown as unavailable, never as empty.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -22,19 +23,10 @@ import {
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { deduplicateNotifications, isNotificationReadBy, parseNotificationDoc } from '@/lib/notifications';
-import { newestFirst } from '@/lib/pets/care';
 import { activeBellNotifications } from './notification-display';
 import { dayKey, startOfLocalDay } from './dates';
-import {
-  computeChoreFacts,
-  computeMaintenanceFacts,
-  computePantryFacts,
-  computePetFacts,
-  computeShoppingFacts,
-  recurringTemplateIdsFrom,
-  type DashboardFacts,
-  type RawDoc,
-} from './facts';
+import type { DashboardFacts, RawDoc } from './facts';
+import { assembleDashboardFacts, feedingFailureKey, type DashboardRaw } from './assemble';
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
@@ -53,31 +45,16 @@ export function useNow(intervalMs = 60_000): Date {
   return now;
 }
 
-type Raw = {
-  rooms?: RawDoc[];
-  openChores?: RawDoc[];
-  todayChores?: RawDoc[];
-  doneToday?: RawDoc[];
-  lists?: RawDoc[];
-  items?: Record<string, RawDoc[]>;
-  pantry?: RawDoc[];
-  assets?: RawDoc[];
-  vehicles?: RawDoc[];
-  templates?: RawDoc[];
-  pets?: RawDoc[];
-  /** Recent feedings per pet, one list per date shape. */
-  feedings?: Record<string, { timestamp?: RawDoc[]; string?: RawDoc[] }>;
-  unread?: number;
-};
+type Raw = DashboardRaw;
 
 type Store = { key: string; raw: Raw; failed: Set<string> };
 const EMPTY_STORE: Store = { key: '', raw: {}, failed: new Set() };
 
 export type DashboardData = {
   facts: DashboardFacts;
-  /** True until every permitted section has delivered its first snapshot. */
+  /** True until every permitted, readable section has delivered its first snapshot. */
   loading: boolean;
-  /** Sections whose listener failed (permission or network); tiles show a quiet error. */
+  /** Failure keys (sections, and `feed:<petId>`); failed sections also appear in `facts.unavailable`. */
   failed: Set<string>;
   now: Date;
 };
@@ -133,7 +110,8 @@ export function useDashboardData(enabled = true): DashboardData {
       const itemListeners = new Map<string, () => void>();
       listen('shopping', query(base('shopping-lists')), (s) => {
         const lists = docs(s);
-        setRaw((r) => ({ ...r, lists, items: Object.fromEntries(lists.map((list) => [list.id, r.items?.[list.id] ?? []])) }));
+        // Keep only answered lists' items; a new list has no entry until its listener answers.
+        setRaw((r) => ({ ...r, lists, items: Object.fromEntries(lists.flatMap((list) => (r.items?.[list.id] ? [[list.id, r.items[list.id]]] : []))) }));
         const ids = new Set(lists.map((list) => list.id));
         for (const [id, stop] of itemListeners) {
           if (!ids.has(id)) {
@@ -188,7 +166,7 @@ export function useDashboardData(enabled = true): DashboardData {
               const previous = r.feedings?.[pet.id] ?? {};
               return { ...r, feedings: { ...(r.feedings ?? {}), [pet.id]: { ...previous, [shape]: docs(logs) } } };
             }),
-            fail('pets'),
+            fail(feedingFailureKey(pet.id)),
           )));
         }
       });
@@ -212,36 +190,12 @@ export function useDashboardData(enabled = true): DashboardData {
   const raw = store.key === key ? store.raw : EMPTY_STORE.raw;
   const failed = store.key === key ? store.failed : EMPTY_STORE.failed;
 
-  const facts = useMemo<DashboardFacts>(() => {
-    const result: DashboardFacts = {};
-    const viewer = { uid, email };
-    if (canChores && raw.openChores && raw.rooms) {
-      const merged = new Map<string, RawDoc>();
-      [...(raw.openChores ?? []), ...(raw.todayChores ?? []), ...(raw.doneToday ?? [])].forEach((chore) => merged.set(chore.id, chore));
-      result.chores = computeChoreFacts([...merged.values()], raw.rooms, viewer, now, recurringTemplateIdsFrom(raw.templates ?? [], dayKey(now)));
-    }
-    if (canShopping && raw.lists) {
-      result.shopping = computeShoppingFacts(raw.lists, raw.items ?? {});
-      if (raw.pantry) result.pantry = computePantryFacts(raw.pantry, now);
-    }
-    if (canMaintenance && raw.assets && raw.vehicles) result.maintenance = computeMaintenanceFacts(raw.assets, raw.vehicles, now, timeZone);
-    if (canPets && raw.pets) {
-      const feedings = Object.fromEntries(Object.entries(raw.feedings ?? {}).map(([petId, shapes]) => [
-        petId,
-        newestFirst([shapes.timestamp ?? [], shapes.string ?? []] as Array<Array<RawDoc & { date: unknown }>>, RECENT_FEEDINGS),
-      ]));
-      result.pets = computePetFacts(raw.pets, feedings, now);
-    }
-    if (canNotifications && raw.unread !== undefined) result.notifications = { unread: raw.unread };
-    return result;
-  }, [raw, now, uid, email, timeZone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
-
-  const loading = Boolean(householdId) && (
-    (canChores && !failed.has('chores') && (!raw.openChores || !raw.rooms))
-    || (canShopping && !failed.has('shopping') && !raw.lists)
-    || (canMaintenance && !failed.has('maintenance') && (!raw.assets || !raw.vehicles))
-    || (canPets && !failed.has('pets') && !raw.pets)
-  );
+  const { facts, loading } = useMemo(() => assembleDashboardFacts(
+    raw,
+    failed,
+    { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid) },
+    { viewer: { uid, email }, now, timeZone, recentFeedings: RECENT_FEEDINGS },
+  ), [raw, failed, now, uid, email, timeZone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
 
   return { facts, loading, failed, now };
 }

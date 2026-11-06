@@ -229,7 +229,7 @@ describe('buildMorningBrief', () => {
   it('builds one sentence from exact counts with links', () => {
     const facts = {
       chores: computeChoreFacts(chores, rooms, viewer, now),
-      pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat', foodSchedule: 'twice daily' }], {}, now),
+      pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat', foodSchedule: 'twice daily' }], { pixel: [] }, now),
       pantry: computePantryFacts([{ id: 'milk', name: 'Milk', location: 'Fridge', expiryDate: '2026-08-02' }], now),
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });
