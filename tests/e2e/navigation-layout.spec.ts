@@ -35,14 +35,17 @@ test.describe('navigation and layout regressions', () => {
     await expect(sheet).toHaveCount(0);
     await expect(tabs.getByRole('button', { name: 'More' })).toHaveAttribute('aria-current', 'page');
 
-    // The bar never covers the end of the page.
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-    const barTop = await tabs.evaluate((el) => el.getBoundingClientRect().top);
-    const mainBottom = await page.locator('main').evaluate((el) => {
-      const last = el.lastElementChild?.getBoundingClientRect();
-      return last ? last.bottom : 0;
-    });
-    expect(mainBottom).toBeLessThanOrEqual(barTop + 1);
+    // The bar never covers the end of the page once it has settled (the page-enter
+    // transition moves content by a few pixels while it runs).
+    await expect.poll(async () => {
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      const barTop = await tabs.evaluate((el) => el.getBoundingClientRect().top);
+      const mainBottom = await page.locator('main').evaluate((el) => {
+        const last = el.lastElementChild?.getBoundingClientRect();
+        return last ? last.bottom : 0;
+      });
+      return mainBottom - barTop;
+    }).toBeLessThanOrEqual(1);
   });
 
   test('B6: the tab bar is hidden on desktop', async ({ page }, testInfo) => {
