@@ -10,6 +10,27 @@ const ts = (d: Date) => Timestamp.fromDate(d) as never;
 const run = (now: Date) => runHouseholdReminders(adminDb as never, HOUSE, now, ts);
 const house = () => adminDb.collection('households').doc(HOUSE);
 
+// The real database, except that listing this household's chores returns nothing:
+// the view of a run that read chores before an overlapping run committed.
+const bind = <T extends object>(target: T, override: (key: PropertyKey) => unknown) =>
+  new Proxy(target, {
+    get(obj, key) {
+      const replaced = override(key);
+      if (replaced !== undefined) return replaced;
+      const value = Reflect.get(obj, key, obj);
+      return typeof value === 'function' ? value.bind(obj) : value;
+    },
+  });
+const staleChoresDb = () => bind(adminDb, key => key === 'collection'
+  ? (name: string) => bind(adminDb.collection(name), k => k === 'doc'
+    ? (id: string) => bind(adminDb.collection(name).doc(id), d => d === 'collection'
+      ? (sub: string) => sub === 'chores'
+        ? bind(adminDb.collection(name).doc(id).collection(sub), c => c === 'get' ? async () => ({ docs: [] }) : undefined)
+        : adminDb.collection(name).doc(id).collection(sub)
+      : undefined)
+    : undefined)
+  : undefined);
+
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());
   await house().set({ name: 'Upkeep', ownerUid: 'o1', timeZone: 'America/Chicago', memberEmails: [] });
@@ -83,6 +104,19 @@ describe('household upkeep', () => {
     const reminder = await house().collection('notifications').doc('o1-reminder-2026-11-05').get();
     assert.equal(reminder.exists, true, 'reminder sent in the same run that generated the chore');
     assert.equal(reminder.data()?.message, '1 chore due today.');
+  });
+
+  test('a run with a stale view never resets a chore completed in the meantime', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const thursday = (await house().collection('chores').where('originalDueDate', '==', '2026-11-05').get()).docs[0];
+    await thursday.ref.update({ isCompleted: true, completedAt: '2026-11-05T15:05:00.000Z' });
+    // A second, overlapping run that read the chores before the first one committed.
+    const result = await runHouseholdReminders(staleChoresDb() as never, HOUSE, now, ts);
+    assert.equal(result.generatedChores, 0, 'nothing re-created');
+    const after = (await thursday.ref.get()).data();
+    assert.equal(after?.isCompleted, true);
+    assert.equal(after?.completedAt, '2026-11-05T15:05:00.000Z');
   });
 
   test('a household being deleted gets no upkeep writes', async () => {
