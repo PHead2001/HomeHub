@@ -22,18 +22,21 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy) return;
-    const entries = parseQuickAdd(value);
+    const submitted = value;
+    const entries = parseQuickAdd(submitted);
+    // Validate even while an earlier add is still saving, so the message is never lost.
     if (entries.length === 0) {
       setError('Type an item, or several separated by commas.');
       inputRef.current?.focus();
       return;
     }
+    if (busy) return;
     setError(null);
     setBusy(true);
     try {
       const ok = await onAdd(entries);
-      if (ok) setValue('');
+      // Clear only what was added: text typed while the add was saving stays.
+      if (ok) setValue((current) => (current === submitted ? '' : current));
     } finally {
       setBusy(false);
       inputRef.current?.focus();

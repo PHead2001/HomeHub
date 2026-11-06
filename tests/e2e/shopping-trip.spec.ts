@@ -76,6 +76,8 @@ test.describe('shopping trip', () => {
         const snapshot = await groceryItems.where('name', '==', name).get();
         return snapshot.docs.map((document) => document.data().quantity);
       }).toEqual([4]);
+      // The add has finished once the field is cleared.
+      await expect(field).toHaveValue('');
 
       // Empty input is an inline field error, not a toast.
       await field.fill(' , ');
