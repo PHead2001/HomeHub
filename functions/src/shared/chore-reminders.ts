@@ -3,6 +3,8 @@
 import {localDay, localMinutes, parseTimeOfDay, toDay} from "./calendar";
 
 export const OVERDUE_ALERT_AFTER_MINUTES = 7 * 60;
+/** householdUpkeep runs every 60 minutes. */
+export const UPKEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 export type ChoreInput = {
   id: string;
@@ -38,12 +40,14 @@ const plural = (count: number, word: string) =>
  * @param {ReminderPerson} person Recipient with settings and timezone.
  * @param {ChoreInput[]} chores Household chores.
  * @param {Date} now Current instant.
+ * @param {number} runIntervalMs Time since the previous scheduled run.
  * @return {ChoreNotification[]} Notifications to ensure exist.
  */
 export const choreNotificationsFor = (
   person: ReminderPerson,
   chores: ChoreInput[],
   now: Date,
+  runIntervalMs = UPKEEP_INTERVAL_MS,
 ): ChoreNotification[] => {
   const today = localDay(now, person.timeZone);
   const minutes = localMinutes(now, person.timeZone);
@@ -54,7 +58,6 @@ export const choreNotificationsFor = (
     const day = dueDay(c);
     return day !== null && day < today;
   });
-  const dueToday = mine.filter((c) => dueDay(c) === today);
   const notes: ChoreNotification[] = [];
 
   if (overdue.length > 0 && minutes >= OVERDUE_ALERT_AFTER_MINUTES) {
@@ -72,23 +75,44 @@ export const choreNotificationsFor = (
   }
 
   const reminderAt = parseTimeOfDay(person.reminderTime);
-  const pending = overdue.length + dueToday.length;
-  if (person.reminderEnabled && reminderAt !== null &&
-      minutes >= reminderAt && pending > 0) {
-    const sourceId = `reminder-${today}`;
-    notes.push({
+  const dailyReminder = (day: string): ChoreNotification | null => {
+    const late = mine.filter((c) => {
+      const due = dueDay(c);
+      return due !== null && due < day;
+    });
+    const onDay = mine.filter((c) => dueDay(c) === day);
+    if (late.length + onDay.length === 0) return null;
+    const sourceId = `reminder-${day}`;
+    const when = day === today ? "today" : "yesterday";
+    return {
       id: `${person.uid}-${sourceId}`,
       targetUserUid: person.uid,
       targetUserEmail: person.email,
       title: "Daily chore reminder",
-      message: dueToday.length > 0 && overdue.length > 0 ?
-        `${plural(dueToday.length, "chore")} due today and ` +
-          `${overdue.length} overdue.` :
-        dueToday.length > 0 ?
-          `${plural(dueToday.length, "chore")} due today.` :
-          `${plural(overdue.length, "chore")} still overdue.`,
+      message: onDay.length > 0 && late.length > 0 ?
+        `${plural(onDay.length, "chore")} due ${when} and ` +
+          `${late.length} overdue.` :
+        onDay.length > 0 ?
+          `${plural(onDay.length, "chore")} due ${when}.` :
+          `${plural(late.length, "chore")} still overdue.`,
       sourceId,
-    });
+    };
+  };
+  if (person.reminderEnabled && reminderAt !== null) {
+    if (minutes >= reminderAt) {
+      const note = dailyReminder(today);
+      if (note) notes.push(note);
+    }
+    // A reminder time after the day's last scheduled run (say 23:30 with runs
+    // on the hour) is never reached on its own day; the first run of the next
+    // day sends it instead.
+    const previousRun = new Date(now.getTime() - runIntervalMs);
+    const previousDay = localDay(previousRun, person.timeZone);
+    if (previousDay !== today &&
+        localMinutes(previousRun, person.timeZone) < reminderAt) {
+      const note = dailyReminder(previousDay);
+      if (note) notes.push(note);
+    }
   }
   return notes;
 };

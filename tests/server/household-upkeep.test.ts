@@ -60,7 +60,10 @@ describe('household upkeep', () => {
     const eightDaysLater = new Date(now.getTime() + 8 * 86400000);
     const later = await run(eightDaysLater);
     assert.equal(later.refreshedNotifications, 1, 'an expired but still-overdue reminder stays visible');
-    assert.equal((await house().collection('notifications').where('category', '==', 'maintenance').get()).size, 1);
+    const refreshed = await house().collection('notifications').where('category', '==', 'maintenance').get();
+    assert.equal(refreshed.size, 1);
+    // Clients list the last 7 days by createdAt, so the refresh must move it.
+    assert.equal(refreshed.docs[0].data().createdAt.toDate().toISOString(), eightDaysLater.toISOString());
   });
 
   test('chore reminders respect the member’s reminder time and never duplicate', async () => {

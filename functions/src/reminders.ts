@@ -155,12 +155,15 @@ export const runHouseholdReminders = async (
         return "created";
       }
       const expiresAt = snap.get("expiresAt") as Timestamp | undefined;
-      // Still-actionable reminders stay visible: extend an expired one rather
-      // than letting the 7-day window hide something that is still overdue.
+      // Still-actionable reminders stay visible: re-surface an expired one
+      // rather than letting the 7-day window hide something still overdue.
+      // Clients list notifications created in the last 7 days, so createdAt
+      // moves too; an earlier dismissal still stands.
       if (expiresAt && expiresAt.toMillis() <= now.getTime() &&
           !snap.get("resolvedAt")) {
         tx.update(ref, {
           message: fields.message,
+          createdAt: ts(now),
           expiresAt: ts(new Date(now.getTime() +
             NOTIFICATION_TTL_DAYS * 86400000)),
         });

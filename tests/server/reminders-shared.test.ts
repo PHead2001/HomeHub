@@ -115,6 +115,22 @@ describe('chore reminders', () => {
     assert.equal(evening[1].message, '1 chore due today and 1 overdue.');
   });
 
+  test('a reminder time after the last hourly run still fires exactly once', () => {
+    const late = { ...person, reminderTime: '23:30' };
+    const sent = new Map<string, string>();
+    // Every hourly run from local midnight Nov 5 through local midnight Nov 6 (CST = UTC-6).
+    for (let hour = 0; hour <= 24; hour++) {
+      const now = new Date(Date.UTC(2026, 10, 5, 6 + hour));
+      for (const note of choreNotificationsFor(late, chores, now)) {
+        if (note.id.includes('reminder-2026-11-05') && !sent.has(note.id)) sent.set(note.id, now.toISOString());
+      }
+    }
+    assert.deepEqual([...sent.keys()], ['u1-reminder-2026-11-05']);
+    assert.equal(sent.get('u1-reminder-2026-11-05'), '2026-11-06T06:00:00.000Z', 'sent by the first run of the next day');
+    const midnight = choreNotificationsFor(late, chores, new Date('2026-11-06T06:00:00Z'));
+    assert.equal(midnight.find(n => n.id === 'u1-reminder-2026-11-05')?.message, '1 chore due yesterday and 1 overdue.');
+  });
+
   test('disabled reminders and no pending chores stay quiet', () => {
     const quiet = choreNotificationsFor({ ...person, reminderEnabled: false }, chores.slice(1, 2), new Date('2026-11-05T23:30:00Z'));
     assert.deepEqual(quiet, []);
