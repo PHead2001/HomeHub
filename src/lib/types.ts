@@ -335,7 +335,8 @@ export type HouseholdPermission =
 
 export type PermissionOverrides = Partial<Record<HouseholdPermission, boolean>>;
 
-export type HouseholdMemberStatus = 'active' | 'pending';
+// 'deleting': the household is being deleted; rules grant nothing to non-active members.
+export type HouseholdMemberStatus = 'active' | 'pending' | 'deleting';
 
 export type HouseholdMember = {
   uid: string;
@@ -402,6 +403,9 @@ export type Household = {
     createdAt: string; // ISO string
     inviteCode?: string;
     updatedAt?: string;
+    /** Set when the owner starts deleting the household; data is frozen until removal finishes. */
+    deletingAt?: unknown;
+    deletingByUid?: string;
 }
 
 export type InviteCode = {

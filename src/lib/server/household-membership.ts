@@ -82,6 +82,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
     ]);
     if (!householdId || !householdSnap.exists) throw new MembershipError('That household no longer exists.');
+    if (householdSnap.get('deletingAt')) throw new MembershipError('That household is being deleted.');
     if (memberSnap.exists) throw new MembershipError('You are already part of this household.');
 
     const currentHouseholdId = profileSnap.exists ? profileSnap.data()?.householdId : null;
@@ -133,10 +134,13 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     const name = caller.displayName || caller.email;
     const createdAt = Timestamp.fromDate(now);
     const expires = Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS);
+    // One document per join event and approver: a rejoin creates new documents (so the
+    // push trigger fires), while a retry of this transaction reuses the same IDs.
+    const eventId = `${caller.uid}-${now.getTime()}`;
     for (const approver of approversSnap.docs) {
       const approverData = approver.data();
       if (approverData.status && approverData.status !== 'active') continue;
-      transaction.set(householdRef.collection('notifications').doc(`household-newuser-${caller.uid}-${approver.id}`), {
+      transaction.set(householdRef.collection('notifications').doc(`household-newuser-${eventId}-${approver.id}`), {
         householdId,
         category: 'system',
         title: 'New member needs approval',
@@ -163,14 +167,11 @@ const deleteHouseholdFiles = async (householdId: string) => {
   await bucket.deleteFiles({ prefix: `households/${householdId}/` });
 };
 
-const memberRecord = async (householdId: string, uid: string) => {
-  const snap = await adminDb.collection('households').doc(householdId).collection('members').doc(uid).get();
-  return snap.exists ? snap.data() || null : null;
-};
-
 type NoticeFields = { title: string; message: string; sourceType: string; sourceId: string };
 
-// One notification per active owner/admin, each targeted to its recipient.
+// One notification per active owner/admin and event, each targeted to its recipient.
+// The event time is part of the ID so a repeat event (leave, rejoin, leave again)
+// creates new documents and triggers push; transaction retries reuse the same IDs.
 const approverNotices = (
   householdRef: FirebaseFirestore.DocumentReference,
   approvers: FirebaseFirestore.QueryDocumentSnapshot[],
@@ -179,7 +180,7 @@ const approverNotices = (
 ): Array<[FirebaseFirestore.DocumentReference, Record<string, unknown>]> => approvers
   .filter(approver => !approver.data().status || approver.data().status === 'active')
   .map(approver => [
-    householdRef.collection('notifications').doc(`${fields.sourceType}-${fields.sourceId}-${approver.id}`),
+    householdRef.collection('notifications').doc(`${fields.sourceType}-${fields.sourceId}-${now.getTime()}-${approver.id}`),
     {
       householdId: householdRef.id,
       category: 'system',
@@ -201,12 +202,14 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
   const householdRef = adminDb.collection('households').doc(householdId);
   const memberRef = householdRef.collection('members').doc(caller.uid);
   await adminDb.runTransaction(async transaction => {
-    const [memberSnap, chores, templates, approvers] = await Promise.all([
+    const [householdSnap, memberSnap, chores, templates, approvers] = await Promise.all([
+      transaction.get(householdRef),
       transaction.get(memberRef),
       transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email)),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
     ]);
+    if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.');
     const member = memberSnap.exists ? memberSnap.data() || null : null;
     if (!member) throw new MembershipError('You are not part of this household.');
     if (member.role === 'owner') throw new MembershipError('Transfer ownership to someone else before leaving.');
@@ -234,20 +237,39 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
   });
 };
 
-// Deleting: owner only, confirmed by typing the household name. Destructive cleanup
-// (files, then every data subcollection) runs first; membership, profiles, invites and
-// the household document go last in one atomic batch. If cleanup fails partway, the
-// owner is still the owner and can simply run the delete again.
-export const deleteHousehold = async (caller: VerifiedCaller, householdId: string, confirmName: string) => {
+// Deleting: owner only, confirmed by typing the household name.
+// 1. One transaction verifies the owner, marks the household `deletingAt`, sets every
+//    membership to status 'deleting' and revokes every invite. Rules grant nothing to a
+//    non-active membership, so from this point no client can read or write household
+//    data or files, and joining/leaving are refused on the server.
+// 2. Files, then every data subcollection, are removed.
+// 3. Profiles, invites, memberships and the household document go in one final batch.
+// If step 2 or 3 fails, the household stays frozen and the owner can run delete again.
+export const deleteHousehold = async (caller: VerifiedCaller, householdId: string, confirmName: string, now = new Date()) => {
   const householdRef = adminDb.collection('households').doc(householdId);
-  const [household, member] = await Promise.all([householdRef.get(), memberRecord(householdId, caller.uid)]);
-  if (!household.exists) throw new MembershipError('That household no longer exists.');
-  if (!member || member.role !== 'owner' || (member.status && member.status !== 'active')) {
-    throw new MembershipError('Only the household owner can delete it.');
-  }
-  if ((confirmName || '').trim() !== String(household.data()?.name || '').trim()) {
-    throw new MembershipError('Type the household name exactly to confirm.');
-  }
+  const invitesQuery = adminDb.collection('inviteCodes').where('householdId', '==', householdId);
+  await adminDb.runTransaction(async transaction => {
+    const [household, memberSnap, members, invites] = await Promise.all([
+      transaction.get(householdRef),
+      transaction.get(householdRef.collection('members').doc(caller.uid)),
+      transaction.get(householdRef.collection('members')),
+      transaction.get(invitesQuery),
+    ]);
+    if (!household.exists) throw new MembershipError('That household no longer exists.');
+    const resuming = Boolean(household.get('deletingAt'));
+    const member = memberSnap.exists ? memberSnap.data() || null : null;
+    const allowedStatus = resuming ? ['deleting'] : ['active'];
+    if (!member || member.role !== 'owner' || !allowedStatus.includes(member.status || 'active')) {
+      throw new MembershipError('Only the household owner can delete it.');
+    }
+    if ((confirmName || '').trim() !== String(household.data()?.name || '').trim()) {
+      throw new MembershipError('Type the household name exactly to confirm.');
+    }
+    if (resuming) return;
+    transaction.update(householdRef, { deletingAt: Timestamp.fromDate(now), deletingByUid: caller.uid });
+    members.docs.forEach(d => transaction.update(d.ref, { status: 'deleting' }));
+    invites.docs.forEach(d => transaction.update(d.ref, { revokedAt: now.toISOString() }));
+  });
 
   await deleteHouseholdFiles(householdId);
   const subcollections = await householdRef.listCollections();

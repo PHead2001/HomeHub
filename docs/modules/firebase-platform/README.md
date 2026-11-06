@@ -68,7 +68,7 @@ Direct temporary chores use the existing `chores` path with optional `templateId
 
 Rules use Firebase Auth UID/email and UID membership documents only; `households.memberEmails` and profile household fields grant nothing. Pending `newuser` members are blocked from ordinary household subcollections. Storage rules read the same membership records through cross-service `firestore.get()`, apply the same role presets and overrides, and enforce image-only uploads (5–10 MB) for pets, barcode images and avatars and a 15 MB document/image allowlist for maintenance attachments; every other path is denied. Cross-service reads require the Storage service agent to hold `roles/firebaserules.firestoreServiceAgent` (granted on `homehub-j91jb` 2026-11-06).
 
-Home Assistant credentials under `home-automation/*` are write-only for clients with `automation.manage`; no client can read the token back.
+Home Assistant credentials under `home-automation/*` can be read and written only by members with `automation.manage`; every other role is denied. The app itself reads and writes them through authorized server actions.
 
 Firestore rules explicitly map known household collections to the closest role/permission operation: chores/templates/rooms, shopping lists/items/config, pantry, barcode library, pets/logs, assets, vehicles, maintenance logs/attachments, notifications, audit logs, and automation configuration. Member-document permission overrides are honored, pending users are denied, and unknown household paths deny by default. Where one update can represent multiple product actions, rules use the narrowest existing permission without field-level semantic inference.
 

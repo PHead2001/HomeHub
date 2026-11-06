@@ -31,7 +31,7 @@ Every action (`getHomeAssistantStatus`, `getHomeAssistantEntities`, `saveHomeAss
 
 ## Authentication, Roles, and Security
 
-Firestore rules make `home-automation/*` unreadable by every client role, including the owner; only server actions read the token. Addresses must be `https`, without embedded credentials, and must resolve only to public IP addresses (loopback, private, link-local/metadata, CGNAT, unique-local and multicast ranges are refused); `.local`, `.lan`, `.internal` and `.home.arpa` names are refused. The URL is re-validated on every request, so stored legacy `http://…local` addresses fail safely with a clear message. Residual risk: DNS can change between validation and the request; redirects are not followed.
+Firestore rules let only members with `automation.manage` (owners and admins by default, who could replace the token anyway) read `home-automation/*`; every other role, including members, children, guests and pending members, is denied. This read exists for compatibility with the older client, which checked setup by reading the document directly; this app reads and writes credentials only through the server actions above. Addresses must be `https`, without embedded credentials, and must resolve only to public IP addresses (loopback, private, link-local/metadata, CGNAT, unique-local and multicast ranges are refused); `.local`, `.lan`, `.internal` and `.home.arpa` names are refused. The URL is re-validated on every request, so stored legacy `http://…local` addresses fail safely with a clear message. Residual risk: DNS can change between validation and the request; redirects are not followed.
 
 ## Integrations and Background Processing
 

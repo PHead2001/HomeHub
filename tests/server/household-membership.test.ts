@@ -164,4 +164,43 @@ describe('leaving and deleting', () => {
     assert.equal((await adminDb.collection('inviteCodes').doc('DELE-TEME-XX').get()).exists, false);
     assert.equal((await adminDb.collection('users').doc(owner.email).get()).data()?.householdId, null);
   });
+
+  test('a refused delete freezes nothing', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await rejects(deleteHousehold(owner, HOUSE, 'Wrong Name'), /exactly/);
+    assert.equal((await house.get()).data()?.deletingAt, undefined);
+    assert.equal((await house.collection('members').doc(admin.uid).get()).data()?.status, 'active');
+  });
+
+  test('a household being deleted refuses joining and leaving, and only its owner can finish', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    // The state a delete leaves when it froze the household and then failed partway.
+    await house.update({ deletingAt: new Date(), deletingByUid: owner.uid });
+    for (const id of [owner.uid, admin.uid, guest.uid]) await house.collection('members').doc(id).update({ status: 'deleting' });
+    await house.collection('chores').doc('left-behind').set({ task: 'Leftover' });
+    await invite('FROZ-ENHO-US');
+    await rejects(redeemInvite(newcomer, 'FROZ-ENHO-US', NOW), /being deleted/);
+    await rejects(leaveHousehold(guest, HOUSE, NOW), /being deleted/);
+    await rejects(deleteHousehold(admin, HOUSE, 'Join House'), /Only the household owner/);
+    await deleteHousehold(owner, HOUSE, 'Join House');
+    assert.equal((await house.get()).exists, false);
+    assert.equal((await house.collection('chores').get()).size, 0);
+    assert.equal((await house.collection('members').get()).size, 0);
+    assert.equal((await adminDb.collection('inviteCodes').doc('FROZ-ENHO-US').get()).exists, false);
+  });
+});
+
+describe('repeat events', () => {
+  test('rejoining creates new approval notifications so push fires again', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    const approvals = async () => (await house.collection('notifications')
+      .where('sourceType', '==', 'household-newuser').where('targetUserUid', '==', owner.uid).get()).size;
+    await invite('FIRS-TJOI-NX');
+    await redeemInvite(newcomer, 'FIRS-TJOI-NX', NOW);
+    assert.equal(await approvals(), 1);
+    await leaveHousehold(newcomer, HOUSE, new Date(NOW.getTime() + 60_000));
+    await invite('SECO-NDJO-IN');
+    await redeemInvite(newcomer, 'SECO-NDJO-IN', new Date(NOW.getTime() + 120_000));
+    assert.equal(await approvals(), 2);
+  });
 });

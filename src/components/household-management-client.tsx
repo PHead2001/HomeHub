@@ -113,10 +113,14 @@ export function HouseholdManagementClient() {
   const [isDeleting, setIsDeleting] = useState(false);
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const [activeTab, setActiveTab] = useState(() => {
-    const requested = searchParams.get('tab');
-    return requested && householdTabs.includes(requested) ? requested : 'overview';
-  });
+  const requestedTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(() =>
+    requestedTab && householdTabs.includes(requestedTab) ? requestedTab : 'overview');
+  // A notification link to ?tab=… while this page is already open changes the URL without
+  // remounting; follow it. Manual tab clicks are not overridden until the URL changes again.
+  useEffect(() => {
+    if (requestedTab && householdTabs.includes(requestedTab)) setActiveTab(requestedTab);
+  }, [requestedTab]);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);

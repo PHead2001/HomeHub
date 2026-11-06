@@ -138,8 +138,9 @@ function JoinHouseholdForm({
 }
 
 export function HouseholdManager({ children }: HouseholdManagerProps) {
-  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, createHousehold, joinHousehold, logout } = useAuth();
+  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
   const pathname = usePathname();
+  const [finishingDelete, setFinishingDelete] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
 
@@ -174,6 +175,53 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
           </DialogContent>
         </Dialog>
       </>
+    );
+  }
+
+  // The owner started deleting this household; its data is frozen. If a run failed
+  // partway, the owner can finish it from here.
+  if (currentUser && household?.deletingAt) {
+    const isOwner = currentMember?.role === 'owner';
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          hideClose
+        >
+          <DialogHeader>
+            <DialogTitle className="font-headline text-2xl text-center">This household is being deleted</DialogTitle>
+            <DialogDescription className="text-center text-base">
+              {isOwner
+                ? 'Deletion did not finish. Finish deleting to remove the remaining data.'
+                : 'The owner is deleting this household. Its data is no longer available.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-2">
+            {isOwner && (
+              <Button
+                variant="destructive"
+                disabled={finishingDelete}
+                onClick={async () => {
+                  setFinishingDelete(true);
+                  try {
+                    await deleteHousehold(household.name);
+                  } finally {
+                    setFinishingDelete(false);
+                  }
+                }}
+              >
+                {finishingDelete ? 'Deleting…' : 'Finish deleting'}
+              </Button>
+            )}
+            <Button variant="link" className="text-primary" onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     );
   }
 
