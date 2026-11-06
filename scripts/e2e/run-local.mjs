@@ -167,7 +167,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts", "tests/e2e/navigation-layout.spec.ts", "tests/e2e/appearance.spec.ts", "tests/e2e/maintenance-ux.spec.ts", "tests/e2e/pwa-share.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts", "tests/e2e/navigation-layout.spec.ts", "tests/e2e/appearance.spec.ts", "tests/e2e/household-ux.spec.ts", "tests/e2e/pwa-share.spec.ts", "tests/e2e/maintenance-ux.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
@@ -190,7 +190,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator reseed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts", "tests/e2e/navigation-layout.spec.ts", "tests/e2e/appearance.spec.ts", "tests/e2e/maintenance-ux.spec.ts", "tests/e2e/pwa-share.spec.ts"],
+      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts", "tests/e2e/navigation-layout.spec.ts", "tests/e2e/appearance.spec.ts", "tests/e2e/household-ux.spec.ts", "tests/e2e/pwa-share.spec.ts", "tests/e2e/maintenance-ux.spec.ts"],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
