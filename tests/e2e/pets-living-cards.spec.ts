@@ -39,12 +39,20 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
   test('Add Pet sits in the header row', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openPets(page);
-    const heading = await page.getByRole('heading', { name: 'Your Pets', exact: true }).boundingBox();
+    const heading = page.getByRole('heading', { name: 'Your Pets', exact: true });
+    // The header row holds the title block (heading + subtitle) and the actions.
+    const row = await heading.locator('xpath=../..').boundingBox();
+    const title = await heading.boundingBox();
     const add = await page.getByRole('button', { name: 'Add Pet' }).boundingBox();
-    expect(heading && add).toBeTruthy();
-    // Same row: the button's vertical span overlaps the heading's.
-    expect(add!.y).toBeLessThan(heading!.y + heading!.height);
-    expect(add!.x).toBeGreaterThan(heading!.x + heading!.width);
+    expect(row && title && add).toBeTruthy();
+    // Same row: the button's vertical centre falls within the header row, level with the title.
+    const addCentre = add!.y + add!.height / 2;
+    expect(addCentre).toBeGreaterThanOrEqual(row!.y);
+    expect(addCentre).toBeLessThanOrEqual(row!.y + row!.height);
+    expect(add!.y).toBeLessThan(title!.y + title!.height);
+    // Right-aligned in the row.
+    expect(Math.abs(add!.x + add!.width - (row!.x + row!.width))).toBeLessThanOrEqual(1);
+    expect(add!.x).toBeGreaterThan(row!.x + row!.width / 2);
   });
 
   test('cards show who fed last, the daily ring and one-tap feeding', async ({ page }, testInfo) => {
@@ -68,7 +76,8 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
 
     // The second feeding completes the day.
     await pixel.getByRole('button', { name: 'Feed Pixel, 1 can' }).click();
-    await expect(page.getByText('Pixel is all fed for today')).toBeVisible();
+    // Radix also mirrors the toast into its own live region; target the visible title.
+    await expect(page.getByText('Pixel is all fed for today', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('All fed today');
   });
 
