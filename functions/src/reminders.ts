@@ -22,6 +22,12 @@ type Db = Firestore;
 type Timestamp = FirestoreTimestamp;
 
 export const NOTIFICATION_TTL_DAYS = 7;
+/**
+ * Still-actionable reminders are refreshed this long before they expire, so
+ * the Firestore TTL policy on expiresAt can only reach them if upkeep has not
+ * run for two days.
+ */
+export const REFRESH_BEFORE_EXPIRY_MS = 2 * 86400000;
 export const COMPLETED_CHORE_RETENTION_DAYS = 90;
 export const RECURRING_LOOKAHEAD = 30;
 const APPROVED = new Set(["owner", "admin", "member", "child", "guest"]);
@@ -222,11 +228,14 @@ export const runHouseholdReminders = async (
         return "created";
       }
       const expiresAt = snap.get("expiresAt") as Timestamp | undefined;
-      // Still-actionable reminders stay visible: re-surface an expired one
-      // rather than letting the 7-day window hide something still overdue.
-      // Clients list notifications created in the last 7 days, so createdAt
-      // moves too; an earlier dismissal still stands.
-      if (expiresAt && expiresAt.toMillis() <= now.getTime() &&
+      // Still-actionable reminders stay visible: re-surface one that is close
+      // to expiry rather than letting the 7-day window hide something still
+      // overdue. Clients list notifications created in the last 7 days, so
+      // createdAt moves too. This runs before expiry so the TTL policy never
+      // deletes a still-actionable reminder (which would lose its read and
+      // dismissed state); an update keeps them and sends no new push.
+      if (expiresAt &&
+          expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS &&
           !snap.get("resolvedAt")) {
         tx.update(ref, {
           message: fields.message,
