@@ -25,9 +25,9 @@ This module owns rooms, chore templates, one-time and recurring assignments, gen
 
 ## Architecture and Data Flow
 
-`ChoreChartClient` loads rooms, templates, chore instances, and assignees. Assignees are the household's approved membership records (`households/{householdId}/members`: not `newuser`, status `active`), enriched with `users/{email}` profiles where readable; a profile that cannot be read falls back to the member record's name and avatar, so one unreadable profile never breaks the page. Recurring templates are normalized and expanded client-side when data loads, but only for members with `chores.create`; a failed generation write is logged and never blocks viewing. Generation starts at today and creates 30 valid occurrences with deterministic IDs derived from template, room, date, and assignee.
+`ChoreChartClient` loads rooms, templates, chore instances, and assignees from approved membership records (enriched with readable `users/{email}` profiles). It does not expand recurring templates itself: before reading chores, each load calls the `syncHouseholdUpkeep` server action, which runs the same idempotent upkeep as the hourly `householdUpkeep` Cloud Function. That step creates any missing instances for the next 30 occurrences of each recurring template, starting at today in the household time zone, with deterministic IDs derived from template, room, date, and assignee. If the action fails, the page logs a warning and shows whatever instances already exist.
 
-Completion updates chore instances. Editing or canceling a recurrence removes incomplete generated instances and regenerates from the template; completed history remains.
+Completion updates chore instances. Editing or canceling a recurrence deletes the template's incomplete instances in the browser; the reload that follows runs server upkeep, which regenerates instances for an edited recurrence. Completed history remains.
 
 Temporary Task validates name, room, assignee, and due date, then atomically writes one auto-ID chore instance and one deterministic assignee notification. It does not write `chore-templates`.
 
@@ -46,9 +46,9 @@ Biweekly schedules use `startDate` as an anchor. Monthly day-of-month is limited
 
 ## Authentication, Roles, and Security
 
-The page requires an authenticated user and uses that user's household ID. Assignee discovery uses UID membership records only; `households.memberEmails` is not consulted.
+The page requires an authenticated user and uses that user's household ID. Assignee discovery uses approved, active `households/{householdId}/members/{uid}` records; an unreadable profile falls back to the member record's display name.
 
-Navigation uses `chores.view`. Firestore's broad approved-member rule does not enforce granular `chores.complete/create/edit/delete/assign` permissions, so role restrictions are primarily UI-level. Pending `newuser` members are denied by rules.
+Navigation uses `chores.view`. Firestore rules enforce granular permissions: `chores.view` to read chores, templates, and rooms; `chores.create` to create chores and templates; `chores.complete` for updates limited to `isCompleted`, `completedAt`, and `completedSubTasks`; `chores.edit` for other chore and template updates and room create/update; and `chores.delete` for deletes. `chores.assign` is not checked by rules separately (recurring assignment is a template update). On-demand upkeep requires `chores.view`. Pending `newuser` members are denied by rules.
 
 ## Integrations and Background Processing
 
