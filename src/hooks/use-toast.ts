@@ -7,6 +7,7 @@ import type {
   ToastActionElement,
   ToastProps,
 } from "@/components/ui/toast"
+import { FRIENDLY_ERROR_TITLES, friendlyError, friendlyErrorKind } from "@/lib/friendly-error"
 
 const TOAST_LIMIT = 1
 const TOAST_REMOVE_DELAY = 1000000
@@ -169,6 +170,30 @@ function toast({ ...props }: Toast) {
   }
 }
 
+/**
+ * Failure toast for a caught error. The description always comes from
+ * `friendlyError()`, so raw Firebase/network text never reaches users. Use it
+ * for outcomes only (could not save, could not reach the server); field
+ * problems belong inline next to the field (see `FieldError`).
+ *
+ *   } catch (error) {
+ *     toastError(error, "Couldn't save the chore")
+ *   }
+ */
+function toastError(
+  error: unknown,
+  title?: string,
+  options: Omit<Toast, "title" | "description" | "variant"> = {}
+) {
+  const kind = friendlyErrorKind(error)
+  return toast({
+    ...options,
+    variant: "destructive",
+    title: title ?? FRIENDLY_ERROR_TITLES[kind],
+    description: friendlyError(error),
+  })
+}
+
 function useToast() {
   const [state, setState] = React.useState<State>(memoryState)
 
@@ -185,8 +210,9 @@ function useToast() {
   return {
     ...state,
     toast,
+    toastError,
     dismiss: (toastId?: string) => dispatch({ type: "DISMISS_TOAST", toastId }),
   }
 }
 
-export { useToast, toast }
+export { useToast, toast, toastError }
