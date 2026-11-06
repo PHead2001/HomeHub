@@ -13,9 +13,11 @@ import {
   inviteState,
   memberFirstName,
   normalizeOverrides,
+  permissionDraftKey,
   relativeTime,
   roleLabel,
   sortMembers,
+  startOfNextWeek,
   startOfWeek,
   togglePermissionOverride,
 } from '../../src/components/household/household-model';
@@ -101,6 +103,22 @@ describe('members', () => {
     assert.equal(start.getHours(), 0);
   });
 
+  it('advances the week boundary at the next local Monday midnight', () => {
+    const sunday = new Date(2026, 7, 2, 23, 59); // Sunday 2 Aug 2026
+    const next = startOfNextWeek(sunday);
+    assert.equal(next.getDay(), 1);
+    assert.equal(next.getDate(), 3);
+    assert.equal(next.getHours(), 0);
+    // Just after the rollover, the current week starts there, so last week's
+    // completions fall before the boundary.
+    assert.equal(startOfWeek(new Date(2026, 7, 3, 0, 1)).getTime(), next.getTime());
+    const stats = choreStatsByEmail(
+      [{ assignedToEmail: 'a@example.test', isCompleted: true, completedAt: new Date(2026, 7, 1, 12).toISOString() }],
+      startOfWeek(new Date(2026, 7, 3, 0, 1)),
+    );
+    assert.equal(stats.get('a@example.test'), undefined);
+  });
+
   it('formats relative times', () => {
     const now = new Date('2026-08-01T12:00:00Z');
     assert.equal(relativeTime('2026-08-01T11:59:40Z', now), 'just now');
@@ -130,6 +148,15 @@ describe('permission matrix', () => {
     assert.deepEqual(normalizeOverrides('admin', { 'household.delete': true, 'chores.view': true, 'shopping.delete': false }), {
       'shopping.delete': false,
     });
+  });
+
+  it('invalidates a permission draft when the role changes but stored overrides do not', () => {
+    const before = { ...member('s', 'member'), permissions: {} };
+    const after = { ...before, role: 'guest' as const };
+    assert.notEqual(permissionDraftKey(before), permissionDraftKey(after));
+    assert.equal(permissionDraftKey(before), permissionDraftKey({ ...before }));
+    assert.notEqual(permissionDraftKey(before), permissionDraftKey({ ...before, permissions: { 'shopping.delete': true } }));
+    assert.equal(permissionDraftKey(null), '');
   });
 
   it('reports changed and customized permissions', () => {

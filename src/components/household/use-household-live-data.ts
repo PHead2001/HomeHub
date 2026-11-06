@@ -5,7 +5,7 @@ import { collection, doc, onSnapshot, query, where, type Unsubscribe } from 'fir
 import { db } from '@/lib/firebase';
 import { inviteDateToIso } from '@/lib/invite-codes';
 import type { AuditLog, Chore, HouseholdMember, InviteCode } from '@/lib/types';
-import { choreStatsByEmail, sortMembers, startOfWeek, type MemberChoreStats } from './household-model';
+import { choreStatsByEmail, sortMembers, startOfNextWeek, startOfWeek, type MemberChoreStats } from './household-model';
 
 export type HouseholdLiveData = {
   /** Live household name (the auth context loads it once). */
@@ -44,7 +44,26 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [chores, setChores] = useState<Pick<Chore, 'assignedToEmail' | 'isCompleted' | 'completedAt'>[]>([]);
-  const [weekStart] = useState(() => startOfWeek());
+  const [weekStart, setWeekStart] = useState(() => startOfWeek());
+
+  // Move the "this week" boundary at local Monday midnight, and re-check when a
+  // suspended or hidden tab comes back (timers may not fire while suspended).
+  useEffect(() => {
+    const sync = () => {
+      const current = startOfWeek();
+      setWeekStart((prev) => (prev.getTime() === current.getTime() ? prev : current));
+    };
+    const delay = Math.max(1000, startOfNextWeek().getTime() - Date.now() + 1000);
+    const timer = window.setTimeout(sync, Math.min(delay, 2 ** 31 - 1));
+    const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', sync);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', sync);
+    };
+  }, [weekStart]);
 
   useEffect(() => {
     if (!householdId) return;

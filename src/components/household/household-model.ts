@@ -154,6 +154,13 @@ export function startOfWeek(now = new Date()): Date {
   return start;
 }
 
+/** Monday 00:00 local time of the week after the one containing `now`. */
+export function startOfNextWeek(now = new Date()): Date {
+  const next = startOfWeek(now);
+  next.setDate(next.getDate() + 7);
+  return next;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Member stats                                                               */
 /* ------------------------------------------------------------------------- */
@@ -207,6 +214,19 @@ export function togglePermissionOverride(
   if (nextValue === defaults[permission]) delete next[permission];
   else next[permission] = nextValue;
   return next;
+}
+
+/**
+ * Identity of a permission draft: the member, their role and their stored
+ * overrides. A role change resets overrides to `{}`, which can leave the stored
+ * overrides unchanged, so the role must be part of the key; otherwise a draft
+ * prepared for the old role would survive a live role change and could be saved.
+ */
+export function permissionDraftKey(
+  member: Pick<HouseholdMember, 'uid' | 'role' | 'permissions'> | null,
+): string {
+  if (!member) return '';
+  return `${member.uid}|${member.role}|${JSON.stringify(normalizeOverrides(member.role, member.permissions))}`;
 }
 
 /** Removes overrides equal to the role default and any owner-only grants. */

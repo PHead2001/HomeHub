@@ -80,7 +80,8 @@ Invite codes are created, listed and revoked by owners/admins (`useCount` must s
 - Admin workflows exclude the owner.
 - Household creation retries candidate IDs but does not use an explicit nonexistence transaction/precondition around the full batch.
 - Manager listeners fail independently, so denied invite/audit/chore queries never blank member data; a failed members listener shows a notice and the caller's own record.
-- Member chore stats count chores assigned to the member (chores do not record who ticked them).
+- Member chore stats count chores assigned to the member (chores do not record who ticked them). The week boundary moves at local Monday midnight (and is re-checked when the tab regains focus or visibility), which re-subscribes the completed-chores query.
+- An unsaved permission draft is tied to the member, their role and their stored overrides; a live role or permission change discards it.
 - The permission editor never writes owner-only overrides, which the rules reject.
 - `/household?tab=<tab>` opens that tab, including when the page is already open (`overview`, `invites`, `members`, `roles`, `activity`, or `danger`); unknown values, and tabs the viewer cannot see, fall back to Overview. Approval notifications deep-link to `/household?tab=members`.
 - Join-request and member-left notifications are written server-side with one notification per event and active owner/admin (a rejoin creates new documents, so push fires again), each targeted by `targetUserUid`. The daily pending-member reminder written client-side by Household Manager is not targeted, so it is shown and pushed to every approved member; push recipients come only from approved member records, never from `memberEmails`.

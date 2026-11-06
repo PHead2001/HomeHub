@@ -16,6 +16,7 @@ import {
   changedPermissions,
   memberName,
   normalizeOverrides,
+  permissionDraftKey,
   roleLabel,
   roleSummary,
   togglePermissionOverride,
@@ -55,9 +56,9 @@ export function RolesPanel({
   const saved = useMemo(() => (member ? normalizeOverrides(member.role, member.permissions) : {}), [member]);
   const [saving, setSaving] = useState(false);
 
-  // The draft belongs to one member and one saved state: choosing someone else,
-  // or a saved change arriving live, starts again from what is stored.
-  const draftKey = `${member?.uid ?? ''}|${JSON.stringify(saved)}`;
+  // The draft belongs to one member, role and saved state: choosing someone else,
+  // or a role or permission change arriving live, starts again from what is stored.
+  const draftKey = permissionDraftKey(member);
   const [draftState, setDraftState] = useState<{ key: string; overrides: PermissionOverrides } | null>(null);
   const draft = draftState && draftState.key === draftKey ? draftState.overrides : saved;
   const setDraft = (update: PermissionOverrides | ((prev: PermissionOverrides) => PermissionOverrides)) => {
