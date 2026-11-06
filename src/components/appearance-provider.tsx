@@ -133,18 +133,31 @@ type ViewTransitionDocument = Document & {
   startViewTransition?: (update: () => void) => { ready: Promise<void>; finished: Promise<void> };
 };
 
-/** Applies a preset with the circular reveal when possible, otherwise instantly. */
-function revealPreset(id: PresetId, origin: RevealOrigin, allowMotion: boolean) {
+/**
+ * Applies a preset with the circular reveal when possible, otherwise instantly.
+ * `commit` (storing the new preferences, which re-renders React) runs together with
+ * the DOM update: inside the view transition's update callback, after the old
+ * snapshot is captured. Committing earlier would let the sync effect apply the new
+ * theme before the capture, and the reveal would show the new theme on both sides.
+ */
+function revealPreset(id: PresetId, origin: RevealOrigin, allowMotion: boolean, commit: () => void) {
   const doc = document as ViewTransitionDocument;
-  if (document.documentElement.getAttribute('data-theme') === id) return;
+  if (document.documentElement.getAttribute('data-theme') === id) {
+    commit();
+    return;
+  }
   if (!allowMotion || typeof doc.startViewTransition !== 'function') {
     applyPresetToDocument(id);
+    commit();
     return;
   }
   const { x, y } = originPoint(origin);
   const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
   try {
-    const transition = doc.startViewTransition(() => applyPresetToDocument(id));
+    const transition = doc.startViewTransition(() => {
+      applyPresetToDocument(id);
+      commit();
+    });
     transition.ready
       .then(() => {
         document.documentElement.animate(
@@ -155,6 +168,7 @@ function revealPreset(id: PresetId, origin: RevealOrigin, allowMotion: boolean) 
       .catch(() => undefined);
   } catch {
     applyPresetToDocument(id);
+    commit();
   }
 }
 
@@ -219,8 +233,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       const previous = getStoredPreferences();
       const next = parseAppearance({ ...previous, ...patch });
       const allowMotion = !(next.reduceMotion || systemReducedMotion);
-      revealPreset(resolvePresetId(next, systemDark), origin, allowMotion);
-      storePreferences(next);
+      revealPreset(resolvePresetId(next, systemDark), origin, allowMotion, () => storePreferences(next));
 
       const syncedChanged = SYNCED_KEYS.some((key) => previous[key] !== next[key]);
       if (syncedChanged && currentUser?.email) {
