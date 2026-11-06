@@ -97,7 +97,7 @@ Every application module depends on this platform. [Notifications](../notificati
 - Unknown household subcollections have no permissive fallback.
 - Notification deletion is denied; logical expiration needs manual TTL configuration.
 - Functions remove invalid FCM tokens after failed sends.
-- UID-only push targeting depends on a `users.uid` query, but profile creation does not consistently store that field.
+- Push recipients are resolved from membership records (approved members only; targeted notifications reach only their target), and each recipient's profile is read directly by email for FCM tokens. No `users.uid` query is used.
 - Creation rules require notification targets to be household members (UID membership record, or a profile pointing at the household), allow only `/`-relative deep links, and reject unknown fields.
 - The E2E seed and Playwright config refuse non-loopback emulator hosts; the seed additionally requires the exact `demo-homehub-e2e` project.
 - The emulator-only custom token route has no service-account secret and returns 404 unless emulator safety gates pass.

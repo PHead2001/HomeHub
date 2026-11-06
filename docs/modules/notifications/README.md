@@ -77,7 +77,7 @@ The homepage overview counts only active notifications visible to the verified u
 - Deleting a maintenance asset or vehicle resolves its active schedule and expiration reminders from a fresh notification snapshot; unrelated notification history remains intact.
 - Bell and center presentation deduplicate legacy documents with the same semantic source while merging read, dismiss, and resolution history.
 - Reminders are absent until a relevant client page runs its generator.
-- UID-only push targeting queries `users.uid`, while current profile creation does not consistently persist a `uid` field.
+- Push recipients come from the household's membership records: a notification targeted by `targetUserUid` (or `targetUserEmail`) goes only to that approved member, an untargeted one to every approved member, never to pending or former members. Each recipient's profile is then read directly by email (`users/{email}`) for its FCM tokens; no `users.uid` query is involved, so profiles without a stored `uid` still receive pushes.
 - New-member approval notifications are targeted at each active owner/admin.
 
 ## Validation

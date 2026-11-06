@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { MembershipError, deleteHousehold, leaveHousehold, redeemInvite, type VerifiedCaller } from '../../src/lib/server/household-membership';
+import { deduplicateNotifications } from '../../src/lib/notifications';
+import type { Notification } from '../../src/lib/types';
 
 // Runs against the Firestore emulator through the real Admin SDK path the app uses.
 const NOW = new Date('2026-08-01T12:00:00.000Z');
@@ -198,9 +200,19 @@ describe('repeat events', () => {
     await invite('FIRS-TJOI-NX');
     await redeemInvite(newcomer, 'FIRS-TJOI-NX', NOW);
     assert.equal(await approvals(), 1);
+    // The owner dismisses the first request.
+    const first = (await house.collection('notifications').where('sourceType', '==', 'household-newuser').where('targetUserUid', '==', owner.uid).get()).docs[0];
+    await first.ref.update({ [`dismissedBy.${owner.uid}`]: true, [`readBy.${owner.uid}`]: true });
     await leaveHousehold(newcomer, HOUSE, new Date(NOW.getTime() + 60_000));
     await invite('SECO-NDJO-IN');
     await redeemInvite(newcomer, 'SECO-NDJO-IN', new Date(NOW.getTime() + 120_000));
     assert.equal(await approvals(), 2);
+    // What the owner's bell shows after de-duplication: the new request, not dismissed.
+    const docs = (await house.collection('notifications').where('targetUserUid', '==', owner.uid).get()).docs;
+    const shown = deduplicateNotifications(docs.map(d => ({ id: d.id, ...d.data(),
+      createdAt: d.data().createdAt.toDate(), expiresAt: d.data().expiresAt.toDate() }) as unknown as Notification))
+      .filter(n => n.sourceType === 'household-newuser');
+    assert.equal(shown.length, 2, 'separate join events stay separate');
+    assert.equal(shown.filter(n => !(n.dismissedBy as Record<string, unknown>)?.[owner.uid]).length, 1, 'the rejoin request is not dismissed');
   });
 });

@@ -149,6 +149,8 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
         expiresAt: expires,
         deepLink: '/household?tab=members',
         sourceType: 'household-newuser',
+        // Per-event state: a rejoin must not inherit the earlier request's read/dismissed state.
+        stateKey: String(now.getTime()),
         sourceId: caller.uid,
         targetUserUid: approver.id,
         readBy: {},
@@ -190,6 +192,8 @@ const approverNotices = (
       targetUserUid: approver.id,
       readBy: {},
       dismissedBy: {},
+      // Per-event state: a repeat event must not inherit earlier read/dismissed state.
+      stateKey: String(now.getTime()),
       ...fields,
     },
   ]);
