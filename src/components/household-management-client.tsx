@@ -10,6 +10,7 @@ import {
   getDocs,
   query,
   runTransaction,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
@@ -67,6 +68,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn, copyText } from '@/lib/utils';
+import { inviteDateToIso } from '@/lib/invite-codes';
 
 const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const INVITE_TTL_MINUTES = 30;
@@ -105,7 +107,10 @@ const hasOverrides = (member: HouseholdMember) => Object.keys(member.permissions
 const householdTabs = ['overview', 'invites', 'members', 'roles', 'activity', 'danger'];
 
 export function HouseholdManagementClient() {
-  const { currentUser, household, currentMember, permissions, leaveHousehold } = useAuth();
+  const { currentUser, household, currentMember, permissions, leaveHousehold, deleteHousehold } = useAuth();
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
   const { toast } = useToast();
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState(() => {
@@ -160,7 +165,7 @@ export function HouseholdManagementClient() {
 
       const nextInvites = invitesResult.status === 'fulfilled'
         ? invitesResult.value.docs
-          .map(snapshot => ({ id: snapshot.id, ...snapshot.data() }) as InviteCode)
+          .map(snapshot => ({ id: snapshot.id, ...snapshot.data(), expiresAt: inviteDateToIso(snapshot.data().expiresAt) }) as InviteCode)
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         : [];
       const nextAudit = auditResult.status === 'fulfilled'
@@ -266,7 +271,7 @@ export function HouseholdManagementClient() {
         try {
           await runTransaction(db, async (transaction) => {
             const existing = await transaction.get(inviteRef);
-            if (existing.exists() && isActiveInvite({ id: existing.id, ...existing.data() } as InviteCode)) {
+            if (existing.exists() && isActiveInvite({ id: existing.id, ...existing.data(), expiresAt: inviteDateToIso(existing.data().expiresAt) } as InviteCode)) {
               throw new Error('Invite code collision.');
             }
             const now = new Date();
@@ -283,7 +288,8 @@ export function HouseholdManagementClient() {
               maxUses: 1,
               useCount: 0,
             };
-            transaction.set(inviteRef, createdInvite);
+            // Rules require a real Timestamp expiry no more than two hours ahead.
+            transaction.set(inviteRef, { ...createdInvite, expiresAt: Timestamp.fromDate(expiresAt) });
             transaction.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
               actorUid: currentUser.uid,
               actorEmail: currentUser.email,
@@ -797,15 +803,54 @@ export function HouseholdManagementClient() {
                 <div className="rounded-md border border-destructive/40 p-4">
                   <h3 className="font-semibold">Delete Household</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Full recursive household deletion needs a server-side Firebase Function to verify ownership and delete subcollections/storage safely. This PR intentionally does not ship a client-side delete button.
+                    Permanently deletes {household.name}: every chore, list, pet, maintenance record, photo and invite. Members keep their accounts. This cannot be undone.
                   </p>
-                  <Button variant="destructive" className="mt-3" disabled>Server-side delete deferred</Button>
+                  <Button variant="destructive" className="mt-3" disabled={!isOwner} onClick={() => setIsDeleteOpen(true)}>
+                    Delete Household
+                  </Button>
+                  {!isOwner && <p className="mt-2 text-sm text-muted-foreground">Only the owner can delete the household.</p>}
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
         </Tabs>
       )}
+
+      <Dialog open={isDeleteOpen} onOpenChange={(open) => { setIsDeleteOpen(open); if (!open) setDeleteConfirm(''); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete {household?.name}?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes the household and everything in it for every member. Type the household name to confirm.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (deleteConfirm.trim() !== household?.name || isDeleting) return;
+              setIsDeleting(true);
+              const deleted = await deleteHousehold(deleteConfirm);
+              setIsDeleting(false);
+              if (deleted) setIsDeleteOpen(false);
+            }}
+          >
+            <Input
+              aria-label="Household name"
+              value={deleteConfirm}
+              onChange={(event) => setDeleteConfirm(event.target.value)}
+              placeholder={household?.name}
+              autoComplete="off"
+            />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setIsDeleteOpen(false)}>Keep household</Button>
+              <Button type="submit" variant="destructive" disabled={deleteConfirm.trim() !== household?.name || isDeleting}>
+                {isDeleting ? 'Deleting…' : 'Delete forever'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!permissionsMember} onOpenChange={(open) => !open && setPermissionsMember(null)}>
         <DialogContent className="max-h-[90vh] max-w-2xl">

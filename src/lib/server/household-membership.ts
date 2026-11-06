@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
+import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import type { Household, HouseholdMember } from '@/lib/types';
 
@@ -148,4 +148,107 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     const household = { id: householdSnap.id, ...householdSnap.data() } as Household;
     return { household, member };
   });
+};
+
+const deleteHouseholdFiles = async (householdId: string) => {
+  const bucket = adminStorageBucket();
+  if (!bucket) return;
+  await bucket.deleteFiles({ prefix: `households/${householdId}/` });
+};
+
+const memberRecord = async (householdId: string, uid: string) => {
+  const snap = await adminDb.collection('households').doc(householdId).collection('members').doc(uid).get();
+  return snap.exists ? snap.data() || null : null;
+};
+
+const notifyApprovers = (
+  batch: FirebaseFirestore.WriteBatch,
+  householdRef: FirebaseFirestore.DocumentReference,
+  approvers: FirebaseFirestore.QueryDocumentSnapshot[],
+  now: Date,
+  fields: { title: string; message: string; sourceType: string; sourceId: string }
+) => {
+  for (const approver of approvers) {
+    const data = approver.data();
+    if (data.status && data.status !== 'active') continue;
+    batch.set(householdRef.collection('notifications').doc(`${fields.sourceType}-${fields.sourceId}-${approver.id}`), {
+      householdId: householdRef.id,
+      category: 'system',
+      createdAt: Timestamp.fromDate(now),
+      expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
+      deepLink: '/household?tab=members',
+      targetUserUid: approver.id,
+      readBy: {},
+      dismissedBy: {},
+      ...fields,
+    });
+  }
+};
+
+// Leaving: any non-owner. Chores and recurring templates assigned to the leaver
+// become unassigned so nothing keeps being scheduled for someone who left.
+export const leaveHousehold = async (caller: VerifiedCaller, householdId: string, now = new Date()) => {
+  const member = await memberRecord(householdId, caller.uid);
+  if (!member) throw new MembershipError('You are not part of this household.');
+  if (member.role === 'owner') throw new MembershipError('Transfer ownership to someone else before leaving.');
+
+  const householdRef = adminDb.collection('households').doc(householdId);
+  const [chores, templates, approvers] = await Promise.all([
+    householdRef.collection('chores').where('assignedToEmail', '==', caller.email).get(),
+    householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email).get(),
+    householdRef.collection('members').where('role', 'in', ['owner', 'admin']).get(),
+  ]);
+  const batch = adminDb.batch();
+  const iso = now.toISOString();
+  batch.delete(householdRef.collection('members').doc(caller.uid));
+  batch.update(householdRef, { memberEmails: FieldValue.arrayRemove(caller.email), updatedAt: iso });
+  batch.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
+  chores.docs.filter(d => !d.data().isCompleted).forEach(d =>
+    batch.update(d.ref, { assignedToEmail: '', assignedToDisplayName: 'Unassigned' }));
+  templates.docs.forEach(d => batch.update(d.ref, {
+    assignedToEmail: FieldValue.delete(),
+    'recurrence.assignedToEmail': FieldValue.delete(),
+  }));
+  batch.set(householdRef.collection('auditLogs').doc(), {
+    actorUid: caller.uid, actorEmail: caller.email, actorName: caller.displayName || null,
+    action: 'member.left', targetUid: caller.uid, targetEmail: caller.email, createdAt: iso,
+  });
+  notifyApprovers(batch, householdRef, approvers.docs.filter(d => d.id !== caller.uid), now, {
+    title: 'Member left',
+    message: `${caller.displayName || caller.email} left the household.`,
+    sourceType: 'household-member-left',
+    sourceId: caller.uid,
+  });
+  await batch.commit();
+};
+
+// Deleting: owner only, confirmed by typing the household name. Removes every
+// subcollection, the household's invites and files, and clears members' profiles.
+export const deleteHousehold = async (caller: VerifiedCaller, householdId: string, confirmName: string) => {
+  const householdRef = adminDb.collection('households').doc(householdId);
+  const [household, member] = await Promise.all([householdRef.get(), memberRecord(householdId, caller.uid)]);
+  if (!household.exists) throw new MembershipError('That household no longer exists.');
+  if (!member || member.role !== 'owner' || (member.status && member.status !== 'active')) {
+    throw new MembershipError('Only the household owner can delete it.');
+  }
+  if ((confirmName || '').trim() !== String(household.data()?.name || '').trim()) {
+    throw new MembershipError('Type the household name exactly to confirm.');
+  }
+
+  const [members, invites] = await Promise.all([
+    householdRef.collection('members').get(),
+    adminDb.collection('inviteCodes').where('householdId', '==', householdId).get(),
+  ]);
+  const emails = members.docs.map(d => d.data().email).filter((e): e is string => typeof e === 'string');
+  const profiles = await Promise.all(emails.map(email => adminDb.collection('users').doc(email).get()));
+  const batch = adminDb.batch();
+  profiles.forEach(profile => {
+    if (profile.exists && profile.data()?.householdId === householdId) {
+      batch.set(profile.ref, { householdId: null, role: 'member', permissions: {} }, { merge: true });
+    }
+  });
+  invites.docs.forEach(d => batch.delete(d.ref));
+  await batch.commit();
+  await deleteHouseholdFiles(householdId);
+  await adminDb.recursiveDelete(householdRef);
 };

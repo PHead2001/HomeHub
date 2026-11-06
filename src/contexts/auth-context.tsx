@@ -17,24 +17,19 @@ import {
   GoogleAuthProvider,
 } from 'firebase/auth';
 import {
-  arrayRemove,
   collection,
   deleteField,
   doc,
   getDoc,
-  getDocs,
-  query,
   setDoc,
   updateDoc,
-  where,
   writeBatch,
 } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { auth, db } from '@/lib/firebase';
-import { buildNotificationDocument } from '@/lib/notifications';
 import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
 import { normalizeInviteCode } from '@/lib/invite-codes';
-import { joinHouseholdWithInvite } from '@/app/household/actions';
+import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
 import type {
   Household,
   HouseholdMember,
@@ -56,7 +51,8 @@ interface AuthContextType {
   updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string) => Promise<void>;
   createHousehold: (name: string) => Promise<void>;
   joinHousehold: (code: string) => Promise<boolean>;
-  leaveHousehold: () => Promise<void>;
+  leaveHousehold: () => Promise<boolean>;
+  deleteHousehold: (confirmName: string) => Promise<boolean>;
 }
 
 export const AuthContext = createContext<AuthContextType | null>(null);
@@ -514,85 +510,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [currentUser, toast]);
 
+  const resetHouseholdState = useCallback(() => {
+    setHousehold(null);
+    setCurrentMember(null);
+    setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : null);
+  }, []);
+
   const leaveHousehold = useCallback(async () => {
-    if (!currentUser?.email || !currentUser.householdId || !household || !currentMember) {
-      toast({ variant: 'destructive', title: 'No Household', description: 'There is no household to leave.' });
-      return;
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser || !currentUser?.householdId || !household) {
+      toast({ variant: 'destructive', title: 'No household', description: 'There is no household to leave.' });
+      return false;
     }
-    if (currentMember.role === 'owner') {
-      toast({
-        variant: 'destructive',
-        title: 'Owner Cannot Leave',
-        description: 'Transfer ownership or delete the household before leaving.',
-      });
-      return;
-    }
-
     try {
-      const householdId = currentUser.householdId;
-      const batch = writeBatch(db);
-      const now = new Date().toISOString();
-      batch.delete(doc(db, 'households', householdId, 'members', currentUser.uid));
-      batch.update(doc(db, 'households', householdId), {
-        memberEmails: arrayRemove(currentUser.email),
-        updatedAt: now,
-      });
-      batch.set(doc(db, 'users', currentUser.email), {
-        householdId: null,
-        role: 'member',
-        permissions: {},
-      }, { merge: true });
-      batch.set(doc(collection(db, 'households', householdId, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'member.left',
-        targetUid: currentUser.uid,
-        targetEmail: currentUser.email,
-        targetName: currentUser.displayName,
-        createdAt: now,
-      });
-      batch.set(doc(collection(db, 'households', householdId, 'notifications')), buildNotificationDocument({
-        householdId,
-        category: 'system',
-        title: 'Member left household',
-        message: `${currentUser.displayName || currentUser.email} left the household.`,
-        deepLink: '/household?tab=members',
-        sourceType: 'household-member-left',
-        sourceId: currentUser.uid,
-      }));
-
-      const choresSnap = await getDocs(query(
-        collection(db, 'households', householdId, 'chores'),
-        where('assignedToEmail', '==', currentUser.email)
-      ));
-      choresSnap.forEach((choreDoc) => {
-        batch.update(choreDoc.ref, {
-          assignedToEmail: '',
-          assignedToDisplayName: 'Unassigned',
-        });
-      });
-
-      const templatesSnap = await getDocs(query(
-        collection(db, 'households', householdId, 'chore-templates'),
-        where('assignedToEmail', '==', currentUser.email)
-      ));
-      templatesSnap.forEach((templateDoc) => {
-        batch.update(templateDoc.ref, {
-          assignedToEmail: null,
-        });
-      });
-
-      await batch.commit();
-      setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : null);
-      setHousehold(null);
-      setCurrentMember(null);
-      toast({ title: 'Left Household', description: `You left ${household.name}.` });
-    } catch (error) {
-      console.error('Failed to leave household', error);
-      toast({ variant: 'destructive', title: 'Leave Failed', description: getErrorMessage(error) || 'Could not leave the household.' });
+      const result = await leaveHouseholdAction({ idToken: await firebaseUser.getIdToken(), householdId: currentUser.householdId });
+      if (!result.ok) {
+        toast({ variant: 'destructive', title: 'Could not leave', description: result.message });
+        return false;
+      }
+      resetHouseholdState();
+      toast({ title: 'You left the household', description: `You are no longer part of ${household.name}.` });
+      return true;
+    } catch {
+      toast({ variant: 'destructive', title: 'Could not leave', description: 'We could not reach HomeHub. Try again.' });
+      return false;
     }
-  }, [currentMember, currentUser, household, toast]);
+  }, [currentUser?.householdId, household, resetHouseholdState, toast]);
+
+  const deleteHousehold = useCallback(async (confirmName: string) => {
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser || !currentUser?.householdId || !household) return false;
+    try {
+      const result = await deleteHouseholdAction({
+        idToken: await firebaseUser.getIdToken(),
+        householdId: currentUser.householdId,
+        confirmName,
+      });
+      if (!result.ok) {
+        toast({ variant: 'destructive', title: 'Could not delete', description: result.message });
+        return false;
+      }
+      resetHouseholdState();
+      toast({ title: 'Household deleted', description: `${household.name} and everything in it were deleted.` });
+      return true;
+    } catch {
+      toast({ variant: 'destructive', title: 'Could not delete', description: 'We could not reach HomeHub. Try again.' });
+      return false;
+    }
+  }, [currentUser?.householdId, household, resetHouseholdState, toast]);
 
   const permissions = getMemberPermissions(currentMember);
 
@@ -609,6 +574,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     createHousehold,
     joinHousehold,
     leaveHousehold,
+    deleteHousehold,
   };
 
   return (

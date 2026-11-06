@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import { adminDb } from '../../src/lib/server/firebase-admin';
-import { MembershipError, redeemInvite, type VerifiedCaller } from '../../src/lib/server/household-membership';
+import { MembershipError, deleteHousehold, leaveHousehold, redeemInvite, type VerifiedCaller } from '../../src/lib/server/household-membership';
 
 // Runs against the Firestore emulator through the real Admin SDK path the app uses.
 const NOW = new Date('2026-08-01T12:00:00.000Z');
@@ -123,5 +123,45 @@ describe('invite redemption', () => {
     const third: VerifiedCaller = { uid: 'join-third', email: 'join.third@example.test' };
     await rejects(redeemInvite(third, 'MULT-IUSE-XX', NOW), /already been used/);
     await adminDb.collection('users').doc(third.email).delete();
+  });
+});
+
+describe('leaving and deleting', () => {
+  test('a member leaves: record gone, chores unassigned, owner and admin alerted', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await house.collection('chores').doc('c1').set({ task: 'Trash', assignedToEmail: guest.email, isCompleted: false });
+    await house.collection('chores').doc('c2').set({ task: 'Done', assignedToEmail: guest.email, isCompleted: true });
+    await house.collection('chore-templates').doc('t1').set({ task: 'Trash', assignedToEmail: guest.email, recurrence: { frequency: 'daily', assignedToEmail: guest.email } });
+    await leaveHousehold(guest, HOUSE, NOW);
+    assert.equal((await house.collection('members').doc(guest.uid).get()).exists, false);
+    assert.equal((await house.collection('chores').doc('c1').get()).data()?.assignedToEmail, '');
+    assert.equal((await house.collection('chores').doc('c2').get()).data()?.assignedToEmail, guest.email);
+    const template = (await house.collection('chore-templates').doc('t1').get()).data();
+    assert.equal(template?.assignedToEmail, undefined);
+    assert.equal(template?.recurrence?.assignedToEmail, undefined);
+    assert.ok(!((await house.get()).data()?.memberEmails || []).includes(guest.email));
+    const notes = await house.collection('notifications').where('sourceType', '==', 'household-member-left').get();
+    assert.deepEqual(notes.docs.map(d => d.data().targetUserUid).sort(), [admin.uid, owner.uid].sort());
+  });
+
+  test('the owner cannot leave and outsiders are refused', async () => {
+    await rejects(leaveHousehold(owner, HOUSE, NOW), /Transfer ownership/);
+    await rejects(leaveHousehold(newcomer, HOUSE, NOW), /not part/);
+  });
+
+  test('only the owner, typing the exact name, can delete; everything goes', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await house.collection('chores').doc('c1').set({ task: 'Trash' });
+    await house.collection('pets').doc('p1').collection('feeding-logs').doc('f1').set({ amount: 1 });
+    await adminDb.collection('users').doc(owner.email).set({ email: owner.email, householdId: HOUSE, role: 'owner' });
+    await invite('DELE-TEME-XX');
+    await rejects(deleteHousehold(admin, HOUSE, 'Join House'), /Only the household owner/);
+    await rejects(deleteHousehold(owner, HOUSE, 'join house'), /exactly/);
+    await deleteHousehold(owner, HOUSE, 'Join House');
+    assert.equal((await house.get()).exists, false);
+    assert.equal((await house.collection('chores').get()).size, 0);
+    assert.equal((await house.collection('pets').doc('p1').collection('feeding-logs').get()).size, 0);
+    assert.equal((await adminDb.collection('inviteCodes').doc('DELE-TEME-XX').get()).exists, false);
+    assert.equal((await adminDb.collection('users').doc(owner.email).get()).data()?.householdId, null);
   });
 });

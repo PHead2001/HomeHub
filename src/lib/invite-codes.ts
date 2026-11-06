@@ -7,3 +7,11 @@ export const normalizeInviteCode = (input: string): string | null => {
   if (!INVITE_ALPHABET.test(compact)) return null;
   return `${compact.slice(0, 4)}-${compact.slice(4, 8)}-${compact.slice(8)}`;
 };
+
+// Invite expiry is stored as a Firestore Timestamp (older codes used ISO strings).
+export const inviteDateToIso = (value: unknown): string => {
+  if (value && typeof value === 'object' && 'toDate' in value && typeof (value as { toDate: unknown }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate().toISOString();
+  }
+  return typeof value === 'string' ? value : '';
+};
