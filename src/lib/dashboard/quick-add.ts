@@ -5,8 +5,8 @@
  * returns `null`, and the palette falls back to search.
  */
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
-import { parsePortion } from '../pets/care';
-import type { PortionUnit } from '../pets/types';
+import { knownFoodType, newestFirst, parsePortion } from '../pets/care';
+import type { FoodType, PortionUnit } from '../pets/types';
 import { parseQuickAdd as parseShoppingEntries, splitSettled, type QuickAddEntry } from '../shopping/items';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -421,4 +421,13 @@ export function quickAddRetryMessage(failed: readonly QuickAddEntry[]): string |
   const names = failed.map((entry) => entry.name);
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
   return `Couldn't add ${list}. ${failed.length === 1 ? 'It is' : 'They are'} still here; press Confirm to try again.`;
+}
+
+/**
+ * Food type for a quick-logged meal, the Pets way: `knownFoodType` of the newest
+ * feeding across both date-shape lists (merged with Pets' `newestFirst`), else Dry
+ * (Pets' own default when there is no history).
+ */
+export function foodTypeFromLatest(lists: Array<Array<{ id: string; date: unknown; foodType?: unknown }>>): FoodType {
+  return knownFoodType(newestFirst(lists, 1)[0]?.foodType) ?? 'Dry';
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
@@ -136,6 +136,18 @@ describe('parseQuickAdd: chores', () => {
     if (curb?.kind !== 'chore') return;
     assert.equal(curb.assignee?.uid, 'morgan');
     assert.equal(curb.task, 'Take bins to curb');
+  });
+});
+
+describe('quick-add food type', () => {
+  it('reuses the newest feeding\u2019s food type across both date shapes, Dry only without history', () => {
+    const stamped = [{ id: 'a', date: { toDate: () => new Date('2026-07-30T08:00:00Z') }, foodType: 'Dry' }];
+    const strings = [{ id: 'b', date: '2026-07-31T08:00:00.000Z', foodType: 'Wet' }];
+    assert.equal(foodTypeFromLatest([stamped, strings]), 'Wet');
+    assert.equal(foodTypeFromLatest([[{ ...stamped[0], foodType: 'Mix' }], [{ ...strings[0], date: '2026-07-01T08:00:00.000Z' }]]), 'Mix');
+    // An unknown stored value is not reused (Pets' knownFoodType), and no history means Dry.
+    assert.equal(foodTypeFromLatest([[{ id: 'c', date: new Date(), foodType: 'Kibble' }], []]), 'Dry');
+    assert.equal(foodTypeFromLatest([[], []]), 'Dry');
   });
 });
 
