@@ -409,6 +409,13 @@ describe('independent review regressions', () => {
     await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.owner.uid), { status: 'pending' }));
   });
 
+  test('owners and admins set the household timezone; members save their own', async () => {
+    await assertSucceeds(updateDoc(doc(dbFor(users.admin), 'households', householdA), { timeZone: 'America/New_York' }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { timeZone: 'UTC' }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: 'Fine', timeZone: 'x'.repeat(100) }));
+    await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Denver' }));
+  });
+
   test('households cannot be deleted from the client', async () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), 'households', householdA)));
   });

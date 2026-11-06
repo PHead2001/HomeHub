@@ -140,10 +140,12 @@ service cloud.firestore {
     }
 
     function validHouseholdName() {
-      return !('name' in request.resource.data) ||
-        (request.resource.data.name is string &&
-          request.resource.data.name.size() > 0 &&
-          request.resource.data.name.size() <= 80);
+      return (!('timeZone' in request.resource.data) ||
+          (request.resource.data.timeZone is string && request.resource.data.timeZone.size() <= 64)) &&
+        (!('name' in request.resource.data) ||
+          (request.resource.data.name is string &&
+            request.resource.data.name.size() > 0 &&
+            request.resource.data.name.size() <= 80));
     }
 
     // ---------------------------------------------------------------------
@@ -193,6 +195,7 @@ service cloud.firestore {
           'birthday',
           'gender',
           'preferences',
+          'timeZone',
           'forcePasswordChange'
         ]) &&
         (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid);
@@ -356,12 +359,12 @@ service cloud.firestore {
         (
           (isOwnerRole(householdId) &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'name', 'memberEmails', 'updatedAt', 'ownerUid', 'ownerEmail', 'inviteCode'
+              'name', 'memberEmails', 'updatedAt', 'ownerUid', 'ownerEmail', 'inviteCode', 'timeZone'
             ]) &&
             ownerPointerStaysValid(householdId) &&
             previousOwnerDemotedIfMoved(householdId)) ||
           (isAdminRole(householdId) &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'memberEmails', 'updatedAt']))
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'memberEmails', 'updatedAt', 'timeZone']))
         );
       allow delete: if false;
 
