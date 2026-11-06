@@ -252,7 +252,8 @@ export function ShoppingListClient({
         if (reconcileAgainRef.current) reconcileWithServer(listId);
       });
   }, []);
-  selectedListIdRef.current = selectedList?.id ?? null;
+  // The open list's id (from the URL), so async results for another list are never shown.
+  selectedListIdRef.current = selectedListId;
 
   // --- Data Fetching ---
 
@@ -315,6 +316,9 @@ export function ShoppingListClient({
         getDocOfflineAware(categoriesDoc)
       ]);
 
+      // The member may have opened another list meanwhile (e.g. an Undo toast for list A
+      // pressed while list B is open): never render A's items under B's header.
+      if (selectedListIdRef.current !== listId) return;
       const itemsData = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
       setListItems(itemsData);
 
@@ -328,9 +332,9 @@ export function ShoppingListClient({
       // Reset to default if no specific categories are set for this list
       setCategories(storedCategories ?? DEFAULT_SHOPPING_CATEGORIES);
     } catch (error) {
-      toastError(error, 'Could not load list items');
+      if (selectedListIdRef.current === listId) toastError(error, 'Could not load list items');
     } finally {
-      if (!silent) setLoadingItems(false);
+      if (!silent && selectedListIdRef.current === listId) setLoadingItems(false);
     }
   }, [currentUser, reconcileWithServer, toastError]);
   fetchItemsRef.current = fetchItemsAndCategories;
@@ -571,10 +575,15 @@ export function ShoppingListClient({
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
       const list = selectedList;
-      const lastNeeded = isCheckingOff
+      // The write always targets the item's own list; the screen is only touched while
+      // that list is still the open one (an Undo can arrive after switching lists).
+      const isListOpen = () => selectedListIdRef.current === list.id;
+      const lastNeeded = isCheckingOff && isListOpen()
         && listItemsRef.current.filter(listItem => listItem.status === 'needed' && listItem.id !== item.id).length === 0;
-      const setItemStatus = (status: ShoppingListItem['status']) =>
+      const setItemStatus = (status: ShoppingListItem['status']) => {
+        if (!isListOpen()) return;
         setListItems(prev => prev.map(listItem => listItem.id === item.id ? { ...listItem, status } : listItem));
+      };
       // A failed write is not undone by restoring this tick's starting status: several
       // ticks on one item can be queued offline and fail together, and each captured a
       // different predecessor. Show the confirmed state from Firestore instead.

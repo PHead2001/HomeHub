@@ -57,6 +57,34 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('undo from a list that is no longer open keeps the open list on screen', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const apples = groceryItems.doc('apples');
+    await apples.update({ status: 'needed' });
+    try {
+      await open(page, '/shopping');
+      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      await page.locator('#item-needed-apples').click();
+      await expect.poll(async () => (await apples.get()).data()?.status).toBe('purchased');
+
+      // In-app switch (no reload), so the Undo toast from Weekly Groceries is still showing.
+      await page.getByRole('button', { name: 'Back to all lists' }).click();
+      await page.getByRole('button', { name: 'Open Hardware Run' }).click();
+      await expect(page.getByRole('heading', { name: 'Hardware Run', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Undo' }).click();
+
+      // The undo lands on Weekly Groceries ...
+      await expect.poll(async () => (await apples.get()).data()?.status).toBe('needed');
+      // ... and Hardware Run still shows its own items, not Weekly Groceries'.
+      await expect(page.getByRole('heading', { name: 'Hardware Run', exact: true })).toBeVisible();
+      await expect(page.getByRole('checkbox', { name: /HVAC filters/ })).toBeVisible();
+      await expect(page.locator('#item-needed-apples, #item-purchased-apples')).toHaveCount(0);
+      await expect(page.getByRole('checkbox', { name: /Whole milk/ })).toHaveCount(0);
+    } finally {
+      await apples.update({ status: 'needed' });
+    }
+  });
+
   test('quick-add takes several items and merges duplicates into one item', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const name = 'E2E quick bread';

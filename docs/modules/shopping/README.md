@@ -97,7 +97,7 @@ Firestore rules require `shopping.view` to read lists, items and category config
 - `sourceUrl` is stored only when it parses as http(s), and is re-checked before rendering as a link.
 - Deleting a list removes only the parent document; nested items/config can remain orphaned despite destructive dialog wording.
 - Purchase-to-pantry is one Firestore batch, but it is separate from clearing purchased items: "Add to pantry, then clear" clears only after the pantry batch succeeds.
-- Undo after a delete rewrites the same document id with the item's previous fields; undo after a tick writes the status back through the same offline-aware path.
+- Undo after a delete rewrites the same document id with the item's previous fields; undo after a tick writes the status back through the same offline-aware path, always to the item's own list. If another list has been opened since, the write still lands on the original list but the open list's items are left alone: item reads and optimistic updates only apply while their list is the one in the URL.
 - Motion stays in budget and respects reduced motion (system or in-app): row strike-through 150 ms then a 120 ms fade, purchased rows drop in over 220 ms, the cart wobble is 350 ms and skipped under reduced motion, the receipt prints in 900 ms and any key or pointer press finishes it (instant under reduced motion). Swipe-to-tick is enabled only for coarse pointers; the checkbox never moves.
 - All colors are tokens (list tints use the contrast-tested `--member-N` palette); `tests/unit/shopping-logic.test.ts` fails on raw color literals in the shopping components.
 - Errors use `toastError`, so raw Firebase text never reaches users; field problems are inline (`FormMessage` or `FieldError`).

@@ -27,13 +27,14 @@ export type PantryHandoffChoice = {
 };
 
 export type PantryWritePlan =
-  | { kind: 'increment'; id: string; name: string; quantity: number }
+  /** Adds `add` to the existing entry with an atomic Firestore increment (never a read-then-write total). */
+  | { kind: 'increment'; id: string; name: string; add: number }
   | { kind: 'create'; name: string; quantity: number; location: PantryItemLocation };
 
 /**
  * Plans the pantry writes for a batch of purchased items. An item merges into an
  * existing pantry entry with the same name, location and the default `items`
- * unit (its quantity grows); anything else becomes a new entry counted in
+ * unit (its quantity grows by an atomic increment, so concurrent handoffs add up); anything else becomes a new entry counted in
  * `items`. Two purchases of the same name and location in one batch are combined.
  */
 export function planPantryHandoff(
@@ -57,7 +58,7 @@ export function planPantryHandoff(
       && pantryItem.unit === 'items'
       && itemNameKey(pantryItem.name) === itemNameKey(entry.name));
     if (match) {
-      plans.push({ kind: 'increment', id: match.id, name: match.name, quantity: (Number(match.quantity) || 0) + entry.quantity });
+      plans.push({ kind: 'increment', id: match.id, name: match.name, add: entry.quantity });
     } else {
       plans.push({ kind: 'create', ...entry });
     }

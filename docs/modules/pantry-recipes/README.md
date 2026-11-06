@@ -47,7 +47,7 @@ Deleting an item and adding it back to a shopping list are separate operations: 
 - `PantryItem` in `src/lib/types.ts` defines `id`, `name`, `quantity`, `unit`, `location`, and optional nullable ISO `expiryDate`.
 - `PantryItemUnit`, `pantryItemUnitCategories`, and `PantryItemLocation` define supported units and locations.
 - Recipe results are not persisted.
-- Batch handoff from shopping (`addPurchasesToPantry`) writes one Firestore batch: an existing entry with the same name (case-insensitive), the same location and unit `items` has its `quantity` raised; otherwise a new document is created with `name`, `quantity`, `unit: 'items'`, `location` and `expiryDate: null` (the same fields as the form). Shelves are guessed from the shopping category (Dairy, Meat, Produce, Deli, Seafood, Eggs to Fridge; Frozen to Freezer; everything else to Pantry) and can be changed before confirming.
+- Batch handoff from shopping (`addPurchasesToPantry`) writes one Firestore batch: an existing entry with the same name (case-insensitive), the same location and unit `items` has its `quantity` raised with an atomic Firestore `increment()` of the amount bought, so two members adding to the same entry at the same time both count; otherwise a new document is created with `name`, `quantity`, `unit: 'items'`, `location` and `expiryDate: null` (the same fields as the form). Shelves are guessed from the shopping category (Dairy, Meat, Produce, Deli, Seafood, Eggs to Fridge; Frozen to Freezer; everything else to Pantry) and can be changed before confirming.
 
 Writes use `setDoc(..., { merge: true })`. Editing an item's name does not rename its existing Firestore document ID.
 

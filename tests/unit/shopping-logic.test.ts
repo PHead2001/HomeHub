@@ -135,10 +135,26 @@ describe('pantry handoff', () => {
       { item: { name: '  ', quantity: 1 }, location: 'Pantry' },
     ], existing);
     assert.deepEqual(plans, [
-      { kind: 'increment', id: 'milk-1', name: 'Whole Milk', quantity: 3 },
+      { kind: 'increment', id: 'milk-1', name: 'Whole Milk', add: 2 },
       { kind: 'create', name: 'Rice', quantity: 1, location: 'Pantry' },
       { kind: 'create', name: 'Peas', quantity: 3, location: 'Freezer' },
     ]);
+  });
+});
+
+describe('pantry handoff is concurrency-safe', () => {
+  test('an increment plan carries only the amount added, never a total computed from a read', () => {
+    const plans = planPantryHandoff(
+      [{ item: { name: 'Eggs', quantity: 1 }, location: 'Fridge' }],
+      [{ id: 'eggs', name: 'Eggs', quantity: 2, unit: 'items', location: 'Fridge' }],
+    );
+    assert.deepEqual(plans, [{ kind: 'increment', id: 'eggs', name: 'Eggs', add: 1 }]);
+    assert.ok(!('quantity' in plans[0]));
+  });
+
+  test('the writer applies increments with Firestore increment(), which also queues offline', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
+    assert.match(source, /quantity: increment\(plan\.add\)/);
   });
 });
 
