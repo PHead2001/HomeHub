@@ -77,7 +77,7 @@ export function HealthPanel({
           )}
           {health.bonus > 0 && (
             <p className="px-2 text-sm text-muted-foreground">
-              <span className="mr-3 font-semibold tabular-nums text-success">+{health.bonus}</span>
+              <span className="mr-3 font-semibold tabular-nums text-success">+{health.bonus}</span>{' '}
               {health.recentLogs} {health.recentLogs === 1 ? 'log' : 'logs'} in the last {HEALTH_RULES.recentDays} days
             </p>
           )}

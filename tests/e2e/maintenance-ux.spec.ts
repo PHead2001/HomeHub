@@ -57,16 +57,27 @@ test.describe('maintenance center UX', () => {
   test('H10: overview shows the home health score with its reasons, linked to the items', async ({ page }) => {
     await open(page, '/maintenance');
     const panel = page.getByTestId('maintenance-health');
-    // Seed: HVAC flagged (−10), filter due today (−5), warranty ending (−2); dishwasher filter due soon (−2);
-    // SUV tire rotation, registration and inspection due soon (−2 each); two logs in 90 days (+4).
-    await expect(panel.getByRole('img', { name: 'Home health 79 out of 100, needs some care.' })).toBeVisible();
-    await expect(panel.getByText('Needs some care')).toBeVisible();
+    // Seed deductions: HVAC flagged (−10), filter due today (−5), warranty ending (−2); dishwasher filter
+    // due soon (−2); SUV tire rotation, registration and inspection due soon (−2 each) = −25. The bonus
+    // depends on how many linked logs other specs have left in the last 90 days (2 in the seed, +2 each,
+    // at most +10), so the score is 79-85 rather than one exact value.
+    const dial = panel.getByRole('img', { name: /^Home health \d+ out of 100, / });
+    await expect(dial).toBeVisible();
+    const label = (await dial.getAttribute('aria-label')) || '';
+    const score = Number(/Home health (\d+)/.exec(label)?.[1]);
+    expect(score).toBeGreaterThanOrEqual(79);
+    expect(score).toBeLessThanOrEqual(85);
+    await expect(panel.getByText(score >= 85 ? 'In good shape' : 'Needs some care', { exact: true })).toBeVisible();
+    // The ticker settles on the same number the label announces.
+    await expect(dial).toContainText(String(score));
+    await expect(panel.getByRole('list', { name: 'Score deductions' }).getByRole('listitem')).toHaveCount(5);
+    await expect(panel.getByRole('button', { name: 'Show 2 more' })).toBeVisible();
     const deduction = panel.getByRole('button', { name: /Main HVAC System: flagged as needing attention/ });
     await expect(deduction).toContainText('−10');
     await deduction.click();
     await expect(page.getByRole('tab', { name: 'Home Assets' })).toHaveAttribute('aria-selected', 'true');
     await expect(page).toHaveURL(/\?asset=hvac-main$/);
-    await expect(page.getByRole('img', { name: /^Main HVAC System health 85 out of 100/ }).first()).toBeVisible();
+    await expect(page.getByRole('img', { name: /^Main HVAC System health \d+ out of 100/ }).first()).toBeVisible();
   });
 
   test('tabs are linkable with ?tab= and choosing a tab updates the URL', async ({ page }) => {
@@ -100,7 +111,8 @@ test.describe('maintenance center UX', () => {
     await expect(warranty.getByRole('button', { name: /^Snooze/ })).toHaveCount(0);
 
     await dishwasher.getByRole('button', { name: 'Snooze 1 week: Clean filter for Kitchen Dishwasher' }).click();
-    await expect(page.getByText('Snoozed for a week')).toBeVisible();
+    // Radix also mirrors each toast into a screen-reader live region; target the visible title.
+    await expect(page.getByText('Snoozed for a week', { exact: true })).toBeVisible();
     await expect.poll(async () => (await household.collection('home-assets').doc('dishwasher').get()).get('schedules')?.[0]?.nextDueDate)
       .toBe('2026-08-08');
     await expect(overdue.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' })).toHaveCount(0);
@@ -109,7 +121,7 @@ test.describe('maintenance center UX', () => {
 
     const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
     await filter.getByRole('button', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
-    await expect(page.getByText('Marked done')).toBeVisible();
+    await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
     await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0])
       .toMatchObject({ lastCompletedDate: '2026-08-01', nextDueDate: '2026-11-01' });
     await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get()).size)

@@ -495,14 +495,15 @@ function AttachmentPanel({
 
   return (
     <div className="rounded-lg border p-3" data-testid={`attachments-${targetType}-${targetId}`}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Wraps by its own width, not the viewport: the panel sits in a narrow detail column on desktop. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-muted-foreground" />
           <h3 className="font-headline font-semibold">{title}</h3>
         </div>
-        {canUpload && <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        {canUpload && <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Select value={category} onValueChange={(value) => setCategory(value as MaintenanceAttachmentCategory)}>
-            <SelectTrigger className="w-full sm:w-44">
+            <SelectTrigger className="w-40" aria-label="Attachment category">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -1982,7 +1983,8 @@ export function MaintenanceLogClient() {
     onEdit: () => void;
     onDelete: () => void;
   }) => (canEdit || canDelete) && (
-    <div className="flex flex-wrap items-center gap-2 border-t pt-4">
+    // Fits one row in the 320-420 px detail column; wraps only on very narrow screens.
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-2 border-t pt-4">
       {canEdit && (
         <Button aria-label={`Edit ${kind} ${name}`} variant="outline" size="sm" onClick={onEdit}>
           <Edit className="mr-2 h-4 w-4" />
@@ -1993,7 +1995,7 @@ export function MaintenanceLogClient() {
         <Button variant="ghost" size="sm" onClick={onEdit}>
           <PencilLine className="mr-2 h-4 w-4" />
           Add details
-          <span className="ml-1 text-muted-foreground">({missing} empty)</span>
+          <span className="sr-only">({missing} empty)</span>
         </Button>
       )}
       {canDelete && (

@@ -15,7 +15,7 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 - Review date/mileage reminders and act on them in place: **Mark done**, **Snooze 1 week**, or **Open** the asset/vehicle (see "Reminder actions").
 - See a 0-100 **home health score** on Overview (dial, band label and the deductions behind it, each linking to its item) and a small health ring on every active asset and vehicle card and detail panel (see "Home health score").
 - Asset cards are photo-first: the newest image attachment fills a fixed band at the top of the card; without one, the category icon on a token gradient.
-- Detail panels list only the fields that have a value (no "Not recorded"); Edit, "Add details (N empty)" and Delete share one action row, with Delete set apart on the right.
+- Detail panels list only the fields that have a value (no "Not recorded"); Edit, "Add details" (its accessible name adds "(N empty)") and Delete share one action row that fits the desktop detail column, with Delete set apart on the right; it wraps only on very narrow screens. The attachment header (category, Upload) wraps by its own width, so it never overflows the narrow detail column.
 - Controls follow the member's maintenance permissions: Add/Edit/Complete/Snooze/Upload need `maintenance.edit`, Add Log needs `maintenance.createLogs`, Mark done and Complete need both, Delete (records, logs, attachments) needs `maintenance.delete`. A member without `maintenance.view` sees a "not shared with you" state and no queries run.
 
 ## Entry Points
