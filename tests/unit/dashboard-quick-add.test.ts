@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, resolveChoreAssignee, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
@@ -136,6 +136,26 @@ describe('parseQuickAdd: chores', () => {
     if (curb?.kind !== 'chore') return;
     assert.equal(curb.assignee?.uid, 'morgan');
     assert.equal(curb.task, 'Take bins to curb');
+  });
+});
+
+describe('shopping quick-add outcomes', () => {
+  it('reports per-item outcomes so a retry sends only the failed entries', () => {
+    const entries = [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 2 }, { name: 'Bread', quantity: 1 }];
+    const error = new Error('offline');
+    const outcome = shoppingAddOutcome(entries, [
+      { status: 'fulfilled', value: 'saved' },
+      { status: 'rejected', reason: error },
+      { status: 'fulfilled', value: 'queued' },
+    ]);
+    assert.deepEqual(outcome.saved.map((entry) => entry.name), ['Milk', 'Bread']);
+    assert.deepEqual(outcome.failed, [{ name: 'Eggs', quantity: 2 }]);
+    assert.equal(outcome.queued, true);
+    assert.equal(outcome.firstError, error);
+    assert.equal(quickAddRetryMessage(outcome.failed), "Couldn't add Eggs. It is still here; press Confirm to try again.");
+    assert.equal(quickAddRetryMessage([]), null);
+    const allSaved = shoppingAddOutcome(entries.slice(0, 1), [{ status: 'fulfilled', value: 'saved' }]);
+    assert.deepEqual(allSaved, { saved: [entries[0]], failed: [], queued: false });
   });
 });
 

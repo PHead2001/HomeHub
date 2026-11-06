@@ -37,11 +37,12 @@ import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
-import { assignableMembers, describeRepeat, parseQuickAdd, resolveChoreAssignee, type QuickAddIntent, type QuickAddMember } from '@/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type QuickAddIntent, type QuickAddMember } from '@/lib/dashboard/quick-add';
 import { choreCapabilities } from '@/lib/chores/list';
 import { DEFAULT_PORTION, formatPortion } from '@/lib/pets/care';
 import type { PortionUnit } from '@/lib/pets/types';
 import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
+import { friendlyError } from '@/lib/friendly-error';
 import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, logFeeding } from './quick-add-actions';
@@ -135,6 +136,7 @@ export function CommandPalette({
   const [activeChoice, setActive] = useState(0);
   const [pending, setPending] = useState<QuickAddIntent | null>(null);
   const [saving, setSaving] = useState(false);
+  const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const optionId = (i: number) => `${listId}-option-${i}`;
@@ -250,8 +252,19 @@ export function CommandPalette({
     setSaving(true);
     try {
       if (pending.kind === 'shopping' && pending.list) {
-        const status = await addShoppingItems(householdId, pending.list, pending.items, lateError);
-        toast({ title: status === 'queued' ? 'Saved offline' : 'Added to the list', description: `${pending.items.map((item) => item.name).join(', ')} on ${pending.list.name}.` });
+        const outcome = await addShoppingItems(householdId, pending.list, pending.items, lateError);
+        if (outcome.saved.length > 0) {
+          toast({ title: outcome.queued ? 'Saved offline' : 'Added to the list', description: `${outcome.saved.map((item) => item.name).join(', ')} on ${pending.list.name}.` });
+          playFeedback('add');
+        }
+        if (outcome.failed.length > 0) {
+          // Keep only what failed, so Confirm retries those and never re-adds the saved ones.
+          setPending({ ...pending, items: outcome.failed });
+          setRetryMessage(`${quickAddRetryMessage(outcome.failed)} ${friendlyError(outcome.firstError)}`);
+          return;
+        }
+        close();
+        return;
       } else if (pending.kind === 'feeding') {
         const portion = feedingPortion(pending);
         await logFeeding(householdId, pending.pet.id, portion.amount, portion.unit, currentUser, lateError);
@@ -334,8 +347,10 @@ export function CommandPalette({
             self={self}
             members={assignable}
             saving={saving}
+            message={retryMessage}
             onBack={() => {
               setPending(null);
+              setRetryMessage(null);
               window.setTimeout(() => inputRef.current?.focus(), 0);
             }}
             onConfirm={confirm}
@@ -414,6 +429,7 @@ function QuickAddPreview({
   self,
   members,
   saving,
+  message,
   onBack,
   onConfirm,
   onNavigate,
@@ -422,6 +438,8 @@ function QuickAddPreview({
   self: QuickAddMember | null;
   members: QuickAddMember[];
   saving: boolean;
+  /** Inline note after a partial save: which entries are left to retry. */
+  message?: string | null;
   onBack: () => void;
   onConfirm: (assignee?: QuickAddMember | null) => void;
   onNavigate: (href: string) => void;
@@ -467,6 +485,7 @@ function QuickAddPreview({
         </label>
       )}
       {handOff && <p className="mt-3 text-sm text-muted-foreground">{handOff.note}</p>}
+      {message && <p role="alert" className="mt-3 text-sm text-destructive" data-testid="quick-add-retry">{message}</p>}
       <div className="mt-4 flex justify-between gap-2">
         <Button type="button" variant="ghost" onClick={onBack} disabled={saving}>
           <ArrowLeft aria-hidden className="mr-2 h-4 w-4" />

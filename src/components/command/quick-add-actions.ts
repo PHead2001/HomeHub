@@ -23,7 +23,8 @@ import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offli
 import { addFeedingLog } from '@/components/pets/pet-log-api';
 import { loggerName } from '@/lib/pets/care';
 import type { PortionUnit } from '@/lib/pets/types';
-import { findMergeTarget } from '@/lib/shopping/items';
+import { findMergeTarget, type QuickAddEntry } from '@/lib/shopping/items';
+import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
 import { mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
@@ -34,9 +35,9 @@ import type { QuickAddList, QuickAddMember } from '@/lib/dashboard/quick-add';
 export async function addShoppingItems(
   householdId: string,
   list: QuickAddList,
-  items: Array<{ name: string; quantity: number }>,
+  items: QuickAddEntry[],
   onLateError: (error: unknown) => void,
-): Promise<'saved' | 'queued'> {
+): Promise<ShoppingAddOutcome> {
   const categoriesSnapshot = await getDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
   const offline = isBrowserOffline();
@@ -45,10 +46,12 @@ export async function addShoppingItems(
   // item (the transaction re-checks it is still needed); offline nothing merges.
   const needed = offline ? [] : (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
     ?.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<ShoppingListItem, 'id'>) })) ?? [];
-  let status: 'saved' | 'queued' = 'saved';
-  for (const item of items) {
+  // Each entry is its own write, settled independently (Shopping's quick-add
+  // contract): one failure never hides which entries were saved, and a retry
+  // sends only the failed ones, so nothing is added twice.
+  const settled = await Promise.allSettled(items.map(async (item): Promise<'saved' | 'queued'> => {
     const target = findMergeTarget(needed, item.name);
-    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), item.quantity)) continue;
+    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), item.quantity)) return 'saved';
     const { category } = await resolveShoppingCategory({
       itemName: item.name,
       categories,
@@ -56,13 +59,9 @@ export async function addShoppingItems(
       categorize: async (input) => unwrapAiActionResult(await categorizeGroceryItem(input, await getAiActionContext(householdId))),
     });
     const { itemId, data } = buildShoppingListItem({ name: item.name, quantity: item.quantity, category });
-    const result = await awaitWriteUnlessOffline(
-      setDoc(doc(itemsRef, itemId), data),
-      onLateError,
-    );
-    if (result === 'queued') status = 'queued';
-  }
-  return status;
+    return awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
+  }));
+  return shoppingAddOutcome(items, settled);
 }
 
 // Feedings go through the Pets module's own writer, so quick-add entries carry the

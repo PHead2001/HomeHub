@@ -11,7 +11,6 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { Bell, CheckSquare, PawPrint, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
 import { NumberTicker } from '@/components/motion/number-ticker';
-import { relativeDays } from '@/lib/dashboard/dates';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { useAuth } from '@/hooks/use-auth';
@@ -203,7 +202,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
               <li key={`${item.label}-${index}`} className="flex justify-between gap-2">
                 <span className="truncate">{item.label}</span>
                 <span className={cn('shrink-0 text-xs', item.overdue ? 'text-warning' : 'text-muted-foreground')}>
-                  {item.days === null ? 'by mileage' : relativeDays(item.days)}
+                  {item.statusLabel}
                 </span>
               </li>
             ))}
@@ -213,9 +212,12 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         {next ? (
           <>
             <span className="truncate font-medium">{next.label}</span>
+            {/* Maintenance's own copy: the status badge text and the "when" line, which
+                says "mi over" / "mi to go" for mileage triggers. Never a negative span. */}
             <span className={cn('font-headline text-2xl font-semibold', next.overdue ? 'text-warning' : 'text-foreground')}>
-              {next.days === null ? 'Due by mileage' : next.overdue ? `${-next.days} ${-next.days === 1 ? 'day' : 'days'} overdue` : next.days === 0 ? 'Due today' : `In ${next.days} ${next.days === 1 ? 'day' : 'days'}`}
+              {next.statusLabel}
             </span>
+            {next.detail && <span className="truncate text-sm text-muted-foreground" data-testid="maintenance-tile-detail">{next.detail}</span>}
           </>
         ) : (
           <span className="text-sm text-muted-foreground">Nothing scheduled.</span>

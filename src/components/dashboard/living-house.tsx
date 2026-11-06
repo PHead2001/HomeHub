@@ -356,7 +356,7 @@ export function LivingHouse({
             <YardObject
               href={climateItem?.href ?? MAINTENANCE_REMINDERS_HREF}
               testId="house-hvac"
-              label={maintenance.climateDue ? `Heating and cooling: ${climateItem?.label ?? 'needs attention'}` : 'Heating and cooling: all good'}
+              label={maintenance.climateDue ? `Heating and cooling: ${climateItem ? `${climateItem.label}, ${climateItem.statusLabel.toLowerCase()}` : 'needs attention'}` : 'Heating and cooling: all good'}
             >
               <span className="relative flex h-9 w-9 items-center justify-center rounded-md border bg-card">
                 <AirVent aria-hidden className="h-4 w-4" />
@@ -369,7 +369,7 @@ export function LivingHouse({
             <YardObject
               href={vehicleItem?.href ?? MAINTENANCE_REMINDERS_HREF}
               testId="house-car"
-              label={maintenance.vehicleDue ? `Car: ${vehicleItem?.label ?? 'service'} due` : 'Car: no service due'}
+              label={maintenance.vehicleDue ? `Car: ${vehicleItem ? `${vehicleItem.label}, ${vehicleItem.statusLabel.toLowerCase()}` : 'needs attention'}` : 'Car: no service due'}
             >
               <span className="relative flex h-9 w-12 items-center justify-center rounded-md border bg-card">
                 <Car aria-hidden className="h-5 w-5" />

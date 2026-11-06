@@ -81,7 +81,7 @@ test.describe('dashboard, shell and notifications', () => {
       await expect(page.getByTestId('dashboard-tile-pets')).toContainText(pet.countLabel);
     }
     await expect(house.getByRole('link', { name: /^Heating and cooling: Replace air filter/ })).toBeVisible();
-    await expect(house.getByRole('link', { name: /^Car: .+ due$/ })).toBeVisible();
+    await expect(house.getByRole('link', { name: /^Car: .+, (overdue|due today|due soon|expired|expires today|expires soon)$/ })).toBeVisible();
 
     // Section 3: exact tiles by default, before any AI request.
     await expect(page.getByTestId('home-ai-overview-result')).toHaveCount(0);

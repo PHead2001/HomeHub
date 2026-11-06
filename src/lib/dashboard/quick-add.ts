@@ -7,7 +7,7 @@
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
 import { parsePortion } from '../pets/care';
 import type { PortionUnit } from '../pets/types';
-import { parseQuickAdd as parseShoppingEntries } from '../shopping/items';
+import { parseQuickAdd as parseShoppingEntries, splitSettled, type QuickAddEntry } from '../shopping/items';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Matches `value` only as whole words (a letter or digit on either side does not count). */
@@ -390,4 +390,35 @@ export function resolveChoreAssignee(
   if (requested && assignable.some((member) => member.email === requested.email)) return { assignee: requested, restricted: false };
   const fallback = self && assignable.some((member) => member.email === self.email) ? self : assignable[0] ?? self;
   return { assignee: fallback, restricted: Boolean(requested && fallback && requested.email !== fallback.email) };
+}
+
+export type ShoppingAddOutcome = {
+  saved: QuickAddEntry[];
+  failed: QuickAddEntry[];
+  /** True when at least one saved entry is only queued (offline). */
+  queued: boolean;
+  firstError?: unknown;
+};
+
+/**
+ * Per-entry outcome of a quick-add shopping submission, with Shopping's
+ * `splitSettled`: which entries were saved (or queued offline) and which failed.
+ * The palette keeps only the failed ones in the preview for a retry.
+ */
+export function shoppingAddOutcome(
+  entries: readonly QuickAddEntry[],
+  settled: readonly PromiseSettledResult<'saved' | 'queued'>[],
+): ShoppingAddOutcome {
+  const { failed, firstError } = splitSettled(entries, settled);
+  const saved = entries.filter((_, index) => settled[index]?.status === 'fulfilled');
+  const queued = settled.some((result) => result.status === 'fulfilled' && result.value === 'queued');
+  return firstError === undefined ? { saved, failed, queued } : { saved, failed, queued, firstError };
+}
+
+/** Inline message for entries that could not be added; they stay in the preview. */
+export function quickAddRetryMessage(failed: readonly QuickAddEntry[]): string | null {
+  if (failed.length === 0) return null;
+  const names = failed.map((entry) => entry.name);
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `Couldn't add ${list}. ${failed.length === 1 ? 'It is' : 'They are'} still here; press Confirm to try again.`;
 }

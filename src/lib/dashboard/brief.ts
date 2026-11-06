@@ -68,8 +68,9 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   const maintenance = facts.maintenance;
   if (maintenance && maintenance.overdue > 0) {
     phrases.push([{ text: `${plural(maintenance.overdue, 'maintenance task')} overdue`, href: MAINTENANCE_REMINDERS_HREF }]);
-  } else if (maintenance?.next && maintenance.next.days === 0) {
-    phrases.push([{ text: maintenance.next.label, href: maintenance.next.href }, { text: ' is due today' }]);
+  } else if (maintenance?.next && maintenance.next.status === 'due_today') {
+    // The reminder's own status (date or mileage), never recomputed from dates.
+    phrases.push([{ text: maintenance.next.label, href: maintenance.next.href }, { text: ` (${maintenance.next.statusLabel.toLowerCase()})` }]);
   }
 
   if (phrases.length === 0 && facts.shopping && facts.shopping.neededItems > 0) {

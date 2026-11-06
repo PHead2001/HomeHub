@@ -11,7 +11,16 @@ import { collapseMissedRecurring } from '../chores/list';
 import { daysUntilExpiry } from '../shopping/pantry';
 import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
 import type { PetProfile } from '../pets/types';
-import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
+import {
+  buildMaintenanceReminders,
+  dateStatus,
+  mileageStatus,
+  type AssetInput,
+  type MaintenanceReminder,
+  type ReminderStatus,
+  type VehicleInput,
+} from '../../../functions/src/shared/maintenance-reminders';
+import { reminderDueDetail, reminderStatusLabel } from '../maintenance/reminder-copy';
 import { diffDays, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 
@@ -66,7 +75,16 @@ export type MaintenanceItem = {
   kind: 'asset' | 'vehicle';
   /** HVAC/heating/cooling assets, used by the living house's outdoor unit. */
   climate: boolean;
+  /** Whole days to the due date (negative when past); null without a date. Not the trigger: see `trigger`. */
   days: number | null;
+  /** The reminder's own status from `buildMaintenanceReminders`. */
+  status: ReminderStatus;
+  /** What set the status: the due date, or the mileage threshold (vehicle services). */
+  trigger: 'date' | 'mileage';
+  /** Maintenance's badge text: "Overdue", "Due today", "Expires soon"... (`reminderStatusLabel`). */
+  statusLabel: string;
+  /** Maintenance's "when" line: "Due Aug 1, 2026", "At 49,000 mi · 250 mi over" (`reminderDueDetail`). */
+  detail: string;
   overdue: boolean;
   dueSoon: boolean;
   href: string;
@@ -285,6 +303,21 @@ export function computePantryFacts(items: RawDoc[], now: Date): PantryFacts {
 const CLIMATE = /hvac|furnace|air ?condition|heat ?pump|boiler|a\/c|\bac\b/i;
 
 /**
+ * Which threshold set a reminder's status. A vehicle service is due by date or by
+ * mileage, whichever is more urgent (`buildMaintenanceReminders`); when the mileage
+ * status is the reminder's status and the date status is not, mileage is the trigger.
+ */
+export function reminderTrigger(
+  reminder: Pick<MaintenanceReminder, 'status' | 'dueDate' | 'dueMileage' | 'currentMileage'>,
+  today: string,
+  timeZone: string,
+): 'date' | 'mileage' {
+  const byMiles = mileageStatus(reminder.dueMileage, reminder.currentMileage);
+  if (byMiles !== reminder.status) return 'date';
+  return dateStatus(reminder.dueDate, today, timeZone) === reminder.status ? 'date' : 'mileage';
+}
+
+/**
  * Maintenance facts from the Maintenance module's own reminder rules
  * (`buildMaintenanceReminders`, shared with the Maintenance page and the hourly
  * reminders): retired assets and retired or sold vehicles are excluded, "soon"
@@ -317,6 +350,10 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
       kind: reminder.targetType === 'vehicle' ? 'vehicle' : 'asset',
       climate: Boolean(asset && CLIMATE.test(`${asset.category ?? ''} ${asset.name ?? ''}`)),
       days: dueDay ? diffDays(dueDay, today) : null,
+      status: reminder.status,
+      trigger: reminderTrigger(reminder, today, zone),
+      statusLabel: reminderStatusLabel(reminder.group, reminder.status),
+      detail: reminderDueDetail(reminder, today),
       overdue: reminder.status === 'overdue',
       dueSoon: reminder.status === 'due_today' || reminder.status === 'due_soon',
       href: reminder.deepLink,

@@ -136,6 +136,25 @@ describe('shopping, pantry, maintenance and pets', () => {
     assert.equal(facts.next?.href, '/maintenance?asset=hvac&schedule=hvac%3Alegacy-0-replace-air-filter');
   });
 
+  it('keeps the mileage trigger: overdue by miles with a future date never reads as negative days', () => {
+    const facts = computeMaintenanceFacts([], [{
+      id: 'suv', nickname: 'Family SUV', status: 'active', currentMileage: 50_200,
+      serviceSchedules: [{ id: 'tires', serviceName: 'Tire rotation', nextDueMileage: 49_000, nextDueDate: '2026-08-31' }],
+    }], now, localZone);
+    const item = facts.next!;
+    assert.equal(item.status, 'overdue');
+    assert.equal(item.trigger, 'mileage');
+    assert.equal(item.statusLabel, 'Overdue');
+    assert.match(item.detail, /At 49,000 mi · 1,200 mi over/);
+    assert.equal(item.days, 30, 'the date is still in the future');
+    assert.doesNotMatch(`${item.statusLabel} ${item.detail}`, /-\d/);
+    // A date-driven reminder keeps the date trigger and Maintenance's own wording.
+    const byDate = computeMaintenanceFacts([{ id: 'hvac', name: 'HVAC', category: 'HVAC', status: 'active', schedules: [{ scheduleName: 'Filter', nextDueDate: '2026-07-20' }] }], [], now, localZone).next!;
+    assert.equal(byDate.trigger, 'date');
+    assert.equal(byDate.statusLabel, 'Overdue');
+    assert.match(byDate.detail, /^Due Jul 20, 2026 · 12 days ago$/);
+  });
+
   it('leaves out retired assets and retired or sold vehicles, as Maintenance does', () => {
     const facts = computeMaintenanceFacts(
       [{ id: 'old-ac', name: 'Old AC', category: 'HVAC', status: 'retired', schedules: [{ scheduleName: 'Service', nextDueDate: '2026-07-01' }] }],
