@@ -671,6 +671,17 @@ describe('audit log', () => {
   });
 });
 
+describe('AI usage counters', () => {
+  test('no client can read, create or reset AI quota counters', async () => {
+    for (const user of [users.owner, users.admin, users.member]) {
+      const ref = doc(dbFor(user), 'aiUsage', `user_${user.uid}_2026-08-01`);
+      await assertFails(getDoc(ref));
+      await assertFails(setDoc(ref, { count: 0 }));
+    }
+    await assertFails(getDocs(collection(dbFor(users.owner), 'aiUsage')));
+  });
+});
+
 describe('Home Assistant credentials', () => {
   test('only automation managers can read the stored token', async () => {
     for (const user of [users.owner, users.admin]) {
