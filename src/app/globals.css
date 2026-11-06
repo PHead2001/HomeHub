@@ -2,76 +2,208 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  font-family: Arial, Helvetica, sans-serif;
-}
+/*
+ * HomeHub design tokens.
+ *
+ * Color tokens (surfaces, text, accent, status, borders, ring, member colors,
+ * ambient colors) are defined once per theme preset in `src/lib/theme/tokens.ts`
+ * and emitted into <head> by the root layout as `:root[data-theme="…"]` rules.
+ * This file holds the non-color tokens and the shared utilities built on them.
+ *
+ * Motion contract: when reduced motion is on (system setting or the in-app
+ * switch), <html> carries `data-motion="reduce"`. Every animation must honor
+ * both `@media (prefers-reduced-motion: reduce)` and `[data-motion="reduce"]`.
+ */
 
 @layer base {
   :root {
-    --background: 0 0% 98%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 174 44% 51%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 174 44% 51%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 83%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 174 44% 51%;
-    --chart-1: 12 76% 61%;
-    --chart-2: 173 58% 39%;
-    --chart-3: 197 37% 24%;
-    --chart-4: 43 74% 66%;
-    --chart-5: 27 87% 67%;
-    --radius: 0.5rem;
-  }
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 174 44% 51%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 174 44% 51%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 174 44% 51%;
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 30 80% 55%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
-  }
-}
+    /* One radius scale; Tailwind's rounded-sm/md/lg/xl/2xl derive from it. */
+    --radius: 0.75rem;
 
-@layer base {
+    /* Elevation: base (page) → raised (cards) → overlay (dialogs, popovers, sheets). */
+    --shadow-raised:
+      inset 0 1px 0 0 hsl(var(--highlight) / var(--highlight-opacity)),
+      0 1px 2px 0 hsl(var(--shadow) / calc(var(--shadow-opacity) * 0.6)),
+      0 4px 12px -4px hsl(var(--shadow) / calc(var(--shadow-opacity) * 0.5));
+    --shadow-overlay:
+      inset 0 1px 0 0 hsl(var(--highlight) / calc(var(--highlight-opacity) * 1.5)),
+      0 8px 24px -6px hsl(var(--shadow) / var(--shadow-opacity)),
+      0 24px 48px -12px hsl(var(--shadow) / calc(var(--shadow-opacity) * 0.8));
+
+    /* One focus-visible ring for every interactive element. */
+    --focus-ring-width: 2px;
+    --focus-ring-offset: 2px;
+
+    /* Motion budgets (see the audit's "Motion budgets"). */
+    --duration-micro: 150ms;
+    --duration-ui: 220ms;
+    --duration-data: 550ms;
+    --duration-theme: 520ms;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    /* Generated with motion's spring(0.25, 0.2); kept in sync by tests/unit/motion-tokens.test.ts. */
+    --ease-spring: linear(0, 0.1504, 0.421, 0.6644, 0.8358, 0.9381, 0.9898, 1.0106, 1.0152, 1.0129, 1.0088, 1.0051, 1.0025, 1.0009, 1.0002, 1, 1);
+  }
+
   * {
     @apply border-border;
   }
+
+  html {
+    /* Tabs and lists that grow a scrollbar must not shift the layout sideways. */
+    scrollbar-gutter: stable;
+  }
+
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* One focus ring everywhere (replaces the browser's default outline). */
+  :focus-visible {
+    outline: var(--focus-ring-width) solid hsl(var(--ring));
+    outline-offset: var(--focus-ring-offset);
+  }
+}
+
+@layer components {
+  /* Frosted glass for the sticky header and sheets. Text contrast holds because
+     the surface stays mostly opaque. */
+  .surface-glass {
+    background-color: hsl(var(--popover) / 0.82);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+  }
+
+  /*
+   * Spotlight glow card. Add `glow-card` to a surface (or use <GlowCard>); the
+   * `useGlow` hook writes --glow-x/--glow-y on pointer move. Only the pseudo-element
+   * layers change; the element and its click targets never move. Applies only on
+   * devices that hover with a fine pointer.
+   */
+  .glow-card {
+    position: relative;
+    isolation: isolate;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .glow-card::before,
+    .glow-card::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity var(--duration-micro) var(--ease-standard);
+    }
+    /* Soft spotlight on the surface. */
+    .glow-card::before {
+      z-index: -1;
+      background: radial-gradient(
+        320px circle at var(--glow-x, 50%) var(--glow-y, 50%),
+        hsl(var(--primary) / 0.1),
+        transparent 65%
+      );
+    }
+    /* Border ring that brightens nearest the pointer (the mask colors are alpha
+       stencils, not visible colors). */
+    .glow-card::after {
+      padding: 1px;
+      background: radial-gradient(
+        200px circle at var(--glow-x, 50%) var(--glow-y, 50%),
+        hsl(var(--primary) / 0.75),
+        transparent 70%
+      );
+      -webkit-mask: linear-gradient(black 0 0) content-box, linear-gradient(black 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(black 0 0) content-box exclude, linear-gradient(black 0 0);
+    }
+    .glow-card:hover::before,
+    .glow-card:hover::after {
+      opacity: 1;
+    }
+  }
+
+  /* Ambient aurora behind the app shell. One intensity token per theme. */
+  .ambient-aurora {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: var(--ambient-intensity, 0.06);
+  }
+  .ambient-aurora__blob {
+    position: absolute;
+    width: 60vmax;
+    height: 60vmax;
+    border-radius: 9999px;
+    filter: blur(80px);
+    will-change: transform;
+  }
+  .ambient-aurora__blob--a {
+    top: -20vmax;
+    left: -15vmax;
+    background: radial-gradient(circle, hsl(var(--ambient-1)), transparent 70%);
+    animation: aurora-drift-a 32s ease-in-out infinite alternate;
+  }
+  .ambient-aurora__blob--b {
+    bottom: -25vmax;
+    right: -20vmax;
+    background: radial-gradient(circle, hsl(var(--ambient-2)), transparent 70%);
+    animation: aurora-drift-b 41s ease-in-out infinite alternate;
+  }
+  .ambient-aurora__grain {
+    position: absolute;
+    inset: 0;
+    opacity: 0.5;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  /* Paused while the tab is hidden; static under reduced motion. */
+  :root[data-visibility='hidden'] .ambient-aurora__blob {
+    animation-play-state: paused;
+  }
+  :root[data-motion='reduce'] .ambient-aurora__blob {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ambient-aurora__blob {
+      animation: none;
+    }
+  }
+
+  /* Thin top progress bar for navigations slower than 150 ms (NavigationProgress). */
+  .nav-progress {
+    position: fixed;
+    inset: 0 0 auto 0;
+    z-index: 60;
+    height: 2px;
+    pointer-events: none;
+    background: hsl(var(--primary));
+    transform-origin: 0 50%;
+    transform: scaleX(var(--nav-progress, 0));
+    transition:
+      transform 400ms var(--ease-standard),
+      opacity var(--duration-ui) var(--ease-standard);
   }
 }
 
 @layer utilities {
+  /* The one scoped transition for interactive UI (replaces `transition-all`). */
+  .transition-ui {
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity,
+      box-shadow, transform;
+    transition-duration: var(--duration-micro);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  /* Spring curve for overlay enter animations (dialogs, sheets, popovers, menus). */
+  .ease-spring-enter[data-state='open'],
+  .ease-spring-enter[data-state='delayed-open'] {
+    animation-timing-function: var(--ease-spring);
+    animation-duration: var(--duration-ui);
+  }
+
   /* Hide spinner buttons on number inputs */
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button {
@@ -82,4 +214,50 @@ body {
   input[type=number] {
     -moz-appearance: textfield;
   }
+}
+
+@keyframes aurora-drift-a {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(12vmax, 6vmax, 0) scale(1.1); }
+  100% { transform: translate3d(4vmax, 14vmax, 0) scale(0.95); }
+}
+
+@keyframes aurora-drift-b {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-10vmax, -8vmax, 0) scale(1.08); }
+  100% { transform: translate3d(-16vmax, 2vmax, 0) scale(0.97); }
+}
+
+/* View transitions (theme reveal, cross-route morphs): the root snapshot is not
+   cross-faded; the theme reveal clips it from script, and page content has its
+   own crossfade. Named shared elements keep the default morph. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Reduced motion: instant end states everywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+:root[data-motion='reduce'] *,
+:root[data-motion='reduce'] *::before,
+:root[data-motion='reduce'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  animation-delay: 0ms !important;
+  transition-duration: 0.01ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
 }

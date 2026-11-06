@@ -2057,7 +2057,7 @@ export function ChoreChartClient() {
                              <AccordionPrimitive.Header className="flex flex-1 min-w-0">
                                 <AccordionPrimitive.Trigger asChild>
                                     <button 
-                                        className="flex flex-1 flex-col text-left items-start min-w-0 bg-transparent border-0 outline-none cursor-pointer py-2 md:py-0"
+                                        className="flex flex-1 flex-col text-left items-start min-w-0 bg-transparent border-0 cursor-pointer py-2 md:py-0"
                                         aria-label={`Show details for ${chore.task}`}
                                     >
                                         <span className={cn("font-medium text-xs md:text-base block truncate w-full", isOverdue && !isCompleted && "text-destructive", isCompleted && "text-muted-foreground line-through")}>

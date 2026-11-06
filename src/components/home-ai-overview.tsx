@@ -93,7 +93,7 @@ export function HomeAiOverview() {
                 key={metric.section}
                 href={overviewSectionRoutes[metric.section]}
                 data-testid={`overview-metric-${metric.section}`}
-                className="min-w-0 border p-3 transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="min-w-0 border p-3 transition-colors hover:bg-muted/40 "
               >
                 <p className="truncate text-xs text-muted-foreground">{metric.label}</p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums">{metric.value}</p>

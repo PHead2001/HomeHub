@@ -43,7 +43,7 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
       <div className="relative aspect-video w-full overflow-hidden rounded-md">
         <video ref={ref as React.RefObject<HTMLVideoElement>} className="h-full w-full object-cover" />
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="h-1/3 w-3/4 rounded-lg border-2 border-red-500 shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
+          <div className="h-1/3 w-3/4 rounded-lg border-2 border-destructive shadow-[0_0_0_9999px_hsl(var(--scrim)/0.5)]" />
         </div>
       </div>
       <form
