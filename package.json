@@ -28,6 +28,8 @@
     "test:visual:update:local": "node scripts/e2e/run-local.mjs --visual-update"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/space-grotesk": "^5.3.0",
     "@genkit-ai/compat-oai": "^1.15.5",
     "@genkit-ai/next": "^1.15.5",
     "@hookform/resolvers": "^4.1.3",

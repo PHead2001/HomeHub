@@ -1,6 +1,6 @@
 
 import type {Metadata, Viewport} from 'next';
-import { Inter, Space_Grotesk } from 'next/font/google';
+import localFont from 'next/font/local';
 import './globals.css';
 import { Header } from '@/components/header';
 import { MobileTabBar } from '@/components/mobile-tab-bar';
@@ -12,16 +12,19 @@ import { ThemeInjector } from '@/components/theme-injector';
 import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
 import { PushNotificationManager } from '@/components/PushNotificationManager';
 
-const inter = Inter({
-  subsets: ['latin'],
-  weight: ['400', '500', '700'],
+// Fonts are bundled from npm (Fontsource variable fonts, Latin subset), not fetched
+// from Google Fonts at build time: that download failed intermittently and broke
+// builds (CI and an App Hosting rollout) with a next/font loader error.
+const inter = localFont({
+  src: '../../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2',
+  weight: '100 900',
   variable: '--font-inter',
   display: 'swap',
 });
 
-const spaceGrotesk = Space_Grotesk({
-  subsets: ['latin'],
-  weight: ['400', '500', '700'],
+const spaceGrotesk = localFont({
+  src: '../../node_modules/@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2',
+  weight: '300 700',
   variable: '--font-space-grotesk',
   display: 'swap',
 });
