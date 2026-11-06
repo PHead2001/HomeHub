@@ -1,108 +1,80 @@
-
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
-import type { CareLog } from '@/lib/types';
+import { PlusCircle, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
-import { PlusCircle, Trash2 } from 'lucide-react';
-import { Skeleton } from './ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { collection, getDocs, deleteDoc, doc, orderBy, query, setDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { playFeedback } from '@/lib/feedback';
+import { loggerName } from '@/lib/pets/care';
+import type { PetCareLog } from '@/lib/pets/types';
+import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
+import { LoggedBy } from './pets/logged-by';
+import { addPetLog, deletePetLog, usePetLogs } from './pets/pet-log-api';
 
 const logSchema = z.object({
-  activity: z.string().min(3, 'Activity is required.'),
-  notes: z.string().optional(),
+  activity: z.string().trim().min(3, 'Describe the activity (at least 3 characters).').max(80, 'Keep the activity under 80 characters.'),
+  notes: z.string().max(500, 'Keep notes under 500 characters.').optional(),
 });
 
+type LogValues = z.infer<typeof logSchema>;
+
 interface CareLogProps {
-    petId: string;
+  petId: string;
 }
 
 export function CareLogClient({ petId }: CareLogProps) {
-  const { currentUser } = useAuth();
-  const [logs, setLogs] = useState<CareLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { currentUser, permissions } = useAuth();
+  const { toast, toastError } = useToast();
+  const canAdd = Boolean(permissions['pets.addLogs']);
+  const canDelete = Boolean(permissions['pets.deleteLogs']);
+  const householdId = currentUser?.householdId ?? null;
+  const { logs, loading, error } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', 100);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
-  const { toast } = useToast();
+  const [formOpen, setFormOpen] = useState(false);
 
-  const getLogsCollectionRef = useCallback(() => {
-    if (!currentUser?.householdId) return null;
-    return collection(db, 'households', currentUser.householdId, 'pets', petId, 'care-logs');
-  }, [currentUser, petId]);
-
-  const fetchLogs = useCallback(async () => {
-    const logsCollection = getLogsCollectionRef();
-    if (!logsCollection) {
-      setLogs([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const q = query(logsCollection, orderBy('date', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const logsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CareLog));
-      setLogs(logsData);
-    } catch (error) {
-      console.error("Error fetching care logs:", error);
-      toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch care logs.' });
-    } finally {
-      setLoading(false);
-    }
-  }, [getLogsCollectionRef, toast]);
-
-  useEffect(() => {
-    if (currentUser) {
-      fetchLogs();
-    }
-  }, [currentUser, fetchLogs]);
-
-  const form = useForm<z.infer<typeof logSchema>>({
+  const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),
     defaultValues: { activity: '', notes: '' },
   });
 
-  const onSubmit = async (values: z.infer<typeof logSchema>) => {
-    const logsCollection = getLogsCollectionRef();
-    if (!logsCollection) return;
-    const newLog = {
-      date: new Date().toISOString(),
-      activity: values.activity,
-      notes: values.notes || '',
-    };
+  const onSubmit = async (values: LogValues) => {
+    if (!householdId || !currentUser) return;
     try {
-      const logId = (logs.length + 1).toString();
-      await setDoc(doc(logsCollection, logId), newLog);
-      form.reset();
-      toast({ title: "Log added", description: "Care activity has been logged." });
-      await fetchLogs();
-    } catch {
-      toast({ variant: 'destructive', title: 'Error', description: 'Failed to add log.' });
+      await addPetLog(householdId, petId, 'care-logs', {
+        date: new Date().toISOString(),
+        activity: values.activity,
+        notes: values.notes || '',
+        loggedByUid: currentUser.uid,
+        loggedByName: loggerName(currentUser),
+      });
+      playFeedback('complete');
+      form.reset({ activity: '', notes: '' });
+      setFormOpen(false);
+      toast({ title: 'Care logged', description: values.activity });
+    } catch (submitError) {
+      toastError(submitError, "Couldn't log the activity");
     }
   };
 
   const deleteLog = async (logId: string) => {
-     const logsCollection = getLogsCollectionRef();
-     if (!logsCollection) return;
-     try {
-        await deleteDoc(doc(logsCollection, logId));
-        toast({ title: 'Log removed'});
-        await fetchLogs();
-     } catch {
-        toast({ variant: 'destructive', title: 'Error', description: 'Failed to remove log.' });
-     }
-  }
+    if (!householdId) return;
+    try {
+      await deletePetLog(householdId, petId, 'care-logs', logId);
+      toast({ title: 'Log removed' });
+    } catch (deleteError) {
+      toastError(deleteError, "Couldn't remove the log");
+    }
+  };
 
   return (
     <>
@@ -117,67 +89,87 @@ export function CareLogClient({ petId }: CareLogProps) {
       }}
     />
     <Card>
-      <CardHeader>
-        <CardTitle className="font-headline">General Care Log</CardTitle>
-        <CardDescription>Record grooming, vet visits, and other activities.</CardDescription>
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+        <div className="space-y-1.5">
+          <CardTitle className="font-headline">General Care Log</CardTitle>
+          <CardDescription>Grooming, walks, vet visits and other care.</CardDescription>
+        </div>
+        {canAdd && !formOpen && (
+          <Button type="button" variant="outline" size="sm" onClick={() => setFormOpen(true)}>
+            <PlusCircle className="mr-2 h-4 w-4" /> Log care
+          </Button>
+        )}
       </CardHeader>
       <CardContent className="space-y-6">
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 p-4 border rounded-lg">
-             <FormField
-              control={form.control}
-              name="activity"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Activity</FormLabel>
-                  <FormControl>
-                    <Input placeholder="e.g. Vet Visit, Nail Trim" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
+        {canAdd && formOpen && (
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 rounded-lg border p-4" aria-label="Log a care activity">
+              <FormField
+                control={form.control}
+                name="activity"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Activity</FormLabel>
+                    <FormControl>
+                      <Input placeholder="e.g. Vet Visit, Nail Trim" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="notes"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Notes (Optional)</FormLabel>
+                    <FormControl>
+                      <Textarea placeholder="e.g. Annual checkup, all clear." rows={2} {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit" size="sm" disabled={form.formState.isSubmitting}><PlusCircle className="mr-2 h-4 w-4" /> Save activity</Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setFormOpen(false)}>Cancel</Button>
+              </div>
+            </form>
+          </Form>
+        )}
+
+        <section className="space-y-3" aria-labelledby={`care-history-${petId}`}>
+          <h3 id={`care-history-${petId}`} className="font-semibold">History</h3>
+          {loading && (
+            <div className="space-y-2">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          )}
+          {!loading && error ? (
+            <p className="py-4 text-center text-sm text-muted-foreground">Care history is unavailable right now.</p>
+          ) : null}
+          {!loading && !error && logs.length === 0 && (
+            <p className="py-4 text-center text-sm text-muted-foreground">No care logged yet.</p>
+          )}
+          {!loading && logs.map((log) => (
+            <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
+              <div className="min-w-0 space-y-0.5">
+                <p className="font-semibold text-foreground">{log.activity}</p>
+                <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
+                  <span>{format(new Date(log.date), 'PPP p')}</span>
+                  <LoggedBy entry={log} />
+                </p>
+                {log.notes && <p className="mt-1 text-muted-foreground">{log.notes}</p>}
+              </div>
+              {canDelete && (
+                <Button variant="ghost" size="icon" aria-label={`Delete ${log.activity} care log`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
               )}
-            />
-            <FormField
-              control={form.control}
-              name="notes"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Notes (Optional)</FormLabel>
-                  <FormControl>
-                    <Textarea placeholder="e.g. Annual checkup, all clear." rows={3} {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <Button type="submit" size="sm"><PlusCircle className="mr-2"/> Add Log Entry</Button>
-          </form>
-        </Form>
-        
-        <div className="space-y-4">
-            <h3 className="font-semibold">History</h3>
-            {loading && (
-                <div className="space-y-2">
-                    <Skeleton className="h-16 w-full" />
-                    <Skeleton className="h-16 w-full" />
-                </div>
-            )}
-            {!loading && logs.length === 0 && (
-                <p className="text-sm text-center text-muted-foreground py-4">No care logs yet.</p>
-            )}
-            {!loading && logs.map(log => (
-                <div key={log.id} className="flex justify-between items-start text-sm p-3 bg-secondary/50 rounded-md">
-                    <div>
-                        <p className="font-medium">{format(new Date(log.date), 'PPP p')}</p>
-                        <p className="text-foreground font-semibold">{log.activity}</p>
-                        {log.notes && <p className="text-muted-foreground mt-1">{log.notes}</p>}
-                    </div>
-                    <Button variant="ghost" size="icon" aria-label={`Delete ${log.activity} care log`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
-                        <Trash2 className="h-4 w-4" />
-                    </Button>
-                </div>
-            ))}
-        </div>
+            </div>
+          ))}
+        </section>
       </CardContent>
     </Card>
     </>
