@@ -118,6 +118,19 @@ export function formatQuickAddEntries(entries: readonly QuickAddEntry[]): string
   return entries.map((entry) => (entry.quantity > 1 ? `${entry.quantity} ${entry.name}` : entry.name)).join(', ');
 }
 
+/**
+ * The quick-add field after a save: the failed entries (if any) go back in front
+ * of whatever the member has typed since the submit, which is new input and is
+ * kept as is. Leading separators the member typed (", eggs") are dropped so the
+ * result reads as one list. With nothing failed the current text is unchanged.
+ */
+export function mergeRetryText(failed: readonly QuickAddEntry[], current: string): string {
+  const retry = formatQuickAddEntries(failed);
+  if (!retry) return current;
+  const typed = current.replace(/^[\s,;]+/, '').trim();
+  return typed ? `${retry}, ${typed}` : retry;
+}
+
 /** Inline message naming the entries that could not be added. */
 export function quickAddFailureMessage(failed: readonly QuickAddEntry[]): string | null {
   if (failed.length === 0) return null;

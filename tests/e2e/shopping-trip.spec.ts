@@ -233,6 +233,48 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('text typed while a quick-add is saving is new input and nothing is added twice', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const slow = 'E2E slow merge';
+    const later = 'E2E typed later';
+    await Promise.all([deleteWhere(groceryItems, slow), deleteWhere(groceryItems, later)]);
+    const target = groceryItems.doc('e2e-slow-merge');
+    await target.set({ name: slow, quantity: 1, category: 'Other', status: 'needed', createdAt: fixedNow });
+    // The merge is a transaction (REST RPCs): hold those for a moment so the save stays pending.
+    const transactionRpc = /:(beginTransaction|commit|batchGet)\b/;
+    try {
+      await open(page, '/shopping?list=weekly-groceries');
+      await expect(page.locator('#item-needed-e2e-slow-merge')).toBeVisible();
+      await page.route(transactionRpc, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await route.continue();
+      });
+      const field = page.getByLabel('Items to add to Weekly Groceries');
+      await field.fill(slow);
+      await field.press('Enter');
+      // Cleared at once; the save is still running.
+      await expect(field).toHaveValue('');
+      await expect(page.getByRole('form', { name: 'Quick add to Weekly Groceries' })).toHaveAttribute('aria-busy', 'true');
+
+      // Typing while it saves, and pressing Enter, neither re-adds nor loses anything.
+      await field.pressSequentially(`, ${later}`);
+      await field.press('Enter');
+      await expect(page.getByRole('form', { name: 'Quick add to Weekly Groceries' })).toHaveAttribute('aria-busy', 'false', { timeout: 30_000 });
+      await expect(field).toHaveValue(`, ${later}`);
+      await expect(field).toBeFocused();
+      await expect.poll(async () => (await target.get()).data()?.quantity).toBe(2);
+
+      await page.unroute(transactionRpc);
+      await field.press('Enter');
+      await expect(field).toHaveValue('');
+      await expect.poll(async () => (await groceryItems.where('name', '==', later).get()).size).toBe(1);
+      expect((await target.get()).data()?.quantity).toBe(2);
+    } finally {
+      await page.unroute(transactionRpc).catch(() => undefined);
+      await Promise.all([deleteWhere(groceryItems, slow), deleteWhere(groceryItems, later)]);
+    }
+  });
+
   test('header navigation to /shopping resets the open tab and list to match the URL', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/shopping?tab=pantry');

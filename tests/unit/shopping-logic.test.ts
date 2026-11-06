@@ -13,6 +13,7 @@ import {
   withoutIds,
   splitSettled,
   formatQuickAddEntries,
+  mergeRetryText,
   quickAddFailureMessage,
   canMergeInto,
   isStillPurchased,
@@ -270,6 +271,28 @@ describe('quick-add partial failures', () => {
     assert.equal(text, '2 Bread, Eggs');
     assert.deepEqual(parseQuickAdd(text), [{ name: 'Bread', quantity: 2 }, { name: 'Eggs', quantity: 1 }]);
     assert.equal(formatQuickAddEntries([]), '');
+  });
+
+  test('puts failed entries back in front of text typed during the save, keeping that text', () => {
+    const failed = [{ name: 'Milk', quantity: 1 }, { name: 'Bread', quantity: 2 }];
+    assert.equal(mergeRetryText(failed, ''), 'Milk, 2 Bread');
+    assert.equal(mergeRetryText(failed, 'eggs'), 'Milk, 2 Bread, eggs');
+    assert.equal(mergeRetryText(failed, ', eggs '), 'Milk, 2 Bread, eggs', 'leading separator typed after the clear');
+    assert.equal(mergeRetryText(failed, '   '), 'Milk, 2 Bread');
+    // Full success: the member's text is untouched, even untrimmed.
+    assert.equal(mergeRetryText([], 'eggs, '), 'eggs, ');
+    assert.equal(mergeRetryText([], ''), '');
+    // Nothing submitted is ever re-added: only `failed` is put back.
+    assert.deepEqual(parseQuickAdd(mergeRetryText([{ name: 'Milk', quantity: 1 }], 'eggs')), [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 1 }]);
+  });
+
+  test('the quick-add bar clears on submit and never compares with the submitted text', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping', 'quick-add-bar.tsx'), 'utf8');
+    assert.doesNotMatch(source, /current === submitted/);
+    const submit = source.slice(source.indexOf('const submit'), source.indexOf('<form'));
+    assert.ok(submit.indexOf("setValue('')") < submit.indexOf('await onAdd('), 'the field is cleared before the save starts');
+    assert.match(submit, /setValue\(\(current\) => mergeRetryText\(failed, current\)\)/);
+    assert.match(submit, /if \(busyRef\.current\) return;/);
   });
 
   test('names the failed entries inline', () => {

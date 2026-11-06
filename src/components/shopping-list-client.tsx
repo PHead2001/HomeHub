@@ -1098,7 +1098,8 @@ export function ShoppingListClient({
                             </AccordionContent>
                             </AccordionItem>
                         </Accordion>
-                        {canEdit && <QuickAddBar listName={selectedList.name} onAdd={onQuickAdd} />}
+                        {/* Keyed per list: a pending save's leftovers never land in another list's field. */}
+                        {canEdit && <QuickAddBar key={selectedList.id} listName={selectedList.name} onAdd={onQuickAdd} />}
                       </>
                     )}
                 </div>
