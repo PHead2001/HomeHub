@@ -66,13 +66,15 @@ Direct temporary chores use the existing `chores` path with optional `templateId
 
 ## Authentication, Roles, and Security
 
-Rules use Firebase Auth UID/email, UID membership documents, and legacy `households.memberEmails`. Pending `newuser` members are blocked from ordinary household subcollections.
+Rules use Firebase Auth UID/email and UID membership documents only; `households.memberEmails` and profile household fields grant nothing. Pending `newuser` members are blocked from ordinary household subcollections. Storage rules read the same membership records through cross-service `firestore.get()`, apply the same role presets and overrides, and enforce image-only uploads (5–10 MB) for pets, barcode images and avatars and a 15 MB document/image allowlist for maintenance attachments; every other path is denied. Cross-service reads require the Storage service agent to hold `roles/firebaserules.firestoreServiceAgent` (granted on `homehub-j91jb` 2026-11-06).
+
+Home Assistant credentials under `home-automation/*` are write-only for clients with `automation.manage`; no client can read the token back.
 
 Firestore rules explicitly map known household collections to the closest role/permission operation: chores/templates/rooms, shopping lists/items/config, pantry, barcode library, pets/logs, assets, vehicles, maintenance logs/attachments, notifications, audit logs, and automation configuration. Member-document permission overrides are honored, pending users are denied, and unknown household paths deny by default. Where one update can represent multiple product actions, rules use the narrowest existing permission without field-level semantic inference.
 
-Protected AI, overview, and barcode server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before any Admin aggregation, public fallback, or OpenAI request. Legacy email members receive member presets unless household owner UID/email evidence proves ownership; profile role/overrides do not grant household authority. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
+Protected AI, overview, and barcode server actions use Firebase Admin to verify the caller's ID token, household membership, pending status, role preset, and permission overrides before any Admin aggregation, public fallback, or OpenAI request. Authority comes only from the caller's approved `members/{uid}` record (`src/ai/household-authority.ts`); legacy email listings, owner email/UID fields and profile role/overrides grant nothing. App Hosting supplies Admin credentials through its runtime identity; no service-account key is committed.
 
-Maintenance Storage restricts size/type; barcode/pet/avatar paths are scoped but have no server-side size/MIME restrictions. No App Check enforcement is configured.
+No App Check enforcement is configured.
 
 ## Integrations and Background Processing
 
@@ -91,12 +93,12 @@ Every application module depends on this platform. [Notifications](../notificati
 ## Invariants and Failure Behavior
 
 - User profile document IDs are email addresses; household membership document IDs are Auth UIDs.
-- Legacy email membership is supported conservatively when no UID member document exists: household owner evidence grants owner and every other listed email receives member defaults.
+- There is no legacy email fallback: an identity without an approved membership record has no household access in rules or server actions.
 - Unknown household subcollections have no permissive fallback.
 - Notification deletion is denied; logical expiration needs manual TTL configuration.
 - Functions remove invalid FCM tokens after failed sends.
 - UID-only push targeting depends on a `users.uid` query, but profile creation does not consistently store that field.
-- Notification target fields are trusted by the push function and are not proven household members by creation rules.
+- Creation rules require notification targets to be household members (UID membership record, or a profile pointing at the household), allow only `/`-relative deep links, and reject unknown fields.
 - The E2E seed and Playwright config refuse non-loopback emulator hosts; the seed additionally requires the exact `demo-homehub-e2e` project.
 - The emulator-only custom token route has no service-account secret and returns 404 unless emulator safety gates pass.
 - CI artifacts exclude `playwright/.auth/`; only failure reports, traces, screenshots, videos, and emulator logs are uploaded.
@@ -109,8 +111,13 @@ Every application module depends on this platform. [Notifications](../notificati
 - Run `npm.cmd run test:e2e:ci` to reproduce the GitHub Actions authenticated smoke/regression phase locally without visual comparison.
 - Run `npm.cmd run test:ai` for key-free flow contracts and `npm.cmd run test:e2e:ai:local` for authenticated desktop/mobile AI workflows.
 - In `functions/`, run `npm.cmd run lint` and `npm.cmd run build` for function changes.
-- Run `npm.cmd run test:rules` for the Java-backed Firestore Emulator rules suite covering role presets, overrides, pending status, legacy fallback, and Household A/B isolation.
-- Manually verify cross-household denial, pending-user denial, legacy fallback, own-profile restrictions, attachment restrictions, FCM delivery, and invalid-token cleanup.
+- Run `npm.cmd run test:rules` for the Java-backed Firestore and Storage emulator matrix (roles, overrides, pending, legacy-only identities, ownership, invites, profiles, notifications, audit log, Home Assistant credentials, Storage paths and limits). CI runs it on every PR.
+- After any production rules deploy, read the live rulesets back (`node scripts/deploy/verify-live-rules.mjs --project homehub-j91jb`); a deploy command or console save is not proof.
+- Manually verify FCM delivery and invalid-token cleanup.
+
+## Release Path for Rules and Indexes
+
+App Hosting deploys only the Next.js app. `firestore.rules`, `storage.rules` and `firestore.indexes.json` are released by `.github/workflows/deploy-firebase-config.yml` on merge to `main`: it reruns the rules matrix, deploys with Workload Identity Federation (repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT`, `production` environment), then fails unless the live rulesets match the merged files.
 
 ## When This Document Must Be Updated
 

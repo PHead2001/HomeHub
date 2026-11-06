@@ -9,14 +9,14 @@ const result = spawnSync(process.execPath, [
   '--project',
   E2E_PROJECT_ID,
   '--only',
-  'firestore',
-  'node --import tsx --test tests/rules/firestore.rules.test.ts',
+  'firestore,storage',
+  'node --import tsx --test --test-concurrency=1 tests/rules/firestore.rules.test.ts tests/rules/storage.rules.test.ts',
 ], {
   cwd: process.cwd(),
   env: e2eEnvironment,
   stdio: 'inherit',
   shell: false,
-  timeout: 120_000,
+  timeout: 300_000,
 });
 
 if (result.error) throw result.error;

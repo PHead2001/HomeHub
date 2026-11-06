@@ -2,47 +2,93 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function signedIn() {
-      return request.auth != null && request.auth.token.email != null;
+      return request.auth != null && request.auth.token.email is string;
     }
 
-    function householdMember(householdId) {
-      return signedIn() && (
-        (
-          firestore.exists(/databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid)) &&
-          firestore.get(/databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid)).data.role != 'newuser'
-        ) ||
-        (
-          !firestore.exists(/databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid)) &&
-          request.auth.token.email in
-            firestore.get(/databases/(default)/documents/households/$(householdId)).data.memberEmails
-        )
-      );
+    function memberPath(householdId) {
+      return /databases/(default)/documents/households/$(householdId)/members/$(request.auth.uid);
+    }
+
+    // Mirrors firestore.rules: households/{id}/members/{uid} is the only authority.
+    function roleHasPermission(role, permission) {
+      return role == 'owner' ||
+        (role == 'admin' && !(permission in ['household.delete', 'household.transferOwnership'])) ||
+        (role == 'member' && permission in [
+          'household.view',
+          'chores.view', 'chores.complete', 'chores.create', 'chores.edit', 'chores.assign',
+          'shopping.view', 'shopping.edit',
+          'pets.view', 'pets.addLogs',
+          'maintenance.view', 'maintenance.createLogs', 'maintenance.edit',
+          'automation.view',
+          'notifications.view', 'notifications.dismiss'
+        ]) ||
+        (role == 'child' && permission in [
+          'household.view', 'chores.view', 'chores.complete', 'pets.view', 'pets.addLogs',
+          'notifications.view', 'notifications.dismiss'
+        ]) ||
+        (role == 'guest' && permission in [
+          'household.view', 'chores.view', 'shopping.view', 'pets.view',
+          'maintenance.view', 'notifications.view'
+        ]);
+    }
+
+    function hasPermission(householdId, permission) {
+      return signedIn() &&
+        firestore.exists(memberPath(householdId)) &&
+        memberHasPermission(firestore.get(memberPath(householdId)).data, permission);
+    }
+
+    function memberHasPermission(member, permission) {
+      let overrides = member.get('permissions', {});
+      return member.role in ['owner', 'admin', 'member', 'child', 'guest'] &&
+        member.get('status', 'active') == 'active' &&
+        (member.role == 'owner' ||
+          (permission in overrides
+            ? overrides[permission] == true
+            : roleHasPermission(member.role, permission)));
+    }
+
+    function isImage(maxBytes) {
+      return request.resource != null &&
+        request.resource.size <= maxBytes &&
+        request.resource.contentType.matches('image/(png|jpeg|webp|gif|heic|heif|avif)');
     }
 
     function validMaintenanceFile() {
       return request.resource != null &&
-        request.resource.size < 15 * 1024 * 1024 &&
-        request.resource.contentType.matches('image/.*|application/pdf|text/plain|application/msword|application/vnd.openxmlformats-officedocument.*');
+        request.resource.size <= 15 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/(png|jpeg|webp|gif|heic|heif|avif)|application/pdf|text/plain|application/msword|application/vnd[.]openxmlformats-officedocument[.](wordprocessingml[.]document|spreadsheetml[.]sheet)');
     }
 
     match /households/{householdId}/maintenance/{targetType}/{targetId}/{fileName} {
-      allow read: if householdMember(householdId);
-      allow create, update: if householdMember(householdId) &&
+      allow read: if hasPermission(householdId, 'maintenance.view');
+      allow create: if hasPermission(householdId, 'maintenance.edit') &&
         targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
         validMaintenanceFile();
-      allow delete: if householdMember(householdId);
+      allow update: if false;
+      allow delete: if hasPermission(householdId, 'maintenance.delete');
     }
 
     match /households/{householdId}/barcode-library/{allPaths=**} {
-      allow read, write: if householdMember(householdId);
+      allow read: if hasPermission(householdId, 'shopping.view');
+      allow create, update: if hasPermission(householdId, 'shopping.edit') && isImage(5 * 1024 * 1024);
+      allow delete: if hasPermission(householdId, 'shopping.delete');
     }
 
     match /households/{householdId}/pets/{allPaths=**} {
-      allow read, write: if householdMember(householdId);
+      allow read: if hasPermission(householdId, 'pets.view');
+      allow create, update: if hasPermission(householdId, 'pets.editProfiles') && isImage(10 * 1024 * 1024);
+      allow delete: if hasPermission(householdId, 'pets.editProfiles');
     }
 
     match /users/{userEmail}/avatars/{allPaths=**} {
-      allow read, write: if signedIn() && request.auth.token.email == userEmail;
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.token.email == userEmail && isImage(5 * 1024 * 1024);
+      allow delete: if signedIn() && request.auth.token.email == userEmail;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

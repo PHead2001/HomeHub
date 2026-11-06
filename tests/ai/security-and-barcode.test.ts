@@ -4,50 +4,34 @@ import { resolveHouseholdAuthority } from '../../src/ai/household-authority';
 import { HomeHubAiError } from '../../src/ai/errors';
 import { parseOpenFoodFactsQuantity, parseSimplePackageQuantity } from '../../src/ai/barcode-quantity';
 
-describe('conservative household authorization', () => {
-  test('legacy non-owner profile elevation cannot become household authority', () => {
-    const result = resolveHouseholdAuthority({
-      uid: 'legacy-uid',
-      email: 'legacy@example.test',
-      household: {
-        ownerUid: 'owner-uid',
-        ownerEmail: 'owner@example.test',
-        memberEmails: ['owner@example.test', 'legacy@example.test'],
-      },
-    });
-    assert.equal(result.role, 'member');
-    assert.equal(result.permissions['household.delete'], false);
-    assert.equal(result.permissions['shopping.view'], true);
+describe('membership-record household authorization', () => {
+  test('without a membership record there is no authority, even for listed or owner emails', () => {
+    // Legacy household fields are display data only; the server must match firestore.rules.
+    assert.throws(() => resolveHouseholdAuthority({ uid: 'legacy-uid' }), HomeHubAiError);
+    assert.throws(() => resolveHouseholdAuthority({ uid: 'owner-uid', member: undefined }), HomeHubAiError);
   });
 
-  test('legacy owner requires owner evidence and nonmembers are rejected', () => {
-    const owner = resolveHouseholdAuthority({
-      uid: 'owner-uid',
-      email: 'owner@example.test',
-      household: { ownerUid: 'owner-uid', ownerEmail: 'owner@example.test', memberEmails: ['owner@example.test'] },
-    });
+  test('approved records resolve their role preset and overrides', () => {
+    const owner = resolveHouseholdAuthority({ uid: 'owner-uid', member: { uid: 'owner-uid', role: 'owner', status: 'active' } });
     assert.equal(owner.role, 'owner');
-    assert.throws(() => resolveHouseholdAuthority({
-      uid: 'outsider',
-      email: 'outsider@example.test',
-      household: { memberEmails: [] },
-    }), HomeHubAiError);
+    assert.equal(owner.permissions['household.delete'], true);
+    const limited = resolveHouseholdAuthority({
+      uid: 'member',
+      member: { uid: 'member', role: 'member', status: 'active', permissions: { 'shopping.view': false } },
+    });
+    assert.equal(limited.permissions['shopping.view'], false);
+    assert.equal(limited.permissions['household.delete'], false);
   });
 
-  test('member document permissions override presets and pending members are denied', () => {
-    const denied = resolveHouseholdAuthority({
-      uid: 'member',
-      email: 'member@example.test',
-      household: { memberEmails: ['member@example.test'] },
-      member: { role: 'member', status: 'active', permissions: { 'shopping.view': false } },
-    });
-    assert.equal(denied.permissions['shopping.view'], false);
-    assert.throws(() => resolveHouseholdAuthority({
-      uid: 'pending',
-      email: 'pending@example.test',
-      household: { memberEmails: ['pending@example.test'] },
-      member: { role: 'newuser', status: 'pending' },
-    }), HomeHubAiError);
+  test('pending, unknown-role and mismatched records are denied', () => {
+    for (const member of [
+      { role: 'newuser', status: 'pending' },
+      { role: 'member', status: 'pending' },
+      { role: 'super-admin', status: 'active' },
+      { uid: 'someone-else', role: 'owner', status: 'active' },
+    ]) {
+      assert.throws(() => resolveHouseholdAuthority({ uid: 'caller', member }), HomeHubAiError);
+    }
   });
 });
 

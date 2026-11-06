@@ -7,28 +7,24 @@ export type ResolvedHouseholdAuthority = {
   permissions: Record<HouseholdPermission, boolean>;
 };
 
+const approvedRoles: HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest'];
+
+// Mirrors firestore.rules: households/{id}/members/{uid} is the only authority.
+// Legacy household fields (memberEmails, ownerEmail, ownerUid) never grant access.
 export const resolveHouseholdAuthority = ({
   uid,
-  email,
-  household,
   member,
 }: {
   uid: string;
-  email: string;
-  household: Record<string, unknown>;
   member?: Record<string, unknown>;
 }): ResolvedHouseholdAuthority => {
-  const memberEmails = Array.isArray(household.memberEmails) ? household.memberEmails : [];
-  if (!member && !memberEmails.includes(email)) throw new HomeHubAiError('forbidden');
-  if (member?.status === 'pending' || member?.role === 'newuser') throw new HomeHubAiError('forbidden');
+  if (!member) throw new HomeHubAiError('forbidden');
+  if (typeof member.uid === 'string' && member.uid !== uid) throw new HomeHubAiError('forbidden');
 
-  const ownerEvidence = household.ownerUid === uid || household.ownerEmail === email;
-  const role: HouseholdRole = member
-    ? (member.role as HouseholdRole)
-    : ownerEvidence ? 'owner' : 'member';
-  const permissions = getEffectivePermissions(
-    role,
-    member ? (member.permissions || {}) as PermissionOverrides : {}
-  );
+  const role = member.role as HouseholdRole;
+  const status = typeof member.status === 'string' ? member.status : 'active';
+  if (!approvedRoles.includes(role) || status !== 'active') throw new HomeHubAiError('forbidden');
+
+  const permissions = getEffectivePermissions(role, (member.permissions || {}) as PermissionOverrides);
   return { role, permissions };
 };

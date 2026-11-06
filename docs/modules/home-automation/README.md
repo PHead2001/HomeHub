@@ -31,9 +31,9 @@ The client saves credentials in Firestore through auth context. The server actio
 
 ## Authentication, Roles, and Security
 
-Navigation uses `automation.view`, but the route/client only require a signed-in user with a household. The generic Firestore household rule allows every approved member to read/write the credential document; `automation.manage` and `automation.control` are not enforced at the rule boundary.
+Navigation uses `automation.view`, but the route/client only require a signed-in user with a household. Firestore rules make `home-automation/*` write-only for clients holding `automation.manage`; no client role, including the owner, can read the stored token.
 
-The long-lived token is stored directly in Firestore and is readable by approved members. The server action accepts caller-provided email and household ID and does not independently verify a server-side Firebase session. Its Firestore read through the web client SDK requires authenticated runtime verification.
+The server action still accepts caller-provided email and household ID and reads credentials through the web client SDK without a signed-in user, so it is denied by rules and cannot connect in production. It must move to the Admin SDK behind verified ID-token authorization (tracked as audit B2).
 
 ## Integrations and Background Processing
 
