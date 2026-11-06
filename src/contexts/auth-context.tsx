@@ -381,18 +381,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchOrCreateUserProfile, toast]);
 
   const logout = useCallback(async () => {
-    await signOut(auth);
+    // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
+    // the rules reject them once signed out. Then remove this household's cached data
+    // from the device. A terminated Firestore instance cannot be reused, so the page
+    // reloads afterwards. (Emulator runs hold only synthetic data and keep the live
+    // instance.)
+    const firestoreStopped = !firebaseEmulatorMode && await clearLocalFirestoreCache();
+    try {
+      await signOut(auth);
+    } finally {
+      if (firestoreStopped) window.location.assign("/");
+    }
+    if (firestoreStopped) return;
     setCurrentUser(null);
     setHousehold(null);
     setCurrentMember(null);
     setHouseholdLoading(false);
-    // Remove this household's cached data from the device, then reload: the
-    // Firestore instance cannot be reused after its cache is cleared. (Emulator
-    // runs hold only synthetic data and keep the live instance.)
-    if (!firebaseEmulatorMode && await clearLocalFirestoreCache()) {
-      window.location.assign("/");
-      return;
-    }
     toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
   
