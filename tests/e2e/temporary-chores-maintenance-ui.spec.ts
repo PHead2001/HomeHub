@@ -392,7 +392,10 @@ test.describe('temporary chores and maintenance UI regressions', () => {
       await openAuthenticated(page, '/', 'Welcome Home');
       await expect(page.getByRole('heading', { name: 'Quick Actions' })).toHaveCount(0);
       await expect(page.getByRole('heading', { name: 'Your Dashboard' })).toBeVisible();
-      await expect(page.getByRole('link', { name: 'View Shopping' })).toBeVisible();
+      // The module carousel was replaced by the living house and the tile grid.
+      await expect(page.getByTestId('living-house')).toBeVisible();
+      await expect(page.getByTestId('dashboard-tile-shopping')).toBeVisible();
+      await expect(page.getByTestId('dashboard-tile-shopping')).toHaveAttribute('href', '/shopping');
       await assertNoDocumentOverflow(page);
     }
   });

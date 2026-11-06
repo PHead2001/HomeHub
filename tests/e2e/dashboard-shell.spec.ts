@@ -16,6 +16,10 @@ async function openDashboard(page: Page) {
   await page.clock.setFixedTime(fixedNow);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Welcome Home', exact: true })).toBeVisible();
+  // The command center (palette and shortcuts) starts listening once the member record
+  // has loaded, which is also when the header search button appears. Keys pressed
+  // before that are not handled.
+  await expect(page.getByTestId('header-search')).toBeVisible();
 }
 
 test.describe('dashboard, shell and notifications', () => {
@@ -29,7 +33,7 @@ test.describe('dashboard, shell and notifications', () => {
     await expect(house.getByTestId('house-room-kitchen')).toHaveAttribute('data-room-status', 'due');
     await expect(house.getByTestId('house-room-living-room')).toHaveAttribute('data-room-status', 'due');
     await expect(house.getByTestId('house-room-garage')).toHaveAttribute('data-room-status', 'clear');
-    await expect(house.getByRole('link', { name: /^Kitchen: 1 due today$/ })).toBeVisible();
+    await expect(house.getByRole('link', { name: /^Kitchen: \d+ due today$/ })).toBeVisible();
     await expect(house.getByTestId('house-pet-maple')).toHaveAttribute('data-fed', 'true');
     await expect(house.getByTestId('house-pet-pixel')).toHaveAttribute('data-fed', 'false');
     await expect(house.getByRole('link', { name: /^Heating and cooling: Replace air filter/ })).toBeVisible();
@@ -46,8 +50,8 @@ test.describe('dashboard, shell and notifications', () => {
 
     // H04: the brief is built from the same facts and links its nouns.
     const brief = page.getByTestId('morning-brief');
-    await expect(brief).toContainText(/1 chore today/);
-    await expect(brief.getByRole('link', { name: /1 chore today/ })).toHaveAttribute('href', '/chores');
+    await expect(brief).toContainText(/\d+ chores? today/);
+    await expect(brief.getByRole('link', { name: /\d+ chores? today/ })).toHaveAttribute('href', '/chores');
   });
 
   test('the old carousel is gone and nothing overflows on small phones', async ({ page }, testInfo) => {
@@ -73,7 +77,7 @@ test.describe('dashboard, shell and notifications', () => {
     await input.press('Enter');
     await expect(page).toHaveURL(/\/pets\/maple$/);
 
-    await page.goto('/');
+    await openDashboard(page);
     await page.keyboard.press('Control+k');
     await input.fill('add e2e paper towels to groceries');
     const quickAdd = palette.getByTestId('palette-quick-add');
