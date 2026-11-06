@@ -7,7 +7,7 @@ import { FirestorePermissionError } from '@/lib/errors';
 import { useToast } from '@/hooks/use-toast';
 
 export function FirebaseErrorListener() {
-  const { toast } = useToast();
+  const { toastError } = useToast();
 
   useEffect(() => {
     const handlePermissionError = (error: FirestorePermissionError) => {
@@ -15,12 +15,7 @@ export function FirebaseErrorListener() {
         path: error.context.path,
         operation: error.context.operation,
       });
-      toast({
-        variant: 'destructive',
-        title: 'Permission Denied',
-        description: 'You do not have permission to perform this action.',
-        duration: 10000,
-      });
+      toastError(error, undefined, { duration: 10000 });
     };
 
     errorEmitter.on('permission-error', handlePermissionError);
@@ -28,7 +23,7 @@ export function FirebaseErrorListener() {
     return () => {
       errorEmitter.off('permission-error', handlePermissionError);
     };
-  }, [toast]);
+  }, [toastError]);
 
   return null; // This component does not render anything
 }

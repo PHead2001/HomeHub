@@ -3,6 +3,7 @@
 import * as React from "react"
 import * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"
+import { AlertCircle } from "lucide-react"
 import {
   Controller,
   FormProvider,
@@ -154,13 +155,16 @@ const FormMessage = React.forwardRef<
   }
 
   return (
+    // Same look as FieldError (src/components/field-error.tsx): one inline style for field problems.
     <p
       ref={ref}
       id={formMessageId}
-      className={cn("text-sm font-medium text-destructive", className)}
+      role="alert"
+      className={cn("flex items-start gap-1.5 text-sm font-medium text-destructive", className)}
       {...props}
     >
-      {body}
+      <AlertCircle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span>{body}</span>
     </p>
   )
 })
