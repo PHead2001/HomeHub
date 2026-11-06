@@ -103,6 +103,9 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 - Overview provider configuration, 429, timeout, unavailable, refusal, or malformed output returns the already-calculated facts with a sanitized AI status; authentication and database failures remain action failures.
 - Prompt injection is reduced through authorization, data minimization, one explicit system instruction, structured untrusted-data boundaries, schemas, bounded output, and post-validation. Household text is never treated as trusted instructions; this is defense in depth, not a claim that prompt injection is impossible.
 
+- The Genkit packages (`genkit`, `@genkit-ai/next`, `@genkit-ai/compat-oai`, `genkit-cli`) must move together: `@genkit-ai/next` and `@genkit-ai/compat-oai` require a matching `genkit` version, and a partial `npm audit fix` can leave them split. Genkit's Google Cloud dependencies are also covered by the root `protobufjs` and `@grpc/grpc-js` overrides described in the [Firebase Platform README](../firebase-platform/README.md).
+- Known open advisories (production): zod 3 memory exhaustion on oversized constrained collections is fixed only in zod 4, which Genkit (`zod ^3.23.8`) does not support; server-action input is capped at Next.js's 1 MB body default, which bounds it. OpenTelemetry `JaegerPropagator` DoS (fixed only in OTel 2.x; Genkit pins 1.x) is unreachable because the app never starts the OpenTelemetry SDK; do not enable Genkit telemetry or set `OTEL_PROPAGATORS=jaeger` without revisiting this.
+
 ## Validation
 
 - Run `npm.cmd run test:ai` for deterministic task success and failure contracts.
