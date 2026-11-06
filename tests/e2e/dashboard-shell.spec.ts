@@ -127,6 +127,8 @@ test.describe('dashboard, shell and notifications', () => {
     await expect(help).toBeVisible();
     await expect(help.getByText('Go to Shopping')).toBeVisible();
     await page.keyboard.press('Escape');
+    // Shortcuts stay off while an overlay is visible, including its closing animation.
+    await expect(help).toBeHidden();
 
     await page.keyboard.press('g');
     await page.keyboard.press('s');
