@@ -34,7 +34,8 @@ export default function manifest(): MetadataRoute.Manifest {
         name: 'Log feeding',
         short_name: 'Feeding',
         description: 'Log a pet feeding',
-        url: '/pets',
+        // Opens the feeding picker (straight to the confirm step with one pet).
+        url: '/pets?feed=1',
         icons: [{ src: '/icons/shortcut-96.png', sizes: '96x96', type: 'image/png' }],
       },
       {

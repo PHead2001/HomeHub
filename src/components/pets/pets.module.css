@@ -19,6 +19,26 @@
   98% { transform: scaleY(0.1); }
 }
 
+/*
+ * Species avatar idle (ambient): a slow 24 s sway and bob of the whole figure,
+ * at most 1.5 px and 1.5 degrees, staggered between cards. Paused while the tab
+ * is hidden; none under reduced motion.
+ */
+.idle {
+  transform-box: view-box;
+  transform-origin: 60px 104px;
+  animation: pet-idle 24s ease-in-out infinite;
+}
+
+.idle[data-delay='1'] { animation-delay: -8s; }
+.idle[data-delay='2'] { animation-delay: -16s; }
+
+@keyframes pet-idle {
+  0%, 40%, 80%, 100% { transform: translateY(0) rotate(0deg); }
+  20% { transform: translateY(-1.5px) rotate(-1.5deg); }
+  60% { transform: translateY(-1px) rotate(1.2deg); }
+}
+
 /* Feeding ring fill (data change: 500 ms, non-blocking). */
 .ringFill {
   transition: stroke-dashoffset 500ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -49,11 +69,13 @@
   100% { opacity: 0; transform: translate(var(--paw-x, 0), var(--paw-y, -28px)) scale(1) rotate(var(--paw-rotate, 0deg)); }
 }
 
-:global(html[data-visibility='hidden']) .eyes {
+:global(html[data-visibility='hidden']) .eyes,
+:global(html[data-visibility='hidden']) .idle {
   animation-play-state: paused;
 }
 
 :global(html[data-motion='reduce']) .eyes,
+:global(html[data-motion='reduce']) .idle,
 :global(html[data-motion='reduce']) .paw {
   animation: none !important;
 }
@@ -68,6 +90,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .eyes,
+  .idle,
   .paw {
     animation: none !important;
   }

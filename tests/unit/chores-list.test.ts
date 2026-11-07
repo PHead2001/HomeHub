@@ -5,8 +5,11 @@ import { describe, it } from 'node:test';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { restoreChoreFields, completionFields } from '../../src/lib/chores/patch';
 import { msUntilNextMidnight } from '../../src/lib/chores/dates';
-import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, openSubTasks, uniqueTemplateId } from '../../src/lib/chores/list';
+import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, newChoreDocId, openSubTasks } from '../../src/lib/chores/list';
 import { getRolePresetPermissions } from '../../src/lib/permissions';
+import { blend, contrastRatio, hslTokenToRgb } from '../../src/lib/theme/contrast';
+import { PRESET_LIST } from '../../src/lib/theme/tokens';
+import { shortcutHint } from '../../src/lib/chores/shortcut-hints';
 
 const chore = (overrides: Partial<ChoreRecord>): ChoreRecord => ({
   id: overrides.id || 'c',
@@ -84,10 +87,27 @@ describe('chore list helpers', () => {
     assert.ok(confettiCount({ subTasks: Array.from({ length: 20 }, (_, i) => String(i)) }) <= 40);
   });
 
-  it('picks a free template id', () => {
-    assert.equal(uniqueTemplateId('trash', new Set()), 'trash');
-    assert.equal(uniqueTemplateId('trash', new Set(['trash', 'trash-2'])), 'trash-3');
-    assert.equal(uniqueTemplateId('', new Set()), 'chore');
+  it('gives new templates and rooms an id that cannot collide (slug + auto-id)', () => {
+    const auto = 'AbCdEfGhIjKlMnOpQrSt';
+    assert.equal(newChoreDocId('Take out trash', auto), 'take-out-trash-AbCdEfGhIjKlMnOpQrSt');
+    // Same name twice (two members, or a stale offline list): two different ids.
+    assert.notEqual(newChoreDocId('Trash', auto), newChoreDocId('Trash', 'ZyXwVuTsRqPoNmLkJiHg'));
+    assert.equal(newChoreDocId('', auto), `chore-${auto}`);
+    assert.equal(newChoreDocId('!!!', auto, 'room'), `room-${auto}`);
+    assert.equal(newChoreDocId('x'.repeat(200), auto).length, 60 + 1 + auto.length);
+    // A missing or short random part is refused rather than producing a guessable id.
+    assert.throws(() => newChoreDocId('Trash', ''));
+    assert.throws(() => newChoreDocId('Trash', 'short'));
+  });
+
+  it('creates never pick ids from the loaded list or merge into existing documents', () => {
+    const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
+    assert.doesNotMatch(page, /uniqueTemplateId/);
+    assert.match(page, /const templateId = newChoreDocId\(input\.task, doc\(templatesCollection\)\.id\)/);
+    assert.match(page, /const templateId = id \|\| newChoreDocId\(choreData\.task \|\| '', doc\(templatesCollection\)\.id\)/);
+    assert.match(page, /const roomId = id \|\| newChoreDocId\(roomData\.name, doc\(roomsCollection\)\.id, 'room'\)/);
+    // The library create checks for an existing document and sets without merge.
+    assert.match(page, /if \(oldTemplateSnap\.exists\(\)\) throw new Error\([^)]*\);\s*transaction\.set\(templateRef, choreData\);/);
   });
 });
 
@@ -157,5 +177,40 @@ describe('targeted rollback and day rollover', () => {
     assert.equal(msUntilNextMidnight(new Date(2026, 7, 1, 23, 59, 0)), 60_000);
     assert.equal(msUntilNextMidnight(new Date(2026, 7, 31, 12, 0, 0)), 12 * 60 * 60 * 1000);
     assert.ok(msUntilNextMidnight(new Date(2026, 7, 1, 23, 59, 59, 999)) >= 1000);
+  });
+});
+
+describe('chores polish (wave 4)', () => {
+  const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
+
+  it('the mobile Overdue pill meets WCAG AA in every preset', () => {
+    const list = read('src/components/chores/chore-list.tsx');
+    // The pill: destructive text on a 10% destructive tint, on the row's card surface.
+    assert.match(list, /rounded-full bg-destructive\/10 px-1\.5 py-0\.5 font-medium text-destructive">Overdue</);
+    assert.match(list, /'rounded-lg border bg-card'/);
+    assert.equal(PRESET_LIST.length, 5);
+    for (const preset of PRESET_LIST) {
+      const tint = blend(hslTokenToRgb(preset.colors.destructive), hslTokenToRgb(preset.colors.card), 0.1);
+      const ratio = contrastRatio(hslTokenToRgb(preset.colors.destructive), tint);
+      assert.ok(ratio >= 4.5, `${preset.id}: Overdue pill ${ratio.toFixed(2)}:1`);
+    }
+  });
+
+  it('uses real plurals, live counts, the shared stagger and the shortcut hint', () => {
+    const page = read('src/components/chore-chart-client.tsx');
+    assert.doesNotMatch(page, /\(s\)/);
+    assert.match(page, /pluralize\(selectedChores\.length, 'chore'\)/);
+    assert.match(page, /pluralize\(openSubTasks\(chore\)\.length, 'unfinished step'\)/);
+    for (const count of ['todoEntries.length', 'visibleFutureChores.length', 'visibleCompletedChores.length', 'group.entries.length']) {
+      const escaped = count.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      assert.match(page, new RegExp(`<NumberTicker value=\\{${escaped}\\}`));
+    }
+    assert.match(page, /title=\{shortcutHint\('chore '\)\}/);
+    assert.equal(shortcutHint('chore '), 'New chore from anywhere: press N');
+    assert.equal(shortcutHint('fed '), 'Log a feeding from anywhere: press F');
+    assert.equal(shortcutHint('nope '), undefined);
+    const list = read('src/components/chores/chore-list.tsx');
+    assert.match(list, /<Stagger as="ul"/);
+    assert.match(list, /<StaggerItem\s+as="li"/);
   });
 });

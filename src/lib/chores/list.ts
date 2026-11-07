@@ -4,6 +4,7 @@
  */
 import type { HouseholdPermission } from '../types';
 import { choreDueKey, type ChoreRecord } from './dates';
+import { stableSlugify } from '../../../functions/src/shared/ids';
 
 export type ChoreCapabilities = {
   /** Mark chores done, tick sub-tasks, undo a completion. */
@@ -102,11 +103,15 @@ export function confettiCount(chore: Pick<ChoreRecord, 'subTasks'>): number {
   return Math.min(40, 10 + subTasks * 6);
 }
 
-/** A unique template id for a new chore name, avoiding existing ids. */
-export function uniqueTemplateId(base: string, existing: ReadonlySet<string>): string {
-  const root = base || 'chore';
-  if (!existing.has(root)) return root;
-  let n = 2;
-  while (existing.has(`${root}-${n}`)) n += 1;
-  return `${root}-${n}`;
+/**
+ * ID for a new chore template or room: a readable slug of the name plus a
+ * Firestore auto-id, so it can never collide with a document this page has not
+ * seen (offline cache, or one another member just created). Picking a "free"
+ * slug from the loaded list could overwrite or merge into such a document.
+ * Mirrors the shell's `quickCreateId`.
+ */
+export function newChoreDocId(label: string, autoId: string, fallback = 'chore'): string {
+  const random = autoId.replace(/[^a-zA-Z0-9]/g, '');
+  if (random.length < 16) throw new Error('newChoreDocId needs a Firestore auto-id');
+  return `${(stableSlugify(label) || fallback).slice(0, 60)}-${random}`;
 }
