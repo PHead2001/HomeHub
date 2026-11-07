@@ -1,6 +1,7 @@
 
 "use client"
 
+import { warmSignInPopup } from '@/lib/auth-popup';
 import { useState, type ReactNode } from "react"
 import { useAuth } from "@/hooks/use-auth"
 import { Button } from "@/components/ui/button"
@@ -42,7 +43,7 @@ export function LoginDialog({ children }: LoginDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{children}</DialogTrigger>
+      <DialogTrigger asChild onPointerEnter={warmSignInPopup} onFocus={warmSignInPopup}>{children}</DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle className="font-headline">Sign in to HomeHub</DialogTitle>
@@ -55,6 +56,8 @@ export function LoginDialog({ children }: LoginDialogProps) {
                 variant="outline"
                 size="lg"
                 onClick={handleLogin}
+                onPointerEnter={warmSignInPopup}
+                onFocus={warmSignInPopup}
                 disabled={loading}
                 className="w-full"
             >

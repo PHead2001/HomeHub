@@ -4,7 +4,6 @@ import localFont from 'next/font/local';
 import './globals.css';
 import { Header } from '@/components/header';
 import { MobileTabBar } from '@/components/mobile-tab-bar';
-import { Toaster } from "@/components/ui/toaster"
 import { AuthProvider } from '@/contexts/auth-context';
 import { PasswordChangeHandler } from '@/components/password-change-handler';
 import { HouseholdManager } from '@/components/household-manager';
@@ -16,7 +15,7 @@ import { MorphRouteListener } from '@/hooks/use-morph-navigation';
 import { themeCss, DEFAULT_DARK_PRESET } from '@/lib/theme/tokens';
 import { THEME_COLORS, themeBootstrapScript } from '@/lib/theme/appearance';
 import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
-import { DeferredPushNotificationManager } from '@/components/deferred-push-notification-manager';
+import { DeferredPushNotificationManager, DeferredToaster, SignInWarmup } from '@/components/deferred-push-notification-manager';
 import { CommandCenter } from '@/components/command/command-center';
 import { TimeOfDayTint } from '@/components/dashboard/time-of-day';
 
@@ -88,6 +87,7 @@ export default function RootLayout({
             <GlowPointerTracker />
             <MorphRouteListener />
             <DeferredPushNotificationManager />
+            <SignInWarmup />
             <FirebaseErrorListener />
             <PasswordChangeHandler />
             <HouseholdManager>
@@ -96,7 +96,7 @@ export default function RootLayout({
               <MobileTabBar />
               <CommandCenter />
             </HouseholdManager>
-            <Toaster />
+            <DeferredToaster />
           </AppearanceProvider>
         </AuthProvider>
       </body>

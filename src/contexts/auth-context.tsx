@@ -19,6 +19,7 @@ import {
 } from 'firebase/auth';
 import { useToast } from '@/hooks/use-toast';
 import { auth, firebaseEmulatorMode } from '@/lib/firebase-app';
+import { signInPopupResolver } from '@/lib/auth-popup';
 import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { friendlyError } from '@/lib/friendly-error';
@@ -347,7 +348,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     googleProvider.setCustomParameters({ prompt: "consent" });
 
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      // The resolver is passed explicitly: Auth is created without one (first-paint budget).
+      const result = await signInWithPopup(auth, googleProvider, signInPopupResolver());
       const { user: firebaseUser } = result;
 
       const credential = GoogleAuthProvider.credentialFromResult(result);

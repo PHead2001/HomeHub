@@ -7,7 +7,15 @@
 // Guarded by eslint `no-restricted-imports`: this file, auth-context.tsx and
 // layout.tsx must not import Firestore, Storage, Messaging or `@/lib/firebase`.
 import { initializeApp, getApps, getApp, type FirebaseOptions } from "firebase/app";
-import { connectAuthEmulator, getAuth } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  browserSessionPersistence,
+  connectAuthEmulator,
+  getAuth,
+  indexedDBLocalPersistence,
+  initializeAuth,
+  type Auth,
+} from "firebase/auth";
 import { normalizeFirebaseAppId } from "./firebase-app-id";
 
 export const firebaseConfig: FirebaseOptions = {
@@ -23,7 +31,23 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
 
-export const auth = getAuth(app);
+// In the browser Auth starts with the same persistence order `getAuth` uses
+// (IndexedDB, then localStorage, then sessionStorage) but without the popup/redirect
+// resolver, which would fetch Google's api.js before first paint. Sign-in passes
+// the resolver explicitly (`src/lib/auth-popup.ts`). The server keeps `getAuth`.
+const createAuth = (): Auth => {
+  if (typeof window === "undefined") return getAuth(app);
+  try {
+    return initializeAuth(app, {
+      persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+    });
+  } catch {
+    // Already initialized (development hot reload).
+    return getAuth(app);
+  }
+};
+
+export const auth = createAuth();
 
 type AuthEmulatorState = typeof globalThis & { __homeHubAuthEmulatorConnected?: boolean };
 

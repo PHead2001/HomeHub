@@ -19,6 +19,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
+import { warmSignInPopup } from '@/lib/auth-popup';
 import { floorPoint, layoutHouse } from '@/lib/dashboard/house-layout';
 import { LANDING_STEPS, landingStage, moduleVisible, pieceVisible, SAMPLE_ROOMS, type LandingModule, type LandingPiece } from '@/lib/dashboard/landing-scene';
 import styles from './dashboard.module.css';
@@ -227,7 +228,7 @@ export function Landing() {
           >
             <h2 className="font-headline text-2xl font-semibold">Bring your household together</h2>
             <p className="mx-auto mt-2 max-w-md text-muted-foreground">Create a household or join one with an invite code after you sign in.</p>
-            <Button size="lg" className="mt-6" onClick={signIn} disabled={loading || signingIn}>
+            <Button size="lg" className="mt-6" onClick={signIn} onPointerEnter={warmSignInPopup} onFocus={warmSignInPopup} disabled={loading || signingIn}>
               <LogIn aria-hidden className="mr-2 h-4 w-4" />
               Sign in with Google
             </Button>
