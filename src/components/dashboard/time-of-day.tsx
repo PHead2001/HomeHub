@@ -6,10 +6,19 @@
  * jump at the hour) and are exposed as CSS custom properties that tint token
  * colors: dawn uses `--member-5` (rose), day `--primary`, dusk `--warning`
  * (amber) and night `--member-3` (indigo).
+ *
+ * Opt-in live weather (H02) adds rain streaks, snow or a sun glint over the shell
+ * and the living house (`WeatherLayer`). Both the tint and the weather are left out
+ * under reduced motion.
  */
 import { useEffect, useState, type CSSProperties } from 'react';
 import { DAY_PHASES, phaseWeights, windowsLit, type DayPhase } from '@/lib/dashboard/ambience';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useLiveWeather } from '@/lib/dashboard/use-weather';
+import type { WeatherEffect } from '@/lib/dashboard/weather';
+import { cn } from '@/lib/utils';
+import { useAuth } from '@/hooks/use-auth';
+import { writeSessionHint } from '@/lib/dashboard/session-hint';
 import styles from './dashboard.module.css';
 
 export type DayLight = { weights: Record<DayPhase, number>; lit: boolean; style: CSSProperties };
@@ -32,10 +41,59 @@ export function useDayLight(): DayLight | null {
   return light;
 }
 
-/** A barely-there tint behind the whole app shell. Off under reduced motion. */
+const EFFECT_CLASS: Record<Exclude<WeatherEffect, null>, string> = {
+  rain: styles.rain,
+  snow: styles.snowfall,
+  glint: styles.glint,
+};
+
+/**
+ * Decorative weather over the shell or the house: CSS-only, transform/opacity
+ * loops of 20 s or more, very low contrast, paused while the tab is hidden. The
+ * caller renders it only when motion is not reduced.
+ */
+export function WeatherLayer({ effect, scope }: { effect: Exclude<WeatherEffect, null>; scope: 'shell' | 'house' }) {
+  return (
+    <div
+      aria-hidden
+      data-testid={`weather-${scope}`}
+      data-effect={effect}
+      className={cn(styles.weather, scope === 'shell' ? styles.weatherShell : styles.weatherHouse, EFFECT_CLASS[effect])}
+    />
+  );
+}
+
+/**
+ * Keeps the `homehub.session` device hint in step with the real session on every
+ * route (this component is mounted once in the root layout), so `/` can pick the
+ * landing page or the dashboard skeleton before auth resolves.
+ */
+function useSessionHint() {
+  const { currentUser, loading } = useAuth();
+  const signedIn = Boolean(currentUser);
+  useEffect(() => {
+    if (loading) return;
+    writeSessionHint(signedIn, (() => {
+      try {
+        return window.localStorage;
+      } catch {
+        return null;
+      }
+    })());
+  }, [loading, signedIn]);
+}
+
+/** A barely-there tint behind the whole app shell, plus live weather when on. Off under reduced motion. */
 export function TimeOfDayTint() {
+  useSessionHint();
   const light = useDayLight();
   const reduced = useReducedMotion();
+  const weather = useLiveWeather();
   if (!light || reduced) return null;
-  return <div aria-hidden className={styles.shellTint} style={light.style} data-testid="time-of-day-tint" />;
+  return (
+    <>
+      <div aria-hidden className={styles.shellTint} style={light.style} data-testid="time-of-day-tint" />
+      {weather?.effect && <WeatherLayer effect={weather.effect} scope="shell" />}
+    </>
+  );
 }

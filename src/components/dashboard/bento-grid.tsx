@@ -3,19 +3,32 @@
 /**
  * Dashboard bento grid (H22): live tiles shown by default, from exact facts (no
  * "Generate" step). Each tile deep-links to its module, numbers tick in, and a
- * peek (H26) lists the details on hover or keyboard focus. Sections the member
+ * peek (H26) lists the details on hover or keyboard focus. Tiles tilt slightly
+ * toward the cursor on fine pointers (visual layer only; the link never moves).
+ * Weather (only when the member turned live weather on) and household streaks
+ * (Chores' own stats) complete the grid. Sections the member
  * cannot view are left out; sections still loading show a fixed-size skeleton so
  * nothing shifts.
  */
-import type { ReactNode } from 'react';
+import type { PointerEvent, ReactNode } from 'react';
 import Link from 'next/link';
-import { Bell, CheckSquare, PawPrint, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
+import { Bell, CheckSquare, CloudSun, Flame, PawPrint, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
+import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
+import { tiltFor } from '@/lib/dashboard/tilt';
+import { temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
+import { useLiveWeather } from '@/lib/dashboard/use-weather';
 import { useAuth } from '@/hooks/use-auth';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
 import { PeekCard } from './peek-card';
+import styles from './dashboard.module.css';
+
+const fineHover = () => typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 
 function Tile({
   href,
@@ -34,18 +47,35 @@ function Tile({
   peek?: ReactNode;
   children: ReactNode;
 }) {
+  const reduced = useReducedMotion();
+  // The link box is the click target and never moves; only the inner visual layer tilts.
+  const onPointerMove = (event: PointerEvent<HTMLAnchorElement>) => {
+    if (reduced || event.pointerType !== 'mouse' || !fineHover()) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const tilt = tiltFor(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height);
+    event.currentTarget.style.setProperty('--tilt-x', `${tilt.x}deg`);
+    event.currentTarget.style.setProperty('--tilt-y', `${tilt.y}deg`);
+  };
+  const onPointerLeave = (event: PointerEvent<HTMLAnchorElement>) => {
+    event.currentTarget.style.removeProperty('--tilt-x');
+    event.currentTarget.style.removeProperty('--tilt-y');
+  };
   return (
     <PeekCard peek={peek ?? null} className={cn('min-w-0', className)}>
       <Link
         href={href}
         data-testid={testId}
-        className="glow-card flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised transition-ui hover:border-primary/40"
+        className={cn(styles.tilt, 'block h-full rounded-xl')}
+        onPointerMove={onPointerMove}
+        onPointerLeave={onPointerLeave}
       >
-        <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Icon aria-hidden className="h-4 w-4 text-primary" />
-          <span className="truncate">{title}</span>
+        <span className={cn(styles.tiltLayer, 'glow-card flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised transition-ui hover:border-primary/40')}>
+          <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <Icon aria-hidden className="h-4 w-4 text-primary" />
+            <span className="truncate">{title}</span>
+          </span>
+          {children}
         </span>
-        {children}
       </Link>
     </PeekCard>
   );
@@ -105,6 +135,7 @@ const Big = ({ value, suffix }: { value: number; suffix?: string }) => (
 
 export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; loading: boolean; failed: Set<string> }) {
   const { permissions } = useAuth();
+  const weather = useLiveWeather();
   const tiles: ReactNode[] = [];
 
   if (permissions['chores.view']) {
@@ -265,6 +296,55 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
       <Tile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications">
         <Big value={facts.notifications.unread} suffix="unread" />
         <span className="text-sm text-muted-foreground">{facts.notifications.unread === 0 ? 'All caught up.' : 'See what needs you.'}</span>
+      </Tile>,
+    );
+  }
+
+  // Hidden entirely (no names, ranking, peek or screen-reader sentence) when the
+  // household turned the Chores leaderboard off.
+  if (permissions['chores.view'] && !facts.streaksHidden) {
+    const streaks = facts.streaks;
+    tiles.push(streaks ? (
+      <Tile
+        key="streaks"
+        href="/chores"
+        title="Household streaks"
+        icon={Flame}
+        testId="dashboard-tile-streaks"
+        peek={streaks.top.length > 0 ? (
+          <ul className="space-y-1">
+            {streaks.top.map((entry) => (
+              <li key={entry.email} className="flex justify-between gap-2">
+                <span className="truncate">{entry.name}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{streakDaysLabel(entry.streak)}{entry.activeToday ? '' : ', not yet today'}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      >
+        {/* One sentence for screen readers; the ticking number and labels below are visual only. */}
+        <span className="sr-only" data-testid="streaks-summary">{streakSummary(streaks)}</span>
+        {streaks.longest > 0 ? (
+          <span aria-hidden className="flex min-w-0 flex-col gap-2">
+            <Big value={streaks.longest} suffix={`${streaks.longest === 1 ? 'day' : 'days'} best streak`} />
+            <span className="truncate text-sm text-muted-foreground" data-testid="streaks-leader">
+              {streaks.top[0].name}{streaks.running > 1 ? ` and ${streaks.running - 1} more on a streak` : ''}
+            </span>
+          </span>
+        ) : (
+          <span aria-hidden className="text-sm text-muted-foreground">No streaks yet. Finish a chore today to start one.</span>
+        )}
+        <span aria-hidden className="text-xs text-muted-foreground" data-testid="streaks-week">{streaks.weekCompleted} done this week</span>
+      </Tile>
+    ) : failed.has('streaks') || failed.has('chores') ? <UnavailableTile key="streaks" href="/chores" title="Household streaks" icon={Flame} testId="dashboard-tile-streaks" /> : <TileSkeleton key="streaks" />);
+  }
+
+  if (weather) {
+    tiles.push(
+      <Tile key="weather" href="#weather-settings" title="Weather" icon={CloudSun} testId="dashboard-tile-weather">
+        <span className="sr-only">{weatherSummary(weather)}</span>
+        <span aria-hidden className="font-headline text-3xl font-semibold tabular-nums">{temperatureLabel(weather)}</span>
+        <span aria-hidden className="truncate text-sm text-muted-foreground">{weather.label} in {weather.place}</span>
       </Tile>,
     );
   }

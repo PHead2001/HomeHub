@@ -12,7 +12,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useAuth } from '@/hooks/use-auth';
 import { isComposingKey, isTypingTarget, matchShortcut, SHORTCUTS } from '@/lib/dashboard/shortcuts';
 import type { HouseholdPermission } from '@/lib/types';
-import { CommandPalette } from './command-palette';
+import dynamic from 'next/dynamic';
+
+// The palette searches and writes household data (Firestore); it is its own chunk,
+// loaded only once a signed-in member can use it (`enabled`).
+const CommandPalette = dynamic(() => import('./command-palette').then((mod) => mod.CommandPalette), { ssr: false });
 import { PALETTE_EVENT, SHORTCUT_HELP_EVENT, type PaletteRequest } from './events';
 
 const GO_TIMEOUT_MS = 1200;

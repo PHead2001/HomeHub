@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   collection,
+  doc,
   limit,
   onSnapshot,
   orderBy,
@@ -27,7 +28,9 @@ import { activeBellNotifications } from './notification-display';
 import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
 import { dayKey, startOfLocalDay } from './dates';
 import type { DashboardFacts, RawDoc } from './facts';
-import { assembleDashboardFacts, feedingFailureKey, type DashboardRaw } from './assemble';
+import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
+import { leaderboardEnabledFrom } from './streaks';
+import { HEALTH_RULES } from '../maintenance/health';
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
@@ -112,6 +115,15 @@ export function useDashboardData(enabled = true): DashboardData {
       // the field are simply not returned by that query, and the other one covers them.
       listen('chores', query(base('chores'), where('completedAtServer', '>=', Timestamp.fromDate(todayStartDate))), (s) => setRaw((r) => ({ ...r, doneTodayServer: docs(s) })));
       listen('chores', query(base('chores'), where('completedAt', '>=', todayStart)), (s) => setRaw((r) => ({ ...r, doneToday: docs(s) })));
+      // Streaks (H22/H06): every retained completion and the approved members, as the Chores page reads them.
+      listen(STREAKS_FAILURE, query(base('chores'), where('isCompleted', '==', true)), (s) => setRaw((r) => ({ ...r, completedChores: docs(s) })));
+      listen(STREAKS_FAILURE, query(collection(db, 'households', householdId, 'members')), (s) => setRaw((r) => ({ ...r, members: docs(s) })));
+      // The Chores "Show leaderboard" setting gates the comparative streaks tile.
+      unsubscribers.push(onSnapshot(
+        doc(db, 'households', householdId, 'chore-settings', 'preferences'),
+        (snapshot) => setRaw((r) => ({ ...r, leaderboard: leaderboardEnabledFrom(snapshot.exists() ? snapshot.data() : undefined) ? 'on' : 'off' })),
+        fail(LEADERBOARD_FAILURE),
+      ));
     }
 
     if (canShopping) {
@@ -143,6 +155,10 @@ export function useDashboardData(enabled = true): DashboardData {
     if (canMaintenance) {
       listen('maintenance', query(base('home-assets')), (s) => setRaw((r) => ({ ...r, assets: docs(s) })));
       listen('maintenance', query(base('vehicles')), (s) => setRaw((r) => ({ ...r, vehicles: docs(s) })));
+      // Home health (H10 in the house): only logs recent enough to count toward the bonus
+      // (with two days of margin for time zones); `computeHomeHealth` applies the exact window.
+      const since = new Date(Date.now() - (HEALTH_RULES.recentDays + 2) * 86_400_000).toISOString().slice(0, 10);
+      listen(HEALTH_FAILURE, query(base('maintenance'), where('date', '>=', since)), (s) => setRaw((r) => ({ ...r, logs: docs(s) })));
     }
 
     if (canPets) {

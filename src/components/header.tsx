@@ -4,10 +4,8 @@
 import { User, LogOut, ScanBarcode, Home, Search } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { isActiveRoute } from '@/lib/navigation';
-import { SPRING_SNAPPY } from '@/lib/motion';
 import type { HouseholdPermission } from '@/lib/types';
 import { Button } from './ui/button';
 import { useAuth } from '@/hooks/use-auth';
@@ -21,9 +19,24 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
-import { NotificationBell } from './notification-bell';
+import dynamic from 'next/dynamic';
 import { Logo } from './brand/logo';
 import { openCommandPalette } from './command/events';
+
+// The bell reads notifications from Firestore; it loads as its own chunk once a
+// signed-in member with notifications.view is known, so signed-out pages never
+// download Firestore. The placeholder keeps the icon button's size (no shift).
+// The sliding underline uses `motion`; it loads as its own chunk (only signed-in
+// members see nav links), with a plain underline until then.
+const HeaderNavUnderline = dynamic(() => import('./header-nav-underline').then((mod) => mod.HeaderNavUnderline), {
+  ssr: false,
+  loading: () => <span aria-hidden className="absolute inset-x-2.5 -bottom-3 h-0.5 rounded-full bg-primary" />,
+});
+
+const NotificationBell = dynamic(() => import('./notification-bell').then((mod) => mod.NotificationBell), {
+  ssr: false,
+  loading: () => <span aria-hidden className="inline-block h-10 w-10" />,
+});
 
 
 const NAV_LINKS: Array<{ href: string; label: string; permission: HouseholdPermission }> = [
@@ -63,13 +76,7 @@ export function Header() {
               >
                 {link.label}
                 {active && (
-                  // Slides between links (shared layoutId); instant under reduced motion.
-                  <motion.span
-                    layoutId="header-nav-underline"
-                    aria-hidden
-                    className="absolute inset-x-2.5 -bottom-3 h-0.5 rounded-full bg-primary"
-                    transition={SPRING_SNAPPY}
-                  />
+                  <HeaderNavUnderline />
                 )}
               </Link>
             );

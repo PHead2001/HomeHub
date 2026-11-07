@@ -19,6 +19,7 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { DURATION, EASE } from '@/lib/motion';
+import { leaderboardEnabledFrom } from '@/lib/dashboard/streaks';
 import { countInYear, maintenanceSpend, readConsistentChoreTotals, summarizeChores, topPurchasedItem, yearBounds, yearIn, type WrappedSummary } from '@/lib/dashboard/wrapped';
 import type { RawDoc } from '@/lib/dashboard/facts';
 
@@ -146,6 +147,9 @@ export function HomeWrapped() {
         // chores, stats again; retried if a purge lands in between), so no chore is
         // counted twice or missed. A missing or unreadable stats document, or one
         // that keeps changing, falls back to the last 90 days, said on the card.
+        const showRanking = await getDoc(doc(db, 'households', householdId, 'chore-settings', 'preferences'))
+          .then((snapshot) => leaderboardEnabledFrom(snapshot.exists() ? snapshot.data() : undefined))
+          .catch(() => false);
         const statsRef = doc(db, 'households', householdId, 'stats', choreStatsDocId(year));
         section('Chores', readConsistentChoreTotals({
           readStats: () => getDoc(statsRef).then((snapshot) => (snapshot.exists() ? snapshot.data() : undefined)).catch(() => undefined),
@@ -153,6 +157,9 @@ export function HomeWrapped() {
         }).then((totals) => {
           const stats = totals.consistent ? totals.stats : undefined;
           Object.assign(summary, summarizeChores(totals.retained, year, { names, stats, timeZone: household?.timeZone }));
+          // The champion card ranks members, so it follows the Chores "Show leaderboard"
+          // setting: shown only when it is known to be on (missing means on, as on Chores).
+          if (!showRanking) summary.champion = null;
           if (!stats) summary.choresWindowReason = totals.consistent ? 'no-stats' : 'busy';
         }));
       }
