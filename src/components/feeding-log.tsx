@@ -33,7 +33,7 @@ const logSchema = z.object({
   ampm: z.enum(['AM', 'PM']),
   // Accepts every planned portion (e.g. "1/3 cup" → 0.33), so the default always validates.
   cups: z.coerce
-    .number({ invalid_type_error: 'Enter an amount.' })
+    .number<number>({ error: 'Enter an amount.' })
     .refine(isValidPortion, `Use an amount above 0 and up to ${PORTION_MAX}.`),
   foodAmountType: z.enum(PORTION_UNITS),
   foodType: z.enum(FOOD_TYPES),

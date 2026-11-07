@@ -90,9 +90,9 @@ const runGuarded = async <T>(
 /**
  * Largest client payload (context + input, as JSON) an AI action accepts. Real
  * inputs are a few KB (a 60-item recipe request is about 12 KB). Rejecting larger
- * payloads before any validation bounds the work Genkit's pinned zod 3 can be made
- * to do (GHSA-mrhx-c7xc-m3w5, oversized constrained collections); see the AI/Genkit
- * module README.
+ * payloads before authorization or any schema validation keeps that work bounded to
+ * small inputs (defense in depth; the zod 3 advisory GHSA-mrhx-c7xc-m3w5 that first
+ * motivated it is fixed by zod 4.6.6+); see the AI module README.
  */
 export const MAX_AI_ACTION_PAYLOAD_BYTES = 64 * 1024;
 
