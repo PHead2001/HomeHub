@@ -1,36 +1,52 @@
 'use client';
 
 /**
- * The living house (H01): the dashboard hero. Inline SVG and CSS only, built from
- * the household's chore rooms and read-only dashboard facts:
- * - each room glows amber with a badge when it has overdue chores, shows a dot
- *   for chores due today, and sparkles once when today's work there is done;
- * - pets wander in the yard; a pet that has not been fed recently sits by its bowl;
+ * The living house (H01): the dashboard hero. An isometric-style cutaway in inline
+ * SVG and CSS (no WebGL), built from the household's chore rooms
+ * (`layoutHouse` in `src/lib/dashboard/house-layout.ts`) and read-only dashboard facts:
+ * - each room glows amber with a badge when it has overdue chores, shows a dot for
+ *   chores due today, and sparkles once when today's work there is done;
+ * - fed pets wander between rooms; a pet not fed on schedule sits by its bowl; a
+ *   pet whose feeding history is unavailable rests without any claim;
  * - the fridge shows how stocked it is and pulses when food expires soon;
  * - the car and the outdoor HVAC unit show a wrench when service is due;
- * - windows light up in the evening (H02), with seasonal touches (H27) and a
- *   Konami-code disco mode (H29).
- * Every room and object is a real link with a full text name, so the scene is
- * keyboard-navigable and readable without the picture. Under reduced motion it
- * renders fully static.
+ * - a home health badge mirrors Maintenance's score (H10);
+ * - windows light up in the evening and live weather is drawn over it (H02), with
+ *   seasonal touches (H27), a Konami-code disco mode and pet sounds (H29).
+ *
+ * The SVG is decoration (`aria-hidden`). Every room is an HTML link laid exactly
+ * over its rectangle, with the full text name, so the scene is navigable room by
+ * room (Tab, or arrow keys between rooms) and readable without the picture.
+ * Clicking a room zooms into it and morphs into Chores filtered to that room
+ * (`/chores?room=<roomId>`); under reduced motion it is a plain navigation and the
+ * scene is fully static.
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
-import { AirVent, Car, Cat, Dog, PawPrint, Refrigerator, Sparkles, Wrench } from 'lucide-react';
+import { AirVent, Car, Cat, Dog, PawPrint, Refrigerator, Sparkles, Wrench, type LucideProps } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
-import { playFeedback } from '@/lib/feedback';
+import { useMorphNavigation } from '@/hooks/use-morph-navigation';
+import { morphStyle } from '@/lib/motion';
 import { seasonFor, type Season } from '@/lib/dashboard/ambience';
 import { isComposingKey, isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
 import { roomSummary, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
-import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from '@/lib/dashboard/links';
-import { useDayLight } from './time-of-day';
+import { choresRoomHref, roomMorphName, MAINTENANCE_OVERVIEW_HREF, MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from '@/lib/dashboard/links';
+import { layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout, type NavKey, type PetPlacement, type RoomPlacement } from '@/lib/dashboard/house-layout';
+import { healthSummaryText, type HealthResult } from '@/lib/maintenance/health';
+import { playPetSound } from '@/lib/dashboard/pet-sound';
+import { useLiveWeather } from '@/lib/dashboard/use-weather';
+import { useDayLight, WeatherLayer } from './time-of-day';
+import { WeatherControls } from './weather-controls';
 import { PeekCard } from './peek-card';
 import styles from './dashboard.module.css';
 
 const SEASONAL_KEY = 'homehub.dashboard.seasonal';
 const DISCO_MS = 10_000;
-const MAX_ROOMS = 6;
+/** Camera move into a room before the route morph starts (scene budget 400–900 ms). */
+const ZOOM_MS = 420;
+const LONG_PRESS_MS = 550;
+const NAV_KEYS = new Set<string>(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
 
 const readSeasonalPref = () => {
   try {
@@ -40,8 +56,136 @@ const readSeasonalPref = () => {
   }
 };
 
-function RoomTile({ room, href, sparkle }: { room: RoomState; href: string; sparkle: boolean }) {
+function PetIcon({ type, ...props }: { type: string } & LucideProps) {
+  if (type === 'Dog') return <Dog {...props} />;
+  if (type === 'Cat') return <Cat {...props} />;
+  return <PawPrint {...props} />;
+}
+
+/** "1 of 2 today. Fed 2 h ago by Sam", or the Pets module's unavailable line. */
+const petStatus = (pet: PetState) => (pet.fed === null ? pet.headline : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`);
+
+/* ------------------------------------------------------------------------- */
+/* SVG layers (decorative)                                                    */
+/* ------------------------------------------------------------------------- */
+
+const points = (list: Array<{ x: number; y: number }>) => list.map((p) => `${p.x},${p.y}`).join(' ');
+
+function RoomShape({ placement, room, lit, active }: { placement: RoomPlacement; room: RoomState; lit: boolean; active: boolean }) {
+  const { x, y, w, h } = placement;
+  const i = 9;
+  return (
+    <g className={cn(styles.roomLayer, active && styles.roomLayerActive)} data-room-shape={room.id}>
+      <rect
+        x={x + i}
+        y={y + i}
+        width={w - i * 2}
+        height={h - i * 2}
+        className={cn(room.status === 'overdue' ? 'fill-warning/20' : room.status === 'due' ? 'fill-primary/15' : 'fill-card')}
+      />
+      {/* Ceiling, side walls and floor in one-point perspective. */}
+      <polygon points={points([{ x, y }, { x: x + w, y }, { x: x + w - i, y: y + i }, { x: x + i, y: y + i }])} className="fill-muted/70" />
+      <polygon points={points([{ x, y }, { x: x + i, y: y + i }, { x: x + i, y: y + h - i }, { x, y: y + h }])} className="fill-muted/50" />
+      <polygon points={points([{ x: x + w, y }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + w - i, y: y + i }])} className="fill-muted/30" />
+      <polygon points={points([{ x, y: y + h }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + i, y: y + h - i }])} className="fill-secondary" />
+      <rect x={x + w - 34} y={y + i + 6} width="16" height="12" rx="1.5" className="fill-background stroke-border" strokeWidth="1" />
+      <rect x={x + w - 33} y={y + i + 7} width="14" height="10" rx="1" className={cn(styles.windowLight, 'fill-warning')} style={{ opacity: lit ? 0.75 : 0 }} />
+      {room.status === 'overdue' && (
+        <rect x={x + 2} y={y + 2} width={w - 4} height={h - 4} rx="2" className={cn(styles.overdueGlow, 'fill-none stroke-warning')} strokeWidth="3" />
+      )}
+      <rect x={x} y={y} width={w} height={h} className="fill-none stroke-border" strokeWidth="1.5" />
+    </g>
+  );
+}
+
+function PetFigure({ pet, placement, hopping, onHopEnd }: { pet: PetState; placement: PetPlacement; hopping: boolean; onHopEnd: () => void }) {
+  const [p0, p1, p2] = [placement.path[0], placement.path[1] ?? placement.path[0], placement.path[2] ?? placement.path[0]];
+  const style = {
+    '--p0x': `${p0.x}px`, '--p0y': `${p0.y}px`,
+    '--p1x': `${p1.x}px`, '--p1y': `${p1.y}px`,
+    '--p2x': `${p2.x}px`, '--p2y': `${p2.y}px`,
+    transform: `translate(${placement.at.x}px, ${placement.at.y}px)`,
+  } as CSSProperties;
+  return (
+    <g data-pet-figure={pet.id} data-pet-mode={placement.mode} className={cn(placement.mode === 'wander' && styles.petWalk)} style={style}>
+      <g className={cn(hopping && styles.hop)} onAnimationEnd={onHopEnd}>
+        <circle cx="0" cy="-9" r="9" className={cn('fill-card', pet.fed === false ? 'stroke-warning' : 'stroke-border')} strokeWidth="1.5" />
+        <PetIcon type={pet.type} x={-6} y={-15} width={12} height={12} className="text-foreground" strokeWidth={2} />
+      </g>
+    </g>
+  );
+}
+
+function Scenery({ layout, season, golden, lit }: { layout: HouseLayout; season: Season; golden: boolean; lit: boolean }) {
+  const { body, apex, width, groundY, height } = layout;
+  return (
+    <>
+      <rect x="0" y={groundY} width={width} height={height - groundY} className="fill-secondary/70" />
+      <line x1="0" x2={width} y1={groundY} y2={groundY} className="stroke-border" strokeWidth="1.5" />
+      <polygon points={points(layout.sideWall)} className="fill-muted stroke-border" strokeWidth="1.5" strokeLinejoin="round" />
+      <rect x={apex.x + body.w / 4} y={body.y - 50} width="16" height="30" rx="2" className="fill-muted stroke-border" strokeWidth="1.5" />
+      <polygon points={points(layout.roofSide)} className={cn(golden ? 'fill-warning/60' : 'fill-muted', 'stroke-border')} strokeWidth="1.5" strokeLinejoin="round" />
+      <polygon points={points(layout.roofFront)} className={cn(golden ? 'fill-warning/80 stroke-warning' : 'fill-secondary stroke-border')} strokeWidth="2" strokeLinejoin="round" />
+      <circle cx={apex.x} cy={body.y - 22} r="10" className="fill-background stroke-border" strokeWidth="2" />
+      <circle cx={apex.x} cy={body.y - 22} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ opacity: lit ? 0.85 : 0 }} />
+      <rect x={body.x} y={body.y} width={body.w} height={body.h} className="fill-background/40 stroke-border" strokeWidth="2" />
+      {layout.emptyCells.map((cell) => (
+        <g key={`${cell.x}-${cell.y}`}>
+          <rect x={cell.x + 9} y={cell.y + 9} width={cell.w - 18} height={cell.h - 18} className="fill-muted/40" />
+          <rect x={cell.x + cell.w / 2 - 10} y={cell.y + 22} width="20" height="16" rx="2" className="fill-background stroke-border" strokeWidth="1" />
+        </g>
+      ))}
+      {season === 'winter' && (
+        <>
+          <polygon
+            points={points([layout.roofFront[0], apex, layout.roofFront[2], { x: layout.roofFront[2].x - 18, y: body.y - 4 }, { x: apex.x, y: apex.y + 10 }, { x: layout.roofFront[0].x + 18, y: body.y - 4 }])}
+            className="fill-foreground/80"
+          />
+          {[0.15, 0.4, 0.62, 0.86].map((t, index) => (
+            <circle key={t} cx={Math.round(width * t)} cy={6} r="1.6" className={cn(styles.snow, 'fill-foreground/80')} style={{ animationDelay: `${index * -3.5}s` }} />
+          ))}
+        </>
+      )}
+      {season === 'holidays' && (
+        <g transform={`translate(${width - 22} ${groundY - 2})`}>
+          <polygon points="0,-30 12,-8 -12,-8" className="fill-success" />
+          <polygon points="0,-20 15,2 -15,2" className="fill-success" />
+          {[[-6, -6], [5, -16], [7, -3], [-3, -22]].map(([x, y], index) => (
+            <circle key={index} cx={x} cy={y} r="1.6" className={cn(styles.twinkle, index % 2 ? 'fill-warning' : 'fill-destructive')} style={{ animationDelay: `${index * 0.4}s` }} />
+          ))}
+        </g>
+      )}
+      {season === 'halloween' && (
+        <g transform={`translate(${width - 22} ${groundY + 13})`}>
+          <ellipse cx="0" cy="0" rx="9" ry="7" className="fill-warning" />
+          <rect x="-1" y="-10" width="2" height="4" className="fill-success" />
+        </g>
+      )}
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------------- */
+/* HTML layers (the links)                                                    */
+/* ------------------------------------------------------------------------- */
+
+function RoomLink({
+  room,
+  placement,
+  sparkle,
+  morphing,
+  onActive,
+  onNavigate,
+}: {
+  room: RoomState;
+  placement: RoomPlacement;
+  sparkle: boolean;
+  morphing: boolean;
+  onActive: (id: string | null) => void;
+  onNavigate: (event: MouseEvent<HTMLAnchorElement>, room: RoomState, placement: RoomPlacement, href: string) => void;
+}) {
   const summary = roomSummary(room);
+  const href = choresRoomHref(room.id);
   const peek = room.chores.length > 0 ? (
     <div>
       <p className="font-medium">{room.name}</p>
@@ -57,79 +201,87 @@ function RoomTile({ room, href, sparkle }: { room: RoomState; href: string; spar
   ) : null;
 
   return (
-    <PeekCard peek={peek} className="min-w-0">
-      <Link
-        href={href}
-        aria-label={`${room.name}: ${summary}`}
-        data-room-status={room.status}
-        data-testid={`house-room-${room.id}`}
-        className={cn(styles.room, 'block rounded-lg outline-none')}
-      >
-        <span
-          className={cn(
-            styles.roomVisual,
-            'relative flex h-full min-h-[4.5rem] flex-col justify-between gap-1 overflow-hidden rounded-lg border p-2.5',
-            room.status === 'overdue' && 'border-warning/60 bg-warning/10',
-            room.status === 'due' && 'border-primary/50 bg-primary/10',
-            room.status === 'clear' && 'border-border-subtle bg-background/60',
-          )}
+    <li
+      className="absolute min-w-0"
+      style={{ left: `${placement.box.left}%`, top: `${placement.box.top}%`, width: `${placement.box.width}%`, height: `${placement.box.height}%` }}
+    >
+      <PeekCard peek={peek} className="h-full min-w-0">
+        <Link
+          href={href}
+          aria-label={`${room.name}: ${summary}`}
+          data-room-status={room.status}
+          data-room-id={room.id}
+          data-testid={`house-room-${room.id}`}
+          className={cn(styles.room, 'block h-full rounded-sm outline-none')}
+          onClick={(event) => onNavigate(event, room, placement, href)}
+          onPointerEnter={(event) => {
+            if (event.pointerType === 'mouse') onActive(room.id);
+          }}
+          onPointerLeave={() => onActive(null)}
+          onFocus={() => onActive(room.id)}
+          onBlur={() => onActive(null)}
         >
-          {room.status === 'overdue' && (
-            <span aria-hidden className={cn(styles.overdueGlow, 'pointer-events-none absolute inset-0 rounded-lg shadow-[inset_0_0_18px_hsl(var(--warning)/0.35)]')} />
-          )}
-          <span className="flex items-start justify-between gap-2">
-            <span className="truncate text-sm font-medium">{room.name}</span>
-            {room.overdue > 0 ? (
-              <span aria-hidden className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-warning px-1 text-[11px] font-semibold text-warning-foreground">
-                {room.overdue}
-              </span>
-            ) : room.dueToday > 0 ? (
-              <span aria-hidden className="mt-1 h-2 w-2 shrink-0 rounded-full bg-primary" />
-            ) : sparkle ? (
-              <Sparkles aria-hidden className={cn(styles.sparkle, 'h-4 w-4 shrink-0 text-success')} />
-            ) : null}
+          <span
+            className={cn(styles.roomVisual, 'flex h-full flex-col justify-between gap-0.5 overflow-hidden px-[9%] pb-[14%] pt-[10%]')}
+            style={morphing ? morphStyle(roomMorphName(room.id)) : undefined}
+          >
+            <span className="flex min-w-0 items-start justify-between gap-1">
+              <span className="truncate text-xs font-semibold sm:text-sm">{room.name}</span>
+              {room.overdue > 0 ? (
+                <span aria-hidden className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-warning px-1 text-[10px] font-semibold text-warning-foreground sm:h-5 sm:min-w-5 sm:text-[11px]">
+                  {room.overdue}
+                </span>
+              ) : room.dueToday > 0 ? (
+                <span aria-hidden className="mt-1 h-2 w-2 shrink-0 rounded-full bg-primary" />
+              ) : sparkle ? (
+                <Sparkles aria-hidden className={cn(styles.sparkle, 'h-4 w-4 shrink-0 text-success')} />
+              ) : null}
+            </span>
+            <span className={cn('hidden truncate text-[11px] min-[420px]:block sm:text-xs', room.status === 'overdue' ? 'text-foreground' : 'text-muted-foreground')}>{summary}</span>
           </span>
-          <span className={cn('truncate text-xs', room.status === 'overdue' ? 'text-foreground' : 'text-muted-foreground')}>{summary}</span>
-        </span>
-      </Link>
-    </PeekCard>
+        </Link>
+      </PeekCard>
+    </li>
   );
 }
 
-function PetSprite({ pet, index, reduced }: { pet: PetState; index: number; reduced: boolean }) {
-  const [hopping, setHopping] = useState(false);
+function PetChip({ pet, describedBy, onSound }: { pet: PetState; describedBy: string; onSound: (pet: PetState) => void }) {
   const pressTimer = useRef<number | null>(null);
   const longPressed = useRef(false);
-  const Icon = pet.type === 'Dog' ? Dog : pet.type === 'Cat' ? Cat : PawPrint;
-  // The Pets module's own wording: "1 of 2 today. Fed 2 h ago by Sam".
-  // Unknown (history unavailable): no claim either way, the Pets module's unavailable line.
-  const status = pet.fed === null ? pet.headline : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`;
-
-  // Long-press (H29): a little hop and the "add" chirp, only if sound/haptics are on.
-  const startPress = () => {
-    longPressed.current = false;
-    pressTimer.current = window.setTimeout(() => {
-      longPressed.current = true;
-      playFeedback('add');
-      if (!reduced) setHopping(true);
-    }, 550);
-  };
   const endPress = () => {
     if (pressTimer.current !== null) window.clearTimeout(pressTimer.current);
     pressTimer.current = null;
   };
+  useEffect(() => endPress, []);
 
   return (
     <Link
       href={petFeedingHref(pet.id)}
-      aria-label={`${pet.name}: ${status}`}
+      aria-label={`${pet.name}: ${petStatus(pet)}`}
+      aria-describedby={describedBy}
+      aria-keyshortcuts="Space"
       data-testid={`house-pet-${pet.id}`}
       data-fed={pet.fed === null ? 'unknown' : String(pet.fed)}
-      className="relative flex shrink-0 flex-col items-center gap-0.5 rounded-lg px-1 py-0.5 text-[11px]"
-      onPointerDown={startPress}
+      className="relative flex shrink-0 select-none flex-col items-center gap-0.5 rounded-lg px-1 py-0.5 text-[11px] [-webkit-touch-callout:none]"
+      onPointerDown={() => {
+        longPressed.current = false;
+        endPress();
+        pressTimer.current = window.setTimeout(() => {
+          longPressed.current = true;
+          onSound(pet);
+        }, LONG_PRESS_MS);
+      }}
       onPointerUp={endPress}
       onPointerLeave={endPress}
+      onPointerCancel={endPress}
       onContextMenu={(event) => event.preventDefault()}
+      onKeyDown={(event) => {
+        // Keyboard equivalent of the long-press: Space (a link does nothing on Space).
+        if (event.key === ' ' && !isComposingKey(event)) {
+          event.preventDefault();
+          onSound(pet);
+        }
+      }}
       onClick={(event) => {
         if (longPressed.current) {
           event.preventDefault();
@@ -138,17 +290,8 @@ function PetSprite({ pet, index, reduced }: { pet: PetState; index: number; redu
       }}
     >
       <span className="flex items-end gap-0.5">
-        <span
-          className={cn(
-            'flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground',
-            pet.fed && !reduced && (index % 2 ? styles.wanderSlow : styles.wander),
-            hopping && styles.hop,
-          )}
-          onAnimationEnd={(event) => {
-            if (event.animationName.includes('hop')) setHopping(false);
-          }}
-        >
-          <Icon aria-hidden className="h-4 w-4" />
+        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.fed === false && 'border-warning')}>
+          <PetIcon type={pet.type} aria-hidden className="h-4 w-4" />
         </span>
         {pet.fed === false && (
           <svg aria-hidden viewBox="0 0 20 10" className="mb-0.5 h-2.5 w-5 text-warning">
@@ -169,76 +312,80 @@ function YardObject({ href, label, children, testId }: { href: string; label: st
   );
 }
 
-const WrenchBadge = ({ className }: { className?: string }) => (
-  <span aria-hidden className={cn('absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-warning text-warning-foreground', className)}>
+const WrenchBadge = () => (
+  <span aria-hidden className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-warning text-warning-foreground">
     <Wrench className="h-2.5 w-2.5" />
   </span>
 );
 
-function Roof({ season, golden, lit }: { season: Season; golden: boolean; lit: boolean }) {
+/** Small meter for Maintenance's home health score (H10), linked to its overview. */
+function HealthBadge({ health }: { health: HealthResult }) {
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
   return (
-    <svg aria-hidden viewBox="0 0 400 70" preserveAspectRatio="none" className="block h-14 w-full sm:h-16">
-      <rect x="300" y="8" width="22" height="34" rx="2" className="fill-muted" />
-      <polygon
-        points="6,68 200,6 394,68"
-        className={cn(golden ? 'fill-warning/80 stroke-warning' : 'fill-secondary stroke-border')}
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <circle cx="200" cy="44" r="10" className="fill-background stroke-border" strokeWidth="2" />
-      <circle cx="200" cy="44" r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ opacity: lit ? 0.85 : 0 }} />
-      {season === 'winter' && (
-        <>
-          <path d="M40,58 Q120,30 200,10 Q280,30 360,58 L330,58 Q270,36 200,20 Q130,36 70,58 Z" className="fill-foreground/80" />
-          {[80, 150, 250, 330].map((x, i) => (
-            <circle key={x} cx={x} cy={4} r="1.6" className={cn(styles.snow, 'fill-foreground/80')} style={{ animationDelay: `${i * -3.5}s` }} />
-          ))}
-        </>
-      )}
-      {season === 'holidays' && (
-        <g transform="translate(352 30)">
-          <polygon points="0,-24 12,0 -12,0" className="fill-success" />
-          <polygon points="0,-14 15,10 -15,10" className="fill-success" />
-          <rect x="-2" y="10" width="4" height="6" className="fill-muted-foreground" />
-          {[[-6, 4], [5, -6], [7, 6], [-3, -12]].map(([x, y], i) => (
-            <circle key={i} cx={x} cy={y} r="1.6" className={cn(styles.twinkle, i % 2 ? 'fill-warning' : 'fill-destructive')} style={{ animationDelay: `${i * 0.4}s` }} />
-          ))}
-        </g>
-      )}
-    </svg>
+    <Link
+      href={MAINTENANCE_OVERVIEW_HREF}
+      aria-label={healthSummaryText('Home health', health)}
+      data-testid="house-health"
+      data-score={health.score}
+      className="flex shrink-0 items-center gap-1.5 rounded-full border bg-card/80 px-2 py-0.5 text-xs font-medium hover:border-primary/40"
+    >
+      <svg aria-hidden viewBox="0 0 20 20" className="h-4 w-4 -rotate-90">
+        <circle cx="10" cy="10" r={radius} fill="none" strokeWidth="3" className="stroke-muted" />
+        <circle
+          cx="10"
+          cy="10"
+          r={radius}
+          fill="none"
+          strokeWidth="3"
+          strokeLinecap="round"
+          className={health.band === 'good' ? 'stroke-success' : health.band === 'fair' ? 'stroke-warning' : 'stroke-destructive'}
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - health.score / 100)}
+        />
+      </svg>
+      <span className="tabular-nums">{health.score}</span>
+      <span className="hidden text-muted-foreground sm:inline">health</span>
+    </Link>
   );
 }
+
+/* ------------------------------------------------------------------------- */
+/* The house                                                                  */
+/* ------------------------------------------------------------------------- */
 
 export function LivingHouse({
   facts,
   title,
-  roomHref = '/chores',
   golden = false,
-  demo = false,
   now,
 }: {
   facts: DashboardFacts;
   title: string;
-  roomHref?: string;
   golden?: boolean;
-  /** Landing-page mode: mock data, links still go to real routes. */
-  demo?: boolean;
   now: Date;
 }) {
   const reduced = useReducedMotion();
   const light = useDayLight();
+  const weather = useLiveWeather();
+  const { navigate } = useMorphNavigation();
   // The dashboard renders only after sign-in on the client, so reading storage here is safe.
   const [seasonalOn, setSeasonalOn] = useState(() => (typeof window === 'undefined' ? true : readSeasonalPref()));
   const [discoRequested, setDisco] = useState(false);
+  const [activeRoom, setActiveRoom] = useState<string | null>(null);
+  const [zoom, setZoom] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [hoppingPet, setHoppingPet] = useState<string | null>(null);
+  const zoomTimer = useRef<number | null>(null);
+  const roomsRef = useRef<HTMLUListElement>(null);
   const disco = discoRequested && !reduced;
   const season = seasonFor(now);
 
   // Konami code → 10 s of disco. Never under reduced motion, never while typing.
   useEffect(() => {
-    if (reduced || demo) return;
+    if (reduced) return;
     let progress = 0;
     let timeout: number | null = null;
-    const onKey = (event: KeyboardEvent) => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
       if (isComposingKey(event) || isTypingTarget(event.target)) return;
       const step = konamiStep(progress, event.key);
       progress = step.progress;
@@ -255,7 +402,11 @@ export function LivingHouse({
       window.removeEventListener('keydown', onKey, true);
       if (timeout !== null) window.clearTimeout(timeout);
     };
-  }, [reduced, demo]);
+  }, [reduced]);
+
+  useEffect(() => () => {
+    if (zoomTimer.current !== null) window.clearTimeout(zoomTimer.current);
+  }, []);
 
   const toggleSeasonal = () => {
     const next = !seasonalOn;
@@ -267,20 +418,28 @@ export function LivingHouse({
     }
   };
 
-  const rooms = facts.chores?.rooms ?? [];
+  const rooms = useMemo(() => facts.chores?.rooms ?? [], [facts.chores]);
   // With more rooms than fit, rooms that need attention (overdue, then due today,
   // including the "Unknown Room" bucket) are shown first; display keeps name order.
-  const rank = (room: RoomState) => (room.status === 'overdue' ? 0 : room.status === 'due' ? 1 : 2);
-  const visibleIds = new Set([...rooms].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ROOMS).map((room) => room.id));
-  const shownRooms = rooms.filter((room) => visibleIds.has(room.id));
+  const shownRooms = useMemo(() => {
+    const rank = (room: RoomState) => (room.status === 'overdue' ? 0 : room.status === 'due' ? 1 : 2);
+    const visibleIds = new Set([...rooms].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_HOUSE_ROOMS).map((room) => room.id));
+    return rooms.filter((room) => visibleIds.has(room.id));
+  }, [rooms]);
   const hiddenRooms = rooms.length - shownRooms.length;
-  const pets = facts.pets?.pets ?? [];
+  const layout = useMemo(() => layoutHouse(shownRooms.map((room) => room.id)), [shownRooms]);
+  const pets = useMemo(() => facts.pets?.pets ?? [], [facts.pets]);
+  const petPlacements = useMemo(
+    () => placePets(pets, layout, Object.fromEntries(shownRooms.map((room) => [room.id, room.name]))),
+    [pets, layout, shownRooms],
+  );
   const maintenance = facts.maintenance;
   const pantry = facts.pantry;
   const activeSeason = seasonalOn ? season : null;
   const fullness = pantry ? Math.min(1, pantry.fridgeItems / 10) : 0;
   const climateItem = maintenance?.items.find((item) => item.climate && (item.overdue || item.dueSoon));
   const vehicleItem = maintenance?.items.find((item) => item.kind === 'vehicle' && (item.overdue || item.dueSoon));
+  const lit = Boolean(light?.lit);
 
   const summary = [
     facts.chores ? (rooms.some((room) => room.status === 'overdue')
@@ -289,7 +448,41 @@ export function LivingHouse({
     facts.pets && pets.length > 0 ? `${facts.pets.hungry} of ${pets.length} pets waiting to be fed.${facts.pets.unknown ? ` Feeding status unavailable for ${facts.pets.unknown}.` : ''}` : null,
     facts.unavailable?.length ? `Unavailable right now: ${facts.unavailable.join(', ')}.` : null,
     maintenance ? (maintenance.overdue + maintenance.dueSoon > 0 ? `${maintenance.overdue + maintenance.dueSoon} maintenance items due soon.` : 'Maintenance is up to date.') : null,
+    facts.health ? healthSummaryText('Home health', facts.health) : null,
   ].filter(Boolean).join(' ');
+
+  const onRoomNavigate = (event: MouseEvent<HTMLAnchorElement>, room: RoomState, placement: RoomPlacement, href: string) => {
+    // Plain navigation under reduced motion and for modified clicks (new tab, etc.).
+    if (reduced || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (zoom) return;
+    setZoom({ id: room.id, x: placement.center.x, y: placement.center.y });
+    zoomTimer.current = window.setTimeout(() => navigate(href), ZOOM_MS);
+  };
+
+  const onRoomsKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (!NAV_KEYS.has(event.key) || isComposingKey(event)) return;
+    const id = (event.target as HTMLElement).closest<HTMLElement>('[data-room-id]')?.dataset.roomId;
+    if (!id) return;
+    event.preventDefault();
+    const next = roomNeighbor(layout, id, event.key as NavKey);
+    if (next) roomsRef.current?.querySelector<HTMLElement>(`[data-room-id="${CSS.escape(next)}"]`)?.focus();
+  };
+
+  const onPetSound = (pet: PetState) => {
+    playPetSound(pet.type);
+    if (!reduced) setHoppingPet(pet.id);
+  };
+
+  const roomsState = facts.chores
+    ? (shownRooms.length > 0 ? 'rooms' : 'empty')
+    : facts.unavailable?.includes('chores') ? 'unavailable' : 'none';
+  const bodyBox = {
+    left: `${(layout.body.x / layout.width) * 100}%`,
+    top: `${(layout.body.y / layout.height) * 100}%`,
+    width: `${(layout.body.w / layout.width) * 100}%`,
+    height: `${(layout.body.h / layout.height) * 100}%`,
+  };
 
   return (
     <section aria-labelledby="living-house-title" className="mb-6" data-testid="living-house">
@@ -299,53 +492,95 @@ export function LivingHouse({
         data-disco={disco ? 'true' : undefined}
       >
         <div aria-hidden className={styles.sky} />
-        <div className="flex items-center justify-between gap-2 px-4 pt-3">
-          <h2 id="living-house-title" className="min-w-0 truncate font-headline text-lg font-semibold">{title}</h2>
-          {season && !demo && (
-            <button
-              type="button"
-              onClick={toggleSeasonal}
-              aria-pressed={seasonalOn}
-              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-            >
-              Seasonal touches {seasonalOn ? 'on' : 'off'}
-            </button>
-          )}
-        </div>
-        <p className="sr-only">{summary}</p>
-
-        <div className="px-3 sm:px-6">
-          <Roof season={activeSeason} golden={golden} lit={Boolean(light?.lit)} />
-          <div className="rounded-b-lg border-x-2 border-b-2 border-border bg-background/40 p-2 sm:p-3">
-            {facts.chores ? (
-              shownRooms.length > 0 ? (
-                <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Rooms">
-                  {shownRooms.map((room) => (
-                    <li key={room.id} className="min-w-0">
-                      <RoomTile room={room} href={roomHref} sparkle={room.status === 'clear' && room.doneToday > 0} />
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="px-2 py-4 text-center text-sm text-muted-foreground">
-                  Add rooms to your chores and they will appear here.{' '}
-                  <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
-                </p>
-              )
-            ) : facts.unavailable?.includes('chores') ? (
-              <p className="px-2 py-4 text-center text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
-                Rooms are unavailable right now.{' '}
-                <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
-              </p>
-            ) : (
-              <p className="px-2 py-4 text-center text-sm text-muted-foreground">Welcome home.</p>
-            )}
-            {hiddenRooms > 0 && (
-              <p className="mt-2 text-center text-xs text-muted-foreground">
-                <Link href={roomHref} className="hover:text-foreground">+{hiddenRooms} more {hiddenRooms === 1 ? 'room' : 'rooms'}</Link>
-              </p>
+        {!reduced && weather?.effect && <WeatherLayer effect={weather.effect} scope="house" />}
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 pt-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 id="living-house-title" className="min-w-0 truncate font-headline text-lg font-semibold">{title}</h2>
+            {facts.health && <HealthBadge health={facts.health} />}
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <WeatherControls />
+            {season && (
+              <button
+                type="button"
+                onClick={toggleSeasonal}
+                aria-pressed={seasonalOn}
+                className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+              >
+                Seasonal touches {seasonalOn ? 'on' : 'off'}
+              </button>
             )}
           </div>
+        </div>
+        <p className="sr-only">{summary}</p>
+        <p id="house-pet-sound-hint" className="sr-only">Long-press a pet, or press Space on it, to hear it when Sound is on in Profile, Appearance.</p>
+
+        <div className="px-3 pt-1 sm:px-6">
+          <div
+            className={cn(styles.stage, 'relative mx-auto w-full max-w-2xl', zoom && styles.zooming)}
+            style={{ aspectRatio: `${layout.width} / ${layout.height}`, ...(zoom ? { transformOrigin: `${zoom.x}% ${zoom.y}%` } : null) }}
+            data-zoom={zoom?.id}
+          >
+            <svg aria-hidden viewBox={`0 0 ${layout.width} ${layout.height}`} className="absolute inset-0 h-full w-full overflow-visible">
+              <Scenery layout={layout} season={activeSeason} golden={golden} lit={lit} />
+              {layout.rooms.map((placement) => {
+                const room = shownRooms[placement.index];
+                return <RoomShape key={room.id} placement={placement} room={room} lit={lit} active={activeRoom === room.id} />;
+              })}
+              {petPlacements.map((placement) => (placement.mode === 'bowl' && placement.bowl ? (
+                <path key={`bowl-${placement.id}`} d={`M${placement.bowl.x - 8} ${placement.bowl.y - 5}h16l-3 6h-10z`} className="fill-warning" />
+              ) : null))}
+              {petPlacements.map((placement, index) => (
+                <PetFigure
+                  key={placement.id}
+                  pet={pets[index]}
+                  placement={reduced && placement.mode === 'wander' ? { ...placement, mode: 'idle' } : placement}
+                  hopping={hoppingPet === placement.id && !reduced}
+                  onHopEnd={() => setHoppingPet(null)}
+                />
+              ))}
+            </svg>
+
+            {roomsState === 'rooms' ? (
+              <ul ref={roomsRef} aria-label="Rooms" className="absolute inset-0" onKeyDown={onRoomsKeyDown}>
+                {layout.rooms.map((placement) => {
+                  const room = shownRooms[placement.index];
+                  return (
+                    <RoomLink
+                      key={room.id}
+                      room={room}
+                      placement={placement}
+                      sparkle={room.status === 'clear' && room.doneToday > 0}
+                      morphing={zoom?.id === room.id}
+                      onActive={setActiveRoom}
+                      onNavigate={onRoomNavigate}
+                    />
+                  );
+                })}
+              </ul>
+            ) : (
+              <div className="absolute flex items-center justify-center px-3 text-center" style={bodyBox}>
+                {roomsState === 'empty' ? (
+                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">
+                    Add rooms to your chores and they will appear here.{' '}
+                    <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+                  </p>
+                ) : roomsState === 'unavailable' ? (
+                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
+                    Rooms are unavailable right now.{' '}
+                    <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+                  </p>
+                ) : (
+                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">Welcome home.</p>
+                )}
+              </div>
+            )}
+          </div>
+          {hiddenRooms > 0 && (
+            <p className="mt-1 text-center text-xs text-muted-foreground">
+              <Link href="/chores" className="hover:text-foreground">+{hiddenRooms} more {hiddenRooms === 1 ? 'room' : 'rooms'}</Link>
+            </p>
+          )}
         </div>
 
         <div className="mt-2 flex items-end gap-3 overflow-x-auto border-t border-border-subtle bg-secondary/40 px-4 pb-2 pt-3" aria-label="Yard" role="group">
@@ -390,8 +625,8 @@ export function LivingHouse({
             </YardObject>
           )}
           <span className="flex-1" aria-hidden />
-          {pets.map((pet, index) => (
-            <PetSprite key={pet.id} pet={pet} index={index} reduced={reduced || demo} />
+          {pets.map((pet) => (
+            <PetChip key={pet.id} pet={pet} describedBy="house-pet-sound-hint" onSound={onPetSound} />
           ))}
         </div>
       </div>

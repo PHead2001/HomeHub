@@ -33,7 +33,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 ## Architecture and Data Flow
 
-`AuthProvider` listens to Firebase Auth state, loads or creates the email-keyed Firestore profile, then resolves household membership. The login dialog uses a Google popup and requests additional profile fields through Google scopes. Profile edits merge into the current user's document and refresh context state.
+`AuthProvider` listens to Firebase Auth state, loads or creates the email-keyed Firestore profile, then resolves household membership. It imports only the app and Auth (`@/lib/firebase-app`) statically; Firestore and `@/lib/firebase` (which starts App Check first) load with a dynamic `import()` inside each profile, membership, household or logout call, so signed-out visitors never download them. `loading` stays true until the profile read finishes, exactly as before. Google sign-in calls `signInWithPopup(auth, provider)` with Firebase's standard popup resolver, configured once in `src/lib/firebase-app.ts` and kept on purpose so the popup is not blocked on mobile and Safari (see [Firebase Platform](../firebase-platform/README.md)); `tests/e2e/dashboard-house.spec.ts` signs in through the Auth emulator's popup from the landing page. The force-password-change dialog (react-hook-form and zod) loads as its own chunk only for members who must change their password. The login dialog uses a Google popup and requests additional profile fields through Google scopes. Profile edits merge into the current user's document and refresh context state.
 
 Popup cancellation produces `Login canceled.` and clears loading in `finally`.
 
@@ -49,6 +49,7 @@ For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for a
 - Avatar objects: `users/{email}/avatars/{uuid}.{extension}`.
 - `User` includes Auth `uid`, email/name fields, avatar, role and permission compatibility fields, `householdId`, theme, chore settings, birthday, gender, force-password-change state, and `fcmTokens`.
 - `theme` (an existing allow-listed field) holds `{ version: 2, mode: 'dark' | 'light' | 'system', darkPreset: 'midnight' | 'hearth' | 'forest', lightPreset: 'light' | 'sunrise', reduceMotion: boolean }`. Older profiles may still hold the legacy free-color shape `{ background, accent, backgroundHex, accentHex }`; it is ignored (curated presets replace free colors) and overwritten the next time the member changes appearance. No new profile keys or rules changes were needed.
+- `preferences` (an existing allow-listed field) may hold `weather: { enabled: boolean, city: string }`, the dashboard's opt-in live weather and its city (see [Application Shell](../application-shell/README.md), "Live weather"). The member writes it with a merge, so other keys are kept; missing means off. No rules change was needed.
 - New profiles default to `role: member` and `householdId: null`.
 - `timeZone` (IANA name, at most 64 characters) is taken from the browser: whenever the profile loads and the browser's zone differs from the stored one, `AuthProvider` overwrites it (best effort; a failed write is ignored). Server-side upkeep uses it to decide when this person's overdue alert (after 07:00) and daily chore reminder fire; if it is missing or invalid, the household timezone is used.
 

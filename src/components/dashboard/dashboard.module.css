@@ -56,6 +56,34 @@
   100% { opacity: 0.85; transform: scale(1) rotate(0deg); }
 }
 
+/* Isometric scene: the SVG room lifts with its link (the link box never moves). */
+.roomLayer {
+  transition: transform var(--duration-micro) var(--ease-standard);
+}
+.roomLayerActive {
+  transform: translateY(-3px);
+}
+
+/* Camera move into a room (scene budget 400-900 ms), then the route morph. */
+.stage {
+  transition: transform 420ms var(--ease-standard), opacity 420ms var(--ease-standard);
+}
+.zooming {
+  transform: scale(2.4);
+  opacity: 0.35;
+}
+
+/* Fed pets walk between rooms: three waypoints in SVG units (set inline), transform only. */
+.petWalk {
+  animation: pet-walk 24s ease-in-out infinite;
+}
+@keyframes pet-walk {
+  0%, 100% { transform: translate(var(--p0x), var(--p0y)); }
+  12% { transform: translate(var(--p0x), var(--p0y)); }
+  34%, 46% { transform: translate(var(--p1x), var(--p1y)); }
+  68%, 80% { transform: translate(var(--p2x), var(--p2y)); }
+}
+
 /* Pets wander inside their room (small, slow, transform only). */
 .wander {
   animation: wander 9s ease-in-out infinite alternate;
@@ -110,6 +138,106 @@
   to { filter: hue-rotate(360deg) saturate(1.3); }
 }
 
+/* ---------- Live weather (H02): >= 20 s loops, very low contrast ---------- */
+.weather {
+  pointer-events: none;
+  overflow: hidden;
+}
+.weatherHouse {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  opacity: 0.8;
+}
+.weatherShell {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: calc(var(--ambient-intensity, 0.06) * 6);
+}
+.rain::before,
+.snowfall::before {
+  content: '';
+  position: absolute;
+  left: -15%;
+  right: -15%;
+  top: -1200px;
+  bottom: 0;
+}
+/* Tiles are 120 px tall and the layer moves exactly 1200 px, so the loop is seamless. */
+.rain::before {
+  background-image:
+    radial-gradient(0.75px 9px at 50% 50%, hsl(var(--info) / 0.55), transparent),
+    radial-gradient(0.75px 7px at 30% 20%, hsl(var(--info) / 0.4), transparent),
+    radial-gradient(0.75px 8px at 70% 80%, hsl(var(--info) / 0.45), transparent);
+  background-size: 37px 120px, 53px 120px, 71px 120px;
+  transform: rotate(8deg);
+  animation: rain-fall 20s linear infinite;
+}
+@keyframes rain-fall {
+  from { transform: rotate(8deg) translateY(0); }
+  to { transform: rotate(8deg) translateY(1200px); }
+}
+.snowfall::before {
+  background-image:
+    radial-gradient(1.6px 1.6px at 50% 50%, hsl(var(--foreground) / 0.55), transparent),
+    radial-gradient(1.2px 1.2px at 20% 30%, hsl(var(--foreground) / 0.45), transparent),
+    radial-gradient(2px 2px at 80% 70%, hsl(var(--foreground) / 0.4), transparent);
+  background-size: 47px 120px, 83px 120px, 61px 120px;
+  animation: snow-drift 40s linear infinite;
+}
+@keyframes snow-drift {
+  from { transform: translate(0, 0); }
+  to { transform: translate(24px, 1200px); }
+}
+.glint {
+  background: radial-gradient(45% 55% at 88% 0%, hsl(var(--warning) / 0.28), transparent 70%);
+  animation: glint 24s ease-in-out infinite;
+}
+@keyframes glint {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* ---------- Bento tilt (H22): visual layer only, fine pointers only ---------- */
+.tiltLayer {
+  transition: transform var(--duration-micro) var(--ease-standard);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tilt:hover .tiltLayer {
+    transform: perspective(800px) rotateX(var(--tilt-y, 0deg)) rotateY(var(--tilt-x, 0deg));
+  }
+}
+
+/* ---------- `/` before auth resolves: landing or skeleton, chosen pre-paint ---------- */
+.gateSkeleton {
+  display: none;
+}
+:global(:root[data-session='1']) .gateSkeleton {
+  display: block;
+}
+:global(:root[data-session='1']) .gateLanding {
+  display: none;
+}
+
+/* ---------- Landing (H03): the sample house assembles on scroll ---------- */
+.piece {
+  transition: opacity 500ms var(--ease-standard), transform 500ms var(--ease-standard);
+}
+.piece[data-on='false'] {
+  opacity: 0;
+  transform: translateY(-14px);
+}
+/* Module tiles fly in from the steps' side into their rooms. */
+.flyChip {
+  transition: opacity 600ms var(--ease-standard), transform 600ms var(--ease-standard);
+}
+.flyChip[data-on='false'] {
+  opacity: 0;
+  transform: translate(140%, 120%) scale(0.6);
+}
+
 /* ---------- Morning brief typing caret ---------- */
 .caret::after {
   content: '';
@@ -159,7 +287,11 @@
 :global(:root[data-visibility='hidden']) .snow,
 :global(:root[data-visibility='hidden']) .twinkle,
 :global(:root[data-visibility='hidden']) .disco,
-:global(:root[data-visibility='hidden']) .caret::after {
+:global(:root[data-visibility='hidden']) .caret::after,
+:global(:root[data-visibility='hidden']) .petWalk,
+:global(:root[data-visibility='hidden']) .rain::before,
+:global(:root[data-visibility='hidden']) .snowfall::before,
+:global(:root[data-visibility='hidden']) .glint {
   animation-play-state: paused;
 }
 
@@ -174,14 +306,36 @@
 :global(:root[data-motion='reduce']) .disco,
 :global(:root[data-motion='reduce']) .ring,
 :global(:root[data-motion='reduce']) .pop,
-:global(:root[data-motion='reduce']) .caret::after {
+:global(:root[data-motion='reduce']) .caret::after,
+:global(:root[data-motion='reduce']) .petWalk,
+:global(:root[data-motion='reduce']) .rain::before,
+:global(:root[data-motion='reduce']) .snowfall::before,
+:global(:root[data-motion='reduce']) .glint {
   animation: none;
 }
 :global(:root[data-motion='reduce']) .roomVisual,
 :global(:root[data-motion='reduce']) .fanItem,
 :global(:root[data-motion='reduce']) .sky,
-:global(:root[data-motion='reduce']) .windowLight {
+:global(:root[data-motion='reduce']) .windowLight,
+:global(:root[data-motion='reduce']) .roomLayer,
+:global(:root[data-motion='reduce']) .stage,
+:global(:root[data-motion='reduce']) .tiltLayer {
   transition: none;
+}
+:global(:root[data-motion='reduce']) .piece,
+:global(:root[data-motion='reduce']) .flyChip {
+  transition: none;
+}
+:global(:root[data-motion='reduce']) .piece[data-on='false'],
+:global(:root[data-motion='reduce']) .flyChip[data-on='false'] {
+  opacity: 1;
+  transform: none;
+}
+:global(:root[data-motion='reduce']) .roomLayerActive,
+:global(:root[data-motion='reduce']) .zooming,
+:global(:root[data-motion='reduce']) .tilt:hover .tiltLayer {
+  transform: none;
+  opacity: 1;
 }
 :global(:root[data-motion='reduce']) .room:hover .roomVisual,
 :global(:root[data-motion='reduce']) .room:focus-visible .roomVisual {
@@ -200,14 +354,36 @@
   .disco,
   .ring,
   .pop,
-  .caret::after {
+  .caret::after,
+  .petWalk,
+  .rain::before,
+  .snowfall::before,
+  .glint {
     animation: none;
   }
   .roomVisual,
   .fanItem,
   .sky,
-  .windowLight {
+  .windowLight,
+  .roomLayer,
+  .stage,
+  .tiltLayer {
     transition: none;
+  }
+  .roomLayerActive,
+  .zooming,
+  .tilt:hover .tiltLayer {
+    transform: none;
+    opacity: 1;
+  }
+  .piece,
+  .flyChip {
+    transition: none;
+  }
+  .piece[data-on='false'],
+  .flyChip[data-on='false'] {
+    opacity: 1;
+    transform: none;
   }
   .room:hover .roomVisual,
   .room:focus-visible .roomVisual {

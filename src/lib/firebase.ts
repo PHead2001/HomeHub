@@ -1,5 +1,9 @@
 // src/lib/firebase.ts
-import { initializeApp, getApps, getApp, type FirebaseOptions } from "firebase/app";
+// Data access: Firestore, Storage and Messaging, with App Check started first.
+// The app and Auth live in `./firebase-app` (all that signed-out pages load); this
+// module re-exports them so existing imports keep working. Shell code that runs
+// for signed-out visitors (AuthProvider, the root layout) must import this module
+// only dynamically, once a user is known.
 import {
   connectFirestoreEmulator,
   getFirestore,
@@ -11,24 +15,12 @@ import {
   waitForPendingWrites,
   type Firestore,
 } from "firebase/firestore";
-import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { getMessaging, isSupported } from "firebase/messaging";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
-import { normalizeFirebaseAppId } from "./firebase-app-id";
+import { app, auth, firebaseConfig, firebaseEmulatorMode } from "./firebase-app";
 
-export const firebaseConfig: FirebaseOptions = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: normalizeFirebaseAppId(process.env.NEXT_PUBLIC_FIREBASE_APP_ID),
-};
-
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-
-export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
+export { auth, firebaseConfig, firebaseEmulatorMode };
 
 type AppCheckState = typeof globalThis & {
   FIREBASE_APPCHECK_DEBUG_TOKEN?: string | boolean;
@@ -79,7 +71,6 @@ const createFirestore = (): Firestore => {
 };
 
 export const db = createFirestore();
-export const auth = getAuth(app);
 export const storage = getStorage(app);
 
 /**
@@ -132,15 +123,9 @@ const parseEmulatorHost = (value: string, fallbackPort: number) => {
 };
 
 if (firebaseEmulatorMode) {
-  if (!firebaseConfig.projectId?.startsWith("demo-")) {
-    throw new Error("Firebase emulator mode requires a demo- project ID.");
-  }
-
+  // The demo- project check and the Auth emulator connection are in ./firebase-app.
   const emulatorState = globalThis as EmulatorConnectionState;
   if (!emulatorState.__homeHubFirebaseEmulatorsConnected) {
-    const authHost = process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST
-      || process.env.FIREBASE_AUTH_EMULATOR_HOST
-      || "127.0.0.1:9099";
     const firestoreHost = process.env.NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST
       || process.env.FIRESTORE_EMULATOR_HOST
       || "127.0.0.1:8080";
@@ -150,9 +135,6 @@ if (firebaseEmulatorMode) {
       || "127.0.0.1:9199";
     const storageEmulator = parseEmulatorHost(storageHost, 9199);
 
-    connectAuthEmulator(auth, `http://${authHost.replace(/^https?:\/\//, "")}`, {
-      disableWarnings: true,
-    });
     connectFirestoreEmulator(db, firestore.host, firestore.port);
     connectStorageEmulator(storage, storageEmulator.host, storageEmulator.port);
     emulatorState.__homeHubFirebaseEmulatorsConnected = true;
