@@ -147,6 +147,11 @@ export type DashboardFacts = {
   health?: HealthResult | null;
   /** Household streaks (H06) from Chores' `computeChoreStats`; absent while loading or unreadable. */
   streaks?: StreakTileModel;
+  /**
+   * True when the household turned "Show leaderboard" off (or the setting could not
+   * be read): the streaks tile is not rendered at all.
+   */
+  streaksHidden?: boolean;
 };
 
 /** Pantry items expiring within this many days count as "expiring soon". */

@@ -98,6 +98,24 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     }
   });
 
+  test('H22: with the Chores leaderboard turned off there is no streaks tile', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const prefs = household.collection('chore-settings').doc('preferences');
+    const before = await prefs.get();
+    await prefs.set({ leaderboardEnabled: false, updatedAt: new Date().toISOString() });
+    try {
+      await openDashboard(page);
+      // Wait for the rest of the grid, then make sure nothing ranks members.
+      await expect(page.getByTestId('dashboard-tile-chores')).toBeVisible();
+      await expect(page.getByTestId('dashboard-tile-streaks')).toHaveCount(0);
+      await expect(page.getByTestId('streaks-summary')).toHaveCount(0);
+      await expect(page.getByText(/best streak|on a streak/)).toHaveCount(0);
+    } finally {
+      if (before.exists) await prefs.set(before.data()!);
+      else await prefs.delete();
+    }
+  });
+
   test('H02: live weather is opt-in, sends only the city, persists and fills the weather tile', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const requests: URL[] = [];

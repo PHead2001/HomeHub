@@ -59,3 +59,22 @@ export function streakSummary(model: StreakTileModel): string {
   const others = model.running > 1 ? ` and ${model.running - 1} more on a streak` : '';
   return `Best streak: ${streakDaysLabel(model.longest)}, ${model.top[0].name}${others}. ${week}`;
 }
+
+/**
+ * The household's "Show leaderboard" setting from
+ * `households/{id}/chore-settings/preferences`, read exactly as the Chores page
+ * does (`useChoreSettings`): a missing document or a non-boolean field means on.
+ * Pass `undefined` for a document that does not exist.
+ */
+export function leaderboardEnabledFrom(data: unknown): boolean {
+  const value = data && typeof data === 'object' ? (data as Record<string, unknown>).leaderboardEnabled : undefined;
+  return typeof value === 'boolean' ? value : true;
+}
+
+/**
+ * Whether comparative chore stats (who is ahead: streak leader, top three, Wrapped's
+ * champion) may be shown: only when the setting is known to be on. Unknown
+ * (still loading) or unreadable stays hidden, so a household that turned the
+ * leaderboard off never sees a ranking flash or leak.
+ */
+export const mayShowRanking = (leaderboard: 'on' | 'off' | 'unknown') => leaderboard === 'on';

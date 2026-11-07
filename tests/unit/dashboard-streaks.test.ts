@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { computeChoreStats } from '../../src/lib/chores/stats';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
-import { streakDaysLabel, streakMembersFrom, streakSummary, streakTileModel } from '../../src/lib/dashboard/streaks';
-import { assembleDashboardFacts, HEALTH_FAILURE, STREAKS_FAILURE, type DashboardAccess, type DashboardRaw } from '../../src/lib/dashboard/assemble';
+import { leaderboardEnabledFrom, mayShowRanking, streakDaysLabel, streakMembersFrom, streakSummary, streakTileModel } from '../../src/lib/dashboard/streaks';
+import { assembleDashboardFacts, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardAccess, type DashboardRaw } from '../../src/lib/dashboard/assemble';
 
 const now = new Date(2026, 7, 5, 12); // Wednesday
 const iso = (day: number, hour = 9) => new Date(2026, 7, day, hour).toISOString();
@@ -69,7 +69,7 @@ describe('assemble: streaks and home health', () => {
   const context = { viewer: { uid: 'a', email: 'alex@example.test' }, now, timeZone: 'America/Chicago', recentFeedings: 12 };
 
   it('builds streaks once completions and members have answered, and hides them on failure', () => {
-    const raw: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, members: memberRecords as never };
+    const raw: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, members: memberRecords as never, leaderboard: 'on' };
     assert.equal(assembleDashboardFacts(raw, new Set(), access, context).facts.streaks?.longest, 1);
     assert.equal(assembleDashboardFacts({ completedChores: raw.completedChores }, new Set(), access, context).facts.streaks, undefined);
     assert.equal(assembleDashboardFacts(raw, new Set([STREAKS_FAILURE]), access, context).facts.streaks, undefined);
@@ -87,5 +87,46 @@ describe('assemble: streaks and home health', () => {
     assert.equal(assembleDashboardFacts({ assets: [], vehicles: [], logs: [] }, new Set(), access, context).facts.health, null);
     assert.equal(assembleDashboardFacts(raw, new Set([HEALTH_FAILURE]), access, context).facts.health, undefined);
     assert.equal(assembleDashboardFacts({ assets: raw.assets, vehicles: [] }, new Set(), access, context).facts.health, undefined, 'waits for logs');
+  });
+});
+
+describe('streaks follow the Chores leaderboard setting', () => {
+  const access: DashboardAccess = { chores: true, shopping: false, pantry: false, maintenance: false, pets: false, notifications: false };
+  const context = { viewer: { uid: 'a', email: 'alex@example.test' }, now, timeZone: 'America/Chicago', recentFeedings: 12 };
+  const base: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, members: memberRecords as never };
+
+  it('reads the setting exactly like the Chores page: missing document or field means on', () => {
+    assert.equal(leaderboardEnabledFrom(undefined), true);
+    assert.equal(leaderboardEnabledFrom({}), true);
+    assert.equal(leaderboardEnabledFrom({ leaderboardEnabled: 'no' }), true);
+    assert.equal(leaderboardEnabledFrom({ leaderboardEnabled: true }), true);
+    assert.equal(leaderboardEnabledFrom({ leaderboardEnabled: false }), false);
+    assert.equal(mayShowRanking('on'), true);
+    assert.equal(mayShowRanking('off'), false);
+    assert.equal(mayShowRanking('unknown'), false);
+  });
+
+  it('turned off: no streaks facts at all and the tile is marked hidden', () => {
+    const { facts } = assembleDashboardFacts({ ...base, leaderboard: 'off' }, new Set(), access, context);
+    assert.equal(facts.streaks, undefined);
+    assert.equal(facts.streaksHidden, true);
+  });
+
+  it('unreadable setting: hidden, never a ranking', () => {
+    const { facts } = assembleDashboardFacts({ ...base, leaderboard: 'on' }, new Set([LEADERBOARD_FAILURE]), access, context);
+    assert.equal(facts.streaks, undefined);
+    assert.equal(facts.streaksHidden, true);
+  });
+
+  it('still loading: no ranking yet and not hidden (the tile shows a skeleton)', () => {
+    const { facts } = assembleDashboardFacts(base, new Set(), access, context);
+    assert.equal(facts.streaks, undefined);
+    assert.equal(facts.streaksHidden, undefined);
+  });
+
+  it('on: the tile is built', () => {
+    const { facts } = assembleDashboardFacts({ ...base, leaderboard: 'on' }, new Set(), access, context);
+    assert.equal(facts.streaks?.top[0]?.name, 'Alex');
+    assert.equal(facts.streaksHidden, undefined);
   });
 });

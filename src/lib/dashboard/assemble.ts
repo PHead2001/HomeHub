@@ -15,7 +15,7 @@ import { computeHomeHealth } from '../maintenance/health';
 import type { HomeAsset, MaintenanceLog, Vehicle } from '../types';
 import { localDay, safeTimeZone } from '../../../functions/src/shared/calendar';
 import { dayKey } from './dates';
-import { streakMembersFrom, streakTileModel } from './streaks';
+import { mayShowRanking, streakMembersFrom, streakTileModel } from './streaks';
 import {
   computeChoreFacts,
   computeMaintenanceFacts,
@@ -53,6 +53,11 @@ export type DashboardRaw = {
   unread?: number;
   /** Completed chores (every retained completion), for streaks. */
   completedChores?: RawDoc[];
+  /**
+   * The household's "Show leaderboard" setting (`chore-settings/preferences`);
+   * undefined until read. Off hides the comparative streaks tile entirely.
+   */
+  leaderboard?: 'on' | 'off';
   /** Household membership records, for streaks. */
   members?: RawDoc[];
   /** Maintenance logs from the last 90+ days, for the home health score. */
@@ -61,6 +66,8 @@ export type DashboardRaw = {
 
 /** Extra failure keys: these hide one tile or badge and never make a section unavailable. */
 export const STREAKS_FAILURE = 'streaks';
+/** The leaderboard setting could not be read: the ranking stays hidden. */
+export const LEADERBOARD_FAILURE = 'leaderboard';
 export const HEALTH_FAILURE = 'health';
 
 export type DashboardAccess = Record<DashboardSection, boolean>;
@@ -118,7 +125,11 @@ export function assembleDashboardFacts(
   });
 
   // Streaks: Chores' own stats over every retained completion and the approved members.
-  if (access.chores && !failed.has('chores') && !failed.has(STREAKS_FAILURE) && raw.completedChores && raw.members) {
+  // The tile compares members, so it follows the Chores leaderboard setting: shown
+  // only when the setting is known to be on, never while it is loading or unreadable.
+  const leaderboard = failed.has(LEADERBOARD_FAILURE) ? 'unknown' : raw.leaderboard ?? 'unknown';
+  if (access.chores && (raw.leaderboard === 'off' || failed.has(LEADERBOARD_FAILURE))) facts.streaksHidden = true;
+  if (access.chores && mayShowRanking(leaderboard) && !failed.has('chores') && !failed.has(STREAKS_FAILURE) && raw.completedChores && raw.members) {
     facts.streaks = streakTileModel(computeChoreStats(raw.completedChores as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now));
   }
 

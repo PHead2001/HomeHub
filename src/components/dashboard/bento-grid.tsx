@@ -300,7 +300,9 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
     );
   }
 
-  if (permissions['chores.view']) {
+  // Hidden entirely (no names, ranking, peek or screen-reader sentence) when the
+  // household turned the Chores leaderboard off.
+  if (permissions['chores.view'] && !facts.streaksHidden) {
     const streaks = facts.streaks;
     tiles.push(streaks ? (
       <Tile

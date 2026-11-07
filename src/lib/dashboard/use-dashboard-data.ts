@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   collection,
+  doc,
   limit,
   onSnapshot,
   orderBy,
@@ -27,7 +28,8 @@ import { activeBellNotifications } from './notification-display';
 import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
 import { dayKey, startOfLocalDay } from './dates';
 import type { DashboardFacts, RawDoc } from './facts';
-import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
+import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
+import { leaderboardEnabledFrom } from './streaks';
 import { HEALTH_RULES } from '../maintenance/health';
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
@@ -116,6 +118,12 @@ export function useDashboardData(enabled = true): DashboardData {
       // Streaks (H22/H06): every retained completion and the approved members, as the Chores page reads them.
       listen(STREAKS_FAILURE, query(base('chores'), where('isCompleted', '==', true)), (s) => setRaw((r) => ({ ...r, completedChores: docs(s) })));
       listen(STREAKS_FAILURE, query(collection(db, 'households', householdId, 'members')), (s) => setRaw((r) => ({ ...r, members: docs(s) })));
+      // The Chores "Show leaderboard" setting gates the comparative streaks tile.
+      unsubscribers.push(onSnapshot(
+        doc(db, 'households', householdId, 'chore-settings', 'preferences'),
+        (snapshot) => setRaw((r) => ({ ...r, leaderboard: leaderboardEnabledFrom(snapshot.exists() ? snapshot.data() : undefined) ? 'on' : 'off' })),
+        fail(LEADERBOARD_FAILURE),
+      ));
     }
 
     if (canShopping) {
