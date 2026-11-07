@@ -16,7 +16,7 @@ import { Bell, CheckSquare, CloudSun, Flame, PawPrint, Refrigerator, ShoppingCar
 import { NumberTicker } from '@/components/motion/number-ticker';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
-import { streakDaysLabel } from '@/lib/dashboard/streaks';
+import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
 import { temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
@@ -320,17 +320,19 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           </ul>
         ) : null}
       >
+        {/* One sentence for screen readers; the ticking number and labels below are visual only. */}
+        <span className="sr-only" data-testid="streaks-summary">{streakSummary(streaks)}</span>
         {streaks.longest > 0 ? (
-          <>
+          <span aria-hidden className="flex min-w-0 flex-col gap-2">
             <Big value={streaks.longest} suffix={`${streaks.longest === 1 ? 'day' : 'days'} best streak`} />
             <span className="truncate text-sm text-muted-foreground" data-testid="streaks-leader">
               {streaks.top[0].name}{streaks.running > 1 ? ` and ${streaks.running - 1} more on a streak` : ''}
             </span>
-          </>
+          </span>
         ) : (
-          <span className="text-sm text-muted-foreground">No streaks yet. Finish a chore today to start one.</span>
+          <span aria-hidden className="text-sm text-muted-foreground">No streaks yet. Finish a chore today to start one.</span>
         )}
-        <span className="text-xs text-muted-foreground" data-testid="streaks-week">{streaks.weekCompleted} done this week</span>
+        <span aria-hidden className="text-xs text-muted-foreground" data-testid="streaks-week">{streaks.weekCompleted} done this week</span>
       </Tile>
     ) : failed.has('streaks') || failed.has('chores') ? <UnavailableTile key="streaks" href="/chores" title="Household streaks" icon={Flame} testId="dashboard-tile-streaks" /> : <TileSkeleton key="streaks" />);
   }

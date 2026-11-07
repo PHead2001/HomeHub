@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { computeChoreStats } from '../../src/lib/chores/stats';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
-import { streakDaysLabel, streakMembersFrom, streakTileModel } from '../../src/lib/dashboard/streaks';
+import { streakDaysLabel, streakMembersFrom, streakSummary, streakTileModel } from '../../src/lib/dashboard/streaks';
 import { assembleDashboardFacts, HEALTH_FAILURE, STREAKS_FAILURE, type DashboardAccess, type DashboardRaw } from '../../src/lib/dashboard/assemble';
 
 const now = new Date(2026, 7, 5, 12); // Wednesday
@@ -48,6 +48,7 @@ describe('household streaks tile', () => {
     assert.equal(model.running, 3);
     // Pending members are not counted (as on the Chores page).
     assert.equal(model.weekCompleted, 5);
+    assert.equal(streakSummary(model), 'Best streak: 3 days, Alex and 2 more on a streak. 5 chores done this week.');
     for (const entry of model.top) {
       assert.equal(entry.streak, stats.members.find((member) => member.email === entry.email)!.streak);
     }
@@ -56,6 +57,8 @@ describe('household streaks tile', () => {
   it('has an empty state with nobody on a streak', () => {
     const model = streakTileModel(computeChoreStats([], streakMembersFrom(memberRecords), now));
     assert.deepEqual(model, { top: [], running: 0, longest: 0, weekCompleted: 0 });
+    assert.equal(streakSummary(model), 'No streaks yet. 0 chores done this week.');
+    assert.equal(streakSummary({ top: [{ email: 'm', name: 'Morgan', streak: 1, activeToday: false }], running: 1, longest: 1, weekCompleted: 1 }), 'Best streak: 1 day, Morgan. 1 chore done this week.');
     assert.equal(streakDaysLabel(1), '1 day');
     assert.equal(streakDaysLabel(4), '4 days');
   });

@@ -39,8 +39,11 @@ export function WeatherControls() {
 
   const toggle = async () => {
     const enabled = !preference.enabled;
-    if (await persist({ enabled, city: preference.city }) && enabled) setDraft(preference.city);
-    if (!enabled) setEditing(false);
+    // Seed the city field before saving: setting it after the save resolved would
+    // wipe whatever the member typed while the write was in flight.
+    if (enabled) setDraft(preference.city);
+    else setEditing(false);
+    await persist({ enabled, city: preference.city });
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {

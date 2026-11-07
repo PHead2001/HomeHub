@@ -48,3 +48,14 @@ export function streakTileModel(stats: ChoreStats): StreakTileModel {
 }
 
 export const streakDaysLabel = (days: number) => `${days} ${days === 1 ? 'day' : 'days'}`;
+
+/**
+ * The tile's full sentence for screen readers (the visual number ticks in):
+ * "Best streak: 3 days, Alex and 1 more on a streak. 5 chores done this week."
+ */
+export function streakSummary(model: StreakTileModel): string {
+  const week = `${model.weekCompleted} ${model.weekCompleted === 1 ? 'chore' : 'chores'} done this week.`;
+  if (model.longest <= 0 || model.top.length === 0) return `No streaks yet. ${week}`;
+  const others = model.running > 1 ? ` and ${model.running - 1} more on a streak` : '';
+  return `Best streak: ${streakDaysLabel(model.longest)}, ${model.top[0].name}${others}. ${week}`;
+}

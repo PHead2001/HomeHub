@@ -206,7 +206,15 @@ export function Landing() {
             </ol>
           </section>
 
-          <section className="mt-4 rounded-2xl border bg-card p-8 text-center shadow-raised">
+          <section
+            ref={(element) => {
+              stepRefs.current[LANDING_STEPS.length] = element;
+            }}
+            // Reaching the call to action always completes the house, even on screens
+            // too tall to scroll the last step into the observed band.
+            data-step={LANDING_STEPS.length - 1}
+            className="mt-4 rounded-2xl border bg-card p-8 text-center shadow-raised"
+          >
             <h2 className="font-headline text-2xl font-semibold">Bring your household together</h2>
             <p className="mx-auto mt-2 max-w-md text-muted-foreground">Create a household or join one with an invite code after you sign in.</p>
             <Button size="lg" className="mt-6" onClick={signIn} disabled={loading || signingIn}>

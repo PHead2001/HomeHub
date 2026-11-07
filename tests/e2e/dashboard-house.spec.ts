@@ -39,6 +39,8 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await openDashboard(page);
     const house = page.getByTestId('living-house');
     const rooms = house.getByRole('list', { name: 'Rooms' }).getByRole('link');
+    // count() does not wait: let the chore listeners deliver the rooms first.
+    await expect(house.getByTestId('house-room-kitchen')).toBeVisible();
     const count = await rooms.count();
     expect(count).toBeGreaterThanOrEqual(3);
     await rooms.first().focus();
@@ -83,11 +85,16 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     const tile = page.getByTestId('dashboard-tile-streaks');
     await expect(tile).toHaveAttribute('href', '/chores');
     await expect(tile.getByTestId('streaks-week')).toHaveText(`${model.weekCompleted} done this week`);
+    const week = `${model.weekCompleted} ${model.weekCompleted === 1 ? 'chore' : 'chores'} done this week.`;
     if (model.longest > 0) {
-      await expect(tile).toContainText(`${model.longest} ${model.longest === 1 ? 'day' : 'days'} best streak`);
-      await expect(tile.getByTestId('streaks-leader')).toContainText(model.top[0].name);
+      const days = `${model.longest} ${model.longest === 1 ? 'day' : 'days'}`;
+      const others = model.running > 1 ? ` and ${model.running - 1} more on a streak` : '';
+      // The number ticks in visually; the tile's text equivalent states it in full.
+      await expect(tile.getByTestId('streaks-summary')).toHaveText(`Best streak: ${days}, ${model.top[0].name}${others}. ${week}`);
+      await expect(tile).toContainText(`${model.longest === 1 ? 'day' : 'days'} best streak`);
+      await expect(tile.getByTestId('streaks-leader')).toHaveText(`${model.top[0].name}${others}`);
     } else {
-      await expect(tile).toContainText('No streaks yet');
+      await expect(tile.getByTestId('streaks-summary')).toHaveText(`No streaks yet. ${week}`);
     }
   });
 
@@ -155,7 +162,9 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
       await expect(page.getByTestId('weather-toggle')).toHaveAttribute('aria-pressed', 'true');
       await expect(page.getByTestId('dashboard-tile-weather')).toHaveCount(0);
       await expect(page.getByTestId('weather-house')).toHaveCount(0);
-      await expect(page.getByRole('alert')).toHaveCount(0);
+      // No error toast and no error announcement (Next's route announcer is an empty alert).
+      await expect(page.getByRole('region', { name: /^Notifications/ }).locator('li')).toHaveCount(0);
+      await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0);
     } finally {
       await userDoc.update({ 'preferences.weather': FieldValue.delete() }).catch(() => undefined);
     }
@@ -171,7 +180,8 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     expect(Number(await house.getAttribute('data-stage'))).toBeLessThan(FINAL_STAGE);
     await expect(page.getByTestId(`landing-chip-${last}`)).toHaveAttribute('data-on', 'false');
     for (const step of LANDING_STEPS) {
-      await page.getByTestId(`landing-step-${step.module}`).scrollIntoViewIfNeeded();
+      // Scroll the way a reader does: each step up to the middle of the screen.
+      await page.getByTestId(`landing-step-${step.module}`).evaluate((element) => element.scrollIntoView({ block: 'center' }));
       await expect(page.getByTestId(`landing-chip-${step.module}`)).toHaveAttribute('data-on', 'true');
     }
     await expect(house).toHaveAttribute('data-stage', String(FINAL_STAGE));
