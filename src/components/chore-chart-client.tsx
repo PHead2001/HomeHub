@@ -26,11 +26,10 @@ import { useToast } from '@/hooks/use-toast';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
-import { stableSlugify } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
-import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, openSubTasks, uniqueTemplateId, type ToDoEntry } from '@/lib/chores/list';
+import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completionSnapshot, completionUpdate, undoCompletionUpdate, type CompletionSnapshot } from '@/lib/chores/completion';
 import { computeChoreStats, isPodiumDay } from '@/lib/chores/stats';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
@@ -270,7 +269,8 @@ export function ChoreChartClient() {
         }
         await batch.commit();
       } else {
-        const templateId = uniqueTemplateId(stableSlugify(input.task), new Set(choreTemplates.map(t => t.id)));
+        // Readable slug + auto-id: never collides with a template this page has not seen.
+        const templateId = newChoreDocId(input.task, doc(templatesCollection).id);
         const recurrence: Recurrence = { ...input.recurrence, assignedToEmail: input.assignedToEmail };
         await setDoc(doc(templatesCollection, templateId), {
           task: input.task,
@@ -301,20 +301,25 @@ export function ChoreChartClient() {
       toastError(error, "Couldn't add the chore");
       return false;
     }
-  }, [currentUser, getCollectionRef, householdUsers, choreTemplates, shouldNotify, toast, toastError, fetchAllData]);
+  }, [currentUser, getCollectionRef, householdUsers, shouldNotify, toast, toastError, fetchAllData]);
 
   const handleSaveChoreTemplate = async (choreData: Partial<ChoreTemplate>, id?: string) => {
     const templatesCollection = getCollectionRef('chore-templates');
     const choresCollection = getCollectionRef('chores');
     if (!templatesCollection || !choresCollection) return false;
-    const templateId = id || uniqueTemplateId(stableSlugify(choreData.task!), new Set(choreTemplates.map(t => t.id)));
+    const templateId = id || newChoreDocId(choreData.task || '', doc(templatesCollection).id);
     const templateRef = doc(templatesCollection, templateId);
     try {
       await runTransaction(db, async (transaction) => {
-        const oldTemplateSnap = id ? await transaction.get(templateRef) : null;
-        const oldTemplate = oldTemplateSnap?.exists() ? oldTemplateSnap.data() as ChoreTemplate : null;
+        const oldTemplateSnap = await transaction.get(templateRef);
+        if (!id) {
+          // A create never merges into (or overwrites) an existing template.
+          if (oldTemplateSnap.exists()) throw new Error('A chore with this ID already exists. Try again.');
+          transaction.set(templateRef, choreData);
+          return;
+        }
+        const oldTemplate = oldTemplateSnap.exists() ? oldTemplateSnap.data() as ChoreTemplate : null;
         transaction.set(templateRef, choreData, { merge: true });
-        if (!id) return;
         const openChores = await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false)));
         const removedRoomIds = oldTemplate?.roomIds && choreData.roomIds ? oldTemplate.roomIds.filter(roomId => !choreData.roomIds!.includes(roomId)) : [];
         openChores.forEach(choreDoc => {
@@ -437,7 +442,8 @@ export function ChoreChartClient() {
   const handleSaveRoom = async (roomData: { name: string; icon: string }, id?: string) => {
     const roomsCollection = getCollectionRef('rooms');
     if (!roomsCollection) return false;
-    const roomId = id || uniqueTemplateId(stableSlugify(roomData.name), new Set(rooms.map(r => r.id)));
+    // New rooms: readable slug + auto-id, so a create never overwrites a room this page has not seen.
+    const roomId = id || newChoreDocId(roomData.name, doc(roomsCollection).id, 'room');
     try {
       await setDoc(doc(roomsCollection, roomId), roomData);
       toast({ title: id ? 'Room updated' : 'Room added' });
