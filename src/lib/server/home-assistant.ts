@@ -1,6 +1,8 @@
 import 'server-only';
 
-import { lookup } from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
+import { lookup as lookupAsync } from 'node:dns/promises';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 export class HomeAssistantError extends Error {
@@ -74,7 +76,7 @@ export const isPublicAddress = (address: string): boolean => {
 };
 
 export type Resolver = (hostname: string) => Promise<string[]>;
-const defaultResolver: Resolver = async hostname => (await lookup(hostname, { all: true })).map(entry => entry.address);
+const defaultResolver: Resolver = async hostname => (await lookupAsync(hostname, { all: true })).map(entry => entry.address);
 
 const UNREACHABLE_HINT = 'HomeHub connects from the internet, so use an https address that works outside your home network (for example your Nabu Casa or reverse-proxy URL).';
 
@@ -107,10 +109,82 @@ export const normalizeHomeAssistantUrl = async (raw: string, resolve: Resolver =
 
 export type Fetcher = typeof fetch;
 
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+type LookupCallback = (error: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void;
+
+/**
+ * DNS lookup for the outgoing socket that only ever yields public addresses. The
+ * hostname was already validated in `normalizeHomeAssistantUrl`, but `fetch` would
+ * resolve it again; a hostile DNS server could answer the check with a public
+ * address and the connection with a private one (DNS rebinding). Validating here,
+ * at connect time, closes that gap: the socket can only open to an address that
+ * passed `isPublicAddress`.
+ */
+export const publicOnlyLookup = (resolve: Resolver) => (
+  hostname: string,
+  options: { all?: boolean },
+  callback: LookupCallback,
+) => {
+  resolve(hostname).then(
+    addresses => {
+      if (!addresses.length || !addresses.every(isPublicAddress)) {
+        const error: NodeJS.ErrnoException = new Error('Refusing to connect to a non-public address.');
+        error.code = 'EHOMEHUBPRIVATE';
+        callback(error, options.all ? [] : '');
+        return;
+      }
+      const entries = addresses.map(address => ({ address, family: isIP(address) }));
+      if (options.all) callback(null, entries);
+      else callback(null, entries[0].address, entries[0].family);
+    },
+    error => callback(error as NodeJS.ErrnoException, options.all ? [] : ''),
+  );
+};
+
+/**
+ * GET over https whose socket can only connect to public addresses (see
+ * `publicOnlyLookup`). Never follows redirects, caps the body, and honours the
+ * abort signal. Returns a standard `Response`.
+ */
+export const pinnedFetch = (resolve: Resolver): Fetcher => (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = new URL(String(input));
+  if (url.protocol !== 'https:') throw new HomeAssistantError(`Use an https:// address. ${UNREACHABLE_HINT}`);
+  return new Promise<Response>((resolvePromise, reject) => {
+    const request = httpsRequest(url, {
+      method: 'GET',
+      headers: init?.headers as Record<string, string> | undefined,
+      lookup: publicOnlyLookup(resolve) as never,
+      signal: init?.signal ?? undefined,
+    }, incoming => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      incoming.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_RESPONSE_BYTES) {
+          incoming.destroy();
+          reject(new HomeAssistantError('Home Assistant sent too much data.'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      incoming.on('end', () => {
+        const status = incoming.statusCode ?? 502;
+        // Response forbids a body on these statuses.
+        const body = status === 204 || status === 304 ? null : Buffer.concat(chunks);
+        resolvePromise(new Response(body, { status }));
+      });
+      incoming.on('error', reject);
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}) as Fetcher;
+
 export const fetchHomeAssistantStates = async (
   rawUrl: string,
   accessToken: string,
-  { fetchImpl = fetch, resolve = defaultResolver }: { fetchImpl?: Fetcher; resolve?: Resolver } = {}
+  { resolve = defaultResolver, fetchImpl = pinnedFetch(resolve) }: { fetchImpl?: Fetcher; resolve?: Resolver } = {}
 ): Promise<HomeAssistantEntitySummary[]> => {
   // Re-validate on every call: stored URLs predate validation, and DNS can change.
   const base = await normalizeHomeAssistantUrl(rawUrl, resolve);
@@ -123,7 +197,11 @@ export const fetchHomeAssistantStates = async (
       redirect: 'manual',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof HomeAssistantError) throw error;
+    if ((error as NodeJS.ErrnoException)?.code === 'EHOMEHUBPRIVATE') {
+      throw new HomeAssistantError(`That address points at a private network. ${UNREACHABLE_HINT}`);
+    }
     throw new HomeAssistantError(`Home Assistant did not answer. ${UNREACHABLE_HINT}`);
   }
   if (response.status >= 300 && response.status < 400) {

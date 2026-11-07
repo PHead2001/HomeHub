@@ -40,6 +40,7 @@ Firestore rules let only members with `automation.manage` (owners and admins by 
 ## Integrations and Background Processing
 
 - External API: Home Assistant REST `GET /api/states`.
+- Outbound request safety (`src/lib/server/home-assistant.ts`): the member-supplied URL must be https, carry no credentials, and not use a local-only name; `normalizeHomeAssistantUrl` resolves it and requires every address to be public (`isPublicAddress` blocks loopback, private, link-local and metadata, CGNAT, multicast and IPv6 forms that embed them), on save and again on every fetch. The request itself goes through `pinnedFetch`, a `node:https` GET whose socket lookup (`publicOnlyLookup`) re-resolves and re-validates at connect time, so a DNS answer that changes between the check and the connection (DNS rebinding) is refused before anything is sent. Redirects are never followed, responses are capped at 5 MB and time out after 8 s. This is the mitigation for CodeQL `js/request-forgery`: the URL is user-supplied by design.
 - No Home Assistant Cloud Function, scheduled job, notification writer, or FCM path exists.
 - No environment variable config is used for the household-specific URL/token.
 

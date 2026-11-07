@@ -113,18 +113,36 @@ export function applyPresetToDocument(id: PresetId, root: HTMLElement = document
 }
 
 /**
+ * JSON for embedding in an inline <script>. `JSON.stringify` alone leaves `<`
+ * (so a value containing `</script>` could close the tag) and U+2028/U+2029
+ * (line terminators in older JavaScript) unescaped; escaping them keeps every
+ * embedded value inert, whatever it contains.
+ */
+const LINE_SEPARATOR = String.fromCharCode(0x2028);
+const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
+
+export function scriptLiteral(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .split(LINE_SEPARATOR).join('\\u2028')
+    .split(PARAGRAPH_SEPARATOR).join('\\u2029');
+}
+
+/**
  * Inline script for <head>. Runs before first paint and before hydration: reads the
  * stored preferences and sets `data-theme`, the `dark`/`light` class and
  * `data-motion="reduce"` on <html> so there is never a flash of the wrong theme.
  * Keep it dependency-free; it must never throw.
  */
+
 export function themeBootstrapScript(): string {
   const kinds = Object.fromEntries(PRESET_LIST.map((preset) => [preset.id, preset.kind]));
-  return `(function(){try{var d=document.documentElement,p={};try{p=JSON.parse(localStorage.getItem(${JSON.stringify(
+  return `(function(){try{var d=document.documentElement,p={};try{p=JSON.parse(localStorage.getItem(${scriptLiteral(
     APPEARANCE_STORAGE_KEY,
-  )})||"{}")||{}}catch(e){}var k=${JSON.stringify(kinds)},c=${JSON.stringify(THEME_COLORS)};var dk=k[p.darkPreset]==="dark"?p.darkPreset:${JSON.stringify(
+  )})||"{}")||{}}catch(e){}var k=${scriptLiteral(kinds)},c=${scriptLiteral(THEME_COLORS)};var dk=k[p.darkPreset]==="dark"?p.darkPreset:${scriptLiteral(
     DEFAULT_DARK_PRESET,
-  )};var lt=k[p.lightPreset]==="light"?p.lightPreset:${JSON.stringify(
+  )};var lt=k[p.lightPreset]==="light"?p.lightPreset:${scriptLiteral(
     DEFAULT_LIGHT_PRESET,
   )};var m=p.mode==="light"||p.mode==="system"?p.mode:"dark";var mq=function(q){return window.matchMedia&&window.matchMedia(q).matches};var id=(m==="dark"||(m==="system"&&mq("(prefers-color-scheme: dark)")))?dk:lt;d.setAttribute("data-theme",id);d.classList.remove(k[id]==="dark"?"light":"dark");d.classList.add(k[id]);if(p.reduceMotion===true||mq("(prefers-reduced-motion: reduce)")){d.setAttribute("data-motion","reduce")}else{d.removeAttribute("data-motion")}var t=document.querySelector('meta[name="theme-color"]');if(t)t.setAttribute("content",c[id])}catch(e){}})();`;
 }
