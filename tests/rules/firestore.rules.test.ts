@@ -740,10 +740,22 @@ describe('chore completion stamps and chore settings', () => {
     }));
   });
 
-  test('phase 1: a completion without a stamp (previous client) is still accepted', async () => {
-    // Open tabs and cached copies of the previous client don't send completedAtServer.
-    // Phase 2 removes this allowance once every client sends the stamp.
-    await assertSucceeds(updateDoc(chore(users.child), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+  test('a completion without a server stamp is denied', async () => {
+    await assertFails(updateDoc(chore(users.child), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+    await assertFails(updateDoc(chore(users.owner), { isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z' }));
+    await assertFails(setDoc(doc(dbFor(users.member), 'households', householdA, 'chores', 'unstamped-done'), {
+      task: 'Unstamped', isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z',
+    }));
+  });
+
+  test('a chore completed before stamps existed can still be edited and reopened', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'chores', 'legacy-done'), {
+        task: 'Legacy done', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z',
+      });
+    });
+    await assertSucceeds(updateDoc(chore(users.owner, 'legacy-done'), { task: 'Legacy done (renamed)' }));
+    await assertSucceeds(updateDoc(chore(users.child, 'legacy-done'), { isCompleted: false, completedAt: deleteField() }));
   });
 
   test('chores cannot be created already completed with a client-chosen stamp', async () => {
@@ -771,5 +783,28 @@ describe('chore completion stamps and chore settings', () => {
     await assertSucceeds(getDoc(prefs(users.guest)));
     await assertFails(getDoc(prefs(users.pending)));
     await assertFails(getDoc(doc(dbFor(users.ownerB), 'households', householdA, 'chore-settings', 'preferences')));
+  });
+});
+
+describe('yearly chore stats', () => {
+  const stats = (user: Identity, household = householdA) => doc(dbFor(user), 'households', household, 'stats', 'chores-2026');
+
+  test('members who can view chores read stats; nobody else does and no client writes', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'stats', 'chores-2026'), {
+        year: 2026, completed: 3, byAssignee: { member_a_x: 3 }, names: { member_a_x: 'Member A' },
+      });
+    });
+    await assertSucceeds(getDoc(stats(users.member)));
+    await assertSucceeds(getDoc(stats(users.child)));
+    await assertFails(getDoc(stats(users.pending)));
+    await assertFails(getDoc(stats(users.ownerB)));
+    await assertFails(getDoc(doc(environment.unauthenticatedContext().firestore(), 'households', householdA, 'stats', 'chores-2026')));
+    for (const user of [users.owner, users.admin, users.member]) {
+      await assertFails(setDoc(stats(user), { year: 2026, completed: 999 }));
+      await assertFails(updateDoc(stats(user), { completed: 0 }));
+      await assertFails(deleteDoc(stats(user)));
+    }
+    await assertFails(setDoc(doc(dbFor(users.owner), 'households', householdA, 'stats', 'anything-else'), { completed: 1 }));
   });
 });

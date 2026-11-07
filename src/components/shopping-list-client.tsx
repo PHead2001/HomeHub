@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { onDataChanged } from '@/lib/data-changed';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -354,6 +355,17 @@ export function ShoppingListClient({
       fetchLists();
     }
   }, [currentUser, fetchLists]);
+
+  // Items added from elsewhere (the command palette's quick add): silently re-read
+  // the open list if it changed, and the card counts. Reads stay offline-aware.
+  useEffect(() => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return;
+    return onDataChanged('shopping', householdId, (detail) => {
+      if (detail.listId && selectedListIdRef.current === detail.listId) void fetchItemsRef.current?.(detail.listId, { silent: true });
+      void fetchCounts(lists);
+    });
+  }, [currentUser?.householdId, fetchCounts, lists]);
 
   useEffect(() => {
     setOpenSections(['needed']);

@@ -488,26 +488,23 @@ service cloud.firestore {
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
       }
 
-      // Points and streaks are derived from completion times, so the current client
-      // stamps a completion with the server time: when a chore becomes completed with
-      // a completedAtServer, it must equal request.time, and a completed chore keeps
-      // its stamp. Phase 1 (rollout compatibility): a completion WITHOUT a stamp is
-      // still accepted, because open tabs and cached copies of the previous client
-      // don't send one; stats fall back to completedAt for those. Phase 2, once every
-      // client sends the stamp, removes the "no stamp" branches below.
+      // Points and streaks are derived from completion times, so every completion is
+      // stamped by the server: a chore that becomes completed must carry
+      // completedAtServer == request.time (no stamp, or a client-chosen one, is
+      // denied), and a completed chore keeps its stamp. Chores completed before the
+      // stamp existed keep working: they are already completed, and stats fall back
+      // to completedAt for them.
       function choreCompletionStampValid() {
         return request.resource.data.get('isCompleted', false) != true ||
           (resource.data.get('isCompleted', false) == true &&
             request.resource.data.get('completedAtServer', null) == resource.data.get('completedAtServer', null)) ||
           (resource.data.get('isCompleted', false) != true &&
-            (request.resource.data.get('completedAtServer', null) == request.time ||
-              !('completedAtServer' in request.resource.data)));
+            request.resource.data.get('completedAtServer', null) == request.time);
       }
 
       function choreCreatedWithServerCompletion() {
         return request.resource.data.get('isCompleted', false) != true ||
-          request.resource.data.get('completedAtServer', null) == request.time ||
-          !('completedAtServer' in request.resource.data);
+          request.resource.data.get('completedAtServer', null) == request.time;
       }
 
       // Household chore display preferences (leaderboard on/off). Owners and
@@ -533,6 +530,13 @@ service cloud.firestore {
         allow read: if hasHouseholdPermission(householdId, 'chores.view');
         allow create, update: if hasHouseholdPermission(householdId, 'chores.edit');
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+      }
+
+      // Yearly chore totals (stats/chores-{year}), written only by server upkeep when
+      // it removes old completed chores. Read-only for members who can view chores.
+      match /stats/{statId} {
+        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow write: if false;
       }
 
       match /shopping-lists/{listId} {

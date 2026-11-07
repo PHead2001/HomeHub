@@ -1,7 +1,7 @@
 
 "use client";
 
-import { User, LogOut, ScanBarcode, Home } from 'lucide-react';
+import { User, LogOut, ScanBarcode, Home, Search } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'motion/react';
@@ -23,6 +23,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { NotificationBell } from './notification-bell';
 import { Logo } from './brand/logo';
+import { openCommandPalette } from './command/events';
 
 
 const NAV_LINKS: Array<{ href: string; label: string; permission: HouseholdPermission }> = [
@@ -30,6 +31,8 @@ const NAV_LINKS: Array<{ href: string; label: string; permission: HouseholdPermi
   { href: '/pets', label: 'Pets', permission: 'pets.view' },
   { href: '/maintenance', label: 'Maintenance', permission: 'maintenance.view' },
   { href: '/chores', label: 'Chores', permission: 'chores.view' },
+  // Gated like Chores: the calendar shows chores (and other dated items).
+  { href: '/calendar', label: 'Calendar', permission: 'chores.view' },
   { href: '/automation', label: 'Automation', permission: 'automation.view' },
 ];
 
@@ -41,7 +44,7 @@ export function Header() {
   return (
     <header className="surface-glass sticky top-0 z-50 w-full border-b border-border-subtle">
       <div className="container mx-auto flex h-14 items-center px-4">
-        <Link href="/" className="flex items-center gap-2 mr-6">
+        <Link href="/" aria-label="HomeHub home" className="flex items-center gap-2 mr-6">
           <Logo size={24} animated />
           <span className="font-headline text-xl font-bold">HomeHub</span>
         </Link>
@@ -75,11 +78,24 @@ export function Header() {
         <div className="flex flex-1 items-center justify-end gap-2">
             {currentUser ? (
               <>
+                 {currentUser.householdId && currentMember && !isPendingNewUser && (
+                   <Button
+                     variant="ghost"
+                     size="icon"
+                     onClick={() => openCommandPalette()}
+                     aria-label="Search or quick add"
+                     aria-keyshortcuts="Control+K Meta+K"
+                     title="Search or quick add (Ctrl+K)"
+                     data-testid="header-search"
+                   >
+                     <Search className="h-5 w-5" aria-hidden />
+                   </Button>
+                 )}
                  {permissions['notifications.view'] && !isPendingNewUser && <NotificationBell />}
                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="Account menu">
-                      <Avatar className="h-9 w-9">
+                      <Avatar className="h-9 w-9" aria-hidden>
                          <AvatarImage src={currentUser.avatarUrl ?? undefined} alt={currentUser.displayName} />
                         <AvatarFallback>{currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U'}</AvatarFallback>
                       </Avatar>

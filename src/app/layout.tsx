@@ -17,6 +17,8 @@ import { themeCss, DEFAULT_DARK_PRESET } from '@/lib/theme/tokens';
 import { THEME_COLORS, themeBootstrapScript } from '@/lib/theme/appearance';
 import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
 import { PushNotificationManager } from '@/components/PushNotificationManager';
+import { CommandCenter } from '@/components/command/command-center';
+import { TimeOfDayTint } from '@/components/dashboard/time-of-day';
 
 // Fonts are bundled from npm (Fontsource variable fonts, Latin subset), not fetched
 // from Google Fonts at build time: that download failed intermittently and broke
@@ -82,6 +84,7 @@ export default function RootLayout({
         <AuthProvider>
           <AppearanceProvider>
             <NavigationProgress />
+            <TimeOfDayTint />
             <GlowPointerTracker />
             <MorphRouteListener />
             <PushNotificationManager />
@@ -91,6 +94,7 @@ export default function RootLayout({
               <Header />
               <main className="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">{children}</main>
               <MobileTabBar />
+              <CommandCenter />
             </HouseholdManager>
             <Toaster />
           </AppearanceProvider>

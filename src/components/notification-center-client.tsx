@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Link from "next/link";
-import { format, formatDistanceToNow } from "date-fns";
-import { Bell, CheckCheck, Clock, ExternalLink, Loader2, X } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { CheckCheck, Clock, ExternalLink, Loader2, X } from "lucide-react";
 import { collection, doc, onSnapshot, orderBy, query, updateDoc, where, writeBatch } from "firebase/firestore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,9 @@ import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/firebase";
 import type { Notification, NotificationCategory, NotificationUserAction } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { EmptyState } from "@/components/empty-state";
+import { friendlyError } from "@/lib/friendly-error";
+import { caughtUpLine, groupNotifications, notificationSourceLabel } from "@/lib/dashboard/notification-display";
 import {
   createNotificationAction,
   deduplicateNotifications,
@@ -126,6 +129,7 @@ function NotificationCenterItem({
   const resolvedName = getActionName(notification.resolvedBy);
   const dismissedName = getActionName(dismissedAction);
   const hasDeepLink = getNotificationLink(notification) !== "#";
+  const sourceLabel = notificationSourceLabel(notification.sourceType);
   const backgroundOpacity = isDismissed ? 0 : Math.min(Math.abs(dragX / SWIPE_THRESHOLD), 1);
 
   return (
@@ -134,7 +138,7 @@ function NotificationCenterItem({
         className="absolute inset-y-0 right-0 flex w-full items-center justify-end bg-muted pr-5 text-muted-foreground"
         style={{ opacity: backgroundOpacity }}
       >
-        <X className="h-5 w-5" />
+        <X aria-hidden className="h-5 w-5" />
       </div>
       <div
         ref={itemRef}
@@ -161,18 +165,17 @@ function NotificationCenterItem({
           </div>
           <div className="mt-3 space-y-1">
             <div className="flex items-start justify-between gap-3">
-              <h2 className="font-headline text-base font-semibold leading-tight">{notification.title || "HomeHub"}</h2>
-              {hasDeepLink && <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
+              <h3 className="font-headline text-base font-semibold leading-tight">{notification.title || "HomeHub"}</h3>
+              {hasDeepLink && <ExternalLink aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
             </div>
             <p className="text-sm text-muted-foreground">{notification.message}</p>
           </div>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1">
-              <Clock className="h-3 w-3" />
+              <Clock aria-hidden className="h-3 w-3" />
               {formatDistanceToNow(notification.createdAt, { addSuffix: true })}
             </span>
-            <span>Expires {format(notification.expiresAt, "MMM d, h:mm a")}</span>
-            {notification.sourceType && <span>Source: {notification.sourceType}</span>}
+            {sourceLabel && <span>{sourceLabel}</span>}
             {dismissedName && <span>Dismissed by {dismissedName}</span>}
             {resolvedName && <span>Completed by {resolvedName}</span>}
           </div>
@@ -182,7 +185,7 @@ function NotificationCenterItem({
             type="button"
             variant="ghost"
             size="icon"
-            className="absolute right-2 top-1/2 hidden h-8 w-8 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex focus:flex"
+            className="absolute right-2 top-1/2 hidden h-8 w-8 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex group-focus-within:flex"
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -200,7 +203,7 @@ function NotificationCenterItem({
 
 export function NotificationCenterClient() {
   const { currentUser } = useAuth();
-  const { toast } = useToast();
+  const { toastError } = useToast();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeFilter, setActiveFilter] = useState<NotificationFilter>("unread");
   const [isLoading, setIsLoading] = useState(true);
@@ -228,8 +231,8 @@ export function NotificationCenterClient() {
         setNotifications(deduplicateNotifications(snapshot.docs.map(parseNotificationDoc)));
         setIsLoading(false);
       },
-      () => {
-        setError("Could not load notification history.");
+      (loadError) => {
+        setError(friendlyError(loadError));
         setIsLoading(false);
       }
     );
@@ -274,7 +277,7 @@ export function NotificationCenterClient() {
       await batch.commit();
     } catch (dismissError) {
       console.error("Error dismissing notifications:", dismissError);
-      toast({ variant: "destructive", title: "Error", description: "Could not dismiss notifications." });
+      toastError(dismissError, "Could not dismiss notifications");
     }
   };
 
@@ -330,6 +333,7 @@ export function NotificationCenterClient() {
             variant={activeFilter === filter.value ? "default" : "outline"}
             size="sm"
             className="shrink-0"
+            aria-pressed={activeFilter === filter.value}
             onClick={() => setActiveFilter(filter.value)}
           >
             {filter.label}
@@ -346,26 +350,39 @@ export function NotificationCenterClient() {
         </Card>
       ) : error ? (
         <Card>
-          <CardContent className="p-8 text-center text-sm text-destructive">{error}</CardContent>
+          <CardContent role="alert" className="p-8 text-center text-sm text-destructive">Could not load notification history. {error}</CardContent>
         </Card>
       ) : filteredNotifications.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center gap-2 p-8 text-center text-sm text-muted-foreground">
-            <Bell className="h-6 w-6" />
-            No notifications match this filter.
-          </CardContent>
+          {activeFilter === "unread" ? (
+            <EmptyState kind="notifications" title="All caught up" description={caughtUpLine(new Date())} />
+          ) : (
+            <EmptyState
+              kind="notifications"
+              title="Nothing here"
+              description="No notifications match this filter in the last 7 days."
+              action={{ label: "Show all", onClick: () => setActiveFilter("all") }}
+            />
+          )}
         </Card>
       ) : (
-        <div className="space-y-3">
-          {filteredNotifications.map((notification) => (
-            <NotificationCenterItem
-              key={notification.id}
-              notification={notification}
-              isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
-              isDismissed={currentUser?.uid ? isNotificationDismissedBy(notification, currentUser.uid) : false}
-              onDismiss={(id) => dismissNotifications([id])}
-              onOpen={handleOpenNotification}
-            />
+        <div className="space-y-6">
+          {groupNotifications(filteredNotifications, new Date()).map((group) => (
+            <section key={group.id} aria-labelledby={`notification-group-${group.id}`}>
+              <h2 id={`notification-group-${group.id}`} className="mb-2 text-sm font-medium text-muted-foreground">{group.label}</h2>
+              <div className="space-y-3">
+                {group.items.map((notification) => (
+                    <NotificationCenterItem
+                      key={notification.id}
+                      notification={notification}
+                      isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
+                      isDismissed={currentUser?.uid ? isNotificationDismissedBy(notification, currentUser.uid) : false}
+                      onDismiss={(id) => dismissNotifications([id])}
+                      onOpen={handleOpenNotification}
+                    />
+                ))}
+              </div>
+            </section>
           ))}
         </div>
       )}

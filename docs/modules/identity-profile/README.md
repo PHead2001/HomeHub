@@ -6,7 +6,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 ## User-Facing Capabilities
 
-- Sign in with Google from the header login dialog ("Sign in to HomeHub"). Signed-out visitors to `/profile`, `/household` and `/automation` see a `SignInPrompt` (`src/components/profile/sign-in-prompt.tsx`) with a real Sign in button that opens the same dialog; other modules can adopt it.
+- Sign in with Google from the header login dialog ("Sign in to HomeHub"). Signed-out visitors to every signed-in-only page (`/chores`, `/calendar`, `/shopping`, `/library`, `/pets`, `/pets/[id]`, `/maintenance`, `/household`, `/profile`, `/automation`) see a `SignInPrompt` (`src/components/profile/sign-in-prompt.tsx`) with a real Sign in button that opens the same dialog, never a dead-end "Please log in" line (covered by `tests/e2e/dashboard-shell.spec.ts`).
 - Cancel sign-in and return to an idle login state.
 - View and edit personal profile fields at `/profile`.
 - See your current avatar at the top of Personal Information: your photo, or the generated gradient avatar in your member color (`MemberAvatar`), with your name, role and household. Add, change or remove the photo (preview before saving, Undo / Keep photo). Unsupported types and files over 5 MB are explained inline (`FieldError`); the display name (2-60 characters) is validated inline.

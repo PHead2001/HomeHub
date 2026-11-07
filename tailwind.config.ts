@@ -148,4 +148,7 @@ export default {
     },
   },
   plugins: [tailwindcssAnimate],
+  // `hover:` styles apply only on devices with a real hovering pointer, so a tapped
+  // button on a phone never keeps a stuck hover fill (audit section 4, "Refresh").
+  future: { hoverOnlyWhenSupported: true },
 } satisfies Config;

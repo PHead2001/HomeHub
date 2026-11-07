@@ -120,7 +120,7 @@ export function HouseholdManagementClient() {
     canReadAudit,
     canViewChores: Boolean(permissions['chores.view']),
   });
-  const { members, invites, auditLogs, choreStats } = live;
+  const { members, invites, auditLogs, choreStats, choreStatsReady } = live;
   const householdDisplayName = live.name ?? household?.name ?? '';
 
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -782,7 +782,7 @@ export function HouseholdManagementClient() {
                     member={member}
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
-                    stats={choreStats.get(member.email.toLowerCase()) ?? (permissions['chores.view'] ? { doneThisWeek: 0, open: 0 } : undefined)}
+                    stats={choreStats.get(member.email.toLowerCase()) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={changeMemberRole}
                     onCustomize={openCustomize}
@@ -808,7 +808,7 @@ export function HouseholdManagementClient() {
                     member={member}
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
-                    stats={member.role === 'newuser' ? undefined : choreStats.get(member.email.toLowerCase()) ?? (permissions['chores.view'] ? { doneThisWeek: 0, open: 0 } : undefined)}
+                    stats={member.role === 'newuser' ? undefined : choreStats.get(member.email.toLowerCase()) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={changeMemberRole}
                     onCustomize={openCustomize}
