@@ -1,3 +1,15 @@
+import {
+  APIConnectionTimeoutError,
+  APIError,
+  APIUserAbortError,
+  AuthenticationError,
+  BadRequestError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+} from 'openai';
+import { ZodError } from 'zod';
+
 export type AiErrorCode =
   | 'busy'
   | 'configuration'
@@ -51,8 +63,34 @@ type ProviderErrorShape = {
   status?: unknown;
 };
 
+/** Maps OpenAI SDK error classes; returns undefined for anything else. */
+const fromOpenAiSdkError = (error: unknown): HomeHubAiError | undefined => {
+  const cause = { cause: error };
+  if (error instanceof APIUserAbortError || error instanceof APIConnectionTimeoutError) {
+    return new HomeHubAiError('timeout', cause);
+  }
+  if (!(error instanceof APIError)) return undefined;
+
+  if (error instanceof RateLimitError) return new HomeHubAiError('rate_limited', cause);
+  if (error instanceof AuthenticationError || error instanceof PermissionDeniedError) {
+    return new HomeHubAiError('configuration', cause);
+  }
+  if (error instanceof NotFoundError && error.code === 'model_not_found') {
+    return new HomeHubAiError('configuration', cause);
+  }
+  // OpenAI rejected the request itself (for example an oversized prompt); matches the
+  // INVALID_ARGUMENT mapping the Genkit plugin applied to HTTP 400.
+  if (error instanceof BadRequestError) return new HomeHubAiError('invalid_input', cause);
+  // Connection failures, 5xx, and every other HTTP status.
+  return new HomeHubAiError('unavailable', cause);
+};
+
 export const normalizeAiError = (error: unknown): HomeHubAiError => {
   if (error instanceof HomeHubAiError) return error;
+
+  const sdkError = fromOpenAiSdkError(error);
+  if (sdkError) return sdkError;
+  if (error instanceof ZodError) return new HomeHubAiError('invalid_response', { cause: error });
 
   const providerError = error && typeof error === 'object' ? error as ProviderErrorShape : {};
   const status = typeof providerError.status === 'number' ? providerError.status : undefined;

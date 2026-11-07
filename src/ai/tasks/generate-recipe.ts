@@ -1,7 +1,6 @@
-import { z } from 'genkit';
-import { ai } from '@/ai/genkit';
+import { z } from 'zod';
 import { openAiModels } from '@/ai/model-config';
-import { generateStructured } from '@/ai/structured-generation';
+import { generateStructured, parseTaskInput, parseTaskOutput } from '@/ai/structured-generation';
 
 const PantryItemSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -27,26 +26,20 @@ export const GenerateRecipeOutputSchema = z.object({
 });
 export type GenerateRecipeOutput = z.infer<typeof GenerateRecipeOutputSchema>;
 
-export const generateRecipeFlow = ai.defineFlow(
-  {
-    name: 'generateRecipeFlow',
-    inputSchema: GenerateRecipeInputSchema,
+export async function generateRecipeFlow(candidateInput: GenerateRecipeInput): Promise<GenerateRecipeOutput> {
+  const input = parseTaskInput(GenerateRecipeInputSchema, candidateInput);
+  const result = await generateStructured({
+    flowName: 'recipe',
+    input,
+    model: openAiModels.recipe,
     outputSchema: GenerateRecipeOutputSchema,
-  },
-  async input => {
-    const result = await generateStructured({
-      flowName: 'recipe',
-      input,
-      model: openAiModels.recipe,
-      outputSchema: GenerateRecipeOutputSchema,
-      timeoutMs: 25_000,
-      maxOutputTokens: 1_600,
-      taskInstruction: [
-        'Create one practical home recipe primarily using the supplied pantry items.',
-        'Use conventional flavor pairings. Put only common missing staples under needed.',
-        'Return clear steps and only the requested structured output.',
-      ].join('\n'),
-    });
-    return result.output;
-  }
-);
+    timeoutMs: 25_000,
+    maxOutputTokens: 1_600,
+    taskInstruction: [
+      'Create one practical home recipe primarily using the supplied pantry items.',
+      'Use conventional flavor pairings. Put only common missing staples under needed.',
+      'Return clear steps and only the requested structured output.',
+    ].join('\n'),
+  });
+  return parseTaskOutput(GenerateRecipeOutputSchema, result.output);
+}

@@ -96,7 +96,7 @@ App Check is **enforced** for Firestore and Storage and not enforced for Auth (s
 - Household deletion is an Admin SDK server action (`src/app/household/actions.ts`), not a function.
 - Environment names: `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`, and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - E2E-only names: `NEXT_PUBLIC_USE_FIREBASE_EMULATORS`, `NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST`, `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST`, `FIRESTORE_EMULATOR_HOST`, and `FIREBASE_STORAGE_EMULATOR_HOST`.
-- AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL` (`gpt-5.6-luna`), `OPENAI_CATEGORIZATION_MODEL` (`gpt-5.6-luna`), `OPENAI_RECIPE_MODEL` (`gpt-5.6-terra`), `OPENAI_MAINTENANCE_MODEL` (`gpt-5.6-luna`), and `OPENAI_OVERVIEW_MODEL` (`gpt-5.6-luna`).
+- AI runtime names: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL` (`gpt-6-luna`), `OPENAI_CATEGORIZATION_MODEL` (`gpt-6-luna`), `OPENAI_RECIPE_MODEL` (`gpt-6.1-terra`), `OPENAI_MAINTENANCE_MODEL` (`gpt-6-luna`), and `OPENAI_OVERVIEW_MODEL` (`gpt-6-luna`).
 - `HOMEHUB_AI_TEST_MODE=deterministic` is accepted only by the exact demo emulator environment and is never enabled automatically in production.
 
 ## Cross-Module Dependencies
@@ -118,7 +118,7 @@ Every application module depends on this platform. [Notifications](../notificati
 - Normal CI/emulator commands do not need `OPENAI_API_KEY` and cannot call OpenAI through the deterministic test provider.
 - The browser Firestore instance uses the persistent multi-tab cache; offline reads return cached data and offline writes are queued, never dropped. Security rules still apply when queued writes reach the server; a rejected write surfaces only through the caller's error handler.
 
-- Dependency security overrides (root `package.json` `overrides`): `protobufjs ^7.6.6` and `@grpc/grpc-js ^1.14.7`. `@firebase/firestore` (Node build) and `google-gax` (through Genkit's Google Cloud logging) pin `grpc-js 1.9.x` / `protobufjs 7.2.x`, which carry critical protobufjs code-injection and grpc-js advisories. Both overrides stay within the same major version. Keep them until those upstream pins move past the fixed versions (`npm ls protobufjs @grpc/grpc-js --omit=dev` shows a single patched version of each), and run the rules, server and E2E suites after any change to them.
+- Dependency security overrides (root `package.json` `overrides`): `protobufjs ^7.6.6` and `@grpc/grpc-js ^1.14.7`. `@firebase/firestore` (Node build) and `google-gax` (through `firebase-admin`'s Firestore client) pin `grpc-js 1.9.x` / `protobufjs 7.2.x`, which carry critical protobufjs code-injection and grpc-js advisories. Both overrides stay within the same major version. Keep them until those upstream pins move past the fixed versions (`npm ls protobufjs @grpc/grpc-js --omit=dev` shows a single patched version of each), and run the rules, server and E2E suites after any change to them.
 
 ## Validation
 

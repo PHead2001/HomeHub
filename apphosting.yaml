@@ -13,27 +13,27 @@ env:
     secret: openaiApiKey
 
   - variable: OPENAI_DEFAULT_MODEL
-    value: gpt-5.6-luna
+    value: gpt-6-luna
     availability:
       - RUNTIME
 
   - variable: OPENAI_CATEGORIZATION_MODEL
-    value: gpt-5.6-luna
+    value: gpt-6-luna
     availability:
       - RUNTIME
 
   - variable: OPENAI_RECIPE_MODEL
-    value: gpt-5.6-terra
+    value: gpt-6.1-terra
     availability:
       - RUNTIME
 
   - variable: OPENAI_MAINTENANCE_MODEL
-    value: gpt-5.6-luna
+    value: gpt-6-luna
     availability:
       - RUNTIME
 
   - variable: OPENAI_OVERVIEW_MODEL
-    value: gpt-5.6-luna
+    value: gpt-6-luna
     availability:
       - RUNTIME
 
