@@ -2,7 +2,6 @@
 
 import { collection, deleteDoc, deleteField, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
-import { v4 as uuidv4 } from 'uuid';
 import { db } from '@/lib/firebase';
 import { slugify } from '@/lib/utils';
 import type { PetFields } from './pet-form';
@@ -12,7 +11,7 @@ export const NO_PHOTO_URL = 'https://placehold.co/300x300.png';
 
 async function uploadPetPhoto(householdId: string, photoFile: File): Promise<string> {
   const extension = photoFile.name.split('.').pop();
-  const storageRef = ref(getStorage(), `households/${householdId}/pets/${uuidv4()}.${extension}`);
+  const storageRef = ref(getStorage(), `households/${householdId}/pets/${crypto.randomUUID()}.${extension}`);
   await uploadBytes(storageRef, photoFile);
   return getDownloadURL(storageRef);
 }
