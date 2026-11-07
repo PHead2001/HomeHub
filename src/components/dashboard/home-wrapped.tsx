@@ -19,7 +19,7 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { DURATION, EASE } from '@/lib/motion';
-import { countInYear, maintenanceSpend, readConsistentChoreTotals, summarizeChores, topPurchasedItem, yearBounds, type WrappedSummary } from '@/lib/dashboard/wrapped';
+import { countInYear, maintenanceSpend, readConsistentChoreTotals, summarizeChores, topPurchasedItem, yearBounds, yearIn, type WrappedSummary } from '@/lib/dashboard/wrapped';
 import type { RawDoc } from '@/lib/dashboard/facts';
 
 type Card = { eyebrow: string; headline: string; detail: string };
@@ -121,7 +121,9 @@ export function HomeWrapped() {
     setLoading(true);
     setCards(null);
     setIndex(0);
-    const year = new Date().getFullYear();
+    // The household's current year, not the browser's: around New Year they can differ,
+    // and the stats document and every card are bucketed in the household's time zone.
+    const year = yearIn(new Date(), household?.timeZone) ?? new Date().getFullYear();
     const base = (...path: string[]) => collection(db, 'households', householdId, ...path);
     const docs = (snapshot: Awaited<ReturnType<typeof getDocs>>) => snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as RawDoc);
     try {
@@ -212,7 +214,7 @@ export function HomeWrapped() {
     try {
       const blob = await renderShareImage(cards);
       if (!blob) throw new Error('canvas-unavailable');
-      const file = new File([blob], `homehub-wrapped-${new Date().getFullYear()}.png`, { type: 'image/png' });
+      const file = new File([blob], `homehub-wrapped-${yearIn(new Date(), household?.timeZone) ?? new Date().getFullYear()}.png`, { type: 'image/png' });
       if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: 'HomeHub Wrapped' }).catch(() => undefined);
       } else {

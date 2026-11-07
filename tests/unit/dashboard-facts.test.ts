@@ -426,3 +426,12 @@ describe('Home Wrapped aggregation', () => {
     ], 2026), { spend: 120.5, logs: 2 });
   });
 });
+
+describe('Wrapped year', () => {
+  it("is the household's current year, not the browser's, around New Year", () => {
+    // 00:30 UTC on Jan 1 2027 is still Dec 31 2026 in Chicago.
+    const instant = new Date('2027-01-01T00:30:00Z');
+    assert.equal(yearIn(instant, 'America/Chicago'), 2026);
+    assert.equal(yearIn(instant, 'UTC'), 2027);
+  });
+});
