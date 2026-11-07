@@ -85,8 +85,10 @@ export function useSwipeDismiss({
   const onPointerDown = (event: React.PointerEvent<HTMLElement>) => {
     swiped.current = false;
     if (disabled || sliding || !event.isPrimary || !isSwipePointer(event.pointerType, coarsePointer())) return;
-    // The dismiss button (and any other control) keeps its own click.
-    if ((event.target as HTMLElement).closest('button')) return;
+    // A swipe may start anywhere on the card, including on the dismiss button
+    // (always shown on touch screens, at the right edge where a left swipe
+    // naturally starts). A tap on the button still clicks it: the pointer is
+    // captured only after the slop, and a completed swipe's click is swallowed.
     active.current = true;
     pointerId.current = event.pointerId;
     startX.current = event.clientX;
