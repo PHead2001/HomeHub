@@ -116,7 +116,7 @@ function NotificationItem({
 }
 
 export function NotificationBell() {
-  const { currentUser } = useAuth();
+  const { currentUser, permissions } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -161,8 +161,12 @@ export function NotificationBell() {
 
   const activeNotifications = useMemo(() => {
     if (!currentUser?.uid || !currentUser.email) return [];
-    return activeBellNotifications(notifications, currentUser);
-  }, [currentUser, notifications]);
+    return activeBellNotifications(notifications, {
+      uid: currentUser.uid,
+      email: currentUser.email,
+      canView: (permission) => Boolean(permissions[permission]),
+    });
+  }, [currentUser, notifications, permissions]);
 
   const unreadCount = useMemo(() => {
     if (!currentUser?.uid) return 0;

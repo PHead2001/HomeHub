@@ -6,6 +6,7 @@
 import { startOfLocalDay } from './dates';
 import { isNotificationDismissedBy, isNotificationExpired, isNotificationVisibleToUser } from '../notifications';
 import type { Notification } from '../types';
+import { canSeeCategory, type ViewPermission } from '@functions/shared/push-audience';
 
 /** The bell shows at most this many active notifications (and counts unread among them). */
 export const BELL_LIMIT = 10;
@@ -16,10 +17,16 @@ export const BELL_LIMIT = 10;
  * already merged with `deduplicateNotifications`. The dashboard's unread tile uses
  * the same list, so both always show the same number.
  */
-export function activeBellNotifications(notifications: Notification[], user: { uid: string; email: string }, now = new Date()): Notification[] {
+export function activeBellNotifications(
+  notifications: Notification[],
+  user: { uid: string; email: string; canView?: (permission: ViewPermission) => boolean },
+  now = new Date(),
+): Notification[] {
   return notifications
     .filter((notification) => !isNotificationExpired(notification, now))
     .filter((notification) => isNotificationVisibleToUser(notification, user))
+    // A module's notifications need that module's view permission (as pushes do).
+    .filter((notification) => !user.canView || canSeeCategory(notification.category, user.canView))
     .filter((notification) => !notification.resolvedAt)
     .filter((notification) => !isNotificationDismissedBy(notification, user.uid))
     .slice(0, BELL_LIMIT);

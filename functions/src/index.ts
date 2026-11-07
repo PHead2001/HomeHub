@@ -10,6 +10,7 @@ import {
   selectRecipientEmails,
   type MemberRecord,
 } from "./push-policy";
+import {filterRecipientsByCategory} from "./shared/push-audience";
 import {
   memberCanView,
   resolvePushImage,
@@ -51,7 +52,12 @@ export const sendPushOnNewNotification = onDocumentCreated(
       .collection("members").get();
     const members: MemberRecord[] = membersSnap.docs
       .map((doc) => ({uid: doc.id, ...doc.data()}));
-    const recipientEmails = selectRecipientEmails(members, notificationData);
+    // Members who cannot see this category in the app (for example no
+    // pets.view for a pets reminder) get no push at all, matching the bell.
+    const recipientEmails = filterRecipientsByCategory(
+      members.filter(isApprovedMember),
+      selectRecipientEmails(members, notificationData),
+      notificationData.category);
     if (recipientEmails.length === 0) {
       logger.log("No approved recipients for notification.");
       return;

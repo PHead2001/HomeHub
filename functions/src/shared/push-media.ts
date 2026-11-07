@@ -6,12 +6,16 @@
 // object in this household's own folder of the project's Storage bucket, or a
 // plain image path on the app's own origin. Anything else is dropped.
 
+import {memberCanView, type ViewPermission} from "./push-audience";
+
+// Re-exported for callers that check who may see a picture.
+export {memberCanView};
+export type {ViewPermission};
+
 /** App icon shown with every push (same file as the web manifest). */
 export const PUSH_ICON = "/icons/icon-192.png";
 /** Monochrome house glyph on transparency, for the Android status bar. */
 export const PUSH_BADGE = "/icons/badge-96.png";
-
-export type ViewPermission = "pets.view" | "shopping.view";
 
 /** A Firestore document to read, relative to the household document. */
 export type ImageSource = {
@@ -210,38 +214,6 @@ export const resolvePushImage = async (
     source = source.fallback ? source.fallback(data) : null;
   }
   return null;
-};
-
-const ROLE_VIEW: Record<string, ViewPermission[]> = {
-  admin: ["pets.view", "shopping.view"],
-  member: ["pets.view", "shopping.view"],
-  child: ["pets.view"],
-  guest: ["pets.view", "shopping.view"],
-};
-
-/**
- * Mirrors `memberHasPermission` in firestore.rules for the view permissions a
- * picture needs: owners see everything, explicit overrides win, then the
- * role's defaults. A recipient who could not open the pet or the product in
- * the app does not get its picture in a push.
- * @param {object} member Membership record.
- * @param {ViewPermission} permission Permission to check.
- * @return {boolean} True when the member may see the picture.
- */
-export const memberCanView = (
-  member: {role?: unknown; permissions?: unknown},
-  permission: ViewPermission,
-): boolean => {
-  if (typeof member.role !== "string") return false;
-  if (member.role === "owner") return true;
-  const overrides = member.permissions;
-  if (
-    overrides && typeof overrides === "object" &&
-    Object.prototype.hasOwnProperty.call(overrides, permission)
-  ) {
-    return (overrides as Record<string, unknown>)[permission] === true;
-  }
-  return (ROLE_VIEW[member.role] ?? []).includes(permission);
 };
 
 /**

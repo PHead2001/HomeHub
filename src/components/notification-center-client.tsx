@@ -17,6 +17,7 @@ import { db } from "@/lib/firebase";
 import type { Notification, NotificationCategory, NotificationUserAction } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
+import { canSeeCategory } from "@functions/shared/push-audience";
 import { friendlyError } from "@/lib/friendly-error";
 import { caughtUpLine, groupNotifications, notificationSourceLabel } from "@/lib/dashboard/notification-display";
 import {
@@ -159,7 +160,7 @@ function NotificationCenterItem({
 }
 
 export function NotificationCenterClient() {
-  const { currentUser } = useAuth();
+  const { currentUser, permissions } = useAuth();
   const dismissNotifications = useDismissNotifications();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeFilter, setActiveFilter] = useState<NotificationFilter>("unread");
@@ -206,6 +207,8 @@ export function NotificationCenterClient() {
 
     return validNotifications.filter((notification) => {
       if (!isNotificationVisibleToUser(notification, currentUser)) return false;
+      // A module's notifications need that module's view permission (as pushes do).
+      if (!canSeeCategory(notification.category, (permission) => Boolean(permissions[permission]))) return false;
 
       const isDismissed = isNotificationDismissedBy(notification, currentUser.uid);
       const isRead = isNotificationReadBy(notification, currentUser.uid);
@@ -215,7 +218,7 @@ export function NotificationCenterClient() {
       if (activeFilter === "dismissed") return isDismissed;
       return notification.category === activeFilter;
     });
-  }, [activeFilter, currentUser, validNotifications]);
+  }, [activeFilter, currentUser, permissions, validNotifications]);
 
   const handleDismissVisible = () => {
     if (!currentUser?.uid) return;
