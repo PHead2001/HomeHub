@@ -5,17 +5,32 @@ import * as logger from "firebase-functions/logger";
 import {runHouseholdReminders} from "./reminders";
 import {
   clampText,
+  isApprovedMember,
   safeDeepLink,
   selectRecipientEmails,
   type MemberRecord,
 } from "./push-policy";
+import {
+  memberCanView,
+  resolvePushImage,
+  webpushNotification,
+  type PushImage,
+} from "./shared/push-media";
 
 admin.initializeApp();
 
 const db = admin.firestore();
 const messaging = admin.messaging();
 
-type TokenOwner = {token: string; ref: admin.firestore.DocumentReference};
+type TokenOwner = {
+  token: string;
+  ref: admin.firestore.DocumentReference;
+  showImage: boolean;
+};
+
+// Firestore reads for the push image. Paths are built by push-media from the
+// trigger's own householdId, so reads never leave that household.
+const readDoc = async (path: string) => (await db.doc(path).get()).data();
 
 export const sendPushOnNewNotification = onDocumentCreated(
   "households/{householdId}/notifications/{notificationId}",
@@ -42,16 +57,30 @@ export const sendPushOnNewNotification = onDocumentCreated(
       return;
     }
 
+    const image: PushImage | null = await resolvePushImage(
+      readDoc, householdId, notificationData,
+      admin.app().options.storageBucket ?? "");
+    // Only recipients who could open the pet or product in the app see its
+    // picture; everyone else gets the same push without the image.
+    const canSeeImage = (email: string): boolean => {
+      if (!image) return false;
+      const lower = email.toLowerCase();
+      const member = members.find((m) => isApprovedMember(m) &&
+        typeof m.email === "string" && m.email.toLowerCase() === lower);
+      return member ? memberCanView(member, image.permission) : false;
+    };
+
     const recipientDocs = await Promise.all(
       recipientEmails.map((email) => db.collection("users").doc(email).get()),
     );
     const tokenOwners: TokenOwner[] = [];
-    recipientDocs.forEach((userDoc) => {
+    recipientDocs.forEach((userDoc, index) => {
       const raw = userDoc.data()?.fcmTokens;
       const tokens: unknown[] = Array.isArray(raw) ? raw : [];
+      const showImage = canSeeImage(recipientEmails[index]);
       tokens.forEach((token) => {
         if (typeof token === "string") {
-          tokenOwners.push({token, ref: userDoc.ref});
+          tokenOwners.push({token, ref: userDoc.ref, showImage});
         }
       });
     });
@@ -61,40 +90,52 @@ export const sendPushOnNewNotification = onDocumentCreated(
       return;
     }
 
-    const payload: admin.messaging.MulticastMessage = {
-      notification: {
-        title: clampText(notificationData.title, "HomeHub", 120),
-        body: clampText(
-          notificationData.message, "You have a new notification.", 500),
-      },
-      webpush: {
-        fcmOptions: {link: safeDeepLink(notificationData.deepLink)},
-        notification: {icon: "/favicon.ico"},
-      },
-      tokens: tokenOwners.map((entry) => entry.token),
-    };
-
-    const response = await messaging.sendEachForMulticast(payload);
-    logger.log("Push notification send completed.", {
-      successCount: response.successCount,
-      failureCount: response.failureCount,
-    });
+    const title = clampText(notificationData.title, "HomeHub", 120);
+    const body = clampText(
+      notificationData.message, "You have a new notification.", 500);
+    const tag = event.params.notificationId;
+    const groups = [true, false]
+      .map((withImage) => tokenOwners.filter((o) => o.showImage === withImage))
+      .filter((group) => group.length > 0);
 
     const tokensToRemove: Promise<admin.firestore.WriteResult>[] = [];
-    response.responses.forEach((result, index) => {
-      const error = result.error;
-      if (result.success || !error) return;
-      logger.error("Failure sending notification.", {code: error.code});
-      if (
-        error.code === "messaging/invalid-registration-token" ||
-        error.code === "messaging/registration-token-not-registered"
-      ) {
-        tokensToRemove.push(tokenOwners[index].ref.update({
-          fcmTokens: admin.firestore.FieldValue.arrayRemove(
-            tokenOwners[index].token),
-        }));
-      }
-    });
+    for (const group of groups) {
+      const options = webpushNotification(
+        tag, group[0].showImage && image ? image.url : null);
+      const payload: admin.messaging.MulticastMessage = {
+        notification: {title, body},
+        webpush: {
+          fcmOptions: {link: safeDeepLink(notificationData.deepLink)},
+          notification: options,
+          // The service worker's own display reads these (the SDK does not
+          // pass badge or tag through to onBackgroundMessage).
+          data: {tag: options.tag, badge: options.badge},
+        },
+        tokens: group.map((entry) => entry.token),
+      };
+
+      const response = await messaging.sendEachForMulticast(payload);
+      logger.log("Push notification send completed.", {
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        withImage: Boolean(options.image),
+      });
+
+      response.responses.forEach((result, index) => {
+        const error = result.error;
+        if (result.success || !error) return;
+        logger.error("Failure sending notification.", {code: error.code});
+        if (
+          error.code === "messaging/invalid-registration-token" ||
+          error.code === "messaging/registration-token-not-registered"
+        ) {
+          tokensToRemove.push(group[index].ref.update({
+            fcmTokens: admin.firestore.FieldValue.arrayRemove(
+              group[index].token),
+          }));
+        }
+      });
+    }
 
     return Promise.all(tokensToRemove);
   },

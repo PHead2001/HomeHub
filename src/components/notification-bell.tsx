@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, BellDot, CheckCheck, ExternalLink, X } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { collection, doc, limit, onSnapshot, orderBy, query, updateDoc, where, writeBatch } from "firebase/firestore";
+import { collection, doc, limit, onSnapshot, orderBy, query, updateDoc, where } from "firebase/firestore";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -21,7 +21,9 @@ import { useAuth } from "@/hooks/use-auth";
 import { db } from "@/lib/firebase";
 import { errorEmitter } from '@/lib/error-emitter';
 import { FirestorePermissionError } from '@/lib/errors';
-import { useToast } from "@/hooks/use-toast";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
+import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
+import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
 import { useAppBadge } from "@/hooks/use-app-badge";
 import { EmptyState } from "@/components/empty-state";
 import { activeBellNotifications, caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
@@ -45,127 +47,70 @@ function NotificationItem({
   onDismiss: (id: string) => void;
   onOpen: (notification: Notification) => void;
 }) {
-  const [dragX, setDragX] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const itemRef = useRef<HTMLDivElement>(null);
-  const startXRef = useRef(0);
-  const wasDraggedRef = useRef(false);
-  const SWIPE_THRESHOLD = -60;
-
-  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    // Swipe-to-dismiss is a touch gesture; capturing on a mouse press would
-    // retarget the click away from the item's link.
-    if (!event.isPrimary || event.pointerType === 'mouse') return;
-
-    wasDraggedRef.current = false;
-    setIsDragging(true);
-    startXRef.current = event.clientX;
-    if (itemRef.current) {
-      itemRef.current.style.transition = 'none';
-    }
-  };
-
-  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging || !event.isPrimary) return;
-
-    const deltaX = event.clientX - startXRef.current;
-    if (Math.abs(deltaX) > 5 && !wasDraggedRef.current) {
-      itemRef.current?.setPointerCapture(event.pointerId);
-    }
-    if (Math.abs(deltaX) > 5) {
-      wasDraggedRef.current = true;
-    }
-
-    if (wasDraggedRef.current) {
-      event.preventDefault();
-    }
-
-    if (deltaX < 50) {
-      setDragX(deltaX < 0 ? deltaX : deltaX / 5);
-    }
-  };
-
-  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging || !event.isPrimary) return;
-
-    setIsDragging(false);
-    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
-    if (itemRef.current) {
-      itemRef.current.style.transition = 'transform 0.2s ease-out';
-    }
-
-    if (wasDraggedRef.current && dragX < SWIPE_THRESHOLD) {
-      setDragX(-itemRef.current!.offsetWidth);
-      setTimeout(() => onDismiss(notification.id), 200);
-    } else {
-      setDragX(0);
-    }
-  };
-
-  const handlePointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging) return;
-
-    setIsDragging(false);
-    wasDraggedRef.current = false;
-    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
-    if (itemRef.current) itemRef.current.style.transition = 'transform 0.2s ease-out';
-    setDragX(0);
-  };
-
-  const backgroundOpacity = Math.min(Math.abs(dragX / SWIPE_THRESHOLD), 1);
+  const reducedMotion = useReducedMotion();
+  // The wrapper and the menu item never move (they are the hit targets); only
+  // the content layer slides.
+  const swipe = useSwipeDismiss({
+    disabled: false,
+    reducedMotion,
+    onDismiss: () => onDismiss(notification.id),
+  });
 
   return (
-    <div className="group relative w-full overflow-hidden rounded-sm bg-popover">
+    <div
+      {...swipe.handlers}
+      className="group relative w-full touch-pan-y overflow-hidden rounded-sm"
+      style={{ cursor: swipe.dragging ? 'grabbing' : 'grab' }}
+    >
       <div
-        className="absolute inset-y-0 right-0 flex w-full items-center justify-end bg-muted pr-4 text-muted-foreground"
-        style={{ opacity: backgroundOpacity }}
+        aria-hidden
+        className={cn("pointer-events-none absolute inset-0 flex items-center justify-end bg-muted pr-4 text-muted-foreground", reducedMotion && "z-10")}
+        style={{ opacity: swipe.hintOpacity }}
       >
         <X className="h-5 w-5" />
       </div>
-      <div
-        ref={itemRef}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        className="w-full touch-pan-y bg-popover"
-        style={{ transform: `translateX(${dragX}px)`, cursor: isDragging ? 'grabbing' : 'grab' }}
+      <DropdownMenuItem
+        asChild
+        className={cn("relative flex flex-col items-start gap-1 whitespace-normal p-0 pr-8", !isRead && "bg-accent/50")}
       >
-        <DropdownMenuItem
-          asChild
-          className={cn("flex flex-col items-start gap-1 whitespace-normal p-0 pr-8", !isRead && "bg-accent/50")}
-          onSelect={(event) => {
-            if (wasDraggedRef.current) event.preventDefault();
-          }}
+        <Link
+          href={getNotificationLink(notification)}
+          className="block h-full w-full"
+          draggable={false}
+          onClick={() => onOpen(notification)}
         >
-          <Link
-            href={getNotificationLink(notification)}
-            className="block h-full w-full p-2"
-            draggable={false}
-            onClick={() => onOpen(notification)}
+          {/* Opaque only while it moves, so the item's own highlight shows at rest. */}
+          <div
+            data-swipe-visual
+            className={cn("pointer-events-none relative p-2", swipe.engaged && "bg-popover")}
+            style={swipe.visualStyle}
           >
-            <p className="text-sm font-medium leading-tight pointer-events-none">{notification.title || "HomeHub"}</p>
-            <p className="text-sm pointer-events-none">{notification.message}</p>
-            <p className="text-xs text-muted-foreground pointer-events-none">
+            {swipe.engaged && !isRead && <span aria-hidden className="absolute inset-0 bg-accent/50" />}
+            <p className="relative text-sm font-medium leading-tight">{notification.title || "HomeHub"}</p>
+            <p className="relative text-sm">{notification.message}</p>
+            <p className="relative text-xs text-muted-foreground">
               {formatDistanceToNow(notification.createdAt, { addSuffix: true })}
             </p>
-          </Link>
-        </DropdownMenuItem>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="absolute right-1 top-1/2 hidden h-7 w-7 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex group-focus-within:flex"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onDismiss(notification.id);
-          }}
-        >
-          <X className="h-4 w-4" />
-          <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
-        </Button>
-      </div>
+          </div>
+        </Link>
+      </DropdownMenuItem>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={cn(
+          "absolute right-1 top-1/2 hidden h-7 w-7 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex group-focus-within:flex [@media(pointer:coarse)]:flex",
+          swipe.engaged && "opacity-0",
+        )}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onDismiss(notification.id);
+        }}
+      >
+        <X className="h-4 w-4" />
+        <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
+      </Button>
     </div>
   );
 }
@@ -175,7 +120,7 @@ export function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const { toastError } = useToast();
+  const dismissNotifications = useDismissNotifications();
   // H11: the bell rings and the badge pops when a new unread notification arrives.
   const [ringKey, setRingKey] = useState(0);
   const previousUnread = useRef<number | null>(null);
@@ -235,27 +180,6 @@ export function NotificationBell() {
 
   const groups = useMemo(() => groupNotifications(activeNotifications, new Date()), [activeNotifications]);
   const bellLabel = unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications';
-
-  const dismissNotifications = async (notificationIds: string[]) => {
-    if (!currentUser?.householdId || !currentUser.uid || notificationIds.length === 0) return;
-
-    const batch = writeBatch(db);
-    const action = createNotificationAction(currentUser);
-
-    notificationIds.forEach((notificationId) => {
-      const notificationRef = doc(db, 'households', currentUser.householdId!, 'notifications', notificationId);
-      batch.update(notificationRef, {
-        [`dismissedBy.${currentUser.uid}`]: action,
-      });
-    });
-
-    try {
-      await batch.commit();
-    } catch (error) {
-      console.error("Error dismissing notifications:", error);
-      toastError(error, 'Could not dismiss notifications');
-    }
-  };
 
   const handleOpenNotification = async (notification: Notification) => {
     if (!currentUser?.householdId || !currentUser.uid || isNotificationReadBy(notification, currentUser.uid)) return;

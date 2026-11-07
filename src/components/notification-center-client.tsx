@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { CheckCheck, Clock, ExternalLink, Loader2, X } from "lucide-react";
-import { collection, doc, onSnapshot, orderBy, query, updateDoc, where, writeBatch } from "firebase/firestore";
+import { collection, doc, onSnapshot, orderBy, query, updateDoc, where } from "firebase/firestore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
-import { useToast } from "@/hooks/use-toast";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
+import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
+import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
 import { db } from "@/lib/firebase";
 import type { Notification, NotificationCategory, NotificationUserAction } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -63,97 +65,47 @@ function NotificationCenterItem({
   onDismiss: (id: string) => void;
   onOpen: (notification: Notification, event: React.MouseEvent<HTMLAnchorElement>) => void;
 }) {
-  const [dragX, setDragX] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const itemRef = useRef<HTMLDivElement>(null);
-  const startXRef = useRef(0);
-  const dragXRef = useRef(0);
-  const wasDraggedRef = useRef(false);
-  const SWIPE_THRESHOLD = -70;
-
-  const updateDragX = (nextDragX: number) => {
-    dragXRef.current = nextDragX;
-    setDragX(nextDragX);
-  };
-
-  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    // Swipe-to-dismiss is a touch gesture; mouse users have the dismiss button.
-    if (!event.isPrimary || event.pointerType === 'mouse' || isDismissed || (event.target as HTMLElement).closest('button')) return;
-
-    wasDraggedRef.current = false;
-    setIsDragging(true);
-    startXRef.current = event.clientX;
-    dragXRef.current = 0;
-    if (itemRef.current) itemRef.current.style.transition = "none";
-  };
-
-  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging || !event.isPrimary) return;
-
-    const deltaX = event.clientX - startXRef.current;
-    if (Math.abs(deltaX) > 5 && !wasDraggedRef.current) {
-      wasDraggedRef.current = true;
-      // Capture only once a swipe has started; capturing on press retargets
-      // the click away from the card's link and breaks navigation.
-      itemRef.current?.setPointerCapture(event.pointerId);
-    }
-    if (wasDraggedRef.current) event.preventDefault();
-    if (deltaX < 50) updateDragX(deltaX < 0 ? deltaX : deltaX / 5);
-  };
-
-  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging || !event.isPrimary) return;
-
-    setIsDragging(false);
-    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
-    if (itemRef.current) itemRef.current.style.transition = "transform 0.2s ease-out";
-
-    if (wasDraggedRef.current && dragXRef.current < SWIPE_THRESHOLD) {
-      updateDragX(-itemRef.current!.offsetWidth);
-      setTimeout(() => onDismiss(notification.id), 200);
-    } else {
-      updateDragX(0);
-    }
-  };
-
-  const handlePointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging) return;
-    setIsDragging(false);
-    wasDraggedRef.current = false;
-    if (itemRef.current?.hasPointerCapture(event.pointerId)) itemRef.current.releasePointerCapture(event.pointerId);
-    if (itemRef.current) itemRef.current.style.transition = "transform 0.2s ease-out";
-    updateDragX(0);
-  };
+  const reducedMotion = useReducedMotion();
+  // The wrapper and the link never move (they are the hit targets); only the
+  // card's visual layer slides, so a tap always lands where it was aimed.
+  const swipe = useSwipeDismiss({
+    disabled: isDismissed,
+    reducedMotion,
+    onDismiss: () => onDismiss(notification.id),
+  });
 
   const dismissedAction = Object.values(notification.dismissedBy)[0];
   const resolvedName = getActionName(notification.resolvedBy);
   const dismissedName = getActionName(dismissedAction);
   const hasDeepLink = getNotificationLink(notification) !== "#";
   const sourceLabel = notificationSourceLabel(notification.sourceType);
-  const backgroundOpacity = isDismissed ? 0 : Math.min(Math.abs(dragX / SWIPE_THRESHOLD), 1);
 
   return (
-    <div className="group relative overflow-hidden rounded-lg border bg-background">
+    <div
+      {...swipe.handlers}
+      data-testid="notification-card"
+      className={cn("group relative overflow-hidden rounded-lg border bg-background", !isDismissed && "touch-pan-y")}
+      style={{ cursor: isDismissed ? "default" : (swipe.dragging ? "grabbing" : "grab") }}
+    >
       <div
-        className="absolute inset-y-0 right-0 flex w-full items-center justify-end bg-muted pr-5 text-muted-foreground"
-        style={{ opacity: backgroundOpacity }}
+        aria-hidden
+        // Behind the sliding card; with reduced motion the card stays put, so
+        // the hint fades in over it instead.
+        className={cn("pointer-events-none absolute inset-0 flex items-center justify-end bg-muted pr-5 text-muted-foreground", reducedMotion && "z-10")}
+        style={{ opacity: swipe.hintOpacity }}
       >
-        <X aria-hidden className="h-5 w-5" />
+        <X className="h-5 w-5" />
       </div>
-      <div
-        ref={itemRef}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        className={cn("relative touch-pan-y bg-background transition-opacity", isDismissed && "opacity-70")}
-        style={{ transform: `translateX(${dragX}px)`, cursor: isDismissed ? "default" : (isDragging ? "grabbing" : "grab") }}
+      <Link
+        href={getNotificationLink(notification)}
+        onClick={(event) => onOpen(notification, event)}
+        className="relative block"
+        draggable={false}
       >
-        <Link
-          href={getNotificationLink(notification)}
-          onClick={(event) => onOpen(notification, event)}
-          className="block p-4 pr-12"
-          draggable={false}
+        <div
+          data-swipe-visual
+          className={cn("bg-background p-4 pr-12", isDismissed && "opacity-70")}
+          style={swipe.visualStyle}
         >
           <div className="flex flex-wrap items-start gap-2">
             <Badge variant={isDismissed ? "outline" : "secondary"}>
@@ -179,31 +131,36 @@ function NotificationCenterItem({
             {dismissedName && <span>Dismissed by {dismissedName}</span>}
             {resolvedName && <span>Completed by {resolvedName}</span>}
           </div>
-        </Link>
-        {!isDismissed && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-2 top-1/2 hidden h-8 w-8 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex group-focus-within:flex"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onDismiss(notification.id);
-            }}
-          >
-            <X className="h-4 w-4" />
-            <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
-          </Button>
-        )}
-      </div>
+        </div>
+      </Link>
+      {!isDismissed && (
+        // The button alternative to swiping. Hover pointers reveal it on hover
+        // or keyboard focus; touch screens always show it.
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "absolute right-2 top-1/2 hidden h-8 w-8 -translate-y-1/2 text-muted-foreground hover:text-foreground group-hover:flex group-focus-within:flex [@media(pointer:coarse)]:flex",
+            swipe.engaged && "opacity-0",
+          )}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onDismiss(notification.id);
+          }}
+        >
+          <X className="h-4 w-4" />
+          <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
+        </Button>
+      )}
     </div>
   );
 }
 
 export function NotificationCenterClient() {
   const { currentUser } = useAuth();
-  const { toastError } = useToast();
+  const dismissNotifications = useDismissNotifications();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeFilter, setActiveFilter] = useState<NotificationFilter>("unread");
   const [isLoading, setIsLoading] = useState(true);
@@ -259,27 +216,6 @@ export function NotificationCenterClient() {
       return notification.category === activeFilter;
     });
   }, [activeFilter, currentUser, validNotifications]);
-
-  const dismissNotifications = async (notificationIds: string[]) => {
-    if (!currentUser?.householdId || !currentUser.uid || notificationIds.length === 0) return;
-
-    const batch = writeBatch(db);
-    const action = createNotificationAction(currentUser);
-
-    notificationIds.forEach((notificationId) => {
-      const notificationRef = doc(db, "households", currentUser.householdId!, "notifications", notificationId);
-      batch.update(notificationRef, {
-        [`dismissedBy.${currentUser.uid}`]: action,
-      });
-    });
-
-    try {
-      await batch.commit();
-    } catch (dismissError) {
-      console.error("Error dismissing notifications:", dismissError);
-      toastError(dismissError, "Could not dismiss notifications");
-    }
-  };
 
   const handleDismissVisible = () => {
     if (!currentUser?.uid) return;
