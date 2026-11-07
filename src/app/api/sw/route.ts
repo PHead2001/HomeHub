@@ -30,6 +30,45 @@ export async function GET() {
 
   const script = `
     // ---- Push (Firebase Cloud Messaging) ------------------------------------
+    // Push payload checks. Links open only as in-app paths (the same rule as
+    // the server's safeDeepLink). Icons and badges come only from this
+    // origin's /icons/ folder. Rich images must be https download URLs for a
+    // household object in this project's Storage bucket, or an image path on
+    // this origin; the server has already limited them to the right household.
+    const PUSH_STORAGE_PREFIX = 'https://firebasestorage.googleapis.com/v0/b/' +
+      encodeURIComponent(${JSON.stringify(firebaseConfig.storageBucket || '')}) + '/o/households%2F';
+    const safePushLink = (link) => {
+      if (typeof link !== 'string') return '/';
+      const trimmed = link.trim();
+      return /^\\/(?![\\/\\\\])/.test(trimmed) && trimmed.length <= 300 ? trimmed : '/';
+    };
+    const safePushAsset = (value) => {
+      if (typeof value !== 'string') return null;
+      try {
+        const url = new URL(value, self.location.origin);
+        if (url.origin !== self.location.origin || !url.pathname.startsWith('/icons/')) return null;
+        return url.pathname.includes('..') ? null : url.pathname;
+      } catch (error) {
+        return null;
+      }
+    };
+    const safePushImage = (value) => {
+      if (typeof value !== 'string' || value.length > 2048) return null;
+      try {
+        const url = new URL(value, self.location.origin);
+        if (url.origin === self.location.origin) {
+          return /\\.(png|jpe?g|webp|gif)$/i.test(url.pathname) && !url.pathname.includes('..') && !url.pathname.startsWith('/api/')
+            ? url.pathname
+            : null;
+        }
+        const ok = url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+          ${JSON.stringify(Boolean(firebaseConfig.storageBucket))} && url.href.startsWith(PUSH_STORAGE_PREFIX);
+        return ok ? url.href : null;
+      } catch (error) {
+        return null;
+      }
+    };
+
     // A failed import (CDN blocked or offline at install) must not stop the
     // app-shell worker from installing; push simply stays off until the next update.
     try {
@@ -47,15 +86,26 @@ export async function GET() {
 
         const messaging = firebase.messaging();
 
+        // When the payload has a notification block, the Messaging SDK has
+        // already shown it with the server's icon, badge, image and tag. This
+        // display uses the same tag, so it replaces that one instead of
+        // stacking a duplicate, and routes clicks through the allowlisted
+        // handler below. Every picture is re-checked here.
         messaging.onBackgroundMessage((payload) => {
-          const notificationTitle = payload.notification?.title || 'New Notification';
+          const notification = payload.notification || {};
+          const data = payload.data || {};
+          const notificationTitle = notification.title || 'HomeHub';
           const notificationOptions = {
-            body: payload.notification?.body || '',
-            icon: payload.notification?.icon || '/icons/icon-192.png',
+            body: notification.body || '',
+            icon: safePushAsset(notification.icon) || '/icons/icon-192.png',
+            badge: safePushAsset(data.badge) || '/icons/badge-96.png',
             data: {
-                link: payload.fcmOptions?.link || '/'
+                link: safePushLink(payload.fcmOptions?.link)
             }
           };
+          const image = safePushImage(notification.image);
+          if (image) notificationOptions.image = image;
+          if (typeof data.tag === 'string' && data.tag) notificationOptions.tag = data.tag;
 
           return self.registration.showNotification(notificationTitle, notificationOptions);
         });
@@ -67,7 +117,7 @@ export async function GET() {
     self.addEventListener('notificationclick', (event) => {
         event.notification.close();
 
-        const targetUrl = event.notification.data?.link || '/';
+        const targetUrl = safePushLink(event.notification.data?.link);
 
         event.waitUntil(
             clients.matchAll({ type: "window" }).then((clientList) => {

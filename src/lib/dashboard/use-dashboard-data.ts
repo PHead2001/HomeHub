@@ -24,6 +24,7 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { deduplicateNotifications, isNotificationReadBy, parseNotificationDoc } from '@/lib/notifications';
 import { activeBellNotifications } from './notification-display';
+import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
 import { dayKey, startOfLocalDay } from './dates';
 import type { DashboardFacts, RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
@@ -75,10 +76,11 @@ export function useDashboardData(enabled = true): DashboardData {
   const canMaintenance = Boolean(permissions['maintenance.view']);
   const canPets = Boolean(permissions['pets.view']);
   const canNotifications = Boolean(permissions['notifications.view']);
+  const canAutomation = Boolean(permissions['automation.view']);
 
   // State is keyed by what it was loaded for, so a household, member, day or
   // permission change never shows the previous data while new snapshots arrive.
-  const key = [householdId, uid, today, canChores, canShopping, canMaintenance, canPets, canNotifications].join('|');
+  const key = [householdId, uid, today, canChores, canShopping, canMaintenance, canPets, canNotifications, canAutomation].join('|');
 
   useEffect(() => {
     if (!householdId) return;
@@ -189,9 +191,18 @@ export function useDashboardData(enabled = true): DashboardData {
 
     if (canNotifications && uid) {
       const since = new Date(Date.now() - 7 * 86_400_000);
-      listen('notifications', query(base('notifications'), where('createdAt', '>=', since), orderBy('createdAt', 'desc'), limit(30)), (s) => {
+      // Same category filter as the bell (module view permissions; all in `key`),
+      // applied in the query so the 30-item cap counts only visible notifications.
+      const views: Record<string, boolean> = {
+        'chores.view': canChores, 'shopping.view': canShopping, 'maintenance.view': canMaintenance,
+        'pets.view': canPets, 'automation.view': canAutomation,
+      };
+      const categories = viewableNotificationCategories((permission) => Boolean(views[permission]));
+      listen('notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s) => {
         // The bell's own pipeline: deduplicate, then the same filters and cap.
-        const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), { uid, email });
+        const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), {
+          uid, email, canView: (permission) => Boolean(views[permission]),
+        });
         setRaw((r) => ({ ...r, unread: active.filter((n) => !isNotificationReadBy(n, uid)).length }));
       });
     }

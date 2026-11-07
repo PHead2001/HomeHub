@@ -460,7 +460,9 @@ test.describe('verification finding regressions', () => {
         type: 'touchMove',
         touchPoints: [{ x: touchStartX - 110, y: touchY }],
       });
-      await expect.poll(async () => draggableNotification.evaluate((element) => element.getAttribute('style') || ''))
+      // Only the visual layer slides; the card's hit target stays put.
+      await expect.poll(async () => draggableNotification.locator('[data-swipe-visual]')
+        .evaluate((element) => element.getAttribute('style') || ''))
         .toContain('translateX(-110px)');
       await touchClient.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
       await touchClient.detach();

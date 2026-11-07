@@ -74,7 +74,7 @@ Primary topology:
 - `inviteCodes/{code}`
 - `aiUsage/{scope}_{id}_{day}` (server-only daily AI quota counters; rules deny all client access)
 
-Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` declares no composite indexes; its `fieldOverrides` hold the TTL policies on `notifications.expiresAt` and `aiUsage.expiresAt` (each with the field's default single-field indexes), deployed by the release workflow.
+Storage paths cover household maintenance files, barcode images, pet images, and per-email avatars. `firestore.indexes.json` declares one composite index, `notifications` (`category` ASC, `createdAt` DESC, collection scope), for the category-filtered notification queries of members who cannot see every module (bell, center, dashboard tile); its `fieldOverrides` hold the TTL policies on `notifications.expiresAt` and `aiUsage.expiresAt` (each with the field's default single-field indexes), deployed by the release workflow.
 
 Direct temporary chores use the existing `chores` path with optional `templateId` and `sourceType: temporary`; no parallel collection or fake template is created. One-time library assignments are written with `sourceType: template`; generated recurring instances have none. Completed chores may carry `completedAtServer` (a server timestamp written with the completion). Maintenance logs preserved after registry deletion remove their live target ID and retain optional `formerTargetType`/`formerTargetName` history fields.
 
@@ -95,7 +95,7 @@ App Check is **enforced** for Firestore and Storage and not enforced for Auth (s
 ## Integrations and Background Processing
 
 - Firebase Auth, Firestore, Storage, Cloud Messaging, Functions, and App Hosting.
-- Cloud Functions: `sendPushOnNewNotification` (Firestore trigger) and `householdUpkeep` (every 60 minutes: recurring chores, 90-day completed-chore retention, maintenance and chore reminders). Shared, dependency-free rules live in `functions/src/shared/` and are imported by the web app through the `@functions/*` path alias.
+- Cloud Functions: `sendPushOnNewNotification` (Firestore trigger) and `householdUpkeep` (every 60 minutes, and on demand through `syncHouseholdUpkeep`: recurring chores, 90-day completed-chore retention, maintenance and chore reminders, and pet medication reminders, for which it reads every pet and all of its `medication-logs`, creates a `pet_medication` notification when a countdown is due or overdue, resolves it in a transaction that re-reads the pet's entries once a newer dose is logged or the pet is deleted, and reopens a resolved reminder whose countdown or schedule is actionable again). See [Notifications](../notifications/README.md). Shared, dependency-free rules live in `functions/src/shared/` and are imported by the web app through the `@functions/*` path alias.
 - Household deletion is an Admin SDK server action (`src/app/household/actions.ts`), not a function.
 - Environment names: `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`, and `NEXT_PUBLIC_FIREBASE_VAPID_KEY`.
 - E2E-only names: `NEXT_PUBLIC_USE_FIREBASE_EMULATORS`, `NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST`, `NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST`, `NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST`, `FIRESTORE_EMULATOR_HOST`, and `FIREBASE_STORAGE_EMULATOR_HOST`.
@@ -113,7 +113,7 @@ Every application module depends on this platform. [Notifications](../notificati
 - Unknown household subcollections have no permissive fallback.
 - Clients cannot delete notifications; expired ones are removed by the Firestore TTL policy on `notifications.expiresAt`, versioned in `firestore.indexes.json`.
 - Functions remove invalid FCM tokens after failed sends.
-- Push recipients are resolved from membership records (approved members only; targeted notifications reach only their target), and each recipient's profile is read directly by email for FCM tokens. No `users.uid` query is used.
+- Push recipients are resolved from membership records (approved members only; targeted notifications reach only their target; module categories reach only members with that module's view permission), and each recipient's profile is read directly by email for FCM tokens. No `users.uid` query is used.
 - Creation rules require notification targets to be household members (UID membership record, or a profile pointing at the household), allow only `/`-relative deep links, and reject unknown fields.
 - The E2E seed and Playwright config refuse non-loopback emulator hosts; the seed additionally requires the exact `demo-homehub-e2e` project.
 - The emulator-only custom token route has no service-account secret and returns 404 unless emulator safety gates pass.

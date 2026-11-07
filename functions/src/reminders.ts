@@ -20,6 +20,11 @@ import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
 } from "./shared/maintenance-reminders";
+import {isDocId} from "./shared/push-media";
+import {
+  MEDICATION_SOURCE_TYPE, buildMedicationReminders, medicationCycle,
+  pendingCycles, type PetInput,
+} from "./shared/medication-reminders";
 import {normalizeRecurrence, upcomingOccurrences} from "./shared/recurrence";
 
 type Db = Firestore;
@@ -42,7 +47,22 @@ export type HouseholdRunResult = {
   purgedChores: number;
   createdNotifications: number;
   refreshedNotifications: number;
+  resolvedNotifications: number;
+  reopenedNotifications: number;
 };
+
+/**
+ * Whether a resolved reminder that is actionable again may be reopened: only
+ * when its last write (the resolution) happened before the run started reading
+ * the data that says it is actionable.
+ * @param {number | undefined} lastWriteMs Notification update time.
+ * @param {number} sourcesReadFromMs When the run started its source reads.
+ * @return {boolean} True to reopen.
+ */
+export const shouldReopen = (
+  lastWriteMs: number | undefined,
+  sourcesReadFromMs: number,
+): boolean => lastWriteMs !== undefined && lastWriteMs < sourcesReadFromMs;
 
 const notificationBody = (
   householdId: string,
@@ -75,6 +95,7 @@ export const runHouseholdReminders = async (
   const result: HouseholdRunResult = {
     householdId, generatedChores: 0, purgedChores: 0,
     createdNotifications: 0, refreshedNotifications: 0,
+    resolvedNotifications: 0, reopenedNotifications: 0,
   };
   const house = db.collection("households").doc(householdId);
   const houseSnap = await house.get();
@@ -157,6 +178,11 @@ export const runHouseholdReminders = async (
   const timeZone = safeTimeZone(houseSnap.get("timeZone"));
   const today = localDay(now, timeZone);
 
+  // Wall-clock start of this run's source reads (Firestore update times are
+  // wall-clock too, unlike the injectable `now`). A resolved reminder is
+  // reopened only if it was resolved before this instant, so every read below
+  // already reflects whatever change resolved it.
+  const sourcesReadFrom = Date.now();
   const [membersSnap, choresSnap, templatesSnap, assetsSnap, vehiclesSnap] =
     await Promise.all([
       house.collection("members").get(),
@@ -262,6 +288,29 @@ export const runHouseholdReminders = async (
         tx.set(ref, notificationBody(householdId, now, ts, fields));
         return "created";
       }
+      const freshExpiry = ts(new Date(now.getTime() +
+        NOTIFICATION_TTL_DAYS * 86400000));
+      // Reopen: this reminder is actionable again with the same identity, so
+      // whatever resolved it was undone (for example a mistakenly logged dose
+      // was deleted, or a maintenance completion never reached its schedule).
+      // Only when it was resolved before this run read its sources: a
+      // resolution written while the run was in flight may reflect data the
+      // run has not seen. It is an update, so no new push is sent; members
+      // already had one for this same reminder, and it is visible in the
+      // bell again. Read and dismissed state is kept, as on refresh.
+      if (snap.get("resolvedAt")) {
+        if (!shouldReopen(snap.updateTime?.toMillis(), sourcesReadFrom)) {
+          return "unchanged";
+        }
+        tx.update(ref, {
+          ...fields,
+          resolvedAt: null,
+          resolvedBy: null,
+          createdAt: ts(now),
+          expiresAt: freshExpiry,
+        });
+        return "reopened";
+      }
       const expiresAt = snap.get("expiresAt") as Timestamp | undefined;
       // Still-actionable reminders stay visible: re-surface one that is close
       // to expiry rather than letting the 7-day window hide something still
@@ -270,13 +319,11 @@ export const runHouseholdReminders = async (
       // deletes a still-actionable reminder (which would lose its read and
       // dismissed state); an update keeps them and sends no new push.
       if (expiresAt &&
-          expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS &&
-          !snap.get("resolvedAt")) {
+          expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS) {
         tx.update(ref, {
           message: fields.message,
           createdAt: ts(now),
-          expiresAt: ts(new Date(now.getTime() +
-            NOTIFICATION_TTL_DAYS * 86400000)),
+          expiresAt: freshExpiry,
         });
         return "refreshed";
       }
@@ -284,6 +331,7 @@ export const runHouseholdReminders = async (
     });
     if (created === "created") result.createdNotifications++;
     if (created === "refreshed") result.refreshedNotifications++;
+    if (created === "reopened") result.reopenedNotifications++;
     return created !== "stopped";
   };
 
@@ -304,6 +352,70 @@ export const runHouseholdReminders = async (
         stateKey: r.stateKey,
       });
     if (!kept) return result;
+  }
+
+  // Pet medication reminders (household-wide, like maintenance): one per
+  // countdown state, in the household's day. Every entry of each pet is read
+  // so a later dose without a next due date cancels the countdown, exactly
+  // as on the pet's page.
+  const petsSnap = await house.collection("pets").get();
+  const pets: PetInput[] = await Promise.all(petsSnap.docs.map(async (pet) => ({
+    id: pet.id,
+    name: pet.get("name"),
+    logs: (await pet.ref.collection("medication-logs").get()).docs
+      .map((log) => log.data()),
+  })));
+  for (const r of buildMedicationReminders(pets, today)) {
+    const kept = await ensure(
+      deterministicNotificationId(r.sourceType, r.sourceId, r.stateKey), {
+        category: "pets",
+        title: r.title,
+        message: r.message,
+        deepLink: r.deepLink,
+        sourceType: r.sourceType,
+        sourceId: r.sourceId,
+        stateKey: r.stateKey,
+      });
+    if (!kept) return result;
+  }
+  // A reminder resolves once its countdown is no longer pending: a newer
+  // dose was logged (with a later due date, or none), or the pet is gone.
+  const pending = pendingCycles(pets);
+  const openMedication = (await house.collection("notifications")
+    .where("sourceType", "==", MEDICATION_SOURCE_TYPE).get()).docs
+    .filter((note) => !note.get("resolvedAt") &&
+      typeof note.get("sourceId") === "string" &&
+      typeof note.get("stateKey") === "string" &&
+      !pending.has(
+        medicationCycle(note.get("sourceId"), note.get("stateKey"))));
+  for (const note of openMedication) {
+    const sourceId: string = note.get("sourceId");
+    const petId = sourceId.split(":")[0];
+    const status = await db.runTransaction(async (tx) => {
+      const petRef = isDocId(petId) ?
+        house.collection("pets").doc(petId) : null;
+      const [home, snap, pet, logs] = await Promise.all([
+        tx.get(house), tx.get(note.ref),
+        petRef ? tx.get(petRef) : Promise.resolve(null),
+        petRef ? tx.get(petRef.collection("medication-logs")) :
+          Promise.resolve(null),
+      ]);
+      if (!home.exists || home.get("deletingAt")) return "stopped";
+      if (!snap.exists || snap.get("resolvedAt")) return "skipped";
+      // Revalidate inside the transaction: this run's countdowns may be stale
+      // (an overlapping run may have seen the dose deleted and reopened the
+      // reminder). The pet and its entries are read here, so a concurrent
+      // change retries this transaction rather than slipping past it.
+      const stillPending = Boolean(pet?.exists && logs) && pendingCycles([{
+        id: petId,
+        logs: logs!.docs.map((log) => log.data()),
+      }]).has(medicationCycle(sourceId, snap.get("stateKey")));
+      if (stillPending) return "skipped";
+      tx.update(note.ref, {resolvedAt: ts(now)});
+      return "resolved";
+    });
+    if (status === "stopped") return result;
+    if (status === "resolved") result.resolvedNotifications++;
   }
 
   // Chore reminders (per person, in their own timezone). Reminder documents
