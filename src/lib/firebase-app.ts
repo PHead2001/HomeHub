@@ -31,10 +31,14 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 export const firebaseEmulatorMode = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "true";
 
-// In the browser Auth starts with the same persistence order `getAuth` uses
-// (IndexedDB, then localStorage, then sessionStorage) but without the popup/redirect
-// resolver, which would fetch Google's api.js before first paint. Sign-in passes
-// the resolver explicitly (`src/lib/auth-popup.ts`). The server keeps `getAuth`.
+// In the browser Auth uses the same persistence order as `getAuth` (IndexedDB,
+// then localStorage, then sessionStorage) but no popup/redirect resolver, so
+// Google's api.js is not fetched before first paint (H03 Lighthouse budget).
+// Sign-in passes the resolver CLASS to `signInWithPopup` (Firebase's
+// `_getInstance` accepts only the class). Trade-off: Firebase no longer starts the
+// resolver early on mobile browsers and Safari, so there the popup can be blocked
+// (`auth/popup-blocked`); the member sees "Login Failed" and can tap again. The
+// server keeps `getAuth`.
 const createAuth = (): Auth => {
   if (typeof window === "undefined") return getAuth(app);
   try {

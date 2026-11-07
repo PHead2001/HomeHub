@@ -15,7 +15,7 @@ import { MorphRouteListener } from '@/hooks/use-morph-navigation';
 import { themeCss, DEFAULT_DARK_PRESET } from '@/lib/theme/tokens';
 import { THEME_COLORS, themeBootstrapScript } from '@/lib/theme/appearance';
 import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
-import { DeferredPushNotificationManager, DeferredToaster, SignInWarmup } from '@/components/deferred-push-notification-manager';
+import { DeferredPushNotificationManager, DeferredToaster } from '@/components/deferred-push-notification-manager';
 import { CommandCenter } from '@/components/command/command-center';
 import { TimeOfDayTint } from '@/components/dashboard/time-of-day';
 
@@ -87,7 +87,6 @@ export default function RootLayout({
             <GlowPointerTracker />
             <MorphRouteListener />
             <DeferredPushNotificationManager />
-            <SignInWarmup />
             <FirebaseErrorListener />
             <PasswordChangeHandler />
             <HouseholdManager>

@@ -34,7 +34,6 @@ const eslintConfig = defineConfig([
       "src/components/motion/page-transition.tsx",
       "src/components/dashboard/time-of-day.tsx",
       "src/lib/dashboard/use-weather.ts",
-      "src/lib/auth-popup.ts",
       "src/components/password-change-handler.tsx",
       "src/components/login-dialog.tsx",
     ],

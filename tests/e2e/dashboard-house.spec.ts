@@ -193,6 +193,42 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await context.close();
   });
 
+  test('sign-in: the landing button opens the Auth emulator popup and signs the visitor in', async ({ browser }) => {
+    // Real signInWithPopup (CI otherwise signs in with custom tokens): catches a broken
+    // popup resolver, which rejects before any popup opens. Runs on both projects; the
+    // mobile one emulates a mobile user agent, which takes Firebase's proactive path.
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(String(error)));
+    // The app reads the Google profile after sign-in; answer for Google, never the network.
+    await context.route(/people\.googleapis\.com/, (route) => route.fulfill({
+      json: { names: [{ displayName: 'Popup Tester', givenName: 'Popup', familyName: 'Tester' }], photos: [] },
+    }));
+    await page.goto('/');
+    const signIn = page.getByRole('button', { name: 'Sign in with Google' });
+    await expect(signIn).toBeEnabled();
+
+    const [popup] = await Promise.all([page.waitForEvent('popup'), signIn.click()]);
+    await popup.waitForLoadState();
+    expect(new URL(popup.url()).host).toBe('127.0.0.1:9099');
+    expect(new URL(popup.url()).pathname).toContain('/emulator/auth/handler');
+    expect(pageErrors).toEqual([]);
+
+    // The emulator's account chooser: add an account with generated details.
+    await popup.getByRole('button', { name: /add new account/i }).click();
+    await popup.getByRole('button', { name: /auto-generate user information/i }).click();
+    await popup.getByRole('button', { name: /sign in with google\.com/i }).click();
+    await popup.waitForEvent('close');
+
+    // Signed in: a brand-new member gets the create-or-join screen, not the landing.
+    await expect(page.getByText('Welcome to HomeHub!', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('landing')).toHaveCount(0);
+    await expect(page.getByText('Login Failed')).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+    await context.close();
+  });
+
   test('H03: a stale signed-in hint never leaves a signed-out visitor on the skeleton', async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: 'http://127.0.0.1:9002',

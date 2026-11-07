@@ -6,13 +6,10 @@
  * - `PushNotificationManager` (Firebase Messaging, the service worker registration
  *   and foreground push toasts; the worker already registered only after `load`);
  * - the toast viewport (`Toaster`). Toasts raised earlier are kept in the toast
- *   store and appear as soon as it mounts;
- * - the Google sign-in popup resolver, warmed for signed-out visitors.
+ *   store and appear as soon as it mounts.
  */
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useAuth } from '@/hooks/use-auth';
-import { warmSignInPopup } from '@/lib/auth-popup';
 
 const PushNotificationManager = dynamic(() => import('./PushNotificationManager').then((mod) => mod.PushNotificationManager), { ssr: false });
 const Toaster = dynamic(() => import('./ui/toaster').then((mod) => mod.Toaster), { ssr: false });
@@ -47,14 +44,4 @@ export function DeferredPushNotificationManager() {
 
 export function DeferredToaster() {
   return useAfterLoadIdle() ? <Toaster /> : null;
-}
-
-/** Warms the sign-in popup for signed-out visitors once the page is idle. */
-export function SignInWarmup() {
-  const ready = useAfterLoadIdle();
-  const { currentUser, loading } = useAuth();
-  useEffect(() => {
-    if (ready && !loading && !currentUser) warmSignInPopup();
-  }, [ready, loading, currentUser]);
-  return null;
 }
