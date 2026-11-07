@@ -32,5 +32,6 @@ export function PageTransition({ children }: { children: ReactNode }) {
     hasShownFirstPage = true;
   }, []);
 
-  return <div className={animate ? `${styles.page} ${styles.enter}` : styles.page}>{children}</div>;
+  // data-page-transition: named `page-content` during route view transitions (globals.css).
+  return <div data-page-transition className={animate ? styles.enter : undefined}>{children}</div>;
 }

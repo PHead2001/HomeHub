@@ -184,7 +184,7 @@ test.describe('H12/D09: motion', () => {
       if (!original) return;
       document.startViewTransition = ((update: () => Promise<void>) => {
         const header = document.querySelector('[data-site-header]');
-        const content = document.querySelector('main > div');
+        const content = document.querySelector('[data-page-transition]');
         w.__vt.push({
           header: header ? getComputedStyle(header).viewTransitionName : 'missing',
           page: content ? getComputedStyle(content).viewTransitionName : null,

@@ -5,7 +5,20 @@
  */
 import { DEFAULT_PORTION, formatPortion } from '../pets/care';
 import type { PortionUnit } from '../pets/types';
-import { describeRepeat, type MaintenanceTarget, type QuickAddIntent, type QuickAddMember } from './quick-add';
+import { describeRepeat, type MaintenanceTarget, type QuickAddIntent, type QuickAddMember, type QuickAddVehicle } from './quick-add';
+
+/**
+ * The vehicle or asset a maintenance preview starts with: the one the sentence
+ * named, else the household's only vehicle for a mileage reading, else none.
+ * Derived from the loaded records (not frozen when the card opened), so the only
+ * vehicle is preselected even if the records arrived after the card.
+ */
+export function defaultMaintenanceTarget(intent: QuickAddIntent, vehicles: readonly QuickAddVehicle[]): MaintenanceTarget | null {
+  if (intent.kind !== 'maintenance') return null;
+  if (intent.target) return intent.target;
+  if (intent.mileage !== null && vehicles.length === 1) return { kind: 'vehicle', vehicle: vehicles[0] };
+  return null;
+}
 
 /**
  * Why Confirm is unavailable on a quick-add preview, or null when it can save.
@@ -19,13 +32,19 @@ export function quickAddConfirmBlocker({
   indexLoading,
   vehicleCount,
   chosenTarget,
+  chosenAssignee = null,
 }: {
   intent: QuickAddIntent;
   indexLoading: boolean;
   vehicleCount: number;
   chosenTarget: MaintenanceTarget | null;
+  /** The assignee picked in the preview (needed when the sentence's name was ambiguous). */
+  chosenAssignee?: QuickAddMember | null;
 }): string | null {
   if (indexLoading) return "Loading your household's members, rooms, lists and vehicles…";
+  if (intent.kind === 'chore' && intent.assigneeQuery && !intent.assignee && !chosenAssignee) {
+    return `More than one member is called ${intent.assigneeQuery}. Choose who this chore is for.`;
+  }
   if (intent.kind === 'maintenance' && intent.mileage !== null && vehicleCount > 0 && chosenTarget?.kind !== 'vehicle') {
     return 'Choose the vehicle this reading belongs to.';
   }
@@ -54,6 +73,11 @@ export function describeIntent(intent: QuickAddIntent, self: QuickAddMember | nu
       return { title: `Log a meal for ${intent.pet.name}`, detail: `${formatPortion(portion.amount, portion.unit)}, now` };
     }
     case 'chore': {
+      if (intent.assigneeQuery && !intent.assignee) {
+        const first = new Date(`${intent.dueDate}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+        const when = intent.repeat ? `repeats ${describeRepeat(intent.repeat)}, first ${first}` : `due ${first}`;
+        return { title: `${intent.repeat ? 'Repeating chore' : 'Chore'}: ${intent.task}`, detail: `${when} · for which ${intent.assigneeQuery}?${intent.room ? ` · ${intent.room.name}` : ''}` };
+      }
       const who = intent.assignee ?? self;
       const first = new Date(`${intent.dueDate}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
       const when = intent.repeat ? `repeats ${describeRepeat(intent.repeat)}, first ${first}` : `due ${first}`;

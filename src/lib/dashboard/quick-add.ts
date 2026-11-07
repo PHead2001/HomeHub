@@ -69,6 +69,8 @@ export type ChoreIntent = {
   repeat: QuickAddRepeat | null;
   /** The room the sentence names ("in the kitchen"); null is "Around the house". */
   room?: QuickAddRoom | null;
+  /** A name ("Sam") that fits more than one member: the preview asks who it is for. */
+  assigneeQuery?: string | null;
   /** Why the repeat differs from what was asked (a monthly day moved to the 28th). */
   repeatNote?: string | null;
 };
@@ -250,8 +252,13 @@ export function findRepeat(text: string, now: Date): RepeatMatch | null {
   return null;
 }
 
-/** Matches "for Sam", "for me", "@sam" to a household member. */
-export function findAssignee(text: string, context: QuickAddContext): { member: QuickAddMember; consumed: RegExp } | null {
+/**
+ * Matches "for Sam", "for me", "@sam" to a household member: by first name, full
+ * name or email name, case-insensitively. The phrase is always removed from the
+ * task once it names a member. When the name fits more than one member, `member`
+ * is null and `ambiguous` holds the name, so the preview asks who it is for.
+ */
+export function findAssignee(text: string, context: QuickAddContext): { member: QuickAddMember | null; consumed: RegExp; ambiguous?: string } | null {
   for (const mention of text.matchAll(/(?:^|\s)(?:for\s+|to\s+|@)@?([a-z][a-z.'-]*)\b/gi)) {
     const word = mention[1].toLowerCase().replace(/[.'-]+$/, '');
     const consumed = new RegExp(mention[0].trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -260,12 +267,13 @@ export function findAssignee(text: string, context: QuickAddContext): { member: 
       if (self) return { member: self, consumed };
       continue;
     }
-    const member = context.members.find((candidate) => {
+    const matches = context.members.filter((candidate) => {
       const first = candidate.name.trim().split(/\s+/)[0]?.toLowerCase();
       const local = candidate.email.split('@')[0]?.toLowerCase();
       return first === word || candidate.name.toLowerCase() === word || local === word || local?.split(/[._-]/)[0] === word;
     });
-    if (member) return { member, consumed };
+    if (matches.length === 1) return { member: matches[0], consumed };
+    if (matches.length > 1) return { member: null, consumed, ambiguous: mention[1].replace(/[.'-]+$/, '') };
   }
   return null;
 }
@@ -435,6 +443,7 @@ function parseChore(text: string, context: QuickAddContext): ChoreIntent | null 
     task: capitalize(task),
     dueDate: dayKey(due),
     assignee: assignee?.member ?? null,
+    assigneeQuery: assignee?.ambiguous ?? null,
     repeat: repeat?.repeat ?? null,
     repeatNote: repeat?.repeat.frequency === 'monthly' && context.now.getDate() > MONTHLY_MAX_DAY
       ? normalizeRepeat({ frequency: 'monthly', dayOfMonth: context.now.getDate() }).note

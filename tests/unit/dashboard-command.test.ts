@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, normalizeRepeat, MONTHLY_MAX_DAY, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
-import { describeIntent, quickAddConfirmBlocker } from '../../src/lib/dashboard/quick-add-preview';
+import { defaultMaintenanceTarget, describeIntent, quickAddConfirmBlocker } from '../../src/lib/dashboard/quick-add-preview';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
 import { mileageNote, quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
 import { dayKey } from '../../src/lib/dashboard/dates';
@@ -351,5 +351,50 @@ describe('Confirm waits for the palette index (review 4503943546)', () => {
     assert.equal(quickAddConfirmBlocker({ intent: oil, indexLoading: false, vehicleCount: 0, chosenTarget: null }), null);
     assert.equal(quickAddConfirmBlocker({ intent: chore, indexLoading: false, vehicleCount: 0, chosenTarget: null }), null);
     assert.equal(quickAddConfirmBlocker({ intent: shopping, indexLoading: false, vehicleCount: 0, chosenTarget: null }), null);
+  });
+});
+
+describe('"for <member>" resolves and leaves the title (E2E finding 1)', () => {
+  it('a trailing "for Sam" is Sam, case-insensitively, and is removed from the task', () => {
+    for (const text of ['trash every Tuesday for Sam', 'trash every Tuesday for SAM', 'Trash every tuesday for sam.']) {
+      const intent = parseQuickAdd(text, context);
+      assert.equal(intent?.kind, 'chore', text);
+      if (intent?.kind !== 'chore') continue;
+      assert.equal(intent.task, 'Trash', text);
+      assert.equal(intent.assignee?.uid, 'sam', text);
+      assert.equal(intent.assigneeQuery, null, text);
+    }
+  });
+
+  it('a name that fits two members leaves the assignee to pick and blocks Confirm until chosen', () => {
+    const twoSams: QuickAddContext = {
+      ...context,
+      members: [...context.members, { uid: 'sam2', email: 'sam.other@example.test', name: 'Sam Other' }],
+    };
+    const intent = parseQuickAdd('trash every Tuesday for Sam', twoSams);
+    assert.equal(intent?.kind, 'chore');
+    if (intent?.kind !== 'chore') return;
+    assert.equal(intent.task, 'Trash', 'the name is still removed from the title');
+    assert.equal(intent.assignee, null);
+    assert.equal(intent.assigneeQuery, 'Sam');
+    assert.match(describeIntent(intent, twoSams.members[0]).detail, /for which Sam\?/);
+    assert.match(quickAddConfirmBlocker({ intent, indexLoading: false, vehicleCount: 0, chosenTarget: null }) ?? '', /Choose who/);
+    assert.equal(quickAddConfirmBlocker({ intent, indexLoading: false, vehicleCount: 0, chosenTarget: null, chosenAssignee: twoSams.members[2] }), null);
+  });
+});
+
+describe('the only vehicle is preselected from the loaded records (E2E finding 2)', () => {
+  const oil = parseQuickAdd('oil change 48,200 miles', context)!;
+  it('one vehicle: preselected; several: none until chosen; a named one wins', () => {
+    const suv = { id: 'family-suv', name: 'Family SUV', currentMileage: 48_750 };
+    assert.deepEqual(defaultMaintenanceTarget(oil, [suv]), { kind: 'vehicle', vehicle: suv });
+    assert.equal(defaultMaintenanceTarget(oil, []), null);
+    assert.equal(defaultMaintenanceTarget(oil, context.vehicles!), null);
+    const named = parseQuickAdd('oil change on the Civic 48,200 miles', context)!;
+    assert.equal(defaultMaintenanceTarget(named, context.vehicles!)?.kind === 'vehicle' && (defaultMaintenanceTarget(named, context.vehicles!) as { vehicle: { id: string } }).vehicle.id, 'civic');
+    // Without a reading nothing is assumed: the log can be general.
+    assert.equal(defaultMaintenanceTarget(parseQuickAdd('log replaced filters', context)!, [suv]), null);
+    // Preselected, Confirm is free.
+    assert.equal(quickAddConfirmBlocker({ intent: oil, indexLoading: false, vehicleCount: 1, chosenTarget: defaultMaintenanceTarget(oil, [suv]) }), null);
   });
 });

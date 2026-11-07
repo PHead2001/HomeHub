@@ -19,8 +19,6 @@
   }
 }
 
-/* Named only during a route view transition, so the theme reveal (also a view
-   transition) still clips the whole page as one snapshot. */
-:global(:root[data-route-transition]) .page {
-  view-transition-name: page-content;
-}
+/* The page-content view-transition name lives in globals.css (keyed on
+   [data-page-transition]): CSS modules would rename it, and the
+   ::view-transition-*(page-content) rules would then never match. */

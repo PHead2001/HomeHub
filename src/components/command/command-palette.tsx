@@ -48,7 +48,7 @@ import type { HouseholdPermission } from '@/lib/types';
 import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote } from '@/lib/dashboard/quick-add-writes';
-import { describeIntent, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker } from '@/lib/dashboard/quick-add-preview';
+import { defaultMaintenanceTarget, describeIntent, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
@@ -565,13 +565,17 @@ function QuickAddPreview({
   onBack: () => void;
   onConfirm: (choices: PreviewChoices) => void;
 }) {
-  const resolved = intent.kind === 'chore' ? resolveChoreAssignee(intent.assignee, members, self) : { assignee: null, restricted: false };
+  // A name that fits several members ("for Sam" with two Sams) is left for the member to pick.
+  const ambiguous = intent.kind === 'chore' && Boolean(intent.assigneeQuery) && !intent.assignee && members.length > 1;
+  const resolved = intent.kind === 'chore' && !ambiguous ? resolveChoreAssignee(intent.assignee, members, self) : { assignee: null, restricted: false };
   const [assigneeEmail, setAssigneeEmail] = useState(resolved.assignee?.email ?? '');
   const [roomId, setRoomId] = useState(intent.kind === 'chore' ? intent.room?.id ?? 'general' : 'general');
-  const initialTarget = intent.kind === 'maintenance' && intent.target
-    ? `${intent.target.kind}:${intent.target.kind === 'vehicle' ? intent.target.vehicle.id : intent.target.asset.id}`
-    : intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 1 ? `vehicle:${vehicles[0].id}` : '';
-  const [targetKey, setTargetKey] = useState(initialTarget);
+  // Until the member picks one, the target follows the loaded records (the named
+  // vehicle or asset, else the only vehicle for a reading), never a snapshot taken
+  // before they arrived.
+  const [pickedTarget, setTargetKey] = useState<string | null>(null);
+  const fallbackTarget = defaultMaintenanceTarget(intent, vehicles);
+  const targetKey = pickedTarget ?? (fallbackTarget ? `${fallbackTarget.kind}:${fallbackTarget.kind === 'vehicle' ? fallbackTarget.vehicle.id : fallbackTarget.asset.id}` : '');
   const assignee = members.find((member) => member.email === assigneeEmail) ?? (self?.email === assigneeEmail ? self : null);
   const room = rooms.find((candidate) => candidate.id === roomId) ?? null;
   const target: MaintenanceTarget | null = (() => {
@@ -588,7 +592,7 @@ function QuickAddPreview({
   })();
   // A mileage belongs to a vehicle: with vehicles to choose from, pick one first.
   const needsVehicle = !indexLoading && intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length > 0 && target?.kind !== 'vehicle';
-  const blocker = quickAddConfirmBlocker({ intent, indexLoading, vehicleCount: vehicles.length, chosenTarget: target });
+  const blocker = quickAddConfirmBlocker({ intent, indexLoading, vehicleCount: vehicles.length, chosenTarget: target, chosenAssignee: assignee });
   const shown: QuickAddIntent = intent.kind === 'chore'
     ? { ...intent, assignee: assignee ?? resolved.assignee, room }
     : intent.kind === 'maintenance' ? { ...intent, target } : intent;
@@ -630,7 +634,8 @@ function QuickAddPreview({
       {intent.kind === 'chore' && members.length > 1 && (
         <label className="mt-3 block text-sm">
           <span className="mb-1 block text-muted-foreground">Assign to</span>
-          <select value={assigneeEmail} onChange={(event) => setAssigneeEmail(event.target.value)} className={fieldClass}>
+          <select value={assigneeEmail} onChange={(event) => setAssigneeEmail(event.target.value)} className={fieldClass} aria-invalid={(ambiguous && !assignee) || undefined}>
+            {assigneeEmail === '' && <option value="" disabled>Choose who</option>}
             {members.map((member) => (
               <option key={member.email} value={member.email}>{member.name}</option>
             ))}

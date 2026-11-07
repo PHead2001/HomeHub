@@ -242,6 +242,9 @@
    8 px settle (old out in 120 ms, new in over --duration-ui); the header and the
    phone tab bar are captured on their own and shown live, so they stay put above
    the page. Shared elements named with morphStyle() keep the default morph. */
+:root[data-route-transition] [data-page-transition] {
+  view-transition-name: page-content;
+}
 :root[data-route-transition] [data-site-header] {
   view-transition-name: site-header;
 }
