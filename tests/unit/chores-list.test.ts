@@ -202,7 +202,8 @@ describe('chores polish (wave 4)', () => {
     assert.match(page, /pluralize\(selectedChores\.length, 'chore'\)/);
     assert.match(page, /pluralize\(openSubTasks\(chore\)\.length, 'unfinished step'\)/);
     for (const count of ['todoEntries.length', 'visibleFutureChores.length', 'visibleCompletedChores.length', 'group.entries.length']) {
-      assert.match(page, new RegExp(`<NumberTicker value=\\{${count.replace(/\./g, '\\.')}\\}`));
+      const escaped = count.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      assert.match(page, new RegExp(`<NumberTicker value=\\{${escaped}\\}`));
     }
     assert.match(page, /title=\{shortcutHint\('chore '\)\}/);
     assert.equal(shortcutHint('chore '), 'New chore from anywhere: press N');
