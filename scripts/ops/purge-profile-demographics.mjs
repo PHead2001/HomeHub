@@ -6,25 +6,33 @@
 //   node scripts/ops/purge-profile-demographics.mjs --project homehub-j91jb           # dry run: counts only
 //   node scripts/ops/purge-profile-demographics.mjs --project homehub-j91jb --apply   # deletes the two fields
 //
-// Auth: Application Default Credentials, like scripts/deploy/verify-live-rules.mjs
-// (`gcloud auth application-default login`, or GOOGLE_APPLICATION_CREDENTIALS
-// pointing at a service-account key). The account needs Firestore read/write.
+// Auth (see ./credentials.mjs):
+//   default                 Application Default Credentials (`gcloud auth
+//                           application-default login`, or GOOGLE_APPLICATION_CREDENTIALS)
+//   --firebase-tools-login  the `firebase login` account instead; firebase-tools is
+//                           loaded from --firebase-tools-from <dir>, else
+//                           HOMEHUB_FIREBASE_TOOLS_FROM, else this checkout
+//   e.g. node scripts/ops/purge-profile-demographics.mjs --project homehub-j91jb --firebase-tools-login --firebase-tools-from "C:/Coding Projects/HomeHub-deps"
+// The account needs Firestore read/write. Tokens are never printed.
 //
 // Output is counts only: never emails, document IDs or field values. The scan
 // reads only the two fields (a projection), so the other profile data is never
 // downloaded. --apply deletes just those fields with FieldValue.delete(), in
 // batches of at most 400 writes; nothing else on the profile changes.
-import { applicationDefault, initializeApp } from 'firebase-admin/app';
+import { initializeApp } from 'firebase-admin/app';
 import { FieldPath, FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { DEMOGRAPHIC_FIELDS, countDemographics, demographicFieldsToDelete, parseOpsArgs } from './profile-privacy.mjs';
+import { opsCredential } from './credentials.mjs';
 
 const PAGE_SIZE = 400;
 
-const { projectId, apply } = parseOpsArgs(process.argv.slice(2));
+const options = parseOpsArgs(process.argv.slice(2), process.env);
+const { projectId, apply } = options;
+const { credential, label } = opsCredential(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
-console.log(`Project ${projectId} (${target}). Mode: ${apply ? 'APPLY (fields will be deleted)' : 'dry run (no writes)'}.`);
+console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (fields will be deleted)' : 'dry run (no writes)'}.`);
 
-const app = initializeApp({ credential: applicationDefault(), projectId });
+const app = initializeApp({ credential, projectId });
 const db = getFirestore(app);
 
 const totals = { scanned: 0, birthday: 0, gender: 0 };

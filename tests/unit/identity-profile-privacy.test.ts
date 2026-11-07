@@ -64,8 +64,8 @@ describe('push token migration', () => {
 
 describe('ops command line', () => {
   test('dry run is the default; --apply opts in', () => {
-    assert.deepEqual(parseOpsArgs(['--project', 'demo-x']), { projectId: 'demo-x', apply: false });
-    assert.deepEqual(parseOpsArgs(['--apply', '--project', 'demo-x']), { projectId: 'demo-x', apply: true });
+    assert.deepEqual(parseOpsArgs(['--project', 'demo-x']), { projectId: 'demo-x', apply: false, auth: 'adc', firebaseToolsFrom: null });
+    assert.deepEqual(parseOpsArgs(['--apply', '--project', 'demo-x']), { projectId: 'demo-x', apply: true, auth: 'adc', firebaseToolsFrom: null });
   });
 
   test('a project is required and unknown flags are refused', () => {
@@ -73,5 +73,24 @@ describe('ops command line', () => {
     assert.throws(() => parseOpsArgs(['--project']), /--project/);
     assert.throws(() => parseOpsArgs(['--project', '--apply']), /--project/);
     assert.throws(() => parseOpsArgs(['--project', 'demo-x', '--aply']), /Unknown argument/);
+  });
+
+  test('ADC stays the default; --firebase-tools-login opts in', () => {
+    const env = { HOMEHUB_FIREBASE_TOOLS_FROM: 'C:/deps' };
+    assert.equal(parseOpsArgs(['--project', 'demo-x'], env).auth, 'adc');
+    assert.equal(parseOpsArgs(['--project', 'demo-x'], env).firebaseToolsFrom, null);
+    assert.deepEqual(parseOpsArgs(['--project', 'demo-x', '--firebase-tools-login'], {}), {
+      projectId: 'demo-x', apply: false, auth: 'firebase-tools', firebaseToolsFrom: null,
+    });
+    assert.equal(parseOpsArgs(['--firebase-tools-login', '--project', 'demo-x'], env).firebaseToolsFrom, 'C:/deps');
+    assert.equal(
+      parseOpsArgs(['--project', 'demo-x', '--firebase-tools-login', '--firebase-tools-from', 'D:/tools'], env).firebaseToolsFrom,
+      'D:/tools',
+    );
+  });
+
+  test('the firebase-tools path needs a value and the login flag', () => {
+    assert.throws(() => parseOpsArgs(['--project', 'demo-x', '--firebase-tools-login', '--firebase-tools-from']), /value/);
+    assert.throws(() => parseOpsArgs(['--project', 'demo-x', '--firebase-tools-from', 'D:/tools']), /needs --firebase-tools-login/);
   });
 });

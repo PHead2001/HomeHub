@@ -669,6 +669,13 @@ describe('push tokens', () => {
     await assertFails(setDoc(pushDoc(users.member), { fcmTokens: ['a'], updatedAt: Timestamp.fromDate(new Date('2020-01-01')) }));
   });
 
+  test('a full list can be replaced by a trimmed one that adds a new device', async () => {
+    const full = Array.from({ length: 20 }, (_, i) => `t${i}`);
+    await assertSucceeds(setDoc(pushDoc(users.member), { fcmTokens: full, updatedAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(pushDoc(users.member), { fcmTokens: [...full.slice(1), 'new'], updatedAt: serverTimestamp() }));
+    await assertFails(setDoc(pushDoc(users.member), { fcmTokens: [...full, 'new'], updatedAt: serverTimestamp() }));
+  });
+
   test('legacy profile tokens may only shrink or be removed', async () => {
     await environment.withSecurityRulesDisabled(async context => {
       await updateDoc(doc(context.firestore(), 'users', users.member.email), { fcmTokens: ['old-1', 'old-2'] });

@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button';
 import { BellRing, Loader2 } from 'lucide-react';
 import { db, getFirebaseMessaging } from '@/lib/firebase';
 import { getToken } from 'firebase/messaging';
-import { arrayUnion, deleteField, doc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { deleteField, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { awaitWriteUnlessOffline } from '@/lib/firestore-offline';
+import { nextPushTokens } from '@/lib/push-tokens';
 import { registerHomeHubServiceWorker } from '@/lib/service-worker';
 
 
@@ -68,13 +69,15 @@ export function PushNotificationSettings() {
             
             if (currentToken) {
                 // Tokens live in an owner-only document so housemates, who can read
-                // the profile, never see them. Any legacy profile tokens move along.
-                const legacyTokens = (currentUser.fcmTokens || []).filter(token => typeof token === 'string');
+                // the profile, never see them. Any legacy profile tokens move along,
+                // and past the rules' cap of 20 the oldest tokens make room.
+                const pushRef = doc(db, 'users', currentUser.email, 'private', 'push');
+                const stored = await getDoc(pushRef);
                 const batch = writeBatch(db);
-                batch.set(doc(db, 'users', currentUser.email, 'private', 'push'), {
-                    fcmTokens: arrayUnion(...legacyTokens, currentToken),
+                batch.set(pushRef, {
+                    fcmTokens: nextPushTokens(stored.get('fcmTokens'), currentUser.fcmTokens, currentToken),
                     updatedAt: serverTimestamp(),
-                }, { merge: true });
+                });
                 if (currentUser.fcmTokens) {
                     batch.update(doc(db, 'users', currentUser.email), { fcmTokens: deleteField() });
                 }

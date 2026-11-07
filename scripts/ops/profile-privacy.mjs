@@ -45,18 +45,48 @@ export function mergePushTokens(legacyTokens, privateTokens) {
   return merged.slice(Math.max(0, merged.length - MAX_PUSH_TOKENS));
 }
 
+const VALUE_FLAGS = new Set(['--project', '--firebase-tools-from']);
+const SWITCHES = new Set(['--apply', '--firebase-tools-login']);
+
 /**
- * Parses the shared command line: `--project <id>` (required) and `--apply`.
+ * Parses the shared command line:
+ * - `--project <id>` (required)
+ * - `--apply` (otherwise a dry run)
+ * - `--firebase-tools-login` (authenticate with the firebase-tools login
+ *   instead of Application Default Credentials)
+ * - `--firebase-tools-from <dir or package.json>` (where firebase-tools is
+ *   installed; falls back to `env.HOMEHUB_FIREBASE_TOOLS_FROM`, then this
+ *   checkout). Only meaningful with --firebase-tools-login.
  * @param {string[]} argv process.argv.slice(2)
+ * @param {Record<string, string | undefined>} [env] process.env
  */
-export function parseOpsArgs(argv) {
-  const index = argv.indexOf('--project');
-  const projectId = index >= 0 ? argv[index + 1] : undefined;
-  if (!projectId || projectId.startsWith('--')) {
-    throw new Error('Pass --project <firebase project id>.');
+export function parseOpsArgs(argv, env = {}) {
+  const values = {};
+  const switches = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (VALUE_FLAGS.has(arg)) {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) throw new Error(`Pass a value after ${arg}.`);
+      values[arg] = value;
+      index += 1;
+    } else if (SWITCHES.has(arg)) {
+      switches.add(arg);
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
   }
-  const known = new Set(['--project', projectId, '--apply']);
-  const unknown = argv.filter(arg => !known.has(arg));
-  if (unknown.length > 0) throw new Error(`Unknown argument: ${unknown[0]}`);
-  return { projectId, apply: argv.includes('--apply') };
+  if (!values['--project']) throw new Error('Pass --project <firebase project id>.');
+  const firebaseToolsLogin = switches.has('--firebase-tools-login');
+  if (values['--firebase-tools-from'] && !firebaseToolsLogin) {
+    throw new Error('--firebase-tools-from needs --firebase-tools-login.');
+  }
+  return {
+    projectId: values['--project'],
+    apply: switches.has('--apply'),
+    auth: firebaseToolsLogin ? 'firebase-tools' : 'adc',
+    firebaseToolsFrom: firebaseToolsLogin
+      ? values['--firebase-tools-from'] || env.HOMEHUB_FIREBASE_TOOLS_FROM || null
+      : null,
+  };
 }

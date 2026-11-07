@@ -8,23 +8,32 @@
 //   node scripts/ops/migrate-push-tokens.mjs --project homehub-j91jb           # dry run: counts only
 //   node scripts/ops/migrate-push-tokens.mjs --project homehub-j91jb --apply   # moves the tokens
 //
-// Auth: Application Default Credentials, like scripts/deploy/verify-live-rules.mjs
-// (`gcloud auth application-default login`, or GOOGLE_APPLICATION_CREDENTIALS).
+// Auth (see ./credentials.mjs):
+//   default                 Application Default Credentials (`gcloud auth
+//                           application-default login`, or GOOGLE_APPLICATION_CREDENTIALS)
+//   --firebase-tools-login  the `firebase login` account instead; firebase-tools is
+//                           loaded from --firebase-tools-from <dir>, else
+//                           HOMEHUB_FIREBASE_TOOLS_FROM, else this checkout
+//   e.g. node scripts/ops/migrate-push-tokens.mjs --project homehub-j91jb --firebase-tools-login --firebase-tools-from "C:/Coding Projects/HomeHub-deps"
+// The account needs Firestore read/write. Tokens are never printed.
 //
 // Output is counts only: never emails, document IDs or tokens. Each profile is
 // moved in its own transaction (read both documents, write the merged list,
 // delete the legacy field), so a token registered meanwhile is not lost.
-import { applicationDefault, initializeApp } from 'firebase-admin/app';
+import { initializeApp } from 'firebase-admin/app';
 import { FieldPath, FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { mergePushTokens, parseOpsArgs } from './profile-privacy.mjs';
+import { opsCredential } from './credentials.mjs';
 
 const PAGE_SIZE = 400;
 
-const { projectId, apply } = parseOpsArgs(process.argv.slice(2));
+const options = parseOpsArgs(process.argv.slice(2), process.env);
+const { projectId, apply } = options;
+const { credential, label } = opsCredential(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
-console.log(`Project ${projectId} (${target}). Mode: ${apply ? 'APPLY (tokens will move)' : 'dry run (no writes)'}.`);
+console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (tokens will move)' : 'dry run (no writes)'}.`);
 
-const app = initializeApp({ credential: applicationDefault(), projectId });
+const app = initializeApp({ credential, projectId });
 const db = getFirestore(app);
 
 let scanned = 0;
