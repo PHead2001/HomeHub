@@ -496,3 +496,24 @@ export const FEED_SHORTCUT_PARAM = 'feed';
 export function wantsQuickFeed(params: { get(name: string): string | null } | null | undefined): boolean {
   return params?.get(FEED_SHORTCUT_PARAM) === '1';
 }
+
+/**
+ * What `/pets?feed=1` does: nothing when not requested; `wait` until both the
+ * member's permissions (auth and household membership) and the pet list have
+ * loaded, so a late permission never turns into a silent "ignore"; then `open`
+ * the picker for members who may log with at least one pet, else `ignore`. The
+ * param is removed only after `open` or `ignore`.
+ */
+export type QuickFeedDecision = 'none' | 'wait' | 'open' | 'ignore';
+
+export function quickFeedDecision(input: {
+  requested: boolean;
+  permissionsReady: boolean;
+  petsReady: boolean;
+  canFeed: boolean;
+  petCount: number;
+}): QuickFeedDecision {
+  if (!input.requested) return 'none';
+  if (!input.permissionsReady || !input.petsReady) return 'wait';
+  return input.canFeed && input.petCount > 0 ? 'open' : 'ignore';
+}

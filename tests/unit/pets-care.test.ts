@@ -8,6 +8,7 @@ import {
   FEED_SHORTCUT_PARAM,
   petHref,
   petPhotoMorphName,
+  quickFeedDecision,
   wantsQuickFeed,
   feedingCountLabel,
   feedingHeadline,
@@ -442,13 +443,32 @@ describe('pet links, morph and shortcut', () => {
     assert.equal(wantsQuickFeed(null), false);
   });
 
-  it('feeding is tap plus confirm, and the shortcut deep-links to it', () => {
+  it('the Feed button is one tap with Undo; only the shortcut confirms', () => {
     const button = readFileSync(resolve(process.cwd(), 'src/components/pets/quick-feed-button.tsx'), 'utf8');
-    // The Feed button opens a confirmation; only its "Log feeding" button writes.
-    assert.match(button, /<PopoverTrigger asChild>/);
-    assert.doesNotMatch(button, /onClick=\{\(\) => void quick\.feed\('tap'\)\}/);
-    assert.match(button, /Log feeding/);
+    // Owner decision (H09): one reversible tap is the accessible alternative to holding.
+    assert.match(button, /onClick=\{\(\) => void quick\.feed\('tap'\)\}/);
+    assert.doesNotMatch(button, /Popover/);
+    assert.match(button, /Undo/);
+    // The launcher shortcut never logs silently: its picker ends in a confirm step.
+    const picker = readFileSync(resolve(process.cwd(), 'src/components/pets/feed-picker-dialog.tsx'), 'utf8');
+    assert.match(picker, /FeedConfirmPanel/);
     const manifest = readFileSync(resolve(process.cwd(), 'src/app/manifest.ts'), 'utf8');
     assert.match(manifest, /url: '\/pets\?feed=1'/);
+  });
+
+  it('decides ?feed=1 only once permissions and pets have both loaded', () => {
+    const base = { requested: true, permissionsReady: true, petsReady: true, canFeed: true, petCount: 2 };
+    assert.equal(quickFeedDecision({ ...base, requested: false }), 'none');
+    // Pets loaded before the membership (the race): wait, never ignore.
+    assert.equal(quickFeedDecision({ ...base, permissionsReady: false, canFeed: false }), 'wait');
+    assert.equal(quickFeedDecision({ ...base, petsReady: false, petCount: 0 }), 'wait');
+    assert.equal(quickFeedDecision(base), 'open');
+    assert.equal(quickFeedDecision({ ...base, petCount: 1 }), 'open');
+    assert.equal(quickFeedDecision({ ...base, canFeed: false }), 'ignore');
+    assert.equal(quickFeedDecision({ ...base, petCount: 0 }), 'ignore');
+    const client = readFileSync(resolve(process.cwd(), 'src/components/pets-client.tsx'), 'utf8');
+    assert.match(client, /permissionsReady: !authLoading && !householdLoading && Boolean\(currentMember\)/);
+    // The param is removed only after a decision.
+    assert.match(client, /if \(!handledFeedRequest \|\| !feedRequested\) return;/);
   });
 });

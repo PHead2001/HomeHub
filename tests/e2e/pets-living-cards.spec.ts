@@ -15,14 +15,9 @@ const SEEDED_FEEDING = 'morning-feed';
 const TEST_PET = 'e2e-tweety';
 const EXTRA_MEDS = ['e2e-med-ear', 'e2e-med-joint', 'e2e-med-dental'];
 
-/** Tap plus confirm (H09): the Feed button opens a confirmation; only "Log feeding" writes. */
-async function feed(page: Page, scope: Locator | Page, name: string) {
+/** One tap feeds (H09, owner decision): the Feed button logs at once; Undo reverses it. */
+async function feed(scope: Locator | Page, name: string) {
   await scope.getByRole('button', { name }).click();
-  const confirm = page.getByTestId('feed-confirm');
-  await expect(confirm).toBeVisible();
-  await expect(confirm.getByRole('button', { name: 'Log feeding' })).toBeFocused();
-  await confirm.getByRole('button', { name: 'Log feeding' }).click();
-  await expect(confirm).toHaveCount(0);
 }
 
 async function openPets(page: Page) {
@@ -83,7 +78,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     expect(add!.x).toBeGreaterThan(row!.x + row!.width / 2);
   });
 
-  test('cards show who fed last, the daily ring and tap-plus-confirm feeding', async ({ page }, testInfo) => {
+  test('cards show who fed last, the daily ring and one-tap feeding', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openPets(page);
     const maple = page.getByTestId('pet-card-maple');
@@ -92,7 +87,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
 
     const pixel = page.getByTestId('pet-card-pixel');
     await expect(pixel).toContainText('No feedings logged yet');
-    await feed(page, pixel, 'Feed Pixel, 1 can');
+    await feed(pixel, 'Feed Pixel, 1 can');
     await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('Fed just now by Alex');
     await expect(pixel).toContainText('1 of 2 today');
@@ -103,7 +98,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     }).toEqual([{ cups: 1, foodAmountType: 'Cans', loggedByUid: ownerUid }]);
 
     // The second feeding completes the day.
-    await feed(page, pixel, 'Feed Pixel, 1 can');
+    await feed(pixel, 'Feed Pixel, 1 can');
     // Radix also mirrors the toast into its own live region; target the visible title.
     await expect(page.getByText('Pixel is all fed for today', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('All fed today');
@@ -120,7 +115,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await openPets(page);
     const pixel = page.getByTestId('pet-card-pixel');
     await expect(pixel).toContainText('0 of 2 today');
-    await feed(page, pixel, 'Feed Pixel, 1 can');
+    await feed(pixel, 'Feed Pixel, 1 can');
     await expect(pixel).toContainText('Fed just now by Alex');
     await expect(pixel).toContainText('1 of 2 today');
 
@@ -156,23 +151,19 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await expect(page.getByTestId('pet-card-pixel')).toContainText('Due in 2 days');
   });
 
-  test('cancelling the feed confirmation writes nothing', async ({ page }, testInfo) => {
+  test('one tap writes a feeding and Undo removes it', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openPets(page);
     const pixel = page.getByTestId('pet-card-pixel');
     const button = pixel.getByRole('button', { name: 'Feed Pixel, 1 can' });
     await expect(button).toHaveAttribute('title', 'Log a feeding from anywhere: press F');
     await button.click();
-    const confirm = page.getByTestId('feed-confirm');
-    await expect(confirm).toContainText('Log 1 can of');
-    await confirm.getByRole('button', { name: 'Cancel' }).click();
-    await expect(confirm).toHaveCount(0);
-    await button.click();
-    await page.keyboard.press('Escape');
-    await expect(confirm).toHaveCount(0);
-    await expect(button).toBeFocused();
-    await page.waitForTimeout(300);
-    expect((await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(0);
+    // No confirmation on the card: the tap logged.
+    await expect(page.getByTestId('feed-confirm')).toHaveCount(0);
+    await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(1);
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(0);
     await expect(pixel).toContainText('No feedings logged yet');
   });
 
@@ -309,7 +300,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await page.clock.setFixedTime(fixedNow);
     await page.goto('/pets/maple');
     await expect(page.getByRole('heading', { name: 'Maple', exact: true })).toBeVisible();
-    await feed(page, page, 'Feed Maple, 1.5 cups');
+    await feed(page, 'Feed Maple, 1.5 cups');
     await expect(page.getByText('by Alex').first()).toBeVisible();
     await expect(page.getByText('1.5 cups of dry food').first()).toBeVisible();
 

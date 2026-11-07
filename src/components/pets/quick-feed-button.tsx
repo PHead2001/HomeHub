@@ -3,7 +3,6 @@
 import * as React from 'react';
 import { Loader2, Utensils } from 'lucide-react';
 import { Button, type ButtonProps } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ToastAction } from '@/components/ui/toast';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
@@ -147,9 +146,9 @@ function shortcutHint(type: 'quick-add', prefix: string): string | undefined {
 }
 
 /**
- * The confirm step of tap-plus-confirm feeding (H09 acceptance): names the pet,
- * portion and food type, and logs only on "Log feeding". Used by the Feed
- * button's popover and by the "Log feeding" shortcut's picker on /pets.
+ * The confirm step of the "Log feeding" home-screen shortcut (`/pets?feed=1`):
+ * names the pet, portion and food type, and logs only on "Log feeding". A
+ * launcher shortcut never logs silently; the Feed button itself is one tap.
  */
 export function FeedConfirmPanel({
   petName,
@@ -200,43 +199,36 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
 };
 
 /**
- * Feeding at the planned portion (section 3 Pets, H09) and the accessible
- * alternative to hold to feed: tap, then confirm. The tap opens a small
- * confirmation (pet, portion, food type) with focus on **Log feeding**; Escape or
- * Cancel closes it without writing. The toast then confirms what was logged,
- * with Undo for members who may delete logs. The full form stays on the pet page
- * behind "Log with details".
+ * One-tap feeding at the planned portion (section 3 Pets, H09) and the accessible
+ * alternative to hold to feed (owner decision): the tap logs at once and the
+ * toast confirms what was logged, with Undo for 5 s for members who may delete
+ * logs. A single reversible tap is the alternative to holding; only the "Log
+ * feeding" home-screen shortcut asks first (`FeedPickerDialog`), because nothing
+ * on a pet was tapped there. The full form stays on the pet page behind "Log
+ * with details".
  */
 export function QuickFeedButton({ controller, describedBy, className, size, variant = 'default', ...options }: QuickFeedButtonProps) {
   const own = useQuickFeed(options);
   const quick = controller ?? own;
-  const [confirming, setConfirming] = React.useState(false);
-  const titleId = React.useId();
 
   if (!quick.allowed) return null;
 
   return (
     <span className={cn('relative inline-flex', className)}>
-      <Popover open={confirming} onOpenChange={setConfirming}>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            size={size}
-            variant={variant}
-            className="w-full"
-            disabled={quick.saving}
-            aria-label={`Feed ${options.petName}, ${quick.portion}`}
-            aria-describedby={describedBy}
-            title={FEED_SHORTCUT_HINT}
-          >
-            {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
-            Feed · {quick.portion}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-64" align="center" side="top" aria-labelledby={titleId} data-testid="feed-confirm">
-          <FeedConfirmPanel petName={options.petName} quick={quick} titleId={titleId} onDone={() => setConfirming(false)} />
-        </PopoverContent>
-      </Popover>
+      <Button
+        type="button"
+        size={size}
+        variant={variant}
+        className="w-full"
+        onClick={() => void quick.feed('tap')}
+        disabled={quick.saving}
+        aria-label={`Feed ${options.petName}, ${quick.portion}`}
+        aria-describedby={describedBy}
+        title={FEED_SHORTCUT_HINT}
+      >
+        {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
+        Feed · {quick.portion}
+      </Button>
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}
     </span>
   );
