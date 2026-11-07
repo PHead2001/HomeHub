@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
 import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { format } from 'date-fns';
@@ -36,7 +37,7 @@ import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDial
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
-import { HouseCleanMoment, type CleanRoom } from '@/components/chores/house-clean-moment';
+import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
@@ -44,6 +45,9 @@ import { useToday } from '@/components/chores/use-today';
 import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
+import { morphStyle } from '@/lib/motion';
+import { ALL_ROOMS, choresRoomHref, effectiveChoresRoom, parseChoresRoom, roomSharedId } from '@/lib/chores/url-state';
+import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/chores/house-clean';
 
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
 
@@ -52,14 +56,19 @@ const UNDO_MS = 5000;
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
 const statsNow = (today: string) => { const d = dayFromKey(today); d.setHours(23, 59, 59, 999); return d; };
 
-const houseCleanKey = (householdId: string, day: string) => `homehub.houseClean.${householdId}.${day}`;
+// The "house is clean" moment fires at most once per household per day on this
+// device: the flag lives in localStorage (shared by tabs, survives reloads), and
+// an in-memory set covers storage being blocked.
+const celebratedDays = new Set<string>();
 
 function readFlag(key: string): boolean {
-  try { return window.sessionStorage.getItem(key) === '1'; } catch { return false; }
+  if (celebratedDays.has(key)) return true;
+  try { return window.localStorage.getItem(key) === '1'; } catch { return false; }
 }
 
 function writeFlag(key: string) {
-  try { window.sessionStorage.setItem(key, '1'); } catch { /* storage blocked: the moment may show again */ }
+  celebratedDays.add(key);
+  try { window.localStorage.setItem(key, '1'); } catch { /* storage blocked: the in-memory flag still holds for this visit */ }
 }
 
 export function ChoreChartClient() {
@@ -92,7 +101,17 @@ export function ChoreChartClient() {
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
-  const [filterRoomId, setFilterRoomId] = useState<string>('all');
+  // The room filter lives in the URL (`/chores?room=kitchen`), read on every
+  // render so dashboard links, Back/Forward and client navigation stay in sync.
+  const searchParams = useSearchParams();
+  const pathname = usePathname() || '/chores';
+  const requestedRoomId = parseChoresRoom(searchParams);
+  const setFilterRoomId = useCallback((roomId: string) => {
+    const href = choresRoomHref(pathname, new URLSearchParams(window.location.search), roomId);
+    if (href === `${window.location.pathname}${window.location.search}`) return;
+    // Shallow update: Next.js syncs useSearchParams with history.replaceState.
+    window.history.replaceState(null, '', href);
+  }, [pathname]);
 
   // Chores that already celebrated in this visit: confetti never fires twice for one chore.
   const celebrated = useRef(new Set<string>());
@@ -481,18 +500,18 @@ export function ChoreChartClient() {
     if (!currentUser?.householdId) return;
     const hadDue = !isToDoClear(before, today);
     if (!hadDue || !isToDoClear(after, today)) return;
-    const key = houseCleanKey(currentUser.householdId, today);
+    const key = houseCleanStorageKey(currentUser.householdId, today);
     if (readFlag(key)) return;
     writeFlag(key);
     const doneToday = after.filter(chore => {
       const instant = completionInstant(chore);
       return instant && dayKey(instant) === today;
     });
-    const roomIds = [...new Set(doneToday.flatMap(chore => chore.roomIds || []))];
-    const cleanRooms = roomIds.map(id => roomsById.get(id)).filter(Boolean).map(room => ({ id: room!.id, name: room!.name, icon: room!.icon }));
-    setHouseClean(cleanRooms);
+    // Every room of the household (the whole house is clean); rooms worked in today sparkle first.
+    const workedIn = new Set(doneToday.flatMap(chore => chore.roomIds || []));
+    setHouseClean(cleanHouseRooms(rooms, workedIn));
     playFeedback('celebrate');
-  }, [currentUser?.householdId, today, roomsById]);
+  }, [currentUser?.householdId, today, rooms]);
 
   const undoCompletion = useCallback(async (snapshots: Map<string, CompletionSnapshot>) => {
     const choresCollection = getCollectionRef('chores');
@@ -669,8 +688,19 @@ export function ChoreChartClient() {
   const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today)), [assignedChores, statsMembers, today]);
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.email, user.avatarUrl])), [householdUsers]);
 
+  // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
+  const filterRoomId = effectiveChoresRoom(requestedRoomId, loading ? null : new Set(rooms.map(room => room.id)));
+  // Shared-element target for the living house's room → Chores morph (H01): the
+  // page container carries `view-transition-name: room-<roomId>` from the first
+  // render (the skeleton too), so the View Transition lands on it.
+  const frame = (children: ReactNode) => (
+    <div data-testid="chores-page" data-room-filter={filterRoomId} style={morphStyle(filterRoomId !== ALL_ROOMS ? roomSharedId(filterRoomId) : null)}>
+      {children}
+    </div>
+  );
+
   if (loading || !isMounted) {
-    return (
+    return frame(
       <div className="space-y-8">
         <Card>
           <CardHeader>
@@ -688,7 +718,7 @@ export function ChoreChartClient() {
   }
 
   if (!currentUser) {
-    return <SignInPrompt what="manage chores" />;
+    return frame(<SignInPrompt what="manage chores" />);
   }
 
   const filteredChores = assignedChores.filter(chore => {
@@ -747,8 +777,10 @@ export function ChoreChartClient() {
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
     const groups = groupByRoom(entries);
+    // Keyed on the room filter: defaultValue only applies on mount, so a new
+    // filter remounts the groups with the newly selected room open.
     return (
-      <Accordion type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
+      <Accordion key={`${prefix}-${filterRoomId}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
         {groups.map(group => (
           <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
@@ -768,7 +800,7 @@ export function ChoreChartClient() {
   const openCreateRoom = () => setRoomsDialog({ open: true, startNew: true });
   const showLeaderboard = settings.leaderboardEnabled && householdUsers.length > 0 && !isEmptyHousehold;
 
-  return (
+  return frame(
     <>
       {confettiLayer}
       <HouseCleanMoment open={!!houseClean} rooms={houseClean || []} onDone={closeHouseClean} />

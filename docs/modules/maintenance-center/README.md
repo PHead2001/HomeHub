@@ -15,6 +15,8 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 - Review date/mileage reminders and act on them in place: **Mark done**, **Snooze 1 week**, or **Open** the asset/vehicle (see "Reminder actions").
 - See a 0-100 **home health score** on Overview (dial, band label and the deductions behind it, each linking to its item) and a small health ring on every active asset and vehicle card and detail panel (see "Home health score").
 - Asset cards are photo-first: the newest image attachment fills a fixed band at the top of the card; without one, the category icon on a token gradient.
+- **Warranty countdown ring** (H10): an asset with a warranty end date shows a small ring beside its health ring, filled with the share of the warranty term still left and the days left inside ("9d"; years from 1,000 days, "0d" once ended). Its accessible name reads e.g. "Main HVAC System: Warranty: 9 days left of 1,551". The ring turns amber within 30 days and grey once ended. HomeHub stores no warranty start date, so the term runs from the asset's **purchase date** when it is set and earlier than the end date; otherwise the term is assumed to be **one year** ending on the warranty end date (`warrantyCountdown()` in `src/lib/maintenance/warranty.ts`, `WARRANTY_FALLBACK_DAYS = 365`). Days are counted on the household's local day. The ring sweeps from full on load (550 ms, value only; instant under reduced motion).
+- **Odometer** (H10): a vehicle card shows its mileage as odometer wheels (at least six, leading zeros), each rolling to its digit (transform only, 550 ms, wheels a few ms apart; final digits at once under reduced motion). Screen readers get the plain value ("48,750 miles"), which is also part of the card's accessible name; the wheels are `aria-hidden`.
 - Detail panels list only the fields that have a value (no "Not recorded"); Edit, "Add details" (its accessible name adds "(N empty)") and Delete share one action row that fits the desktop detail column, with Delete set apart on the right; it wraps only on very narrow screens. The attachment header (category, Upload) wraps by its own width, so it never overflows the narrow detail column.
 - Controls follow the member's maintenance permissions: Add/Edit/Complete/Snooze/Upload need `maintenance.edit`, Add Log needs `maintenance.createLogs`, Mark done and Complete need both, Delete (records, logs, attachments) needs `maintenance.delete`. A member without `maintenance.view` sees a "not shared with you" state and no queries run.
 
@@ -22,8 +24,8 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 
 - `src/app/maintenance/page.tsx`
 - `src/components/maintenance-log-client.tsx`
-- `src/components/maintenance/` (`asset-card.tsx`, `health-ring.tsx`, `health-panel.tsx`, `reminder-list.tsx`)
-- `src/lib/maintenance/` (pure: `health.ts` score, `schedules.ts` completion/snooze/schedule keys, `reminder-copy.ts` card copy, `display.ts` summary/photo/field rules)
+- `src/components/maintenance/` (`asset-card.tsx`, `health-ring.tsx`, `health-panel.tsx`, `reminder-list.tsx`, `warranty-ring.tsx`, `odometer.tsx`)
+- `src/lib/maintenance/` (pure: `health.ts` score, `schedules.ts` completion/snooze/schedule keys, `reminder-copy.ts` card copy, `display.ts` summary/photo/field rules, `warranty.ts` warranty countdown, `odometer.ts` odometer digits)
 - `src/ai/flows/summarize-maintenance-log.ts`
 - Maintenance types in `src/lib/types.ts`
 - Maintenance-specific matches in `firestore.rules` and `storage.rules`
@@ -139,8 +141,8 @@ Firestore rules enforce the granular permissions (with per-member overrides): re
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes; run a production build for broad UI/data-flow changes.
 - Run functions and rules validation when notification delivery or security changes.
 - Manually test canonical/invalid/deleted-record deep links, legacy logs/name-only schedules, checklist and date/mileage/combined scheduled entries, ten repeated/overlapping reminder syncs, dismissal persistence, completion advancement, partial failures, attachment allow/deny/delete behavior, inactive vehicles, and cross-household denial.
-- `npm run test:unit` should include `tests/unit/maintenance-health.test.ts` (score formula, caps, bands, retired items) and `tests/unit/maintenance-reminders.test.ts` (card copy, schedule matching and legacy keys, Mark done/Snooze eligibility and values, AI-summary rule, field collapsing, photo choice, token-only components).
-- `tests/e2e/maintenance-ux.spec.ts` covers the health dial and its links, `?tab=` links, Snooze and Mark done in place (Firestore writes and notification resolution), collapsed detail fields and the action row, photo and fallback cards at 1009 px, inline validation, and a guest seeing no change controls.
+- `npm run test:unit` should include `tests/unit/maintenance-health.test.ts` (score formula, caps, bands, retired items) and `tests/unit/maintenance-reminders.test.ts` (card copy, schedule matching and legacy keys, Mark done/Snooze eligibility and values, AI-summary rule, field collapsing, photo choice, token-only components) and `tests/unit/maintenance-warranty-odometer.test.ts` (countdown math with the purchase-date and one-year fallback terms, odometer digits and accessible text).
+- `tests/e2e/maintenance-ux.spec.ts` covers the health dial and its links, `?tab=` links, Snooze and Mark done in place (Firestore writes and notification resolution), collapsed detail fields and the action row, photo and fallback cards at 1009 px, inline validation, and a guest seeing no change controls. `tests/e2e/maintenance-warranty-odometer.spec.ts` covers the HVAC warranty ring's values and name, no ring without a warranty, the odometer's digits, settled wheels and text value, and instant wheels under reduced motion.
 - For asset/vehicle/log/schedule/checklist/attachment deletion, test cancel and confirm, attachment blocking, persistence after reload, historical-log preservation, related reminder resolution, and unrelated-record survival.
 
 ## When This Document Must Be Updated
