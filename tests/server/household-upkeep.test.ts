@@ -3,7 +3,9 @@ import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
-import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
+import { parseNotificationDoc } from '../../src/lib/notifications';
+import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
+import { choreStatsAssigneeKey, deterministicNotificationId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -87,6 +89,18 @@ describe('household upkeep', () => {
     assert.equal(refreshed.size, 1);
     // Clients list the last 7 days by createdAt, so the refresh must move it.
     assert.equal(refreshed.docs[0].data().createdAt.toDate().toISOString(), eightDaysLater.toISOString());
+  });
+
+  test('a maintenance reminder resolved while its schedule is still actionable is reopened', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const ref = (await house().collection('notifications').where('category', '==', 'maintenance').get()).docs[0].ref;
+    // The app resolved it, but the schedule never advanced (for example the write failed).
+    await ref.update({ resolvedAt: new Date('2026-11-05T15:30:00Z'), resolvedBy: { uid: 'o1' } });
+    const later = await run(new Date('2026-11-05T16:00:00Z'));
+    assert.equal(later.reopenedNotifications, 1);
+    assert.equal(later.createdNotifications, 0);
+    assert.equal((await ref.get()).data()!.resolvedAt, null);
   });
 
   test('a still-overdue reminder is refreshed before TTL could delete it, keeping its state', async () => {
@@ -209,5 +223,126 @@ describe('household upkeep', () => {
     assert.equal(second.purgedChores, 0);
     assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 3);
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
+  });
+
+  describe('pet medication reminders', () => {
+    // Household time zone is America/Chicago (UTC-5 in November 2026).
+    const meds = () => house().collection('notifications').where('sourceType', '==', 'pet_medication').get();
+    const logs = () => house().collection('pets').doc('maple').collection('medication-logs');
+    beforeEach(async () => {
+      await house().collection('pets').doc('maple').set({ name: 'Maple', type: 'Dog', photoUrl: 'https://placehold.co/300x300.png' });
+      await logs().doc('d1').set({ date: '2026-10-07T14:00:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-11-06' });
+    });
+
+    test('nothing the day before; one reminder on the due day, idempotently', async () => {
+      // 11:30pm Nov 5 in Chicago (05:30 UTC Nov 6): still the day before.
+      await run(new Date('2026-11-06T05:30:00Z'));
+      assert.equal((await meds()).size, 0);
+
+      // 12:30am Nov 6 in Chicago.
+      const dueDay = new Date('2026-11-06T06:30:00Z');
+      const first = await run(dueDay);
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      const note = notes.docs[0].data();
+      assert.equal(note.category, 'pets');
+      assert.equal(note.title, "Maple's Flea prevention is due today");
+      assert.equal(note.sourceId, 'maple:flea prevention');
+      assert.equal(note.stateKey, 'due|2026-11-06');
+      assert.equal(note.deepLink, '/pets/maple?tab=medication');
+      assert.equal(note.targetUserUid, undefined, 'household-wide, like maintenance');
+      assert.equal(notes.docs[0].id, deterministicNotificationId('pet_medication', 'maple:flea prevention', 'due|2026-11-06'));
+      assert.ok(first.createdNotifications >= 1);
+
+      await run(new Date('2026-11-06T18:00:00Z'));
+      assert.equal((await meds()).size, 1, 'a re-run creates nothing new');
+    });
+
+    test('an overdue countdown gets its own overdue reminder once', async () => {
+      await run(new Date('2026-11-08T15:00:00Z'));
+      await run(new Date('2026-11-08T16:00:00Z'));
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      assert.equal(notes.docs[0].data().title, "Maple's Flea prevention is overdue");
+      assert.equal(notes.docs[0].data().stateKey, 'overdue|2026-11-06');
+    });
+
+    test('a newer dose resolves the reminder, with or without a next due date', async () => {
+      await run(new Date('2026-11-06T15:00:00Z'));
+      await logs().doc('d2').set({ date: '2026-11-06T16:00:00.000Z', medication: ' flea PREVENTION ', dosage: '1 chew', notes: '' });
+      const after = await run(new Date('2026-11-06T17:00:00Z'));
+      assert.equal(after.resolvedNotifications, 1);
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      assert.ok(notes.docs[0].data().resolvedAt, 'resolved');
+      // Already resolved: nothing more to do, and no countdown means no new reminder.
+      const again = await run(new Date('2026-11-07T17:00:00Z'));
+      assert.equal(again.resolvedNotifications, 0);
+      assert.equal((await meds()).size, 1);
+    });
+
+    test('deleting the dose that resolved a reminder reopens it, without a new document', async () => {
+      await run(new Date('2026-11-08T15:00:00Z'));
+      const [note] = (await meds()).docs;
+      assert.equal(note.data().stateKey, 'overdue|2026-11-06');
+      // A dose logged by mistake resolves the overdue reminder...
+      await logs().doc('oops').set({ date: '2026-11-08T15:30:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-12-08' });
+      assert.equal((await run(new Date('2026-11-08T16:00:00Z'))).resolvedNotifications, 1);
+      assert.ok((await note.ref.get()).data()!.resolvedAt);
+      await note.ref.update({ 'dismissedBy.o1': true });
+      // ...and deleting it makes the countdown pending again: the same reminder comes back.
+      await logs().doc('oops').delete();
+      const later = new Date('2026-11-09T15:00:00Z');
+      const reopened = await run(later);
+      assert.equal(reopened.reopenedNotifications, 1);
+      assert.equal(reopened.createdNotifications, 0, 'same identity, no new document (and no new push)');
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      const data = notes.docs[0].data();
+      assert.equal(data.resolvedAt, null);
+      assert.equal(data.resolvedBy, null);
+      assert.equal(data.title, "Maple's Flea prevention is overdue");
+      assert.equal(data.createdAt.toDate().toISOString(), later.toISOString(), 'listed again in the 7-day window');
+      assert.ok(data.expiresAt.toDate() > new Date(later.getTime() + 6 * 86400000), 'expiry pushed out');
+      assert.equal(data.dismissedBy.o1, true, 'a member who dismissed it keeps that choice');
+      // Visible again in the app's bell list.
+      const parsed = parseNotificationDoc(notes.docs[0] as never);
+      assert.equal(activeBellNotifications([parsed], { uid: 'm2', email: 'm2@example.test' }, later).length, 1);
+      // Stable afterwards.
+      const again = await run(new Date('2026-11-09T16:00:00Z'));
+      assert.equal(again.reopenedNotifications, 0);
+      assert.equal(again.resolvedNotifications, 0);
+    });
+
+    test('a run with stale medication entries never resolves a still-pending reminder', async () => {
+      await run(new Date('2026-11-08T15:00:00Z'));
+      const [note] = (await meds()).docs;
+      assert.ok(!note.data().resolvedAt);
+      // This run read the pet's entries while a mistaken dose existed (since
+      // deleted, and another run may have reopened the reminder meanwhile).
+      const staleLogs = [
+        { date: '2026-10-07T14:00:00.000Z', medication: 'Flea prevention', nextDueDate: '2026-11-06' },
+        { date: '2026-11-08T15:30:00.000Z', medication: 'Flea prevention', nextDueDate: '2026-12-08' },
+      ];
+      const stalePets = { docs: [{
+        id: 'maple',
+        get: (field: string) => (field === 'name' ? 'Maple' : undefined),
+        ref: { collection: () => ({ get: async () => ({ docs: staleLogs.map(data => ({ data: () => data })) }) }) },
+      }] };
+      const stale = await runHouseholdReminders(staleListingDb('pets', stalePets) as never, HOUSE, new Date('2026-11-08T16:00:00Z'), ts);
+      assert.equal(stale.resolvedNotifications, 0, 'revalidated against the real entries in the transaction');
+      assert.ok(!(await note.ref.get()).data()!.resolvedAt, 'still open');
+    });
+
+    test('a resolved countdown leaves the next one free to remind', async () => {
+      await run(new Date('2026-11-06T15:00:00Z'));
+      await logs().doc('d2').set({ date: '2026-11-06T16:00:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-12-06' });
+      await run(new Date('2026-11-06T17:00:00Z'));
+      assert.equal((await meds()).docs.filter(d => !d.data().resolvedAt).length, 0);
+      await run(new Date('2026-12-06T15:00:00Z'));
+      const open = (await meds()).docs.filter(d => !d.data().resolvedAt);
+      assert.equal(open.length, 1);
+      assert.equal(open[0].data().stateKey, 'due|2026-12-06');
+    });
   });
 });
