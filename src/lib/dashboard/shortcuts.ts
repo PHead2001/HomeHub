@@ -45,6 +45,17 @@ export const SHORTCUTS: ShortcutDefinition[] = [
 
 export type KeyInput = { key: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean };
 
+/**
+ * True while an input method editor (IME: Japanese, Chinese, Korean, some mobile
+ * keyboards) is composing text. Enter, arrows and Escape then belong to the IME
+ * (confirm a candidate, move between candidates, cancel), so no handler may act on
+ * them. Browsers report `isComposing`, and some send `keyCode` 229 instead.
+ */
+export function isComposingKey(event: { isComposing?: boolean; keyCode?: number; nativeEvent?: { isComposing?: boolean; keyCode?: number } }): boolean {
+  const native = event.nativeEvent ?? event;
+  return Boolean(event.isComposing || native.isComposing || event.keyCode === 229 || native.keyCode === 229);
+}
+
 /** True when focus is in a place where letters are typing, not commands. */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!target || typeof (target as HTMLElement).closest !== 'function') return false;

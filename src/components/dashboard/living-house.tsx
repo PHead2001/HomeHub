@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { playFeedback } from '@/lib/feedback';
 import { seasonFor, type Season } from '@/lib/dashboard/ambience';
-import { isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
+import { isComposingKey, isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
 import { roomSummary, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from '@/lib/dashboard/links';
 import { useDayLight } from './time-of-day';
@@ -239,7 +239,7 @@ export function LivingHouse({
     let progress = 0;
     let timeout: number | null = null;
     const onKey = (event: KeyboardEvent) => {
-      if (isTypingTarget(event.target)) return;
+      if (isComposingKey(event) || isTypingTarget(event.target)) return;
       const step = konamiStep(progress, event.key);
       progress = step.progress;
       if (step.done) {

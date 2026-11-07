@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { SPRING_SNAPPY } from '@/lib/motion';
+import { isComposingKey } from '@/lib/dashboard/shortcuts';
 import { cn } from '@/lib/utils';
 
 const PEEK_DELAY_MS = 400;
@@ -54,7 +55,7 @@ export function PeekCard({
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
+      if (event.key === 'Escape' && !isComposingKey(event)) close();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

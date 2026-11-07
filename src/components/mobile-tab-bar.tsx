@@ -26,6 +26,7 @@ import { isActiveRoute } from '@/lib/navigation';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from './ui/sheet';
 import { openCommandPalette } from './command/events';
 import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
+import { isComposingKey } from '@/lib/dashboard/shortcuts';
 import styles from './dashboard/dashboard.module.css';
 import type { HouseholdPermission } from '@/lib/types';
 
@@ -79,7 +80,7 @@ function QuickAddFab({ actions }: { actions: QuickAction[] }) {
     if (!open) return;
     firstAction.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !isComposingKey(event)) {
         setOpen(false);
         toggle.current?.focus();
       }

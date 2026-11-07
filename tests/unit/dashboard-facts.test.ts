@@ -12,7 +12,7 @@ import {
 
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
-import { countInYear, maintenanceSpend, summarizeChores, topPurchasedItem, firstNameOnly, yearBounds, yearIn } from '../../src/lib/dashboard/wrapped';
+import { countInYear, maintenanceSpend, readConsistentChoreTotals, statsSignature, summarizeChores, topPurchasedItem, firstNameOnly, yearBounds, yearIn } from '../../src/lib/dashboard/wrapped';
 import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
 import { addPurgedChores, choreStatsDocId, completionYear, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { dayKey, daysBetween, toDateValue } from '../../src/lib/dashboard/dates';
@@ -359,6 +359,57 @@ describe('Home Wrapped aggregation', () => {
       { id: '1', date: '2026-01-01', cost: 50 },
       { id: '2', date: '2026-01-01T03:00:00.000Z', cost: 70 },
     ], 2026, zone), { spend: 50, logs: 1 });
+  });
+
+  it('reads yearly stats and retained chores as one snapshot, retrying when a purge lands in between', async () => {
+    // A fake household: 3 retained completions this year, 10 already archived.
+    const chore = (id: string) => ({ id, isCompleted: true, completedAt: '2026-10-01T10:00:00Z', assignedToEmail: 'sam@example.test' });
+    let retained = [chore('a'), chore('b'), chore('c')];
+    let stats: Record<string, unknown> = { year: 2026, completed: 10, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 10 }, updatedAt: new Date('2026-11-01T00:00:00Z') };
+    // Upkeep's purge: archive chore "a" into the stats and delete it, atomically.
+    const purge = () => {
+      retained = retained.filter((entry) => entry.id !== 'a');
+      stats = { ...stats, completed: 11, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 11 }, updatedAt: new Date('2026-11-06T00:00:00Z') };
+    };
+    let statsReads = 0;
+    let purged = false;
+    const reader = {
+      readStats: async () => {
+        statsReads += 1;
+        return stats;
+      },
+      readRetained: async () => {
+        const snapshot = [...retained];
+        // The purge commits after the retained query but before the second stats read.
+        if (!purged) {
+          purged = true;
+          purge();
+        }
+        return snapshot;
+      },
+    };
+    const totals = await readConsistentChoreTotals(reader);
+    assert.equal(totals.consistent, true);
+    assert.equal(totals.attempts, 2, 'the first, torn snapshot was retried');
+    assert.equal(statsReads, 4);
+    const summary = summarizeChores(totals.retained, 2026, { stats: totals.consistent ? totals.stats : undefined, timeZone: 'UTC' });
+    assert.equal(summary.choresDone, 13, 'chore "a" counted once: 11 archived + 2 retained, not 11 + 3');
+    assert.equal(summary.champion?.count, 13);
+
+    // A household where totals change on every read: gives up and returns the retained chores only.
+    let tick = 0;
+    const busy = await readConsistentChoreTotals({
+      readStats: async () => ({ completed: tick++, updatedAt: new Date(tick) }),
+      readRetained: async () => [chore('x')],
+    });
+    assert.equal(busy.consistent, false);
+    assert.equal(busy.attempts, 3);
+    assert.equal(summarizeChores(busy.retained, 2026, { timeZone: 'UTC' }).choresWindow, 'last90days');
+
+    // Missing on both reads is consistent (no stats yet).
+    const none = await readConsistentChoreTotals({ readStats: async () => undefined, readRetained: async () => [] });
+    assert.equal(none.consistent, true);
+    assert.equal(statsSignature(undefined), 'missing');
   });
 
   it('merges purchased items case-insensitively and sums upkeep spend', () => {

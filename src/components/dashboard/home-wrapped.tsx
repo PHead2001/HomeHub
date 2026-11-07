@@ -10,6 +10,7 @@
 import { useRef, useState } from 'react';
 import { Timestamp, collection, doc, getCountFromServer, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { choreStatsDocId } from '@functions/shared/chore-stats';
+import { isComposingKey } from '@/lib/dashboard/shortcuts';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronLeft, ChevronRight, Gift, Loader2, Share2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -18,7 +19,7 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { DURATION, EASE } from '@/lib/motion';
-import { countInYear, maintenanceSpend, summarizeChores, topPurchasedItem, yearBounds, type WrappedSummary } from '@/lib/dashboard/wrapped';
+import { countInYear, maintenanceSpend, readConsistentChoreTotals, summarizeChores, topPurchasedItem, yearBounds, type WrappedSummary } from '@/lib/dashboard/wrapped';
 import type { RawDoc } from '@/lib/dashboard/facts';
 
 type Card = { eyebrow: string; headline: string; detail: string };
@@ -32,7 +33,9 @@ function buildCards(summary: WrappedSummary, householdName: string, unavailable:
       eyebrow: summary.choresWindow === 'last90days' ? 'Chores done (last 90 days)' : `Chores done in ${summary.year}`,
       headline: String(summary.choresDone),
       detail: summary.choresWindow === 'last90days'
-        ? 'Counts from the last 90 days: older completions from before yearly totals were kept are not included.'
+        ? summary.choresWindowReason === 'busy'
+          ? 'Counts from the last 90 days: yearly totals were being updated while this loaded. Open Wrapped again in a moment for the whole year.'
+          : 'Counts from the last 90 days: older completions from before yearly totals were kept are not included.'
         : summary.choresDone === 0 ? 'A quiet year. Plenty of time for next year.' : 'Every one of them ticked off by someone in this house.',
     });
   }
@@ -136,17 +139,19 @@ export function HomeWrapped() {
           const data = member.data() as { email?: unknown; displayName?: unknown };
           return typeof data.email === 'string' && typeof data.displayName === 'string' ? [[data.email.trim().toLowerCase(), data.displayName] as const] : [];
         }));
-        section('Chores', Promise.all([
-          getDocs(query(base('chores'), where('isCompleted', '==', true))),
-          // Completions upkeep already removed (kept 90 days) are counted here.
-          // A missing or unreadable document falls back to the last 90 days, said on the card.
-          getDoc(doc(db, 'households', householdId, 'stats', choreStatsDocId(year))).catch(() => null),
-        ]).then(([snapshot, stats]) => {
-          Object.assign(summary, summarizeChores(docs(snapshot), year, {
-            names,
-            stats: stats?.exists() ? stats.data() : undefined,
-            timeZone: household?.timeZone,
-          }));
+        // Completions upkeep already removed (kept 90 days) live in the yearly stats.
+        // Stats and retained chores are read as one consistent snapshot (stats,
+        // chores, stats again; retried if a purge lands in between), so no chore is
+        // counted twice or missed. A missing or unreadable stats document, or one
+        // that keeps changing, falls back to the last 90 days, said on the card.
+        const statsRef = doc(db, 'households', householdId, 'stats', choreStatsDocId(year));
+        section('Chores', readConsistentChoreTotals({
+          readStats: () => getDoc(statsRef).then((snapshot) => (snapshot.exists() ? snapshot.data() : undefined)).catch(() => undefined),
+          readRetained: () => getDocs(query(base('chores'), where('isCompleted', '==', true))).then(docs),
+        }).then((totals) => {
+          const stats = totals.consistent ? totals.stats : undefined;
+          Object.assign(summary, summarizeChores(totals.retained, year, { names, stats, timeZone: household?.timeZone }));
+          if (!stats) summary.choresWindowReason = totals.consistent ? 'no-stats' : 'busy';
         }));
       }
       if (permissions['shopping.view']) {
@@ -248,6 +253,7 @@ export function HomeWrapped() {
             <div
               className="touch-pan-y select-none"
               onKeyDown={(event) => {
+                if (isComposingKey(event)) return;
                 if (event.key === 'ArrowRight') go(1);
                 if (event.key === 'ArrowLeft') go(-1);
               }}

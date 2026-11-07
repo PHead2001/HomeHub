@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useAuth } from '@/hooks/use-auth';
-import { isTypingTarget, matchShortcut, SHORTCUTS } from '@/lib/dashboard/shortcuts';
+import { isComposingKey, isTypingTarget, matchShortcut, SHORTCUTS } from '@/lib/dashboard/shortcuts';
 import type { HouseholdPermission } from '@/lib/types';
 import { CommandPalette } from './command-palette';
 import { PALETTE_EVENT, SHORTCUT_HELP_EVENT, type PaletteRequest } from './events';
@@ -73,7 +73,7 @@ export function CommandCenter() {
   useEffect(() => {
     if (!enabled) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (event.defaultPrevented || isComposingKey(event) || event.repeat) return;
       const commandKey = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
       // Letters never fire while typing or while another dialog is open; Ctrl/Cmd+K always works.
       if (!commandKey && (isTypingTarget(event.target) || hasOpenOverlay())) return;

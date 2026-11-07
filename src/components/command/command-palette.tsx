@@ -44,7 +44,7 @@ import type { PortionUnit } from '@/lib/pets/types';
 import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
-import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
+import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, logFeeding } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
@@ -298,6 +298,8 @@ export function CommandPalette({
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // While an IME is composing, Enter and the arrows pick and confirm candidates.
+    if (isComposingKey(event)) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActive(options.length ? (active + 1) % options.length : 0);
@@ -348,7 +350,15 @@ export function CommandPalette({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent hideClose className="top-[12%] max-w-lg translate-y-0 gap-0 overflow-hidden p-0 sm:top-[15%]" data-testid="command-palette">
+      <DialogContent
+        hideClose
+        className="top-[12%] max-w-lg translate-y-0 gap-0 overflow-hidden p-0 sm:top-[15%]"
+        data-testid="command-palette"
+        // Escape during IME composition cancels the composition, not the palette.
+        onEscapeKeyDown={(event) => {
+          if (isComposingKey(event)) event.preventDefault();
+        }}
+      >
         <DialogTitle className="sr-only">Search or quick add</DialogTitle>
         <DialogDescription className="sr-only">
           Search HomeHub, or type a sentence like &quot;milk and eggs to groceries&quot;, &quot;fed Maple&quot; or &quot;vacuum Friday for Sam&quot;.

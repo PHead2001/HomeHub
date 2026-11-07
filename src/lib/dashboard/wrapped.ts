@@ -14,6 +14,8 @@ export type WrappedSummary = {
   choresDone: number | null;
   /** `'year'` when removed chores were included (stats document found), else only the last 90 days. */
   choresWindow?: 'year' | 'last90days';
+  /** Why only the last 90 days are shown: no yearly totals yet, or they kept changing while loading. */
+  choresWindowReason?: 'no-stats' | 'busy';
   champion: { name: string; count: number } | null;
   /**
    * Most-bought item among purchased items still on the lists. Shopping keeps no
@@ -125,4 +127,46 @@ export function maintenanceSpend(logs: RawDoc[], year: number, timeZone?: string
   const thisYear = logs.filter((log) => yearIn(log.date, timeZone) === year);
   const spend = thisYear.reduce((sum, log) => sum + (typeof log.cost === 'number' && Number.isFinite(log.cost) && log.cost > 0 ? log.cost : 0), 0);
   return { spend: Math.round(spend * 100) / 100, logs: thisYear.length };
+}
+
+/** A comparable signature of a stats document: missing, or its count, update time and per-assignee counts. */
+export function statsSignature(data: unknown): string {
+  if (!data || typeof data !== 'object') return 'missing';
+  const raw = data as Record<string, unknown>;
+  const updated = toDateValue(raw.updatedAt)?.getTime() ?? null;
+  const byAssignee = raw.byAssignee && typeof raw.byAssignee === 'object'
+    ? Object.entries(raw.byAssignee as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+    : [];
+  return JSON.stringify([raw.completed ?? null, updated, byAssignee]);
+}
+
+export type ChoreTotalsReader<T> = {
+  /** Reads `stats/chores-{year}`; resolves undefined when it does not exist. */
+  readStats: () => Promise<unknown>;
+  /** Reads the retained completed chores. */
+  readRetained: () => Promise<T[]>;
+};
+
+export type ConsistentChoreTotals<T> =
+  | { consistent: true; stats: unknown; retained: T[]; attempts: number }
+  | { consistent: false; retained: T[]; attempts: number };
+
+/**
+ * Reads the archived yearly totals and the retained chores as one consistent
+ * snapshot, without a server endpoint: stats (S1), retained chores (Q), stats
+ * again (S2). Upkeep archives a chore into the stats and deletes it in one
+ * transaction, so S1 equal to S2 proves no purge committed in between and Q
+ * matches them: no chore is counted in both, or in neither. If a purge lands in
+ * between, it retries (up to `attempts` times); after that it returns only the
+ * retained chores, for the "last 90 days" fallback.
+ */
+export async function readConsistentChoreTotals<T>(reader: ChoreTotalsReader<T>, attempts = 3): Promise<ConsistentChoreTotals<T>> {
+  let retained: T[] = [];
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const before = await reader.readStats();
+    retained = await reader.readRetained();
+    const after = await reader.readStats();
+    if (statsSignature(before) === statsSignature(after)) return { consistent: true, stats: after, retained, attempts: attempt };
+  }
+  return { consistent: false, retained, attempts };
 }

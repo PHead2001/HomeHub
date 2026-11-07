@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
-import { matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
+import { isComposingKey, matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
 // Saturday, 1 August 2026, local noon.
@@ -236,6 +236,14 @@ describe('keyboard shortcuts', () => {
     assert.equal(isTypingTarget(input as unknown as EventTarget), true);
     assert.equal(isTypingTarget({ closest: () => null, isContentEditable: false } as unknown as EventTarget), false);
     assert.equal(isTypingTarget(null), false);
+  });
+
+  it('recognizes IME composition keystrokes', () => {
+    assert.equal(isComposingKey({ isComposing: true }), true);
+    assert.equal(isComposingKey({ keyCode: 229 }), true);
+    assert.equal(isComposingKey({ keyCode: 13, nativeEvent: { isComposing: true } }), true);
+    assert.equal(isComposingKey({ keyCode: 13, nativeEvent: { isComposing: false, keyCode: 13 } }), false);
+    assert.equal(isComposingKey({}), false);
   });
 
   it('detects the Konami code', () => {
