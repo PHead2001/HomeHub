@@ -777,8 +777,10 @@ export function ChoreChartClient() {
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
     const groups = groupByRoom(entries);
+    // Keyed on the room filter: defaultValue only applies on mount, so a new
+    // filter remounts the groups with the newly selected room open.
     return (
-      <Accordion type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
+      <Accordion key={`${prefix}-${filterRoomId}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
         {groups.map(group => (
           <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
