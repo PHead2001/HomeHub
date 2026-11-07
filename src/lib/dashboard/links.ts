@@ -12,3 +12,21 @@ export const shoppingListHref = (listId: string) => shoppingHref('/shopping', nu
 export const MAINTENANCE_REMINDERS_HREF = '/maintenance?tab=reminders';
 export const MAINTENANCE_LOGS_HREF = '/maintenance?tab=logs';
 export const petFeedingHref = (petId: string) => `/pets/${encodeURIComponent(petId)}?tab=feeding`;
+
+/**
+ * Chores filtered to one room: `/chores?room=<roomId>` (the Chores module's room
+ * filter contract). Chores without a room use `general`, as on the Chores page.
+ * The dashboard's "Unknown Room" bucket is not a Firestore room, so it opens the
+ * unfiltered list.
+ */
+export const choresRoomHref = (roomId: string) =>
+  roomId === 'unknown-room' ? '/chores' : `/chores?room=${encodeURIComponent(roomId)}`;
+
+/**
+ * View-transition name of a room, shared with the Chores page's room container
+ * (`roomSharedId` in `src/lib/chores/url-state.ts`): `room-<roomId>`, sanitized
+ * exactly like `sharedId` but with no part suffix. Keep both in sync.
+ */
+export const roomMorphName = (roomId: string) => `room-${roomId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+export const MAINTENANCE_OVERVIEW_HREF = '/maintenance?tab=overview';

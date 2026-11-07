@@ -11,6 +11,8 @@ import { collapseMissedRecurring } from '../chores/list';
 import { daysUntilExpiry } from '../shopping/pantry';
 import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
 import type { PetProfile } from '../pets/types';
+import type { HealthResult } from '../maintenance/health';
+import type { StreakTileModel } from './streaks';
 import {
   buildMaintenanceReminders,
   dateStatus,
@@ -138,11 +140,19 @@ export type DashboardFacts = {
   maintenance?: MaintenanceFacts;
   pets?: PetFacts;
   notifications?: { unread: number };
+  /**
+   * Home health (H10) from Maintenance's `computeHomeHealth`; null when there is
+   * nothing to score. Absent while loading or when the logs could not be read.
+   */
+  health?: HealthResult | null;
+  /** Household streaks (H06) from Chores' `computeChoreStats`; absent while loading or unreadable. */
+  streaks?: StreakTileModel;
 };
 
 /** Pantry items expiring within this many days count as "expiring soon". */
 const SOON_DAYS = 7;
-const GENERAL_ROOM_ID = 'general';
+/** Bucket for chores without a room ("Around the house"). */
+export const GENERAL_ROOM_ID = 'general';
 /** Bucket for chores whose room id no longer matches a room. */
 export const UNKNOWN_ROOM_ID = 'unknown-room';
 /** Same label the Chores page uses for a missing room. */
