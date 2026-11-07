@@ -5,7 +5,7 @@ import type React from "react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { CheckCheck, Clock, ExternalLink, Loader2, X } from "lucide-react";
-import { collection, doc, onSnapshot, orderBy, query, updateDoc, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,6 +18,7 @@ import type { Notification, NotificationCategory, NotificationUserAction } from 
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
 import { canSeeCategory } from "@functions/shared/push-audience";
+import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
 import { friendlyError } from "@/lib/friendly-error";
 import { caughtUpLine, groupNotifications, notificationSourceLabel } from "@/lib/dashboard/notification-display";
 import {
@@ -166,6 +167,8 @@ export function NotificationCenterClient() {
   const [activeFilter, setActiveFilter] = useState<NotificationFilter>("unread");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Same category filter as the bell, applied in the query.
+  const viewKey = categoriesKey(viewableNotificationCategories((permission) => Boolean(permissions[permission])));
 
   useEffect(() => {
     if (!currentUser?.householdId) {
@@ -177,10 +180,11 @@ export function NotificationCenterClient() {
     setIsLoading(true);
     setError(null);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const notificationsQuery = query(
+    const categories = viewKey === "*" ? null : (viewKey.split(",") as NotificationCategory[]);
+    const notificationsQuery = notificationWindowQuery(
       collection(db, "households", currentUser.householdId, "notifications"),
-      where("createdAt", ">=", sevenDaysAgo),
-      orderBy("createdAt", "desc")
+      sevenDaysAgo,
+      categories,
     );
 
     const unsubscribe = onSnapshot(
@@ -196,7 +200,7 @@ export function NotificationCenterClient() {
     );
 
     return () => unsubscribe();
-  }, [currentUser?.householdId]);
+  }, [currentUser?.householdId, viewKey]);
 
   const validNotifications = useMemo(() => {
     return notifications.filter((notification) => !isNotificationExpired(notification));

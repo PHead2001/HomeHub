@@ -314,6 +314,26 @@ describe('household upkeep', () => {
       assert.equal(again.resolvedNotifications, 0);
     });
 
+    test('a run with stale medication entries never resolves a still-pending reminder', async () => {
+      await run(new Date('2026-11-08T15:00:00Z'));
+      const [note] = (await meds()).docs;
+      assert.ok(!note.data().resolvedAt);
+      // This run read the pet's entries while a mistaken dose existed (since
+      // deleted, and another run may have reopened the reminder meanwhile).
+      const staleLogs = [
+        { date: '2026-10-07T14:00:00.000Z', medication: 'Flea prevention', nextDueDate: '2026-11-06' },
+        { date: '2026-11-08T15:30:00.000Z', medication: 'Flea prevention', nextDueDate: '2026-12-08' },
+      ];
+      const stalePets = { docs: [{
+        id: 'maple',
+        get: (field: string) => (field === 'name' ? 'Maple' : undefined),
+        ref: { collection: () => ({ get: async () => ({ docs: staleLogs.map(data => ({ data: () => data })) }) }) },
+      }] };
+      const stale = await runHouseholdReminders(staleListingDb('pets', stalePets) as never, HOUSE, new Date('2026-11-08T16:00:00Z'), ts);
+      assert.equal(stale.resolvedNotifications, 0, 'revalidated against the real entries in the transaction');
+      assert.ok(!(await note.ref.get()).data()!.resolvedAt, 'still open');
+    });
+
     test('a resolved countdown leaves the next one free to remind', async () => {
       await run(new Date('2026-11-06T15:00:00Z'));
       await logs().doc('d2').set({ date: '2026-11-06T16:00:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-12-06' });

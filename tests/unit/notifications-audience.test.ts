@@ -75,3 +75,42 @@ describe('bell list matches the push audience', () => {
     assert.equal(activeBellNotifications(notes, { uid: 'u', email: 'u@example.test' }, now).length, 3);
   });
 });
+
+describe('notification queries filter categories before the cap', () => {
+  test('full access needs no category filter (the existing query)', async () => {
+    const { viewableNotificationCategories, categoriesKey } = await import('../../src/app/notifications/notification-query');
+    for (const role of ['owner', 'admin', 'member'] as const) {
+      const app = getEffectivePermissions(role, {});
+      assert.equal(viewableNotificationCategories((p) => Boolean(app[p])), null, role);
+    }
+    assert.equal(categoriesKey(null), '*');
+  });
+
+  test('restricted members query only what they can see, always including system and general', async () => {
+    const { viewableNotificationCategories } = await import('../../src/app/notifications/notification-query');
+    const child = getEffectivePermissions('child', {});
+    assert.deepEqual(viewableNotificationCategories((p) => Boolean(child[p])), ['chores', 'pets', 'system', 'general']);
+    const guest = getEffectivePermissions('guest', {});
+    assert.deepEqual(viewableNotificationCategories((p) => Boolean(guest[p])), ['chores', 'pets', 'shopping', 'maintenance', 'system', 'general']);
+    const noPets = getEffectivePermissions('member', { 'pets.view': false });
+    assert.deepEqual(viewableNotificationCategories((p) => Boolean(noPets[p])), ['chores', 'shopping', 'maintenance', 'automation', 'system', 'general']);
+    // Within Firestore's `in` limit.
+    assert.ok(viewableNotificationCategories(() => false)!.length <= 30);
+  });
+
+  test('the category filter is part of the query, before the limit', async () => {
+    const { initializeApp } = await import('firebase/app');
+    const { collection, getFirestore } = await import('firebase/firestore');
+    const { notificationWindowQuery } = await import('../../src/app/notifications/notification-query');
+    const db = getFirestore(initializeApp({ projectId: 'demo-unit' }, 'notification-query-unit'));
+    const ref = collection(db, 'households', 'h', 'notifications');
+    // Inspect the query's internal constraints (stable in the firebase JS SDK).
+    const internal = (q: unknown) => (q as { _query: { filters: { field: { toString(): string }; op: string; value: unknown }[]; limit: number | null } })._query;
+    const restricted = internal(notificationWindowQuery(ref, new Date(0), ['chores', 'system', 'general'], 30));
+    assert.deepEqual(restricted.filters.map((f) => [f.field.toString(), f.op]), [['category', 'in'], ['createdAt', '>=']]);
+    assert.equal(restricted.limit, 30);
+    const full = internal(notificationWindowQuery(ref, new Date(0), null));
+    assert.deepEqual(full.filters.map((f) => [f.field.toString(), f.op]), [['createdAt', '>=']]);
+    assert.equal(full.limit, null);
+  });
+});

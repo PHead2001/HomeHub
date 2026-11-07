@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, BellDot, CheckCheck, ExternalLink, X } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { collection, doc, limit, onSnapshot, orderBy, query, updateDoc, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -24,6 +24,7 @@ import { FirestorePermissionError } from '@/lib/errors';
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
 import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
 import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
+import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
 import { useAppBadge } from "@/hooks/use-app-badge";
 import { EmptyState } from "@/components/empty-state";
 import { activeBellNotifications, caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
@@ -125,6 +126,10 @@ export function NotificationBell() {
   const [ringKey, setRingKey] = useState(0);
   const previousUnread = useRef<number | null>(null);
 
+  // The category filter is part of the query, so the 30-item cap counts only
+  // notifications this member may see.
+  const viewKey = categoriesKey(viewableNotificationCategories((permission) => Boolean(permissions[permission])));
+
   useEffect(() => {
     if (!currentUser?.householdId || !currentUser.uid) {
       setNotifications([]);
@@ -135,11 +140,12 @@ export function NotificationBell() {
     setIsLoading(true);
     setHasError(false);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const notificationsQuery = query(
+    const categories = viewKey === '*' ? null : (viewKey.split(',') as Notification['category'][]);
+    const notificationsQuery = notificationWindowQuery(
       collection(db, 'households', currentUser.householdId, 'notifications'),
-      where('createdAt', '>=', sevenDaysAgo),
-      orderBy('createdAt', 'desc'),
-      limit(30)
+      sevenDaysAgo,
+      categories,
+      30,
     );
 
     const unsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
@@ -157,7 +163,7 @@ export function NotificationBell() {
     });
 
     return () => unsubscribe();
-  }, [currentUser?.householdId, currentUser?.uid]);
+  }, [currentUser?.householdId, currentUser?.uid, viewKey]);
 
   const activeNotifications = useMemo(() => {
     if (!currentUser?.uid || !currentUser.email) return [];

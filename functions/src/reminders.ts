@@ -20,6 +20,7 @@ import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
 } from "./shared/maintenance-reminders";
+import {isDocId} from "./shared/push-media";
 import {
   MEDICATION_SOURCE_TYPE, buildMedicationReminders, medicationCycle,
   pendingCycles, type PetInput,
@@ -388,16 +389,33 @@ export const runHouseholdReminders = async (
       !pending.has(
         medicationCycle(note.get("sourceId"), note.get("stateKey"))));
   for (const note of openMedication) {
+    const sourceId: string = note.get("sourceId");
+    const petId = sourceId.split(":")[0];
     const status = await db.runTransaction(async (tx) => {
-      const [home, snap] = await Promise.all([tx.get(house), tx.get(note.ref)]);
+      const petRef = isDocId(petId) ?
+        house.collection("pets").doc(petId) : null;
+      const [home, snap, pet, logs] = await Promise.all([
+        tx.get(house), tx.get(note.ref),
+        petRef ? tx.get(petRef) : Promise.resolve(null),
+        petRef ? tx.get(petRef.collection("medication-logs")) :
+          Promise.resolve(null),
+      ]);
       if (!home.exists || home.get("deletingAt")) return "stopped";
-      if (snap.exists && !snap.get("resolvedAt")) {
-        tx.update(note.ref, {resolvedAt: ts(now)});
-      }
-      return "ok";
+      if (!snap.exists || snap.get("resolvedAt")) return "skipped";
+      // Revalidate inside the transaction: this run's countdowns may be stale
+      // (an overlapping run may have seen the dose deleted and reopened the
+      // reminder). The pet and its entries are read here, so a concurrent
+      // change retries this transaction rather than slipping past it.
+      const stillPending = Boolean(pet?.exists && logs) && pendingCycles([{
+        id: petId,
+        logs: logs!.docs.map((log) => log.data()),
+      }]).has(medicationCycle(sourceId, snap.get("stateKey")));
+      if (stillPending) return "skipped";
+      tx.update(note.ref, {resolvedAt: ts(now)});
+      return "resolved";
     });
     if (status === "stopped") return result;
-    result.resolvedNotifications++;
+    if (status === "resolved") result.resolvedNotifications++;
   }
 
   // Chore reminders (per person, in their own timezone). Reminder documents

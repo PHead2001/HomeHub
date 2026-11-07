@@ -15,6 +15,10 @@ import {
   getDoc,
   getDocs,
   deleteField,
+  limit,
+  orderBy,
+  query,
+  where,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -632,6 +636,23 @@ describe('notifications', () => {
     await assertFails(addDoc(collection(dbFor(users.pending), 'households', householdA, 'notifications'), notification()));
     await assertFails(addDoc(collection(dbFor(users.legacy), 'households', householdA, 'notifications'), notification()));
     await assertFails(addDoc(collection(dbFor(users.ownerB), 'households', householdA, 'notifications'), notification()));
+  });
+
+  test('restricted members can list with the bell category filter', async () => {
+    // The bell, center and dashboard tile filter categories in the query for
+    // members who cannot see every module (see notification-query.ts).
+    const bellQuery = query(
+      collection(dbFor(users.child), 'households', householdA, 'notifications'),
+      where('category', 'in', ['chores', 'pets', 'system', 'general']),
+      where('createdAt', '>=', Timestamp.fromDate(new Date(Date.now() - 7 * 86400000))),
+      orderBy('createdAt', 'desc'),
+      limit(30),
+    );
+    await assertSucceeds(getDocs(bellQuery));
+    await assertFails(getDocs(query(
+      collection(dbFor(users.pending), 'households', householdA, 'notifications'),
+      where('category', 'in', ['system', 'general']),
+    )));
   });
 
   test('members dismiss only their own state', async () => {
