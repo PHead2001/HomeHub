@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { DURATION, EASE } from '@/lib/motion';
 import { reminderDueDetail, reminderStatusLabel } from '@/lib/maintenance/reminder-copy';
-import { canMarkReminderDone, canSnoozeReminder, SNOOZE_DAYS } from '@/lib/maintenance/schedules';
+import { canMarkReminderDone, canSnoozeReminder, reminderCycleKey, SNOOZE_DAYS } from '@/lib/maintenance/schedules';
 import { cn } from '@/lib/utils';
 
 export type ReminderBusy = { id: string; action: 'done' | 'snooze' } | null;
@@ -87,12 +87,15 @@ export function ReminderList({
     return <EmptyState compact headingLevel={3} title={emptyTitle} description={emptyDescription} />;
   }
 
+  // Keyed by cycle, not reminder id: a schedule completed early can show its next
+  // cycle under the same id, and that card must start unchecked.
   const markDone = async (reminder: MaintenanceReminder) => {
+    const cycle = reminderCycleKey(reminder);
     if (completesInPlace(reminder)) {
-      setChecked((previous) => new Set(previous).add(reminder.id));
-      // Never twice for one reminder, even if a retry is needed.
-      if (!celebrated.current.has(reminder.id)) {
-        celebrated.current.add(reminder.id);
+      setChecked((previous) => new Set(previous).add(cycle));
+      // Never twice for one cycle, even if a retry is needed.
+      if (!celebrated.current.has(cycle)) {
+        celebrated.current.add(cycle);
         burst(checkRefs.current.get(reminder.id)?.getBoundingClientRect(), REMINDER_CONFETTI);
       }
     }
@@ -100,7 +103,7 @@ export function ReminderList({
     if (result !== 'done') {
       setChecked((previous) => {
         const next = new Set(previous);
-        next.delete(reminder.id);
+        next.delete(cycle);
         return next;
       });
     }
@@ -119,7 +122,7 @@ export function ReminderList({
             const showLog = canLog && completable;
             const showSnooze = canSnooze && canSnoozeReminder(reminder);
             const detail = reminderDueDetail(reminder, today);
-            const isChecked = checked.has(reminder.id);
+            const isChecked = checked.has(reminderCycleKey(reminder));
             return (
               <motion.li
                 key={reminder.id}

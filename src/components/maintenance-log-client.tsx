@@ -103,6 +103,7 @@ import {
   getAssetScheduleMode,
   getVehicleScheduleMode,
   quickCompletionValues,
+  serviceCompletionValues,
   scheduleKeyFor,
   snoozedDueDate,
   type ScheduleCompletionTarget,
@@ -1533,12 +1534,20 @@ export function MaintenanceLogClient() {
         : values.targetType === 'vehicle' && values.vehicleId === logScheduleTarget.vehicle.id
     ) ? logScheduleTarget : null;
     if (linked) {
+      // Never write a schedule without a next due: the advanced values must be
+      // computable from the log (Log service opens only for such schedules, so
+      // the only way to miss is a cleared mileage on a mileage-interval service).
+      const completion = serviceCompletionValues(
+        linked,
+        values.date,
+        linked.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
+      );
+      if (!completion) {
+        logForm.setError('mileage', { message: 'Enter the mileage so the next service can be scheduled.' }, { shouldFocus: true });
+        return;
+      }
       try {
-        const done = await applyScheduleCompletion(linked, {
-          completedDate: values.date,
-          mileage: linked.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
-          notes: values.notes,
-        }, {
+        const done = await applyScheduleCompletion(linked, { ...completion, notes: values.notes }, {
           title: values.title.trim(),
           type: values.type,
           cost: toNumber(values.cost),
@@ -1752,6 +1761,13 @@ export function MaintenanceLogClient() {
   const openLogService = (reminder: MaintenanceReminder) => {
     if (!canCreateLogs) return;
     const target = findReminderSchedule(reminder, assets, vehicles);
+    // Like Mark done: a schedule whose next due cannot be advanced from its
+    // interval (an explicit date or mileage with no repeat) is completed in the
+    // completion dialog, where the next due values are entered.
+    if (target && canComplete && !quickCompletionValues(target, today)) {
+      openScheduleCompletionDialog(target);
+      return;
+    }
     const vehicle = reminder.targetType === 'vehicle' ? vehicles.find((item) => item.id === reminder.targetId) : undefined;
     openLogDialog({
       targetType: reminder.targetType,
