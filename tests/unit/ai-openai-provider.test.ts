@@ -44,7 +44,7 @@ const completion = (message: Record<string, unknown>, finishReason = 'stop') => 
   id: 'chatcmpl-test',
   object: 'chat.completion',
   created: 0,
-  model: 'gpt-5.6-luna',
+  model: 'gpt-6-luna',
   choices: [{ index: 0, finish_reason: finishReason, message: { role: 'assistant', refusal: null, ...message } }],
   usage: { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 },
 });
@@ -88,7 +88,7 @@ describe('OpenAI provider request', () => {
     assert.equal(requests.length, 1);
     const [request] = requests;
     assert.match(request.url, /\/chat\/completions$/);
-    assert.equal(request.body.model, 'gpt-5.6-luna');
+    assert.equal(request.body.model, 'gpt-6-luna');
     assert.equal(request.body.max_completion_tokens, 500);
     assert.equal('reasoning_effort' in request.body, false);
     const messages = request.body.messages as Array<{ role: string; content: string }>;
@@ -124,7 +124,7 @@ describe('OpenAI provider request', () => {
     await recipe.generateRecipeFlow({
       items: [{ name: 'rice', quantity: 1, unit: 'cup' }, { name: 'beans', quantity: 1, unit: 'can' }],
     });
-    assert.equal(requests[0].body.model, 'gpt-5.6-terra');
+    assert.equal(requests[0].body.model, 'gpt-6.1-terra');
     assert.equal(requests[0].body.max_completion_tokens, 1_600);
 
     handler = () => completion({ content: JSON.stringify({
@@ -142,7 +142,7 @@ describe('OpenAI provider request', () => {
     const narrative = await overview.generateHomeOverviewNarrativeFlow({
       maintenance: { assetsNeedingAttention: 1, overdue: 1, dueSoon: 0, checklistItems: 0, urgent: [] },
     });
-    assert.equal(requests[1].body.model, 'gpt-5.6-luna');
+    assert.equal(requests[1].body.model, 'gpt-6-luna');
     assert.equal(requests[1].body.reasoning_effort, 'medium');
     assert.equal(requests[1].body.max_completion_tokens, 900);
     // Nulls are dropped and sections outside the supplied facts are filtered out.
@@ -155,7 +155,7 @@ describe('OpenAI provider request', () => {
     const result = await generation.generateStructured({
       flowName: 'maintenance-summary',
       input: { log: 'x' },
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       outputSchema: z.object({ summary: z.string() }),
       taskInstruction: 'Summarize.',
       timeoutMs: 5_000,
@@ -163,7 +163,7 @@ describe('OpenAI provider request', () => {
     });
     assert.deepEqual(result, {
       output: { summary: 'Done.' },
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
     });
   });
@@ -211,7 +211,7 @@ describe('OpenAI provider failures', () => {
     await assert.rejects(generation.generateStructured({
       flowName: 'maintenance-summary',
       input: { log: 'x' },
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       outputSchema: z.object({ summary: z.string() }),
       taskInstruction: 'Summarize.',
       timeoutMs: 25,

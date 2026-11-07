@@ -44,11 +44,11 @@ const assertAiCode = (code: string) => (error: unknown) => {
 describe('deterministic OpenAI task provider', () => {
   test('uses the configured Luna and Terra defaults', () => {
     assert.deepEqual(modelConfig.openAiModels, {
-      default: 'gpt-5.6-luna',
-      categorization: 'gpt-5.6-luna',
-      recipe: 'gpt-5.6-terra',
-      maintenance: 'gpt-5.6-luna',
-      overview: 'gpt-5.6-luna',
+      default: 'gpt-6-luna',
+      categorization: 'gpt-6-luna',
+      recipe: 'gpt-6.1-terra',
+      maintenance: 'gpt-6-luna',
+      overview: 'gpt-6-luna',
     });
   });
 
@@ -103,7 +103,7 @@ describe('deterministic OpenAI task provider', () => {
 
     const { getLastDeterministicGeneration } = await import('../../src/ai/structured-generation');
     const metadata = getLastDeterministicGeneration();
-    assert.equal(metadata?.model, 'gpt-5.6-luna');
+    assert.equal(metadata?.model, 'gpt-6-luna');
     assert.equal(metadata?.reasoningEffort, 'medium');
     assert.equal(metadata?.system.includes(injection), false);
     assert.equal(JSON.stringify(metadata?.untrustedInput).includes(injection), true);

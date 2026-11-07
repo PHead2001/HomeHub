@@ -87,7 +87,7 @@ Admin SDK reads occur only after this authorization result exists. Altered house
 ## Integrations and Background Processing
 
 - OpenAI Chat Completions through the official `openai` npm package (7.x), with strict structured outputs.
-- Default and per-flow model variables: `OPENAI_DEFAULT_MODEL=gpt-5.6-luna`, `OPENAI_CATEGORIZATION_MODEL=gpt-5.6-luna`, `OPENAI_RECIPE_MODEL=gpt-5.6-terra`, `OPENAI_MAINTENANCE_MODEL=gpt-5.6-luna`, and `OPENAI_OVERVIEW_MODEL=gpt-5.6-luna`. Overview alone sends `reasoning_effort: medium`.
+- Default and per-flow model variables: `OPENAI_DEFAULT_MODEL=gpt-6-luna`, `OPENAI_CATEGORIZATION_MODEL=gpt-6-luna`, `OPENAI_RECIPE_MODEL=gpt-6.1-terra`, `OPENAI_MAINTENANCE_MODEL=gpt-6-luna`, and `OPENAI_OVERVIEW_MODEL=gpt-6-luna`. Overview alone sends `reasoning_effort: medium`.
 - `OPENAI_API_KEY` is server-only. App Hosting maps it to Secret Manager secret `openaiApiKey` at runtime.
 - `HOMEHUB_AI_TEST_MODE=deterministic` works only with the exact demo emulator project, loopback Auth/Firestore hosts, and non-production Node environment.
 - Open Food Facts is used only by barcode lookup.
