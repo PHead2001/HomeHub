@@ -10,10 +10,7 @@
  * needed. Households have no city field, so the city is per user too.
  */
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
-import { awaitWriteUnlessOffline } from '@/lib/firestore-offline';
 import {
   fetchWeather,
   normalizeCity,
@@ -99,6 +96,13 @@ export function useWeatherPreference(): {
     emit();
     try {
       // Merge writes only `preferences.weather`; other preference keys are kept.
+      // Loaded on demand: this hook also runs in the root layout (shell weather), which
+      // must not pull Firestore into signed-out pages.
+      const [{ db }, { doc, setDoc }, { awaitWriteUnlessOffline }] = await Promise.all([
+        import('@/lib/firebase'),
+        import('firebase/firestore'),
+        import('@/lib/firestore-offline'),
+      ]);
       await awaitWriteUnlessOffline(setDoc(doc(db, 'users', email), { preferences: { weather: clean } }, { merge: true }));
     } catch (error) {
       if (previous) overrides.set(email, previous);

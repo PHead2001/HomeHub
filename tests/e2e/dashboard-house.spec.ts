@@ -193,6 +193,23 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await context.close();
   });
 
+  test('H03: a stale signed-in hint never leaves a signed-out visitor on the skeleton', async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:9002',
+      storageState: { cookies: [], origins: [{ origin: 'http://127.0.0.1:9002', localStorage: [{ name: 'homehub.session', value: '1' }] }] },
+    });
+    const page = await context.newPage();
+    await page.goto('/');
+    // The hint picks the skeleton before auth resolves; signed out, the landing must win.
+    await expect(page.getByTestId('landing')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Welcome Home', level: 1 })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeEnabled();
+    // And the stale hint is cleared for next time.
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('homehub.session'))).toBeNull();
+    await context.close();
+  });
+
   test('H03: under reduced motion the landing shows the finished house at once', async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: 'http://127.0.0.1:9002',

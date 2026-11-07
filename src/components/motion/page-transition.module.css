@@ -1,0 +1,17 @@
+/* Route crossfade with an 8 px settle (H12, <= 250 ms), CSS only so the first page
+   never loads an animation library. Mirrors PAGE_ENTER in src/lib/motion.ts. */
+.enter {
+  animation: page-enter var(--duration-ui, 220ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+:global(:root[data-motion='reduce']) .enter {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .enter {
+    animation: none;
+  }
+}

@@ -17,17 +17,8 @@ import {
   type User as FirebaseAuthUser,
   GoogleAuthProvider,
 } from 'firebase/auth';
-import {
-  collection,
-  deleteField,
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  writeBatch,
-} from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
-import { auth, clearLocalFirestoreCache, db, firebaseEmulatorMode } from '@/lib/firebase';
+import { auth, firebaseEmulatorMode } from '@/lib/firebase-app';
 import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { friendlyError } from '@/lib/friendly-error';
@@ -40,6 +31,15 @@ import type {
 } from '@/lib/types';
 
 type PermissionMap = Record<HouseholdPermission, boolean>;
+
+/**
+ * Firestore and the rest of the data stack (`@/lib/firebase`, which starts App
+ * Check before Firestore and Storage) load only when a signed-in user needs them,
+ * so signed-out pages download just the app and Auth. Every caller below awaits
+ * this before its first read or write; after the first call it resolves at once.
+ */
+const loadData = () => Promise.all([import('@/lib/firebase'), import('firebase/firestore')])
+  .then(([firebase, firestore]) => ({ ...firestore, db: firebase.db, clearLocalFirestoreCache: firebase.clearLocalFirestoreCache }));
 
 interface AuthContextType {
   currentUser: User | null;
@@ -138,6 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       toast({ variant: 'destructive', title: "Sign-in error", description: "No email address found for user."});
       return null;
     }
+    const { db, doc, getDoc, setDoc } = await loadData();
     const userDocRef = doc(db, 'users', firebaseUser.email);
     const docSnap = await getDoc(userDocRef);
 
@@ -203,6 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const cleanupLegacyInviteCode = async (householdData: Household, role: HouseholdMember['role']) => {
       if (role !== 'owner' || !householdData.inviteCode) return;
       try {
+        const { db, doc, updateDoc, deleteField } = await loadData();
         await updateDoc(doc(db, 'households', householdData.id), {
           inviteCode: deleteField(),
           updatedAt: new Date().toISOString(),
@@ -217,6 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const loadMembership = async (householdId: string) => {
       if (!currentUser?.email || !currentUser.uid) return null;
 
+      const { db, doc, getDoc } = await loadData();
       const memberSnap = await getDoc(doc(db, 'households', householdId, 'members', currentUser.uid));
       if (!memberSnap.exists()) return null;
 
@@ -257,6 +260,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCurrentMember(null);
       if (!currentUser?.email || !currentUser.householdId) return;
       try {
+        const { db, doc, setDoc } = await loadData();
         await setDoc(doc(db, 'users', currentUser.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
         setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : prev);
       } catch (error) {
@@ -387,7 +391,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // from the device. A terminated Firestore instance cannot be reused, so the page
     // reloads afterwards. (Emulator runs hold only synthetic data and keep the live
     // instance.)
-    const firestoreStopped = !firebaseEmulatorMode && await clearLocalFirestoreCache();
+    const firestoreStopped = !firebaseEmulatorMode && await (await loadData()).clearLocalFirestoreCache();
     try {
       await signOut(auth);
     } finally {
@@ -416,6 +420,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         data.forcePasswordChange = false;
       }
       
+      const { db, doc, setDoc } = await loadData();
       const userDocRef = doc(db, 'users', currentUser.email);
       await setDoc(userDocRef, data, { merge: true });
       setCurrentUser(prev => prev ? { ...prev, ...data } : null);
@@ -447,6 +452,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
     }
 
+    const { db, doc, collection, writeBatch } = await loadData();
     const userDocRef = doc(db, 'users', currentUser.email);
     
     let createdHousehold: Household | null = null;

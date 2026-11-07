@@ -33,7 +33,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 ## Architecture and Data Flow
 
-`AuthProvider` listens to Firebase Auth state, loads or creates the email-keyed Firestore profile, then resolves household membership. The login dialog uses a Google popup and requests additional profile fields through Google scopes. Profile edits merge into the current user's document and refresh context state.
+`AuthProvider` listens to Firebase Auth state, loads or creates the email-keyed Firestore profile, then resolves household membership. It imports only the app and Auth (`@/lib/firebase-app`) statically; Firestore and `@/lib/firebase` (which starts App Check first) load with a dynamic `import()` inside each profile, membership, household or logout call, so signed-out visitors never download them. `loading` stays true until the profile read finishes, exactly as before. The login dialog uses a Google popup and requests additional profile fields through Google scopes. Profile edits merge into the current user's document and refresh context state.
 
 Popup cancellation produces `Login canceled.` and clears loading in `finally`.
 
