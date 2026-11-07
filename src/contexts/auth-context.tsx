@@ -16,7 +16,6 @@ import {
   signInWithPopup,
   type User as FirebaseAuthUser,
   GoogleAuthProvider,
-  browserPopupRedirectResolver,
 } from 'firebase/auth';
 import { useToast } from '@/hooks/use-toast';
 import { auth, firebaseEmulatorMode } from '@/lib/firebase-app';
@@ -348,8 +347,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     googleProvider.setCustomParameters({ prompt: "consent" });
 
     try {
-      // The resolver class is passed here because Auth is created without one (first-paint budget).
-      const result = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
+      const result = await signInWithPopup(auth, googleProvider);
       const { user: firebaseUser } = result;
 
       const credential = GoogleAuthProvider.credentialFromResult(result);
