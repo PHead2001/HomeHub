@@ -69,3 +69,13 @@ describe('medication reminders', () => {
     assert.deepEqual(imageSourceFor({ category: 'pets', sourceType: 'pet_medication', sourceId: 'maple:flea prevention' })?.path, ['pets', 'maple']);
   });
 });
+
+describe('reopening a resolved reminder', () => {
+  test('only when it was resolved before the run started reading its sources', async () => {
+    const { shouldReopen } = await import('../../functions/src/reminders');
+    assert.equal(shouldReopen(1_000, 2_000), true, 'resolved earlier: the data read since shows it is actionable again');
+    assert.equal(shouldReopen(2_000, 2_000), false, 'resolved during the run: the run may not have seen why');
+    assert.equal(shouldReopen(3_000, 2_000), false);
+    assert.equal(shouldReopen(undefined, 2_000), false);
+  });
+});

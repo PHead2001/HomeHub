@@ -158,7 +158,7 @@ export const householdUpkeep = onSchedule(
     const households = await db.collection("households").select().get();
     const totals = {households: 0, failed: 0, generatedChores: 0,
       purgedChores: 0, createdNotifications: 0, refreshedNotifications: 0,
-      resolvedNotifications: 0};
+      resolvedNotifications: 0, reopenedNotifications: 0};
     for (const household of households.docs) {
       try {
         const result = await runHouseholdReminders(db, household.id, now, ts);
@@ -168,6 +168,7 @@ export const householdUpkeep = onSchedule(
         totals.createdNotifications += result.createdNotifications;
         totals.refreshedNotifications += result.refreshedNotifications;
         totals.resolvedNotifications += result.resolvedNotifications;
+        totals.reopenedNotifications += result.reopenedNotifications;
       } catch (error) {
         totals.failed++;
         logger.error("Household upkeep failed.", {

@@ -3,6 +3,8 @@ import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
+import { parseNotificationDoc } from '../../src/lib/notifications';
+import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
 import { choreStatsAssigneeKey, deterministicNotificationId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
@@ -87,6 +89,18 @@ describe('household upkeep', () => {
     assert.equal(refreshed.size, 1);
     // Clients list the last 7 days by createdAt, so the refresh must move it.
     assert.equal(refreshed.docs[0].data().createdAt.toDate().toISOString(), eightDaysLater.toISOString());
+  });
+
+  test('a maintenance reminder resolved while its schedule is still actionable is reopened', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const ref = (await house().collection('notifications').where('category', '==', 'maintenance').get()).docs[0].ref;
+    // The app resolved it, but the schedule never advanced (for example the write failed).
+    await ref.update({ resolvedAt: new Date('2026-11-05T15:30:00Z'), resolvedBy: { uid: 'o1' } });
+    const later = await run(new Date('2026-11-05T16:00:00Z'));
+    assert.equal(later.reopenedNotifications, 1);
+    assert.equal(later.createdNotifications, 0);
+    assert.equal((await ref.get()).data()!.resolvedAt, null);
   });
 
   test('a still-overdue reminder is refreshed before TTL could delete it, keeping its state', async () => {
@@ -265,6 +279,39 @@ describe('household upkeep', () => {
       const again = await run(new Date('2026-11-07T17:00:00Z'));
       assert.equal(again.resolvedNotifications, 0);
       assert.equal((await meds()).size, 1);
+    });
+
+    test('deleting the dose that resolved a reminder reopens it, without a new document', async () => {
+      await run(new Date('2026-11-08T15:00:00Z'));
+      const [note] = (await meds()).docs;
+      assert.equal(note.data().stateKey, 'overdue|2026-11-06');
+      // A dose logged by mistake resolves the overdue reminder...
+      await logs().doc('oops').set({ date: '2026-11-08T15:30:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-12-08' });
+      assert.equal((await run(new Date('2026-11-08T16:00:00Z'))).resolvedNotifications, 1);
+      assert.ok((await note.ref.get()).data()!.resolvedAt);
+      await note.ref.update({ 'dismissedBy.o1': true });
+      // ...and deleting it makes the countdown pending again: the same reminder comes back.
+      await logs().doc('oops').delete();
+      const later = new Date('2026-11-09T15:00:00Z');
+      const reopened = await run(later);
+      assert.equal(reopened.reopenedNotifications, 1);
+      assert.equal(reopened.createdNotifications, 0, 'same identity, no new document (and no new push)');
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      const data = notes.docs[0].data();
+      assert.equal(data.resolvedAt, null);
+      assert.equal(data.resolvedBy, null);
+      assert.equal(data.title, "Maple's Flea prevention is overdue");
+      assert.equal(data.createdAt.toDate().toISOString(), later.toISOString(), 'listed again in the 7-day window');
+      assert.ok(data.expiresAt.toDate() > new Date(later.getTime() + 6 * 86400000), 'expiry pushed out');
+      assert.equal(data.dismissedBy.o1, true, 'a member who dismissed it keeps that choice');
+      // Visible again in the app's bell list.
+      const parsed = parseNotificationDoc(notes.docs[0] as never);
+      assert.equal(activeBellNotifications([parsed], { uid: 'm2', email: 'm2@example.test' }, later).length, 1);
+      // Stable afterwards.
+      const again = await run(new Date('2026-11-09T16:00:00Z'));
+      assert.equal(again.reopenedNotifications, 0);
+      assert.equal(again.resolvedNotifications, 0);
     });
 
     test('a resolved countdown leaves the next one free to remind', async () => {

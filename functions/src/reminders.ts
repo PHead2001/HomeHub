@@ -47,7 +47,21 @@ export type HouseholdRunResult = {
   createdNotifications: number;
   refreshedNotifications: number;
   resolvedNotifications: number;
+  reopenedNotifications: number;
 };
+
+/**
+ * Whether a resolved reminder that is actionable again may be reopened: only
+ * when its last write (the resolution) happened before the run started reading
+ * the data that says it is actionable.
+ * @param {number | undefined} lastWriteMs Notification update time.
+ * @param {number} sourcesReadFromMs When the run started its source reads.
+ * @return {boolean} True to reopen.
+ */
+export const shouldReopen = (
+  lastWriteMs: number | undefined,
+  sourcesReadFromMs: number,
+): boolean => lastWriteMs !== undefined && lastWriteMs < sourcesReadFromMs;
 
 const notificationBody = (
   householdId: string,
@@ -80,7 +94,7 @@ export const runHouseholdReminders = async (
   const result: HouseholdRunResult = {
     householdId, generatedChores: 0, purgedChores: 0,
     createdNotifications: 0, refreshedNotifications: 0,
-    resolvedNotifications: 0,
+    resolvedNotifications: 0, reopenedNotifications: 0,
   };
   const house = db.collection("households").doc(householdId);
   const houseSnap = await house.get();
@@ -163,6 +177,11 @@ export const runHouseholdReminders = async (
   const timeZone = safeTimeZone(houseSnap.get("timeZone"));
   const today = localDay(now, timeZone);
 
+  // Wall-clock start of this run's source reads (Firestore update times are
+  // wall-clock too, unlike the injectable `now`). A resolved reminder is
+  // reopened only if it was resolved before this instant, so every read below
+  // already reflects whatever change resolved it.
+  const sourcesReadFrom = Date.now();
   const [membersSnap, choresSnap, templatesSnap, assetsSnap, vehiclesSnap] =
     await Promise.all([
       house.collection("members").get(),
@@ -268,6 +287,29 @@ export const runHouseholdReminders = async (
         tx.set(ref, notificationBody(householdId, now, ts, fields));
         return "created";
       }
+      const freshExpiry = ts(new Date(now.getTime() +
+        NOTIFICATION_TTL_DAYS * 86400000));
+      // Reopen: this reminder is actionable again with the same identity, so
+      // whatever resolved it was undone (for example a mistakenly logged dose
+      // was deleted, or a maintenance completion never reached its schedule).
+      // Only when it was resolved before this run read its sources: a
+      // resolution written while the run was in flight may reflect data the
+      // run has not seen. It is an update, so no new push is sent; members
+      // already had one for this same reminder, and it is visible in the
+      // bell again. Read and dismissed state is kept, as on refresh.
+      if (snap.get("resolvedAt")) {
+        if (!shouldReopen(snap.updateTime?.toMillis(), sourcesReadFrom)) {
+          return "unchanged";
+        }
+        tx.update(ref, {
+          ...fields,
+          resolvedAt: null,
+          resolvedBy: null,
+          createdAt: ts(now),
+          expiresAt: freshExpiry,
+        });
+        return "reopened";
+      }
       const expiresAt = snap.get("expiresAt") as Timestamp | undefined;
       // Still-actionable reminders stay visible: re-surface one that is close
       // to expiry rather than letting the 7-day window hide something still
@@ -276,13 +318,11 @@ export const runHouseholdReminders = async (
       // deletes a still-actionable reminder (which would lose its read and
       // dismissed state); an update keeps them and sends no new push.
       if (expiresAt &&
-          expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS &&
-          !snap.get("resolvedAt")) {
+          expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS) {
         tx.update(ref, {
           message: fields.message,
           createdAt: ts(now),
-          expiresAt: ts(new Date(now.getTime() +
-            NOTIFICATION_TTL_DAYS * 86400000)),
+          expiresAt: freshExpiry,
         });
         return "refreshed";
       }
@@ -290,6 +330,7 @@ export const runHouseholdReminders = async (
     });
     if (created === "created") result.createdNotifications++;
     if (created === "refreshed") result.refreshedNotifications++;
+    if (created === "reopened") result.reopenedNotifications++;
     return created !== "stopped";
   };
 

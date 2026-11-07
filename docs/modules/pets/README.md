@@ -72,7 +72,7 @@ Pet Storage rules require `pets.view` to read and `pets.editProfiles` to upload,
 
 ## Integrations and Background Processing
 
-Firebase Storage holds pet photos. The hourly upkeep Cloud Function (`functions/src/reminders.ts` with `functions/src/shared/medication-reminders.ts`) reads pets and their medication logs and writes medication reminders (`sourceType` `pet_medication`, due today or overdue, resolved once a newer dose is logged); its pushes show the pet's photo. No Genkit flow or external API is involved. Sound and haptics go through the shared opt-in `playFeedback`.
+Firebase Storage holds pet photos. The hourly upkeep Cloud Function (`functions/src/reminders.ts` with `functions/src/shared/medication-reminders.ts`) reads pets and their medication logs and writes medication reminders (`sourceType` `pet_medication`, due today or overdue, resolved once a newer dose is logged, and reopened if that dose is deleted); its pushes show the pet's photo. No Genkit flow or external API is involved. Sound and haptics go through the shared opt-in `playFeedback`.
 
 ## Cross-Module Dependencies
 
