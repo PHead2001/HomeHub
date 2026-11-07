@@ -65,6 +65,17 @@ export function staggerDelay(count: number): number {
 export const TAB_ENTER = { durationMs: 150, offsetPx: 4 } as const;
 
 /**
+ * What a tab panel does with its entrance marker when its `data-state` changes:
+ * play it only on a switch from inactive to active (never for the panel active on
+ * first render, which has no previous state), clear it when the panel is hidden.
+ */
+export function tabEnterChange(previous: string | null, next: string | null): 'add' | 'remove' | 'keep' {
+  if (next === previous) return 'keep';
+  if (next === 'active') return previous === 'inactive' ? 'add' : 'keep';
+  return 'remove';
+}
+
+/**
  * Route view transitions (H12). Longest time the old page is held while the next
  * route commits: a link click (navigation already under way) and an explicit
  * morph (`useMorphNavigation`, which may also wait for its target element).

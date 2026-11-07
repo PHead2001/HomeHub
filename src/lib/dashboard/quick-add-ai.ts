@@ -12,6 +12,7 @@ import type { ParseCommandInput, ParseCommandOutput } from '@/ai/tasks/parse-com
 import { dayKey, startOfLocalDay } from './dates';
 import {
   firstDateForRepeat,
+  normalizeRepeat,
   type QuickAddContext,
   type QuickAddIntent,
   type QuickAddList,
@@ -103,7 +104,9 @@ function toRepeat(repeat: NonNullable<NonNullable<ParseCommandOutput['chore']>['
 export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs, context: QuickAddContext): QuickAddIntent | null {
   const today = dayKey(startOfLocalDay(context.now));
   if (output.kind === 'chore' && output.chore) {
-    const repeat = output.chore.repeat ? toRepeat(output.chore.repeat) : null;
+    const asked = output.chore.repeat ? toRepeat(output.chore.repeat) : null;
+    const normalized = asked ? normalizeRepeat(asked) : null;
+    const repeat = normalized?.repeat ?? null;
     const due = repeat
       ? dayKey(firstDateForRepeat(repeat, context.now))
       : output.chore.dueDate && DAY.test(output.chore.dueDate) && output.chore.dueDate >= today ? output.chore.dueDate : today;
@@ -114,6 +117,7 @@ export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs,
       assignee: (output.chore.assigneeRef && refs.members.get(output.chore.assigneeRef)) || null,
       repeat,
       room: (output.chore.roomRef && refs.rooms.get(output.chore.roomRef)) || null,
+      repeatNote: normalized?.note ?? null,
     };
   }
   if (output.kind === 'maintenance' && output.maintenance) {
@@ -143,4 +147,31 @@ export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs,
     return { kind: 'feeding', pet, amount: output.feeding.amount ?? null, unit: output.feeding.unit ?? null };
   }
   return null;
+}
+
+export type RevisionGuard = {
+  /** Starts a request: returns its revision and makes every older one stale. */
+  next: () => number;
+  /** Makes every outstanding request stale (the input or the preview changed). */
+  invalidate: () => void;
+  /** True while `revision` is still the latest and nothing invalidated it. */
+  isCurrent: (revision: number) => boolean;
+};
+
+/**
+ * Ties async AI reads to the input they were made for: only the latest request,
+ * and only until the input or the open preview changes, may update the palette.
+ */
+export function createRevisionGuard(): RevisionGuard {
+  let current = 0;
+  return {
+    next: () => {
+      current += 1;
+      return current;
+    },
+    invalidate: () => {
+      current += 1;
+    },
+    isCurrent: (revision) => revision === current,
+  };
 }

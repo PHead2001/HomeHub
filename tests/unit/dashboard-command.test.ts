@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, normalizeRepeat, MONTHLY_MAX_DAY, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { describeIntent } from '../../src/lib/dashboard/quick-add-preview';
-import { buildAiParseRequest, intentFromAiParse, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
+import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
 import { mileageNote, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
 import { dayKey } from '../../src/lib/dashboard/dates';
 import { GO_TARGETS, SHORTCUTS, ariaKeyShortcuts, isShortcutSequence, shortcutById, shortcutText } from '../../src/lib/dashboard/shortcuts';
 import { notificationDestination } from '../../src/lib/dashboard/notification-display';
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import type { DashboardFacts } from '../../src/lib/dashboard/facts';
-import { ROUTE_TRANSITION, STAGGER, TAB_ENTER, morphProps, morphStyle, sharedId, staggerItemDelayMs } from '../../src/lib/motion';
+import { ROUTE_TRANSITION, STAGGER, TAB_ENTER, morphProps, morphStyle, sharedId, staggerItemDelayMs, tabEnterChange } from '../../src/lib/motion';
 import { routeKey } from '../../src/components/motion/route-transition';
 
 // Saturday, 1 August 2026, local noon.
@@ -99,8 +99,9 @@ describe('quick add writes: same shapes as the module screens', () => {
     assert.deepEqual(recurrenceFromRepeat({ frequency: 'weekly', dayOfWeek: 2 }, '2026-08-04'), { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] } });
     assert.deepEqual(recurrenceFromRepeat({ frequency: 'biweekly', dayOfWeek: 5 }, '2026-08-07'), { frequency: 'biweekly', interval: 2, weeklyOptions: { daysOfWeek: [5] }, startDate: '2026-08-07' });
     assert.deepEqual(recurrenceFromRepeat({ frequency: 'daily' }, '2026-08-01'), { frequency: 'daily', interval: 1, dailyOptions: { excludeWeekends: false } });
-    // The dialog offers days 1-28.
-    assert.deepEqual(recurrenceFromRepeat({ frequency: 'monthly', dayOfMonth: 31 }, '2026-08-31'), { frequency: 'monthly', interval: 1, monthlyOptions: { mode: 'dayOfMonth', dayOfMonth: 28 } });
+    assert.deepEqual(recurrenceFromRepeat({ frequency: 'monthly', dayOfMonth: 28 }, '2026-08-28'), { frequency: 'monthly', interval: 1, monthlyOptions: { mode: 'dayOfMonth', dayOfMonth: 28 } });
+    // A day the dialog cannot store is refused, never silently changed (intents are normalized before their preview).
+    assert.throws(() => recurrenceFromRepeat({ frequency: 'monthly', dayOfMonth: 31 }, '2026-08-31'), /invalid-recurrence/);
   });
 
   it('builds the chore template with its room and assignee', () => {
@@ -139,10 +140,12 @@ describe('quick add writes: same shapes as the module screens', () => {
     assert.equal(mileageNote(null, vehicle), null);
   });
 
-  it('starts weekly repeats on the coming weekday and others today', () => {
+  it('starts weekly repeats on the coming weekday, monthly ones on the coming day of the month, daily today', () => {
     assert.equal(dayKey(firstDateForRepeat({ frequency: 'weekly', dayOfWeek: 6 }, now)), '2026-08-01');
     assert.equal(dayKey(firstDateForRepeat({ frequency: 'weekly', dayOfWeek: 2 }, now)), '2026-08-04');
-    assert.equal(dayKey(firstDateForRepeat({ frequency: 'monthly', dayOfMonth: 15 }, now)), '2026-08-01');
+    assert.equal(dayKey(firstDateForRepeat({ frequency: 'monthly', dayOfMonth: 15 }, now)), '2026-08-15');
+    assert.equal(dayKey(firstDateForRepeat({ frequency: 'monthly', dayOfMonth: 1 }, now)), '2026-08-01');
+    assert.equal(dayKey(firstDateForRepeat({ frequency: 'daily' }, now)), '2026-08-01');
   });
 });
 
@@ -251,5 +254,64 @@ describe('peeks (H26)', () => {
     const brief = buildMorningBrief(facts, { greeting: 'Morning', name: 'Alex' });
     const linked = brief.segments.filter((segment) => segment.href);
     assert.deepEqual(linked.map((segment) => segment.peek), [{ kind: 'chores' }, { kind: 'pet', id: 'maple' }]);
+  });
+});
+
+describe('monthly repeats use the Chores 1-28 rule before the preview (review 4503881855)', () => {
+  it('normalizes days 29-31 to the 28th with a note, and leaves 1-28 alone', () => {
+    assert.equal(MONTHLY_MAX_DAY, 28);
+    assert.deepEqual(normalizeRepeat({ frequency: 'monthly', dayOfMonth: 15 }), { repeat: { frequency: 'monthly', dayOfMonth: 15 }, note: null });
+    const late = normalizeRepeat({ frequency: 'monthly', dayOfMonth: 31 });
+    assert.deepEqual(late.repeat, { frequency: 'monthly', dayOfMonth: 28 });
+    assert.match(late.note ?? '', /days 1-28.*28th instead of the 31st/);
+    assert.equal(normalizeRepeat({ frequency: 'weekly', dayOfWeek: 2 }).note, null);
+  });
+
+  it('a "monthly" chore typed on the 31st previews and saves the 28th, first due next month', () => {
+    const onThe31st: QuickAddContext = { ...context, now: new Date(2026, 6, 31, 12) };
+    const intent = parseQuickAdd('chore water the plants monthly', onThe31st);
+    assert.equal(intent?.kind, 'chore');
+    if (intent?.kind !== 'chore') return;
+    assert.deepEqual(intent.repeat, { frequency: 'monthly', dayOfMonth: 28 });
+    assert.equal(intent.dueDate, '2026-08-28');
+    assert.match(intent.repeatNote ?? '', /28th/);
+    assert.match(describeIntent(intent, null).detail, /monthly on day 28, first Fri, Aug 28/);
+    // What the preview shows is exactly what is stored.
+    assert.deepEqual(recurrenceFromRepeat(intent.repeat!, intent.dueDate).monthlyOptions, { mode: 'dayOfMonth', dayOfMonth: 28 });
+  });
+
+  it('the AI reader monthly day is normalized the same way', () => {
+    const { refs } = buildAiParseRequest('x y', context);
+    const chore = intentFromAiParse({ kind: 'chore', chore: { task: 'pay rent', repeat: { frequency: 'monthly', dayOfMonth: 30 } } }, refs, context);
+    assert.equal(chore?.kind === 'chore' && chore.repeat?.frequency === 'monthly' && chore.repeat.dayOfMonth, 28);
+    assert.equal(chore?.kind === 'chore' && chore.dueDate, '2026-08-28');
+    assert.match(chore?.kind === 'chore' ? chore.repeatNote ?? '' : '', /30th/);
+    const early = intentFromAiParse({ kind: 'chore', chore: { task: 'pay rent', repeat: { frequency: 'monthly', dayOfMonth: 1 } } }, refs, context);
+    assert.equal(early?.kind === 'chore' && early.dueDate, '2026-08-01');
+    assert.equal(early?.kind === 'chore' && early.repeatNote, null);
+  });
+});
+
+describe('stale AI reads are ignored (review 4503881859)', () => {
+  it('only the latest request, until the input or preview changes, may update the palette', () => {
+    const guard = createRevisionGuard();
+    const first = guard.next();
+    const second = guard.next();
+    assert.equal(guard.isCurrent(first), false, 'an older read is stale once a newer one starts');
+    assert.equal(guard.isCurrent(second), true);
+    guard.invalidate(); // the member edits the sentence or opens another preview
+    assert.equal(guard.isCurrent(second), false, 'its answer, error and status are all ignored');
+    const third = guard.next();
+    assert.equal(guard.isCurrent(third), true);
+  });
+});
+
+describe('tab entrance follows activation (review 4503881852)', () => {
+  it('plays only on inactive to active, never for the first active panel, and clears when hidden', () => {
+    assert.equal(tabEnterChange('active', 'active'), 'keep');
+    assert.equal(tabEnterChange(null, 'active'), 'keep');
+    assert.equal(tabEnterChange('inactive', 'active'), 'add');
+    assert.equal(tabEnterChange('active', 'inactive'), 'remove');
+    assert.equal(tabEnterChange('inactive', 'inactive'), 'keep');
   });
 });

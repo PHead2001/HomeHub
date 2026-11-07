@@ -4,30 +4,10 @@ import * as React from "react"
 import * as TabsPrimitive from "@radix-ui/react-tabs"
 
 import { cn } from "@/lib/utils"
+import { tabEnterChange } from "@/lib/motion"
 import styles from "./tabs.module.css"
 
-/**
- * Set once the tab set has mounted. The panel shown on first render appears at
- * once (the page itself may be entering); panels opened later by switching tabs
- * play the enter animation.
- */
-const TabsMountedContext = React.createContext<{ current: boolean } | null>(null)
-
-const Tabs = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Root>
->((props, ref) => {
-  const mounted = React.useRef(false)
-  React.useEffect(() => {
-    mounted.current = true
-  }, [])
-  return (
-    <TabsMountedContext.Provider value={mounted}>
-      <TabsPrimitive.Root ref={ref} {...props} />
-    </TabsMountedContext.Provider>
-  )
-})
-Tabs.displayName = TabsPrimitive.Root.displayName
+const Tabs = TabsPrimitive.Root
 
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
@@ -59,21 +39,51 @@ const TabsTrigger = React.forwardRef<
 ))
 TabsTrigger.displayName = TabsPrimitive.Trigger.displayName
 
+/**
+ * A tab panel (D09/H12). Radix keeps every panel's element rendered (inactive ones
+ * are `hidden`) and mounts only the active panel's children, so the entrance is
+ * keyed to activation, not to mounting: when this panel goes from inactive to
+ * active after the first render, it gets `data-tab-enter` before paint (a
+ * MutationObserver on its own `data-state`) and fades
+ * in with a 4 px settle (`tabs.module.css`). The panel active on first render, and
+ * any panel under reduced motion, shows at once. The attribute is set on the DOM
+ * (React never manages it), so a parent re-render cannot cut the animation short.
+ */
 const TabsContent = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
->(({ className, ...props }, ref) => {
-  const mounted = React.useContext(TabsMountedContext)
-  // Decided when the panel mounts (Radix mounts the active panel only): a panel
-  // opened by a tab switch fades in with a small settle; under reduced motion the
-  // CSS shows it at once. A forceMount panel never animates.
-  const [enter] = React.useState(() => Boolean(mounted?.current) && !props.forceMount)
+>(({ className, ...props }, forwardedRef) => {
+  const local = React.useRef<React.ElementRef<typeof TabsPrimitive.Content> | null>(null)
+  const ref = React.useCallback((node: React.ElementRef<typeof TabsPrimitive.Content> | null) => {
+    local.current = node
+    if (typeof forwardedRef === "function") forwardedRef(node)
+    else if (forwardedRef) forwardedRef.current = node
+  }, [forwardedRef])
+
+  // Watches the panel's own data-state: the selected tab can change without this
+  // wrapper re-rendering (uncontrolled tab sets). Mutation records are handled as
+  // a microtask, before the browser paints the newly shown panel.
+  React.useEffect(() => {
+    const node = local.current
+    if (!node || typeof MutationObserver === "undefined") return
+    let previous = node.getAttribute("data-state")
+    const observer = new MutationObserver(() => {
+      const state = node.getAttribute("data-state")
+      const change = tabEnterChange(previous, state)
+      if (change === "add") node.setAttribute("data-tab-enter", "")
+      else if (change === "remove") node.removeAttribute("data-tab-enter")
+      previous = state
+    })
+    observer.observe(node, { attributes: true, attributeFilter: ["data-state"] })
+    return () => observer.disconnect()
+  }, [])
+
   return (
     <TabsPrimitive.Content
       ref={ref}
       className={cn(
         "mt-2",
-        enter && styles.enter,
+        styles.panel,
         className
       )}
       {...props}

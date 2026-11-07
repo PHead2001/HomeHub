@@ -46,7 +46,7 @@ import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
 import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
-import { buildAiParseRequest, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
+import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote } from '@/lib/dashboard/quick-add-writes';
 import { describeIntent, feedingPortion, maintenanceTargetName as targetName } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
@@ -175,25 +175,38 @@ export function CommandPalette({
   const canQuickAdd = Object.values(INTENT_PERMISSION).some((permission) => permissions[permission]);
   const offerAi = canQuickAdd && !index.loading && shouldOfferAiParse(text, intent);
 
+  // Each AI read belongs to one input revision. Editing the text, opening another
+  // preview or going back starts a new revision, so a slower, older answer (or
+  // its error) never replaces what the member is looking at now.
+  const [aiRequests] = useState(createRevisionGuard);
+  const invalidateAi = useCallback(() => {
+    aiRequests.invalidate();
+    setAiState({ status: 'idle' });
+  }, [aiRequests]);
+
   const readWithAi = useCallback(async () => {
     const householdId = currentUser?.householdId;
-    if (!householdId || !quickContext || aiState.status === 'reading') return;
+    if (!householdId || !quickContext) return;
+    const revision = aiRequests.next();
     setAiState({ status: 'reading' });
     try {
       const { input, refs } = buildAiParseRequest(text, quickContext);
       const output = unwrapAiActionResult(await parseCommand(input, await getAiActionContext(householdId)));
+      if (!aiRequests.isCurrent(revision)) return;
       const read = permitted(intentFromAiParse(output, refs, quickContext));
       if (!read) {
         setAiState({ status: 'none' });
         return;
       }
+      aiRequests.invalidate();
       setAiState({ status: 'idle' });
       setPendingFromAi(true);
       setPending(read);
     } catch (error) {
+      if (!aiRequests.isCurrent(revision)) return;
       setAiState({ status: 'error', message: error instanceof Error && error.message ? error.message : friendlyError(error) });
     }
-  }, [currentUser?.householdId, quickContext, aiState.status, text, permitted]);
+  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests]);
 
   const options = useMemo<Option[]>(() => {
     const search = text.trim();
@@ -240,7 +253,11 @@ export function CommandPalette({
         detail: description.detail,
         hint: 'Enter',
         icon: Plus,
-        run: () => setPending(intent),
+        run: () => {
+          invalidateAi();
+          setPendingFromAi(false);
+          setPending(intent);
+        },
       });
     }
     // Reading with AI uses a daily AI request, so Enter picks it first only when
@@ -255,7 +272,7 @@ export function CommandPalette({
       run: () => void readWithAi(),
     }] : [];
     return [...quick, ...records, ...pageOptions, ...ai];
-  }, [text, permissions, index.entries, intent, self, navigate, offerAi, readWithAi]);
+  }, [text, permissions, index.entries, intent, self, navigate, offerAi, readWithAi, invalidateAi]);
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
@@ -269,11 +286,12 @@ export function CommandPalette({
 
   const listen = useCallback(() => {
     voice.start((spoken, final) => {
+      invalidateAi();
       setText(spoken);
       setActive(0);
       if (final) inputRef.current?.focus();
     });
-  }, [voice]);
+  }, [voice, invalidateAi]);
 
   useEffect(() => {
     if (open && startVoice && voice.supported) listen();
@@ -418,6 +436,7 @@ export function CommandPalette({
             saving={saving}
             message={retryMessage}
             onBack={() => {
+              invalidateAi();
               setPending(null);
               setPendingFromAi(false);
               setRetryMessage(null);
@@ -436,7 +455,7 @@ export function CommandPalette({
                 onChange={(event) => {
                   setText(event.target.value);
                   setActive(0);
-                  setAiState({ status: 'idle' });
+                  invalidateAi();
                 }}
                 onKeyDown={onKeyDown}
                 role="combobox"
@@ -581,6 +600,9 @@ function QuickAddPreview({
         <p className="font-medium">{description.title}</p>
         <p className="text-sm text-muted-foreground">{description.detail}</p>
       </div>
+      {intent.kind === 'chore' && intent.repeatNote && (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="quick-add-repeat-note">{intent.repeatNote}</p>
+      )}
       {fromAi && (
         <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="quick-add-ai-marker">
           <Sparkles aria-hidden className="h-3 w-3" />

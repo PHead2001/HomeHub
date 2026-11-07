@@ -69,6 +69,8 @@ export type ChoreIntent = {
   repeat: QuickAddRepeat | null;
   /** The room the sentence names ("in the kitchen"); null is "Around the house". */
   room?: QuickAddRoom | null;
+  /** Why the repeat differs from what was asked (a monthly day moved to the 28th). */
+  repeatNote?: string | null;
 };
 
 export type MaintenanceTarget = { kind: 'vehicle'; vehicle: QuickAddVehicle } | { kind: 'asset'; asset: QuickAddAsset };
@@ -112,13 +114,40 @@ function nextWeekday(now: Date, weekday: Weekday, strictlyAfter = false): Date {
   return addLocalDays(today, delta);
 }
 
+/** Chores repeats monthly on days 1-28 only (every month has them), as its dialog offers. */
+export const MONTHLY_MAX_DAY = 28;
+
 /**
- * The first day a repeating chore is due, as `findRepeat` picks it: the coming
- * weekday (today included) for weekly and every-other-week repeats, otherwise today.
+ * The repeat as Chores can store it: a monthly day after the 28th becomes the 28th,
+ * with a note for the preview, so the schedule the member confirms is exactly the
+ * one that is saved.
+ */
+export function normalizeRepeat(repeat: QuickAddRepeat): { repeat: QuickAddRepeat; note: string | null } {
+  if (repeat.frequency !== 'monthly') return { repeat, note: null };
+  const day = Math.max(1, Math.floor(repeat.dayOfMonth));
+  if (day <= MONTHLY_MAX_DAY) return { repeat: { frequency: 'monthly', dayOfMonth: day }, note: null };
+  return {
+    repeat: { frequency: 'monthly', dayOfMonth: MONTHLY_MAX_DAY },
+    note: `Chores repeat monthly on days 1-${MONTHLY_MAX_DAY}, so this one is set to the ${MONTHLY_MAX_DAY}th instead of the ${day}${day === 31 ? 'st' : 'th'}.`,
+  };
+}
+
+/**
+ * The first day a repeating chore is due: the coming weekday (today included) for
+ * weekly and every-other-week repeats, the coming day of the month for monthly
+ * ones (today included), otherwise today.
  */
 export function firstDateForRepeat(repeat: QuickAddRepeat, now: Date): Date {
   if (repeat.frequency === 'weekly' || repeat.frequency === 'biweekly') return nextWeekday(now, repeat.dayOfWeek);
-  return startOfLocalDay(now);
+  const today = startOfLocalDay(now);
+  if (repeat.frequency === 'monthly') {
+    if (today.getDate() <= repeat.dayOfMonth) {
+      const thisMonth = new Date(today.getFullYear(), today.getMonth(), repeat.dayOfMonth);
+      if (thisMonth.getMonth() === today.getMonth()) return thisMonth;
+    }
+    return new Date(today.getFullYear(), today.getMonth() + 1, repeat.dayOfMonth);
+  }
+  return today;
 }
 
 type DateMatch = { date: Date; consumed: RegExp };
@@ -211,10 +240,11 @@ export function findRepeat(text: string, now: Date): RepeatMatch | null {
     };
   }
   if (/\b(every month|monthly|each month)\b/.test(lower)) {
+    const repeat = normalizeRepeat({ frequency: 'monthly', dayOfMonth: now.getDate() }).repeat;
     return {
-      repeat: { frequency: 'monthly', dayOfMonth: now.getDate() },
+      repeat,
       consumed: /\b(every month|monthly|each month)\b/i,
-      firstDate: startOfLocalDay(now),
+      firstDate: firstDateForRepeat(repeat, now),
     };
   }
   return null;
@@ -406,6 +436,9 @@ function parseChore(text: string, context: QuickAddContext): ChoreIntent | null 
     dueDate: dayKey(due),
     assignee: assignee?.member ?? null,
     repeat: repeat?.repeat ?? null,
+    repeatNote: repeat?.repeat.frequency === 'monthly' && context.now.getDate() > MONTHLY_MAX_DAY
+      ? normalizeRepeat({ frequency: 'monthly', dayOfMonth: context.now.getDate() }).note
+      : null,
     room: room?.room ?? null,
   };
 }

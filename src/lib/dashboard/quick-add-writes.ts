@@ -14,18 +14,22 @@
  */
 import { buildRecurrence, type RecurrenceState } from '@/components/chores/recurrence-fields';
 import type { MaintenanceLog, Recurrence } from '@/lib/types';
-import type { MaintenanceTarget, QuickAddRepeat } from './quick-add';
+import { MONTHLY_MAX_DAY, type MaintenanceTarget, type QuickAddRepeat } from './quick-add';
 
 /** The recurrence the Chores dialog stores for this repeat (`buildRecurrence`). */
 export function recurrenceFromRepeat(repeat: QuickAddRepeat, firstDay: string): Omit<Recurrence, 'assignedToEmail'> {
+  // Intents are normalized before their preview (`normalizeRepeat`); a day the
+  // dialog cannot store is refused here rather than silently changed.
+  if (repeat.frequency === 'monthly' && (repeat.dayOfMonth < 1 || repeat.dayOfMonth > MONTHLY_MAX_DAY || !Number.isInteger(repeat.dayOfMonth))) {
+    throw new Error('invalid-recurrence');
+  }
   const state: RecurrenceState = {
     frequency: repeat.frequency,
     excludeWeekends: false,
     daysOfWeek: repeat.frequency === 'weekly' || repeat.frequency === 'biweekly' ? [String(repeat.dayOfWeek)] : [],
     biweeklyStartDate: new Date(`${firstDay}T12:00:00`),
     monthlyMode: 'dayOfMonth',
-    // The dialog offers days 1-28 (every month has them).
-    dayOfMonth: repeat.frequency === 'monthly' ? Math.min(28, Math.max(1, repeat.dayOfMonth)) : 1,
+    dayOfMonth: repeat.frequency === 'monthly' ? repeat.dayOfMonth : 1,
     nthWeek: 1,
     nthWeekday: 1,
   };
