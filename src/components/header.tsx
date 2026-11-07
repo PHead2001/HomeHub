@@ -19,7 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { MemberAvatar } from './member-avatar';
-import { ShortcutHint } from './ui/shortcut-hint';
+import { LazyShortcutHint as ShortcutHint } from './ui/lazy-shortcut-hint';
 import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import dynamic from 'next/dynamic';
 import { Logo } from './brand/logo';

@@ -136,6 +136,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 - Run `npm.cmd run test:unit` for the strict-schema conversion of every flow output schema and the OpenAI provider contract (request body, response handling, SDK error mapping) against a stubbed `fetch`; it never reaches the network.
 - Run `npm.cmd run test:e2e:ai:local` for authenticated desktop/mobile Shopping, recipe, maintenance-summary, overview, barcode, partial-permission, and cross-household workflows.
 - Run `npm.cmd run test:rules` for emulator-only module permissions and Household A/B isolation.
+- Run `npm.cmd run test:server` for `tests/server/ai-action-auth.test.ts`: single permissions, the any-of list (any one grants, none denies, an empty list denies even the owner), pending and non-member callers denied in every form, and the payload cap and quota order around the grant.
 - Run `npm.cmd run lint`, `npm.cmd run typecheck`, and `npm.cmd run build` after AI changes.
 - Run `npm.cmd run test:ai:openai:live` only with a replacement key securely loaded into the environment; it is the only provider-live validation command. Local development uses the app itself (`npm.cmd run dev`) or this smoke command; there is no separate AI developer UI.
 - Manually verify server denial for unauthenticated, pending, cross-household, and insufficient-permission callers before changing authorization behavior.

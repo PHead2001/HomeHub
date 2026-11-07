@@ -13,7 +13,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { isComposingKey, isTypingTarget, matchShortcut, SHORTCUTS } from '@/lib/dashboard/shortcuts';
 import type { HouseholdPermission } from '@/lib/types';
 import dynamic from 'next/dynamic';
-import { ShortcutKeys } from '@/components/ui/shortcut-hint';
+import { ShortcutKeys } from '@/components/ui/shortcut-keys';
 
 // The palette searches and writes household data (Firestore); it is its own chunk,
 // loaded only once a signed-in member can use it (`enabled`).

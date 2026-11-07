@@ -58,7 +58,7 @@ This module owns the root layout, global providers and overlays, primary navigat
 - `src/lib/service-worker.ts`
 - `src/app/e2e-login/page.tsx`
 - `src/components/e2e-login-client.tsx`
-- `src/components/ui/*` (shadcn primitives plus `shortcut-hint.tsx` and `peek-link.tsx`)
+- `src/components/ui/*` (shadcn primitives plus `shortcut-hint.tsx`, `lazy-shortcut-hint.tsx`, `shortcut-keys.tsx` and `peek-link.tsx`)
 
 ## Architecture and Data Flow
 
@@ -96,7 +96,7 @@ HomeHub has exactly one service worker, `/api/sw` with scope `/` (`src/lib/servi
 
 The desktop header (`<nav aria-label="Main">`) marks the current link with `aria-current="page"`, the foreground color and an accent underline (a motion `layoutId="header-nav-underline"` element) that slides to the new link on navigation. Header and phone tab bar share `isActiveRoute` from `src/lib/navigation.ts`.
 
-Header and phone tab bar navigation derive visibility from effective permissions. The header also has a "Search or quick add" button (opens the palette), the notification bell named "Notifications" (plus the unread count when there is one, which ticks to new values) and the "Account menu" button with the member's shared gradient `MemberAvatar` (photo when there is one; decorative, the button carries the name). The search button and the header links with a `G` shortcut carry `ShortcutHint` tooltips.
+Header and phone tab bar navigation derive visibility from effective permissions. The header also has a "Search or quick add" button (opens the palette), the notification bell named "Notifications" (plus the unread count when there is one, which ticks to new values) and the "Account menu" button with the member's shared gradient `MemberAvatar` (photo when there is one; decorative, the button carries the name). The search button and the header links with a `G` shortcut carry `ShortcutHint` tooltips through `LazyShortcutHint` (`src/components/ui/lazy-shortcut-hint.tsx`): the tooltip code loads only once a signed-in header renders them, so the signed-out landing never downloads it before first paint, and until then the control already has its `aria-keyshortcuts`. `ShortcutKeys` lives in its own tooltip-free file (`shortcut-keys.tsx`) for the same reason (the cheat sheet in the first-paint command center uses it).
 
 `tailwind.config.ts` sets `future.hoverOnlyWhenSupported`, so every `hover:` style applies only on devices with a hovering, fine pointer. On phones a tapped button no longer keeps a stuck hover fill (the audit's "Refresh button keeps a filled look after click").
 
