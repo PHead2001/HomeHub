@@ -198,7 +198,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
               <NumberTicker value={chores.todayDone} /> of <NumberTicker value={chores.todayTotal} /> done
             </span>
             <span className="block text-sm text-muted-foreground">
-              {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} /> open for you</>}
+              {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</>}
               {chores.overdueTotal > 0 && <span className="text-warning">{` · ${chores.overdueTotal} overdue`}</span>}
             </span>
           </span>
@@ -268,7 +268,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
                 </span>
               </li>
             ))}
-            {pets.pets.length > 3 && <li className="text-xs text-muted-foreground">+<NumberTicker value={pets.pets.length - 3} /> more</li>}
+            {pets.pets.length > 3 && <li className="text-xs text-muted-foreground">+<NumberTicker value={pets.pets.length - 3} animateOnMount={false} /> more</li>}
           </ul>
         )}
       </Tile>

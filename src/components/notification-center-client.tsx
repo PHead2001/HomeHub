@@ -308,9 +308,13 @@ export function NotificationCenterClient() {
           >
             {filter.label}
             {filter.value === "unread" && !isLoading && !error && unreadCount > 0 && (
-              <span className="ml-1.5 rounded-full bg-background/20 px-1.5 text-xs font-semibold" data-testid="notification-unread-count">
-                <NumberTicker value={unreadCount} />
-              </span>
+              <>
+                {/* A real space, so the button reads and is named "Unread 3". */}
+                {" "}
+                <span className="rounded-full bg-background/20 px-1.5 text-xs font-semibold" data-testid="notification-unread-count">
+                  <NumberTicker value={unreadCount} animateOnMount={false} />
+                </span>
+              </>
             )}
           </Button>
         ))}

@@ -82,6 +82,27 @@ export function tabEnterChange(previous: string | null, next: string | null): 'a
  */
 export const ROUTE_TRANSITION = { linkMaxWaitMs: 500, morphMaxWaitMs: 800, pollMs: 16 } as const;
 
+/* NumberTicker frames (pure, unit-tested; used by src/components/motion/number-ticker.tsx). */
+/** Figure space: as wide as a digit in tabular figures. */
+const FIGURE_SPACE = '\u2007';
+/** Punctuation space: as wide as a period or comma. */
+const PUNCTUATION_SPACE = '\u2008';
+
+/**
+ * The string drawn while counting: `current` padded at the start to the final
+ * value's length, so it occupies exactly the final text's width. Null when the
+ * count cannot be drawn in that width (a start value with more characters than
+ * the final one, e.g. counting down from 12 to 9): then the value changes at once.
+ */
+export function tickerFrame(current: string, final: string, start: string): string | null {
+  if (start.length > final.length || current.length > final.length) return null;
+  // Pad with a space as wide as the final character it stands in for (a digit,
+  // or a separator such as "," or "."), so the drawn string is exactly as wide.
+  const missing = final.length - current.length;
+  const pad = Array.from(final.slice(0, missing), (char) => (/\d/.test(char) ? FIGURE_SPACE : PUNCTUATION_SPACE)).join('');
+  return pad + current;
+}
+
 /** Page content enter: crossfade with an 8 px settle. */
 export const PAGE_ENTER = {
   initial: { opacity: 0, y: 8 },

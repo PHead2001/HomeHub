@@ -9,7 +9,7 @@ import { GO_TARGETS, SHORTCUTS, ariaKeyShortcuts, isShortcutSequence, shortcutBy
 import { notificationDestination } from '../../src/lib/dashboard/notification-display';
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import type { DashboardFacts } from '../../src/lib/dashboard/facts';
-import { ROUTE_TRANSITION, STAGGER, TAB_ENTER, morphProps, morphStyle, sharedId, staggerItemDelayMs, tabEnterChange } from '../../src/lib/motion';
+import { ROUTE_TRANSITION, STAGGER, TAB_ENTER, morphProps, morphStyle, sharedId, staggerItemDelayMs, tabEnterChange, tickerFrame } from '../../src/lib/motion';
 import { routeKey } from '../../src/components/motion/route-transition';
 
 // Saturday, 1 August 2026, local noon.
@@ -396,5 +396,20 @@ describe('the only vehicle is preselected from the loaded records (E2E finding 2
     assert.equal(defaultMaintenanceTarget(parseQuickAdd('log replaced filters', context)!, [suv]), null);
     // Preselected, Confirm is free.
     assert.equal(quickAddConfirmBlocker({ intent: oil, indexLoading: false, vehicleCount: 1, chosenTarget: defaultMaintenanceTarget(oil, [suv]) }), null);
+  });
+});
+
+describe('NumberTicker frames never change the width (H12 text contract)', () => {
+  const FIGURE = ' ';
+  const PUNCT = ' ';
+  it('pads a shorter count with digit-wide and separator-wide spaces to the final length', () => {
+    assert.equal(tickerFrame('0', '1', '0'), '0');
+    assert.equal(tickerFrame('7', '12', '0'), `${FIGURE}7`);
+    assert.equal(tickerFrame('999', '1,000', '0'), `${FIGURE}${PUNCT}999`);
+    assert.equal(tickerFrame('12', '12', '0')?.length, 2);
+  });
+  it('declines a count that would be wider than the final value (it then changes at once)', () => {
+    assert.equal(tickerFrame('12', '9', '12'), null);
+    assert.equal(tickerFrame('10', '9', '12'), null);
   });
 });

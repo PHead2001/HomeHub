@@ -1,6 +1,8 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { resolve } from 'node:path';
+import { build } from 'esbuild';
 import { fixedNow } from './test-helpers';
 
 /*
@@ -307,5 +309,93 @@ test.describe('visual and a11y checks the verification could not settle', () => 
       await page.getByRole('navigation', { name: 'Primary' }).getByRole('button', { name: /More/ }).click();
       await checkDialog();
     }
+  });
+});
+
+/**
+ * NumberTicker inside labels: one real text node with the final value at every
+ * moment, so textContent, innerText and the accessible name are exact, both while
+ * the digits count and after. Rendered from the real component (bundled with
+ * esbuild) with page.setContent, so no app data is involved.
+ */
+async function tickerHarness() {
+  const result = await build({
+    entryPoints: [resolve('tests/e2e/fixtures/number-ticker-harness.tsx')],
+    bundle: true,
+    write: false,
+    outdir: 'out',
+    format: 'iife',
+    jsx: 'automatic',
+    tsconfig: resolve('tsconfig.json'),
+    loader: { '.module.css': 'local-css' },
+    define: { 'process.env.NODE_ENV': '"production"' },
+    logLevel: 'silent',
+    plugins: [{
+      // The harness has no AppearanceProvider; reduced motion falls back to the media query.
+      name: 'appearance-stub',
+      setup(builder) {
+        builder.onResolve({ filter: /appearance-provider$/ }, () => ({ path: 'appearance-stub', namespace: 'stub' }));
+        builder.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: 'export const useOptionalAppearance = () => null;', loader: 'js' }));
+      },
+    }],
+  });
+  const js = result.outputFiles.find((file) => file.path.endsWith('.js'))!.text;
+  const css = result.outputFiles.find((file) => file.path.endsWith('.css'))?.text ?? '';
+  return `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div><script>${js}</script></body></html>`;
+}
+
+test.describe('H12: NumberTicker keeps labels exact', () => {
+  test('text and accessible names read the final value while counting and after', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const html = await tickerHarness();
+    const read = (selector: string) => page.locator(selector).evaluate((element) => ({
+      text: element.textContent,
+      inner: (element as HTMLElement).innerText,
+      counting: element.querySelector('[data-counting]') !== null,
+    }));
+
+    await page.setContent(html);
+    const todo = page.getByRole('button', { name: 'To Do (1)', exact: true });
+    await expect(todo).toBeVisible();
+    // Mid-animation: the button's ticker counts up from 0 on mount.
+    const during = await read('#todo');
+    expect(during.counting, 'still counting when first read').toBe(true);
+    expect(during).toMatchObject({ text: 'To Do (1)', inner: 'To Do (1)' });
+    await expect(page.getByRole('button', { name: 'Future (1)', exact: true })).toBeVisible();
+    expect(await read('#pets')).toMatchObject({ text: '1 of 2 today', inner: '1 of 2 today' });
+
+    // After the animation.
+    await expect.poll(async () => (await read('#todo')).counting).toBe(false);
+    expect(await read('#todo')).toMatchObject({ text: 'To Do (1)', inner: 'To Do (1)', counting: false });
+
+    // A change ticks; the label already says the new value while it counts.
+    await page.evaluate(() => window.__setCount?.(5));
+    const changing = await read('#future');
+    expect(changing).toMatchObject({ text: 'Future (5)', inner: 'Future (5)', counting: true });
+    await expect(page.getByRole('button', { name: 'Future (5)', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'To Do (5)', exact: true })).toBeVisible();
+    expect(await read('#big')).toMatchObject({ text: '5,000 points', inner: '5,000 points' });
+
+    // No width change while counting (the drawn digits add no width).
+    await page.evaluate(() => window.__setCount?.(1));
+    await expect.poll(async () => (await read('#todo')).counting).toBe(false);
+    const rest = await page.locator('#todo').evaluate((element) => element.getBoundingClientRect().width);
+    await page.evaluate(() => window.__setCount?.(9));
+    await expect.poll(async () => (await read('#todo')).counting).toBe(false);
+    const after = await page.locator('#todo').evaluate((element) => element.getBoundingClientRect().width);
+    await page.evaluate(() => window.__setCount?.(1));
+    await page.evaluate(() => window.__setCount?.(9));
+    const mid = await page.locator('#todo').evaluate((element) => ({ width: element.getBoundingClientRect().width, counting: element.querySelector('[data-counting]') !== null }));
+    expect(mid.counting).toBe(true);
+    expect(Math.abs(mid.width - after)).toBeLessThan(0.5);
+    expect(Math.abs(rest - after)).toBeLessThan(0.5);
+  });
+
+  test('reduced motion shows the final value at once', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setContent(await tickerHarness());
+    await expect(page.getByRole('button', { name: 'To Do (1)', exact: true })).toBeVisible();
+    expect(await page.locator('[data-counting]').count()).toBe(0);
   });
 });
