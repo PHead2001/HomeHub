@@ -13,8 +13,22 @@
  *   for the vehicle or asset (or general), with the odometer reading on vehicle logs.
  */
 import { buildRecurrence, type RecurrenceState } from '@/components/chores/recurrence-fields';
+import { stableSlugify } from '@/lib/utils';
 import type { MaintenanceLog, Recurrence } from '@/lib/types';
 import { MONTHLY_MAX_DAY, type MaintenanceTarget, type QuickAddRepeat } from './quick-add';
+
+/**
+ * Id for a document quick add creates: a readable slug plus a Firestore auto-id
+ * (`doc(collection).id`, 20 random characters). Quick add never reads the existing
+ * ids to pick a free one: offline (or from cache) that list can be incomplete, and
+ * a queued `setDoc` onto a taken id would overwrite that document on reconnect. A
+ * random part makes every create a new document, online or offline.
+ */
+export function quickCreateId(label: string, randomPart: string, fallback = 'item'): string {
+  const random = randomPart.replace(/[^a-zA-Z0-9]/g, '');
+  if (random.length < 16) throw new Error('quickCreateId needs a Firestore auto-id');
+  return `${(stableSlugify(label) || fallback).slice(0, 60)}-${random}`;
+}
 
 /** The recurrence the Chores dialog stores for this repeat (`buildRecurrence`). */
 export function recurrenceFromRepeat(repeat: QuickAddRepeat, firstDay: string): Omit<Recurrence, 'assignedToEmail'> {

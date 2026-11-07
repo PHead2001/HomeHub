@@ -48,7 +48,7 @@ import type { HouseholdPermission } from '@/lib/types';
 import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote } from '@/lib/dashboard/quick-add-writes';
-import { describeIntent, feedingPortion, maintenanceTargetName as targetName } from '@/lib/dashboard/quick-add-preview';
+import { describeIntent, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
@@ -167,7 +167,13 @@ export function CommandPalette({
     return candidate;
   }, [permissions]);
 
-  const intent = useMemo(() => (quickContext ? permitted(parseQuickAdd(text, quickContext)) : null), [text, quickContext, permitted]);
+  // No suggestion until the index (members, rooms, lists, pets, vehicles, assets)
+  // has loaded: a sentence read against half the records could pick the wrong (or
+  // no) assignee, room, list or vehicle.
+  const intent = useMemo(
+    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, quickContext)) : null),
+    [text, quickContext, permitted, index.loading],
+  );
 
   // AI reading (H13 fallback): only on request, for a sentence the parser could not read.
   const [aiState, setAiState] = useState<{ status: 'idle' | 'reading' | 'none' | 'error'; message?: string }>({ status: 'idle' });
@@ -426,6 +432,9 @@ export function CommandPalette({
         </DialogDescription>
         {pending ? (
           <QuickAddPreview
+            // Remounts once the index has loaded, so its choices start from the full records.
+            key={index.loading ? 'loading' : 'ready'}
+            indexLoading={index.loading}
             intent={pending}
             self={self}
             members={assignable}
@@ -528,6 +537,7 @@ function VoiceWave() {
 
 function QuickAddPreview({
   intent,
+  indexLoading,
   self,
   members,
   rooms,
@@ -540,6 +550,8 @@ function QuickAddPreview({
   onConfirm,
 }: {
   intent: QuickAddIntent;
+  /** The palette index is still loading: no choice can be trusted yet. */
+  indexLoading: boolean;
   self: QuickAddMember | null;
   members: QuickAddMember[];
   rooms: QuickAddRoom[];
@@ -575,7 +587,8 @@ function QuickAddPreview({
     return null;
   })();
   // A mileage belongs to a vehicle: with vehicles to choose from, pick one first.
-  const needsVehicle = intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length > 0 && target?.kind !== 'vehicle';
+  const needsVehicle = !indexLoading && intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length > 0 && target?.kind !== 'vehicle';
+  const blocker = quickAddConfirmBlocker({ intent, indexLoading, vehicleCount: vehicles.length, chosenTarget: target });
   const shown: QuickAddIntent = intent.kind === 'chore'
     ? { ...intent, assignee: assignee ?? resolved.assignee, room }
     : intent.kind === 'maintenance' ? { ...intent, target } : intent;
@@ -649,7 +662,10 @@ function QuickAddPreview({
           </select>
         </label>
       )}
-      {intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 0 && (
+      {blocker && (
+        <p role="status" className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-blocker">{blocker}</p>
+      )}
+      {!indexLoading && intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 0 && (
         <p className="mt-3 text-sm text-muted-foreground">No vehicles yet, so this is a general log with the reading in its notes.</p>
       )}
       {note && <p className="mt-3 text-sm text-warning" data-testid="quick-add-mileage-note">{note}</p>}
@@ -663,7 +679,7 @@ function QuickAddPreview({
           ref={confirmRef}
           type="button"
           onClick={() => onConfirm({ assignee, room, target })}
-          disabled={saving || needsVehicle}
+          disabled={saving || blocker !== null}
           data-testid="quick-add-confirm"
         >
           {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}

@@ -14,7 +14,7 @@
  * - one-time chores: a temporary task (chore + targeted assignment notification,
  *   skipped when you assign it to yourself), as Chores creates them;
  * - repeating chores: a chore template with the Chores dialog's recurrence shape
- *   (`repeatingChoreTemplate`), a unique template id as Chores picks it, and the
+ *   (`repeatingChoreTemplate`), an id that is always new (`quickCreateId`), and the
  *   same "new repeating chore" notification; server upkeep creates the instances;
  * - maintenance logs: a routine log like the Maintenance "Add log" form
  *   (`quickMaintenanceLog`), with the odometer reading on the vehicle's log.
@@ -41,9 +41,7 @@ import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { Chore, ShoppingListItem, User } from '@/lib/types';
 import type { MaintenanceTarget, QuickAddList, QuickAddMember, QuickAddRepeat, QuickAddRoom } from '@/lib/dashboard/quick-add';
-import { quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '@/lib/dashboard/quick-add-writes';
-import { uniqueTemplateId } from '@/lib/chores/list';
-import { slugify, stableSlugify } from '@/lib/utils';
+import { quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '@/lib/dashboard/quick-add-writes';
 
 export async function addShoppingItems(
   householdId: string,
@@ -200,10 +198,10 @@ export async function createRepeatingChore({
   onLateError: (error: unknown) => void;
 }): Promise<{ templateId: string; status: 'saved' | 'queued' }> {
   const templates = collection(db, 'households', householdId, 'chore-templates');
-  // Chores picks a readable id that is not taken; if the ids cannot be read, a
-  // random suffix keeps it from overwriting an existing template.
-  const existing = await getDocsOfflineAware(templates).then((snapshot) => new Set(snapshot.docs.map((entry) => entry.id))).catch(() => null);
-  const templateId = existing ? uniqueTemplateId(stableSlugify(task), existing) : slugify(task);
+  // Always a new document: a readable slug plus a Firestore auto-id. Picking a free
+  // readable id would need the full template list, which offline (or from cache)
+  // may be incomplete, so a queued write could overwrite a template on reconnect.
+  const templateId = quickCreateId(task, doc(templates).id, 'chore');
   const template = repeatingChoreTemplate({
     task,
     roomId: room?.id ?? null,
@@ -249,7 +247,9 @@ export async function logMaintenance({
   target: MaintenanceTarget | null;
   onLateError: (error: unknown) => void;
 }): Promise<{ logId: string; status: 'saved' | 'queued' }> {
-  const logId = slugify(title);
+  const logs = collection(db, 'households', householdId, 'maintenance');
+  // Always a new document (see createRepeatingChore): never overwrites a log.
+  const logId = quickCreateId(title, doc(logs).id, 'log');
   const data = quickMaintenanceLog({
     householdId,
     title,
@@ -258,6 +258,6 @@ export async function logMaintenance({
     target,
     nowIso: new Date().toISOString(),
   });
-  const status = await awaitWriteUnlessOffline(setDoc(doc(db, 'households', householdId, 'maintenance', logId), data), onLateError);
+  const status = await awaitWriteUnlessOffline(setDoc(doc(logs, logId), data), onLateError);
   return { logId, status };
 }

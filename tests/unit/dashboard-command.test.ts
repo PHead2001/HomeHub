@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, normalizeRepeat, MONTHLY_MAX_DAY, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
-import { describeIntent } from '../../src/lib/dashboard/quick-add-preview';
+import { describeIntent, quickAddConfirmBlocker } from '../../src/lib/dashboard/quick-add-preview';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
-import { mileageNote, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
+import { mileageNote, quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
 import { dayKey } from '../../src/lib/dashboard/dates';
 import { GO_TARGETS, SHORTCUTS, ariaKeyShortcuts, isShortcutSequence, shortcutById, shortcutText } from '../../src/lib/dashboard/shortcuts';
 import { notificationDestination } from '../../src/lib/dashboard/notification-display';
@@ -313,5 +313,43 @@ describe('tab entrance follows activation (review 4503881852)', () => {
     assert.equal(tabEnterChange('inactive', 'active'), 'add');
     assert.equal(tabEnterChange('active', 'inactive'), 'remove');
     assert.equal(tabEnterChange('inactive', 'inactive'), 'keep');
+  });
+});
+
+describe('quick add never overwrites on create (review 4503943542)', () => {
+  it('ids are a readable slug plus a Firestore auto-id, never the bare slug an existing template may have', () => {
+    const a = quickCreateId('Trash', 'Ab3dE5gH7jK9mN1pQ2rS', 'chore');
+    const b = quickCreateId('Trash', 'Zz9yX8wV7uT6sR5qP4oN', 'chore');
+    assert.equal(a, 'trash-Ab3dE5gH7jK9mN1pQ2rS');
+    assert.notEqual(a, b);
+    // Chores' own readable ids ("trash", "trash-2") can never be produced.
+    assert.notEqual(a, 'trash');
+    assert.doesNotMatch(a, /^trash(-\d+)?$/);
+    assert.equal(quickCreateId('!!!', 'Ab3dE5gH7jK9mN1pQ2rS', 'chore'), 'chore-Ab3dE5gH7jK9mN1pQ2rS');
+    assert.equal(quickCreateId('x'.repeat(200), 'Ab3dE5gH7jK9mN1pQ2rS').length, 60 + 1 + 20);
+    // No auto-id, no id: a create must not fall back to a guessable one.
+    assert.throws(() => quickCreateId('Trash', ''), /auto-id/);
+    assert.throws(() => quickCreateId('Trash', 'abc'), /auto-id/);
+  });
+});
+
+describe('Confirm waits for the palette index (review 4503943546)', () => {
+  const oil = parseQuickAdd('oil change 48,200 miles', context)!;
+  const chore = parseQuickAdd('trash every Tuesday for Sam', context)!;
+  const shopping = parseQuickAdd('add milk', context)!;
+  const suv = { kind: 'vehicle' as const, vehicle: context.vehicles![0] };
+
+  it('every preview kind is blocked while vehicles, members, rooms and lists load', () => {
+    for (const intent of [oil, chore, shopping]) {
+      assert.match(quickAddConfirmBlocker({ intent, indexLoading: true, vehicleCount: 0, chosenTarget: null }) ?? '', /Loading/, intent.kind);
+    }
+  });
+
+  it('once loaded, a mileage needs a vehicle when the household has any; otherwise it can save', () => {
+    assert.match(quickAddConfirmBlocker({ intent: oil, indexLoading: false, vehicleCount: 2, chosenTarget: null }) ?? '', /vehicle/);
+    assert.equal(quickAddConfirmBlocker({ intent: oil, indexLoading: false, vehicleCount: 2, chosenTarget: suv }), null);
+    assert.equal(quickAddConfirmBlocker({ intent: oil, indexLoading: false, vehicleCount: 0, chosenTarget: null }), null);
+    assert.equal(quickAddConfirmBlocker({ intent: chore, indexLoading: false, vehicleCount: 0, chosenTarget: null }), null);
+    assert.equal(quickAddConfirmBlocker({ intent: shopping, indexLoading: false, vehicleCount: 0, chosenTarget: null }), null);
   });
 });

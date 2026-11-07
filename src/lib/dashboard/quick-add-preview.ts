@@ -7,6 +7,31 @@ import { DEFAULT_PORTION, formatPortion } from '../pets/care';
 import type { PortionUnit } from '../pets/types';
 import { describeRepeat, type MaintenanceTarget, type QuickAddIntent, type QuickAddMember } from './quick-add';
 
+/**
+ * Why Confirm is unavailable on a quick-add preview, or null when it can save.
+ * The vehicles, assets, members, rooms and lists the preview picks from come from
+ * the palette's index; until it has loaded, a choice made now could be wrong (a
+ * mileage saved as a general log because no vehicle was known yet), so every kind
+ * waits for it. A mileage then needs a vehicle when the household has any.
+ */
+export function quickAddConfirmBlocker({
+  intent,
+  indexLoading,
+  vehicleCount,
+  chosenTarget,
+}: {
+  intent: QuickAddIntent;
+  indexLoading: boolean;
+  vehicleCount: number;
+  chosenTarget: MaintenanceTarget | null;
+}): string | null {
+  if (indexLoading) return "Loading your household's members, rooms, lists and vehicles…";
+  if (intent.kind === 'maintenance' && intent.mileage !== null && vehicleCount > 0 && chosenTarget?.kind !== 'vehicle') {
+    return 'Choose the vehicle this reading belongs to.';
+  }
+  return null;
+}
+
 export const maintenanceTargetName = (target: MaintenanceTarget | null | undefined) =>
   target ? (target.kind === 'vehicle' ? target.vehicle.name : target.asset.name) : null;
 

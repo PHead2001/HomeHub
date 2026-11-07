@@ -97,6 +97,9 @@ test.describe('H13: natural-language quick add writes what it says', () => {
       await expect(preview.getByRole('combobox', { name: 'Vehicle' })).toHaveValue('vehicle:family-suv');
       await expect(preview.getByTestId('quick-add-mileage-note')).toContainText('48,750');
       expect((await household.collection('maintenance').where('title', '==', 'Oil change').get()).size).toBe(0);
+      // The index has loaded and a vehicle is chosen, so nothing blocks Confirm.
+      await expect(preview.getByTestId('quick-add-blocker')).toHaveCount(0);
+      await expect(preview.getByTestId('quick-add-confirm')).toBeEnabled();
       await preview.getByTestId('quick-add-confirm').click();
       await expect(palette).toHaveCount(0);
       await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Oil change').get()).size).toBe(1);
