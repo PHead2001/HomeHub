@@ -6,6 +6,7 @@ import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '.
 import { toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { recurringChoreId } from '../../../functions/src/shared/ids';
+import { currentMedications, type MedicationDue as MedicationCountdown } from '../pets/care';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
 export type CalendarEventKind = 'chore' | 'maintenance' | 'medication';
@@ -29,6 +30,11 @@ export type CalendarEvent = {
    * yet (it creates the next 30). Shown so far-off weeks are complete; not movable.
    */
   planned?: boolean;
+  /**
+   * An upcoming medication dose (not a logged one), with the Pets countdown's
+   * state and label ("Due in 3 days"). Absent on logged doses.
+   */
+  medicationDue?: Pick<MedicationCountdown, 'state' | 'label'>;
 };
 
 export type CalendarMember = { uid: string; email: string; name: string };
@@ -87,9 +93,11 @@ export type MedicationEntry = {
   dosage?: string;
   /** ISO timestamp the dose was logged for. */
   date: string;
+  /** Next dose due (`yyyy-MM-dd`), as entered with the dose. */
+  nextDueDate?: string;
 };
 
-/** Medication doses that were logged (pets have no medication schedule yet). */
+/** Medication doses that were logged. */
 export function medicationEvents(entries: readonly MedicationEntry[]): CalendarEvent[] {
   return entries.flatMap(entry => {
     const parsed = new Date(entry.date);
@@ -105,6 +113,34 @@ export function medicationEvents(entries: readonly MedicationEntry[]): CalendarE
       href: `/pets/${encodeURIComponent(entry.petId)}`,
     }];
   });
+}
+
+/**
+ * Upcoming medication doses: per pet, every current countdown from the Pets
+ * module's own rule (`currentMedications`, which the pet card chips and, mirrored,
+ * the server reminders use), on its due day. Overdue doses join the red rail.
+ * `entries` must hold every medication entry of each pet, as the calendar loads.
+ */
+export function medicationDueEvents(entries: readonly MedicationEntry[], today: string): CalendarEvent[] {
+  const byPet = new Map<string, MedicationEntry[]>();
+  for (const entry of entries) {
+    const list = byPet.get(entry.petId);
+    if (list) list.push(entry);
+    else byPet.set(entry.petId, [entry]);
+  }
+  const now = dayFromKey(today);
+  return [...byPet.entries()].flatMap(([petId, logs]) =>
+    currentMedications(logs.map(log => ({ ...log, dosage: log.dosage ?? '' })), now).map(due => ({
+      id: `medication-due:${petId}:${due.medication.trim().toLowerCase()}`,
+      kind: 'medication' as const,
+      title: due.dosage ? `${due.medication} (${due.dosage})` : due.medication,
+      subtitle: logs[0].petName,
+      day: dayKey(due.due),
+      overdue: due.state === 'overdue',
+      completed: false,
+      href: `/pets/${encodeURIComponent(petId)}?tab=medication`,
+      medicationDue: { state: due.state, label: due.label },
+    })));
 }
 
 const KIND_ORDER: Record<CalendarEventKind, number> = { chore: 0, maintenance: 1, medication: 2 };

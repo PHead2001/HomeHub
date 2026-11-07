@@ -1,4 +1,4 @@
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
@@ -13,6 +13,12 @@ const household = getFirestore(adminApp).collection('households').doc(householdI
 const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'desktop-chromium');
 const SEEDED_FEEDING = 'morning-feed';
 const TEST_PET = 'e2e-tweety';
+const EXTRA_MEDS = ['e2e-med-ear', 'e2e-med-joint', 'e2e-med-dental'];
+
+/** One tap feeds (H09, owner decision): the Feed button logs at once; Undo reverses it. */
+async function feed(scope: Locator | Page, name: string) {
+  await scope.getByRole('button', { name }).click();
+}
 
 async function openPets(page: Page) {
   await page.clock.setFixedTime(fixedNow);
@@ -28,6 +34,7 @@ async function restorePetsSeed() {
   }
   await household.collection('pets').doc('pixel').collection('medication-logs').doc('flea-prevention')
     .update({ nextDueDate: FieldValue.delete() }).catch(() => undefined);
+  await Promise.all(EXTRA_MEDS.map((id) => household.collection('pets').doc('pixel').collection('medication-logs').doc(id).delete()));
   const testPetLogs = await household.collection('pets').doc(TEST_PET).collection('feeding-logs').get();
   await Promise.all(testPetLogs.docs.map((entry) => entry.ref.delete()));
   await household.collection('pets').doc(TEST_PET).delete();
@@ -80,7 +87,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
 
     const pixel = page.getByTestId('pet-card-pixel');
     await expect(pixel).toContainText('No feedings logged yet');
-    await pixel.getByRole('button', { name: 'Feed Pixel, 1 can' }).click();
+    await feed(pixel, 'Feed Pixel, 1 can');
     await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('Fed just now by Alex');
     await expect(pixel).toContainText('1 of 2 today');
@@ -91,7 +98,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     }).toEqual([{ cups: 1, foodAmountType: 'Cans', loggedByUid: ownerUid }]);
 
     // The second feeding completes the day.
-    await pixel.getByRole('button', { name: 'Feed Pixel, 1 can' }).click();
+    await feed(pixel, 'Feed Pixel, 1 can');
     // Radix also mirrors the toast into its own live region; target the visible title.
     await expect(page.getByText('Pixel is all fed for today', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('All fed today');
@@ -108,7 +115,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await openPets(page);
     const pixel = page.getByTestId('pet-card-pixel');
     await expect(pixel).toContainText('0 of 2 today');
-    await pixel.getByRole('button', { name: 'Feed Pixel, 1 can' }).click();
+    await feed(pixel, 'Feed Pixel, 1 can');
     await expect(pixel).toContainText('Fed just now by Alex');
     await expect(pixel).toContainText('1 of 2 today');
 
@@ -144,6 +151,81 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await expect(page.getByTestId('pet-card-pixel')).toContainText('Due in 2 days');
   });
 
+  test('one tap writes a feeding and Undo removes it', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await openPets(page);
+    const pixel = page.getByTestId('pet-card-pixel');
+    const button = pixel.getByRole('button', { name: 'Feed Pixel, 1 can' });
+    await expect(button).toHaveAttribute('title', 'Log a feeding from anywhere: press F');
+    await button.click();
+    // No confirmation on the card: the tap logged.
+    await expect(page.getByTestId('feed-confirm')).toHaveCount(0);
+    await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(1);
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(0);
+    await expect(pixel).toContainText('No feedings logged yet');
+  });
+
+  test('every current medication gets a chip, most urgent first, with +N overflow', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const meds = household.collection('pets').doc('pixel').collection('medication-logs');
+    await meds.doc('flea-prevention').update({ nextDueDate: '2026-08-03' });
+    await meds.doc(EXTRA_MEDS[0]).set({ date: '2026-07-30T09:00:00.000Z', medication: 'Ear drops', dosage: '2 drops', notes: '', nextDueDate: '2026-07-31' });
+    await openPets(page);
+    const chips = page.getByTestId('pet-card-pixel').getByTestId('medication-chips');
+    await expect(chips.getByRole('listitem')).toHaveCount(2);
+    await expect(chips.getByRole('listitem').first()).toContainText('Ear drops');
+    await expect(chips.getByRole('listitem').first()).toContainText('Overdue by 1 day');
+    await expect(chips.getByRole('listitem').nth(1)).toContainText('Monthly flea prevention');
+
+    await meds.doc(EXTRA_MEDS[1]).set({ date: '2026-07-30T09:00:00.000Z', medication: 'Joint support', dosage: '1 tab', notes: '', nextDueDate: '2026-08-10' });
+    await meds.doc(EXTRA_MEDS[2]).set({ date: '2026-07-30T09:00:00.000Z', medication: 'Dental chew', dosage: '1', notes: '', nextDueDate: '2026-08-20' });
+    await expect(chips.getByTestId('medication-chips-more')).toContainText('+2');
+    await expect(chips.getByTestId('medication-chips-more')).toHaveAttribute('title', /Joint support: Due in 9 days\nDental chew: Due in 19 days/);
+
+    // The Medication tab shows all of them.
+    await page.goto('/pets/pixel?tab=medication');
+    await expect(page.getByRole('tabpanel').getByTestId('medication-chips').getByRole('listitem')).toHaveCount(4);
+  });
+
+  test('the Log feeding shortcut opens the feeding picker', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Pixel last ate wet food: the confirm must say so and log Wet, never a default Dry.
+    const pixelLogs = household.collection('pets').doc('pixel').collection('feeding-logs');
+    await pixelLogs.doc('e2e-wet-yesterday').set({
+      date: new Date('2026-07-31T18:00:00.000Z'), cups: 1, foodType: 'Wet', foodAmountType: 'Cans', comments: '', ampm: 'PM',
+    });
+    await page.clock.setFixedTime(fixedNow);
+    await page.goto('/pets?feed=1');
+    const dialog = page.getByRole('dialog', { name: 'Log a feeding' });
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(/\/pets$/);
+    await dialog.getByRole('button', { name: 'Pixel, 1 can' }).click();
+    // Confirm stays disabled until the history has loaded, then names the last food.
+    await expect(dialog).toContainText('Log 1 can of wet food for Pixel?');
+    await expect(dialog.getByTestId('feed-confirm-loading')).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Log feeding' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByTestId('pet-card-pixel')).toContainText('Fed just now by Alex');
+    await expect.poll(async () => (await pixelLogs.get()).docs
+      .filter((entry) => entry.id !== 'e2e-wet-yesterday')
+      .map((entry) => entry.data().foodType)).toEqual(['Wet']);
+  });
+
+  test('a pet card opens the pet page (shared-element morph) and peeks on hover', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await openPets(page);
+    const link = page.getByTestId('pet-card-maple').getByRole('link', { name: 'Maple' });
+    await link.hover();
+    await expect(page.getByTestId('pet-peek-maple')).toBeVisible();
+    await expect(page.getByTestId('pet-peek-maple')).toContainText("Open Maple's page");
+    await link.click();
+    await expect(page).toHaveURL(/\/pets\/maple$/);
+    await expect(page.getByRole('heading', { name: 'Maple', exact: true })).toBeVisible();
+    await expect(page.getByTestId('pet-hero')).toHaveCSS('view-transition-name', 'pet-maple-photo');
+  });
+
   test('pets without a photo get species art', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await household.collection('pets').doc(TEST_PET).set({
@@ -152,6 +234,8 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await openPets(page);
     const card = page.getByTestId(`pet-card-${TEST_PET}`);
     await expect(card.getByRole('img', { name: 'Tweety, bird illustration' })).toBeVisible();
+    // The art idles on a slow ambient loop (none under reduced motion, see the unit test).
+    await expect(card.getByTestId('species-idle')).toHaveCSS('animation-duration', '24s');
     await expect(card.getByRole('button', { name: 'Feed Tweety, 1 scoop' })).toBeVisible();
     // Seeded pets keep their photo through next/image with a face-safe crop.
     await expect(page.getByRole('img', { name: 'Photo of Maple' })).toHaveCSS('object-position', '50% 35%');
@@ -225,7 +309,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await page.clock.setFixedTime(fixedNow);
     await page.goto('/pets/maple');
     await expect(page.getByRole('heading', { name: 'Maple', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Feed Maple, 1.5 cups' }).click();
+    await feed(page, 'Feed Maple, 1.5 cups');
     await expect(page.getByText('by Alex').first()).toBeVisible();
     await expect(page.getByText('1.5 cups of dry food').first()).toBeVisible();
 

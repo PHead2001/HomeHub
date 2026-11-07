@@ -8,7 +8,8 @@ import { CalendarDays, Edit, Home, MoreVertical, Pill, Sparkles, Trash2, Utensil
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { feedingPlan, formatPortion } from '@/lib/pets/care';
+import { feedingPlan, formatPortion, petPhotoMorphName } from '@/lib/pets/care';
+import { morphStyle } from '@/lib/motion';
 import type { PetProfile } from '@/lib/pets/types';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -124,7 +125,8 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
         <Skeleton className="mb-4 h-10 w-44" />
         <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
           <div className="space-y-6 md:col-span-1">
-            <Skeleton className="h-80 w-full rounded-lg" />
+            {/* Lands the /pets card → hero morph (H12) while the pet loads. */}
+            <Skeleton className="h-80 w-full rounded-lg" style={morphStyle(petPhotoMorphName(petId))} />
             <Skeleton className="h-32 w-full rounded-lg" />
           </div>
           <div className="space-y-4 md:col-span-2">
@@ -196,6 +198,8 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                 sizes="(max-width: 768px) 100vw, 33vw"
                 priority
                 className="aspect-[4/3] w-full"
+                frameStyle={morphStyle(petPhotoMorphName(pet.id))}
+                frameTestId="pet-hero"
               />
             </CardHeader>
             <CardContent className="space-y-4 p-4">
@@ -204,7 +208,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                 <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
               </div>
               <div className="flex flex-col gap-3">
-                <PetCareSummary pet={pet} householdId={householdId} />
+                <PetCareSummary pet={pet} householdId={householdId} maxMedicationChips={4} />
               </div>
             </CardContent>
           </Card>

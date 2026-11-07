@@ -6,8 +6,9 @@ import { dayKey, type ChoreRecord } from '../../src/lib/chores/dates';
 import { recurringChoreId } from '../../functions/src/shared/ids';
 import { stableSlugify } from '../../src/lib/utils';
 import {
-  choreEvents, groupByDay, maintenanceCalendarItems, occurrenceIds, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, sortEvents, weekDays,
+  choreEvents, groupByDay, maintenanceCalendarItems, occurrenceIds, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, sortEvents, weekDays,
 } from '../../src/lib/chores/calendar';
+import { currentMedications } from '../../src/lib/pets/care';
 
 const chore = (overrides: Partial<ChoreRecord>): ChoreRecord => ({
   id: 'c1',
@@ -57,6 +58,43 @@ describe('calendar events', () => {
     assert.equal(event.title, 'Heartworm (1 tab)');
     assert.equal(event.href, '/pets/maple');
     assert.equal(medicationEvents([{ id: 'x', petId: 'p', petName: 'P', medication: 'M', date: 'nope' }]).length, 0);
+  });
+
+  it('shows upcoming medication doses from the Pets countdown rule', () => {
+    const entries = [
+      { id: 'a', petId: 'maple', petName: 'Maple', medication: 'Heartworm', dosage: '1 tab', date: '2026-07-03T10:00:00.000Z', nextDueDate: '2026-08-03' },
+      { id: 'b', petId: 'maple', petName: 'Maple', medication: 'Ear drops', dosage: '2 drops', date: '2026-07-20T10:00:00.000Z', nextDueDate: '2026-07-30' },
+      // A newer dose without a next date: no countdown for Joint support.
+      { id: 'c', petId: 'maple', petName: 'Maple', medication: 'Joint support', dosage: '1', date: '2026-07-01T10:00:00.000Z', nextDueDate: '2026-08-05' },
+      { id: 'd', petId: 'maple', petName: 'Maple', medication: 'joint support', dosage: '1', date: '2026-07-31T10:00:00.000Z' },
+      { id: 'e', petId: 'pixel', petName: 'Pixel', medication: 'Flea prevention', date: '2026-07-01T10:00:00.000Z', nextDueDate: '2026-08-01' },
+    ];
+    const events = medicationDueEvents(entries, '2026-08-01');
+    assert.deepEqual(events.map(e => [e.subtitle, e.title, e.day, e.overdue, e.completed, e.medicationDue?.label]), [
+      ['Maple', 'Ear drops (2 drops)', '2026-07-30', true, false, 'Overdue by 2 days'],
+      ['Maple', 'Heartworm (1 tab)', '2026-08-03', false, false, 'Due in 2 days'],
+      ['Pixel', 'Flea prevention', '2026-08-01', false, false, 'Due today'],
+    ]);
+    assert.equal(events[0].href, '/pets/maple?tab=medication');
+    // Not a fork: the same doses, labels and order as the pet card chips.
+    const today = new Date(2026, 7, 1);
+    const maple = currentMedications(entries.filter(e => e.petId === 'maple').map(e => ({ ...e, dosage: e.dosage ?? '' })), today);
+    assert.deepEqual(events.filter(e => e.subtitle === 'Maple').map(e => e.medicationDue?.label), maple.map(due => due.label));
+    // Overdue doses join the red rail; logged doses stay separate events.
+    assert.deepEqual(overdueRail(events).map(e => e.title), ['Ear drops (2 drops)']);
+    assert.equal(medicationEvents(entries).every(e => e.completed && !e.medicationDue), true);
+  });
+
+  it('the calendar has a phone day agenda that swipes and answers the arrow keys', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/components/chores/calendar/household-calendar.tsx'), 'utf8');
+    assert.match(source, /type View = 'day' \| 'week' \| 'month'/);
+    assert.match(source, /matches \? 'day' : 'week'/);
+    assert.match(source, /<ToggleGroupItem value="day"/);
+    assert.match(source, /e\.key === 'ArrowLeft' \|\| e\.key === 'ArrowRight'/);
+    assert.match(source, /addDaysToKey\(selectedDay, direction\)/);
+    assert.match(source, /medicationDueEvents\(medication, today\)/);
+    assert.match(source, /<Stagger as="ol"/);
+    assert.match(source, /<PeekCard/);
   });
 
   it('groups, sorts and builds the overdue rail', () => {

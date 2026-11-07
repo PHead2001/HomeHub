@@ -1,12 +1,16 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { PetProfile } from '@/lib/pets/types';
+import { FEED_SHORTCUT_PARAM, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
+import { Stagger, StaggerItem } from './motion/stagger';
+import { FeedPickerDialog } from './pets/feed-picker-dialog';
 import { AddPetDialog } from './add-pet-dialog';
 import { DeletePetAlert } from './delete-pet-alert';
 import { EditPetDialog } from './edit-pet-dialog';
@@ -38,7 +42,7 @@ function PetSkeleton() {
 }
 
 export function PetsClient() {
-  const { currentUser, permissions } = useAuth();
+  const { currentUser, currentMember, permissions, loading: authLoading, householdLoading } = useAuth();
   const { toast, toastError } = useToast();
   const householdId = currentUser?.householdId ?? null;
   const canEdit = Boolean(permissions['pets.editProfiles']);
@@ -76,6 +80,33 @@ export function PetsClient() {
   const loadFailed = ready && snapshot.failed;
 
   const existingNames = useMemo(() => pets.map((pet) => pet.name), [pets]);
+
+  // "Log feeding" home-screen shortcut (`/pets?feed=1`): once both the pet list and
+  // the member's permissions have loaded, open the feeding picker (straight to the
+  // confirm step with one pet) or ignore the request, then drop the param so a
+  // reload or Back does not reopen it. Nothing is decided, or removed, before that.
+  const searchParams = useSearchParams();
+  const feedRequested = wantsQuickFeed(searchParams);
+  const canFeed = Boolean(permissions['pets.addLogs']);
+  const [feedPickerOpen, setFeedPickerOpen] = useState(false);
+  const [handledFeedRequest, setHandledFeedRequest] = useState(false);
+  const feedDecision = quickFeedDecision({
+    requested: feedRequested && !handledFeedRequest,
+    permissionsReady: !authLoading && !householdLoading && Boolean(currentMember),
+    petsReady: ready && !loading,
+    canFeed,
+    petCount: pets.length,
+  });
+  if (feedDecision === 'open' || feedDecision === 'ignore') {
+    setHandledFeedRequest(true);
+    if (feedDecision === 'open') setFeedPickerOpen(true);
+  }
+  useEffect(() => {
+    if (!handledFeedRequest || !feedRequested) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete(FEED_SHORTCUT_PARAM);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [handledFeedRequest, feedRequested]);
 
   const handleAddPet = async (fields: PetFields, photoFile: File | null): Promise<boolean> => {
     if (!householdId) return false;
@@ -130,6 +161,9 @@ export function PetsClient() {
       {canEdit && (
         <AddPetDialog open={addOpen} onOpenChange={setAddOpen} existingNames={existingNames} onAddPet={handleAddPet} />
       )}
+      {canFeed && householdId && (
+        <FeedPickerDialog open={feedPickerOpen} onOpenChange={setFeedPickerOpen} pets={pets} householdId={householdId} />
+      )}
       <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} />
       <DeletePetAlert
         isOpen={!!petToDelete}
@@ -145,20 +179,21 @@ export function PetsClient() {
           <PetSkeleton />
         </div>
       ) : pets.length > 0 && householdId ? (
-        <div className={GRID}>
+        <Stagger className={GRID}>
           {pets.map((pet, index) => (
-            <LivingPetCard
-              key={pet.id}
-              pet={pet}
-              householdId={householdId}
-              canEdit={canEdit}
-              onEdit={setPetToEdit}
-              onDelete={setPetToDelete}
-              priority={index === 0}
-              index={index}
-            />
+            <StaggerItem key={pet.id} className="min-w-0">
+              <LivingPetCard
+                pet={pet}
+                householdId={householdId}
+                canEdit={canEdit}
+                onEdit={setPetToEdit}
+                onDelete={setPetToDelete}
+                priority={index === 0}
+                index={index}
+              />
+            </StaggerItem>
           ))}
-        </div>
+        </Stagger>
       ) : loadFailed ? (
         <EmptyState
           kind="pets"

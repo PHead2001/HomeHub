@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useRef } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence } from 'motion/react';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import type { User as HomeHubUser } from '@/lib/types';
@@ -16,6 +16,7 @@ import { SPRING_UI } from '@/lib/motion';
 import { cn, stableSlugify } from '@/lib/utils';
 import { memberName } from './assignee-select';
 import { CompletionCheck } from './completion-check';
+import { Stagger, StaggerItem } from '@/components/motion/stagger';
 
 export type ChoreListHandlers = {
   onToggleDone: (chore: ChoreRecord, origin: HTMLElement | null) => void;
@@ -69,9 +70,9 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   );
 
   return (
-    <motion.li
+    <StaggerItem
+      as="li"
       layout="position"
-      initial={false}
       exit={{ opacity: 0, y: 12, transition: { duration: 0.18 } }}
       transition={SPRING_UI}
       className={cn(
@@ -215,17 +216,21 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
           )}
         </div>
       )}
-    </motion.li>
+    </StaggerItem>
   );
 }
 
-/** Chore rows for one room group. Completed rows leave with a short slide. */
+/**
+ * Chore rows for one room group. Rows enter with the shared stagger (H12, at most
+ * 30 ms apart and 400 ms in all; instant under reduced motion) and completed rows
+ * leave with a short slide. Rows are interactive from the first frame.
+ */
 export function ChoreList(props: ChoreListProps) {
   return (
-    <ul className="space-y-2">
-      <AnimatePresence initial={false}>
+    <Stagger as="ul" className="space-y-2" count={props.entries.length}>
+      <AnimatePresence>
         {props.entries.map(entry => <ChoreRow key={entry.chore.id} entry={entry} props={props} />)}
       </AnimatePresence>
-    </ul>
+    </Stagger>
   );
 }
