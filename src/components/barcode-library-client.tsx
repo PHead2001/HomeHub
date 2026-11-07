@@ -8,7 +8,6 @@ import { useAuth } from '@/hooks/use-auth';
 import { db, storage } from '@/lib/firebase';
 import { collection, doc, getDocs, setDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { v4 as uuidv4 } from 'uuid';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -228,7 +227,7 @@ export function BarcodeLibraryClient() {
   const uploadPhoto = async (photoFile: File): Promise<{ imageUrl: string; imagePath: string }> => {
     if (!currentUser?.householdId) throw new Error("User not in a household");
     const fileExtension = photoFile.name.split('.').pop();
-    const fileName = `${uuidv4()}.${fileExtension}`;
+    const fileName = `${crypto.randomUUID()}.${fileExtension}`;
     const storageRef = ref(storage, `households/${currentUser.householdId}/barcode-library/${fileName}`);
     await uploadBytes(storageRef, photoFile);
     return { imageUrl: await getDownloadURL(storageRef), imagePath: storageRef.fullPath };
