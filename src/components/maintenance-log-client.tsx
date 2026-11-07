@@ -52,6 +52,7 @@ import { AssetCard } from '@/components/maintenance/asset-card';
 import { HealthPanel } from '@/components/maintenance/health-panel';
 import { HealthRing } from '@/components/maintenance/health-ring';
 import { ReminderList, type ReminderBusy } from '@/components/maintenance/reminder-list';
+import { Odometer } from '@/components/maintenance/odometer';
 import { Badge } from '@/components/ui/badge';
 import {
   AlertDialog,
@@ -85,6 +86,7 @@ import { db } from '@/lib/firebase';
 import { playFeedback } from '@/lib/feedback';
 import { pickAssetPhoto, presentFields, shouldOfferAiSummary } from '@/lib/maintenance/display';
 import { computeHomeHealth, healthKey, type HealthDeduction, type HealthResult } from '@/lib/maintenance/health';
+import { warrantyCountdown } from '@/lib/maintenance/warranty';
 import {
   calculateNextAssetDueDate,
   calculateNextVehicleDueDate,
@@ -2159,6 +2161,7 @@ export function MaintenanceLogClient() {
                       asset={asset}
                       photo={pickAssetPhoto(attachments, asset.id)}
                       health={healthFor('home_asset', asset.id)}
+                      warranty={warrantyCountdown(asset, today)}
                       selected={selectedAsset?.id === asset.id}
                       onSelect={() => setSelectedAssetId(asset.id)}
                     />
@@ -2314,7 +2317,7 @@ export function MaintenanceLogClient() {
                               {vehicleHealth && <HealthRing score={vehicleHealth.score} band={vehicleHealth.band} label={`${vehicle.nickname} health`} />}
                             </div>
                             <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                              <span>{typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString()} miles` : 'Mileage not recorded'}</span>
+                              {typeof vehicle.currentMileage === 'number' ? <Odometer miles={vehicle.currentMileage} /> : <span>Mileage not recorded</span>}
                               {vehicle.status === 'needs_attention' && <Badge variant="destructive">Needs attention</Badge>}
                             </div>
                           </button>

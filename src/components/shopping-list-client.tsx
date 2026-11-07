@@ -51,6 +51,7 @@ import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
 import { CartIndicator } from './shopping/cart-indicator';
+import { useCartFlight } from './shopping/cart-flight';
 import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
 import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
@@ -205,6 +206,7 @@ export function ShoppingListClient({
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
+  const cartFlight = useCartFlight();
 
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [counts, setCounts] = useState<Record<string, ListCounts>>({});
@@ -627,6 +629,13 @@ export function ShoppingListClient({
         reconcileWithServer(list.id);
       };
 
+      // Into the cart (H07): a copy of the name flies from the row (measured before
+      // the row leaves) into the cart icon; skipped under reduced motion.
+      if (isCheckingOff && isListOpen()) {
+        const row = document.querySelector(`[data-testid="shopping-item-${CSS.escape(item.id)}"]`);
+        cartFlight.launch(row?.querySelector('label') ?? row ?? null, item.name);
+      }
+
       // Show the tick immediately. Offline, the write waits in Firestore's persistent
       // queue (it survives reloads) and syncs when the connection returns.
       setItemStatus(newStatus);
@@ -861,6 +870,7 @@ export function ShoppingListClient({
 
     return (
         <>
+            {cartFlight.layer}
             <AlertDialog open={isClearAlertOpen} onOpenChange={setIsClearAlertOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
@@ -928,7 +938,7 @@ export function ShoppingListClient({
                             {renderListIcon(selectedList, { className: 'h-5 w-5' })}
                           </span>
                           <h2 className="min-w-0 break-words font-headline text-2xl font-semibold leading-tight">{selectedList.name}</h2>
-                          <CartIndicator count={purchasedItems.length} onClick={openPurchased} className="ml-auto sm:ml-2" />
+                          <CartIndicator ref={cartFlight.cartRef} count={purchasedItems.length} inFlight={cartFlight.inFlight} onClick={openPurchased} className="ml-auto sm:ml-2" />
                         </div>
                     </div>
                     {canEdit && (
