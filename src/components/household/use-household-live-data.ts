@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot, query, where, type Unsubscribe } from 'firebase/firestore';
+import { Timestamp, collection, doc, onSnapshot, query, where, type Query, type Unsubscribe } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { inviteDateToIso } from '@/lib/invite-codes';
-import type { AuditLog, Chore, HouseholdMember, InviteCode } from '@/lib/types';
-import { choreStatsByEmail, sortMembers, startOfNextWeek, startOfWeek, type MemberChoreStats } from './household-model';
+import type { AuditLog, HouseholdMember, InviteCode } from '@/lib/types';
+import { choreStatsByEmail, mergeChoresById, sortMembers, startOfNextWeek, startOfWeek, type ChoreLike, type MemberChoreStats } from './household-model';
+
+type ChoreParts = { key: string; open?: ChoreLike[]; server?: ChoreLike[]; legacy?: ChoreLike[]; failed?: boolean };
 
 export type HouseholdLiveData = {
   /** Live household name (the auth context loads it once). */
@@ -13,8 +15,10 @@ export type HouseholdLiveData = {
   members: HouseholdMember[];
   invites: InviteCode[];
   auditLogs: AuditLog[];
-  /** Chore counts by lower-cased member email; empty without `chores.view`. */
+  /** Chore counts by lower-cased member email; empty without `chores.view` or until ready. */
   choreStats: Map<string, MemberChoreStats>;
+  /** True once every chore listener answered without error; until then show no counts. */
+  choreStatsReady: boolean;
   /** True until the first members snapshot (or its error) arrives. */
   loading: boolean;
   /** True when the members listener failed (offline, permission). */
@@ -43,8 +47,11 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
   const [membersFailed, setMembersFailed] = useState(false);
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [chores, setChores] = useState<Pick<Chore, 'assignedToEmail' | 'isCompleted' | 'completedAt'>[]>([]);
   const [weekStart, setWeekStart] = useState(() => startOfWeek());
+  // Chore listener results, keyed by household and week so a rollover or a new
+  // household never shows the previous week's numbers.
+  const choresKey = `${householdId ?? ''}|${weekStart.getTime()}`;
+  const [choreParts, setChoreParts] = useState<ChoreParts>({ key: '' });
 
   // Move the "this week" boundary at local Monday midnight, and re-check when a
   // suspended or hidden tab comes back (timers may not fire while suspended).
@@ -113,28 +120,38 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
 
   useEffect(() => {
     if (!householdId || !canViewChores) return;
-    // Single-field filter (no composite index): every open chore plus this week's completions.
+    // Single-field filters (no composite index): every open chore, plus this week's
+    // completions by both timestamps the Chores module reads (`completionInstant`):
+    // the server stamp `completedAtServer` (a Timestamp) and the legacy client
+    // `completedAt` string. Documents missing a field are not returned by that
+    // field's query; the other query covers them. A new `weekStart` re-subscribes all.
+    const key = choresKey;
     const choresRef = collection(db, 'households', householdId, 'chores');
-    let open: typeof chores = [];
-    let done: typeof chores = [];
-    const publish = () => setChores([...open, ...done]);
-    const pick = (data: Record<string, unknown>) => ({
+    const pick = (id: string, data: Record<string, unknown>): ChoreLike => ({
+      id,
       assignedToEmail: typeof data.assignedToEmail === 'string' ? data.assignedToEmail : '',
       isCompleted: data.isCompleted === true,
       completedAt: typeof data.completedAt === 'string' ? data.completedAt : null,
+      completedAtServer: data.completedAtServer ?? null,
     });
-    const stopOpen = onSnapshot(
-      query(choresRef, where('isCompleted', '==', false)),
-      (snapshot) => { open = snapshot.docs.map((d) => pick(d.data())); publish(); },
-      (error) => console.warn('Member chore stats unavailable', error),
+    const listen = (part: 'open' | 'server' | 'legacy', q: Query) => onSnapshot(
+      q,
+      (snapshot) => setChoreParts((prev) => ({
+        ...(prev.key === key ? prev : { key, failed: false }),
+        [part]: snapshot.docs.map((d) => pick(d.id, d.data())),
+      })),
+      (error) => {
+        console.warn('Member chore stats unavailable', error);
+        setChoreParts((prev) => ({ ...(prev.key === key ? prev : { key }), failed: true }));
+      },
     );
-    const stopDone = onSnapshot(
-      query(choresRef, where('completedAt', '>=', weekStart.toISOString())),
-      (snapshot) => { done = snapshot.docs.map((d) => pick(d.data())).filter((c) => c.isCompleted); publish(); },
-      (error) => console.warn('Member chore stats unavailable', error),
-    );
-    return () => { stopOpen(); stopDone(); };
-  }, [canViewChores, householdId, weekStart]);
+    const stops = [
+      listen('open', query(choresRef, where('isCompleted', '==', false))),
+      listen('server', query(choresRef, where('completedAtServer', '>=', Timestamp.fromDate(weekStart)))),
+      listen('legacy', query(choresRef, where('completedAt', '>=', weekStart.toISOString()))),
+    ];
+    return () => stops.forEach((stop) => stop());
+  }, [canViewChores, choresKey, householdId, weekStart]);
 
   const members = useMemo(() => {
     if (!rawMembers) return [];
@@ -144,10 +161,15 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
     return sortMembers(list);
   }, [currentMember, rawMembers]);
 
-  // Data from a listener that is no longer allowed (role changed) is not shown.
+  // Stats exist only when all three chore listeners answered for this household and
+  // week, and none failed: a failed or pending read is never shown as 0 done / 0 open.
+  const parts = choreParts.key === choresKey ? choreParts : { key: choresKey };
+  const choreStatsReady = canViewChores && !parts.failed && Boolean(parts.open && parts.server && parts.legacy);
   const choreStats = useMemo(
-    () => (canViewChores ? choreStatsByEmail(chores, weekStart) : new Map<string, MemberChoreStats>()),
-    [canViewChores, chores, weekStart],
+    () => (choreStatsReady
+      ? choreStatsByEmail(mergeChoresById(parts.open!, parts.server!, parts.legacy!), weekStart)
+      : new Map<string, MemberChoreStats>()),
+    [choreStatsReady, parts.open, parts.server, parts.legacy, weekStart],
   );
 
   return {
@@ -156,6 +178,7 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
     invites: canListInvites ? invites : [],
     auditLogs: canReadAudit ? auditLogs : [],
     choreStats,
+    choreStatsReady,
     loading: rawMembers === null,
     membersFailed,
   };

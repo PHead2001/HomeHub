@@ -112,9 +112,14 @@ test.describe('household governance UX', () => {
 
     await page.getByLabel('Show').click();
     await page.getByRole('option', { name: 'Sam Member (Member)' }).click();
+    // The Select hands focus back to its trigger as it closes; wait for that, or the
+    // Space below can land on the trigger and reopen the list.
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(page.getByLabel('Show')).toBeFocused();
     const cell = page.getByRole('checkbox', { name: 'Delete shopping for Sam Member' });
     await expect(cell).toHaveAttribute('aria-checked', 'false');
     await cell.focus();
+    await expect(cell).toBeFocused();
     await page.keyboard.press('Space');
     await expect(cell).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByText('1 unsaved change.')).toBeVisible();

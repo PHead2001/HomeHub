@@ -5,6 +5,7 @@ import {
   OWNER_ONLY_PERMISSIONS,
   changedPermissions,
   choreStatsByEmail,
+  mergeChoresById,
   customizedPermissions,
   describeAuditAction,
   formatInviteInput,
@@ -94,6 +95,24 @@ describe('members', () => {
     ], weekStart);
     assert.deepEqual(stats.get('sam@example.test'), { doneThisWeek: 1, open: 1 });
     assert.equal(stats.size, 1);
+  });
+
+  it('counts this week by the server stamp, and a chore found by both completion queries once', () => {
+    const weekStart = new Date('2026-07-27T00:00:00Z');
+    // The client string says last week (skewed clock); the server stamp says this week.
+    const stamped = {
+      id: 'k', assignedToEmail: 'sam@example.test', isCompleted: true,
+      completedAt: '2026-07-26T23:00:00Z', completedAtServer: { toDate: () => new Date('2026-07-27T09:00:00Z') },
+    };
+    const legacy = { id: 'l', assignedToEmail: 'sam@example.test', isCompleted: true, completedAt: '2026-07-28T10:00:00Z' };
+    const open = { id: 'o', assignedToEmail: 'sam@example.test', isCompleted: false };
+    // The server-stamp query and the legacy query can both return the same document.
+    const merged = mergeChoresById([open], [stamped, legacy], [legacy]);
+    assert.equal(merged.length, 3);
+    assert.deepEqual(choreStatsByEmail(merged, weekStart).get('sam@example.test'), { doneThisWeek: 2, open: 1 });
+    // A server stamp from last week wins over a client string from this week.
+    const backdated = { id: 'b', assignedToEmail: 'sam@example.test', isCompleted: true, completedAt: '2026-07-28T10:00:00Z', completedAtServer: { seconds: Date.parse('2026-07-20T10:00:00Z') / 1000 } };
+    assert.equal(choreStatsByEmail([backdated], weekStart).get('sam@example.test'), undefined);
   });
 
   it('starts the week on Monday', () => {

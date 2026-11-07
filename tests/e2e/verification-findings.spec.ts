@@ -82,6 +82,16 @@ async function restoreMutableSeedData() {
     const snapshot = await household.collection('shopping-lists').doc('weekly-groceries').collection('items').where('name', '==', name).get();
     await Promise.all(snapshot.docs.map((item) => item.ref.delete()));
   }
+  // The maintenance sync test completes the seeded HVAC filter, which writes a routine
+  // log. Remove logs on seeded assets and vehicles other than the seeded ones, so
+  // later specs (for example the health score) see the seed.
+  const seededLogIds = new Set(['oil-change', 'hvac-inspection', 'gutter-cleaning']);
+  const seededTargets = new Set(['hvac-main', 'dishwasher', 'family-suv']);
+  const logs = await household.collection('maintenance').get();
+  await Promise.all(logs.docs
+    .filter((log) => !seededLogIds.has(log.id)
+      && (seededTargets.has(log.get('assetId')) || seededTargets.has(log.get('vehicleId'))))
+    .map((log) => log.ref.delete()));
 }
 
 async function openAuthenticated(page: Page, path: string, heading: string) {

@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 export default function LibraryPage() {
     const { currentUser } = useAuth();
@@ -22,7 +23,7 @@ export default function LibraryPage() {
                 </Button>
             </div>
 
-            {!currentUser && <p className="text-center py-8">Please log in to manage your barcode library.</p>}
+            {!currentUser && <SignInPrompt what="manage your barcode library" />}
 
             {currentUser && (
                 <BarcodeLibraryClient />

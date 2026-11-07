@@ -4,6 +4,7 @@
  * chore is due" and "the day it was completed".
  */
 import type { Chore } from '../types';
+import { choreCompletionInstant } from '../../../functions/src/shared/completion';
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -51,18 +52,6 @@ export function choreDueKey(chore: Pick<Chore, 'originalDueDate' | 'dueDate'>): 
 /** Firestore Timestamp-like values without importing the SDK. */
 type TimestampLike = { toDate: () => Date } | { seconds: number; nanoseconds?: number };
 
-const fromTimestampLike = (value: unknown): Date | null => {
-  if (!value || typeof value !== 'object') return null;
-  if ('toDate' in value && typeof (value as { toDate: unknown }).toDate === 'function') {
-    const date = (value as { toDate: () => Date }).toDate();
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  if ('seconds' in value && typeof (value as { seconds: unknown }).seconds === 'number') {
-    return new Date((value as { seconds: number }).seconds * 1000);
-  }
-  return null;
-};
-
 /** A chore as read from Firestore, including the server-stamped completion time. */
 export type ChoreRecord = Chore & {
   /**
@@ -73,14 +62,13 @@ export type ChoreRecord = Chore & {
   completedAtServer?: TimestampLike | null;
 };
 
-/** When a chore was completed: the server time when present, else `completedAt`. */
+/**
+ * When a chore was completed: the server time when present, else `completedAt`.
+ * One rule for the app and the server (`functions/src/shared/completion.ts`), so
+ * yearly stats written at retention agree with what the Chores page shows.
+ */
 export function completionInstant(chore: Pick<ChoreRecord, 'isCompleted' | 'completedAt' | 'completedAtServer'>): Date | null {
-  if (!chore.isCompleted) return null;
-  const server = fromTimestampLike(chore.completedAtServer);
-  if (server) return server;
-  if (typeof chore.completedAt !== 'string' || !chore.completedAt) return null;
-  const parsed = new Date(chore.completedAt);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  return choreCompletionInstant(chore);
 }
 
 /** Monday of the week containing `key`. */

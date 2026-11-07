@@ -1,0 +1,231 @@
+/*
+ * Dashboard motion and scene styles (H01, H02, H11, H22, H27, H29).
+ * Colors are tokens only (hsl(var(--token))). Every animation is opacity/transform,
+ * pauses while the tab is hidden, and is removed under both reduced-motion selectors.
+ */
+
+/* ---------- Living house ---------- */
+
+.house {
+  position: relative;
+  isolation: isolate;
+}
+
+/* Time-of-day tint layered over the scene sky (weights set inline, 0..1). */
+.sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background:
+    radial-gradient(120% 90% at 15% 0%, hsl(var(--member-5) / calc(var(--tod-dawn, 0) * 0.28)), transparent 70%),
+    radial-gradient(120% 90% at 50% 0%, hsl(var(--primary) / calc(var(--tod-day, 0) * 0.2)), transparent 70%),
+    radial-gradient(120% 90% at 85% 0%, hsl(var(--warning) / calc(var(--tod-dusk, 0) * 0.26)), transparent 70%),
+    linear-gradient(180deg, hsl(var(--member-3) / calc(var(--tod-night, 0) * 0.22)), transparent 80%);
+  transition: opacity 900ms var(--ease-standard);
+}
+
+/* A room's visual layer lifts on hover/focus; the link box itself never moves. */
+.roomVisual {
+  transition: transform var(--duration-micro) var(--ease-standard), box-shadow var(--duration-micro) var(--ease-standard);
+}
+@media (hover: hover) and (pointer: fine) {
+  .room:hover .roomVisual {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px -10px hsl(var(--shadow) / 0.6);
+  }
+}
+.room:focus-visible .roomVisual {
+  transform: translateY(-3px);
+}
+
+.overdueGlow {
+  animation: glow-pulse 2.4s ease-in-out infinite;
+}
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.sparkle {
+  animation: sparkle-in 1.2s ease-out 1 both;
+}
+@keyframes sparkle-in {
+  0% { opacity: 0; transform: scale(0.4) rotate(-20deg); }
+  50% { opacity: 1; transform: scale(1.15) rotate(10deg); }
+  100% { opacity: 0.85; transform: scale(1) rotate(0deg); }
+}
+
+/* Pets wander inside their room (small, slow, transform only). */
+.wander {
+  animation: wander 9s ease-in-out infinite alternate;
+}
+.wanderSlow {
+  animation: wander 13s ease-in-out infinite alternate-reverse;
+}
+@keyframes wander {
+  0% { transform: translateX(0); }
+  45% { transform: translateX(14px); }
+  55% { transform: translateX(14px) translateY(-2px); }
+  100% { transform: translateX(-10px); }
+}
+.hop {
+  animation: hop 420ms ease-out 1;
+}
+@keyframes hop {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-8px); }
+}
+
+.pulse {
+  animation: soft-pulse 1.8s ease-in-out infinite;
+}
+@keyframes soft-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12); opacity: 0.75; }
+}
+
+.windowLight {
+  transition: opacity 900ms var(--ease-standard);
+}
+
+.snow {
+  animation: snow-fall 14s linear infinite;
+}
+@keyframes snow-fall {
+  0% { transform: translateY(-6px); opacity: 0; }
+  10% { opacity: 0.9; }
+  100% { transform: translateY(34px); opacity: 0; }
+}
+.twinkle {
+  animation: glow-pulse 1.6s ease-in-out infinite;
+}
+
+/* Disco mode (Konami code): a 10 s hue drift on the scene only. */
+.disco {
+  animation: disco 2s linear infinite;
+}
+@keyframes disco {
+  from { filter: hue-rotate(0deg) saturate(1.3); }
+  to { filter: hue-rotate(360deg) saturate(1.3); }
+}
+
+/* ---------- Morning brief typing caret ---------- */
+.caret::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: hsl(var(--primary));
+  animation: caret 900ms steps(1) infinite;
+}
+@keyframes caret {
+  50% { opacity: 0; }
+}
+
+/* ---------- Bell ring and badge pop (H11) ---------- */
+.ring {
+  animation: ring 600ms ease-in-out 1;
+  transform-origin: 50% 10%;
+}
+@keyframes ring {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(14deg); }
+  40% { transform: rotate(-12deg); }
+  60% { transform: rotate(8deg); }
+  80% { transform: rotate(-4deg); }
+}
+.pop {
+  animation: pop 320ms var(--ease-standard) 1;
+}
+@keyframes pop {
+  0% { transform: scale(0.4); }
+  60% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+/* ---------- Radial quick-add (H18) ---------- */
+.fanItem {
+  transition: transform 220ms var(--ease-spring, var(--ease-standard)), opacity 160ms var(--ease-standard);
+}
+
+/* ---------- Pause and reduce ---------- */
+:global(:root[data-visibility='hidden']) .overdueGlow,
+:global(:root[data-visibility='hidden']) .wander,
+:global(:root[data-visibility='hidden']) .wanderSlow,
+:global(:root[data-visibility='hidden']) .pulse,
+:global(:root[data-visibility='hidden']) .snow,
+:global(:root[data-visibility='hidden']) .twinkle,
+:global(:root[data-visibility='hidden']) .disco,
+:global(:root[data-visibility='hidden']) .caret::after {
+  animation-play-state: paused;
+}
+
+:global(:root[data-motion='reduce']) .overdueGlow,
+:global(:root[data-motion='reduce']) .sparkle,
+:global(:root[data-motion='reduce']) .wander,
+:global(:root[data-motion='reduce']) .wanderSlow,
+:global(:root[data-motion='reduce']) .hop,
+:global(:root[data-motion='reduce']) .pulse,
+:global(:root[data-motion='reduce']) .snow,
+:global(:root[data-motion='reduce']) .twinkle,
+:global(:root[data-motion='reduce']) .disco,
+:global(:root[data-motion='reduce']) .ring,
+:global(:root[data-motion='reduce']) .pop,
+:global(:root[data-motion='reduce']) .caret::after {
+  animation: none;
+}
+:global(:root[data-motion='reduce']) .roomVisual,
+:global(:root[data-motion='reduce']) .fanItem,
+:global(:root[data-motion='reduce']) .sky,
+:global(:root[data-motion='reduce']) .windowLight {
+  transition: none;
+}
+:global(:root[data-motion='reduce']) .room:hover .roomVisual,
+:global(:root[data-motion='reduce']) .room:focus-visible .roomVisual {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overdueGlow,
+  .sparkle,
+  .wander,
+  .wanderSlow,
+  .hop,
+  .pulse,
+  .snow,
+  .twinkle,
+  .disco,
+  .ring,
+  .pop,
+  .caret::after {
+    animation: none;
+  }
+  .roomVisual,
+  .fanItem,
+  .sky,
+  .windowLight {
+    transition: none;
+  }
+  .room:hover .roomVisual,
+  .room:focus-visible .roomVisual {
+    transform: none;
+  }
+}
+
+/* ---------- App shell time-of-day tint (H02) ---------- */
+/* Very low contrast: scaled by the theme's single ambient intensity token. */
+.shellTint {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: calc(var(--ambient-intensity, 0.06) * 6);
+  background:
+    radial-gradient(70vmax 50vmax at 10% -10%, hsl(var(--member-5) / calc(var(--tod-dawn, 0) * 0.12)), transparent 70%),
+    radial-gradient(70vmax 50vmax at 50% -15%, hsl(var(--primary) / calc(var(--tod-day, 0) * 0.08)), transparent 70%),
+    radial-gradient(70vmax 50vmax at 90% -10%, hsl(var(--warning) / calc(var(--tod-dusk, 0) * 0.12)), transparent 70%),
+    linear-gradient(180deg, hsl(var(--member-3) / calc(var(--tod-night, 0) * 0.1)), transparent 60%);
+}

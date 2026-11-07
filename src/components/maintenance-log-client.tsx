@@ -102,6 +102,7 @@ import {
 import { cn, slugify, stableSlugify } from '@/lib/utils';
 import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 const assetCategories = [
   'HVAC',
@@ -1874,7 +1875,7 @@ export function MaintenanceLogClient() {
   };
 
   if (!currentUser) {
-    return <p className="py-8 text-center">Please log in to manage maintenance.</p>;
+    return <SignInPrompt what="manage maintenance" />;
   }
 
   if (accessDenied) {

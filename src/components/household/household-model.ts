@@ -7,6 +7,7 @@
  */
 
 import { getEffectivePermissions, getRolePresetPermissions, householdPermissions } from '@/lib/permissions';
+import { completionInstant, type ChoreRecord } from '@/lib/chores/dates';
 import type { AuditLog, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
 /** Household names are limited to 80 characters by the Firestore rules. */
@@ -167,11 +168,37 @@ export function startOfNextWeek(now = new Date()): Date {
 
 export type MemberChoreStats = { doneThisWeek: number; open: number };
 
-type ChoreLike = { assignedToEmail?: string | null; isCompleted?: boolean; completedAt?: string | null };
+export type ChoreLike = {
+  id?: string;
+  assignedToEmail?: string | null;
+  isCompleted?: boolean;
+  completedAt?: string | null;
+  /** Server completion stamp (Timestamp-like); authoritative when present. */
+  completedAtServer?: unknown;
+};
+
+/**
+ * Merges chore lists from several queries by document id (later lists win), so a
+ * chore found by more than one query (open, completed by server stamp, completed
+ * by the legacy client date) counts once.
+ */
+export function mergeChoresById<T extends { id?: string }>(...lists: readonly (readonly T[])[]): T[] {
+  const byId = new Map<string, T>();
+  const anonymous: T[] = [];
+  for (const list of lists) {
+    for (const chore of list) {
+      if (chore.id) byId.set(chore.id, chore);
+      else anonymous.push(chore);
+    }
+  }
+  return [...byId.values(), ...anonymous];
+}
 
 /**
  * Counts per member email: chores completed since `weekStart` and chores still open.
  * Chores carry the assignee, not who ticked them, so "done" means "assigned to and done".
+ * The completion time is the Chores module's `completionInstant` (the server stamp
+ * `completedAtServer` when present, else `completedAt`).
  */
 export function choreStatsByEmail(chores: readonly ChoreLike[], weekStart: Date): Map<string, MemberChoreStats> {
   const stats = new Map<string, MemberChoreStats>();
@@ -184,8 +211,12 @@ export function choreStatsByEmail(chores: readonly ChoreLike[], weekStart: Date)
     const email = chore.assignedToEmail?.trim().toLowerCase();
     if (!email) continue;
     if (chore.isCompleted) {
-      const at = chore.completedAt ? new Date(chore.completedAt) : null;
-      if (at && !Number.isNaN(at.getTime()) && at >= weekStart) bump(email, 'doneThisWeek');
+      const at = completionInstant({
+        isCompleted: true,
+        completedAt: chore.completedAt ?? undefined,
+        completedAtServer: chore.completedAtServer as ChoreRecord['completedAtServer'],
+      });
+      if (at && at >= weekStart) bump(email, 'doneThisWeek');
     } else {
       bump(email, 'open');
     }

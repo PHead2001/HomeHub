@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
 import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
@@ -42,6 +43,7 @@ import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useToday } from '@/components/chores/use-today';
 import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
 
@@ -175,6 +177,13 @@ export function ChoreChartClient() {
     if (currentUser?.householdId) void fetchAllData();
     else setLoading(false);
   }, [currentUser, fetchAllData]);
+
+  // Chores created elsewhere (the command palette's quick add): refresh silently.
+  useEffect(() => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return;
+    return onDataChanged('chores', householdId, () => void fetchAllData());
+  }, [currentUser?.householdId, fetchAllData]);
 
   // Chore reminders are sent by the server (functions/src/reminders.ts), not
   // by whichever browser happens to have this page open.
@@ -679,7 +688,7 @@ export function ChoreChartClient() {
   }
 
   if (!currentUser) {
-    return <p className="py-8 text-sm">Please log in to manage chores.</p>;
+    return <SignInPrompt what="manage chores" />;
   }
 
   const filteredChores = assignedChores.filter(chore => {

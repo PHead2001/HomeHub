@@ -6,8 +6,10 @@ This module owns household notification records, bell/history presentation, per-
 
 ## User-Facing Capabilities
 
-- View recent active notifications from the header bell.
-- Open seven-day history at `/notifications`.
+- View recent active notifications from the header bell, grouped into Today, This week and Earlier. The bell is named "Notifications" (with the unread count), rings briefly and pops its badge when a new unread notification arrives, and shows an "All caught up" illustration when empty.
+- Open seven-day history at `/notifications`, grouped into Today, This week and Earlier. Cards show the title, message, age, a plain-language source ("Home maintenance", "Warranty", "Chore assignment", "New member"...) and who dismissed or completed it; internal source names and expiry stamps are never shown.
+- An empty Unread filter shows the shared `EmptyState` (notifications illustration, "All caught up" with a friendly line that stays the same all day); other empty filters offer "Show all".
+- On a hovering pointer, a card's dismiss button appears on hover or when the card has keyboard focus; on touch, swipe left to dismiss.
 - Filter unread, all, dismissed, and feature categories.
 - Mark a notification read by opening it.
 - Dismiss one or all active notifications without deleting history.
@@ -26,12 +28,15 @@ This module owns household notification records, bell/history presentation, per-
 - `src/lib/service-worker.ts`
 - `src/hooks/use-app-badge.ts`
 - `src/lib/notifications.ts`
+- `src/lib/dashboard/notification-display.ts` (date groups, source labels, the caught-up line)
 - `functions/src/index.ts`
 - Notification types in `src/lib/types.ts`
 
 ## Architecture and Data Flow
 
 Feature code creates household notification documents with `buildNotificationDocument`. Bell and center queries parse legacy/current shapes, merge duplicate semantic identities for presentation, filter per-user target/read/dismiss state, and write only the current UID's map entries. Mobile cards reserve horizontal pointer movement while preserving vertical pan, and track drag position synchronously so a fast swipe can dismiss reliably. Gesture capture ignores the desktop dismiss button so pointer capture cannot swallow its click.
+
+The bell's active list is `activeBellNotifications` (not expired, visible to the member, unresolved, not dismissed by them, at most 10), applied after `deduplicateNotifications`; the dashboard's unread tile uses the same two steps, so duplicate legacy copies are counted once and a read or dismissal on either copy applies to both. Presentation helpers in `src/lib/dashboard/notification-display.ts` also group items by local day (`today` since local midnight, `week` for the six days before, `earlier`) and map `sourceType` values to plain labels (unknown values show nothing rather than the raw name). Bell ring and badge pop are CSS animations from `src/components/dashboard/dashboard.module.css`, keyed so they replay only when the unread count increases after the first load; both are removed under reduced motion. Load failures in the center show `friendlyError` text; dismiss failures use `toastError`.
 
 A Firestore create trigger resolves recipients, sends FCM, and removes invalid registration tokens. Foreground messages become toasts. `/api/sw` serves HomeHub's single service worker: Firebase Messaging background display and deep-link clicks, plus the offline app shell owned by [Application Shell and Dashboard](../application-shell/README.md). Production builds register it on every page load through `PushNotificationManager`; `PushNotificationSettings` registers the same URL and scope (`src/lib/service-worker.ts`) on push opt-in and so receives the same registration for `getToken`. Background notifications use `/icons/icon-192.png` when the payload has no icon. If the Firebase scripts cannot be imported (CDN blocked or offline at install), the worker still installs without push and retries on its next update.
 
@@ -75,6 +80,8 @@ The homepage overview counts only active notifications visible to the verified u
 
 ## Invariants and Failure Behavior
 
+- Notification UI never displays `sourceType`, `stateKey` or `expiresAt` values directly.
+
 - Bell queries the last seven days, reads at most 30 records, and displays up to 10 active unresolved/undismissed items.
 - Center hides expired records and supports system/general records under broad filters, but has no dedicated system/general category filter.
 - Dismissal is per user and does not delete the record.
@@ -91,6 +98,8 @@ The homepage overview counts only active notifications visible to the verified u
 - Run `npm.cmd run test:e2e:local` for deterministic read, unread, dismissed, system, shopping, and maintenance notification fixtures in desktop/mobile views.
 - Manually test own-UID read/dismiss updates, dismiss-all scope, seven-day filtering, deep links, foreground/background delivery, denied permission, invalid-token cleanup, and target/broadcast recipients.
 - Verify expired records with and without TTL and test cross-household access/targeting.
+
+Unit coverage for grouping and source labels lives in `tests/unit/dashboard-ambience.test.ts`; `tests/e2e/dashboard-shell.spec.ts` checks the center shows no internal names or expiry stamps.
 
 ## When This Document Must Be Updated
 

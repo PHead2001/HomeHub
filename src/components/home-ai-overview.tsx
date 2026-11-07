@@ -58,7 +58,7 @@ export function HomeAiOverview() {
   const metrics = result ? getMetrics(result) : [];
 
   return (
-    <section aria-labelledby="ai-overview-heading" className="mb-8 border-y py-5">
+    <section aria-labelledby="ai-overview-heading" className="mb-8 rounded-xl border bg-card/60 p-4 shadow-raised">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -66,10 +66,10 @@ export function HomeAiOverview() {
             <h2 id="ai-overview-heading" className="font-headline text-xl font-semibold">AI Overview</h2>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Generate a private snapshot from the household sections you can access. Exact counts are calculated by HomeHub.
+            Ask AI for a written summary of the sections you can access. The counts above are always HomeHub&apos;s own.
           </p>
         </div>
-        <Button onClick={generate} disabled={loading || !currentUser?.householdId} className="w-full shrink-0 sm:w-auto">
+        <Button onClick={generate} disabled={loading || !currentUser?.householdId} variant="outline" size="sm" className="w-full shrink-0 sm:w-auto">
           {loading ? <RefreshCw className="mr-2 size-4 animate-spin" aria-hidden="true" /> : <Sparkles className="mr-2 size-4" aria-hidden="true" />}
           {loading ? 'Generating...' : result ? 'Regenerate Overview' : 'Generate Overview'}
         </Button>

@@ -42,3 +42,17 @@ export const recurringChoreId = (
   day: string,
   assignedToEmail: string,
 ): string => stableSlugify(`${templateId}-${roomId}-${day}-${assignedToEmail}`);
+
+/**
+ * Map key for one assignee in yearly chore stats. Emails cannot be Firestore
+ * map keys (they contain dots), so the lower-cased email is hashed, with a
+ * readable slug of its local part in front: "sam-member-1x2y3z".
+ * @param {string} email Assignee email.
+ * @return {string} Stable, field-path-safe key.
+ */
+export const choreStatsAssigneeKey = (email: string): string => {
+  const normalized = email.trim().toLowerCase();
+  const slug = stableSlugify(normalized.split("@")[0] || "member")
+    .replace(/-/g, "_").slice(0, 24) || "member";
+  return `${slug}_${hashIdentity(normalized)}`;
+};

@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ScanBarcode } from "lucide-react";
+import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 export default function ShoppingPage() {
     const { currentUser, currentMember, permissions, householdLoading } = useAuth();
@@ -29,7 +30,7 @@ export default function ShoppingPage() {
                 )}
             </div>
 
-            {!currentUser && <p className="text-center py-8">Please log in to manage your shopping lists and inventory.</p>}
+            {!currentUser && <SignInPrompt what="manage your shopping lists and inventory" />}
 
             {denied && (
                 <EmptyState
