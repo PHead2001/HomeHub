@@ -282,10 +282,13 @@ test.describe('maintenance center UX', () => {
     const suv = page.getByTestId('vehicle-card-family-suv');
     await expect(suv.locator('[data-vehicle-photo="image"]')).toBeVisible();
     // The make is shown as text, so the Subaru mark is decorative.
+    await expect(suv.locator('[data-brand]')).toHaveCount(1);
     await expect(suv.locator('[data-brand="subaru"][data-brand-kind="logo"]')).toHaveAttribute('aria-hidden', 'true');
     await expect(page.getByTestId('vehicle-detail').locator('[data-brand="subaru"] path')).toHaveCount(1);
 
     await page.getByRole('tab', { name: 'Home Assets' }).click();
+    // Each card shows its brand mark once (beside the title), whether or not it has a photo.
+    await expect(page.getByTestId('asset-card-dishwasher').locator('[data-brand]')).toHaveCount(1);
     // Bosch has bundled artwork; Carrier gets the monogram badge. Neither card shows the brand as text, so both are named.
     await expect(page.getByTestId('asset-card-dishwasher').getByRole('img', { name: 'Bosch' })).toHaveAttribute('data-brand-kind', 'logo');
     await expect(page.getByTestId('asset-card-hvac-main').getByRole('img', { name: 'Carrier' })).toHaveAttribute('data-brand-kind', 'badge');

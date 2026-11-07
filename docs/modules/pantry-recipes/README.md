@@ -15,7 +15,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 - Start an inventory item from a barcode scan.
 - Move a deleted inventory item back to a selected shopping list.
 - Generate a recipe suggestion from the currently loaded inventory (H08 recipe reveal). The dialog opens with a loading state; when the recipe arrives in the shelves view and it uses tiles, the dialog and its scrim fade out (150 ms) so the shelves are visible, the used tiles lift off their shelves (the tile card and picture rise 8 px in 200 ms; the controls' hit areas stay put) with an "In the recipe" marker, the first lifted tile is scrolled into view, and after 450 ms (or at once on any key or pointer press) the dialog returns and the recipe card flips in (220 ms). In the list view, with no matching tiles, or under reduced motion, the tiles are marked and the card shows at once with no flip. Screen readers hear a short "Lifting the items…" status, and focus stays in the dialog throughout. The marker stays until the next generation.
-- Shelf item counts, the expiring/expired header counts and the list view's shelf counts are `NumberTicker`s, and each shelf's tiles enter with the shared `Stagger` (instant under reduced motion).
+- Shelf item counts, the expiring/expired header counts and the list view's shelf counts tick with `LiveCount` (plain text at rest, so "Pantry (3)" reads exactly that), and each shelf's tiles enter with the shared `Stagger` (instant under reduced motion).
 - Receive purchased grocery items in one batch from the shopping trip (see [Shopping](../shopping/README.md)); there is no longer a per-item pantry form after ticking.
 
 ## Entry Points

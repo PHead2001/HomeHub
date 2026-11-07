@@ -55,7 +55,7 @@ import { ReminderList, type MarkDoneResult, type ReminderBusy } from '@/componen
 import { VehicleCard } from '@/components/maintenance/vehicle-card';
 import { BrandLogo } from '@/components/brand/brand-logo';
 import { PeekCard } from '@/components/dashboard/peek-card';
-import { NumberTicker } from '@/components/motion/number-ticker';
+import { LiveCount } from '@/components/shopping/live-count';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import { useInPageMorph } from '@/components/shopping/use-in-page-morph';
 import { morphStyle, sharedId } from '@/lib/motion';
@@ -453,7 +453,7 @@ function SummaryCard({
   icon: Icon,
 }: {
   title: string;
-  /** A count or amount: rendered as a NumberTicker (H12). */
+  /** A count or amount: rendered as a LiveCount (H12). */
   value: number;
   /** Intl options for the value, e.g. currency. */
   format?: Intl.NumberFormatOptions;
@@ -467,7 +467,7 @@ function SummaryCard({
         <Icon className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold"><NumberTicker value={value} format={format} locale="en-US" /></div>
+        <div className="text-2xl font-bold"><LiveCount value={value} format={format} animateOnMount /></div>
         <p className="text-xs text-muted-foreground">{detail}</p>
       </CardContent>
     </Card>

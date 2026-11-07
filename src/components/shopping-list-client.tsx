@@ -56,7 +56,7 @@ import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
 import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
 import { useInPageMorph } from './shopping/use-in-page-morph';
-import { NumberTicker } from '@/components/motion/number-ticker';
+import { LiveCount } from './shopping/live-count';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { morphStyle, sharedId, staggerDelay } from '@/lib/motion';
@@ -1077,7 +1077,7 @@ export function ShoppingListClient({
                       <>
                          <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full">
                             <AccordionItem value="needed">
-                            <AccordionTrigger className="font-headline text-lg"><span>Needed (<NumberTicker value={neededItems.length} animateOnMount={false} />)</span></AccordionTrigger>
+                            <AccordionTrigger className="font-headline text-lg"><span>Needed (<LiveCount value={neededItems.length} />)</span></AccordionTrigger>
                             <AccordionContent>
                                 {neededItems.length === 0 ? (
                                   <EmptyState
@@ -1118,7 +1118,7 @@ export function ShoppingListClient({
                             </AccordionItem>
                             <AccordionItem value="purchased" ref={purchasedSectionRef}>
                             <div className="flex items-center">
-                                <AccordionTrigger className="flex-1 font-headline text-lg"><span>Purchased (<NumberTicker value={purchasedItems.length} animateOnMount={false} />)</span></AccordionTrigger>
+                                <AccordionTrigger className="flex-1 font-headline text-lg"><span>Purchased (<LiveCount value={purchasedItems.length} />)</span></AccordionTrigger>
                                 {purchasedItems.length > 0 && canDelete && (
                                     <Button variant="ghost" size="sm" onClick={() => setIsClearAlertOpen(true)} className="text-muted-foreground hover:text-destructive">
                                         <ArchiveX className="mr-2 h-4 w-4" aria-hidden /> Clear

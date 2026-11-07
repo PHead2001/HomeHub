@@ -38,9 +38,9 @@ const statusLabel = (status: HomeAsset['status']) => (status === 'needs_attentio
 
 /**
  * Photo-first asset card (H30). The newest image attachment fills the photo band
- * over a blurred copy of itself; with no photo the band shows the brand's logo
- * (or its monogram badge), else the category icon. A small brand mark, named for
- * assistive tech, sits beside the title. Cards keep their content height (B7). Beside the health ring,
+ * over a blurred copy of itself; with no photo the band shows the category icon.
+ * The brand mark (logo or monogram badge) appears once, beside the title, named
+ * for assistive tech. Cards keep their content height (B7). Beside the health ring,
  * a warranty countdown ring shows the days left of the warranty term (H10).
  */
 export function AssetCard({
@@ -76,7 +76,7 @@ export function AssetCard({
       <PhotoBand
         kind="asset"
         url={photo?.downloadUrl}
-        fallback={<BrandLogo brand={asset.brand} size="lg" decorative fallback={<Icon className="h-8 w-8" />} />}
+        fallback={<Icon className="h-8 w-8" />}
       />
       <div className="flex items-start justify-between gap-3 p-3">
         <div className="min-w-0">

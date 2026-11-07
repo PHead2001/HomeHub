@@ -15,9 +15,9 @@ const describe = (vehicle: Vehicle) => [vehicle.year, vehicle.make, vehicle.mode
 
 /**
  * Photo-first vehicle card (H30), the same treatment as asset cards: the newest
- * photo attached to the vehicle over a blurred copy of itself, or the make's logo
- * (monogram badge when there is no artwork), or a car icon. The make is shown as
- * text, so the logo is decorative. Sold and retired vehicles render muted with
+ * photo attached to the vehicle over a blurred copy of itself, or a car icon.
+ * The make's logo (monogram badge when there is no artwork) appears once, beside
+ * the title; the make is shown as text, so the logo is decorative. Sold and retired vehicles render muted with
  * their status instead of mileage.
  */
 export const VehicleCard = forwardRef<HTMLButtonElement, {
@@ -47,7 +47,7 @@ export const VehicleCard = forwardRef<HTMLButtonElement, {
       <PhotoBand
         kind="vehicle"
         url={photo?.downloadUrl}
-        fallback={<BrandLogo brand={vehicle.make} size="lg" decorative fallback={<Car className="h-8 w-8" />} />}
+        fallback={<Car className="h-8 w-8" />}
       />
       <div className="w-full p-4 pt-3">
         <div className="flex items-start justify-between gap-3">

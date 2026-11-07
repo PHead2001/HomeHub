@@ -11,7 +11,7 @@ import {
 import type { PantryItem, PantryItemLocation } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { PANTRY_LOCATIONS, expiryLabel, expiryState, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
-import { NumberTicker } from '@/components/motion/number-ticker';
+import { LiveCount } from './live-count';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 
 const SHELF_ICON: Record<PantryItemLocation, LucideIcon> = { Pantry: Archive, Fridge: Refrigerator, Freezer: Snowflake };
@@ -174,7 +174,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
               <h3 id={headingId} className="flex items-center gap-2 font-headline text-lg font-semibold">
                 <Icon className={cn('h-5 w-5', location === 'Pantry' ? 'text-primary' : 'text-info')} aria-hidden />
                 {location}
-                <span className="text-sm font-normal text-muted-foreground"><NumberTicker value={shelfItems.length} /> {shelfItems.length === 1 ? 'item' : 'items'}</span>
+                <span className="text-sm font-normal text-muted-foreground"><LiveCount value={shelfItems.length} /> {shelfItems.length === 1 ? 'item' : 'items'}</span>
               </h3>
               {pickedItem && (
                 pickedItem.location === location ? (
