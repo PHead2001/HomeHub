@@ -130,6 +130,7 @@ export async function lookupBarcode(
 ): Promise<AiActionResult<LookupBarcodeOutput>> {
   return executeAuthorizedAiAction({
     context,
+    input,
     permission: 'shopping.view',
     flowName: 'barcode-lookup',
     maxRequestsPerMinute: 30,

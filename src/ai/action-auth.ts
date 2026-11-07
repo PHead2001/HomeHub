@@ -87,8 +87,53 @@ const runGuarded = async <T>(
   }
 };
 
+/**
+ * Largest client payload (context + input, as JSON) an AI action accepts. Real
+ * inputs are a few KB (a 60-item recipe request is about 12 KB). Rejecting larger
+ * payloads before any validation bounds the work Genkit's pinned zod 3 can be made
+ * to do (GHSA-mrhx-c7xc-m3w5, oversized constrained collections); see the AI/Genkit
+ * module README.
+ */
+export const MAX_AI_ACTION_PAYLOAD_BYTES = 64 * 1024;
+
+/**
+ * True when the payload's size (roughly its JSON size) exceeds `budget`. Walks the
+ * value node by node and stops as soon as the running total passes the budget, so
+ * the work is bounded by the budget itself: every node visited adds at least one
+ * unit. Shared references (which Server Actions can transport) and cycles are
+ * counted each time they are reached, as JSON would expand them, but never
+ * materialized, so a tiny request cannot make this check allocate a large string.
+ */
+export const exceedsPayloadBudget = (value: unknown, budget: number): boolean => {
+  let total = 0;
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    total += 1;
+    if (typeof node === 'string') total += node.length;
+    else if (typeof node === 'number' || typeof node === 'bigint') total += 8;
+    else if (node !== null && typeof node === 'object') {
+      if (Array.isArray(node)) {
+        for (let index = node.length - 1; index >= 0; index -= 1) {
+          stack.push(node[index]);
+          if (total + stack.length > budget) return true;
+        }
+      } else {
+        for (const key of Object.keys(node)) {
+          total += key.length + 1;
+          stack.push((node as Record<string, unknown>)[key]);
+          if (total + stack.length > budget) return true;
+        }
+      }
+    }
+    if (total > budget) return true;
+  }
+  return false;
+};
+
 export const executeAuthorizedAiAction = async <T>({
   context,
+  input,
   permission,
   flowName,
   maxRequestsPerMinute,
@@ -96,6 +141,8 @@ export const executeAuthorizedAiAction = async <T>({
   task,
 }: {
   context: AiActionContext;
+  /** The action's client input, size-checked before authorization and validation. */
+  input?: unknown;
   permission: HouseholdPermission;
   flowName: string;
   maxRequestsPerMinute: number;
@@ -108,6 +155,9 @@ export const executeAuthorizedAiAction = async <T>({
   task: (user: AuthorizedHouseholdUser) => Promise<T>;
 }): Promise<AiActionResult<T>> => {
   try {
+    if (exceedsPayloadBudget({ context, input }, MAX_AI_ACTION_PAYLOAD_BYTES)) {
+      throw new HomeHubAiError('invalid_input');
+    }
     const user = await authorizeHouseholdAction(context, permission);
     const data = await runGuarded(user, flowName, maxRequestsPerMinute, consumeQuota, () => task(user));
     return { ok: true, data };

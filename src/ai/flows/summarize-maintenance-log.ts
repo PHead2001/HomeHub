@@ -19,6 +19,7 @@ export async function summarizeMaintenanceLog(
 ): Promise<AiActionResult<SummarizeMaintenanceLogOutput>> {
   return executeAuthorizedAiAction({
     context,
+    input,
     permission: 'maintenance.view',
     flowName: 'maintenance-summary',
     maxRequestsPerMinute: 12,

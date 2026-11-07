@@ -19,6 +19,7 @@ export async function categorizeGroceryItem(
 ): Promise<AiActionResult<CategorizeGroceryItemOutput>> {
   return executeAuthorizedAiAction({
     context,
+    input,
     permission: 'shopping.edit',
     flowName: 'categorization',
     maxRequestsPerMinute: 20,
