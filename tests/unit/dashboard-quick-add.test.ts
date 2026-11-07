@@ -191,7 +191,7 @@ describe('chore assignees and chores.assign', () => {
 
 describe('parseQuickAdd: maintenance and fallbacks', () => {
   it('recognizes a maintenance log with mileage', () => {
-    assert.deepEqual(parseQuickAdd('oil change 48,200 miles', context), { kind: 'maintenance', title: 'Oil change', mileage: 48200 });
+    assert.deepEqual(parseQuickAdd('oil change 48,200 miles', context), { kind: 'maintenance', title: 'Oil change', mileage: 48200, target: null });
   });
 
   it('needs whole service words', () => {

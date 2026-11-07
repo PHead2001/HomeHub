@@ -212,6 +212,9 @@ function RoomLink({
           data-room-status={room.status}
           data-room-id={room.id}
           data-testid={`house-room-${room.id}`}
+          // The click zooms first and then morphs (useMorphNavigation), so the
+          // generic link transition must not hold the page meanwhile.
+          data-route-transition="manual"
           className={cn(styles.room, 'block h-full rounded-sm outline-none')}
           onClick={(event) => onNavigate(event, room, placement, href)}
           onPointerEnter={(event) => {

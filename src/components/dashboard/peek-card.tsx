@@ -26,16 +26,21 @@ export function PeekCard({
   peek,
   children,
   className,
+  as = 'div',
 }: {
   /** Card content; when null the wrapper renders children only. */
   peek: ReactNode | null;
   children: ReactNode;
   className?: string;
+  /** Wrapper element: `span` inside text or inline layouts, `li` as a list row. */
+  as?: 'div' | 'span' | 'li';
 }) {
+  const Wrapper = as as 'div';
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<PeekPlacement | null>(null);
   const timer = useRef<number | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
+
 
   const clear = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -72,10 +77,10 @@ export function PeekCard({
     };
   }, [open, close]);
 
-  if (!peek) return <div className={className}>{children}</div>;
+  if (!peek) return <Wrapper className={className}>{children}</Wrapper>;
 
   return (
-    <div
+    <Wrapper
       ref={wrapper}
       className={cn('relative', className)}
       onPointerEnter={(event) => {
@@ -109,6 +114,6 @@ export function PeekCard({
         </AnimatePresence>,
         document.body,
       )}
-    </div>
+    </Wrapper>
   );
 }

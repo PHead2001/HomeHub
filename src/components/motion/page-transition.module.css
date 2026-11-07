@@ -1,5 +1,8 @@
 /* Route crossfade with an 8 px settle (H12, <= 250 ms), CSS only so the first page
-   never loads an animation library. Mirrors PAGE_ENTER in src/lib/motion.ts. */
+   never loads an animation library. Mirrors PAGE_ENTER in src/lib/motion.ts.
+   `.enter` is the fallback for browsers without the View Transitions API; when a
+   route view transition runs, the browser animates the `page-content` snapshot
+   instead (globals.css) and `.enter` is not applied. */
 .enter {
   animation: page-enter var(--duration-ui, 220ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
@@ -14,4 +17,10 @@
   .enter {
     animation: none;
   }
+}
+
+/* Named only during a route view transition, so the theme reveal (also a view
+   transition) still clips the whole page as one snapshot. */
+:global(:root[data-route-transition]) .page {
+  view-transition-name: page-content;
 }

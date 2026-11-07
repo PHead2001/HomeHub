@@ -1,0 +1,18 @@
+/* Tab panel enter (D09/H12): fade with a 4 px settle in 150 ms (TAB_ENTER in
+   src/lib/motion.ts). Opacity and transform only, so nothing shifts; the panel is
+   in place and focusable from the first frame. */
+.enter {
+  animation: tab-enter var(--duration-micro, 150ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+@keyframes tab-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+:global(:root[data-motion='reduce']) .enter {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .enter {
+    animation: none;
+  }
+}

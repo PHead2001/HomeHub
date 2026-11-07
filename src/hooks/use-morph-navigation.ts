@@ -1,75 +1,74 @@
 'use client';
 
 import { useCallback, useEffect } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
-import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useRouter } from 'next/navigation';
+import {
+  isRouteTransitionActive,
+  routeTransitionTarget,
+  runRouteTransition,
+  type RouteTransitionOptions,
+} from '@/components/motion/route-transition';
+import { ROUTE_TRANSITION } from '@/lib/motion';
 
-type ViewTransitionDocument = Document & {
-  startViewTransition?: (update: () => Promise<void> | void) => { finished: Promise<void> };
-};
-
-/** Longest we hold the old snapshot while the next route loads. */
-const MAX_WAIT_MS = 800;
-
-// Module-level because the component that starts a morph usually unmounts with
-// its route; the persistent <MorphRouteListener /> in the root layout resolves it.
-let pending: { target: string; resolve: () => void } | null = null;
-
-/** Mounted once in the root layout: tells a pending morph that its route committed. */
+/**
+ * Mounted once in the root layout. Turns plain internal link clicks into route
+ * view transitions (H12): it runs after `next/link` has started the navigation
+ * (window bubble phase, like `NavigationProgress`), so it never changes where a
+ * link goes or which handlers run. Skipped when a handler already started a
+ * transition (a morph), for links marked `data-route-transition="manual"`, for
+ * query-only changes, and wherever `runRouteTransition` declines (reduced motion,
+ * no API). Plain anchors that did a full page load (`defaultPrevented` false) are
+ * left alone.
+ */
 export function MorphRouteListener() {
-  const pathname = usePathname();
   useEffect(() => {
-    if (pending && pathname === pending.target) {
-      pending.resolve();
-      pending = null;
-    }
-  }, [pathname]);
+    const onClick = (event: MouseEvent) => {
+      if (!event.defaultPrevented || isRouteTransitionActive()) return;
+      const target = routeTransitionTarget(event);
+      if (target) runRouteTransition(target.href, null, { maxWaitMs: ROUTE_TRANSITION.linkMaxWaitMs });
+    };
+    window.addEventListener('click', onClick);
+    return () => window.removeEventListener('click', onClick);
+  }, []);
   return null;
 }
 
+export type MorphNavigateOptions = Pick<RouteTransitionOptions, 'waitFor'> & {
+  /** Replace the history entry instead of pushing one. */
+  replace?: boolean;
+};
+
 /**
- * Cross-route shared-element morphs (H12), e.g. pet card photo → pet page hero.
+ * Shared-element morphs between any two elements (H12), across routes or within
+ * one route when the URL changes (a query such as `?list=` or `?asset=`).
  *
- * 1. Give the element on both pages the same name:
- *      <Image style={morphStyle(sharedId('pet', pet.id, 'photo'))} … />
- * 2. Navigate with `navigate(href)` from this hook instead of a plain push:
+ * 1. Give both ends the same name (`sharedId(kind, id, part)` from `@/lib/motion`):
+ *      card:   <img {...morphProps(sharedId('pet', pet.id, 'photo'))} … />
+ *      detail: <img {...morphProps(sharedId('pet', pet.id, 'photo'))} … />
+ *    (`morphStyle(name)` alone also works; `morphProps` adds the `data-morph`
+ *    marker that `waitFor` looks for.) Each name must be unique on the page at
+ *    both ends: when the card stays mounted beside its open detail, give the card
+ *    `null` while the detail is open.
+ * 2. Navigate with this hook instead of a plain push, in the click handler:
  *      const { navigate } = useMorphNavigation();
- *      <Link href={href} onClick={(e) => { e.preventDefault(); navigate(href); }}>
+ *      <Link href={href} onClick={(e) => { e.preventDefault(); navigate(href, { waitFor: name }); }}>
+ *    `waitFor` (a `data-morph` name or a predicate) holds the old snapshot until
+ *    the destination element has rendered, at most 800 ms in total.
  *
- * Uses the View Transitions API: the browser morphs every element whose
- * `view-transition-name` exists on both pages. Where the API is missing or motion
- * is reduced it is a normal `router.push`. Within one route (list → open list,
- * asset card → detail panel) use motion `layoutId={sharedId(…)}` instead.
+ * The page content crossfades around the morph exactly like a plain route change
+ * (same engine, `runRouteTransition`). Where the API is missing or motion is
+ * reduced it is a normal `router.push`/`replace`. If the click handler delays the
+ * navigation (an animation first), mark the link `data-route-transition="manual"`.
  */
 export function useMorphNavigation() {
   const router = useRouter();
-  const reduced = useReducedMotion();
 
   const navigate = useCallback(
-    (href: string) => {
-      const doc = document as ViewTransitionDocument;
-      const target = new URL(href, window.location.href).pathname;
-      if (reduced || typeof doc.startViewTransition !== 'function' || target === window.location.pathname) {
-        router.push(href);
-        return;
-      }
-      doc.startViewTransition(
-        () =>
-          new Promise<void>((resolve) => {
-            const timeout = window.setTimeout(resolve, MAX_WAIT_MS);
-            pending = {
-              target,
-              resolve: () => {
-                window.clearTimeout(timeout);
-                // Let the new route paint before the browser captures it.
-                requestAnimationFrame(() => resolve());
-              },
-            };
-            router.push(href);
-          }),
-      );
+    (href: string, options: MorphNavigateOptions = {}) => {
+      const go = () => (options.replace ? router.replace(href) : router.push(href));
+      runRouteTransition(href, go, { maxWaitMs: ROUTE_TRANSITION.morphMaxWaitMs, waitFor: options.waitFor });
     },
-    [reduced, router],
+    [router],
   );
 
   return { navigate };

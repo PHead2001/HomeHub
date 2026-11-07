@@ -1,16 +1,16 @@
 'use client';
 
 /**
- * The signed-in dashboard: the living house (H01), the morning brief (H04), the
- * bento grid (H22), the on-demand AI Overview and Home Wrapped. Loaded as its own
+ * The signed-in dashboard: the living house (H01), the morning brief (H04, with its
+ * on-demand AI rewrite), the bento grid (H22) and Home Wrapped. Loaded as its own
  * chunk from `src/app/page.tsx`, so signed-out visitors (the landing page) never
  * download it.
  */
 import { useEffect, useState } from 'react';
 import { collection, getCountFromServer, query, where } from 'firebase/firestore';
 import { Keyboard } from 'lucide-react';
-import { HomeAiOverview } from '@/components/home-ai-overview';
 import { openShortcutHelp } from '@/components/command/events';
+import { ShortcutHint, ShortcutKeys } from '@/components/ui/shortcut-hint';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
@@ -59,18 +59,19 @@ export function Dashboard() {
       <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} />
       <MorningBrief facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} ready={!loading} />
       <BentoGrid facts={facts} loading={loading} failed={failed} />
-      <HomeAiOverview />
 
       <div className="flex flex-wrap items-center gap-3">
         <HomeWrapped />
-        <button
-          type="button"
-          onClick={openShortcutHelp}
-          className="hidden items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground md:inline-flex"
-        >
-          <Keyboard aria-hidden className="h-4 w-4" />
-          Keyboard shortcuts <kbd className="rounded border bg-muted px-1.5 text-xs">?</kbd>
-        </button>
+        <ShortcutHint shortcut="help">
+          <button
+            type="button"
+            onClick={openShortcutHelp}
+            className="hidden items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground md:inline-flex"
+          >
+            <Keyboard aria-hidden className="h-4 w-4" />
+            Keyboard shortcuts <ShortcutKeys shortcut="help" />
+          </button>
+        </ShortcutHint>
       </div>
     </div>
   );

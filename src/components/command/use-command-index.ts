@@ -3,14 +3,15 @@
 /**
  * What the command palette can search, loaded once each time the palette opens
  * (read-only, only sections the member can view). Also supplies the members,
- * pets and lists the quick-add parser resolves names against.
+ * pets, lists, rooms, vehicles and assets the quick-add parser resolves names
+ * against.
  */
 import { useEffect, useState } from 'react';
 import { collection, query, where, type DocumentData, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getDocsOfflineAware } from '@/lib/firestore-offline';
 import { useAuth } from '@/hooks/use-auth';
-import type { QuickAddList, QuickAddMember, QuickAddPet } from '@/lib/dashboard/quick-add';
+import type { QuickAddAsset, QuickAddList, QuickAddMember, QuickAddPet, QuickAddRoom, QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { shoppingListHref } from '@/lib/dashboard/links';
 import { feedingPlan } from '@/lib/pets/care';
 import type { PetProfile } from '@/lib/pets/types';
@@ -22,10 +23,16 @@ export type CommandIndex = {
   members: QuickAddMember[];
   pets: QuickAddPet[];
   lists: QuickAddList[];
+  rooms: QuickAddRoom[];
+  /** Active vehicles (retired and sold ones are left out, as in Maintenance's reminders). */
+  vehicles: QuickAddVehicle[];
+  /** Home assets that are not retired. */
+  assets: QuickAddAsset[];
   loading: boolean;
 };
 
-const EMPTY: CommandIndex = { entries: [], members: [], pets: [], lists: [], loading: false };
+const EMPTY: CommandIndex = { entries: [], members: [], pets: [], lists: [], rooms: [], vehicles: [], assets: [], loading: false };
+const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 const str = (value: unknown, fallback = '') => (typeof value === 'string' && value.trim() ? value.trim() : fallback);
 const rows = (snapshot: QuerySnapshot<DocumentData>) => snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Record<string, unknown> & { id: string }));
 
@@ -43,13 +50,14 @@ export function useCommandIndex(open: boolean): CommandIndex {
     const safe = <T,>(promise: Promise<T>) => promise.catch(() => null);
 
     (async () => {
-      const [members, lists, pets, chores, assets, vehicles] = await Promise.all([
+      const [members, lists, pets, chores, assets, vehicles, rooms] = await Promise.all([
         safe(getDocsOfflineAware(base('members'))),
         permissions['shopping.view'] ? safe(getDocsOfflineAware(base('shopping-lists'))) : null,
         permissions['pets.view'] ? safe(getDocsOfflineAware(base('pets'))) : null,
         permissions['chores.view'] ? safe(getDocsOfflineAware(query(base('chores'), where('isCompleted', '==', false)))) : null,
         permissions['maintenance.view'] ? safe(getDocsOfflineAware(base('home-assets'))) : null,
         permissions['maintenance.view'] ? safe(getDocsOfflineAware(base('vehicles'))) : null,
+        permissions['chores.view'] ? safe(getDocsOfflineAware(base('rooms'))) : null,
       ]);
       const listRows = lists ? rows(lists) : [];
       const items = permissions['shopping.view']
@@ -88,6 +96,21 @@ export function useCommandIndex(open: boolean): CommandIndex {
           return { id: pet.id, name: str(pet.name, 'Pet'), portion: { amount: plan.amount, unit: plan.unit } };
         }) : [],
         lists: listRows.map((list) => ({ id: list.id, name: str(list.name, 'Shopping list'), type: str(list.type) || undefined })),
+        rooms: rooms ? rows(rooms).map((room) => ({ id: room.id, name: str(room.name, 'Room') })) : [],
+        vehicles: vehicles
+          ? rows(vehicles)
+              .filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold')
+              .map((vehicle) => ({
+                id: vehicle.id,
+                name: str(vehicle.nickname, 'Vehicle'),
+                make: str(vehicle.make) || undefined,
+                model: str(vehicle.model) || undefined,
+                currentMileage: num(vehicle.currentMileage),
+              }))
+          : [],
+        assets: assets
+          ? rows(assets).filter((asset) => asset.status !== 'retired').map((asset) => ({ id: asset.id, name: str(asset.name, 'Home asset') }))
+          : [],
         loading: false,
       });
       setLoaded(true);

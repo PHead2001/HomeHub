@@ -37,14 +37,39 @@ export const SPRING_UI: Transition = { type: 'spring', visualDuration: 0.25, bou
 /** Snappier spring for small elements (chips, checkmarks, the nav underline). */
 export const SPRING_SNAPPY: Transition = { type: 'spring', visualDuration: 0.2, bounce: 0.15 };
 
-/** Staggered entrance: ≤ 30 ms per item and ≤ 400 ms total. */
-export const STAGGER = { perItem: 0.03, maxTotal: 0.4 } as const;
+/**
+ * Staggered entrance: ≤ 30 ms per item and ≤ 400 ms total. `Stagger` animates the
+ * first `maxIndexed` items in turn; later items share the last delay (330 ms).
+ */
+export const STAGGER = { perItem: 0.03, maxTotal: 0.4, maxIndexed: 12 } as const;
+
+/** Milliseconds after `Stagger` mounts during which new children still enter. */
+export const STAGGER_WINDOW_MS = 1200;
+
+/** Delay (ms) `Stagger` gives its n-th child (0-based): first at once, capped. */
+export function staggerItemDelayMs(index: number): number {
+  const position = Math.min(Math.max(0, Math.floor(index)), STAGGER.maxIndexed - 1);
+  return Math.round(position * STAGGER.perItem * 1000);
+}
 
 /** Per-item delay for `count` items within the stagger budget. */
 export function staggerDelay(count: number): number {
   if (count <= 1) return 0;
   return Math.min(STAGGER.perItem, STAGGER.maxTotal / (count - 1));
 }
+
+/**
+ * Tab panel enter (D09): a fade with a 4 px settle, 150 ms (micro budget). Opacity
+ * and transform only, so the panel never shifts layout. CSS in `tabs.module.css`.
+ */
+export const TAB_ENTER = { durationMs: 150, offsetPx: 4 } as const;
+
+/**
+ * Route view transitions (H12). Longest time the old page is held while the next
+ * route commits: a link click (navigation already under way) and an explicit
+ * morph (`useMorphNavigation`, which may also wait for its target element).
+ */
+export const ROUTE_TRANSITION = { linkMaxWaitMs: 500, morphMaxWaitMs: 800, pollMs: 16 } as const;
 
 /** Page content enter: crossfade with an 8 px settle. */
 export const PAGE_ENTER = {
@@ -74,8 +99,23 @@ export function sharedId(kind: SharedElementKind, id: string, part = 'card'): st
 
 /**
  * Style for an element that should morph across a route change via the View
- * Transitions API (see `useMorphNavigation`). Names must be unique on the page.
+ * Transitions API (see `useMorphNavigation`). Works for any pair of elements (pet
+ * photo → pet hero, list card → open list, asset card → detail): give both ends
+ * the same name. Names must be unique on the page at each end of the transition,
+ * so when the source stays mounted next to its detail (same-route detail panels),
+ * pass `null` for the source while its detail is open.
  */
 export function morphStyle(name: string | null | undefined): CSSProperties | undefined {
   return name ? ({ viewTransitionName: name } as CSSProperties) : undefined;
+}
+
+/**
+ * `morphStyle` plus a `data-morph` marker, so `useMorphNavigation().navigate(href,
+ * { waitFor: name })` can hold the transition until the destination element has
+ * rendered (detail views that render after their data loads).
+ *
+ *   <img {...morphProps(sharedId('pet', pet.id, 'photo'))} … />
+ */
+export function morphProps(name: string | null | undefined): { style?: CSSProperties; 'data-morph'?: string } {
+  return name ? { style: morphStyle(name), 'data-morph': name } : {};
 }

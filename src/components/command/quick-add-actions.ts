@@ -12,14 +12,21 @@
  *   portion (`feedingPlan`) and the latest feeding's food type (`knownFoodType`),
  *   exactly like the one-tap feed button;
  * - one-time chores: a temporary task (chore + targeted assignment notification,
- *   skipped when you assign it to yourself), as Chores creates them.
- * Nothing is written until the person confirms the preview.
+ *   skipped when you assign it to yourself), as Chores creates them;
+ * - repeating chores: a chore template with the Chores dialog's recurrence shape
+ *   (`repeatingChoreTemplate`), a unique template id as Chores picks it, and the
+ *   same "new repeating chore" notification; server upkeep creates the instances;
+ * - maintenance logs: a routine log like the Maintenance "Add log" form
+ *   (`quickMaintenanceLog`), with the odometer reading on the vehicle's log.
+ * Firestore rules check the same permissions as on those screens (chores.create,
+ * maintenance.createLogs). Nothing is written until the person confirms the preview.
  */
 import { Timestamp, collection, doc, getDocs, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { format } from 'date-fns';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { addFeedingLog, petLogsCollection } from '@/components/pets/pet-log-api';
 import { foodTypeFromLatest } from '@/lib/dashboard/quick-add';
@@ -33,7 +40,10 @@ import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { Chore, ShoppingListItem, User } from '@/lib/types';
-import type { QuickAddList, QuickAddMember } from '@/lib/dashboard/quick-add';
+import type { MaintenanceTarget, QuickAddList, QuickAddMember, QuickAddRepeat, QuickAddRoom } from '@/lib/dashboard/quick-add';
+import { quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '@/lib/dashboard/quick-add-writes';
+import { uniqueTemplateId } from '@/lib/chores/list';
+import { slugify, stableSlugify } from '@/lib/utils';
 
 export async function addShoppingItems(
   householdId: string,
@@ -113,6 +123,7 @@ export async function createOneTimeChore({
   task,
   dueDate,
   assignee,
+  room = null,
   onLateError,
 }: {
   householdId: string;
@@ -120,6 +131,7 @@ export async function createOneTimeChore({
   task: string;
   dueDate: string;
   assignee: QuickAddMember;
+  room?: QuickAddRoom | null;
   onLateError: (error: unknown) => void;
 }): Promise<{ choreId: string; status: 'saved' | 'queued' }> {
   const choreRef = doc(collection(db, 'households', householdId, 'chores'));
@@ -131,7 +143,7 @@ export async function createOneTimeChore({
     assignedToDisplayName: assignee.name || assignee.email,
     dueDate: new Date(`${dueDate}T12:00:00`).toISOString(),
     originalDueDate: dueDate,
-    roomIds: [],
+    roomIds: room && room.id !== 'general' ? [room.id] : [],
     isCompleted: false,
     completedSubTasks: [],
     sourceType: 'temporary',
@@ -157,4 +169,95 @@ export async function createOneTimeChore({
   // reconnect) instead of waiting for a server acknowledgement that cannot come.
   const status = await awaitWriteUnlessOffline(batch.commit(), onLateError);
   return { choreId: choreRef.id, status };
+}
+
+/**
+ * A repeating chore, as the Chores "Add Chore" dialog creates one with Repeats on:
+ * one `chore-templates` document (unique id from the task, as Chores picks it) and,
+ * for someone else, a "new repeating chore" notification. Then the household's
+ * upkeep runs (as when the Chores page loads), so the first instance appears now
+ * rather than at the next hourly run. Online only for the upkeep; the template
+ * itself queues offline.
+ */
+export async function createRepeatingChore({
+  householdId,
+  viewer,
+  task,
+  repeat,
+  firstDay,
+  assignee,
+  room,
+  onLateError,
+}: {
+  householdId: string;
+  viewer: User;
+  task: string;
+  repeat: QuickAddRepeat;
+  /** yyyy-MM-dd of the first occurrence (biweekly anchor). */
+  firstDay: string;
+  assignee: QuickAddMember;
+  room: QuickAddRoom | null;
+  onLateError: (error: unknown) => void;
+}): Promise<{ templateId: string; status: 'saved' | 'queued' }> {
+  const templates = collection(db, 'households', householdId, 'chore-templates');
+  // Chores picks a readable id that is not taken; if the ids cannot be read, a
+  // random suffix keeps it from overwriting an existing template.
+  const existing = await getDocsOfflineAware(templates).then((snapshot) => new Set(snapshot.docs.map((entry) => entry.id))).catch(() => null);
+  const templateId = existing ? uniqueTemplateId(stableSlugify(task), existing) : slugify(task);
+  const template = repeatingChoreTemplate({
+    task,
+    roomId: room?.id ?? null,
+    recurrence: recurrenceFromRepeat(repeat, firstDay),
+    assigneeEmail: assignee.email,
+  });
+  const status = await awaitWriteUnlessOffline(setDoc(doc(templates, templateId), template), onLateError);
+
+  if (assignee.uid !== viewer.uid && assignee.email !== viewer.email) {
+    // As in Chores: the notification is best effort and never undoes the chore.
+    void awaitWriteUnlessOffline(setDoc(doc(collection(db, 'households', householdId, 'notifications')), buildNotificationDocument({
+      householdId,
+      category: 'chores',
+      title: 'New chore assigned',
+      message: `You have a new repeating chore: ${task}.`,
+      deepLink: '/chores',
+      sourceType: 'chore-assignment',
+      sourceId: templateId,
+      targetUser: { uid: assignee.uid, email: assignee.email, displayName: assignee.name } as User,
+    })), onLateError).catch((error) => console.warn('Chore saved, but the notification failed:', error instanceof Error ? error.message : String(error)));
+  }
+
+  const user = auth.currentUser;
+  if (status === 'saved' && user) {
+    void user.getIdToken()
+      .then((idToken) => syncHouseholdUpkeep({ idToken, householdId }))
+      .catch((error) => console.warn('Household upkeep could not run.', error instanceof Error ? error.message : String(error)));
+  }
+  return { templateId, status };
+}
+
+/** A maintenance log, as the Maintenance "Add log" form writes it (routine, dated today). */
+export async function logMaintenance({
+  householdId,
+  title,
+  mileage,
+  target,
+  onLateError,
+}: {
+  householdId: string;
+  title: string;
+  mileage: number | null;
+  target: MaintenanceTarget | null;
+  onLateError: (error: unknown) => void;
+}): Promise<{ logId: string; status: 'saved' | 'queued' }> {
+  const logId = slugify(title);
+  const data = quickMaintenanceLog({
+    householdId,
+    title,
+    date: format(new Date(), 'yyyy-MM-dd'),
+    mileage,
+    target,
+    nowIso: new Date().toISOString(),
+  });
+  const status = await awaitWriteUnlessOffline(setDoc(doc(db, 'households', householdId, 'maintenance', logId), data), onLateError);
+  return { logId, status };
 }

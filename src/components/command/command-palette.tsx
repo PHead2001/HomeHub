@@ -5,9 +5,13 @@
  * Ctrl/Cmd+K, "/", the header search button or the tab bar's quick-add open it.
  * Typing searches pages, chores, lists, items, pets and maintenance records; a
  * sentence the deterministic parser understands becomes a quick-add suggestion.
- * Choosing it shows a preview, and nothing is written until "Confirm". Works fully
- * by keyboard (combobox + listbox pattern). There is no cmdk dependency in this
- * project, so the list is a small hand-built listbox.
+ * A sentence it cannot read can be read by AI on request ("Read it with AI", the
+ * `parseCommand` action), which returns the same kind of suggestion. Choosing one
+ * shows a preview card, and nothing is written until "Confirm": then it adds the
+ * shopping items, logs the feeding, creates the one-time or repeating chore (with
+ * its assignee and room) or logs the maintenance (with the odometer reading, for
+ * the chosen vehicle). Works fully by keyboard (combobox + listbox pattern). There
+ * is no cmdk dependency in this project, so the list is a small hand-built listbox.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
@@ -25,6 +29,7 @@ import {
   ScanBarcode,
   Search,
   ShoppingCart,
+  Sparkles,
   User,
   Users,
   Wrench,
@@ -32,21 +37,24 @@ import {
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Stagger } from '@/components/motion/stagger';
+import { parseCommand } from '@/ai/flows/parse-command-flow';
+import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
-import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type QuickAddIntent, type QuickAddMember } from '@/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
+import { buildAiParseRequest, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
+import { mileageNote } from '@/lib/dashboard/quick-add-writes';
+import { describeIntent, feedingPortion, maintenanceTargetName as targetName } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
-import { DEFAULT_PORTION, formatPortion } from '@/lib/pets/care';
-import type { PortionUnit } from '@/lib/pets/types';
-import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
-import { addShoppingItems, createOneTimeChore, logFeeding } from './quick-add-actions';
+import { addShoppingItems, createOneTimeChore, createRepeatingChore, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
 
 type Page = { href: string; label: string; icon: LucideIcon; permission?: HouseholdPermission; keywords?: string };
@@ -84,36 +92,16 @@ const INTENT_PERMISSION: Record<QuickAddIntent['kind'], HouseholdPermission> = {
   shopping: 'shopping.edit',
   feeding: 'pets.addLogs',
   chore: 'chores.create',
-  // The same permission Maintenance requires to log (the preview opens its form).
+  // The same permission Maintenance requires to add a log.
   maintenance: 'maintenance.createLogs',
 };
 
-/** The amount to log: the one in the sentence, else the pet's usual portion, else the Pets default. */
-function feedingPortion(intent: Extract<QuickAddIntent, { kind: 'feeding' }>): { amount: number; unit: PortionUnit } {
-  if (intent.amount !== null) return { amount: intent.amount, unit: intent.unit ?? intent.pet.portion?.unit ?? DEFAULT_PORTION.unit };
-  return intent.pet.portion ?? DEFAULT_PORTION;
-}
-
-function describeIntent(intent: QuickAddIntent, self: QuickAddMember | null): { title: string; detail: string } {
-  switch (intent.kind) {
-    case 'shopping':
-      return {
-        title: `Add ${intent.items.map((item) => (item.quantity > 1 ? `${item.quantity} × ${item.name}` : item.name)).join(', ')}`,
-        detail: intent.list ? `to ${intent.list.name}` : 'No shopping list yet',
-      };
-    case 'feeding': {
-      const portion = feedingPortion(intent);
-      return { title: `Log a meal for ${intent.pet.name}`, detail: `${formatPortion(portion.amount, portion.unit)}, now` };
-    }
-    case 'chore': {
-      const who = intent.assignee ?? self;
-      const when = intent.repeat ? describeRepeat(intent.repeat) : `due ${new Date(`${intent.dueDate}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
-      return { title: `Chore: ${intent.task}`, detail: `${when}${who ? ` · for ${who.name}` : ''}` };
-    }
-    case 'maintenance':
-      return { title: `Log maintenance: ${intent.title}`, detail: intent.mileage ? `at ${intent.mileage.toLocaleString()} miles` : 'Opens Maintenance' };
-  }
-}
+/** What the member picked in the preview card. */
+export type PreviewChoices = {
+  assignee: QuickAddMember | null;
+  room: QuickAddRoom | null;
+  target: MaintenanceTarget | null;
+};
 
 export function CommandPalette({
   open,
@@ -161,19 +149,51 @@ export function CommandPalette({
     router.push(href);
   }, [close, router]);
 
-  const intent = useMemo(() => {
-    if (!currentUser) return null;
-    const parsed = parseQuickAdd(text, {
-      now: new Date(),
-      viewer: { uid: currentUser.uid, email: currentUser.email },
-      members: index.members,
-      pets: index.pets,
-      lists: index.lists,
-    });
-    if (!parsed || !permissions[INTENT_PERMISSION[parsed.kind]]) return null;
-    if (parsed.kind === 'shopping' && !parsed.list) return null;
-    return parsed;
-  }, [text, currentUser, index.members, index.pets, index.lists, permissions]);
+  const quickContext = useMemo<QuickAddContext | null>(() => (currentUser ? {
+    now: new Date(),
+    viewer: { uid: currentUser.uid, email: currentUser.email },
+    members: index.members,
+    pets: index.pets,
+    lists: index.lists,
+    rooms: index.rooms,
+    vehicles: index.vehicles,
+    assets: index.assets,
+  } : null), [currentUser, index.members, index.pets, index.lists, index.rooms, index.vehicles, index.assets]);
+
+  /** Only intents the member may save (the same permissions as the module screens). */
+  const permitted = useCallback((candidate: QuickAddIntent | null): QuickAddIntent | null => {
+    if (!candidate || !permissions[INTENT_PERMISSION[candidate.kind]]) return null;
+    if (candidate.kind === 'shopping' && !candidate.list) return null;
+    return candidate;
+  }, [permissions]);
+
+  const intent = useMemo(() => (quickContext ? permitted(parseQuickAdd(text, quickContext)) : null), [text, quickContext, permitted]);
+
+  // AI reading (H13 fallback): only on request, for a sentence the parser could not read.
+  const [aiState, setAiState] = useState<{ status: 'idle' | 'reading' | 'none' | 'error'; message?: string }>({ status: 'idle' });
+  const [pendingFromAi, setPendingFromAi] = useState(false);
+  const canQuickAdd = Object.values(INTENT_PERMISSION).some((permission) => permissions[permission]);
+  const offerAi = canQuickAdd && !index.loading && shouldOfferAiParse(text, intent);
+
+  const readWithAi = useCallback(async () => {
+    const householdId = currentUser?.householdId;
+    if (!householdId || !quickContext || aiState.status === 'reading') return;
+    setAiState({ status: 'reading' });
+    try {
+      const { input, refs } = buildAiParseRequest(text, quickContext);
+      const output = unwrapAiActionResult(await parseCommand(input, await getAiActionContext(householdId)));
+      const read = permitted(intentFromAiParse(output, refs, quickContext));
+      if (!read) {
+        setAiState({ status: 'none' });
+        return;
+      }
+      setAiState({ status: 'idle' });
+      setPendingFromAi(true);
+      setPending(read);
+    } catch (error) {
+      setAiState({ status: 'error', message: error instanceof Error && error.message ? error.message : friendlyError(error) });
+    }
+  }, [currentUser?.householdId, quickContext, aiState.status, text, permitted]);
 
   const options = useMemo<Option[]>(() => {
     const search = text.trim();
@@ -223,8 +243,19 @@ export function CommandPalette({
         run: () => setPending(intent),
       });
     }
-    return [...quick, ...records, ...pageOptions];
-  }, [text, permissions, index.entries, intent, self, navigate]);
+    // Reading with AI uses a daily AI request, so Enter picks it first only when
+    // nothing else matches; otherwise it is the last choice.
+    const others = quick.length + records.length + pageOptions.length;
+    const ai: Option[] = offerAi ? [{
+      id: 'quick-add-ai',
+      group: others > 0 ? 'Ask AI' : 'Quick add',
+      label: `Read “${search.length > 60 ? `${search.slice(0, 57)}…` : search}” with AI`,
+      detail: 'Shows a preview first; uses one AI request',
+      icon: Sparkles,
+      run: () => void readWithAi(),
+    }] : [];
+    return [...quick, ...records, ...pageOptions, ...ai];
+  }, [text, permissions, index.entries, intent, self, navigate, offerAi, readWithAi]);
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
@@ -254,7 +285,7 @@ export function CommandPalette({
     if (!open && voice.listening) voice.stop();
   }, [open, voice]);
 
-  const confirm = async (choreAssignee?: QuickAddMember | null) => {
+  const confirm = async (choices: PreviewChoices) => {
     const householdId = currentUser?.householdId;
     if (!pending || !householdId || !currentUser) return;
     const lateError = (error: unknown) => toastError(error, 'Could not sync');
@@ -282,11 +313,23 @@ export function CommandPalette({
         toast({ title: status === 'queued' ? 'Saved offline' : 'Feeding logged', description: status === 'queued' ? `${pending.pet.name}'s feeding will sync when you're back online.` : `${pending.pet.name} has been fed.` });
       } else if (pending.kind === 'chore') {
         // Without chores.assign the chore can only be yours (as in the Add Chore dialog).
-        const { assignee } = resolveChoreAssignee(choreAssignee ?? pending.assignee, assignable, self);
+        const { assignee } = resolveChoreAssignee(choices.assignee ?? pending.assignee, assignable, self);
         if (!assignee) throw new Error('missing-assignee');
-        const { choreId, status } = await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee, onLateError: lateError });
-        notifyDataChanged({ module: 'chores', householdId, choreId });
-        toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${pending.task} will sync when you're back online.` : `${pending.task} for ${assignee.name}.` });
+        const room = choices.room;
+        if (pending.repeat) {
+          const { status } = await createRepeatingChore({ householdId, viewer: currentUser, task: pending.task, repeat: pending.repeat, firstDay: pending.dueDate, assignee, room, onLateError: lateError });
+          notifyDataChanged({ module: 'chores', householdId });
+          toast({ title: status === 'queued' ? 'Saved offline' : 'Repeating chore added', description: status === 'queued' ? `${pending.task} will sync when you're back online.` : `${pending.task}, ${describeRepeat(pending.repeat)}, for ${assignee.name}.` });
+        } else {
+          const { choreId, status } = await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee, room, onLateError: lateError });
+          notifyDataChanged({ module: 'chores', householdId, choreId });
+          toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${pending.task} will sync when you're back online.` : `${pending.task} for ${assignee.name}.` });
+        }
+      } else if (pending.kind === 'maintenance') {
+        const { status } = await logMaintenance({ householdId, title: pending.title, mileage: pending.mileage, target: choices.target, onLateError: lateError });
+        notifyDataChanged({ module: 'maintenance', householdId });
+        const where = targetName(choices.target);
+        toast({ title: status === 'queued' ? 'Saved offline' : 'Maintenance logged', description: `${pending.title}${where ? ` for ${where}` : ''}${pending.mileage ? ` at ${pending.mileage.toLocaleString()} miles` : ''}.` });
       }
       playFeedback('add');
       close();
@@ -368,15 +411,19 @@ export function CommandPalette({
             intent={pending}
             self={self}
             members={assignable}
+            rooms={index.rooms}
+            vehicles={index.vehicles}
+            assets={index.assets}
+            fromAi={pendingFromAi}
             saving={saving}
             message={retryMessage}
             onBack={() => {
               setPending(null);
+              setPendingFromAi(false);
               setRetryMessage(null);
               window.setTimeout(() => inputRef.current?.focus(), 0);
             }}
             onConfirm={confirm}
-            onNavigate={navigate}
           />
         ) : (
           <>
@@ -389,6 +436,7 @@ export function CommandPalette({
                 onChange={(event) => {
                   setText(event.target.value);
                   setActive(0);
+                  setAiState({ status: 'idle' });
                 }}
                 onKeyDown={onKeyDown}
                 role="combobox"
@@ -415,13 +463,26 @@ export function CommandPalette({
               )}
             </div>
             {voice.error && <p role="alert" className="border-b px-4 py-2 text-xs text-destructive">{voice.error}</p>}
-            <ul id={listId} role="listbox" aria-label="Results" className="max-h-[min(60vh,24rem)] overflow-y-auto pb-2">
+            <div role="status" aria-live="polite" data-testid="palette-ai-status">
+              {aiState.status === 'reading' && (
+                <p className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
+                  <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
+                  Reading it with AI…
+                </p>
+              )}
+              {aiState.status === 'none' && (
+                <p className="border-b px-4 py-2 text-xs text-muted-foreground">AI could not read that as something to add. Try “chore vacuum Friday” or search instead.</p>
+              )}
+              {aiState.status === 'error' && <p className="border-b px-4 py-2 text-xs text-destructive">{aiState.message}</p>}
+            </div>
+            {/* Results enter in turn when the palette opens (H12); the list is the combobox's listbox. */}
+            <Stagger as="ul" id={listId} role="listbox" aria-label="Results" className="max-h-[min(60vh,24rem)] overflow-y-auto pb-2">
               {listItems.length > 0 ? listItems : (
                 <li role="presentation" className="px-4 py-6 text-center text-sm text-muted-foreground">
                   {index.loading ? 'Loading…' : 'No matches. Try “add milk” or “chore vacuum tomorrow”.'}
                 </li>
               )}
-            </ul>
+            </Stagger>
             <p className="hidden border-t px-4 py-2 text-[11px] text-muted-foreground sm:block">
               ↑ ↓ to move · Enter to choose · Esc to close · ? for shortcuts
             </p>
@@ -450,35 +511,68 @@ function QuickAddPreview({
   intent,
   self,
   members,
+  rooms,
+  vehicles,
+  assets,
+  fromAi,
   saving,
   message,
   onBack,
   onConfirm,
-  onNavigate,
 }: {
   intent: QuickAddIntent;
   self: QuickAddMember | null;
   members: QuickAddMember[];
+  rooms: QuickAddRoom[];
+  vehicles: QuickAddVehicle[];
+  assets: QuickAddAsset[];
+  /** The suggestion came from the AI reader: say so, and ask for a check. */
+  fromAi: boolean;
   saving: boolean;
   /** Inline note after a partial save: which entries are left to retry. */
   message?: string | null;
   onBack: () => void;
-  onConfirm: (assignee?: QuickAddMember | null) => void;
-  onNavigate: (href: string) => void;
+  onConfirm: (choices: PreviewChoices) => void;
 }) {
   const resolved = intent.kind === 'chore' ? resolveChoreAssignee(intent.assignee, members, self) : { assignee: null, restricted: false };
   const [assigneeEmail, setAssigneeEmail] = useState(resolved.assignee?.email ?? '');
-  const description = describeIntent(intent.kind === 'chore' ? { ...intent, assignee: resolved.assignee } : intent, self);
+  const [roomId, setRoomId] = useState(intent.kind === 'chore' ? intent.room?.id ?? 'general' : 'general');
+  const initialTarget = intent.kind === 'maintenance' && intent.target
+    ? `${intent.target.kind}:${intent.target.kind === 'vehicle' ? intent.target.vehicle.id : intent.target.asset.id}`
+    : intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 1 ? `vehicle:${vehicles[0].id}` : '';
+  const [targetKey, setTargetKey] = useState(initialTarget);
   const assignee = members.find((member) => member.email === assigneeEmail) ?? (self?.email === assigneeEmail ? self : null);
+  const room = rooms.find((candidate) => candidate.id === roomId) ?? null;
+  const target: MaintenanceTarget | null = (() => {
+    const [kind, id] = targetKey.split(':');
+    if (kind === 'vehicle') {
+      const vehicle = vehicles.find((candidate) => candidate.id === id);
+      return vehicle ? { kind: 'vehicle', vehicle } : null;
+    }
+    if (kind === 'asset') {
+      const asset = assets.find((candidate) => candidate.id === id);
+      return asset ? { kind: 'asset', asset } : null;
+    }
+    return null;
+  })();
+  // A mileage belongs to a vehicle: with vehicles to choose from, pick one first.
+  const needsVehicle = intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length > 0 && target?.kind !== 'vehicle';
+  const shown: QuickAddIntent = intent.kind === 'chore'
+    ? { ...intent, assignee: assignee ?? resolved.assignee, room }
+    : intent.kind === 'maintenance' ? { ...intent, target } : intent;
+  const description = describeIntent(shown, self);
+  const note = intent.kind === 'maintenance' ? mileageNote(intent.mileage, target) : null;
   const confirmRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => confirmRef.current?.focus(), []);
+  const firstFieldRef = useRef<HTMLSelectElement>(null);
+  useEffect(() => {
+    // The vehicle comes first when it must be chosen; otherwise Confirm has focus.
+    if (needsVehicle) firstFieldRef.current?.focus();
+    else confirmRef.current?.focus();
+    // Only on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Recurring chores and maintenance logs need their module's full form.
-  const handOff = intent.kind === 'maintenance'
-    ? { href: MAINTENANCE_LOGS_HREF, label: 'Open Maintenance', note: 'Maintenance logs need a target and details, so this opens Maintenance where you can log it.' }
-    : intent.kind === 'chore' && intent.repeat
-      ? { href: '/chores', label: 'Open Chores', note: 'Repeating chores are set up from a chore template in Chores. Quick add can create one-time chores.' }
-      : null;
+  const fieldClass = 'h-10 w-full rounded-md border border-input bg-background px-3 text-sm';
 
   return (
     <div className="p-4" data-testid="quick-add-preview">
@@ -487,40 +581,72 @@ function QuickAddPreview({
         <p className="font-medium">{description.title}</p>
         <p className="text-sm text-muted-foreground">{description.detail}</p>
       </div>
+      {fromAi && (
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="quick-add-ai-marker">
+          <Sparkles aria-hidden className="h-3 w-3" />
+          Read by AI. Check the details before you confirm.
+        </p>
+      )}
       {resolved.restricted && (
         <p className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-assignee-restricted">
           You can only assign chores to yourself, so this one will be yours.
         </p>
       )}
-      {intent.kind === 'chore' && !intent.repeat && members.length > 1 && (
+      {intent.kind === 'chore' && members.length > 1 && (
         <label className="mt-3 block text-sm">
           <span className="mb-1 block text-muted-foreground">Assign to</span>
-          <select
-            value={assigneeEmail}
-            onChange={(event) => setAssigneeEmail(event.target.value)}
-            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-          >
+          <select value={assigneeEmail} onChange={(event) => setAssigneeEmail(event.target.value)} className={fieldClass}>
             {members.map((member) => (
               <option key={member.email} value={member.email}>{member.name}</option>
             ))}
           </select>
         </label>
       )}
-      {handOff && <p className="mt-3 text-sm text-muted-foreground">{handOff.note}</p>}
+      {intent.kind === 'chore' && rooms.length > 0 && (
+        <label className="mt-3 block text-sm">
+          <span className="mb-1 block text-muted-foreground">Room</span>
+          <select value={roomId} onChange={(event) => setRoomId(event.target.value)} className={fieldClass}>
+            <option value="general">Around the house</option>
+            {rooms.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {intent.kind === 'maintenance' && (vehicles.length > 0 || (intent.mileage === null && assets.length > 0)) && (
+        <label className="mt-3 block text-sm">
+          <span className="mb-1 block text-muted-foreground">{intent.mileage !== null ? 'Vehicle' : 'For'}</span>
+          <select ref={firstFieldRef} value={targetKey} onChange={(event) => setTargetKey(event.target.value)} className={fieldClass} aria-invalid={needsVehicle || undefined}>
+            {intent.mileage !== null ? <option value="" disabled>Choose a vehicle</option> : <option value="">General (no vehicle or asset)</option>}
+            {vehicles.map((vehicle) => (
+              <option key={vehicle.id} value={`vehicle:${vehicle.id}`}>{vehicle.name}</option>
+            ))}
+            {intent.mileage === null && assets.map((asset) => (
+              <option key={asset.id} value={`asset:${asset.id}`}>{asset.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 0 && (
+        <p className="mt-3 text-sm text-muted-foreground">No vehicles yet, so this is a general log with the reading in its notes.</p>
+      )}
+      {note && <p className="mt-3 text-sm text-warning" data-testid="quick-add-mileage-note">{note}</p>}
       {message && <p role="alert" className="mt-3 text-sm text-destructive" data-testid="quick-add-retry">{message}</p>}
       <div className="mt-4 flex justify-between gap-2">
         <Button type="button" variant="ghost" onClick={onBack} disabled={saving}>
           <ArrowLeft aria-hidden className="mr-2 h-4 w-4" />
           Back
         </Button>
-        {handOff ? (
-          <Button ref={confirmRef} type="button" onClick={() => onNavigate(handOff.href)}>{handOff.label}</Button>
-        ) : (
-          <Button ref={confirmRef} type="button" onClick={() => onConfirm(assignee)} disabled={saving} data-testid="quick-add-confirm">
-            {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-            Confirm
-          </Button>
-        )}
+        <Button
+          ref={confirmRef}
+          type="button"
+          onClick={() => onConfirm({ assignee, room, target })}
+          disabled={saving || needsVehicle}
+          data-testid="quick-add-confirm"
+        >
+          {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+          Confirm
+        </Button>
       </div>
     </div>
   );

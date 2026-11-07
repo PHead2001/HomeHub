@@ -1,8 +1,11 @@
 /**
- * Natural-language quick-add (H13/H14). A deterministic parser, no model: it
- * recognizes shopping items, pet feedings, chores (with a date, assignee and an
- * optional repeat) and maintenance notes. Anything it cannot read confidently
- * returns `null`, and the palette falls back to search.
+ * Natural-language quick-add (H13/H14). A deterministic parser runs first: it
+ * recognizes shopping items, pet feedings, chores (with a date, assignee, room and
+ * an optional repeat) and maintenance logs (with an odometer reading and the
+ * vehicle or asset they belong to). Anything it cannot read confidently returns
+ * `null`; the palette then falls back to search and offers the AI reader
+ * (`src/ai/tasks/parse-command.ts`), whose output is mapped back to the same
+ * intents by `intentFromAiParse` (`src/lib/dashboard/quick-add-ai.ts`).
  */
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
 import { knownFoodType, newestFirst, parsePortion } from '../pets/care';
@@ -18,6 +21,12 @@ export type QuickAddMember = { uid: string; email: string; name: string };
 /** A pet, with its usual portion (Pets' `feedingPlan`) used when the sentence gives no amount. */
 export type QuickAddPet = { id: string; name: string; portion?: { amount: number; unit: PortionUnit } };
 export type QuickAddList = { id: string; name: string; type?: string };
+/** A chore room (Chores' `rooms` collection). */
+export type QuickAddRoom = { id: string; name: string };
+/** A vehicle the household tracks; `currentMileage` is its recorded odometer. */
+export type QuickAddVehicle = { id: string; name: string; make?: string; model?: string; currentMileage?: number };
+/** A home asset (Maintenance's `home-assets`). */
+export type QuickAddAsset = { id: string; name: string };
 
 export type QuickAddContext = {
   now: Date;
@@ -25,6 +34,9 @@ export type QuickAddContext = {
   members: QuickAddMember[];
   pets: QuickAddPet[];
   lists: QuickAddList[];
+  rooms?: QuickAddRoom[];
+  vehicles?: QuickAddVehicle[];
+  assets?: QuickAddAsset[];
 };
 
 export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
@@ -55,12 +67,18 @@ export type ChoreIntent = {
   dueDate: string; // yyyy-MM-dd
   assignee: QuickAddMember | null;
   repeat: QuickAddRepeat | null;
+  /** The room the sentence names ("in the kitchen"); null is "Around the house". */
+  room?: QuickAddRoom | null;
 };
+
+export type MaintenanceTarget = { kind: 'vehicle'; vehicle: QuickAddVehicle } | { kind: 'asset'; asset: QuickAddAsset };
 
 export type MaintenanceIntent = {
   kind: 'maintenance';
   title: string;
   mileage: number | null;
+  /** The vehicle or asset the sentence names; null when it names none. */
+  target?: MaintenanceTarget | null;
 };
 
 export type QuickAddIntent = ShoppingIntent | FeedingIntent | ChoreIntent | MaintenanceIntent;
@@ -92,6 +110,15 @@ function nextWeekday(now: Date, weekday: Weekday, strictlyAfter = false): Date {
   let delta = (weekday - today.getDay() + 7) % 7;
   if (delta === 0 && strictlyAfter) delta = 7;
   return addLocalDays(today, delta);
+}
+
+/**
+ * The first day a repeating chore is due, as `findRepeat` picks it: the coming
+ * weekday (today included) for weekly and every-other-week repeats, otherwise today.
+ */
+export function firstDateForRepeat(repeat: QuickAddRepeat, now: Date): Date {
+  if (repeat.frequency === 'weekly' || repeat.frequency === 'biweekly') return nextWeekday(now, repeat.dayOfWeek);
+  return startOfLocalDay(now);
 }
 
 type DateMatch = { date: Date; consumed: RegExp };
@@ -213,6 +240,54 @@ export function findAssignee(text: string, context: QuickAddContext): { member: 
   return null;
 }
 
+/** A whole-word pattern for a multi-word name (any run of spaces between words). */
+const namePattern = (name: string) => escapeRegExp(name.trim().toLowerCase()).replace(/\s+/g, '\\s+');
+const WORD_BEFORE = '(?<![\\p{L}\\p{N}])';
+const WORD_AFTER = '(?![\\p{L}\\p{N}])';
+
+/**
+ * The room a chore sentence names, as whole words ("kitchen", "Living Room").
+ * "in the kitchen" / "for the kitchen" is removed from the task; a bare room word
+ * stays in it ("clean kitchen" keeps its words). Longest names win.
+ */
+export function findRoom(text: string, rooms: readonly QuickAddRoom[]): { room: QuickAddRoom; consumed: RegExp | null } | null {
+  const sorted = rooms.filter((room) => room.name.trim()).sort((a, b) => b.name.length - a.name.length);
+  for (const room of sorted) {
+    const name = namePattern(room.name);
+    const phrase = new RegExp(`${WORD_BEFORE}(?:in|for)\\s+(?:the\\s+)?${name}${WORD_AFTER}`, 'iu');
+    if (phrase.test(text)) return { room, consumed: phrase };
+    if (new RegExp(`${WORD_BEFORE}${name}${WORD_AFTER}`, 'iu').test(text)) return { room, consumed: null };
+  }
+  return null;
+}
+
+/** Words that name a vehicle: its nickname, "make model", model and make. */
+const vehicleNames = (vehicle: QuickAddVehicle) => [vehicle.name, vehicle.make && vehicle.model ? `${vehicle.make} ${vehicle.model}` : '', vehicle.model ?? '', vehicle.make ?? '']
+  .map((name) => name.trim())
+  .filter((name) => name.length >= 2);
+
+/**
+ * The vehicle or asset a maintenance sentence names (whole words, longest first).
+ * "for the Civic" / "on my Civic" is removed from the title; a bare name stays.
+ */
+export function findMaintenanceTarget(
+  text: string,
+  vehicles: readonly QuickAddVehicle[],
+  assets: readonly QuickAddAsset[],
+): { target: MaintenanceTarget; consumed: RegExp | null } | null {
+  const candidates: Array<{ name: string; target: MaintenanceTarget }> = [
+    ...vehicles.flatMap((vehicle) => vehicleNames(vehicle).map((name) => ({ name, target: { kind: 'vehicle' as const, vehicle } }))),
+    ...assets.filter((asset) => asset.name.trim().length >= 2).map((asset) => ({ name: asset.name.trim(), target: { kind: 'asset' as const, asset } })),
+  ].sort((a, b) => b.name.length - a.name.length);
+  for (const candidate of candidates) {
+    const name = namePattern(candidate.name);
+    const phrase = new RegExp(`${WORD_BEFORE}(?:for|on|in)\\s+(?:the\\s+|my\\s+|our\\s+)?${name}${WORD_AFTER}`, 'iu');
+    if (phrase.test(text)) return { target: candidate.target, consumed: phrase };
+    if (new RegExp(`${WORD_BEFORE}${name}${WORD_AFTER}`, 'iu').test(text)) return { target: candidate.target, consumed: null };
+  }
+  return null;
+}
+
 const LIST_TYPE_WORDS: Array<[RegExp, string]> = [
   [/^(grocery|groceries|grocery list|food|supermarket)$/, 'Grocery'],
   [/^(hardware|hardware store|tools)$/, 'Hardware'],
@@ -269,16 +344,25 @@ function parseFeeding(text: string, context: QuickAddContext): FeedingIntent | n
 
 const MAINTENANCE_WORDS = /\b(oil change|tire rotation|tyre rotation|brakes?|filters?|inspections?|service[sd]?|tune[- ]?up|alignment|repair(?:ed|s)?|replaced?|maintenance|miles|mi|odometer)\b/i;
 
-function parseMaintenance(text: string): MaintenanceIntent | null {
+function parseMaintenance(text: string, context: QuickAddContext): MaintenanceIntent | null {
   const explicit = /^(?:log|logged|did|done)\s+(.+)$/i.exec(text);
-  const body = explicit ? explicit[1] : text;
+  let body = explicit ? explicit[1] : text;
   if (!MAINTENANCE_WORDS.test(body)) return null;
   const mileageMatch = /(\d{1,3}(?:,\d{3})+|\d{3,7})\s*(?:k\s*)?(?:miles|mi)\b/i.exec(body) ?? /\bat\s+(\d{1,3}(?:,\d{3})+|\d{4,7})\b/i.exec(body);
   const mileage = mileageMatch ? Number(mileageMatch[1].replace(/,/g, '')) : null;
   if (!explicit && mileage === null && !/\b(oil change|tire rotation|tyre rotation|tune[- ]?up|alignment)\b/i.test(body)) return null;
-  const title = collapse(body.replace(mileageMatch?.[0] ?? '', '').replace(/\bat\s*$/i, ''));
+  body = body.replace(mileageMatch?.[0] ?? '', ' ');
+  // A mileage reading belongs to a vehicle, so only vehicles are matched then.
+  const found = findMaintenanceTarget(body, context.vehicles ?? [], mileage !== null ? [] : context.assets ?? []);
+  if (found?.consumed) body = body.replace(found.consumed, ' ');
+  const title = collapse(body).replace(/\s+\b(?:at|on|for)$/i, '');
   if (!title) return null;
-  return { kind: 'maintenance', title: capitalize(title).slice(0, 100), mileage: mileage !== null && mileage > 0 && mileage < 2_000_000 ? mileage : null };
+  return {
+    kind: 'maintenance',
+    title: capitalize(title).slice(0, 100),
+    mileage: mileage !== null && mileage > 0 && mileage < 2_000_000 ? mileage : null,
+    target: found?.target ?? null,
+  };
 }
 
 function parseShopping(text: string, context: QuickAddContext): ShoppingIntent | null {
@@ -309,6 +393,8 @@ function parseChore(text: string, context: QuickAddContext): ChoreIntent | null 
   if (date) body = body.replace(date.consumed, ' ');
   const assignee = findAssignee(body, context);
   if (assignee) body = body.replace(assignee.consumed, ' ');
+  const room = findRoom(body, context.rooms ?? []);
+  if (room?.consumed) body = body.replace(room.consumed, ' ');
   // Without an explicit "chore:" prefix we need at least one chore signal.
   if (!explicit && !repeat && !date && !assignee) return null;
   const task = collapse(body.replace(/\b(on|by|due|at)\s*$/i, '').replace(/^\s*(to)\s+/i, ''));
@@ -320,6 +406,7 @@ function parseChore(text: string, context: QuickAddContext): ChoreIntent | null 
     dueDate: dayKey(due),
     assignee: assignee?.member ?? null,
     repeat: repeat?.repeat ?? null,
+    room: room?.room ?? null,
   };
 }
 
@@ -345,7 +432,7 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
     return parseShopping(text, context);
   }
 
-  const maintenance = parseMaintenance(text);
+  const maintenance = parseMaintenance(text, context);
   if (maintenance) return maintenance;
 
   const chore = parseChore(text, context);

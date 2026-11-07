@@ -1,0 +1,39 @@
+/* Staggered entrance (H12): <= 30 ms per item, <= 400 ms total, first item at once.
+   Pure CSS keyed by position, so items keep their own layout classes (grid spans)
+   and no animation library loads. Items from the 12th on share the last delay
+   (330 ms), which caps the total for long lists. Mirrors STAGGER in src/lib/motion.ts. */
+.stagger > * {
+  animation: stagger-in var(--duration-ui, 220ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+  animation-delay: calc(30ms * var(--stagger-index, 11));
+}
+.stagger > :nth-child(1) { --stagger-index: 0; }
+.stagger > :nth-child(2) { --stagger-index: 1; }
+.stagger > :nth-child(3) { --stagger-index: 2; }
+.stagger > :nth-child(4) { --stagger-index: 3; }
+.stagger > :nth-child(5) { --stagger-index: 4; }
+.stagger > :nth-child(6) { --stagger-index: 5; }
+.stagger > :nth-child(7) { --stagger-index: 6; }
+.stagger > :nth-child(8) { --stagger-index: 7; }
+.stagger > :nth-child(9) { --stagger-index: 8; }
+.stagger > :nth-child(10) { --stagger-index: 9; }
+.stagger > :nth-child(11) { --stagger-index: 10; }
+
+/* After the entrance window, items that mount later (new rows, a loaded tile
+   replacing its skeleton) appear at once instead of replaying the entrance. */
+.settled > * {
+  animation: none;
+}
+
+@keyframes stagger-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+:global(:root[data-motion='reduce']) .stagger > * {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stagger > * {
+    animation: none;
+  }
+}

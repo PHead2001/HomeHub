@@ -12,8 +12,12 @@
  */
 import type { PointerEvent, ReactNode } from 'react';
 import Link from 'next/link';
-import { Bell, CheckSquare, CloudSun, Flame, PawPrint, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
+import { Bell, CheckSquare, CloudSun, Flame, PawPrint, Plus, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
 import { NumberTicker } from '@/components/motion/number-ticker';
+import { Stagger } from '@/components/motion/stagger';
+import { ShortcutHint } from '@/components/ui/shortcut-hint';
+import { openCommandPalette } from '@/components/command/events';
+import { shortcutById, type ShortcutId } from '@/lib/dashboard/shortcuts';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
@@ -37,6 +41,7 @@ function Tile({
   testId,
   className,
   peek,
+  quickAdd,
   children,
 }: {
   href: string;
@@ -45,6 +50,8 @@ function Tile({
   testId: string;
   className?: string;
   peek?: ReactNode;
+  /** A quick-add button in the corner (outside the link), with its shortcut hint. */
+  quickAdd?: { shortcut: ShortcutId; label: string };
   children: ReactNode;
 }) {
   const reduced = useReducedMotion();
@@ -61,7 +68,7 @@ function Tile({
     event.currentTarget.style.removeProperty('--tilt-y');
   };
   return (
-    <PeekCard peek={peek ?? null} className={cn('min-w-0', className)}>
+    <PeekCard peek={peek ?? null} className={cn('relative min-w-0', className)}>
       <Link
         href={href}
         data-testid={testId}
@@ -70,14 +77,38 @@ function Tile({
         onPointerLeave={onPointerLeave}
       >
         <span className={cn(styles.tiltLayer, 'glow-card flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised transition-ui hover:border-primary/40')}>
-          <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+          <span className={cn('flex items-center gap-2 text-sm font-medium text-muted-foreground', quickAdd && 'pr-8')}>
             <Icon aria-hidden className="h-4 w-4 text-primary" />
             <span className="truncate">{title}</span>
           </span>
           {children}
         </span>
       </Link>
+      {quickAdd && <TileQuickAdd {...quickAdd} />}
     </PeekCard>
+  );
+}
+
+/**
+ * Opens the palette with the same prefix as the keyboard shortcut (H28), so the
+ * button and its key hint come from one binding. A sibling of the tile link (never
+ * nested in it) in the tile's corner; the link box underneath does not move.
+ */
+function TileQuickAdd({ shortcut, label }: { shortcut: ShortcutId; label: string }) {
+  const { action } = shortcutById(shortcut);
+  const prefix = action.type === 'quick-add' ? action.prefix : '';
+  return (
+    <ShortcutHint shortcut={shortcut} label={label} side="left">
+      <button
+        type="button"
+        aria-label={label}
+        data-testid={`tile-quick-add-${shortcut}`}
+        onClick={() => openCommandPalette({ text: prefix })}
+        className="absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-muted hover:text-foreground"
+      >
+        <Plus aria-hidden className="h-4 w-4" />
+      </button>
+    </ShortcutHint>
   );
 }
 
@@ -148,6 +179,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         icon={CheckSquare}
         testId="dashboard-tile-chores"
         className="sm:col-span-2 lg:row-span-2"
+        quickAdd={permissions['chores.create'] ? { shortcut: 'new-chore', label: 'Add a chore' } : undefined}
         peek={chores.nextUp.length > 0 ? (
           <ul className="space-y-1">
             {chores.nextUp.map((chore) => (
@@ -166,7 +198,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
               <NumberTicker value={chores.todayDone} /> of <NumberTicker value={chores.todayTotal} /> done
             </span>
             <span className="block text-sm text-muted-foreground">
-              {chores.mineOpen === 0 ? 'Nothing assigned to you.' : `${chores.mineOpen} open for you`}
+              {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} /> open for you</>}
               {chores.overdueTotal > 0 && <span className="text-warning">{` · ${chores.overdueTotal} overdue`}</span>}
             </span>
           </span>
@@ -190,6 +222,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         icon={ShoppingCart}
         testId="dashboard-tile-shopping"
         className="sm:col-span-2"
+        quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
         peek={shopping.lists.length > 0 ? (
           <ul className="space-y-1">
             {shopping.lists.map((list) => (
@@ -215,7 +248,14 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
   if (permissions['pets.view']) {
     const pets = facts.pets;
     tiles.push(pets ? (
-      <Tile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets">
+      <Tile
+        key="pets"
+        href="/pets"
+        title="Pets"
+        icon={PawPrint}
+        testId="dashboard-tile-pets"
+        quickAdd={permissions['pets.addLogs'] && pets.pets.length > 0 ? { shortcut: 'log-feeding', label: 'Log a feeding' } : undefined}
+      >
         {pets.pets.length === 0 ? (
           <span className="text-sm text-muted-foreground">No pets yet.</span>
         ) : (
@@ -228,7 +268,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
                 </span>
               </li>
             ))}
-            {pets.pets.length > 3 && <li className="text-xs text-muted-foreground">+{pets.pets.length - 3} more</li>}
+            {pets.pets.length > 3 && <li className="text-xs text-muted-foreground">+<NumberTicker value={pets.pets.length - 3} /> more</li>}
           </ul>
         )}
       </Tile>
@@ -355,9 +395,10 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
     <section aria-labelledby="dashboard-grid-heading" className="mb-8">
       <h2 id="dashboard-grid-heading" className="mb-3 font-headline text-xl font-semibold">Your Dashboard</h2>
       {visible.length > 0 ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-busy={loading || undefined}>
+        // Tiles (and their skeletons) enter in turn (H12 stagger budget).
+        <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-busy={loading || undefined} data-testid="dashboard-grid">
           {visible}
-        </div>
+        </Stagger>
       ) : (
         <p className="text-sm text-muted-foreground">Nothing to show yet. Your household role decides which sections appear here.</p>
       )}
