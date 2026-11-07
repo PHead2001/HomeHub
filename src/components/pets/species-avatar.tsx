@@ -8,7 +8,8 @@ import styles from './pets.module.css';
  * every species, matching the EmptyState art: a primary-tinted backdrop, muted
  * shapes with a `currentColor` outline (from `text-muted-foreground`), foreground
  * eyes and one primary accent. Token classes only, so every preset recolors them.
- * Eyes blink with a CSS-only animation that stops under reduced motion.
+ * Eyes blink and the figure idles (a slow 24 s sway) with CSS-only animations
+ * that pause while the tab is hidden and stop under reduced motion.
  */
 
 const LINE = { fill: 'none', stroke: 'currentColor', strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
@@ -144,7 +145,10 @@ export function SpeciesAvatar({ type, hint, name, decorative, className, blinkOf
       data-species={art}
     >
       <circle className="fill-primary/10" cx="60" cy="60" r="56" />
-      {ART[art](delay)}
+      {/* Idle: the figure sways slowly over the still backdrop (ambient, CSS only). */}
+      <g className={styles.idle} data-delay={delay} data-testid="species-idle">
+        {ART[art](delay)}
+      </g>
     </svg>
   );
 }

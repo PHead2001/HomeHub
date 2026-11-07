@@ -14,12 +14,12 @@ import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { loggerName, nextMedication, parseLocalDate } from '@/lib/pets/care';
+import { currentMedications, loggerName, parseLocalDate } from '@/lib/pets/care';
 import type { PetMedicationLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { MedicationChip } from './pets/medication-chip';
+import { MedicationChips } from './pets/medication-chip';
 import { addPetLog, deletePetLog, useMedicationCountdownLogs, usePetLogs } from './pets/pet-log-api';
 import { useNow } from './pets/use-now';
 
@@ -51,7 +51,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   const [formOpen, setFormOpen] = useState(false);
   const pending = useMedicationCountdownLogs(householdId, petId);
   // A failed countdown load is "unavailable", never "nothing due".
-  const due = pending.loading || pending.error ? null : nextMedication(pending.logs, now);
+  const dues = pending.loading || pending.error ? [] : currentMedications(pending.logs, now);
 
   const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),
@@ -118,10 +118,11 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
         {pending.error ? (
           <p className="text-sm text-muted-foreground">Next dose is unavailable right now.</p>
         ) : null}
-        {due && (
+        {dues.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Next dose:</span>
-            <MedicationChip due={due} />
+            <span className="text-muted-foreground">{dues.length === 1 ? 'Next dose:' : 'Next doses:'}</span>
+            {/* Every current medication here: this tab is the full view. */}
+            <MedicationChips dues={dues} max={dues.length} />
           </div>
         )}
 

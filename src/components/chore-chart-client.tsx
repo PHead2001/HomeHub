@@ -46,6 +46,9 @@ import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { morphStyle } from '@/lib/motion';
+import { NumberTicker } from '@/components/motion/number-ticker';
+import { pluralize } from '@/lib/shopping/items';
+import { shortcutHint } from '@/lib/chores/shortcut-hints';
 import { ALL_ROOMS, choresRoomHref, effectiveChoresRoom, parseChoresRoom, roomSharedId } from '@/lib/chores/url-state';
 import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/chores/house-clean';
 
@@ -784,7 +787,7 @@ export function ChoreChartClient() {
         {groups.map(group => (
           <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
-              <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /> {group.name} ({group.entries.length})</span>
+              <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /> {group.name} (<NumberTicker value={group.entries.length} animateOnMount={false} />)</span>
             </AccordionTrigger>
             <AccordionContent>
               <ChoreList entries={group.entries} {...listProps} />
@@ -834,7 +837,7 @@ export function ChoreChartClient() {
           <AlertDialogHeader>
             <AlertDialogTitle>Complete chores with unfinished steps?</AlertDialogTitle>
             <AlertDialogDescription>
-              {choresPendingCompletion?.length || 0} selected chore(s) still have open steps. Completing them marks those steps done too.
+              {pluralize(choresPendingCompletion?.length || 0, 'selected chore')} still {(choresPendingCompletion?.length || 0) === 1 ? 'has' : 'have'} open steps. Completing them marks those steps done too.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ScrollArea className="max-h-[42vh] rounded-md border">
@@ -842,7 +845,7 @@ export function ChoreChartClient() {
               {choresPendingCompletion?.map(chore => (
                 <div key={chore.id} className="rounded-md bg-muted/50 p-2">
                   <p className="text-sm font-medium leading-tight">{chore.task}</p>
-                  <p className="text-xs text-muted-foreground">{openSubTasks(chore).length} unfinished step(s)</p>
+                  <p className="text-xs text-muted-foreground">{pluralize(openSubTasks(chore).length, 'unfinished step')}</p>
                 </div>
               ))}
             </div>
@@ -915,7 +918,7 @@ export function ChoreChartClient() {
         </div>
         <div className="flex flex-wrap gap-2">
           {capabilities.canCreate && (
-            <Button onClick={openAdd}><Plus className="mr-2 h-4 w-4" /> Add Chore</Button>
+            <Button onClick={openAdd} title={shortcutHint('chore ')}><Plus className="mr-2 h-4 w-4" /> Add Chore</Button>
           )}
           <Button variant="outline" asChild>
             <Link href="/calendar"><CalendarDays className="mr-2 h-4 w-4" /> Calendar</Link>
@@ -1002,7 +1005,7 @@ export function ChoreChartClient() {
             {selectMode && selectedChores.length > 0 && (
               <div className="sticky top-2 z-10 rounded-lg border bg-popover p-3 shadow-overlay">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm font-medium">{selectedChores.length} chore(s) selected</p>
+                  <p className="text-sm font-medium">{pluralize(selectedChores.length, 'chore')} selected</p>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => setSelectedChoreIds([])}>Clear</Button>
                     <Button size="sm" onClick={handleCompleteSelected}>Complete selected</Button>
@@ -1013,7 +1016,7 @@ export function ChoreChartClient() {
 
             <Accordion type="multiple" defaultValue={['todo']} className="w-full space-y-3 md:space-y-4">
               <AccordionItem value="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
-                <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl">To Do ({todoEntries.length})</AccordionTrigger>
+                <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl">To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</AccordionTrigger>
                 <AccordionContent className="pt-1">
                   {todoEntries.length > 0 ? roomGroups('todo', todoEntries, true) : (
                     <EmptyState
@@ -1033,7 +1036,7 @@ export function ChoreChartClient() {
                   <AccordionPrimitive.Header className="flex flex-1">
                     <AccordionPrimitive.Trigger asChild>
                       <button className="flex flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
-                        Future ({visibleFutureChores.length})
+                        <span>Future (<NumberTicker value={visibleFutureChores.length} animateOnMount={false} />)</span>
                         <ChevronDown aria-hidden className="h-4 w-4 shrink-0 transition-transform duration-200 md:h-5 md:w-5" />
                       </button>
                     </AccordionPrimitive.Trigger>
@@ -1055,7 +1058,7 @@ export function ChoreChartClient() {
                   <AccordionPrimitive.Header className="flex flex-1">
                     <AccordionPrimitive.Trigger asChild>
                       <button className="flex flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
-                        Completed ({visibleCompletedChores.length})
+                        <span>Completed (<NumberTicker value={visibleCompletedChores.length} animateOnMount={false} />)</span>
                         <ChevronDown aria-hidden className="h-4 w-4 shrink-0 transition-transform duration-200 md:h-5 md:w-5" />
                       </button>
                     </AccordionPrimitive.Trigger>

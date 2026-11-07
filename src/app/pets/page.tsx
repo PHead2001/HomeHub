@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useAuth } from "@/hooks/use-auth";
 import { PetsClient } from "@/components/pets-client";
 import { PetsPageHeader } from "@/components/pets/pets-page-header";
@@ -11,7 +12,10 @@ export default function PetsPage() {
   return (
     <div className="container mx-auto px-4 py-8">
       {currentUser ? (
-        <PetsClient />
+        // PetsClient reads useSearchParams (the `?feed=1` shortcut).
+        <Suspense fallback={null}>
+          <PetsClient />
+        </Suspense>
       ) : (
         <>
           <PetsPageHeader />

@@ -2,36 +2,45 @@
 
 import { Skeleton } from '@/components/ui/skeleton';
 import {
-  feedingCountLabel,
+  currentMedications,
   feedingHeadline,
   feedingPlan,
   feedingStatus,
   knownFoodType,
-  nextMedication,
+  type FeedingStatus,
 } from '@/lib/pets/care';
+import { NumberTicker } from '@/components/motion/number-ticker';
 import type { PetFeedingLog, PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { FeedingRing } from './feeding-ring';
-import { MedicationChip } from './medication-chip';
+import { MedicationChips } from './medication-chip';
 import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
 import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
 
-/** A pet's live care data: feedings, the plan and today's status, and the next medication. */
+/** A pet's live care data: feedings, the plan and today's status, and every current medication countdown. */
 export function usePetCare(pet: PetProfile, householdId: string) {
   const now = useNow();
   const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
   const medications = useMedicationCountdownLogs(householdId, pet.id);
   const plan = feedingPlan(pet);
   const status = feedings.loading || feedings.error ? null : feedingStatus(feedings.logs, plan, now);
-  const due = medications.loading || medications.error ? null : nextMedication(medications.logs, now);
-  return { now, feedings, medications, plan, status, due, foodType: knownFoodType(feedings.logs[0]?.foodType) };
+  // Most urgent first; empty while loading or unavailable.
+  const dues = medications.loading || medications.error ? [] : currentMedications(medications.logs, now);
+  return { now, feedings, medications, plan, status, dues, foodType: knownFoodType(feedings.logs[0]?.foodType) };
 }
 
 export type PetCare = ReturnType<typeof usePetCare>;
 
+/** "1 of 2 today" / "2 today" / "Not fed today", with the count as a live number (H12). */
+function FeedingCount({ status }: { status: FeedingStatus }) {
+  if (status.perDay) return <><NumberTicker value={status.fedToday} animateOnMount={false} /> of {status.perDay} today</>;
+  if (status.fedToday > 0) return <><NumberTicker value={status.fedToday} animateOnMount={false} /> today</>;
+  return <>Not fed today</>;
+}
+
 /**
- * Feeding ring, "Fed 2 h ago by Sam", the next-medication chip and one-tap feeding,
+ * Feeding ring, "Fed 2 h ago by Sam", one chip per current medication and feeding,
  * shared by the pet card and the pet detail page. A failed load is shown as
  * "unavailable", never as an empty history (which would read as "not fed").
  * The pet card passes its own `care` and `feed` controller, which hold to feed
@@ -44,6 +53,8 @@ type SummaryProps = {
   care?: PetCare;
   feed?: QuickFeedController;
   feedHintId?: string;
+  /** Medication chips shown before "+N" (the card is compact; the detail page shows more). */
+  maxMedicationChips?: number;
 };
 
 export function PetCareSummary(props: SummaryProps) {
@@ -55,8 +66,8 @@ function OwnCareSummary(props: SummaryProps) {
   return <CareSummaryView {...props} care={care} />;
 }
 
-function CareSummaryView({ pet, feedClassName, care, feed, feedHintId }: SummaryProps & { care: PetCare }) {
-  const { now, feedings, medications, plan, status, due, foodType } = care;
+function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedicationChips = 2 }: SummaryProps & { care: PetCare }) {
+  const { now, feedings, medications, plan, status, dues, foodType } = care;
 
   return (
     <>
@@ -78,7 +89,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId }: Summary
               {feedingHeadline(status, now)}
             </p>
             <p className={cn('text-xs', status.complete ? 'font-medium text-success' : 'text-muted-foreground')}>
-              {status.complete && status.perDay ? 'All fed today' : feedingCountLabel(status)}
+              {status.complete && status.perDay ? 'All fed today' : <FeedingCount status={status} />}
             </p>
           </div>
         </div>
@@ -86,9 +97,9 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId }: Summary
 
       {medications.error ? (
         <p className="text-xs text-muted-foreground">Next medication dose is unavailable right now.</p>
-      ) : due ? (
-        <MedicationChip due={due} className="self-start" />
-      ) : null}
+      ) : (
+        <MedicationChips dues={dues} max={maxMedicationChips} className="self-start" />
+      )}
 
       <div className={feedClassName}>
         <QuickFeedButton

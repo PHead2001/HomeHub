@@ -2,6 +2,7 @@
  * Pure helpers for the living pet cards and the pet detail page (H09, D17 and the
  * section 3 Pets items). No Firebase or React imports, so they are unit tested.
  */
+import { sharedId } from '../motion';
 import { FOOD_TYPES, type FoodType, type LoggedBy, type PetMedicationLog, type PetProfile, type PortionUnit } from './types';
 
 /* ------------------------------------------------------------------------- */
@@ -324,15 +325,17 @@ export type MedicationDue = {
   label: string;
 };
 
+type MedicationCountdownInput = Pick<PetMedicationLog, 'date' | 'medication' | 'dosage' | 'nextDueDate'>;
+
 /**
- * The next medication dose: for each medication (case-insensitive name), the most
- * recent entry decides its next due date; the earliest of those is returned.
+ * Every current medication countdown, most urgent first (earliest due date, then
+ * name). For each medication (case-insensitive name) the most recent entry decides
+ * its next due date; a medication whose latest entry has no next due date has no
+ * countdown. This is the one countdown rule: the pet card chips, the Medication
+ * tab, the calendar's upcoming doses and (mirrored) the server reminders use it.
  */
-export function nextMedication(
-  logs: Pick<PetMedicationLog, 'date' | 'medication' | 'dosage' | 'nextDueDate'>[],
-  now: Date,
-): MedicationDue | null {
-  const latest = new Map<string, { at: number; log: (typeof logs)[number] }>();
+export function currentMedications(logs: MedicationCountdownInput[], now: Date): MedicationDue[] {
+  const latest = new Map<string, { at: number; log: MedicationCountdownInput }>();
   for (const log of logs) {
     const key = (log.medication ?? '').trim().toLowerCase();
     if (!key) continue;
@@ -340,16 +343,27 @@ export function nextMedication(
     const current = latest.get(key);
     if (!current || at > current.at) latest.set(key, { at, log });
   }
-  let best: MedicationDue | null = null;
+  const dues: MedicationDue[] = [];
   for (const { log } of latest.values()) {
     const due = parseLocalDate(log.nextDueDate);
     if (!due) continue;
-    if (!best || due < best.due) {
-      const days = calendarDaysBetween(now, due);
-      best = { medication: log.medication, dosage: log.dosage, due, days, ...medicationState(days) };
-    }
+    const days = calendarDaysBetween(now, due);
+    dues.push({ medication: log.medication, dosage: log.dosage, due, days, ...medicationState(days) });
   }
-  return best;
+  return dues.sort((a, b) => a.due.getTime() - b.due.getTime() || a.medication.localeCompare(b.medication));
+}
+
+/** The most urgent medication dose (the first of `currentMedications`), or null. */
+export function nextMedication(logs: MedicationCountdownInput[], now: Date): MedicationDue | null {
+  return currentMedications(logs, now)[0] ?? null;
+}
+
+/** Splits chips into the shown ones and the "+N" overflow count. */
+export function chipOverflow<T>(items: readonly T[], max: number): { shown: T[]; hidden: number } {
+  const limit = Math.max(1, Math.floor(max));
+  // Never "+1": when only one would hide, show it instead.
+  if (items.length <= limit + 1) return { shown: [...items], hidden: 0 };
+  return { shown: items.slice(0, limit), hidden: items.length - limit };
 }
 
 /**
@@ -460,4 +474,25 @@ export function validatePetForm(values: PetFormValues, existingNames: string[] =
     if (!isValidPortion(amount)) errors.portionAmount = `Use an amount above 0 and up to ${PORTION_MAX}.`;
   }
   return errors;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Links and shared elements                                                  */
+/* ------------------------------------------------------------------------- */
+
+/** The pet's page. */
+export function petHref(petId: string): string {
+  return `/pets/${encodeURIComponent(petId)}`;
+}
+
+/** Shared-element name of a pet's photo: the /pets card photo morphs into the pet page hero (H12). */
+export function petPhotoMorphName(petId: string): string {
+  return sharedId('pet', petId, 'photo');
+}
+
+/** `/pets?feed=1`: the "Log feeding" home-screen shortcut opens the feeding picker. */
+export const FEED_SHORTCUT_PARAM = 'feed';
+
+export function wantsQuickFeed(params: { get(name: string): string | null } | null | undefined): boolean {
+  return params?.get(FEED_SHORTCUT_PARAM) === '1';
 }

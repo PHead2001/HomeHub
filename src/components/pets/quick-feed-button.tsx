@@ -3,11 +3,13 @@
 import * as React from 'react';
 import { Loader2, Utensils } from 'lucide-react';
 import { Button, type ButtonProps } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ToastAction } from '@/components/ui/toast';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
+import { SHORTCUTS } from '@/lib/dashboard/shortcuts';
 import { formatPortion, loggerName, type FeedingPlan, type FeedingStatus } from '@/lib/pets/care';
 import type { FoodType } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
@@ -60,6 +62,8 @@ export type QuickFeedController = {
   allowed: boolean;
   saving: boolean;
   portion: string;
+  /** Food type the feeding is logged with (the latest feeding's, else Dry). */
+  foodType: FoodType;
   /** Which control shows the paw burst, and a key that restarts it. */
   burst: { key: number; source: FeedSource } | null;
   feed: (source: FeedSource) => Promise<void>;
@@ -131,7 +135,58 @@ export function useQuickFeed({ petId, petName, plan, status, foodType = 'Dry' }:
     }
   }, [allowed, canUndo, currentUser, petId, petName, plan.amount, plan.unit, plan.perDay, foodType, status, portion, reducedMotion, toast, toastError]);
 
-  return { allowed, saving, portion, burst, feed };
+  return { allowed, saving, portion, foodType, burst, feed };
+}
+
+/** Title hint for the global "log a feeding" shortcut (H28), from the shared shortcut map. */
+export const FEED_SHORTCUT_HINT = shortcutHint('quick-add', 'fed ');
+
+function shortcutHint(type: 'quick-add', prefix: string): string | undefined {
+  const shortcut = SHORTCUTS.find((entry) => entry.action.type === type && entry.action.prefix === prefix);
+  return shortcut ? `${shortcut.label} from anywhere: press ${shortcut.keys.join(' then ')}` : undefined;
+}
+
+/**
+ * The confirm step of tap-plus-confirm feeding (H09 acceptance): names the pet,
+ * portion and food type, and logs only on "Log feeding". Used by the Feed
+ * button's popover and by the "Log feeding" shortcut's picker on /pets.
+ */
+export function FeedConfirmPanel({
+  petName,
+  quick,
+  onDone,
+  titleId,
+}: {
+  petName: string;
+  quick: QuickFeedController;
+  onDone: () => void;
+  titleId: string;
+}) {
+  return (
+    <div className="space-y-3">
+      <p id={titleId} className="text-sm text-foreground">
+        Log <span className="font-semibold">{quick.portion}</span> of {quick.foodType.toLowerCase()} food for{' '}
+        <span className="font-semibold">{petName}</span>?
+      </p>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          size="sm"
+          className="flex-1"
+          disabled={quick.saving}
+          onClick={() => {
+            onDone();
+            void quick.feed('tap');
+          }}
+        >
+          <Utensils aria-hidden className="mr-2 h-4 w-4" /> Log feeding
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export type QuickFeedButtonProps = QuickFeedOptions & {
@@ -145,31 +200,43 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
 };
 
 /**
- * One-tap feeding at the planned portion (section 3 Pets, H09) and the accessible
- * alternative to hold to feed: the tap logs, and the toast confirms what was
- * logged with Undo. The full form stays on the pet page behind "Log with details".
+ * Feeding at the planned portion (section 3 Pets, H09) and the accessible
+ * alternative to hold to feed: tap, then confirm. The tap opens a small
+ * confirmation (pet, portion, food type) with focus on **Log feeding**; Escape or
+ * Cancel closes it without writing. The toast then confirms what was logged,
+ * with Undo for members who may delete logs. The full form stays on the pet page
+ * behind "Log with details".
  */
 export function QuickFeedButton({ controller, describedBy, className, size, variant = 'default', ...options }: QuickFeedButtonProps) {
   const own = useQuickFeed(options);
   const quick = controller ?? own;
+  const [confirming, setConfirming] = React.useState(false);
+  const titleId = React.useId();
 
   if (!quick.allowed) return null;
 
   return (
     <span className={cn('relative inline-flex', className)}>
-      <Button
-        type="button"
-        size={size}
-        variant={variant}
-        className="w-full"
-        onClick={() => void quick.feed('tap')}
-        disabled={quick.saving}
-        aria-label={`Feed ${options.petName}, ${quick.portion}`}
-        aria-describedby={describedBy}
-      >
-        {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
-        Feed · {quick.portion}
-      </Button>
+      <Popover open={confirming} onOpenChange={setConfirming}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            size={size}
+            variant={variant}
+            className="w-full"
+            disabled={quick.saving}
+            aria-label={`Feed ${options.petName}, ${quick.portion}`}
+            aria-describedby={describedBy}
+            title={FEED_SHORTCUT_HINT}
+          >
+            {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
+            Feed · {quick.portion}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-64" align="center" side="top" aria-labelledby={titleId} data-testid="feed-confirm">
+          <FeedConfirmPanel petName={options.petName} quick={quick} titleId={titleId} onDone={() => setConfirming(false)} />
+        </PopoverContent>
+      </Popover>
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}
     </span>
   );

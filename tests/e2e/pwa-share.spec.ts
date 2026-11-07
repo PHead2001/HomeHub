@@ -55,7 +55,7 @@ test.describe('installable app manifest', () => {
     const shortcuts = manifest.shortcuts as { name: string; url: string }[];
     expect(shortcuts.map(({ name, url }) => ({ name, url }))).toEqual([
       { name: 'Add to shopping', url: '/shopping?quickAdd=1' },
-      { name: 'Log feeding', url: '/pets' },
+      { name: 'Log feeding', url: '/pets?feed=1' },
       { name: 'My chores', url: '/chores' },
     ]);
   });

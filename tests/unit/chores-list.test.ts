@@ -7,6 +7,9 @@ import { restoreChoreFields, completionFields } from '../../src/lib/chores/patch
 import { msUntilNextMidnight } from '../../src/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, openSubTasks, uniqueTemplateId } from '../../src/lib/chores/list';
 import { getRolePresetPermissions } from '../../src/lib/permissions';
+import { blend, contrastRatio, hslTokenToRgb } from '../../src/lib/theme/contrast';
+import { PRESET_LIST } from '../../src/lib/theme/tokens';
+import { shortcutHint } from '../../src/lib/chores/shortcut-hints';
 
 const chore = (overrides: Partial<ChoreRecord>): ChoreRecord => ({
   id: overrides.id || 'c',
@@ -157,5 +160,39 @@ describe('targeted rollback and day rollover', () => {
     assert.equal(msUntilNextMidnight(new Date(2026, 7, 1, 23, 59, 0)), 60_000);
     assert.equal(msUntilNextMidnight(new Date(2026, 7, 31, 12, 0, 0)), 12 * 60 * 60 * 1000);
     assert.ok(msUntilNextMidnight(new Date(2026, 7, 1, 23, 59, 59, 999)) >= 1000);
+  });
+});
+
+describe('chores polish (wave 4)', () => {
+  const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
+
+  it('the mobile Overdue pill meets WCAG AA in every preset', () => {
+    const list = read('src/components/chores/chore-list.tsx');
+    // The pill: destructive text on a 10% destructive tint, on the row's card surface.
+    assert.match(list, /rounded-full bg-destructive\/10 px-1\.5 py-0\.5 font-medium text-destructive">Overdue</);
+    assert.match(list, /'rounded-lg border bg-card'/);
+    assert.equal(PRESET_LIST.length, 5);
+    for (const preset of PRESET_LIST) {
+      const tint = blend(hslTokenToRgb(preset.colors.destructive), hslTokenToRgb(preset.colors.card), 0.1);
+      const ratio = contrastRatio(hslTokenToRgb(preset.colors.destructive), tint);
+      assert.ok(ratio >= 4.5, `${preset.id}: Overdue pill ${ratio.toFixed(2)}:1`);
+    }
+  });
+
+  it('uses real plurals, live counts, the shared stagger and the shortcut hint', () => {
+    const page = read('src/components/chore-chart-client.tsx');
+    assert.doesNotMatch(page, /\(s\)/);
+    assert.match(page, /pluralize\(selectedChores\.length, 'chore'\)/);
+    assert.match(page, /pluralize\(openSubTasks\(chore\)\.length, 'unfinished step'\)/);
+    for (const count of ['todoEntries.length', 'visibleFutureChores.length', 'visibleCompletedChores.length', 'group.entries.length']) {
+      assert.match(page, new RegExp(`<NumberTicker value=\\{${count.replace(/\./g, '\\.')}\\}`));
+    }
+    assert.match(page, /title=\{shortcutHint\('chore '\)\}/);
+    assert.equal(shortcutHint('chore '), 'New chore from anywhere: press N');
+    assert.equal(shortcutHint('fed '), 'Log a feeding from anywhere: press F');
+    assert.equal(shortcutHint('nope '), undefined);
+    const list = read('src/components/chores/chore-list.tsx');
+    assert.match(list, /<Stagger as="ul"/);
+    assert.match(list, /<StaggerItem\s+as="li"/);
   });
 });

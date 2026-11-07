@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { flushSync } from 'react-dom';
 import Link from 'next/link';
 import { Edit, MoreVertical, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,9 +12,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { SPECIES_ART_LABEL, speciesArt } from '@/lib/pets/care';
+import { PeekCard } from '@/components/dashboard/peek-card';
+import { useMorphNavigation } from '@/hooks/use-morph-navigation';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { feedingHeadline, formatPortion, petHref, petPhotoMorphName, SPECIES_ART_LABEL, speciesArt } from '@/lib/pets/care';
+import { morphStyle } from '@/lib/motion';
 import type { PetProfile } from '@/lib/pets/types';
-import { PetCareSummary, usePetCare } from './pet-care-summary';
+import { PetCareSummary, usePetCare, type PetCare } from './pet-care-summary';
 import { PetPhoto } from './pet-photo';
 import { HoldToFeedOverlay, useHoldToFeed } from './hold-to-feed';
 import { useQuickFeed } from './quick-feed-button';
@@ -35,6 +40,27 @@ export function petTypeLabel(pet: Pick<PetProfile, 'type' | 'dataAiHint'>): stri
   return art === 'other' ? 'Pet' : SPECIES_ART_LABEL[art].replace(/^\w/, (c) => c.toUpperCase());
 }
 
+/** Peek card facts (H26) for the pet link: what the card does not already show in full. */
+function PetPeek({ pet, care }: { pet: PetProfile; care: PetCare }) {
+  const { plan, status, dues, now } = care;
+  return (
+    <div className="space-y-1.5" data-testid={`pet-peek-${pet.id}`}>
+      <p className="font-semibold text-foreground">{pet.name}</p>
+      <p className="text-xs text-muted-foreground">
+        {petTypeLabel(pet)} · {formatPortion(plan.amount, plan.unit)}{plan.perDay ? `, ${plan.perDay}× a day` : ''}
+      </p>
+      {pet.foodSchedule && <p className="line-clamp-2 text-xs text-muted-foreground">{pet.foodSchedule}</p>}
+      {status && <p className="text-xs text-foreground">{feedingHeadline(status, now)}</p>}
+      {dues.length > 0 && (
+        <ul className="space-y-0.5 text-xs text-foreground">
+          {dues.map((due) => <li key={due.medication}>{due.medication}: {due.label}</li>)}
+        </ul>
+      )}
+      <p className="text-xs font-medium text-primary">Open {pet.name}&apos;s page</p>
+    </div>
+  );
+}
+
 /**
  * Living pet card (H09): photo with a face-safe crop or species art (D17), the
  * feeding ring ("1 of 2 today"), "Fed 2 h ago by Sam", the next medication
@@ -44,8 +70,26 @@ export function petTypeLabel(pet: Pick<PetProfile, 'type' | 'dataAiHint'>): stri
  * hold, so both write through the same `addFeedingLog` call.
  */
 export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0 }: LivingPetCardProps) {
-  const href = `/pets/${pet.id}`;
+  const href = petHref(pet.id);
   const care = usePetCare(pet, householdId);
+  const reduced = useReducedMotion();
+  const { navigate } = useMorphNavigation();
+  // The photo takes its shared-element name only while morphing into the pet page
+  // (H12), so other View Transitions (the theme reveal) never capture it.
+  const [morphing, setMorphing] = React.useState(false);
+  React.useEffect(() => {
+    if (!morphing) return;
+    const timer = window.setTimeout(() => setMorphing(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [morphing]);
+  const openPet = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    // Plain navigation under reduced motion and for modified clicks (new tab, etc.);
+    // a click swallowed by hold to feed is already prevented.
+    if (reduced || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    flushSync(() => setMorphing(true));
+    navigate(href);
+  };
   const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, foodType: care.foodType });
   const photoRef = React.useRef<HTMLDivElement>(null);
   const { hold, enabled: holdEnabled, handlers } = useHoldToFeed(feed, photoRef);
@@ -67,6 +111,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
           className="aspect-[4/3] w-full"
           blinkOffset={index}
+          frameStyle={morphing ? morphStyle(petPhotoMorphName(pet.id)) : undefined}
         />
         {holdEnabled && <HoldToFeedOverlay hold={hold} feed={feed} />}
       </div>
@@ -104,12 +149,14 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
       )}
 
       <div className="flex flex-1 flex-col gap-3 p-4">
-        <div className="min-w-0">
+        {/* `static` keeps the stretched link positioned against the card, not the peek wrapper. */}
+        <PeekCard peek={<PetPeek pet={pet} care={care} />} className="static min-w-0">
           <h2 className="font-headline text-xl font-semibold leading-tight">
             {/* Stretched link: the whole card opens the pet; other controls sit above it. */}
             {/* Not draggable and no touch callout, so holding the photo (through this link's layer) stays a hold. */}
             <Link
               href={href}
+              onClick={openPet}
               draggable={false}
               data-hold-to-feed={holdEnabled ? '' : undefined}
               className="rounded-sm [-webkit-touch-callout:none] after:absolute after:inset-0 after:z-10 after:content-['']"
@@ -118,7 +165,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
             </Link>
           </h2>
           <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
-        </div>
+        </PeekCard>
 
         <PetCareSummary
           pet={pet}
