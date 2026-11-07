@@ -11,7 +11,8 @@ import {
 import type { PantryItem, PantryItemLocation } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { PANTRY_LOCATIONS, expiryLabel, expiryState, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
-import { pluralize } from '@/lib/shopping/items';
+import { NumberTicker } from '@/components/motion/number-ticker';
+import { Stagger, StaggerItem } from '@/components/motion/stagger';
 
 const SHELF_ICON: Record<PantryItemLocation, LucideIcon> = { Pantry: Archive, Fridge: Refrigerator, Freezer: Snowflake };
 
@@ -173,7 +174,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
               <h3 id={headingId} className="flex items-center gap-2 font-headline text-lg font-semibold">
                 <Icon className={cn('h-5 w-5', location === 'Pantry' ? 'text-primary' : 'text-info')} aria-hidden />
                 {location}
-                <span className="text-sm font-normal text-muted-foreground">{pluralize(shelfItems.length, 'item')}</span>
+                <span className="text-sm font-normal text-muted-foreground"><NumberTicker value={shelfItems.length} /> {shelfItems.length === 1 ? 'item' : 'items'}</span>
               </h3>
               {pickedItem && (
                 pickedItem.location === location ? (
@@ -193,7 +194,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                 Nothing in the {location.toLowerCase()} yet.
               </p>
             ) : (
-              <ul className="grid grid-cols-2 gap-3 min-[420px]:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+              <Stagger as="ul" count={shelfItems.length} className="grid grid-cols-2 gap-3 min-[420px]:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                 {shelfItems.map((item) => {
                   const state = expiryState(item.expiryDate, now);
                   const label = expiryLabel(item.expiryDate, now);
@@ -201,17 +202,17 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                   const lifted = liftedIds.has(item.id);
                   const isPicked = picked?.id === item.id || ghost?.id === item.id;
                   return (
-                    <li key={item.id} data-expiry={state}>
-                      {/* A recipe lifts the whole tile off the shelf (a state change, not a hover effect). */}
-                      <div className={cn('relative transition-transform duration-300 ease-out', lifted && '-translate-y-2')}>
+                    <StaggerItem as="li" key={item.id} data-expiry={state} data-lifted={lifted ? 'true' : undefined}>
+                      {/* A recipe lifts the tile off the shelf (H08): the card and its picture rise, the controls' hit areas stay put. */}
+                      <div className="relative">
                       {/* Visual layer: tilt, glow and frost change only this, never the controls. */}
                       <div
                         aria-hidden
                         className={cn(
-                          'pointer-events-none absolute inset-0 rounded-xl border bg-background transition-ui',
+                          'pointer-events-none absolute inset-0 rounded-xl border bg-background transition-[transform,box-shadow,opacity,border-color] duration-200 ease-out',
                           location === 'Freezer' && 'shadow-[inset_0_0_0_2px_hsl(var(--info)/0.35),inset_0_6px_10px_-6px_hsl(var(--info)/0.6)]',
                           EXPIRY_VISUAL[state],
-                          lifted && 'shadow-overlay ring-2 ring-primary',
+                          lifted && '-translate-y-2 shadow-overlay ring-2 ring-primary',
                           isPicked && 'opacity-40',
                         )}
                       />
@@ -223,7 +224,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                           disabled={!canEdit}
                           aria-label={`${item.name}, ${item.quantity} ${item.unit}${label ? `, ${label}` : ''}${lifted ? ', used in the recipe' : ''}${canEdit ? '. Edit' : ''}`}
                         >
-                          <span className={cn('flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg text-4xl', state === 'expired' && 'opacity-60')} aria-hidden>
+                          <span className={cn('flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg text-4xl transition-transform duration-200 ease-out', state === 'expired' && 'opacity-60', lifted && '-translate-y-2')} aria-hidden>
                             {photo ? (
                               <Image src={photo} alt="" width={56} height={56} unoptimized className="h-14 w-14 object-cover" />
                             ) : (
@@ -297,10 +298,10 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                         )}
                       </div>
                       </div>
-                    </li>
+                    </StaggerItem>
                   );
                 })}
-              </ul>
+              </Stagger>
             )}
             {/* The shelf board the tiles stand on. */}
             <div aria-hidden className="mt-3 h-2 rounded-full bg-secondary shadow-raised" />

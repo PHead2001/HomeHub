@@ -144,7 +144,8 @@ test.describe('maintenance center UX', () => {
     // Warranties expire; they are never "overdue" or "due".
     const warranty = page.getByTestId('reminders-warranty').getByRole('listitem').filter({ hasText: 'Main HVAC System' });
     await expect(warranty.getByText('Expires soon', { exact: true })).toBeVisible();
-    await expect(warranty.getByRole('button', { name: /^Mark done/ })).toHaveCount(0);
+    await expect(warranty.getByRole('checkbox', { name: /^Mark done/ })).toHaveCount(0);
+    await expect(warranty.getByRole('button', { name: /^Log service/ })).toHaveCount(0);
     await expect(warranty.getByRole('button', { name: /^Snooze/ })).toHaveCount(0);
 
     await dishwasher.getByRole('button', { name: 'Snooze 1 week: Clean filter for Kitchen Dishwasher' }).click();
@@ -159,7 +160,10 @@ test.describe('maintenance center UX', () => {
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
 
     const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
-    await filter.getByRole('button', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
+    // H05 completion: the check fills at once, before the write returns.
+    const check = filter.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' });
+    await check.click();
+    await expect(check).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
     await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0])
       .toMatchObject({ lastCompletedDate: '2026-08-01', nextDueDate: '2026-11-01' });
@@ -232,6 +236,94 @@ test.describe('maintenance center UX', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
   });
 
+  test('D16: Log service opens the log form for that schedule and completes it on save', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=reminders');
+    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    await filter.getByRole('button', { name: 'Log service: Replace air filter for Main HVAC System' }).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
+    await expect(dialog).toContainText('Saving marks Replace air filter done for Main HVAC System');
+    await expect(dialog.getByLabel('Title')).toHaveValue('Replace air filter');
+    await expect(dialog.getByLabel('Date')).toHaveValue('2026-08-01');
+    await dialog.getByLabel('Cost').fill('42.5');
+    await dialog.getByLabel('Service Provider').fill('E2E Heating');
+    await dialog.getByRole('button', { name: 'Save Log' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText('Service logged', { exact: true })).toBeVisible();
+
+    await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0])
+      .toMatchObject({ lastCompletedDate: '2026-08-01', nextDueDate: '2026-11-01' });
+    await expect.poll(async () => {
+      const logs = await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get();
+      return logs.docs.map((log) => ({ assetId: log.get('assetId'), cost: log.get('cost'), serviceProvider: log.get('serviceProvider'), type: log.get('type') }));
+    }).toEqual([{ assetId: 'hvac-main', cost: 42.5, serviceProvider: 'E2E Heating', type: 'routine' }]);
+    await expect.poll(async () => Boolean((await household.collection('notifications').doc(HVAC_NOTIFICATION).get()).get('resolvedAt')))
+      .toBe(true);
+    await expect(page.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
+  });
+
+  test('H30: vehicle cards show their photo; brand logos and badges theme with the text', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await household.collection('maintenance-attachments').doc('maintenance-ux-vehicle-photo').set({
+      householdId,
+      targetType: 'vehicle',
+      targetId: 'family-suv',
+      category: 'photo',
+      fileName: 'maintenance-ux-photo.png',
+      filePath: `households/${householdId}/maintenance/vehicle/family-suv/maintenance-ux-photo.png`,
+      downloadUrl: '/icons/icon-192.png',
+      contentType: 'image/png',
+      size: 1024,
+      uploadedByUid: 'e2e-owner-uid',
+      createdAt: '2026-07-31T12:00:00.000Z',
+    });
+    await open(page, '/maintenance?tab=vehicles');
+    const suv = page.getByTestId('vehicle-card-family-suv');
+    await expect(suv.locator('[data-vehicle-photo="image"]')).toBeVisible();
+    // The make is shown as text, so the Subaru mark is decorative.
+    await expect(suv.locator('[data-brand="subaru"][data-brand-kind="logo"]')).toHaveAttribute('aria-hidden', 'true');
+    await expect(page.getByTestId('vehicle-detail').locator('[data-brand="subaru"] path')).toHaveCount(1);
+
+    await page.getByRole('tab', { name: 'Home Assets' }).click();
+    // Bosch has bundled artwork; Carrier gets the monogram badge. Neither card shows the brand as text, so both are named.
+    await expect(page.getByTestId('asset-card-dishwasher').getByRole('img', { name: 'Bosch' })).toHaveAttribute('data-brand-kind', 'logo');
+    await expect(page.getByTestId('asset-card-hvac-main').getByRole('img', { name: 'Carrier' })).toHaveAttribute('data-brand-kind', 'badge');
+    const colors = await page.getByTestId('asset-card-dishwasher').locator('[data-brand="bosch"] svg').evaluate((svg) => ({
+      fill: getComputedStyle(svg).fill,
+      color: getComputedStyle(svg).color,
+    }));
+    expect(colors.fill).toBe(colors.color);
+  });
+
+  test('H12: an asset card morphs into the detail panel; a modified click selects plainly', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=assets');
+    // Record the shared-element names present when each view transition starts.
+    await page.evaluate(() => {
+      const w = window as unknown as { __morphs: string[] };
+      w.__morphs = [];
+      const start = document.startViewTransition?.bind(document);
+      if (!start) return;
+      document.startViewTransition = ((update: () => void) => {
+        w.__morphs.push([...document.querySelectorAll<HTMLElement>('*')].map((el) => el.style.viewTransitionName).filter(Boolean).join(','));
+        return start(update);
+      }) as typeof document.startViewTransition;
+    });
+    const morphs = () => page.evaluate(() => (window as unknown as { __morphs: string[] }).__morphs);
+    const current = await page.getByTestId('asset-detail').evaluate((el) => (el.textContent?.includes('Main HVAC System') ? 'hvac-main' : 'dishwasher'));
+    const other = current === 'hvac-main' ? 'dishwasher' : 'hvac-main';
+    await page.getByTestId(`asset-card-${other}`).click();
+    await expect(page.getByTestId(`asset-card-${other}`)).toHaveAttribute('aria-current', 'true');
+    expect(await morphs()).toEqual([`asset-${other}-card`]);
+    // After the morph no element keeps the name.
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('*')].filter((el) => el.style.viewTransitionName).length)).toBe(0);
+
+    await page.getByTestId(`asset-card-${current}`).click({ modifiers: ['Shift'] });
+    await expect(page.getByTestId(`asset-card-${current}`)).toHaveAttribute('aria-current', 'true');
+    expect(await morphs()).toHaveLength(1);
+  });
+
   test('summaries are offered only for notes worth summarizing; validation stays inline', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?tab=logs');
@@ -258,7 +350,8 @@ test.describe('maintenance center UX', () => {
     await expect(page).toHaveURL('/');
     await open(page, '/maintenance?tab=reminders');
     await expect(page.getByRole('button', { name: /^Open: Replace air filter/ }).first()).toBeVisible();
-    await expect(page.getByRole('button', { name: /^Mark done/ })).toHaveCount(0);
+    await expect(page.getByRole('checkbox', { name: /^Mark done/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Log service/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Snooze/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Add Log', exact: true })).toHaveCount(0);
     await page.getByRole('tab', { name: 'Home Assets' }).click();

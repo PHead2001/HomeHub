@@ -23,14 +23,19 @@ import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 
 import { Button } from '@/components/ui/button';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogOverlay,
+  DialogPortal,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { NumberTicker } from '@/components/motion/number-ticker';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,7 +57,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { cn } from '@/lib/utils';
-import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check, LayoutGrid, List as ListIcon } from 'lucide-react';
+import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check, LayoutGrid, List as ListIcon, X } from 'lucide-react';
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
@@ -382,6 +387,9 @@ function PantryItemDialog({
   );
 }
 
+/** How long the lifted tiles hold the stage before the recipe card flips in (H08). */
+const RECIPE_LIFT_HOLD_MS = 450;
+
 function RecipeGeneratorDialog({
     isOpen,
     onOpenChange,
@@ -393,12 +401,19 @@ function RecipeGeneratorDialog({
     onOpenChange: (open: boolean) => void;
     pantryItems: PantryItem[];
     householdId: string;
-    /** Receives each generated recipe, so the shelves can lift the items it uses. */
-    onRecipe?: (recipe: GenerateRecipeOutput | null) => void;
+    /**
+     * Receives each generated recipe so the shelves can lift the items it uses;
+     * returns how many lifted tiles are on screen (0 in the list view).
+     */
+    onRecipe?: (recipe: GenerateRecipeOutput | null) => number;
 }) {
     const { toast } = useToast();
+    const reduced = useReducedMotion();
     const [isLoading, setIsLoading] = useState(false);
     const [recipe, setRecipe] = useState<GenerateRecipeOutput | null>(null);
+    // 'lifting': the dialog and its scrim step aside so the lifted tiles are seen,
+    // then 'shown': the dialog returns and the recipe card flips in.
+    const [phase, setPhase] = useState<'shown' | 'lifting'>('shown');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const requestInFlight = useRef(false);
 
@@ -407,6 +422,7 @@ function RecipeGeneratorDialog({
         requestInFlight.current = true;
         setIsLoading(true);
         setRecipe(null);
+        setPhase('shown');
         setErrorMessage(null);
         onRecipe?.(null);
         try {
@@ -414,8 +430,9 @@ function RecipeGeneratorDialog({
               { items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
               await getAiActionContext(householdId)
             ));
+            const liftedOnScreen = onRecipe?.(result) ?? 0;
+            setPhase(!reduced && liftedOnScreen > 0 ? 'lifting' : 'shown');
             setRecipe(result);
-            onRecipe?.(result);
         } catch (error) {
             const message = getErrorMessage(error) || 'Could not generate a recipe.';
             console.error('Recipe generation failed', message);
@@ -425,7 +442,22 @@ function RecipeGeneratorDialog({
             requestInFlight.current = false;
             setIsLoading(false);
         }
-    }, [householdId, pantryItems, toast, onRecipe]);
+    }, [householdId, pantryItems, toast, onRecipe, reduced]);
+
+    // The lift holds briefly; any key or pointer press skips straight to the card.
+    useEffect(() => {
+        if (phase !== 'lifting') return;
+        const show = () => setPhase('shown');
+        const timer = window.setTimeout(show, RECIPE_LIFT_HOLD_MS);
+        window.addEventListener('keydown', show, true);
+        window.addEventListener('pointerdown', show, true);
+        return () => {
+            window.clearTimeout(timer);
+            window.removeEventListener('keydown', show, true);
+            window.removeEventListener('pointerdown', show, true);
+        };
+    }, [phase]);
+    const lifting = phase === 'lifting';
 
     // Automatically trigger generation when dialog opens
     useEffect(() => {
@@ -436,7 +468,17 @@ function RecipeGeneratorDialog({
 
     return (
         <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-2xl">
+            {/* DialogContent's own markup, composed here so the scrim can step aside during the lift. */}
+            <DialogPortal>
+            <DialogOverlay className={cn('transition-opacity duration-150', lifting && 'opacity-0')} />
+            <DialogPrimitive.Content
+                data-recipe-phase={phase}
+                className={cn(
+                    'fixed left-[50%] top-[50%] z-50 grid w-full max-w-2xl translate-x-[-50%] translate-y-[-50%] ease-spring-enter gap-4 border bg-popover p-6 text-popover-foreground shadow-overlay duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:pointer-events-none data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-xl',
+                    'transition-opacity',
+                    lifting && 'opacity-0',
+                )}
+            >
                 <DialogHeader>
                     <DialogTitle className="font-headline flex items-center gap-2">
                         <Sparkles className="text-primary" />
@@ -454,12 +496,14 @@ function RecipeGeneratorDialog({
                     </div>
                 )}
 
-                {recipe && (
-                    // The recipe card flips in (250 ms; instant under reduced motion).
+                {lifting && <p role="status" className="sr-only">Lifting the items this recipe uses off the shelves.</p>}
+                {recipe && !lifting && (
+                    // After the lift, the recipe card flips in (220 ms; instant under reduced motion).
                     <motion.div
-                        initial={{ rotateX: -70, opacity: 0 }}
+                        data-testid="recipe-card"
+                        initial={reduced ? false : { rotateX: -70, opacity: 0 }}
                         animate={{ rotateX: 0, opacity: 1 }}
-                        transition={{ duration: DURATION.ui, ease: EASE.standard }}
+                        transition={reduced ? { duration: 0 } : { duration: DURATION.ui, ease: EASE.standard }}
                         style={{ transformPerspective: 900, transformOrigin: 'top center' }}
                         className="max-h-[70vh] overflow-y-auto pr-4 space-y-6"
                     >
@@ -539,7 +583,12 @@ function RecipeGeneratorDialog({
                        {isLoading ? <Loader2 className="mr-2 animate-spin" /> :  <><Sparkles className="mr-2" /> Regenerate</>}
                     </Button>
                 </DialogFooter>
-            </DialogContent>
+                <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none">
+                    <X className="h-4 w-4" />
+                    <span className="sr-only">Close</span>
+                </DialogPrimitive.Close>
+            </DialogPrimitive.Content>
+            </DialogPortal>
         </Dialog>
     );
 }
@@ -771,8 +820,20 @@ export function PantryInventoryClient() {
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  // H08: the used tiles lift first (the dialog steps aside while they do), then
+  // the recipe card flips in. Returns how many lifted tiles are on screen.
   const handleRecipe = useCallback((recipe: GenerateRecipeOutput | null) => {
-    setLiftedIds(new Set(recipe ? matchRecipeIngredients(recipe.ingredients.used, itemsRef.current) : []));
+    const ids = recipe ? matchRecipeIngredients(recipe.ingredients.used, itemsRef.current) : [];
+    setLiftedIds(new Set(ids));
+    if (ids.length === 0 || viewRef.current !== 'shelves') return 0;
+    requestAnimationFrame(() => {
+      document.querySelector('[data-testid="pantry-shelves"] [data-lifted="true"]')?.scrollIntoView({ block: 'nearest' });
+    });
+    return ids.length;
   }, []);
 
   const handleAddToSpecificList = useCallback(async (listId: string, itemName: string, quantity: number) => {
@@ -1050,9 +1111,9 @@ export function PantryInventoryClient() {
               <CardTitle className="font-headline">Pantry Inventory</CardTitle>
               {(expiringSoon > 0 || expired > 0) && (
                 <p className="mt-1 text-sm">
-                  {expiringSoon > 0 && <span className="text-warning">{pluralize(expiringSoon, 'item')} expiring soon</span>}
+                  {expiringSoon > 0 && <span className="text-warning"><NumberTicker value={expiringSoon} /> {expiringSoon === 1 ? 'item' : 'items'} expiring soon</span>}
                   {expiringSoon > 0 && expired > 0 && <span className="text-muted-foreground"> · </span>}
-                  {expired > 0 && <span className="text-destructive">{expired} expired</span>}
+                  {expired > 0 && <span className="text-destructive"><NumberTicker value={expired} /> expired</span>}
                 </p>
               )}
             </div>
@@ -1128,7 +1189,7 @@ export function PantryInventoryClient() {
                     return (
                         <AccordionItem value={loc} key={loc} className="min-w-0 rounded-lg border bg-background px-3 sm:px-4">
                             <AccordionTrigger className="hover:no-underline font-headline text-lg">
-                                {loc} ({itemsInLocation.length})
+                                <span>{loc} (<NumberTicker value={itemsInLocation.length} />)</span>
                             </AccordionTrigger>
                             <AccordionContent>
                                 <div className="divide-y sm:hidden" data-testid={`mobile-inventory-${loc.toLowerCase()}`}>
