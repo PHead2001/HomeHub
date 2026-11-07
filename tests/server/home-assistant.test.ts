@@ -5,6 +5,9 @@ import {
   fetchHomeAssistantStates,
   isPublicAddress,
   normalizeHomeAssistantUrl,
+  pinnedFetch,
+  publicOnlyLookup,
+  toResponse,
   type Resolver,
 } from '../../src/lib/server/home-assistant';
 
@@ -98,5 +101,63 @@ describe('Home Assistant state fetch', () => {
     await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(answer(200, { ok: true }))), /did not respond like Home Assistant/);
     const failing = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
     await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(failing)), /did not answer/);
+  });
+});
+
+describe('connect-time address pinning (DNS rebinding, CodeQL js/request-forgery)', () => {
+  const lookupOnce = (resolve: Resolver, all = false) => new Promise<{ error: NodeJS.ErrnoException | null; address: unknown }>((done) => {
+    publicOnlyLookup(resolve)('ha.example.com', { all }, (error, address) => done({ error, address }));
+  });
+
+  test('the socket lookup refuses private, mixed and empty answers', async () => {
+    for (const answer of [['10.0.0.1'], ['93.184.216.34', '169.254.169.254'], ['::1'], []]) {
+      const { error } = await lookupOnce(resolverFor(answer));
+      assert.equal(error?.code, 'EHOMEHUBPRIVATE', `expected refusal for ${JSON.stringify(answer)}`);
+    }
+  });
+
+  test('the socket lookup passes public addresses through, single and all', async () => {
+    const single = await lookupOnce(resolverFor(['93.184.216.34']));
+    assert.equal(single.error, null);
+    assert.equal(single.address, '93.184.216.34');
+    const all = await lookupOnce(resolverFor(['93.184.216.34', '2606:4700::1111']), true);
+    assert.equal(all.error, null);
+    assert.deepEqual(all.address, [{ address: '93.184.216.34', family: 4 }, { address: '2606:4700::1111', family: 6 }]);
+  });
+
+  test('a rebinding answer at connect time is refused before any request is sent', async () => {
+    // First lookup (validation in normalizeHomeAssistantUrl) sees a public address;
+    // the second (the socket's own lookup) is rebound to the metadata server.
+    let calls = 0;
+    const rebinding: Resolver = async () => (calls++ === 0 ? ['93.184.216.34'] : ['169.254.169.254']);
+    await rejectsWith(fetchHomeAssistantStates('https://rebind.example.com', 't'.repeat(30), { resolve: rebinding }), /private network/);
+    assert.equal(calls, 2, 'the socket resolved the host itself instead of trusting the first answer');
+  });
+
+  test('pinnedFetch only speaks https', async () => {
+    await assert.rejects(pinnedFetch(publicResolver)('http://ha.example.com/api/states'), (error: unknown) => error instanceof HomeAssistantError);
+  });
+});
+
+describe('pinned response building (hostile status codes)', () => {
+  const body = [Buffer.from('ignored body')];
+
+  test('null-body statuses never throw, even when the server sends a body (205 Reset Content)', async () => {
+    for (const status of [204, 205, 304]) {
+      const response = toResponse(status, body);
+      assert.equal(response.status, status);
+      assert.equal(await response.text(), '');
+    }
+  });
+
+  test('ordinary statuses keep their body', async () => {
+    const response = toResponse(200, [Buffer.from('[]')]);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), []);
+    assert.equal(toResponse(undefined, []).status, 502);
+  });
+
+  test('statuses Response cannot represent throw, so the listener rejects instead of crashing', () => {
+    for (const status of [600, 999, 0]) assert.throws(() => toResponse(status, body));
   });
 });
