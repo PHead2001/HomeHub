@@ -395,8 +395,6 @@ export type User = {
   permissions?: PermissionOverrides;
   forcePasswordChange?: boolean;
   householdId: string | null;
-  gender?: string;
-  birthday?: string;
   /**
    * Appearance (Profile → Appearance). Version 2 stores curated preset choices;
    * the legacy free-color shape `{ background, accent, backgroundHex, accentHex }`
@@ -407,6 +405,10 @@ export type User = {
     reminderTime: string; // e.g. "17:00"
     reminderEnabled: boolean;
   }
+  /**
+   * Legacy push tokens. New tokens live in `users/{email}/private/push`, which
+   * only the owner can read; this field only shrinks until the migration empties it.
+   */
   fcmTokens?: string[];
 };
 

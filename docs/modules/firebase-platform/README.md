@@ -53,6 +53,7 @@ App Check starts in `src/lib/firebase.ts`, before `getFirestore` and `getStorage
 Primary topology:
 
 - `users/{email}`
+- `users/{email}/private/push` (owner-only push tokens)
 - `households/{householdId}`
 - `households/{householdId}/members/{uid}`
 - `households/{householdId}/notifications/{notificationId}`
@@ -70,7 +71,7 @@ Primary topology:
 - `households/{householdId}/vehicles/{vehicleId}`
 - `households/{householdId}/maintenance/{logId}`
 - `households/{householdId}/maintenance-attachments/{attachmentId}`
-- `households/{householdId}/home-automation/credentials`
+- `households/{householdId}/home-automation/credentials` (server-only; rules deny all client access)
 - `inviteCodes/{code}`
 - `aiUsage/{scope}_{id}_{day}` (server-only daily AI quota counters; rules deny all client access)
 
@@ -82,7 +83,11 @@ Direct temporary chores use the existing `chores` path with optional `templateId
 
 Rules use Firebase Auth UID/email and UID membership documents only; `households.memberEmails` and profile household fields grant nothing. Pending `newuser` members are blocked from ordinary household subcollections. Storage rules read the same membership records through cross-service `firestore.get()`, apply the same role presets and overrides, and enforce image-only uploads (5–10 MB) for pets, barcode images and avatars and a 15 MB document/image allowlist for maintenance attachments; every other path is denied. Cross-service reads require the Storage service agent to hold `roles/firebaserules.firestoreServiceAgent` (granted on `homehub-j91jb` 2026-11-06).
 
-Home Assistant credentials under `home-automation/*` can be read and written only by members with `automation.manage`; every other role is denied. The app itself reads and writes them through authorized server actions.
+Home Assistant credentials under `home-automation/*` are denied to every client, owners included; only the authorized server actions read and write them with the Admin SDK.
+
+Profiles: `birthday` and `gender` can no longer be added or changed (existing values stay readable and removable until `scripts/ops/purge-profile-demographics.mjs` runs), and push tokens live in the owner-only `users/{email}/private/push`; the legacy `fcmTokens` profile field may only shrink. See [Identity and Profile](../identity-profile/README.md). Notification `deepLink` values must be `/`-relative with no second leading slash or backslash and no control characters.
+
+Storage barcode images (`households/{householdId}/barcode-library/**`): read with `shopping.view`, create or replace with `shopping.edit` as an image (png, jpeg, webp, gif, heic, heif, avif) of at most 5 MB, delete with `shopping.delete` (owners and admins by default). Covered by `tests/rules/storage.rules.test.ts`.
 
 Firestore rules explicitly map known household collections to the closest role/permission operation: chores/templates/rooms, shopping lists/items/config, pantry, barcode library, pets/logs, assets, vehicles, maintenance logs/attachments, notifications, audit logs, and automation configuration. Member-document permission overrides are honored, pending users are denied, and unknown household paths deny by default. Where one update can represent multiple product actions, rules use the narrowest existing permission without field-level semantic inference.
 

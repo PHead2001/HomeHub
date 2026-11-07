@@ -20,6 +20,10 @@ const users = {
   owner: { uid: 's-owner', email: 's.owner@example.test' },
   member: { uid: 's-member', email: 's.member@example.test' },
   guest: { uid: 's-guest', email: 's.guest@example.test' },
+  child: { uid: 's-child', email: 's.child@example.test' },
+  admin: { uid: 's-admin', email: 's.admin@example.test' },
+  // A member whose owner turned shopping editing off.
+  noShopping: { uid: 's-no-shopping', email: 's.noshopping@example.test' },
   pending: { uid: 's-pending', email: 's.pending@example.test' },
   legacy: { uid: 's-legacy', email: 's.legacy@example.test' },
   ownerB: { uid: 's-owner-b', email: 's.ownerb@example.test' },
@@ -54,9 +58,14 @@ before(async () => {
       [users.member, 'member', 'active'],
       [users.guest, 'guest', 'active'],
       [users.pending, 'newuser', 'pending'],
+      [users.child, 'child', 'active'],
+      [users.admin, 'admin', 'active'],
     ] as const) {
       await setDoc(doc(db, 'households', householdA, 'members', user.uid), { ...user, role, status });
     }
+    await setDoc(doc(db, 'households', householdA, 'members', users.noShopping.uid), {
+      ...users.noShopping, role: 'member', status: 'active', permissions: { 'shopping.edit': false },
+    });
     await setDoc(doc(db, 'households', householdB), {
       name: 'Storage B', ownerUid: users.ownerB.uid, ownerEmail: users.ownerB.email, memberEmails: [users.ownerB.email],
     });
@@ -66,6 +75,9 @@ before(async () => {
     await uploadBytes(ref(storage, `households/${householdA}/pets/maple.png`), png, image);
     await uploadBytes(ref(storage, `households/${householdA}/maintenance/home_asset/hvac/manual.pdf`), pdf, { contentType: 'application/pdf' });
     await uploadBytes(ref(storage, `households/${householdB}/pets/b.png`), png, image);
+    await uploadBytes(ref(storage, `households/${householdA}/barcode-library/milk.png`), png, image);
+    await uploadBytes(ref(storage, `households/${householdA}/barcode-library/keep.png`), png, image);
+    await uploadBytes(ref(storage, `households/${householdB}/barcode-library/b.png`), png, image);
   });
 });
 
@@ -104,6 +116,56 @@ describe('household files', () => {
     await assertFails(uploadBytes(ref(storageFor(users.ownerB), `households/${householdA}/pets/b.png`), png, image));
     await assertFails(uploadBytes(ref(storageFor(users.owner), `anything/else.png`), png, image));
     await assertFails(uploadBytes(ref(storageFor(users.owner), `households/${householdA}/random/file.png`), png, image));
+  });
+});
+
+describe('barcode library images', () => {
+  const barcode = (user: Identity, name: string, household = householdA) =>
+    ref(storageFor(user), `households/${household}/barcode-library/${name}`);
+
+  test('shopping viewers read them; children, pending members and outsiders cannot', async () => {
+    for (const user of [users.owner, users.admin, users.member, users.guest, users.noShopping]) {
+      await assertSucceeds(getBytes(barcode(user, 'milk.png')));
+    }
+    for (const user of [users.child, users.pending, users.legacy, users.ownerB, users.stranger]) {
+      await assertFails(getBytes(barcode(user, 'milk.png')));
+    }
+    await assertFails(getBytes(ref(environment.unauthenticatedContext().storage(), `households/${householdA}/barcode-library/milk.png`)));
+    await assertFails(getBytes(barcode(users.owner, 'b.png', householdB)));
+  });
+
+  test('only shopping editors upload, including in nested folders', async () => {
+    await assertSucceeds(uploadBytes(barcode(users.owner, 'owner.png'), png, image));
+    await assertSucceeds(uploadBytes(barcode(users.admin, 'admin.webp'), png, { contentType: 'image/webp' }));
+    await assertSucceeds(uploadBytes(barcode(users.member, 'products/0123456789012.jpg'), png, { contentType: 'image/jpeg' }));
+    for (const user of [users.guest, users.child, users.pending, users.legacy, users.noShopping, users.stranger]) {
+      await assertFails(uploadBytes(barcode(user, `${user.uid}.png`), png, image));
+    }
+    await assertFails(uploadBytes(barcode(users.ownerB, 'cross.png'), png, image));
+  });
+
+  test('an editor may replace an existing image', async () => {
+    await assertSucceeds(uploadBytes(barcode(users.member, 'milk.png'), png, image));
+    await assertFails(uploadBytes(barcode(users.guest, 'milk.png'), png, image));
+  });
+
+  test('uploads must be images of 5 MB or less', async () => {
+    for (const contentType of ['image/png', 'image/jpeg', 'image/gif', 'image/heic', 'image/heif', 'image/avif']) {
+      await assertSucceeds(uploadBytes(barcode(users.member, `ok-${contentType.split('/')[1]}`), png, { contentType }));
+    }
+    for (const contentType of ['application/pdf', 'text/html', 'image/svg+xml', 'application/octet-stream']) {
+      await assertFails(uploadBytes(barcode(users.owner, `bad-${contentType.replace(/\W/g, '-')}`), pdf, { contentType }));
+    }
+    await assertSucceeds(uploadBytes(barcode(users.owner, 'limit.png'), new Uint8Array(5 * 1024 * 1024), image));
+    await assertFails(uploadBytes(barcode(users.owner, 'over.png'), new Uint8Array(5 * 1024 * 1024 + 1), image));
+  });
+
+  test('only owners and admins delete (shopping.delete)', async () => {
+    for (const user of [users.member, users.guest, users.child, users.pending, users.noShopping, users.ownerB]) {
+      await assertFails(deleteObject(barcode(user, 'keep.png')));
+    }
+    await assertSucceeds(deleteObject(barcode(users.admin, 'keep.png')));
+    await assertSucceeds(deleteObject(barcode(users.owner, 'milk.png')));
   });
 });
 
