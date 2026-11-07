@@ -20,6 +20,10 @@ import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
 } from "./shared/maintenance-reminders";
+import {
+  MEDICATION_SOURCE_TYPE, buildMedicationReminders, medicationCycle,
+  pendingCycles, type PetInput,
+} from "./shared/medication-reminders";
 import {normalizeRecurrence, upcomingOccurrences} from "./shared/recurrence";
 
 type Db = Firestore;
@@ -42,6 +46,7 @@ export type HouseholdRunResult = {
   purgedChores: number;
   createdNotifications: number;
   refreshedNotifications: number;
+  resolvedNotifications: number;
 };
 
 const notificationBody = (
@@ -75,6 +80,7 @@ export const runHouseholdReminders = async (
   const result: HouseholdRunResult = {
     householdId, generatedChores: 0, purgedChores: 0,
     createdNotifications: 0, refreshedNotifications: 0,
+    resolvedNotifications: 0,
   };
   const house = db.collection("households").doc(householdId);
   const houseSnap = await house.get();
@@ -304,6 +310,53 @@ export const runHouseholdReminders = async (
         stateKey: r.stateKey,
       });
     if (!kept) return result;
+  }
+
+  // Pet medication reminders (household-wide, like maintenance): one per
+  // countdown state, in the household's day. Every entry of each pet is read
+  // so a later dose without a next due date cancels the countdown, exactly
+  // as on the pet's page.
+  const petsSnap = await house.collection("pets").get();
+  const pets: PetInput[] = await Promise.all(petsSnap.docs.map(async (pet) => ({
+    id: pet.id,
+    name: pet.get("name"),
+    logs: (await pet.ref.collection("medication-logs").get()).docs
+      .map((log) => log.data()),
+  })));
+  for (const r of buildMedicationReminders(pets, today)) {
+    const kept = await ensure(
+      deterministicNotificationId(r.sourceType, r.sourceId, r.stateKey), {
+        category: "pets",
+        title: r.title,
+        message: r.message,
+        deepLink: r.deepLink,
+        sourceType: r.sourceType,
+        sourceId: r.sourceId,
+        stateKey: r.stateKey,
+      });
+    if (!kept) return result;
+  }
+  // A reminder resolves once its countdown is no longer pending: a newer
+  // dose was logged (with a later due date, or none), or the pet is gone.
+  const pending = pendingCycles(pets);
+  const openMedication = (await house.collection("notifications")
+    .where("sourceType", "==", MEDICATION_SOURCE_TYPE).get()).docs
+    .filter((note) => !note.get("resolvedAt") &&
+      typeof note.get("sourceId") === "string" &&
+      typeof note.get("stateKey") === "string" &&
+      !pending.has(
+        medicationCycle(note.get("sourceId"), note.get("stateKey"))));
+  for (const note of openMedication) {
+    const status = await db.runTransaction(async (tx) => {
+      const [home, snap] = await Promise.all([tx.get(house), tx.get(note.ref)]);
+      if (!home.exists || home.get("deletingAt")) return "stopped";
+      if (snap.exists && !snap.get("resolvedAt")) {
+        tx.update(note.ref, {resolvedAt: ts(now)});
+      }
+      return "ok";
+    });
+    if (status === "stopped") return result;
+    result.resolvedNotifications++;
   }
 
   // Chore reminders (per person, in their own timezone). Reminder documents

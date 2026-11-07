@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-This module owns pet profiles, pet photos and species art, the living pet cards, pet detail pages, and feeding, medication, and general care histories. It does not currently generate pet reminders or notifications; medication countdowns are shown in the UI only.
+This module owns pet profiles, pet photos and species art, the living pet cards, pet detail pages, and feeding, medication, and general care histories. Medication countdowns also produce server-side reminders: when a medication's next due day arrives (household time zone), hourly upkeep writes a `pets` notification, using the same countdown rule as the UI; see [Notifications](../notifications/README.md).
 
 ## User-Facing Capabilities
 
@@ -70,7 +70,7 @@ Pet Storage rules require `pets.view` to read and `pets.editProfiles` to upload,
 
 ## Integrations and Background Processing
 
-Firebase Storage holds pet photos. No pet-specific Cloud Function, Genkit flow, external API, scheduled job, or automatic notification writer exists. Sound and haptics go through the shared opt-in `playFeedback`.
+Firebase Storage holds pet photos. The hourly upkeep Cloud Function (`functions/src/reminders.ts` with `functions/src/shared/medication-reminders.ts`) reads pets and their medication logs and writes medication reminders (`sourceType` `pet_medication`, due today or overdue, resolved once a newer dose is logged); its pushes show the pet's photo. No Genkit flow or external API is involved. Sound and haptics go through the shared opt-in `playFeedback`.
 
 ## Cross-Module Dependencies
 
@@ -79,7 +79,7 @@ The homepage AI Overview may include pet count and a seven-day care-log count fo
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply user, household, role and effective permission context.
 - [Firebase Platform](../firebase-platform/README.md) owns Firestore/Storage initialization and security rules.
 - [Application Shell and Dashboard](../application-shell/README.md) reads pets and feedings read-only for the dashboard (both date shapes, judged with `feedingPlan`/`feedingStatus`, so "fed" there means today's target is met, as on the pet card) and logs quick-add feedings through `addFeedingLog` with the pet's usual portion unless an amount is given and the latest feeding's food type (`knownFoodType`, Dry without history), as the one-tap feed does (amounts parsed with `parsePortion`; gated by `pets.addLogs`). It links to `/pets/<id>?tab=feeding`. It also exposes pet navigation and the **Log feeding** home-screen shortcut (`/pets`), and provides the design foundation used here (`EmptyState`, `MemberAvatar`, `FieldError`, `toastError`/`friendlyError`, `playFeedback`, `useReducedMotion`, tokens, `glow-card`).
-- [Notifications](../notifications/README.md) defines a `pets` category but receives no records from this module today.
+- [Notifications](../notifications/README.md) receives medication reminders (category `pets`) from hourly upkeep, deep-linking to `/pets/<petId>?tab=medication`. Changing the countdown rule in `src/lib/pets/care.ts` must be mirrored in `functions/src/shared/medication-reminders.ts`.
 
 ## Invariants and Failure Behavior
 

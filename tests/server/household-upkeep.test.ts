@@ -3,7 +3,7 @@ import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
-import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, deterministicNotificationId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -209,5 +209,73 @@ describe('household upkeep', () => {
     assert.equal(second.purgedChores, 0);
     assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 3);
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
+  });
+
+  describe('pet medication reminders', () => {
+    // Household time zone is America/Chicago (UTC-5 in November 2026).
+    const meds = () => house().collection('notifications').where('sourceType', '==', 'pet_medication').get();
+    const logs = () => house().collection('pets').doc('maple').collection('medication-logs');
+    beforeEach(async () => {
+      await house().collection('pets').doc('maple').set({ name: 'Maple', type: 'Dog', photoUrl: 'https://placehold.co/300x300.png' });
+      await logs().doc('d1').set({ date: '2026-10-07T14:00:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-11-06' });
+    });
+
+    test('nothing the day before; one reminder on the due day, idempotently', async () => {
+      // 11:30pm Nov 5 in Chicago (05:30 UTC Nov 6): still the day before.
+      await run(new Date('2026-11-06T05:30:00Z'));
+      assert.equal((await meds()).size, 0);
+
+      // 12:30am Nov 6 in Chicago.
+      const dueDay = new Date('2026-11-06T06:30:00Z');
+      const first = await run(dueDay);
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      const note = notes.docs[0].data();
+      assert.equal(note.category, 'pets');
+      assert.equal(note.title, "Maple's Flea prevention is due today");
+      assert.equal(note.sourceId, 'maple:flea prevention');
+      assert.equal(note.stateKey, 'due|2026-11-06');
+      assert.equal(note.deepLink, '/pets/maple?tab=medication');
+      assert.equal(note.targetUserUid, undefined, 'household-wide, like maintenance');
+      assert.equal(notes.docs[0].id, deterministicNotificationId('pet_medication', 'maple:flea prevention', 'due|2026-11-06'));
+      assert.ok(first.createdNotifications >= 1);
+
+      await run(new Date('2026-11-06T18:00:00Z'));
+      assert.equal((await meds()).size, 1, 'a re-run creates nothing new');
+    });
+
+    test('an overdue countdown gets its own overdue reminder once', async () => {
+      await run(new Date('2026-11-08T15:00:00Z'));
+      await run(new Date('2026-11-08T16:00:00Z'));
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      assert.equal(notes.docs[0].data().title, "Maple's Flea prevention is overdue");
+      assert.equal(notes.docs[0].data().stateKey, 'overdue|2026-11-06');
+    });
+
+    test('a newer dose resolves the reminder, with or without a next due date', async () => {
+      await run(new Date('2026-11-06T15:00:00Z'));
+      await logs().doc('d2').set({ date: '2026-11-06T16:00:00.000Z', medication: ' flea PREVENTION ', dosage: '1 chew', notes: '' });
+      const after = await run(new Date('2026-11-06T17:00:00Z'));
+      assert.equal(after.resolvedNotifications, 1);
+      const notes = await meds();
+      assert.equal(notes.size, 1);
+      assert.ok(notes.docs[0].data().resolvedAt, 'resolved');
+      // Already resolved: nothing more to do, and no countdown means no new reminder.
+      const again = await run(new Date('2026-11-07T17:00:00Z'));
+      assert.equal(again.resolvedNotifications, 0);
+      assert.equal((await meds()).size, 1);
+    });
+
+    test('a resolved countdown leaves the next one free to remind', async () => {
+      await run(new Date('2026-11-06T15:00:00Z'));
+      await logs().doc('d2').set({ date: '2026-11-06T16:00:00.000Z', medication: 'Flea prevention', dosage: '1 chew', notes: '', nextDueDate: '2026-12-06' });
+      await run(new Date('2026-11-06T17:00:00Z'));
+      assert.equal((await meds()).docs.filter(d => !d.data().resolvedAt).length, 0);
+      await run(new Date('2026-12-06T15:00:00Z'));
+      const open = (await meds()).docs.filter(d => !d.data().resolvedAt);
+      assert.equal(open.length, 1);
+      assert.equal(open[0].data().stateKey, 'due|2026-12-06');
+    });
   });
 });
