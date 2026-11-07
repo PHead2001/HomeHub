@@ -16,7 +16,9 @@ import { Badge } from '@/components/ui/badge';
 import type { HealthResult } from '@/lib/maintenance/health';
 import type { HomeAsset, HomeAssetCategory, MaintenanceAttachment } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import type { WarrantyCountdown } from '@/lib/maintenance/warranty';
 import { HealthRing } from './health-ring';
+import { WarrantyRing } from './warranty-ring';
 
 const CATEGORY_ICONS: Record<HomeAssetCategory, ElementType> = {
   HVAC: Thermometer,
@@ -38,18 +40,22 @@ const statusLabel = (status: HomeAsset['status']) => (status === 'needs_attentio
  * uncropped (`object-contain`), so portrait and landscape shots both read. With no
  * photo, or when it fails to load, the band shows the category icon on a
  * token gradient. The band height is fixed, so the card never shifts when the
- * image loads, and cards keep their content height (B7).
+ * image loads, and cards keep their content height (B7). Beside the health ring,
+ * a warranty countdown ring shows the days left of the warranty term (H10).
  */
 export function AssetCard({
   asset,
   photo,
   health,
+  warranty,
   selected,
   onSelect,
 }: {
   asset: HomeAsset;
   photo: MaintenanceAttachment | null;
   health?: HealthResult;
+  /** Warranty countdown (H10); omitted when the asset has no warranty end date. */
+  warranty?: WarrantyCountdown | null;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -100,7 +106,12 @@ export function AssetCard({
             <Badge variant={asset.status === 'needs_attention' ? 'destructive' : 'outline'} className="mt-2">{status}</Badge>
           )}
         </div>
-        {health && <HealthRing score={health.score} band={health.band} label={`${asset.name} health`} />}
+        {(health || warranty) && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            {warranty && <WarrantyRing countdown={warranty} name={asset.name} />}
+            {health && <HealthRing score={health.score} band={health.band} label={`${asset.name} health`} />}
+          </div>
+        )}
       </div>
     </button>
   );

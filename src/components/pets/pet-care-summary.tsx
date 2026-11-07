@@ -14,22 +14,49 @@ import { cn } from '@/lib/utils';
 import { FeedingRing } from './feeding-ring';
 import { MedicationChip } from './medication-chip';
 import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
-import { QuickFeedButton } from './quick-feed-button';
+import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
+
+/** A pet's live care data: feedings, the plan and today's status, and the next medication. */
+export function usePetCare(pet: PetProfile, householdId: string) {
+  const now = useNow();
+  const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
+  const medications = useMedicationCountdownLogs(householdId, pet.id);
+  const plan = feedingPlan(pet);
+  const status = feedings.loading || feedings.error ? null : feedingStatus(feedings.logs, plan, now);
+  const due = medications.loading || medications.error ? null : nextMedication(medications.logs, now);
+  return { now, feedings, medications, plan, status, due, foodType: knownFoodType(feedings.logs[0]?.foodType) };
+}
+
+export type PetCare = ReturnType<typeof usePetCare>;
 
 /**
  * Feeding ring, "Fed 2 h ago by Sam", the next-medication chip and one-tap feeding,
  * shared by the pet card and the pet detail page. A failed load is shown as
  * "unavailable", never as an empty history (which would read as "not fed").
+ * The pet card passes its own `care` and `feed` controller, which hold to feed
+ * shares, so both use one data subscription and one writer.
  */
-export function PetCareSummary({ pet, householdId, feedClassName }: { pet: PetProfile; householdId: string; feedClassName?: string }) {
-  const now = useNow();
-  const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
-  const medications = useMedicationCountdownLogs(householdId, pet.id);
+type SummaryProps = {
+  pet: PetProfile;
+  householdId: string;
+  feedClassName?: string;
+  care?: PetCare;
+  feed?: QuickFeedController;
+  feedHintId?: string;
+};
 
-  const plan = feedingPlan(pet);
-  const status = feedings.loading || feedings.error ? null : feedingStatus(feedings.logs, plan, now);
-  const due = medications.loading || medications.error ? null : nextMedication(medications.logs, now);
+export function PetCareSummary(props: SummaryProps) {
+  return props.care ? <CareSummaryView {...props} care={props.care} /> : <OwnCareSummary {...props} />;
+}
+
+function OwnCareSummary(props: SummaryProps) {
+  const care = usePetCare(props.pet, props.householdId);
+  return <CareSummaryView {...props} care={care} />;
+}
+
+function CareSummaryView({ pet, feedClassName, care, feed, feedHintId }: SummaryProps & { care: PetCare }) {
+  const { now, feedings, medications, plan, status, due, foodType } = care;
 
   return (
     <>
@@ -69,7 +96,9 @@ export function PetCareSummary({ pet, householdId, feedClassName }: { pet: PetPr
           petName={pet.name}
           plan={plan}
           status={status}
-          foodType={knownFoodType(feedings.logs[0]?.foodType)}
+          foodType={foodType}
+          controller={feed}
+          describedBy={feedHintId}
           variant={status?.complete ? 'secondary' : 'default'}
           className="w-full"
         />
