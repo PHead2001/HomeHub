@@ -12,7 +12,7 @@
  * the signed-in dashboard lives in a separate chunk. Under reduced motion the
  * whole house shows at once.
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { CheckSquare, Dog, LogIn, PawPrint, ShoppingCart, Sparkles, Wrench, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/use-auth';
@@ -32,6 +32,15 @@ const MODULE_ICON: Record<LandingModule, LucideIcon> = {
 
 const layout = layoutHouse(SAMPLE_ROOMS.map((room) => room.id));
 const roomById = new Map(layout.rooms.map((room) => [room.id, room]));
+const noSubscribe = () => () => undefined;
+/**
+ * Whether the browser can observe scrolling. The server snapshot assumes it can, so
+ * the server HTML starts the house at stage 0 like the first client render (a
+ * mismatch would leave the finished house in the DOM); a browser without
+ * IntersectionObserver re-renders with the finished house right after hydration.
+ */
+const useCanObserve = () => useSyncExternalStore(noSubscribe, () => typeof IntersectionObserver !== 'undefined', () => true);
+
 const pts = (list: Array<{ x: number; y: number }>) => list.map((p) => `${p.x},${p.y}`).join(' ');
 
 function Piece({ name, stage, children }: { name: LandingPiece; stage: number; children: ReactNode }) {
@@ -135,11 +144,12 @@ export function Landing() {
   const [reached, setReached] = useState(0);
   const [signingIn, setSigningIn] = useState(false);
   const stepRefs = useRef<Array<HTMLElement | null>>([]);
+  const canObserve = useCanObserve();
   // Without IntersectionObserver (very old browsers) the finished house shows at once.
-  const stage = landingStage(reached, reduced || typeof IntersectionObserver === 'undefined');
+  const stage = landingStage(reached, reduced || !canObserve);
 
   useEffect(() => {
-    if (reduced || typeof IntersectionObserver === 'undefined') return;
+    if (reduced || !canObserve) return;
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
@@ -150,7 +160,7 @@ export function Landing() {
     }, { rootMargin: '0px 0px -35% 0px', threshold: 0.2 });
     stepRefs.current.forEach((element) => element && observer.observe(element));
     return () => observer.disconnect();
-  }, [reduced]);
+  }, [reduced, canObserve]);
 
   const signIn = async () => {
     setSigningIn(true);
