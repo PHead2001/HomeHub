@@ -131,4 +131,23 @@ test.describe('notification swipe to dismiss', () => {
     await expect(page.getByText('Notification dismissed', { exact: true })).toBeVisible();
     await notifications.doc(id).update({ [`dismissedBy.${ownerUid}`]: FieldValue.delete() });
   });
+
+  test('two quick dismissals share one Undo that restores both', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const first = await seedNotification(testInfo, 'pair-1');
+    const second = await seedNotification(testInfo, 'pair-2');
+    await openCenter(page, first.title);
+    for (const { title } of [first, second]) {
+      await page.getByRole('link', { name: new RegExp(title) }).hover();
+      await page.getByRole('button', { name: `Dismiss ${title}` }).click();
+      await expect(page.getByRole('link', { name: new RegExp(title) })).toHaveCount(0);
+    }
+    await expect.poll(async () => (await isDismissed(first.id)) && (await isDismissed(second.id))).toBe(true);
+    // The second toast replaced the first, so it counts and restores both.
+    await expect(page.getByText('2 notifications dismissed', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await isDismissed(first.id)) || (await isDismissed(second.id))).toBe(false);
+    await expect(page.getByRole('link', { name: new RegExp(first.title) })).toBeVisible();
+    await expect(page.getByRole('link', { name: new RegExp(second.title) })).toBeVisible();
+  });
 });

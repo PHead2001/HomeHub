@@ -135,3 +135,34 @@ describe('push artwork', () => {
     assert.equal(png[25], 6);
   });
 });
+
+describe('one Undo for consecutive dismissals', () => {
+  test('dismissals within the window accumulate into the newest Undo', async () => {
+    const { createUndoBatch, dismissedToastText } = await import('../../src/app/notifications/undo-batch');
+    const batch = createUndoBatch(5000);
+    assert.deepEqual(batch.add('h|u', ['a'], 0), ['a']);
+    assert.deepEqual(batch.add('h|u', ['b'], 3000), ['a', 'b']);
+    // The window runs from the latest dismissal.
+    assert.deepEqual(batch.add('h|u', ['c', 'a'], 7000), ['a', 'b', 'c']);
+    assert.equal(dismissedToastText(3), '3 notifications dismissed');
+    assert.equal(dismissedToastText(1), 'Notification dismissed');
+    assert.deepEqual(batch.take('h|u'), ['a', 'b', 'c']);
+    assert.deepEqual(batch.take('h|u'), [], 'Undo restores once');
+  });
+
+  test('a dismissal after the window starts a new batch', async () => {
+    const { createUndoBatch } = await import('../../src/app/notifications/undo-batch');
+    const batch = createUndoBatch(5000);
+    batch.add('h|u', ['a'], 0);
+    assert.deepEqual(batch.add('h|u', ['b'], 5000), ['b']);
+    assert.deepEqual(batch.take('h|u'), ['b']);
+  });
+
+  test('batches never mix households or members', async () => {
+    const { createUndoBatch } = await import('../../src/app/notifications/undo-batch');
+    const batch = createUndoBatch(5000);
+    batch.add('h1|u', ['a'], 0);
+    assert.deepEqual(batch.add('h2|u', ['b'], 1000), ['b']);
+    assert.deepEqual(batch.take('h1|u'), []);
+  });
+});

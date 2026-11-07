@@ -10,7 +10,7 @@ This module owns household notification records, bell/history presentation, per-
 - Open seven-day history at `/notifications`, grouped into Today, This week and Earlier. Cards show the title, message, age, a plain-language source ("Home maintenance", "Warranty", "Chore assignment", "New member"...) and who dismissed or completed it; internal source names and expiry stamps are never shown.
 - An empty Unread filter shows the shared `EmptyState` (notifications illustration, "All caught up" with a friendly line that stays the same all day); other empty filters offer "Show all".
 - On a hovering pointer, a card's dismiss button appears on hover or when the card has keyboard focus. On touch screens (touch, or a pen on a coarse-pointer device) the dismiss button is always shown and swiping a card left dismisses it; a mouse drag does nothing. Only the card's visual layer slides; the card and its link stay in place, so taps land where they were aimed. With reduced motion nothing slides: the dismiss hint fades in over the card and a completed swipe dismisses it in place.
-- Every dismissal (swipe, button, Dismiss visible, Dismiss all) shows a toast with Undo for 5 seconds; Undo removes the member's own dismissal.
+- Every dismissal (swipe, button, Dismiss visible, Dismiss all) shows a toast with Undo for 5 seconds; Undo removes the member's own dismissal. Only one toast shows at a time, so dismissals made within 5 seconds of each other accumulate: the newest toast counts them all ("2 notifications dismissed") and its Undo restores them all. The window runs from the latest dismissal (`src/app/notifications/undo-batch.ts`, one batch per household and member shared by the bell and the center).
 - Pushes show the app icon (`/icons/icon-192.png`), a monochrome house badge for the Android status bar (`/icons/badge-96.png`), and, when the notification is about a pet or a product with a photo stored in the household, that photo as the large image.
 - Filter unread, all, dismissed, and feature categories.
 - Mark a notification read by opening it.
@@ -24,7 +24,7 @@ This module owns household notification records, bell/history presentation, per-
 - `src/app/notifications/page.tsx`
 - `src/components/notification-center-client.tsx`
 - `src/components/notification-bell.tsx`
-- `src/app/notifications/swipe-dismiss.ts`, `src/app/notifications/use-dismiss-notifications.tsx`
+- `src/app/notifications/swipe-dismiss.ts`, `src/app/notifications/use-dismiss-notifications.tsx`, `src/app/notifications/undo-batch.ts`, `src/app/notifications/notification-query.ts`
 - `functions/src/shared/push-media.ts`
 - `src/components/PushNotificationManager.tsx`
 - `src/components/PushNotificationSettings.tsx`

@@ -8,14 +8,9 @@ import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline } from '@/lib/firestore-offline';
 import { createNotificationAction } from '@/lib/notifications';
+import { DISMISS_UNDO_MS, dismissedToastText, notificationUndoBatch } from './undo-batch';
 
-/** How long the Undo action stays available after a dismissal. */
-export const DISMISS_UNDO_MS = 5000;
-
-/** Toast copy for a dismissal of `count` notifications. */
-export function dismissedToastText(count: number): string {
-  return count === 1 ? 'Notification dismissed' : `${count} notifications dismissed`;
-}
+export { DISMISS_UNDO_MS, dismissedToastText } from './undo-batch';
 
 /**
  * Dismisses notifications for the signed-in member and offers Undo for five
@@ -49,20 +44,25 @@ export function useDismissNotifications() {
 
   return useCallback(async (ids: string[]) => {
     if (ids.length === 0 || !(await write(ids, false))) return;
+    // One toast at a time: the newest toast's Undo restores every dismissal
+    // made within the window, not just this one.
+    const scope = `${currentUser?.householdId}|${currentUser?.uid}`;
+    const pending = notificationUndoBatch.add(scope, ids);
     const handle = toast({
-      title: dismissedToastText(ids.length),
+      title: dismissedToastText(pending.length),
       duration: DISMISS_UNDO_MS,
       action: (
         <ToastAction
-          altText={ids.length === 1 ? 'Undo dismissing the notification' : 'Undo dismissing the notifications'}
+          altText={pending.length === 1 ? 'Undo dismissing the notification' : `Undo dismissing ${pending.length} notifications`}
           onClick={() => {
             handle.dismiss();
-            void write(ids, true);
+            const restore = notificationUndoBatch.take(scope);
+            if (restore.length > 0) void write(restore, true);
           }}
         >
           Undo
         </ToastAction>
       ),
     });
-  }, [toast, write]);
+  }, [currentUser?.householdId, currentUser?.uid, toast, write]);
 }
