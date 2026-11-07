@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { BellRing, Camera, Loader2, Trash2 } from 'lucide-react';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -106,7 +105,7 @@ export function ProfileClient() {
     if (!currentUser?.email) throw new Error('User not authenticated');
     const storage = getStorage();
     const fileExtension = file.name.split('.').pop();
-    const fileName = `${uuidv4()}.${fileExtension}`;
+    const fileName = `${crypto.randomUUID()}.${fileExtension}`;
     const storageRef = ref(storage, `users/${currentUser.email}/avatars/${fileName}`);
     await uploadBytes(storageRef, file);
     return getDownloadURL(storageRef);
