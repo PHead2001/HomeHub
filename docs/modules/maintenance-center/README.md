@@ -99,7 +99,7 @@ Firestore rules enforce the granular permissions (with per-member overrides): re
 
 ## Integrations and Background Processing
 
-- AI summaries use the authenticated `summarizeMaintenanceLog` Genkit/OpenAI action; generated summaries remain client state and original notes are unchanged.
+- AI summaries use the authenticated `summarizeMaintenanceLog` OpenAI action; generated summaries remain client state and original notes are unchanged.
 - The homepage overview uses `maintenance.view` to calculate status, schedule/checklist, date, mileage, warranty, registration, and inspection signals server-side. Only bounded labels/dates/counts reach the optional narrative; serial numbers, VINs, plates, costs, notes, and attachment paths are excluded.
 - Date due-soon threshold: 14 days.
 - Mileage due-soon threshold: 500 miles.
@@ -110,7 +110,7 @@ Firestore rules enforce the granular permissions (with per-member overrides): re
 ## Cross-Module Dependencies
 
 - [Notifications](../notifications/README.md) displays, dismisses, resolves, and pushes maintenance notices.
-- [AI and Genkit](../ai-genkit/README.md) owns OpenAI configuration, authorization, and deterministic test behavior.
+- [AI and OpenAI](../ai-genkit/README.md) owns OpenAI configuration, authorization, and deterministic test behavior.
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply user and household context.
 - [Firebase Platform](../firebase-platform/README.md) owns persistence initialization and rules.
 - [Application Shell and Dashboard](../application-shell/README.md) reads assets and vehicles read-only for the dashboard and computes its "next maintenance", HVAC and car states with the shared `buildMaintenanceReminders` (so retired assets and retired or sold vehicles never appear there either), linking to each reminder's own deep link. The command palette's maintenance hand-off requires `maintenance.createLogs` and opens `?tab=logs`.

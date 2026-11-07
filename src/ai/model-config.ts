@@ -1,9 +1,9 @@
 const DEFAULT_MODELS = {
-  default: 'gpt-5.6-luna',
-  categorization: 'gpt-5.6-luna',
-  recipe: 'gpt-5.6-terra',
-  maintenance: 'gpt-5.6-luna',
-  overview: 'gpt-5.6-luna',
+  default: 'gpt-6-luna',
+  categorization: 'gpt-6-luna',
+  recipe: 'gpt-6.1-terra',
+  maintenance: 'gpt-6-luna',
+  overview: 'gpt-6-luna',
 } as const;
 const modelNamePattern = /^(?:gpt-[a-z0-9._-]+|o\d[a-z0-9._-]*)$/;
 

@@ -77,7 +77,7 @@ Firestore rules require `shopping.view` to read lists, items and category config
 
 ## Integrations and Background Processing
 
-- Grocery categorization calls the shared authenticated Genkit/OpenAI flow only when the user leaves category selection on Automatic. Household item names are serialized as untrusted data under the centralized AI system instruction. Emulator E2E uses the deterministic provider and never calls OpenAI.
+- Grocery categorization calls the shared authenticated OpenAI flow only when the user leaves category selection on Automatic. Household item names are serialized as untrusted data under the centralized AI system instruction. Emulator E2E uses the deterministic provider and never calls OpenAI.
 - The dashboard overview reads list/item counts only after server verification of `shopping.view`; omitted permission means no Shopping query or overview section.
 - Barcode lookup checks the household library, then Open Food Facts; camera capture uses `react-zxing`.
 - There are no shopping Cloud Functions, scheduled jobs, or real-time snapshot listeners.
@@ -87,7 +87,7 @@ Firestore rules require `shopping.view` to read lists, items and category config
 - [Pantry Inventory and Recipes](../pantry-recipes/README.md) receives purchased grocery items in one batch.
 - [Application Shell](../application-shell/README.md) reads lists, items and the pantry read-only for the dashboard (expiry with `daysUntilExpiry`), links to `?list=<id>` and `?tab=pantry` (built with `shoppingHref`), and lets the command palette add items: split on commas and "and" and parsed with this module's quick-add parser, merged into a still-needed item with `findMergeTarget` + `mergeIntoNeededItem` online, otherwise created with `buildShoppingListItem` (gated by `shopping.edit`). Items added from the palette announce themselves with `homehub:data-changed` (`src/lib/data-changed.ts`); `ShoppingListClient` then silently re-reads the open list if it is the one that changed (`fetchItemsAndCategories(..., { silent: true })`) and the card counts, with the same offline-aware reads. It also supplies `EmptyState`, `FieldError`, `toastError`/`friendlyError`, `playFeedback`, the member-color palette used for list tints, and the motion tokens.
 - [Barcode Library](../barcode-library/README.md) owns mappings, scanning, and public fallback.
-- [AI and Genkit](../ai-genkit/README.md) owns category generation.
+- [AI and OpenAI](../ai-genkit/README.md) owns category generation.
 - [Identity and Profile](../identity-profile/README.md), [Household Governance](../household-governance/README.md), and [Firebase Platform](../firebase-platform/README.md) supply scope/security.
 
 ## Invariants and Failure Behavior

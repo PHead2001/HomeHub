@@ -1,8 +1,8 @@
-import { openAI } from '@genkit-ai/compat-oai/openai';
-import { z } from 'genkit';
-import { ai } from '@/ai/genkit';
+import type OpenAI from 'openai';
+import { z } from 'zod';
 import { HomeHubAiError, normalizeAiError } from '@/ai/errors';
-import { hasOpenAiApiKey } from '@/ai/model-config';
+import { getOpenAiClient } from '@/ai/openai-client';
+import { toStrictOutputSchema } from '@/ai/strict-output-schema';
 import { buildUntrustedDataPrompt, HOMEHUB_AI_SYSTEM_INSTRUCTION } from '@/ai/system-instruction';
 
 export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary' | 'overview';
@@ -145,7 +145,28 @@ const withTimeout = async <T>(work: (signal: AbortSignal) => Promise<T>, timeout
   }
 };
 
-export const generateStructured = async <Schema extends z.ZodTypeAny>({
+/**
+ * Reads the JSON payload of a structured-output completion. A refusal or a
+ * content-filter stop is `refused`; a missing, truncated (`finish_reason:
+ * 'length'`) or unparseable payload is `invalid_response`.
+ */
+export const readCompletionOutput = (completion: OpenAI.Chat.Completions.ChatCompletion): unknown => {
+  const choice = completion.choices[0];
+  if (!choice) throw new HomeHubAiError('invalid_response');
+  if (choice.message.refusal || choice.finish_reason === 'content_filter') throw new HomeHubAiError('refused');
+  if (choice.finish_reason !== 'stop' || !choice.message.content) throw new HomeHubAiError('invalid_response');
+  try {
+    return JSON.parse(choice.message.content);
+  } catch (error) {
+    throw new HomeHubAiError('invalid_response', { cause: error });
+  }
+};
+
+export const toUsage = (usage: OpenAI.Completions.CompletionUsage | undefined): AiGenerationUsage | undefined => usage
+  ? { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, totalTokens: usage.total_tokens }
+  : undefined;
+
+export const generateStructured = async <Schema extends z.ZodType>({
   flowName,
   input,
   model,
@@ -163,11 +184,13 @@ export const generateStructured = async <Schema extends z.ZodTypeAny>({
   timeoutMs: number;
   maxOutputTokens: number;
   reasoningEffort?: AiReasoningEffort;
-}): Promise<StructuredGenerationResult<z.infer<Schema>>> => {
+}): Promise<StructuredGenerationResult<z.output<Schema>>> => {
   const startedAt = Date.now();
   let outcome = 'success';
 
   try {
+    // Converted (and cached) in every mode so deterministic runs also exercise the wire schema.
+    const strictSchema = toStrictOutputSchema(outputSchema);
     if (isDeterministicMode()) {
       generationState.__homeHubLastDeterministicGeneration = {
         flowName,
@@ -177,31 +200,34 @@ export const generateStructured = async <Schema extends z.ZodTypeAny>({
         untrustedInput: input,
         reasoningEffort,
       };
-      const output = outputSchema.parse(deterministicOutput(flowName, input));
+      const output = outputSchema.parse(strictSchema.decode(deterministicOutput(flowName, input)));
       return { output, model: `deterministic/${model}` };
     }
-    if (!hasOpenAiApiKey) throw new HomeHubAiError('configuration');
+    const client = getOpenAiClient();
+    if (!client) throw new HomeHubAiError('configuration');
 
-    const response = await withTimeout(signal => ai.generate({
-      model: openAI.model(model),
-      system: HOMEHUB_AI_SYSTEM_INSTRUCTION,
-      prompt: buildUntrustedDataPrompt(taskInstruction, input),
-      output: { schema: outputSchema },
-      config: {
-        max_completion_tokens: maxOutputTokens,
-        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    const completion = await withTimeout(signal => client.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: HOMEHUB_AI_SYSTEM_INSTRUCTION },
+        { role: 'user', content: buildUntrustedDataPrompt(taskInstruction, input) },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: 'output', schema: strictSchema.wireSchema, strict: true },
       },
-      abortSignal: signal,
-    }), timeoutMs);
+      max_completion_tokens: maxOutputTokens,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    }, { signal }), timeoutMs);
 
-    if (!response.output) {
-      throw new HomeHubAiError(response.finishReason === 'blocked' ? 'refused' : 'invalid_response');
-    }
+    const wireOutput = readCompletionOutput(completion);
+    const parsed = outputSchema.safeParse(strictSchema.decode(wireOutput));
+    if (!parsed.success) throw new HomeHubAiError('invalid_response', { cause: parsed.error });
 
     return {
-      output: outputSchema.parse(response.output),
+      output: parsed.data,
       model,
-      usage: response.usage,
+      usage: toUsage(completion.usage),
     };
   } catch (error) {
     const normalized = normalizeAiError(error);
@@ -215,4 +241,21 @@ export const generateStructured = async <Schema extends z.ZodTypeAny>({
       outcome,
     });
   }
+};
+
+/**
+ * Validates a task's input the way Genkit's `defineFlow` did: a schema failure is
+ * reported as `invalid_input` before any model call. Returns the parsed value.
+ */
+export const parseTaskInput = <Schema extends z.ZodType>(schema: Schema, input: unknown): z.output<Schema> => {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) throw new HomeHubAiError('invalid_input', { cause: parsed.error });
+  return parsed.data;
+};
+
+/** Validates a task's final output (after any post-processing) against its schema. */
+export const parseTaskOutput = <Schema extends z.ZodType>(schema: Schema, output: unknown): z.output<Schema> => {
+  const parsed = schema.safeParse(output);
+  if (!parsed.success) throw new HomeHubAiError('invalid_response', { cause: parsed.error });
+  return parsed.data;
 };

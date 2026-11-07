@@ -1,7 +1,6 @@
-import { z } from 'genkit';
-import { ai } from '@/ai/genkit';
+import { z } from 'zod';
 import { openAiModels } from '@/ai/model-config';
-import { generateStructured } from '@/ai/structured-generation';
+import { generateStructured, parseTaskInput, parseTaskOutput } from '@/ai/structured-generation';
 
 export const SummarizeMaintenanceLogInputSchema = z.object({
   log: z.string().trim().min(1).max(8_000),
@@ -13,26 +12,22 @@ export const SummarizeMaintenanceLogOutputSchema = z.object({
 });
 export type SummarizeMaintenanceLogOutput = z.infer<typeof SummarizeMaintenanceLogOutputSchema>;
 
-export const summarizeMaintenanceLogFlow = ai.defineFlow(
-  {
-    name: 'summarizeMaintenanceLogFlow',
-    inputSchema: SummarizeMaintenanceLogInputSchema,
+export async function summarizeMaintenanceLogFlow(
+  candidateInput: SummarizeMaintenanceLogInput
+): Promise<SummarizeMaintenanceLogOutput> {
+  const input = parseTaskInput(SummarizeMaintenanceLogInputSchema, candidateInput);
+  const result = await generateStructured({
+    flowName: 'maintenance-summary',
+    input,
+    model: openAiModels.maintenance,
     outputSchema: SummarizeMaintenanceLogOutputSchema,
-  },
-  async input => {
-    const result = await generateStructured({
-      flowName: 'maintenance-summary',
-      input,
-      model: openAiModels.maintenance,
-      outputSchema: SummarizeMaintenanceLogOutputSchema,
-      timeoutMs: 15_000,
-      maxOutputTokens: 500,
-      taskInstruction: [
-        'Summarize this home or vehicle maintenance log concisely.',
-        'Preserve important work performed, unresolved issues, dates, mileage, costs, and next steps when present.',
-        'Do not invent facts. Return only the requested structured output.',
-      ].join('\n'),
-    });
-    return result.output;
-  }
-);
+    timeoutMs: 15_000,
+    maxOutputTokens: 500,
+    taskInstruction: [
+      'Summarize this home or vehicle maintenance log concisely.',
+      'Preserve important work performed, unresolved issues, dates, mileage, costs, and next steps when present.',
+      'Do not invent facts. Return only the requested structured output.',
+    ].join('\n'),
+  });
+  return parseTaskOutput(SummarizeMaintenanceLogOutputSchema, result.output);
+}
