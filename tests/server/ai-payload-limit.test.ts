@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { exceedsPayloadBudget, executeAuthorizedAiAction, MAX_AI_ACTION_PAYLOAD_BYTES } from '../../src/ai/action-auth';
 
-// Genkit validates AI inputs with its pinned zod 3, which is affected by
-// GHSA-mrhx-c7xc-m3w5 (memory use when validating oversized constrained
-// collections). Oversized payloads are rejected before authorization or any
-// validation, so that work stays bounded to small inputs.
+// Oversized payloads are rejected before authorization or any schema validation,
+// so that work stays bounded to small inputs. This was added for the zod 3
+// advisory GHSA-mrhx-c7xc-m3w5 (fixed by zod 4.6.6+) and stays as defense in depth.
 describe('AI action payload limit', () => {
   const context = { idToken: 'not-a-real-token', householdId: 'the-foxy-residence-e2e' };
 

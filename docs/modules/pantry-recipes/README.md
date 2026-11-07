@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-This module owns household pantry, refrigerator, and freezer inventory plus recipe suggestions generated from that inventory. It does not own shopping-list records, barcode mappings, or the shared Genkit configuration.
+This module owns household pantry, refrigerator, and freezer inventory plus recipe suggestions generated from that inventory. It does not own shopping-list records, barcode mappings, or the shared OpenAI configuration.
 
 ## User-Facing Capabilities
 
@@ -30,7 +30,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 ## Architecture and Data Flow
 
-`ShoppingCenterClient` hosts the inventory tab; `PantryInventoryClient` takes no props. The inventory client reads and writes household-scoped Firestore documents. Recipe generation sends only loaded `{name, quantity, unit}` values plus a Firebase ID token to the Genkit server action and keeps the result only in component state. The server verifies household membership and `shopping.view` before requesting OpenAI.
+`ShoppingCenterClient` hosts the inventory tab; `PantryInventoryClient` takes no props. The inventory client reads and writes household-scoped Firestore documents. Recipe generation sends only loaded `{name, quantity, unit}` values plus a Firebase ID token to the AI server action and keeps the result only in component state. The server verifies household membership and `shopping.view` before requesting OpenAI.
 
 The dashboard overview uses the same verified `shopping.view` boundary to calculate inventory and expiration counts server-side. It sends only bounded labels/dates and counts to the optional narrative, not full inventory documents.
 
@@ -59,7 +59,7 @@ Firestore rules require `shopping.view` to read, `shopping.edit` to create or up
 
 ## Integrations and Background Processing
 
-- `generateRecipe` uses the shared Genkit/OpenAI task and `OPENAI_RECIPE_MODEL`; `OPENAI_API_KEY` remains server-only.
+- `generateRecipe` uses the shared OpenAI task and `OPENAI_RECIPE_MODEL`; `OPENAI_API_KEY` remains server-only.
 - `BarcodeScanner` supplies scanned product data through the barcode module.
 - There are no Cloud Functions, scheduled jobs, or persisted recipe records for this module.
 
@@ -68,7 +68,7 @@ Firestore rules require `shopping.view` to read, `shopping.edit` to create or up
 - [Shopping](../shopping/README.md) supplies the batch purchased-item handoff.
 - [Barcode Library](../barcode-library/README.md) supplies scanned names and images, and product photos for shelf tiles.
 - [Application Shell](../application-shell/README.md) supplies `EmptyState`, `toastError`/`friendlyError` and the motion tokens.
-- [AI and Genkit](../ai-genkit/README.md) owns model configuration and flow execution.
+- [AI and OpenAI](../ai-genkit/README.md) owns model configuration and flow execution.
 - [Identity and Profile](../identity-profile/README.md) and [Household Governance](../household-governance/README.md) supply the current user and household.
 - [Firebase Platform](../firebase-platform/README.md) owns client initialization and security rules.
 

@@ -58,7 +58,7 @@ import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
 
 const itemSchema = z.object({
   name: z.string().trim().min(1, 'Item name is required.').max(120, 'Keep the name under 120 characters.'),
-  quantity: z.coerce.number().int('Use a whole number.').min(1, 'Quantity must be at least 1.').max(999, 'Quantity must be 999 or less.'),
+  quantity: z.coerce.number<number>().int('Use a whole number.').min(1, 'Quantity must be at least 1.').max(999, 'Quantity must be 999 or less.'),
   category: z.string().optional(),
 });
 

@@ -1,4 +1,4 @@
-import { z } from 'genkit';
+import { z } from 'zod';
 
 export const OverviewSectionSchema = z.enum([
   'chores',
@@ -68,5 +68,6 @@ export const HomeOverviewNarrativeSchema = z.object({
     explanation: z.string().trim().min(1).max(240),
     sourceSection: OverviewSectionSchema,
   })).max(6),
-  sectionSummaries: z.record(OverviewSectionSchema, z.string().trim().min(1).max(240)).default({}),
+  // partialRecord: zod 4's z.record with an enum key requires every key.
+  sectionSummaries: z.partialRecord(OverviewSectionSchema, z.string().trim().min(1).max(240)).default({}),
 });

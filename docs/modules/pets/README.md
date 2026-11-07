@@ -72,7 +72,7 @@ Pet Storage rules require `pets.view` to read and `pets.editProfiles` to upload,
 
 ## Integrations and Background Processing
 
-Firebase Storage holds pet photos. No pet-specific Cloud Function, Genkit flow, external API, scheduled job, or automatic notification writer exists. Sound and haptics go through the shared opt-in `playFeedback`.
+Firebase Storage holds pet photos. No pet-specific Cloud Function, AI flow, external API, scheduled job, or automatic notification writer exists. Sound and haptics go through the shared opt-in `playFeedback`.
 
 ## Cross-Module Dependencies
 

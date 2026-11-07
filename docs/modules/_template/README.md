@@ -26,7 +26,7 @@ Describe sign-in requirements, household scoping, permission checks, and the rel
 
 ## Integrations and Background Processing
 
-Identify external APIs, Genkit flows, Cloud Functions, service workers, scheduled work, and environment variables. Say when none exist.
+Identify external APIs, AI flows, Cloud Functions, service workers, scheduled work, and environment variables. Say when none exist.
 
 ## Cross-Module Dependencies
 
