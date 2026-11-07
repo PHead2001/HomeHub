@@ -210,6 +210,17 @@
   }
 }
 
+/* ---------- `/` before auth resolves: landing or skeleton, chosen pre-paint ---------- */
+.gateSkeleton {
+  display: none;
+}
+:global(:root[data-session='1']) .gateSkeleton {
+  display: block;
+}
+:global(:root[data-session='1']) .gateLanding {
+  display: none;
+}
+
 /* ---------- Landing (H03): the sample house assembles on scroll ---------- */
 .piece {
   transition: opacity 500ms var(--ease-standard), transform 500ms var(--ease-standard);

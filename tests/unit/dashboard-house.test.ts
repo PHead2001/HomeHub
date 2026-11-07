@@ -175,3 +175,19 @@ describe('landing assembly', () => {
     assert.equal(landingStage(0, true), FINAL_STAGE);
   });
 });
+
+describe('session hint for the landing gate', () => {
+  it('writes a bare flag when signed in, removes it when signed out, and survives blocked storage', async () => {
+    const { SESSION_GATE_SCRIPT, SESSION_HINT_KEY, writeSessionHint } = await import('../../src/lib/dashboard/session-hint');
+    const map = new Map<string, string>();
+    const storage = { setItem: (k: string, v: string) => void map.set(k, v), removeItem: (k: string) => void map.delete(k) };
+    writeSessionHint(true, storage);
+    assert.equal(map.get(SESSION_HINT_KEY), '1');
+    writeSessionHint(false, storage);
+    assert.equal(map.has(SESSION_HINT_KEY), false);
+    assert.doesNotThrow(() => writeSessionHint(true, { setItem: () => { throw new Error('blocked'); }, removeItem: () => undefined }));
+    assert.doesNotThrow(() => writeSessionHint(true, null));
+    assert.match(SESSION_GATE_SCRIPT, /^try\{/);
+    assert.ok(SESSION_GATE_SCRIPT.includes(`"${SESSION_HINT_KEY}"`));
+  });
+});

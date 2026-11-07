@@ -17,6 +17,8 @@ import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
 import type { WeatherEffect } from '@/lib/dashboard/weather';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/hooks/use-auth';
+import { writeSessionHint } from '@/lib/dashboard/session-hint';
 import styles from './dashboard.module.css';
 
 export type DayLight = { weights: Record<DayPhase, number>; lit: boolean; style: CSSProperties };
@@ -61,8 +63,29 @@ export function WeatherLayer({ effect, scope }: { effect: Exclude<WeatherEffect,
   );
 }
 
+/**
+ * Keeps the `homehub.session` device hint in step with the real session on every
+ * route (this component is mounted once in the root layout), so `/` can pick the
+ * landing page or the dashboard skeleton before auth resolves.
+ */
+function useSessionHint() {
+  const { currentUser, loading } = useAuth();
+  const signedIn = Boolean(currentUser);
+  useEffect(() => {
+    if (loading) return;
+    writeSessionHint(signedIn, (() => {
+      try {
+        return window.localStorage;
+      } catch {
+        return null;
+      }
+    })());
+  }, [loading, signedIn]);
+}
+
 /** A barely-there tint behind the whole app shell, plus live weather when on. Off under reduced motion. */
 export function TimeOfDayTint() {
+  useSessionHint();
   const light = useDayLight();
   const reduced = useReducedMotion();
   const weather = useLiveWeather();
