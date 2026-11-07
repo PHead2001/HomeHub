@@ -11,7 +11,7 @@ import { FeedConfirmPanel, useQuickFeed } from './quick-feed-button';
 
 function ConfirmStep({ pet, householdId, onDone }: { pet: PetProfile; householdId: string; onDone: () => void }) {
   const care = usePetCare(pet, householdId);
-  const quick = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, foodType: care.foodType });
+  const quick = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food });
   const titleId = React.useId();
   return <FeedConfirmPanel petName={pet.name} quick={quick} titleId={titleId} onDone={onDone} />;
 }

@@ -191,17 +191,26 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
 
   test('the Log feeding shortcut opens the feeding picker', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
+    // Pixel last ate wet food: the confirm must say so and log Wet, never a default Dry.
+    const pixelLogs = household.collection('pets').doc('pixel').collection('feeding-logs');
+    await pixelLogs.doc('e2e-wet-yesterday').set({
+      date: new Date('2026-07-31T18:00:00.000Z'), cups: 1, foodType: 'Wet', foodAmountType: 'Cans', comments: '', ampm: 'PM',
+    });
     await page.clock.setFixedTime(fixedNow);
     await page.goto('/pets?feed=1');
     const dialog = page.getByRole('dialog', { name: 'Log a feeding' });
     await expect(dialog).toBeVisible();
     await expect(page).toHaveURL(/\/pets$/);
     await dialog.getByRole('button', { name: 'Pixel, 1 can' }).click();
-    await expect(dialog).toContainText('Log 1 can of');
+    // Confirm stays disabled until the history has loaded, then names the last food.
+    await expect(dialog).toContainText('Log 1 can of wet food for Pixel?');
+    await expect(dialog.getByTestId('feed-confirm-loading')).toHaveCount(0);
     await dialog.getByRole('button', { name: 'Log feeding' }).click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByTestId('pet-card-pixel')).toContainText('Fed just now by Alex');
-    await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(1);
+    await expect.poll(async () => (await pixelLogs.get()).docs
+      .filter((entry) => entry.id !== 'e2e-wet-yesterday')
+      .map((entry) => entry.data().foodType)).toEqual(['Wet']);
   });
 
   test('a pet card opens the pet page (shared-element morph) and peeks on hover', async ({ page }, testInfo) => {

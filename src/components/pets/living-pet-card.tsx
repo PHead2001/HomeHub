@@ -90,7 +90,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
     flushSync(() => setMorphing(true));
     navigate(href);
   };
-  const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, foodType: care.foodType });
+  const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food });
   const photoRef = React.useRef<HTMLDivElement>(null);
   const { hold, enabled: holdEnabled, handlers } = useHoldToFeed(feed, photoRef);
   const hintId = `feed-hint-${pet.id}`;

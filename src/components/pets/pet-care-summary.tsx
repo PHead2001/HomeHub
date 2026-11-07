@@ -5,8 +5,9 @@ import {
   currentMedications,
   feedingHeadline,
   feedingPlan,
+  feedingHistoryState,
   feedingStatus,
-  knownFoodType,
+  quickFeedFood,
   type FeedingStatus,
 } from '@/lib/pets/care';
 import { NumberTicker } from '@/components/motion/number-ticker';
@@ -27,7 +28,9 @@ export function usePetCare(pet: PetProfile, householdId: string) {
   const status = feedings.loading || feedings.error ? null : feedingStatus(feedings.logs, plan, now);
   // Most urgent first; empty while loading or unavailable.
   const dues = medications.loading || medications.error ? [] : currentMedications(medications.logs, now);
-  return { now, feedings, medications, plan, status, dues, foodType: knownFoodType(feedings.logs[0]?.foodType) };
+  // The quick-feed food type waits for the history (never Dry by default while loading).
+  const food = quickFeedFood(feedingHistoryState(feedings), feedings.logs[0]?.foodType);
+  return { now, feedings, medications, plan, status, dues, food };
 }
 
 export type PetCare = ReturnType<typeof usePetCare>;
@@ -67,7 +70,7 @@ function OwnCareSummary(props: SummaryProps) {
 }
 
 function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedicationChips = 2 }: SummaryProps & { care: PetCare }) {
-  const { now, feedings, medications, plan, status, dues, foodType } = care;
+  const { now, feedings, medications, plan, status, dues, food } = care;
 
   return (
     <>
@@ -107,7 +110,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           petName={pet.name}
           plan={plan}
           status={status}
-          foodType={foodType}
+          food={food}
           controller={feed}
           describedBy={feedHintId}
           variant={status?.complete ? 'secondary' : 'default'}

@@ -167,6 +167,36 @@ export function knownFoodType(value: unknown): FoodType | undefined {
   return (FOOD_TYPES as readonly unknown[]).includes(value) ? (value as FoodType) : undefined;
 }
 
+/** Whether a pet's feeding history (newest 20) has loaded, failed, or is still loading. */
+export type FeedingHistoryState = 'loading' | 'ready' | 'unavailable';
+
+export function feedingHistoryState(feedings: { loading: boolean; error?: unknown }): FeedingHistoryState {
+  if (feedings.loading) return 'loading';
+  return feedings.error ? 'unavailable' : 'ready';
+}
+
+export type QuickFeedFood = {
+  /** False while the history loads: nothing may log yet (the food type is not known). */
+  ready: boolean;
+  foodType: FoodType;
+  /** True when the history could not be read and Dry is used without knowing the last food. */
+  fallback: boolean;
+};
+
+/**
+ * The food type a quick feeding (Feed button, hold, `?feed=1` confirm) logs with:
+ * the latest feeding's known type, or Dry for a pet with no history. While the
+ * history loads nothing is ready, so a fast tap can never log Dry for a pet that
+ * eats wet food (and make Dry the next default). When the history is unavailable
+ * the feeding may still be logged as Dry, but flagged as a fallback so the UI says
+ * so; unavailable history is never treated as empty history.
+ */
+export function quickFeedFood(history: FeedingHistoryState, latestFoodType: unknown): QuickFeedFood {
+  if (history === 'loading') return { ready: false, foodType: 'Dry', fallback: false };
+  if (history === 'unavailable') return { ready: true, foodType: 'Dry', fallback: true };
+  return { ready: true, foodType: knownFoodType(latestFoodType) ?? 'Dry', fallback: false };
+}
+
 export type FeedingPlan = {
   /** Planned feedings per day; null when unknown (no ring target). */
   perDay: number | null;

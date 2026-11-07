@@ -9,6 +9,8 @@ import {
   petHref,
   petPhotoMorphName,
   quickFeedDecision,
+  quickFeedFood,
+  feedingHistoryState,
   wantsQuickFeed,
   feedingCountLabel,
   feedingHeadline,
@@ -454,6 +456,26 @@ describe('pet links, morph and shortcut', () => {
     assert.match(picker, /FeedConfirmPanel/);
     const manifest = readFileSync(resolve(process.cwd(), 'src/app/manifest.ts'), 'utf8');
     assert.match(manifest, /url: '\/pets\?feed=1'/);
+  });
+
+  it('never logs a quick feeding before the history says which food the pet eats', () => {
+    assert.equal(feedingHistoryState({ loading: true, error: null }), 'loading');
+    assert.equal(feedingHistoryState({ loading: false, error: new Error('denied') }), 'unavailable');
+    assert.equal(feedingHistoryState({ loading: false, error: null }), 'ready');
+    // Loading: not ready, so Confirm, the Feed button and hold stay disabled.
+    assert.equal(quickFeedFood('loading', 'Wet').ready, false);
+    // Loaded: the latest feeding's type; Dry only for a pet with no (known) history.
+    assert.deepEqual(quickFeedFood('ready', 'Wet'), { ready: true, foodType: 'Wet', fallback: false });
+    assert.deepEqual(quickFeedFood('ready', undefined), { ready: true, foodType: 'Dry', fallback: false });
+    assert.deepEqual(quickFeedFood('ready', 'Kibble'), { ready: true, foodType: 'Dry', fallback: false });
+    // Unavailable history is not empty history: Dry, flagged so the UI says so.
+    assert.deepEqual(quickFeedFood('unavailable', undefined), { ready: true, foodType: 'Dry', fallback: true });
+    const button = readFileSync(resolve(process.cwd(), 'src/components/pets/quick-feed-button.tsx'), 'utf8');
+    assert.match(button, /if \(!allowed \|\| !ready \|\|/);
+    assert.equal((button.match(/disabled=\{quick\.saving \|\| !quick\.ready\}/g) ?? []).length, 2, 'Feed button and Confirm');
+    assert.match(button, /last feeding unavailable/);
+    const hold = readFileSync(resolve(process.cwd(), 'src/components/pets/hold-to-feed.tsx'), 'utf8');
+    assert.match(hold, /!feed\.ready/);
   });
 
   it('decides ?feed=1 only once permissions and pets have both loaded', () => {
