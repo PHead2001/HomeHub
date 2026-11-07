@@ -142,6 +142,18 @@ export const publicOnlyLookup = (resolve: Resolver) => (
   );
 };
 
+// Statuses the fetch spec says carry no body; `new Response()` throws if given one.
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+
+/**
+ * Builds a `Response` from a raw status and body. Throws for statuses `Response`
+ * cannot represent (outside 200-599); callers turn that into a rejection.
+ */
+export const toResponse = (statusCode: number | undefined, chunks: Buffer[]): Response => {
+  const status = statusCode ?? 502;
+  return new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(chunks), { status });
+};
+
 /**
  * GET over https whose socket can only connect to public addresses (see
  * `publicOnlyLookup`). Never follows redirects, caps the body, and honours the
@@ -169,10 +181,14 @@ export const pinnedFetch = (resolve: Resolver): Fetcher => (async (input: Reques
         chunks.push(chunk);
       });
       incoming.on('end', () => {
-        const status = incoming.statusCode ?? 502;
-        // Response forbids a body on these statuses.
-        const body = status === 204 || status === 304 ? null : Buffer.concat(chunks);
-        resolvePromise(new Response(body, { status }));
+        // Runs in an event listener: anything thrown here would escape the promise
+        // (an uncaught exception a hostile server could trigger), so every failure
+        // must become a rejection.
+        try {
+          resolvePromise(toResponse(incoming.statusCode, chunks));
+        } catch {
+          reject(new HomeAssistantError('That address did not respond like Home Assistant. Check the URL.'));
+        }
       });
       incoming.on('error', reject);
     });

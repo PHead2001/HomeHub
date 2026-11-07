@@ -7,6 +7,7 @@ import {
   normalizeHomeAssistantUrl,
   pinnedFetch,
   publicOnlyLookup,
+  toResponse,
   type Resolver,
 } from '../../src/lib/server/home-assistant';
 
@@ -135,5 +136,28 @@ describe('connect-time address pinning (DNS rebinding, CodeQL js/request-forgery
 
   test('pinnedFetch only speaks https', async () => {
     await assert.rejects(pinnedFetch(publicResolver)('http://ha.example.com/api/states'), (error: unknown) => error instanceof HomeAssistantError);
+  });
+});
+
+describe('pinned response building (hostile status codes)', () => {
+  const body = [Buffer.from('ignored body')];
+
+  test('null-body statuses never throw, even when the server sends a body (205 Reset Content)', async () => {
+    for (const status of [204, 205, 304]) {
+      const response = toResponse(status, body);
+      assert.equal(response.status, status);
+      assert.equal(await response.text(), '');
+    }
+  });
+
+  test('ordinary statuses keep their body', async () => {
+    const response = toResponse(200, [Buffer.from('[]')]);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), []);
+    assert.equal(toResponse(undefined, []).status, 502);
+  });
+
+  test('statuses Response cannot represent throw, so the listener rejects instead of crashing', () => {
+    for (const status of [600, 999, 0]) assert.throws(() => toResponse(status, body));
   });
 });
