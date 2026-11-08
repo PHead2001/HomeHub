@@ -161,7 +161,8 @@ test.describe('chores wave 2', () => {
       await expect(rail.getByRole('button', { name: /Chore: Chores UX overdue/ })).toHaveCount(0);
       // The move confirms with an Undo toast (top right); dismiss it as a person would
       // before reaching for the view switch underneath it.
-      const moved = page.getByRole('status').filter({ hasText: 'Chore moved' });
+      // The toast itself (Radix also announces it through a separate live-region span).
+      const moved = page.getByRole('region', { name: /Notifications/ }).getByRole('status').filter({ hasText: 'Chore moved' });
       await expect(moved).toContainText('Chores UX overdue is now on Mon, Aug 3.');
       await moved.getByRole('button', { name: 'Dismiss notification' }).click();
       await expect(moved).toHaveCount(0);
