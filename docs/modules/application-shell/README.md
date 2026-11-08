@@ -77,7 +77,7 @@ All static brand assets come from the same artwork constants in `logo-artwork.ts
 
 ### Installable app (PWA)
 
-`src/app/manifest.ts` is served at `/manifest.webmanifest` (Next adds the link tag): `id`/`start_url`/`scope` `/`, `display: standalone`, `background_color` and `theme_color` `#020817` (matching the dark default and the `viewport.themeColor`, so the splash blends into the first frame), the icons above, three shortcuts (`/shopping?quickAdd=1`, `/pets`, `/chores`), and a GET `share_target` to `/share` with `title`, `text` and `url`. The root `metadata` adds `applicationName` and `appleWebApp` (capable, title, `black-translucent` status bar) for iOS home-screen launches.
+`src/app/manifest.ts` is served at `/manifest.webmanifest` (Next adds the link tag): `id`/`start_url`/`scope` `/`, `display: standalone`, `background_color` and `theme_color` `#020817` (matching the dark default and the `viewport.themeColor`, so the splash blends into the first frame), the icons above, three shortcuts (`/shopping?quickAdd=1`, `/pets?feed=1` (opens the Pets feeding picker, see [Pets](../pets/README.md)), `/chores`), and a GET `share_target` to `/share` with `title`, `text` and `url`. The root `metadata` adds `applicationName` and `appleWebApp` (capable, title, `black-translucent` status bar) for iOS home-screen launches.
 
 ### Service worker contract
 

@@ -282,7 +282,8 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     expect((await assetRef.get()).exists).toBe(true);
     await page.getByRole('button', { name: 'Delete home asset Test Boiler E2E' }).click();
     await page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' }).getByRole('button', { name: 'Delete Home Asset' }).click();
-    await expect(page.getByText('Remove attachments first')).toBeVisible();
+    // The toast title itself: Radix also mirrors the toast into an assertive live region ("Notification Remove…").
+    await expect(page.getByText('Remove attachments first', { exact: true })).toBeVisible();
     expect((await assetRef.get()).exists).toBe(true);
 
     await attachmentPanel.getByRole('button', { name: 'Delete attachment boiler-note.txt' }).click();

@@ -16,6 +16,9 @@ export type PetPhotoProps = {
   /** Classes for the frame (size, rounding). The frame is `relative overflow-hidden`. */
   className?: string;
   blinkOffset?: number;
+  /** Style for the frame, e.g. a `view-transition-name` for the card → hero morph. */
+  frameStyle?: React.CSSProperties;
+  frameTestId?: string;
 };
 
 /**
@@ -23,12 +26,12 @@ export type PetPhotoProps = {
  * `next/image`, or the illustrated species avatar when there is no photo, the
  * photo is the legacy placeholder, or it fails to load (D17).
  */
-export function PetPhoto({ name, type, hint, photoUrl, sizes, priority, className, blinkOffset }: PetPhotoProps) {
+export function PetPhoto({ name, type, hint, photoUrl, sizes, priority, className, blinkOffset, frameStyle, frameTestId }: PetPhotoProps) {
   const [failedUrl, setFailedUrl] = React.useState<string | null>(null);
   const showPhoto = hasRealPhoto(photoUrl) && failedUrl !== photoUrl;
 
   return (
-    <div className={cn('relative overflow-hidden bg-muted/40', className)}>
+    <div className={cn('relative overflow-hidden bg-muted/40', className)} style={frameStyle} data-testid={frameTestId}>
       {showPhoto ? (
         <Image
           src={photoUrl}

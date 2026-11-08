@@ -25,15 +25,29 @@ import { useToday } from '@/components/chores/use-today';
 import { auth, db } from '@/lib/firebase';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap, type MemberColor } from '@/lib/member-colors';
-import { SPRING_SNAPPY } from '@/lib/motion';
+import { DURATION, EASE, SPRING_SNAPPY } from '@/lib/motion';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { NumberTicker } from '@/components/motion/number-ticker';
+import { Stagger, StaggerItem } from '@/components/motion/stagger';
+import { PeekCard } from '@/components/dashboard/peek-card';
+import { toDate } from '@/lib/pets/care';
 import { cn } from '@/lib/utils';
 import { addDaysToKey, dayFromKey, isDayKey, type ChoreRecord } from '@/lib/chores/dates';
 import {
-  choreEvents, groupByDay, maintenanceCalendarItems, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
+  choreEvents, groupByDay, maintenanceCalendarItems, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
   type CalendarEvent, type CalendarMember, type MedicationEntry, type RecurringTemplate,
 } from '@/lib/chores/calendar';
 
-type View = 'week' | 'month';
+type View = 'day' | 'week' | 'month';
+
+/** Phones open on the day agenda (H19); wider screens on the week. */
+const PHONE_QUERY = '(max-width: 767px)';
+function initialView(): View {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'week';
+  return window.matchMedia(PHONE_QUERY).matches ? 'day' : 'week';
+}
+
+const VIEW_NOUN: Record<View, string> = { day: 'day', week: 'week', month: 'month' };
 type Member = CalendarMember & { avatarUrl?: string | null };
 type SourceErrors = Partial<Record<'chores' | 'maintenance' | 'pets', string>>;
 
@@ -65,9 +79,32 @@ async function loadMembers(householdId: string): Promise<Member[]> {
 const KIND_ICON = { chore: ListChecks, maintenance: Wrench, medication: Pill } as const;
 const KIND_LABEL = { chore: 'Chore', maintenance: 'Maintenance due', medication: 'Medication given' } as const;
 
+/** "Chore", "Maintenance due", "Medication given" (a logged dose) or "Medication due" (an upcoming one). */
+function kindLabel(event: CalendarEvent): string {
+  return event.kind === 'medication' && event.medicationDue ? 'Medication due' : KIND_LABEL[event.kind];
+}
+
+/** One line of status for the peek and details: overdue, done, planned or the dose countdown. */
+function statusLabel(event: CalendarEvent): string | null {
+  if (event.medicationDue) return event.medicationDue.label;
+  if (event.overdue) return 'Overdue';
+  if (event.completed && event.kind === 'chore') return 'Done';
+  if (event.planned) return 'Planned';
+  return null;
+}
+
+function openLabel(event: CalendarEvent): string {
+  return event.kind === 'chore' ? 'Open Chores' : event.kind === 'maintenance' ? 'Open Maintenance' : 'Open pet';
+}
+
 function chipClasses(event: CalendarEvent, color?: MemberColor) {
   if (event.completed && event.kind === 'chore') return 'bg-muted text-muted-foreground line-through border-l-border';
   if (event.kind === 'maintenance') return cn('bg-info/10 text-info', event.overdue ? 'border-l-destructive' : 'border-l-info');
+  if (event.kind === 'medication' && event.medicationDue) {
+    // Same colors as the Pets countdown chip: red when overdue, amber when due soon.
+    if (event.overdue) return 'bg-destructive/10 text-destructive border-l-destructive border-dashed';
+    return cn('bg-warning/10 text-warning border-dashed', event.medicationDue.state === 'upcoming' ? 'border-l-border' : 'border-l-warning');
+  }
   if (event.kind === 'medication') return 'bg-success/10 text-success border-l-success';
   return cn(color?.classes.softChip ?? 'bg-primary/10 text-primary', event.overdue ? 'border-l-destructive' : (color?.classes.border ?? 'border-l-primary'));
 }
@@ -109,8 +146,21 @@ function EventChip({
     onMove(event, target);
   };
 
+  const status = statusLabel(event);
+  // Peek (H26): the key facts on hover or keyboard focus; the details open on click.
+  const peek = (
+    <div className="space-y-1" data-testid="calendar-peek">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{kindLabel(event)}</p>
+      <p className="font-semibold text-foreground">{event.title}</p>
+      <p className="text-xs text-muted-foreground">{event.subtitle} · {format(dayFromKey(event.day), 'EEE, MMM d')}</p>
+      {status && <p className={cn('text-xs font-medium', event.overdue ? 'text-destructive' : 'text-foreground')}>{status}</p>}
+      <p className="text-xs font-medium text-primary">{openLabel(event)} from its details</p>
+    </div>
+  );
+
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) { setTarget(event.day); setError(''); } }}>
+      <PeekCard peek={open ? null : peek} className="min-w-0">
       <motion.div layout={animateMove ? 'position' : false} layoutId={animateMove ? event.id : undefined} transition={SPRING_SNAPPY}>
         <PopoverTrigger asChild>
           <button
@@ -127,20 +177,23 @@ function EventChip({
               event.planned && 'border-dashed',
               movable && 'cursor-grab active:cursor-grabbing',
             )}
-            aria-label={`${KIND_LABEL[event.kind]}: ${event.title}, ${event.subtitle}${event.overdue ? ', overdue' : ''}${event.completed && event.kind === 'chore' ? ', done' : ''}`}
+            aria-label={`${kindLabel(event)}: ${event.title}, ${event.subtitle}${event.medicationDue ? `, ${event.medicationDue.label.toLowerCase()}` : event.overdue ? ', overdue' : ''}${event.completed && event.kind === 'chore' ? ', done' : ''}`}
           >
             <Icon aria-hidden className="h-3 w-3 shrink-0" />
             <span className="truncate">{event.title}</span>
           </button>
         </PopoverTrigger>
       </motion.div>
+      </PeekCard>
       <PopoverContent className="w-72" align="start">
         <div className="space-y-3">
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{KIND_LABEL[event.kind]}</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{kindLabel(event)}</p>
             <p className="font-semibold text-foreground">{event.title}</p>
             <p className="text-sm text-muted-foreground">{event.subtitle} · {format(dayFromKey(event.day), 'EEE, MMM d')}</p>
-            {event.overdue && <p className="mt-1 text-sm font-medium text-destructive">Overdue</p>}
+            {event.medicationDue ? (
+              <p className={cn('mt-1 text-sm font-medium', event.overdue ? 'text-destructive' : 'text-foreground')}>Next dose: {event.medicationDue.label}</p>
+            ) : event.overdue ? <p className="mt-1 text-sm font-medium text-destructive">Overdue</p> : null}
             {event.planned && <p className="mt-1 text-sm text-muted-foreground">Repeating chore. It joins the chart closer to the day.</p>}
           </div>
           {movable && (
@@ -154,7 +207,7 @@ function EventChip({
             </form>
           )}
           <Button variant="link" className="h-auto p-0" asChild>
-            <Link href={event.href}>{event.kind === 'chore' ? 'Open Chores' : event.kind === 'maintenance' ? 'Open Maintenance' : 'Open pet'}</Link>
+            <Link href={event.href}>{openLabel(event)}</Link>
           </Button>
         </div>
       </PopoverContent>
@@ -167,9 +220,11 @@ function EventChip({
 /* -------------------------------------------------------------------------- */
 
 /**
- * Full-page household calendar (H19): Week and Month views of chores, maintenance
- * due dates and logged pet medication. Chores are colored by member, today glows
- * and overdue items stack in a red rail. Members who may edit chores can drag a
+ * Full-page household calendar (H19): Day (agenda), Week and Month views of
+ * chores, maintenance due dates, and pet medication (doses given and upcoming
+ * doses from the Pets countdown). Phones open on the day agenda, which swipes
+ * between days (arrow keys and the previous/next buttons do the same). Chores
+ * are colored by member, today glows and overdue items stack in a red rail. Members who may edit chores can drag a
  * chore to another day or use "Move to date" from its details (keyboard friendly);
  * every move can be undone for 5 s. Maintenance and pet data are read-only here.
  */
@@ -191,7 +246,10 @@ export function HouseholdCalendar() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [medication, setMedication] = useState<MedicationEntry[]>([]);
   const [sourceErrors, setSourceErrors] = useState<SourceErrors>({});
-  const [view, setView] = useState<View>('week');
+  const [view, setView] = useState<View>(initialView);
+  const reduced = useReducedMotion();
+  // Direction of the last day change, so the agenda slides in from that side.
+  const [dayShift, setDayShift] = useState<-1 | 0 | 1>(0);
   const today = useToday();
   const [anchor, setAnchor] = useState(today);
   const [selectedDay, setSelectedDay] = useState(today);
@@ -249,8 +307,13 @@ export function HouseholdCalendar() {
             const pet = petDoc.data() as Pet;
             const meds = await getDocs(collection(db, 'households', householdId, 'pets', petDoc.id, 'medication-logs'));
             return meds.docs.map(m => {
-              const log = m.data() as MedicationLog;
-              return { id: m.id, petId: petDoc.id, petName: pet.name || 'Pet', medication: log.medication || 'Medication', dosage: log.dosage, date: log.date };
+              const log = m.data() as MedicationLog & { nextDueDate?: string };
+              // Dates may be ISO strings or (legacy) Firestore timestamps.
+              const date = toDate(log.date as unknown)?.toISOString() ?? '';
+              return {
+                id: m.id, petId: petDoc.id, petName: pet.name || 'Pet', medication: log.medication || 'Medication', dosage: log.dosage, date,
+                ...(typeof log.nextDueDate === 'string' ? { nextDueDate: log.nextDueDate } : {}),
+              };
             });
           }));
           if (active) setMedication(logs.flat());
@@ -268,7 +331,7 @@ export function HouseholdCalendar() {
   const colors = useMemo(() => memberColorMap(members.map(m => m.uid)), [members]);
   // The whole visible range, so repeating chores beyond the server's 30-occurrence
   // lookahead still show.
-  const visibleDays = useMemo(() => (view === 'week' ? weekDays(anchor) : monthGrid(anchor).flat()), [view, anchor]);
+  const visibleDays = useMemo(() => (view === 'day' ? [selectedDay] : view === 'week' ? weekDays(anchor) : monthGrid(anchor).flat()), [view, anchor, selectedDay]);
   // Everything date-dependent is derived from `today`, so it rolls over at midnight.
   const maintenance = useMemo(() => maintenanceCalendarItems(assets, vehicles, today, timeZone), [assets, vehicles, today, timeZone]);
   const events = useMemo(() => [
@@ -276,6 +339,7 @@ export function HouseholdCalendar() {
     ...plannedRecurringEvents(templates, chores, members, today, visibleDays[0], visibleDays[visibleDays.length - 1]),
     ...maintenanceEvents(maintenance),
     ...medicationEvents(medication),
+    ...medicationDueEvents(medication, today),
   ], [chores, templates, members, maintenance, medication, today, visibleDays]);
   const byDay = useMemo(() => groupByDay(events), [events]);
   const rail = useMemo(() => overdueRail(events), [events]);
@@ -321,8 +385,16 @@ export function HouseholdCalendar() {
 
   const go = (direction: -1 | 0 | 1) => {
     if (direction === 0) {
+      setDayShift(selectedDay === today ? 0 : selectedDay < today ? 1 : -1);
       setAnchor(today);
       setSelectedDay(today);
+      return;
+    }
+    if (view === 'day') {
+      const next = addDaysToKey(selectedDay, direction);
+      setDayShift(direction);
+      setSelectedDay(next);
+      setAnchor(next);
       return;
     }
     const next = view === 'week' ? addDaysToKey(anchor, direction * 7) : shiftMonth(anchor, direction);
@@ -365,7 +437,14 @@ export function HouseholdCalendar() {
     dropTarget === day && 'border-primary bg-primary/10',
   );
 
-  // Phones: swipe left/right on the grid to change week or month.
+  const changeView = (next: View) => {
+    setView(next);
+    // Keep the day in view: the week or month around it, or the day itself.
+    setAnchor(selectedDay);
+    setDayShift(0);
+  };
+
+  // Phones: swipe left/right to change the day (agenda), week or month.
   const swipeHandlers = {
     onTouchStart: (e: React.TouchEvent) => { touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; },
     onTouchEnd: (e: React.TouchEvent) => {
@@ -378,9 +457,13 @@ export function HouseholdCalendar() {
     },
   };
 
-  const title = view === 'week'
-    ? (() => { const days = weekDays(anchor); return `${format(dayFromKey(days[0]), 'MMM d')} - ${format(dayFromKey(days[6]), 'MMM d, yyyy')}`; })()
-    : format(dayFromKey(anchor), 'MMMM yyyy');
+  const title = view === 'day'
+    ? format(dayFromKey(selectedDay), 'EEEE, MMMM d, yyyy')
+    : view === 'week'
+      ? (() => { const days = weekDays(anchor); return `${format(dayFromKey(days[0]), 'MMM d')} - ${format(dayFromKey(days[6]), 'MMM d, yyyy')}`; })()
+      : format(dayFromKey(anchor), 'MMMM yyyy');
+  const viewNoun = VIEW_NOUN[view];
+  const agendaEvents = byDay.get(selectedDay) || [];
 
   if (loading) {
     return (
@@ -402,7 +485,8 @@ export function HouseholdCalendar() {
           <p className="text-muted-foreground">Chores, maintenance and pet medication in one place.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ToggleGroup type="single" value={view} onValueChange={(v) => v && setView(v as View)} aria-label="Calendar view" className="rounded-md border p-0.5">
+          <ToggleGroup type="single" value={view} onValueChange={(v) => v && changeView(v as View)} aria-label="Calendar view" className="rounded-md border p-0.5">
+            <ToggleGroupItem value="day" size="sm" className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">Day</ToggleGroupItem>
             <ToggleGroupItem value="week" size="sm" className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">Week</ToggleGroupItem>
             <ToggleGroupItem value="month" size="sm" className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">Month</ToggleGroupItem>
           </ToggleGroup>
@@ -428,7 +512,7 @@ export function HouseholdCalendar() {
           <aside aria-labelledby="overdue-rail-title" className="space-y-4">
             <section className="rounded-xl border border-l-4 border-l-destructive bg-card p-3 shadow-raised">
               <h2 id="overdue-rail-title" className="mb-2 flex items-center gap-2 font-headline text-base font-semibold text-foreground">
-                <AlertTriangle aria-hidden className="h-4 w-4 text-destructive" /> Overdue ({rail.length})
+                <AlertTriangle aria-hidden className="h-4 w-4 text-destructive" /> Overdue (<NumberTicker value={rail.length} animateOnMount={false} />)
               </h2>
               {rail.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Nothing is overdue.</p>
@@ -454,27 +538,71 @@ export function HouseholdCalendar() {
                   ))}
                   {canViewMaintenance && <li className="flex items-center gap-2 text-sm text-foreground"><Wrench aria-hidden className="h-4 w-4 text-info" /> Maintenance due</li>}
                   {canViewPets && <li className="flex items-center gap-2 text-sm text-foreground"><Pill aria-hidden className="h-4 w-4 text-success" /> Medication given</li>}
+                  {canViewPets && <li className="flex items-center gap-2 text-sm text-foreground"><Pill aria-hidden className="h-4 w-4 text-warning" /> Medication due</li>}
                 </ul>
               </section>
             )}
           </aside>
 
-          <section aria-label={`${view === 'week' ? 'Week' : 'Month'} of ${title}`} className="min-w-0 rounded-xl border bg-card p-3 shadow-raised md:p-4">
+          <section aria-label={view === 'day' ? title : `${view === 'week' ? 'Week' : 'Month'} of ${title}`} className="min-w-0 rounded-xl border bg-card p-3 shadow-raised md:p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon" aria-label={view === 'week' ? 'Previous week' : 'Previous month'} onClick={() => go(-1)}><ChevronLeft className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="icon" aria-label={view === 'week' ? 'Next week' : 'Next month'} onClick={() => go(1)}><ChevronRight className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" aria-label={`Previous ${viewNoun}`} onClick={() => go(-1)}><ChevronLeft className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" aria-label={`Next ${viewNoun}`} onClick={() => go(1)}><ChevronRight className="h-4 w-4" /></Button>
                 <Button variant="outline" size="sm" onClick={() => go(0)}>Today</Button>
               </div>
               <p className="font-headline text-sm font-semibold text-foreground md:text-lg" aria-live="polite">{title}</p>
             </div>
-            {canMove && canViewChores && (
+            {canMove && canViewChores && view !== 'day' && (
               <p className="mb-3 text-xs text-muted-foreground">Drag a chore to another day, or open it and choose Move to date.</p>
             )}
 
             <LayoutGroup>
               <div {...swipeHandlers}>
-                {view === 'week' ? (
+                {view === 'day' ? (
+                  <div
+                    tabIndex={0}
+                    data-testid="calendar-agenda"
+                    data-day={selectedDay}
+                    aria-label={`${format(dayFromKey(selectedDay), 'EEEE, MMMM d')}${selectedDay === today ? ', today' : ''}, ${agendaEvents.length} item${agendaEvents.length === 1 ? '' : 's'}. Left and right arrow keys change the day.`}
+                    onKeyDown={(e) => {
+                      // Only on the agenda itself, never while a chip or field inside has focus.
+                      if (e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+                      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        go(e.key === 'ArrowLeft' ? -1 : 1);
+                      }
+                    }}
+                    className={cn(dayCellClass(selectedDay), 'min-h-[16rem] overflow-hidden p-3')}
+                  >
+                    <motion.div
+                      key={selectedDay}
+                      initial={reduced || dayShift === 0 ? false : { opacity: 0, x: dayShift * 16 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: DURATION.ui, ease: EASE.standard }}
+                    >
+                      <p className={cn('mb-3 flex items-baseline gap-2 font-semibold', selectedDay === today ? 'text-primary' : 'text-muted-foreground')} aria-hidden>
+                        <span className="text-sm">{format(dayFromKey(selectedDay), 'EEEE')}</span>
+                        <span className="text-2xl text-foreground">{format(dayFromKey(selectedDay), 'd')}</span>
+                        <span className="text-sm">{format(dayFromKey(selectedDay), 'MMMM')}</span>
+                        {selectedDay === today && <span className="ml-auto rounded-full bg-primary px-2 text-xs text-primary-foreground">Today</span>}
+                      </p>
+                      {agendaEvents.length > 0 ? (
+                        <Stagger as="ol" key={selectedDay} className="flex flex-col gap-1.5" aria-label="Agenda">
+                          {agendaEvents.map(e => (
+                            <StaggerItem as="li" key={e.id}>
+                              {chip(e)}
+                              <p className="mt-0.5 truncate px-1 text-xs text-muted-foreground">{e.subtitle}{statusLabel(e) ? ` · ${statusLabel(e)}` : ''}</p>
+                            </StaggerItem>
+                          ))}
+                        </Stagger>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">Nothing planned.</p>
+                      )}
+                    </motion.div>
+                    <p className="mt-4 text-xs text-muted-foreground md:hidden" aria-hidden>Swipe left or right for another day.</p>
+                  </div>
+                ) : view === 'week' ? (
                   <ol className="grid gap-2 md:grid-cols-7">
                     {weekDays(anchor).map((day, i) => {
                       const dayEvents = byDay.get(day) || [];
@@ -538,8 +666,10 @@ export function HouseholdCalendar() {
                       <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground">
                         <CalendarDays aria-hidden className="h-4 w-4" /> {format(dayFromKey(selectedDay), 'EEEE, MMMM d')}
                       </h2>
-                      {(byDay.get(selectedDay) || []).length > 0 ? (
-                        <div className="grid gap-1 sm:grid-cols-2">{(byDay.get(selectedDay) || []).map(e => chip(e))}</div>
+                      {agendaEvents.length > 0 ? (
+                        <Stagger key={selectedDay} className="grid gap-1 sm:grid-cols-2">
+                          {agendaEvents.map(e => <StaggerItem key={e.id} className="min-w-0">{chip(e)}</StaggerItem>)}
+                        </Stagger>
                       ) : (
                         <p className="text-sm text-muted-foreground">Nothing planned.</p>
                       )}

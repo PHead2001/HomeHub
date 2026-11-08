@@ -2,6 +2,7 @@
  * Pure helpers for the living pet cards and the pet detail page (H09, D17 and the
  * section 3 Pets items). No Firebase or React imports, so they are unit tested.
  */
+import { sharedId } from '../motion';
 import { FOOD_TYPES, type FoodType, type LoggedBy, type PetMedicationLog, type PetProfile, type PortionUnit } from './types';
 
 /* ------------------------------------------------------------------------- */
@@ -166,6 +167,36 @@ export function knownFoodType(value: unknown): FoodType | undefined {
   return (FOOD_TYPES as readonly unknown[]).includes(value) ? (value as FoodType) : undefined;
 }
 
+/** Whether a pet's feeding history (newest 20) has loaded, failed, or is still loading. */
+export type FeedingHistoryState = 'loading' | 'ready' | 'unavailable';
+
+export function feedingHistoryState(feedings: { loading: boolean; error?: unknown }): FeedingHistoryState {
+  if (feedings.loading) return 'loading';
+  return feedings.error ? 'unavailable' : 'ready';
+}
+
+export type QuickFeedFood = {
+  /** False while the history loads: nothing may log yet (the food type is not known). */
+  ready: boolean;
+  foodType: FoodType;
+  /** True when the history could not be read and Dry is used without knowing the last food. */
+  fallback: boolean;
+};
+
+/**
+ * The food type a quick feeding (Feed button, hold, `?feed=1` confirm) logs with:
+ * the latest feeding's known type, or Dry for a pet with no history. While the
+ * history loads nothing is ready, so a fast tap can never log Dry for a pet that
+ * eats wet food (and make Dry the next default). When the history is unavailable
+ * the feeding may still be logged as Dry, but flagged as a fallback so the UI says
+ * so; unavailable history is never treated as empty history.
+ */
+export function quickFeedFood(history: FeedingHistoryState, latestFoodType: unknown): QuickFeedFood {
+  if (history === 'loading') return { ready: false, foodType: 'Dry', fallback: false };
+  if (history === 'unavailable') return { ready: true, foodType: 'Dry', fallback: true };
+  return { ready: true, foodType: knownFoodType(latestFoodType) ?? 'Dry', fallback: false };
+}
+
 export type FeedingPlan = {
   /** Planned feedings per day; null when unknown (no ring target). */
   perDay: number | null;
@@ -324,15 +355,17 @@ export type MedicationDue = {
   label: string;
 };
 
+type MedicationCountdownInput = Pick<PetMedicationLog, 'date' | 'medication' | 'dosage' | 'nextDueDate'>;
+
 /**
- * The next medication dose: for each medication (case-insensitive name), the most
- * recent entry decides its next due date; the earliest of those is returned.
+ * Every current medication countdown, most urgent first (earliest due date, then
+ * name). For each medication (case-insensitive name) the most recent entry decides
+ * its next due date; a medication whose latest entry has no next due date has no
+ * countdown. This is the one countdown rule: the pet card chips, the Medication
+ * tab, the calendar's upcoming doses and (mirrored) the server reminders use it.
  */
-export function nextMedication(
-  logs: Pick<PetMedicationLog, 'date' | 'medication' | 'dosage' | 'nextDueDate'>[],
-  now: Date,
-): MedicationDue | null {
-  const latest = new Map<string, { at: number; log: (typeof logs)[number] }>();
+export function currentMedications(logs: MedicationCountdownInput[], now: Date): MedicationDue[] {
+  const latest = new Map<string, { at: number; log: MedicationCountdownInput }>();
   for (const log of logs) {
     const key = (log.medication ?? '').trim().toLowerCase();
     if (!key) continue;
@@ -340,16 +373,27 @@ export function nextMedication(
     const current = latest.get(key);
     if (!current || at > current.at) latest.set(key, { at, log });
   }
-  let best: MedicationDue | null = null;
+  const dues: MedicationDue[] = [];
   for (const { log } of latest.values()) {
     const due = parseLocalDate(log.nextDueDate);
     if (!due) continue;
-    if (!best || due < best.due) {
-      const days = calendarDaysBetween(now, due);
-      best = { medication: log.medication, dosage: log.dosage, due, days, ...medicationState(days) };
-    }
+    const days = calendarDaysBetween(now, due);
+    dues.push({ medication: log.medication, dosage: log.dosage, due, days, ...medicationState(days) });
   }
-  return best;
+  return dues.sort((a, b) => a.due.getTime() - b.due.getTime() || a.medication.localeCompare(b.medication));
+}
+
+/** The most urgent medication dose (the first of `currentMedications`), or null. */
+export function nextMedication(logs: MedicationCountdownInput[], now: Date): MedicationDue | null {
+  return currentMedications(logs, now)[0] ?? null;
+}
+
+/** Splits chips into the shown ones and the "+N" overflow count. */
+export function chipOverflow<T>(items: readonly T[], max: number): { shown: T[]; hidden: number } {
+  const limit = Math.max(1, Math.floor(max));
+  // Never "+1": when only one would hide, show it instead.
+  if (items.length <= limit + 1) return { shown: [...items], hidden: 0 };
+  return { shown: items.slice(0, limit), hidden: items.length - limit };
 }
 
 /**
@@ -460,4 +504,46 @@ export function validatePetForm(values: PetFormValues, existingNames: string[] =
     if (!isValidPortion(amount)) errors.portionAmount = `Use an amount above 0 and up to ${PORTION_MAX}.`;
   }
   return errors;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Links and shared elements                                                  */
+/* ------------------------------------------------------------------------- */
+
+/** The pet's page. */
+export function petHref(petId: string): string {
+  return `/pets/${encodeURIComponent(petId)}`;
+}
+
+/** Shared-element name of a pet's photo: the /pets card photo morphs into the pet page hero (H12). */
+export function petPhotoMorphName(petId: string): string {
+  return sharedId('pet', petId, 'photo');
+}
+
+/** `/pets?feed=1`: the "Log feeding" home-screen shortcut opens the feeding picker. */
+export const FEED_SHORTCUT_PARAM = 'feed';
+
+export function wantsQuickFeed(params: { get(name: string): string | null } | null | undefined): boolean {
+  return params?.get(FEED_SHORTCUT_PARAM) === '1';
+}
+
+/**
+ * What `/pets?feed=1` does: nothing when not requested; `wait` until both the
+ * member's permissions (auth and household membership) and the pet list have
+ * loaded, so a late permission never turns into a silent "ignore"; then `open`
+ * the picker for members who may log with at least one pet, else `ignore`. The
+ * param is removed only after `open` or `ignore`.
+ */
+export type QuickFeedDecision = 'none' | 'wait' | 'open' | 'ignore';
+
+export function quickFeedDecision(input: {
+  requested: boolean;
+  permissionsReady: boolean;
+  petsReady: boolean;
+  canFeed: boolean;
+  petCount: number;
+}): QuickFeedDecision {
+  if (!input.requested) return 'none';
+  if (!input.permissionsReady || !input.petsReady) return 'wait';
+  return input.canFeed && input.petCount > 0 ? 'open' : 'ignore';
 }

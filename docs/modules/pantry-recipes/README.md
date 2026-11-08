@@ -14,7 +14,8 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 - Track quantity, unit, storage location, and an optional expiration date.
 - Start an inventory item from a barcode scan.
 - Move a deleted inventory item back to a selected shopping list.
-- Generate a recipe suggestion from the currently loaded inventory. The recipe card flips in, and the tiles it uses lift off their shelves with an "In the recipe" marker until the next generation.
+- Generate a recipe suggestion from the currently loaded inventory (H08 recipe reveal). The dialog opens with a loading state; when the recipe arrives in the shelves view and it uses tiles, the dialog and its scrim fade out (150 ms) so the shelves are visible, the used tiles lift off their shelves (the tile card and picture rise 8 px in 200 ms; the controls' hit areas stay put) with an "In the recipe" marker, the first lifted tile is scrolled into view, and after 450 ms (or at once on any key or pointer press) the dialog returns and the recipe card flips in (220 ms). In the list view, with no matching tiles, or under reduced motion, the tiles are marked and the card shows at once with no flip. Screen readers hear a short "Lifting the items…" status, and focus stays in the dialog throughout. The marker stays until the next generation.
+- Shelf item counts, the expiring/expired header counts and the list view's shelf counts tick with `LiveCount` (plain text at rest, so "Pantry (3)" reads exactly that), and each shelf's tiles enter with the shared `Stagger` (instant under reduced motion).
 - Receive purchased grocery items in one batch from the shopping trip (see [Shopping](../shopping/README.md)); there is no longer a per-item pantry form after ticking.
 
 ## Entry Points
@@ -34,7 +35,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 The dashboard overview uses the same verified `shopping.view` boundary to calculate inventory and expiration counts server-side. It sends only bounded labels/dates and counts to the optional narrative, not full inventory documents.
 
-Inventory reads use `getDocsOfflineAware`. The shelves view renders `PantryShelves`; moving a tile updates only `location` (optimistic, through Firestore's queue; a rejected write shows a `toastError` and re-reads). Product photos come from one read of `barcode-library`; a failure there only drops photos. Recipe matching (`matchRecipeIngredients`) marks an item as used when its full name, or the last word of three or more letters in it, appears in one of the recipe's "from your pantry" lines.
+Inventory reads use `getDocsOfflineAware`. The shelves view renders `PantryShelves`; moving a tile updates only `location` (optimistic, through Firestore's queue; a rejected write shows a `toastError` and re-reads). Product photos come from one read of `barcode-library`; a failure there only drops photos. The recipe dialog composes the shared dialog parts (`DialogPortal`, `DialogOverlay`, Radix `Content`) itself, only so the scrim can step aside during the lift; it keeps the standard dialog markup, focus trap, Escape and close button. Recipe matching (`matchRecipeIngredients`) marks an item as used when its full name, or the last word of three or more letters in it, appears in one of the recipe's "from your pantry" lines.
 
 In the list view, inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
 
@@ -87,7 +88,7 @@ Firestore rules require `shopping.view` to read, `shopping.edit` to create or up
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
-- `tests/unit/shopping-logic.test.ts` covers shelf mapping, handoff planning, expiry states and labels, emoji, recipe matching and photo lookup; `tests/e2e/shopping-trip.spec.ts` covers the shelves view, expiry state, keyboard move, the remembered list view and the batch handoff; `tests/e2e/temporary-chores-maintenance-ui.spec.ts` switches to the list view for the table and phone-row checks.
+- `tests/unit/shopping-logic.test.ts` covers shelf mapping, handoff planning, expiry states and labels, emoji, recipe matching and photo lookup; `tests/e2e/shopping-trip.spec.ts` covers the shelves view, expiry state, keyboard move, the remembered list view, the batch handoff, and the recipe reveal order (tiles lift while the dialog and scrim are transparent, the card follows at least 300 ms later; instant under reduced motion); `tests/e2e/temporary-chores-maintenance-ui.spec.ts` switches to the list view for the table and phone-row checks.
 - Manually test inventory CRUD, drag between shelves with mouse and touch, bulk deletion, expiration display, units and locations, barcode intake, purchased-item intake, return-to-list behavior, and Pantry/Fridge/Freezer layouts at 360/390/412 px with long item names.
 - Test recipe generation with zero, one, two, and many items plus an AI/network failure.
 - Verify a user cannot read another household's inventory.

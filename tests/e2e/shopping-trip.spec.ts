@@ -357,6 +357,53 @@ test.describe('shopping trip', () => {
     }
   });
 
+  test('H12/H28: a list card morphs into the open list and back; Add Item shows its shortcut', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/shopping');
+    // Record the shared-element names present when each view transition starts.
+    await page.evaluate(() => {
+      const w = window as unknown as { __morphs: string[] };
+      w.__morphs = [];
+      const start = document.startViewTransition?.bind(document);
+      if (!start) return;
+      document.startViewTransition = ((update: () => void) => {
+        w.__morphs.push([...document.querySelectorAll<HTMLElement>('*')].map((el) => el.style.viewTransitionName).filter(Boolean).join(','));
+        return start(update);
+      }) as typeof document.startViewTransition;
+    });
+    const morphs = () => page.evaluate(() => (window as unknown as { __morphs: string[] }).__morphs);
+
+    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
+    await expect(page.getByTestId('open-list')).toBeVisible();
+    expect(await morphs()).toEqual(['list-weekly-groceries-card']);
+    await expect(page.getByRole('button', { name: 'Add Item' })).toHaveAttribute('title', 'Add item (A)');
+
+    await page.getByRole('button', { name: 'Back to all lists' }).click();
+    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+    expect(await morphs()).toEqual(['list-weekly-groceries-card', 'list-weekly-groceries-card']);
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('*')].filter((el) => el.style.viewTransitionName).length)).toBe(0);
+  });
+
+  test('H12: reduced motion opens a list with no view transition', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open(page, '/shopping');
+    await page.evaluate(() => {
+      const w = window as unknown as { __morphCount: number };
+      w.__morphCount = 0;
+      const start = document.startViewTransition?.bind(document);
+      if (!start) return;
+      document.startViewTransition = ((update: () => void) => {
+        w.__morphCount += 1;
+        return start(update);
+      }) as typeof document.startViewTransition;
+    });
+    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await expect(page.getByTestId('open-list')).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __morphCount: number }).__morphCount)).toBe(0);
+  });
+
   test('switching tabs keeps the page width steady and lists use token tints', async ({ page }) => {
     await open(page, '/shopping');
     await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
@@ -374,6 +421,47 @@ test.describe('shopping trip', () => {
 });
 
 test.describe('pantry shelves', () => {
+  test('H08: the recipe lifts its tiles in view first, then the card flips in', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/shopping?tab=pantry');
+    await expect(page.getByTestId('pantry-shelves')).toBeVisible();
+    // Watch the order: tiles lift while the dialog and its scrim are transparent, then the card appears.
+    await page.evaluate(() => {
+      const w = window as unknown as { __recipe: Array<{ event: string; at: number; scrim?: string }> };
+      w.__recipe = [];
+      const observer = new MutationObserver(() => {
+        const has = (event: string) => w.__recipe.some((entry) => entry.event === event);
+        if (!has('lifted') && document.querySelector('[data-lifted="true"]')) {
+          const content = document.querySelector('[data-recipe-phase]');
+          const scrim = content?.previousElementSibling as HTMLElement | null;
+          w.__recipe.push({ event: 'lifted', at: performance.now(), scrim: content?.getAttribute('data-recipe-phase') + ':' + (scrim ? scrim.className.includes('opacity-0') : 'none') });
+        }
+        if (!has('card') && document.querySelector('[data-testid="recipe-card"]')) w.__recipe.push({ event: 'card', at: performance.now() });
+      });
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+    });
+    await page.getByRole('button', { name: 'Generate Recipe' }).click();
+    const dialog = page.getByRole('dialog', { name: 'AI Recipe Idea' });
+    await expect(dialog.getByTestId('recipe-card')).toBeVisible();
+    await expect(page.locator('[data-lifted="true"]').first()).toBeVisible();
+    const events = await page.evaluate(() => (window as unknown as { __recipe: Array<{ event: string; at: number; scrim?: string }> }).__recipe);
+    expect(events.map((entry) => entry.event)).toEqual(['lifted', 'card']);
+    expect(events[0].scrim).toBe('lifting:true');
+    expect(events[1].at - events[0].at).toBeGreaterThanOrEqual(300);
+    await page.keyboard.press('Escape');
+  });
+
+  test('H08: under reduced motion the recipe card shows at once', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open(page, '/shopping?tab=pantry');
+    await page.getByRole('button', { name: 'Generate Recipe' }).click();
+    const dialog = page.getByRole('dialog', { name: 'AI Recipe Idea' });
+    await expect(dialog.getByTestId('recipe-card')).toBeVisible();
+    await expect(dialog).toHaveAttribute('data-recipe-phase', 'shown');
+    await page.keyboard.press('Escape');
+  });
+
   test('shelves show tiles with expiry states and move by keyboard', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const yogurt = pantry.doc('yogurt');

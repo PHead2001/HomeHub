@@ -117,25 +117,41 @@ export type QuickCompletion = {
 };
 
 /**
- * Values for a one-tap "Mark done": completed today (at the vehicle's current
- * mileage) with the next due date/mileage advanced by the schedule's interval.
- * Returns null when the next due values cannot be worked out without asking
- * (no interval, or a mileage interval with no recorded mileage); the caller
- * then opens the completion dialog instead of guessing.
+ * Values for completing a schedule on `completedDate` (at `mileage` for a
+ * vehicle) with the next due date/mileage advanced by the schedule's interval.
+ * Returns null when no next due value can be worked out without asking (no
+ * interval, or a mileage interval with no mileage): completing then would write
+ * a schedule with no next due and silently stop its reminders, so callers open
+ * the completion dialog (or ask for the mileage) instead of guessing.
  */
-export const quickCompletionValues = (target: ScheduleCompletionTarget, today: string): QuickCompletion | null => {
+export const serviceCompletionValues = (
+  target: ScheduleCompletionTarget,
+  completedDate: string,
+  mileage?: number,
+): QuickCompletion | null => {
   if (target.targetType === 'home_asset') {
-    const nextDueDate = calculateNextAssetDueDate(target.schedule, today);
-    return nextDueDate ? { completedDate: today, nextDueDate } : null;
+    const nextDueDate = calculateNextAssetDueDate(target.schedule, completedDate);
+    return nextDueDate ? { completedDate, nextDueDate } : null;
   }
-  const { schedule, vehicle } = target;
-  const mileage = vehicle.currentMileage;
+  const { schedule } = target;
   if (schedule.intervalMiles && typeof mileage !== 'number') return null;
-  const nextDueDate = calculateNextVehicleDueDate(schedule, today);
+  const nextDueDate = calculateNextVehicleDueDate(schedule, completedDate);
   const nextDueMileage = calculateNextVehicleMileage(schedule, mileage);
   if (!nextDueDate && typeof nextDueMileage !== 'number') return null;
-  return { completedDate: today, mileage, nextDueDate, nextDueMileage };
+  return { completedDate, mileage, nextDueDate, nextDueMileage };
 };
+
+/** One-tap "Mark done": completed today, at the vehicle's recorded mileage. */
+export const quickCompletionValues = (target: ScheduleCompletionTarget, today: string): QuickCompletion | null =>
+  serviceCompletionValues(target, today, target.targetType === 'vehicle' ? target.vehicle.currentMileage : undefined);
+
+/**
+ * Identity of one reminder cycle: the reminder id plus its due date and
+ * mileage. A schedule completed early can show its next cycle under the same id;
+ * per-card UI state (the drawn completion check) is keyed by this instead.
+ */
+export const reminderCycleKey = (reminder: Pick<MaintenanceReminder, 'id' | 'dueDate' | 'dueMileage'>) =>
+  `${reminder.id}|${reminder.dueDate ?? 'no-date'}|${reminder.dueMileage ?? 'no-mileage'}`;
 
 /** The schedule after completion (same advancement as the completion dialog). */
 /** Completion always ends a snooze, even if the new cycle lands on the snoozed date. */
