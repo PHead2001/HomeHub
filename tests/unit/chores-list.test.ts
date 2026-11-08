@@ -9,7 +9,6 @@ import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear,
 import { getRolePresetPermissions } from '../../src/lib/permissions';
 import { blend, contrastRatio, hslTokenToRgb } from '../../src/lib/theme/contrast';
 import { PRESET_LIST } from '../../src/lib/theme/tokens';
-import { shortcutHint } from '../../src/lib/chores/shortcut-hints';
 
 const chore = (overrides: Partial<ChoreRecord>): ChoreRecord => ({
   id: overrides.id || 'c',
@@ -205,10 +204,7 @@ describe('chores polish (wave 4)', () => {
       const escaped = count.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       assert.match(page, new RegExp(`<NumberTicker value=\\{${escaped}\\}`));
     }
-    assert.match(page, /title=\{shortcutHint\('chore '\)\}/);
-    assert.equal(shortcutHint('chore '), 'New chore from anywhere: press N');
-    assert.equal(shortcutHint('fed '), 'Log a feeding from anywhere: press F');
-    assert.equal(shortcutHint('nope '), undefined);
+    assert.match(page, /<ShortcutHint shortcut="new-chore"/);
     const list = read('src/components/chores/chore-list.tsx');
     assert.match(list, /<Stagger as="ul"/);
     assert.match(list, /<StaggerItem\s+as="li"/);
