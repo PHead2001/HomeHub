@@ -47,7 +47,7 @@ import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { morphStyle } from '@/lib/motion';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
-import { shortcutHint } from '@/lib/chores/shortcut-hints';
+import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { ALL_ROOMS, choresRoomHref, effectiveChoresRoom, parseChoresRoom, roomSharedId } from '@/lib/chores/url-state';
 import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/chores/house-clean';
 
@@ -924,7 +924,9 @@ export function ChoreChartClient() {
         </div>
         <div className="flex flex-wrap gap-2">
           {capabilities.canCreate && (
-            <Button onClick={openAdd} title={shortcutHint('chore ')}><Plus className="mr-2 h-4 w-4" /> Add Chore</Button>
+            <ShortcutHint shortcut="new-chore" label="New chore from anywhere">
+              <Button onClick={openAdd}><Plus className="mr-2 h-4 w-4" /> Add Chore</Button>
+            </ShortcutHint>
           )}
           <Button variant="outline" asChild>
             <Link href="/calendar"><CalendarDays className="mr-2 h-4 w-4" /> Calendar</Link>

@@ -8,7 +8,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
-import { SHORTCUTS } from '@/lib/dashboard/shortcuts';
+import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { formatPortion, loggerName, type FeedingPlan, type FeedingStatus, type QuickFeedFood } from '@/lib/pets/care';
 import type { FoodType } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
@@ -143,14 +143,6 @@ export function useQuickFeed({ petId, petName, plan, status, food }: QuickFeedOp
   return { allowed, saving, portion, foodType, ready, foodFallback, burst, feed };
 }
 
-/** Title hint for the global "log a feeding" shortcut (H28), from the shared shortcut map. */
-export const FEED_SHORTCUT_HINT = shortcutHint('quick-add', 'fed ');
-
-function shortcutHint(type: 'quick-add', prefix: string): string | undefined {
-  const shortcut = SHORTCUTS.find((entry) => entry.action.type === type && entry.action.prefix === prefix);
-  return shortcut ? `${shortcut.label} from anywhere: press ${shortcut.keys.join(' then ')}` : undefined;
-}
-
 /**
  * The confirm step of the "Log feeding" home-screen shortcut (`/pets?feed=1`):
  * names the pet, portion and food type, and logs only on "Log feeding". A
@@ -230,6 +222,7 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
 
   return (
     <span className={cn('relative inline-flex', className)}>
+      <ShortcutHint shortcut="log-feeding" label="Log a feeding from anywhere">
       <Button
         type="button"
         size={size}
@@ -239,11 +232,11 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
         disabled={quick.saving || !quick.ready}
         aria-label={`Feed ${options.petName}, ${quick.portion}`}
         aria-describedby={describedBy}
-        title={FEED_SHORTCUT_HINT}
       >
         {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
         Feed · {quick.portion}
       </Button>
+      </ShortcutHint>
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}
     </span>
   );

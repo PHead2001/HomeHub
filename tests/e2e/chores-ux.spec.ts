@@ -41,8 +41,12 @@ test.describe('chores wave 2', () => {
     const heading = page.getByRole('heading', { name: 'Chore Chart', exact: true });
     expect(await heading.evaluate((el) => getComputedStyle(el).textAlign)).not.toBe('center');
     await expect(page.getByRole('button', { name: 'Add Chore' }).first()).toBeVisible();
-    // H28: the button names the global shortcut that does the same.
-    await expect(page.getByRole('button', { name: 'Add Chore' }).first()).toHaveAttribute('title', 'New chore from anywhere: press N');
+    // H28: the button names the global shortcut that does the same (shared ShortcutHint).
+    const addChore = page.getByRole('main').getByRole('button', { name: 'Add Chore' });
+    await expect(addChore).toHaveAttribute('aria-keyshortcuts', 'N');
+    await addChore.hover();
+    await expect(page.getByTestId('shortcut-hint-new-chore')).toContainText('New chore from anywhere');
+    await page.mouse.move(0, 0);
     // The page's own link (the header nav also has one once the dashboard PR lands).
     await expect(page.getByRole('main').getByRole('link', { name: 'Calendar' })).toHaveAttribute('href', '/calendar');
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);

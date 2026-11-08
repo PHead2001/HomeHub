@@ -3,7 +3,7 @@
 import type { CSSProperties, MouseEvent } from 'react';
 import { Edit, MoreVertical, Trash2 } from 'lucide-react';
 import { PeekCard } from '@/components/dashboard/peek-card';
-import { LiveCount } from './live-count';
+import { NumberTicker } from '@/components/motion/number-ticker';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import type { ShoppingList } from '@/lib/types';
@@ -43,11 +43,11 @@ export function ListCard({
     : total === 0
       ? 'Empty'
       : counts.needed === 0
-        ? <>All <LiveCount value={counts.purchased} /> {counts.purchased === 1 ? 'item' : 'items'} in the cart</>
+        ? <>All <NumberTicker value={counts.purchased} animateOnMount={false} /> {counts.purchased === 1 ? 'item' : 'items'} in the cart</>
         : (
           <>
-            <LiveCount value={counts.needed} /> to buy
-            {counts.purchased > 0 && <> · <LiveCount value={counts.purchased} /> in the cart</>}
+            <NumberTicker value={counts.needed} animateOnMount={false} /> to buy
+            {counts.purchased > 0 && <> · <NumberTicker value={counts.purchased} animateOnMount={false} /> in the cart</>}
           </>
         );
   const peek = (
