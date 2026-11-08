@@ -399,3 +399,38 @@ test.describe('H12: NumberTicker keeps labels exact', () => {
     expect(await page.locator('[data-counting]').count()).toBe(0);
   });
 });
+
+test.describe('H12: entrances never move a click target', () => {
+  const box = (page: import('@playwright/test').Page, testId: string) => page.getByTestId(testId).evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const transforms = [element, element.parentElement, element.closest('[role="tabpanel"]')]
+      .filter((node): node is Element => Boolean(node))
+      .map((node) => getComputedStyle(node).transform);
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, transforms };
+  });
+
+  test('staggered rows keep their box from the first frame of the entrance to the end', async ({ page }) => {
+    await page.setContent(await tickerHarness());
+    const list = page.getByTestId('stagger-list');
+    await expect(list).toHaveAttribute('data-stagger', 'entering');
+    // Row 11 is mid-entrance (330 ms delay, 220 ms fade) when first measured.
+    const first = await box(page, 'row-11');
+    const opacity = await page.getByTestId('row-11').evaluate((element) => Number(getComputedStyle(element.parentElement!).opacity));
+    expect(opacity, 'still entering when measured').toBeLessThan(1);
+    expect(first.transforms.every((value) => value === 'none')).toBe(true);
+    await expect(list).toHaveAttribute('data-stagger', 'settled');
+    const last = await box(page, 'row-11');
+    expect(last).toEqual(first);
+  });
+
+  test('a tab panel fades in without moving its buttons', async ({ page }) => {
+    await page.setContent(await tickerHarness());
+    await page.getByRole('tab', { name: 'Two' }).click();
+    const panel = page.getByRole('tabpanel');
+    await expect(panel).toHaveAttribute('data-tab-enter', '');
+    const during = await box(page, 'panel-two-button');
+    expect(during.transforms.every((value) => value === 'none')).toBe(true);
+    await page.waitForTimeout(250);
+    expect(await box(page, 'panel-two-button')).toEqual(during);
+  });
+});

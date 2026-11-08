@@ -1,13 +1,13 @@
-/* Tab panel enter (D09/H12): fade with a 4 px settle in 150 ms (TAB_ENTER in
-   src/lib/motion.ts). TabsContent sets data-tab-enter when the panel becomes
-   active after the first render. Opacity and transform only, so nothing shifts;
-   the panel is in place and focusable from the first frame. */
+/* Tab panel enter (D09/H12): a 150 ms fade (TAB_ENTER in src/lib/motion.ts).
+   TabsContent sets data-tab-enter when the panel becomes active after the first
+   render. Opacity only: the panel holds buttons and links that are clickable from
+   the first frame, and clickable targets never move. */
 .panel[data-tab-enter] {
   animation: tab-enter var(--duration-micro, 150ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 @keyframes tab-enter {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 :global(:root[data-motion='reduce']) .panel[data-tab-enter] {
   animation: none;

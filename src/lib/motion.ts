@@ -59,10 +59,11 @@ export function staggerDelay(count: number): number {
 }
 
 /**
- * Tab panel enter (D09): a fade with a 4 px settle, 150 ms (micro budget). Opacity
- * and transform only, so the panel never shifts layout. CSS in `tabs.module.css`.
+ * Tab panel enter (D09): a 150 ms fade (micro budget), opacity only, because the
+ * panel's buttons and links are clickable from the first frame and clickable
+ * targets never move. CSS in `tabs.module.css`.
  */
-export const TAB_ENTER = { durationMs: 150, offsetPx: 4 } as const;
+export const TAB_ENTER = { durationMs: 150, offsetPx: 0 } as const;
 
 /**
  * What a tab panel does with its entrance marker when its `data-state` changes:
@@ -103,10 +104,14 @@ export function tickerFrame(current: string, final: string, start: string): stri
   return pad + current;
 }
 
-/** Page content enter: crossfade with an 8 px settle. */
+/**
+ * Page content enter (the CSS fallback): a fade, opacity only, because real page
+ * content is clickable at once. The 8 px settle exists only on the view-transition
+ * snapshot (globals.css), which takes no input.
+ */
 export const PAGE_ENTER = {
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0 },
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
   transition: { duration: DURATION.ui, ease: EASE.standard },
 } as const;
 

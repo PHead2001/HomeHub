@@ -16,10 +16,12 @@ let hasShownFirstPage = false;
  * - With the View Transitions API, `runRouteTransition` (link clicks and
  *   `useMorphNavigation`) names this wrapper `page-content` and the browser
  *   crossfades old and new page with an 8 px settle (globals.css), morphing any
- *   shared elements on the way. This component then adds no animation of its own.
- * - Without it (or for back/forward), the new page fades in with the same 8 px
- *   settle in CSS (`PAGE_ENTER` values), so the first page loads no animation
- *   library.
+ *   shared elements on the way. The settle moves only the transition's snapshot,
+ *   which takes no input; the real page never moves. This component then adds no
+ *   animation of its own.
+ * - Without it (or for back/forward), the new page fades in in CSS, opacity only
+ *   (`PAGE_ENTER`), because its content is clickable at once and clickable
+ *   targets never move; the first page loads no animation library.
  * - Reduced motion (system or in-app) shows content at once, and the first page
  *   of a session is never animated.
  */

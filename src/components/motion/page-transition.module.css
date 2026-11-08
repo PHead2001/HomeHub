@@ -1,5 +1,7 @@
-/* Route crossfade with an 8 px settle (H12, <= 250 ms), CSS only so the first page
-   never loads an animation library. Mirrors PAGE_ENTER in src/lib/motion.ts.
+/* Route fade-in (H12, <= 250 ms), CSS only so the first page never loads an
+   animation library. Mirrors PAGE_ENTER in src/lib/motion.ts. Opacity only: the
+   real page content is clickable from its first frame and must not move (the
+   view-transition path may settle its snapshot, which takes no input).
    `.enter` is the fallback for browsers without the View Transitions API; when a
    route view transition runs, the browser animates the `page-content` snapshot
    instead (globals.css) and `.enter` is not applied. */
@@ -7,8 +9,8 @@
   animation: page-enter var(--duration-ui, 220ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 @keyframes page-enter {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 :global(:root[data-motion='reduce']) .enter {
   animation: none;

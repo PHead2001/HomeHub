@@ -1,4 +1,7 @@
 /* Staggered entrance (H12): <= 30 ms per item, <= 400 ms total, first item at once.
+   Opacity only: items are often the click or tap targets (notification cards,
+   palette options, tiles), and clickable targets never move, so nothing here
+   translates the item box.
    Pure CSS keyed by position, so items keep their own layout classes (grid spans)
    and no animation library loads. Items from the 12th on share the last delay
    (330 ms), which caps the total for long lists. Mirrors STAGGER in src/lib/motion.ts. */
@@ -25,8 +28,8 @@
 }
 
 @keyframes stagger-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 :global(:root[data-motion='reduce']) .stagger > * {

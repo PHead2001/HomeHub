@@ -23,7 +23,8 @@ type StaggerProps = Omit<ComponentPropsWithoutRef<'div'>, 'children'> & {
 
 /**
  * Staggered entrance for lists and card grids (H12): each direct child fades in
- * with a 6 px settle, the first at once and each next one 30 ms later; from the
+ * (opacity only: items are often click targets, which never move), the first at
+ * once and each next one 30 ms later; from the
  * 12th child on they share the last delay, so the spread never exceeds 330 ms
  * (budget: 30 ms per item, 400 ms total; `staggerItemDelayMs` in `@/lib/motion`).
  * Pure CSS keyed by position: children keep their own classes (grid spans, list

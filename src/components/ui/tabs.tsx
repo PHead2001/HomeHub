@@ -45,7 +45,8 @@ TabsTrigger.displayName = TabsPrimitive.Trigger.displayName
  * keyed to activation, not to mounting: when this panel goes from inactive to
  * active after the first render, it gets `data-tab-enter` before paint (a
  * MutationObserver on its own `data-state`) and fades
- * in with a 4 px settle (`tabs.module.css`). The panel active on first render, and
+ * in (opacity only, `tabs.module.css`; its content is clickable at once and never
+ * moves). The panel active on first render, and
  * any panel under reduced motion, shows at once. The attribute is set on the DOM
  * (React never manages it), so a parent re-render cannot cut the animation short.
  */
