@@ -31,6 +31,7 @@ const eslintConfig = defineConfig([
       "src/components/header.tsx",
       "src/components/command/command-center.tsx",
       "src/components/deferred-push-notification-manager.tsx",
+      "src/components/PushNotificationManager.tsx",
       "src/components/motion/page-transition.tsx",
       "src/components/dashboard/time-of-day.tsx",
       "src/lib/dashboard/use-weather.ts",
