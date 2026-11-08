@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { AnimatePresence } from 'motion/react';
@@ -113,6 +113,15 @@ export function HouseholdManagementClient() {
   useEffect(() => {
     if (requestedTab && householdTabs.includes(requestedTab)) setActiveTab(requestedTab);
   }, [requestedTab]);
+  // Choosing a tab replaces the URL with ?tab=… (Overview has none), so refresh and Back
+  // keep it. Shallow update: Next.js syncs useSearchParams with history.replaceState.
+  const selectTab = useCallback((tab: string) => {
+    setActiveTab(tab);
+    const url = new URL(window.location.href);
+    if (tab === 'overview') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', tab);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  }, []);
   const shownTab = visibleTabs.includes(activeTab) ? activeTab : 'overview';
 
   const live = useHouseholdLiveData({
@@ -548,7 +557,7 @@ export function HouseholdManagementClient() {
 
   const openCustomize = (member: HouseholdMember) => {
     setMatrixSelection(member.uid);
-    setActiveTab('roles');
+    selectTab('roles');
   };
 
   if (!currentUser) {
@@ -606,7 +615,7 @@ export function HouseholdManagementClient() {
           <Skeleton className="h-40 w-full rounded-lg" />
         </div>
       ) : (
-        <Tabs value={shownTab} onValueChange={setActiveTab}>
+        <Tabs value={shownTab} onValueChange={selectTab}>
           <TabsList className="grid h-auto w-full grid-cols-3 md:flex md:w-auto md:justify-start">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {canManageInvites && <TabsTrigger value="invites">Invite Codes</TabsTrigger>}
@@ -803,7 +812,7 @@ export function HouseholdManagementClient() {
                     headingLevel={3}
                     title="It's just you so far"
                     description="Invite the people you live with so chores, lists and pets can be shared."
-                    action={canManageInvites ? { label: 'Create an invite code', icon: <UserPlus className="mr-2 h-4 w-4" />, onClick: () => setActiveTab('invites') } : undefined}
+                    action={canManageInvites ? { label: 'Create an invite code', icon: <UserPlus className="mr-2 h-4 w-4" />, onClick: () => selectTab('invites') } : undefined}
                   />
                 </Card>
               </>

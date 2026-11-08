@@ -267,3 +267,61 @@ test.describe('dashboard, shell and notifications', () => {
     await context.close();
   });
 });
+
+test.describe('voice add (H14)', () => {
+  test('with speech recognition the palette mic fills the input from what was said', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.addInitScript(() => {
+      type Handler<T> = ((event: T) => void) | null;
+      class FakeRecognition {
+        lang = '';
+        interimResults = false;
+        continuous = false;
+        maxAlternatives = 1;
+        onresult: Handler<{ results: Array<Array<{ transcript: string }> & { isFinal: boolean }> }> = null;
+        onerror: Handler<{ error?: string }> = null;
+        onend: (() => void) | null = null;
+        start() {
+          (window as unknown as { __voiceStarts: number }).__voiceStarts += 1;
+          window.setTimeout(() => {
+            const alternative = Object.assign([{ transcript: 'e2e voice oat milk to groceries' }], { isFinal: true });
+            this.onresult?.({ results: [alternative] });
+            this.onend?.();
+          }, 50);
+        }
+        stop() { this.onend?.(); }
+        abort() {}
+      }
+      const w = window as unknown as Record<string, unknown>;
+      w.__voiceStarts = 0;
+      w.SpeechRecognition = FakeRecognition;
+      w.webkitSpeechRecognition = FakeRecognition;
+    });
+    await openDashboard(page);
+    await page.keyboard.press('Control+k');
+    const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+    await expect(palette).toBeVisible();
+    const mic = palette.getByRole('button', { name: 'Speak to quick add' });
+    await expect(mic).toBeVisible();
+    await mic.click();
+    await expect(palette.getByRole('combobox', { name: 'Search or quick add' })).toHaveValue('e2e voice oat milk to groceries');
+    expect(await page.evaluate(() => (window as unknown as { __voiceStarts: number }).__voiceStarts)).toBe(1);
+    // Listening ended with the phrase (nothing is added without the confirm step).
+    await expect(palette.getByRole('button', { name: 'Speak to quick add' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('without speech recognition the mic is hidden', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.addInitScript(() => {
+      // Chromium ships webkitSpeechRecognition; remove both names as an unsupported browser would.
+      for (const name of ['SpeechRecognition', 'webkitSpeechRecognition']) {
+        Object.defineProperty(window, name, { value: undefined, configurable: true, writable: true });
+      }
+    });
+    await openDashboard(page);
+    await page.keyboard.press('Control+k');
+    const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+    await expect(palette.getByRole('combobox', { name: 'Search or quick add' })).toBeVisible();
+    await expect(palette.getByRole('button', { name: /Speak to quick add|Stop listening/ })).toHaveCount(0);
+  });
+});

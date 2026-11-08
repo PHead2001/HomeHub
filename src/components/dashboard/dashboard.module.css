@@ -105,15 +105,30 @@
   40% { transform: translateY(-8px); }
 }
 
+/*
+ * Ambient guardrail (G5): the fridge pulse and window lights share the theme's
+ * single `--ambient-intensity` token. `--ambient-scale` is 1 at the default 6%,
+ * so an intensity of 0 keeps the fridge still and the windows dark.
+ */
+.pulse,
+.windowLight {
+  --ambient-scale: calc(var(--ambient-intensity, 0.06) / 0.06);
+}
+
 .pulse {
   animation: soft-pulse 1.8s ease-in-out infinite;
 }
 @keyframes soft-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.12); opacity: 0.75; }
+  50% {
+    transform: scale(calc(1 + 0.12 * var(--ambient-scale, 1)));
+    opacity: max(0.7, calc(1 - 0.25 * var(--ambient-scale, 1)));
+  }
 }
 
+/* `--window-glow` is the lit opacity set by the scene (0 when dark). */
 .windowLight {
+  opacity: min(1, calc(var(--window-glow, 0) * var(--ambient-scale, 1)));
   transition: opacity 900ms var(--ease-standard);
 }
 

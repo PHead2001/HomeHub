@@ -14,13 +14,11 @@ import { ShortcutHint, ShortcutKeys } from '@/components/ui/shortcut-hint';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
+import { isGoldenRoof } from '@/lib/dashboard/ambience';
 import { BentoGrid } from './bento-grid';
 import { HomeWrapped } from './home-wrapped';
 import { LivingHouse } from './living-house';
 import { MorningBrief } from './morning-brief';
-
-/** Chores completed before the living house's roof turns gold (H29). */
-const GOLDEN_ROOF_CHORES = 100;
 
 function useGoldenRoof(householdId: string | null, canView: boolean) {
   const [result, setResult] = useState<{ householdId: string; golden: boolean } | null>(null);
@@ -29,7 +27,7 @@ function useGoldenRoof(householdId: string | null, canView: boolean) {
     let cancelled = false;
     getCountFromServer(query(collection(db, 'households', householdId, 'chores'), where('isCompleted', '==', true)))
       .then((snapshot) => {
-        if (!cancelled) setResult({ householdId, golden: snapshot.data().count >= GOLDEN_ROOF_CHORES });
+        if (!cancelled) setResult({ householdId, golden: isGoldenRoof(snapshot.data().count) });
       })
       .catch(() => undefined);
     return () => {

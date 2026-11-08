@@ -66,3 +66,11 @@ export function seasonFor(date: Date): Season {
   if (month === 0 || month === 1) return 'winter';
   return null;
 }
+
+/** Completed chores before the living house's roof turns gold (H29). */
+export const GOLDEN_ROOF_CHORES = 100;
+
+/** Easter egg (H29): the roof is gold from the 100th completed chore on. */
+export function isGoldenRoof(completedChores: number): boolean {
+  return Number.isFinite(completedChores) && completedChores >= GOLDEN_ROOF_CHORES;
+}
