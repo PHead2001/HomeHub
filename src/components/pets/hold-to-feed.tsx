@@ -74,7 +74,8 @@ export function useHoldToFeed(feed: QuickFeedController, photoRef: React.RefObje
   const onPointerDown = (event: React.PointerEvent) => {
     swallowClick.current = false;
     const photo = photoRef.current;
-    if (!enabled || feed.saving || !photo || !event.isPrimary) return;
+    // No hold before the feeding history (the food type) has loaded.
+    if (!enabled || feed.saving || !feed.ready || !photo || !event.isPrimary) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const target = event.target as Element;
     // Other controls (menu, Feed button) sit above the link and are never a hold.

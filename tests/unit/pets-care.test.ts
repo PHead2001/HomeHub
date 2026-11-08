@@ -3,6 +3,15 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  chipOverflow,
+  currentMedications,
+  FEED_SHORTCUT_PARAM,
+  petHref,
+  petPhotoMorphName,
+  quickFeedDecision,
+  quickFeedFood,
+  feedingHistoryState,
+  wantsQuickFeed,
   feedingCountLabel,
   feedingHeadline,
   feedingPlan,
@@ -205,6 +214,36 @@ describe('medication countdown', () => {
     assert.equal(due?.label, 'Due in 2 days');
   });
 
+  it('lists every current medication, most urgent first (one rule for chips and the calendar)', () => {
+    const logs = [
+      { date: '2026-07-01T10:00:00.000Z', medication: 'Flea prevention', dosage: '1 dose', nextDueDate: '2026-07-29' },
+      { date: '2026-07-29T10:00:00.000Z', medication: 'flea prevention', dosage: '1 dose', nextDueDate: '2026-08-26' },
+      { date: '2026-07-30T10:00:00.000Z', medication: 'Heartworm', dosage: '1 chew', nextDueDate: '2026-08-03' },
+      { date: '2026-07-30T10:00:00.000Z', medication: 'Joint support', dosage: '1 tab', nextDueDate: '2026-07-30' },
+      // A later dose without a next date cancels that medication's countdown.
+      { date: '2026-07-20T10:00:00.000Z', medication: 'Ear drops', dosage: '2 drops', nextDueDate: '2026-08-02' },
+      { date: '2026-07-30T10:00:00.000Z', medication: 'Ear drops', dosage: '2 drops' },
+      { date: '2026-07-30T10:00:00.000Z', medication: 'Antibiotic', dosage: '1', nextDueDate: '2026-08-03' },
+    ];
+    const dues = currentMedications(logs, now);
+    assert.deepEqual(dues.map((due) => [due.medication, due.label]), [
+      ['Joint support', 'Overdue by 2 days'],
+      ['Antibiotic', 'Due in 2 days'],
+      ['Heartworm', 'Due in 2 days'],
+      ['flea prevention', 'Due in 25 days'],
+    ]);
+    assert.equal(nextMedication(logs, now)?.medication, dues[0].medication);
+    assert.deepEqual(currentMedications([], now), []);
+  });
+
+  it('folds extra chips into +N, never +1', () => {
+    assert.deepEqual(chipOverflow([1, 2], 2), { shown: [1, 2], hidden: 0 });
+    assert.deepEqual(chipOverflow([1, 2, 3], 2), { shown: [1, 2, 3], hidden: 0 });
+    assert.deepEqual(chipOverflow([1, 2, 3, 4], 2), { shown: [1, 2], hidden: 2 });
+    assert.deepEqual(chipOverflow([1, 2, 3, 4, 5, 6], 4), { shown: [1, 2, 3, 4], hidden: 2 });
+    assert.deepEqual(chipOverflow([1, 2, 3], 0), { shown: [1], hidden: 2 });
+  });
+
   it('returns null without due dates and labels every state', () => {
     assert.equal(nextMedication([{ date: '2026-07-30', medication: 'X', dosage: '1' }], now), null);
     assert.deepEqual(medicationState(-3), { state: 'overdue', label: 'Overdue by 3 days' });
@@ -375,5 +414,83 @@ describe('pets components use tokens only', () => {
     assert.match(css, /html\[data-motion='reduce'\]\) \.eyes/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
     assert.match(css, /html\[data-visibility='hidden'\]\) \.eyes/);
+  });
+
+  it('idles the species art on a slow ambient loop that pauses and stops under reduced motion', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/components/pets/pets.module.css'), 'utf8');
+    const loop = css.match(/\.idle \{[^}]*animation: pet-idle (\d+)s/);
+    assert.ok(loop, 'the idle loop exists');
+    assert.ok(Number(loop![1]) >= 20, 'ambient loops are 20 s or longer');
+    // Small amplitude: at most 2 px and 2 degrees.
+    const frames = css.slice(css.indexOf('@keyframes pet-idle'), css.indexOf('}', css.indexOf('@keyframes pet-idle') + 200) + 1);
+    for (const [, px] of frames.matchAll(/translateY\((-?[\d.]+)px\)/g)) assert.ok(Math.abs(Number(px)) <= 2);
+    for (const [, deg] of frames.matchAll(/rotate\((-?[\d.]+)deg\)/g)) assert.ok(Math.abs(Number(deg)) <= 2);
+    assert.match(css, /html\[data-visibility='hidden'\]\) \.idle/);
+    assert.match(css, /html\[data-motion='reduce'\]\) \.idle/);
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.eyes,\s*\.idle,/);
+    const avatar = readFileSync(resolve(process.cwd(), 'src/components/pets/species-avatar.tsx'), 'utf8');
+    assert.match(avatar, /className=\{styles\.idle\}/);
+  });
+});
+
+describe('pet links, morph and shortcut', () => {
+  it('names the card photo and the pet hero alike, and reads the feed shortcut', () => {
+    assert.equal(petHref('maple'), '/pets/maple');
+    assert.equal(petPhotoMorphName('maple'), 'pet-maple-photo');
+    assert.equal(petPhotoMorphName('a b'), 'pet-a_b-photo');
+    assert.equal(FEED_SHORTCUT_PARAM, 'feed');
+    assert.equal(wantsQuickFeed(new URLSearchParams('feed=1')), true);
+    assert.equal(wantsQuickFeed(new URLSearchParams('feed=0')), false);
+    assert.equal(wantsQuickFeed(new URLSearchParams('')), false);
+    assert.equal(wantsQuickFeed(null), false);
+  });
+
+  it('the Feed button is one tap with Undo; only the shortcut confirms', () => {
+    const button = readFileSync(resolve(process.cwd(), 'src/components/pets/quick-feed-button.tsx'), 'utf8');
+    // Owner decision (H09): one reversible tap is the accessible alternative to holding.
+    assert.match(button, /onClick=\{\(\) => void quick\.feed\('tap'\)\}/);
+    assert.doesNotMatch(button, /Popover/);
+    assert.match(button, /Undo/);
+    // The launcher shortcut never logs silently: its picker ends in a confirm step.
+    const picker = readFileSync(resolve(process.cwd(), 'src/components/pets/feed-picker-dialog.tsx'), 'utf8');
+    assert.match(picker, /FeedConfirmPanel/);
+    const manifest = readFileSync(resolve(process.cwd(), 'src/app/manifest.ts'), 'utf8');
+    assert.match(manifest, /url: '\/pets\?feed=1'/);
+  });
+
+  it('never logs a quick feeding before the history says which food the pet eats', () => {
+    assert.equal(feedingHistoryState({ loading: true, error: null }), 'loading');
+    assert.equal(feedingHistoryState({ loading: false, error: new Error('denied') }), 'unavailable');
+    assert.equal(feedingHistoryState({ loading: false, error: null }), 'ready');
+    // Loading: not ready, so Confirm, the Feed button and hold stay disabled.
+    assert.equal(quickFeedFood('loading', 'Wet').ready, false);
+    // Loaded: the latest feeding's type; Dry only for a pet with no (known) history.
+    assert.deepEqual(quickFeedFood('ready', 'Wet'), { ready: true, foodType: 'Wet', fallback: false });
+    assert.deepEqual(quickFeedFood('ready', undefined), { ready: true, foodType: 'Dry', fallback: false });
+    assert.deepEqual(quickFeedFood('ready', 'Kibble'), { ready: true, foodType: 'Dry', fallback: false });
+    // Unavailable history is not empty history: Dry, flagged so the UI says so.
+    assert.deepEqual(quickFeedFood('unavailable', undefined), { ready: true, foodType: 'Dry', fallback: true });
+    const button = readFileSync(resolve(process.cwd(), 'src/components/pets/quick-feed-button.tsx'), 'utf8');
+    assert.match(button, /if \(!allowed \|\| !ready \|\|/);
+    assert.equal((button.match(/disabled=\{quick\.saving \|\| !quick\.ready\}/g) ?? []).length, 2, 'Feed button and Confirm');
+    assert.match(button, /last feeding unavailable/);
+    const hold = readFileSync(resolve(process.cwd(), 'src/components/pets/hold-to-feed.tsx'), 'utf8');
+    assert.match(hold, /!feed\.ready/);
+  });
+
+  it('decides ?feed=1 only once permissions and pets have both loaded', () => {
+    const base = { requested: true, permissionsReady: true, petsReady: true, canFeed: true, petCount: 2 };
+    assert.equal(quickFeedDecision({ ...base, requested: false }), 'none');
+    // Pets loaded before the membership (the race): wait, never ignore.
+    assert.equal(quickFeedDecision({ ...base, permissionsReady: false, canFeed: false }), 'wait');
+    assert.equal(quickFeedDecision({ ...base, petsReady: false, petCount: 0 }), 'wait');
+    assert.equal(quickFeedDecision(base), 'open');
+    assert.equal(quickFeedDecision({ ...base, petCount: 1 }), 'open');
+    assert.equal(quickFeedDecision({ ...base, canFeed: false }), 'ignore');
+    assert.equal(quickFeedDecision({ ...base, petCount: 0 }), 'ignore');
+    const client = readFileSync(resolve(process.cwd(), 'src/components/pets-client.tsx'), 'utf8');
+    assert.match(client, /permissionsReady: !authLoading && !householdLoading && Boolean\(currentMember\)/);
+    // The param is removed only after a decision.
+    assert.match(client, /if \(!handledFeedRequest \|\| !feedRequested\) return;/);
   });
 });

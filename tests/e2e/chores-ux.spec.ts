@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 
 // Chores wave 2: one-tap completion with Undo, quick add with inline validation,
@@ -41,6 +41,8 @@ test.describe('chores wave 2', () => {
     const heading = page.getByRole('heading', { name: 'Chore Chart', exact: true });
     expect(await heading.evaluate((el) => getComputedStyle(el).textAlign)).not.toBe('center');
     await expect(page.getByRole('button', { name: 'Add Chore' }).first()).toBeVisible();
+    // H28: the button names the global shortcut that does the same.
+    await expect(page.getByRole('button', { name: 'Add Chore' }).first()).toHaveAttribute('title', 'New chore from anywhere: press N');
     // The page's own link (the header nav also has one once the dashboard PR lands).
     await expect(page.getByRole('main').getByRole('link', { name: 'Calendar' })).toHaveAttribute('href', '/calendar');
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
@@ -99,7 +101,9 @@ test.describe('chores wave 2', () => {
       await open(page, '/chores', 'Chore Chart');
       await page.getByRole('button', { name: 'Select' }).click();
       await page.getByRole('checkbox', { name: 'Select Chores UX bulk 1' }).click();
+      await expect(page.getByText('1 chore selected', { exact: true })).toBeVisible();
       await page.getByRole('checkbox', { name: 'Select Chores UX bulk 2' }).click();
+      await expect(page.getByText('2 chores selected', { exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Complete selected' }).click();
       for (const id of ids) {
         await expect.poll(async () => (await household.collection('chores').doc(id).get()).data()?.isCompleted).toBe(true);
@@ -162,6 +166,70 @@ test.describe('chores wave 2', () => {
     } finally {
       await ref.delete();
     }
+  });
+
+  test('the calendar day agenda changes days by keyboard and shows upcoming medication', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const id = 'chores-ux-agenda';
+    const flea = household.collection('pets').doc('pixel').collection('medication-logs').doc('flea-prevention');
+    await seedChore(id, { task: 'Chores UX agenda', originalDueDate: '2026-08-02', dueDate: '2026-08-02' });
+    await flea.update({ nextDueDate: '2026-08-03' });
+    try {
+      await open(page, '/calendar', 'Calendar');
+      await page.getByRole('radio', { name: 'Day' }).click();
+      const agenda = page.getByTestId('calendar-agenda');
+      await expect(agenda).toHaveAttribute('data-day', '2026-08-01');
+      await expect(agenda).toHaveAttribute('aria-label', /, today, /);
+      // Today glows.
+      await expect(agenda).toHaveClass(/ring-primary/);
+
+      await agenda.focus();
+      await page.keyboard.press('ArrowRight');
+      await expect(agenda).toHaveAttribute('data-day', '2026-08-02');
+      await expect(agenda.getByRole('button', { name: /Chore: Chores UX agenda/ })).toBeVisible();
+      await expect(agenda).not.toHaveClass(/ring-primary/);
+
+      // The upcoming dose, from the same countdown rule as the pet card.
+      await page.getByRole('button', { name: 'Next day' }).click();
+      await expect(agenda).toHaveAttribute('data-day', '2026-08-03');
+      const dose = agenda.getByRole('button', { name: /^Medication due: Monthly flea prevention.*Pixel, due in 2 days/ });
+      await expect(dose).toBeVisible();
+      // Peek (H26): hovering an entry shows its key facts.
+      await dose.hover();
+      await expect(page.getByTestId('calendar-peek')).toContainText('Due in 2 days');
+      await page.mouse.move(0, 0);
+
+      await agenda.focus();
+      await page.keyboard.press('ArrowLeft');
+      await page.keyboard.press('ArrowLeft');
+      await expect(agenda).toHaveAttribute('data-day', '2026-08-01');
+
+    } finally {
+      await household.collection('chores').doc(id).delete();
+      await flea.update({ nextDueDate: FieldValue.delete() }).catch(() => undefined);
+    }
+  });
+
+  test('phones open on the day agenda and swipe between days', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile-chromium');
+    await open(page, '/calendar', 'Calendar');
+    await expect(page.getByRole('radio', { name: 'Day' })).toHaveAttribute('aria-checked', 'true');
+    const agenda = page.getByTestId('calendar-agenda');
+    await expect(agenda).toHaveAttribute('data-day', '2026-08-01');
+    const swipe = (dx: number) => agenda.evaluate((element, distance) => {
+      const box = element.getBoundingClientRect();
+      const x = box.left + box.width / 2;
+      const y = box.top + 40;
+      const touch = (clientX: number) => new Touch({ identifier: 1, target: element, clientX, clientY: y });
+      element.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [touch(x)], changedTouches: [touch(x)] }));
+      element.dispatchEvent(new TouchEvent('touchend', { bubbles: true, touches: [], changedTouches: [touch(x + distance)] }));
+    }, dx);
+    await swipe(-120);
+    await expect(agenda).toHaveAttribute('data-day', '2026-08-02');
+    await swipe(120);
+    await swipe(120);
+    await expect(agenda).toHaveAttribute('data-day', '2026-07-31');
+    expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
   });
 
   test('calendar and chores fit a phone screen', async ({ page }, testInfo) => {
