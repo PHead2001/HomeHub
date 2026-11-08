@@ -155,8 +155,9 @@ test.describe('dashboard, shell and notifications', () => {
     const palette = page.getByRole('dialog', { name: 'Search or quick add' });
     const input = palette.getByRole('combobox', { name: 'Search or quick add' });
     const options = palette.getByRole('option');
+    // The options render after the palette chunk and its index load; wait for them.
+    await expect.poll(() => options.count()).toBeGreaterThan(3);
     const count = await options.count();
-    expect(count).toBeGreaterThan(3);
     // Up from the first option wraps to the last one, below the list's fold.
     await input.press('ArrowUp');
     const last = options.nth(count - 1);

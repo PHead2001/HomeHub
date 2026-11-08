@@ -226,7 +226,8 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await page.waitForTimeout(4500); // idle callback timeout is 3 s
     const bodies = await Promise.all(scripts);
     expect(bodies.length).toBeGreaterThan(0);
-    expect(bodies.filter((body) => body.includes('firestore.googleapis.com')), 'Firestore SDK downloaded while signed out').toHaveLength(0);
+    // Markers inside the SDK code itself: Firestore's gRPC service name and App Check's exchange call.
+    expect(bodies.filter((body) => body.includes('google.firestore.v1.Firestore')), 'Firestore SDK downloaded while signed out').toHaveLength(0);
     expect(bodies.filter((body) => body.includes('exchangeRecaptchaEnterpriseToken')), 'App Check downloaded while signed out').toHaveLength(0);
     await context.close();
   });
