@@ -603,6 +603,108 @@ describe('profiles', () => {
   });
 });
 
+describe('profile demographics (no longer collected)', () => {
+  const seedLegacyDemographics = () => environment.withSecurityRulesDisabled(async context => {
+    await updateDoc(doc(context.firestore(), 'users', users.member.email), { birthday: '2/2', gender: 'female' });
+  });
+
+  test('a profile that still holds birthday and gender stays readable and updatable', async () => {
+    await seedLegacyDemographics();
+    await assertSucceeds(getDoc(doc(dbFor(users.member), 'users', users.member.email)));
+    await assertSucceeds(getDoc(doc(dbFor(users.owner), 'users', users.member.email)));
+    await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { displayName: 'Still works' }));
+    await assertSucceeds(setDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Chicago' }, { merge: true }));
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'users', users.member.email), { role: 'admin', permissions: {} }));
+  });
+
+  test('the owner may remove them but nobody may change them', async () => {
+    await seedLegacyDemographics();
+    const ref = doc(dbFor(users.member), 'users', users.member.email);
+    await assertFails(updateDoc(ref, { birthday: '3/3' }));
+    await assertFails(updateDoc(ref, { gender: 'male' }));
+    await assertSucceeds(updateDoc(ref, { birthday: deleteField(), gender: deleteField() }));
+  });
+
+  test('new writes cannot add birthday or gender', async () => {
+    const ref = doc(dbFor(users.member), 'users', users.member.email);
+    await assertFails(updateDoc(ref, { birthday: '2/2' }));
+    await assertFails(updateDoc(ref, { gender: 'female' }));
+    await assertFails(setDoc(ref, { displayName: 'x', gender: 'female' }, { merge: true }));
+    const newcomer = { uid: 'demo-newcomer', email: 'demo.newcomer@example.test' };
+    await assertFails(setDoc(doc(dbFor(newcomer), 'users', newcomer.email), {
+      email: newcomer.email, householdId: null, role: 'member', birthday: '1/1',
+    }));
+    await assertFails(setDoc(doc(dbFor(newcomer), 'users', newcomer.email), {
+      email: newcomer.email, householdId: null, role: 'member', gender: 'female',
+    }));
+  });
+});
+
+describe('push tokens', () => {
+  const pushDoc = (reader: Identity, owner: Identity = reader, id = 'push') =>
+    doc(dbFor(reader), 'users', owner.email, 'private', id);
+
+  test('the owner saves, reads and clears their own push tokens', async () => {
+    await assertSucceeds(setDoc(pushDoc(users.member), { fcmTokens: ['token-1'], updatedAt: serverTimestamp() }, { merge: true }));
+    await assertSucceeds(getDoc(pushDoc(users.member)));
+    await assertSucceeds(updateDoc(pushDoc(users.member), { fcmTokens: ['token-1', 'token-2'] }));
+    await assertSucceeds(deleteDoc(pushDoc(users.member)));
+  });
+
+  test('housemates, managers and outsiders can neither read nor write them', async () => {
+    await assertSucceeds(setDoc(pushDoc(users.member), { fcmTokens: ['token-1'] }));
+    for (const user of [users.owner, users.admin, users.child, users.guest, users.pending, users.ownerB, users.stranger]) {
+      await assertFails(getDoc(pushDoc(user, users.member)));
+      await assertFails(setDoc(pushDoc(user, users.member), { fcmTokens: ['hijack'] }));
+      await assertFails(deleteDoc(pushDoc(user, users.member)));
+    }
+    await assertFails(getDocs(collection(dbFor(users.owner), 'users', users.member.email, 'private')));
+  });
+
+  test('only the push document exists and it holds only bounded tokens', async () => {
+    await assertFails(setDoc(pushDoc(users.member, users.member, 'other'), { fcmTokens: [] }));
+    await assertFails(setDoc(pushDoc(users.member), { fcmTokens: ['a'], extra: true }));
+    await assertFails(setDoc(pushDoc(users.member), { fcmTokens: 'not-a-list' }));
+    await assertFails(setDoc(pushDoc(users.member), { fcmTokens: Array.from({ length: 21 }, (_, i) => `t${i}`) }));
+    await assertFails(setDoc(pushDoc(users.member), { fcmTokens: ['a'], updatedAt: Timestamp.fromDate(new Date('2020-01-01')) }));
+  });
+
+  test('a full list can be replaced by a trimmed one that adds a new device', async () => {
+    const full = Array.from({ length: 20 }, (_, i) => `t${i}`);
+    await assertSucceeds(setDoc(pushDoc(users.member), { fcmTokens: full, updatedAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(pushDoc(users.member), { fcmTokens: [...full.slice(1), 'new'], updatedAt: serverTimestamp() }));
+    await assertFails(setDoc(pushDoc(users.member), { fcmTokens: [...full, 'new'], updatedAt: serverTimestamp() }));
+  });
+
+  test('legacy profile tokens may only shrink or be removed', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await updateDoc(doc(context.firestore(), 'users', users.member.email), { fcmTokens: ['old-1', 'old-2'] });
+    });
+    const profile = doc(dbFor(users.member), 'users', users.member.email);
+    await assertFails(updateDoc(profile, { fcmTokens: ['old-1', 'old-2', 'new'] }));
+    await assertFails(updateDoc(profile, { fcmTokens: ['other'] }));
+    await assertSucceeds(updateDoc(profile, { fcmTokens: ['old-1'] }));
+    await assertSucceeds(updateDoc(profile, { fcmTokens: deleteField() }));
+    await assertFails(updateDoc(profile, { fcmTokens: ['new'] }));
+    // Moving tokens into the private document and dropping the field is one batch.
+    await environment.withSecurityRulesDisabled(async context => {
+      await updateDoc(doc(context.firestore(), 'users', users.member.email), { fcmTokens: ['old-1'] });
+    });
+    const db = dbFor(users.member);
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'users', users.member.email, 'private', 'push'), { fcmTokens: ['old-1', 'new'], updatedAt: serverTimestamp() }, { merge: true });
+    batch.update(doc(db, 'users', users.member.email), { fcmTokens: deleteField() });
+    await assertSucceeds(batch.commit());
+  });
+
+  test('new profiles cannot carry push tokens', async () => {
+    const newcomer = { uid: 'push-newcomer', email: 'push.newcomer@example.test' };
+    await assertFails(setDoc(doc(dbFor(newcomer), 'users', newcomer.email), {
+      email: newcomer.email, householdId: null, role: 'member', fcmTokens: ['t'],
+    }));
+  });
+});
+
 describe('notifications', () => {
   test('approved members create well-formed household notifications', async () => {
     await assertSucceeds(addDoc(collection(dbFor(users.member), 'households', householdA, 'notifications'), notification({
@@ -615,7 +717,7 @@ describe('notifications', () => {
 
   test('external and protocol-relative links are rejected', async () => {
     const db = dbFor(users.member);
-    for (const deepLink of ['https://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)']) {
+    for (const deepLink of ['https://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)', '/\t/evil.example', '/\n/evil.example', '/chores\u0000']) {
       await assertFails(addDoc(collection(db, 'households', householdA, 'notifications'), notification({ deepLink })));
     }
   });
@@ -707,20 +809,30 @@ describe('AI usage counters', () => {
 });
 
 describe('Home Assistant credentials', () => {
-  test('only automation managers can read the stored token', async () => {
-    for (const user of [users.owner, users.admin]) {
-      await assertSucceeds(getDoc(doc(dbFor(user), 'households', householdA, 'home-automation', 'credentials')));
+  // Only the server (Admin SDK, after authorizing the caller) touches these.
+  const everyone = [
+    users.owner, users.admin, users.member, users.child, users.guest, users.denied, users.pending,
+    users.legacy, users.ownerB, users.stranger,
+  ];
+  const credentials = (user: Identity, id = 'credentials') =>
+    doc(dbFor(user), 'households', householdA, 'home-automation', id);
+
+  test('no client can read the stored token, owners included', async () => {
+    for (const user of everyone) {
+      await assertFails(getDoc(credentials(user)));
+      await assertFails(getDocs(collection(dbFor(user), 'households', householdA, 'home-automation')));
     }
-    for (const user of [users.member, users.child, users.guest, users.pending]) {
-      await assertFails(getDoc(doc(dbFor(user), 'households', householdA, 'home-automation', 'credentials')));
-    }
+    await assertFails(getDoc(doc(environment.unauthenticatedContext().firestore(), 'households', householdA, 'home-automation', 'credentials')));
   });
 
-  test('only automation managers can save or clear credentials', async () => {
-    const credentials = { url: 'https://ha.example.test', accessToken: 'new-token' };
-    await assertSucceeds(setDoc(doc(dbFor(users.owner), 'households', householdA, 'home-automation', 'credentials'), credentials));
-    await assertFails(setDoc(doc(dbFor(users.member), 'households', householdA, 'home-automation', 'credentials'), credentials));
-    await assertSucceeds(deleteDoc(doc(dbFor(users.admin), 'households', householdA, 'home-automation', 'credentials')));
+  test('no client can save, change or clear credentials, owners included', async () => {
+    const data = { url: 'https://ha.example.test', accessToken: 'new-token' };
+    for (const user of everyone) {
+      await assertFails(setDoc(credentials(user), data));
+      await assertFails(updateDoc(credentials(user), { accessToken: 'swapped' }));
+      await assertFails(deleteDoc(credentials(user)));
+      await assertFails(setDoc(credentials(user, 'other'), data));
+    }
   });
 });
 

@@ -25,7 +25,10 @@ const messaging = admin.messaging();
 
 type TokenOwner = {
   token: string;
-  ref: admin.firestore.DocumentReference;
+  // Every document that holds this token: the owner-only
+  // users/{email}/private/push doc and, until the migration empties it, the
+  // legacy users/{email}.fcmTokens field.
+  refs: admin.firestore.DocumentReference[];
   showImage: boolean;
 };
 
@@ -77,18 +80,29 @@ export const sendPushOnNewNotification = onDocumentCreated(
     };
 
     const recipientDocs = await Promise.all(
-      recipientEmails.map((email) => db.collection("users").doc(email).get()),
+      recipientEmails.map((email) => {
+        const profileRef = db.collection("users").doc(email);
+        return Promise.all([
+          profileRef.collection("private").doc("push").get(),
+          profileRef.get(),
+        ]);
+      }),
     );
     const tokenOwners: TokenOwner[] = [];
-    recipientDocs.forEach((userDoc, index) => {
-      const raw = userDoc.data()?.fcmTokens;
-      const tokens: unknown[] = Array.isArray(raw) ? raw : [];
+    recipientDocs.forEach((docs, index) => {
       const showImage = canSeeImage(recipientEmails[index]);
-      tokens.forEach((token) => {
-        if (typeof token === "string") {
-          tokenOwners.push({token, ref: userDoc.ref, showImage});
+      const byToken = new Map<string, TokenOwner>();
+      for (const tokenDoc of docs) {
+        const raw = tokenDoc.data()?.fcmTokens;
+        const tokens: unknown[] = Array.isArray(raw) ? raw : [];
+        for (const token of tokens) {
+          if (typeof token !== "string") continue;
+          const owner = byToken.get(token) ?? {token, refs: [], showImage};
+          owner.refs.push(tokenDoc.ref);
+          byToken.set(token, owner);
         }
-      });
+      }
+      tokenOwners.push(...byToken.values());
     });
 
     if (tokenOwners.length === 0) {
@@ -135,10 +149,12 @@ export const sendPushOnNewNotification = onDocumentCreated(
           error.code === "messaging/invalid-registration-token" ||
           error.code === "messaging/registration-token-not-registered"
         ) {
-          tokensToRemove.push(group[index].ref.update({
-            fcmTokens: admin.firestore.FieldValue.arrayRemove(
-              group[index].token),
-          }));
+          for (const ref of group[index].refs) {
+            tokensToRemove.push(ref.update({
+              fcmTokens: admin.firestore.FieldValue.arrayRemove(
+                group[index].token),
+            }));
+          }
         }
       });
     }

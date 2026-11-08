@@ -3,6 +3,8 @@
 // them is trusted: targets must be approved members and links must stay in
 // the app.
 
+import {safePushLink} from "./shared/push-link";
+
 export type MemberRecord = {
   uid: string;
   email?: unknown;
@@ -55,16 +57,13 @@ export const selectRecipientEmails = (
 };
 
 /**
- * Only same-origin, path-relative links may be opened from a push.
+ * Only same-origin, path-relative links may be opened from a push. This is
+ * the same function the service worker embeds (shared/push-link.ts), so the
+ * two layers cannot drift.
  * @param {unknown} link Candidate deep link.
  * @return {string} A safe in-app path.
  */
-export const safeDeepLink = (link: unknown): string => {
-  if (typeof link !== "string") return "/";
-  const trimmed = link.trim();
-  if (!/^\/(?![/\\])/.test(trimmed) || trimmed.length > 300) return "/";
-  return trimmed;
-};
+export const safeDeepLink = (link: unknown): string => safePushLink(link);
 
 /**
  * Bounds user-provided text for notification payloads.

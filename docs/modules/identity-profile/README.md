@@ -33,7 +33,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 
 ## Architecture and Data Flow
 
-`AuthProvider` listens to Firebase Auth state, loads or creates the email-keyed Firestore profile, then resolves household membership. It imports only the app and Auth (`@/lib/firebase-app`) statically; Firestore and `@/lib/firebase` (which starts App Check first) load with a dynamic `import()` inside each profile, membership, household or logout call, so signed-out visitors never download them. `loading` stays true until the profile read finishes, exactly as before. Google sign-in calls `signInWithPopup(auth, provider)` with Firebase's standard popup resolver, configured once in `src/lib/firebase-app.ts` and kept on purpose so the popup is not blocked on mobile and Safari (see [Firebase Platform](../firebase-platform/README.md)); `tests/e2e/dashboard-house.spec.ts` signs in through the Auth emulator's popup from the landing page. The force-password-change dialog (react-hook-form and zod) loads as its own chunk only for members who must change their password. The login dialog uses a Google popup and requests additional profile fields through Google scopes. Profile edits merge into the current user's document and refresh context state.
+`AuthProvider` listens to Firebase Auth state, loads or creates the email-keyed Firestore profile, then resolves household membership. It imports only the app and Auth (`@/lib/firebase-app`) statically; Firestore and `@/lib/firebase` (which starts App Check first) load with a dynamic `import()` inside each profile, membership, household or logout call, so signed-out visitors never download them. `loading` stays true until the profile read finishes, exactly as before. Google sign-in calls `signInWithPopup(auth, provider)` with Firebase's standard popup resolver, configured once in `src/lib/firebase-app.ts` and kept on purpose so the popup is not blocked on mobile and Safari (see [Firebase Platform](../firebase-platform/README.md)); `tests/e2e/dashboard-house.spec.ts` signs in through the Auth emulator's popup from the landing page. The force-password-change dialog (react-hook-form and zod) loads as its own chunk only for members who must change their password. The Google provider requests only Firebase's default scopes (`openid`, `email`, `profile`) with no forced consent prompt. A new profile takes its name and photo from the ID-token claims Firebase Auth already returns (`getAdditionalUserInfo(result).profile`: `name`, `given_name`, `family_name`, `picture`), falling back to the Auth user's `displayName` and `photoURL`; there is no Google People API call and no birthday or gender is requested or stored. Profile edits merge into the current user's document and refresh context state.
 
 Popup cancellation produces `Login canceled.` and clears loading in `finally`.
 
@@ -47,7 +47,9 @@ For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for a
 
 - Profile: `users/{email}`.
 - Avatar objects: `users/{email}/avatars/{uuid}.{extension}`.
-- `User` includes Auth `uid`, email/name fields, avatar, role and permission compatibility fields, `householdId`, theme, chore settings, birthday, gender, force-password-change state, and `fcmTokens`.
+- `User` includes Auth `uid`, email/name fields, avatar, role and permission compatibility fields, `householdId`, theme, chore settings, force-password-change state, and the legacy `fcmTokens` field (see below).
+- Birthday and gender are no longer collected. Older profiles may still hold `birthday` and `gender` until `scripts/ops/purge-profile-demographics.mjs` removes them (owner-approved; dry run by default, prints counts only, `--apply` deletes just those two fields; authenticates with Application Default Credentials, or with `--firebase-tools-login` the `firebase login` account, loading firebase-tools from `--firebase-tools-from <dir>`, `HOMEHUB_FIREBASE_TOOLS_FROM` or this checkout, via `scripts/ops/credentials.mjs`). No feature reads them.
+- Push tokens: `users/{email}/private/push` `{ fcmTokens: string[] (at most 20), updatedAt }`, readable and writable only by the profile owner (see [Notifications](../notifications/README.md)). The legacy `users/{email}.fcmTokens` field, which housemates could read with the rest of the profile, is no longer written; it may only shrink or be removed, and `scripts/ops/migrate-push-tokens.mjs` moves what is left into the private document.
 - `theme` (an existing allow-listed field) holds `{ version: 2, mode: 'dark' | 'light' | 'system', darkPreset: 'midnight' | 'hearth' | 'forest', lightPreset: 'light' | 'sunrise', reduceMotion: boolean }`. Older profiles may still hold the legacy free-color shape `{ background, accent, backgroundHex, accentHex }`; it is ignored (curated presets replace free colors) and overwritten the next time the member changes appearance. No new profile keys or rules changes were needed.
 - `preferences` (an existing allow-listed field) may hold `weather: { enabled: boolean, city: string }`, the dashboard's opt-in live weather and its city (see [Application Shell](../application-shell/README.md), "Live weather"). The member writes it with a merge, so other keys are kept; missing means off. No rules change was needed.
 - New profiles default to `role: member` and `householdId: null`.
@@ -57,15 +59,15 @@ Household compatibility fields are maintained by Household Governance, not ordin
 
 ## Authentication, Roles, and Security
 
-Firestore rules allow a user to read/write their own email-keyed profile, allow same-household point reads, and prohibit listing the full `users` collection. Self-service updates are limited to an explicit profile-field allowlist.
+Firestore rules allow a user to read/write their own email-keyed profile, allow same-household point reads, and prohibit listing the full `users` collection. Self-service updates are limited to an explicit profile-field allowlist. `birthday` and `gender` may not be added or changed by any write (a new profile cannot carry them either); a profile that still holds them stays readable and updatable, and its owner may delete them. A new profile cannot carry `fcmTokens`, and an update may only shrink or remove that legacy field. `users/{email}/private/{docId}` allows only `docId == 'push'`, only for the profile owner, with only `fcmTokens` (a list of at most 20) and a server-time `updatedAt`; housemates, managers and outsiders are denied. Covered by `tests/rules/firestore.rules.test.ts` ("profile demographics", "push tokens").
 
 Avatar Storage access requires the authenticated token email to match `{userEmail}`, and uploads must be images of at most 5 MB (`isImage(5 * 1024 * 1024)` in `storage.rules`); the profile form checks the same limits before uploading.
 
 ## Integrations and Background Processing
 
-- Firebase Authentication uses Google popup sign-in.
+- Firebase Authentication uses Google popup sign-in with default scopes only; no other Google API is called.
 - Authenticated Playwright setup uses Firebase Auth Emulator custom-token sign-in and persists browser Auth IndexedDB under ignored `playwright/.auth/`.
-- Firebase Cloud Messaging stores tokens in `users/{email}.fcmTokens`.
+- Firebase Cloud Messaging tokens are stored in the owner-only `users/{email}/private/push` document (legacy: `users/{email}.fcmTokens`).
 - Firebase web configuration comes from the `NEXT_PUBLIC_FIREBASE_*` variables documented in `.env.example`.
 - No identity-owned Cloud Function or scheduled job exists.
 

@@ -1,5 +1,6 @@
 
 import { NextResponse } from 'next/server';
+import { safePushLink } from './push-link';
 
 // HomeHub's single service worker, served from /api/sw with a root scope.
 //
@@ -37,11 +38,8 @@ export async function GET() {
     // this origin; the server has already limited them to the right household.
     const PUSH_STORAGE_PREFIX = 'https://firebasestorage.googleapis.com/v0/b/' +
       encodeURIComponent(${JSON.stringify(firebaseConfig.storageBucket || '')}) + '/o/households%2F';
-    const safePushLink = (link) => {
-      if (typeof link !== 'string') return '/';
-      const trimmed = link.trim();
-      return /^\\/(?![\\/\\\\])/.test(trimmed) && trimmed.length <= 300 ? trimmed : '/';
-    };
+    // Source of ./push-link.ts, unit tested in tests/unit/notifications-push-link.test.ts.
+    const safePushLink = ${safePushLink.toString()};
     const safePushAsset = (value) => {
       if (typeof value !== 'string') return null;
       try {

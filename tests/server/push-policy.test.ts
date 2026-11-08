@@ -30,7 +30,11 @@ describe('push content', () => {
   test('only in-app paths are opened', () => {
     assert.equal(safeDeepLink('/chores'), '/chores');
     assert.equal(safeDeepLink('/household?tab=members'), '/household?tab=members');
-    for (const link of ['https://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)', 42, undefined]) {
+    for (const link of [
+      'https://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)', 42, undefined,
+      // URL parsing drops tabs and newlines, so these would open as //evil.example.
+      '/\t/evil.example', '/\n/evil.example', '/%2F/evil.example', '/chores/../../x', '/%2e%2e/x',
+    ]) {
       assert.equal(safeDeepLink(link), '/');
     }
   });
