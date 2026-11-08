@@ -66,4 +66,16 @@ test.describe('navigation and layout regressions', () => {
     expect(height).toBeLessThan(250);
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
   });
+
+  test('L10: unknown paths, including dotted probe paths, answer 404 with the not-found page', async ({ page }) => {
+    for (const path of ['/this-page-does-not-exist', '/.env.save', '/.aws/config']) {
+      const response = await page.goto(path);
+      expect(response?.status(), path).toBe(404);
+      const notFound = page.getByTestId('not-found');
+      await expect(notFound.getByRole('heading', { name: "We couldn't find that page" })).toBeVisible();
+      await expect(notFound.getByRole('link', { name: 'Go home' })).toHaveAttribute('href', '/');
+    }
+    await page.getByTestId('not-found').getByRole('link', { name: 'Go home' }).click();
+    await expect(page).toHaveURL(/\/$/);
+  });
 });

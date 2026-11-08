@@ -54,6 +54,7 @@ This module owns the root layout, global providers and overlays, primary navigat
 - `src/app/manifest.ts`, `src/app/icon.svg`, `src/app/favicon.ico`, `src/app/apple-icon.png`, `public/icons/*`
 - `scripts/brand/render-icons.mjs` (`npm run brand:icons`)
 - `src/app/offline/page.tsx`, `src/app/offline/loading.tsx` (and `src/app/share/loading.tsx` for the share target)
+- `src/app/not-found.tsx` (root 404: every unknown path, including dotted bot probes such as `/.env.save` and `/.aws/config`, answers status 404 with a server-rendered `EmptyState` and a "Go home" link, never a 500; no data access, so it renders signed in or out; covered by `tests/e2e/navigation-layout.spec.ts`, case L10)
 - `src/app/api/sw/route.ts` (offline half; push half is owned by [Notifications](../notifications/README.md))
 - `src/lib/service-worker.ts`
 - `src/app/e2e-login/page.tsx`

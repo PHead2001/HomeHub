@@ -198,7 +198,43 @@ service cloud.firestore {
           'timeZone',
           'forcePasswordChange'
         ]) &&
-        (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid);
+        (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid) &&
+        noNewDemographics() &&
+        legacyPushTokensOnlyShrink();
+    }
+
+    // Google birthday and gender are no longer collected. Profiles that still
+    // hold them stay readable and updatable (and may drop them), but no write
+    // may add or change either field.
+    function noNewDemographics() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return (!changed.hasAny(['birthday']) || !('birthday' in request.resource.data)) &&
+        (!changed.hasAny(['gender']) || !('gender' in request.resource.data));
+    }
+
+    // Push tokens now live in users/{email}/private/push, which only the owner
+    // can read. The legacy profile field may only shrink or be removed until the
+    // migration (scripts/ops/migrate-push-tokens.mjs) empties it.
+    function legacyPushTokensOnlyShrink() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['fcmTokens']) ||
+        !('fcmTokens' in request.resource.data) ||
+        (
+          request.resource.data.fcmTokens is list &&
+          resource.data.get('fcmTokens', []) is list &&
+          resource.data.get('fcmTokens', []).hasAll(request.resource.data.fcmTokens)
+        );
+    }
+
+    // updatedAt, when written, is the server time; an update may leave it as is.
+    function validPushTokenDoc(data, previous) {
+      return data.keys().hasOnly(['fcmTokens', 'updatedAt']) &&
+        data.fcmTokens is list &&
+        data.fcmTokens.size() <= 20 &&
+        (
+          !('updatedAt' in data) ||
+          data.updatedAt == request.time ||
+          (previous != null && data.updatedAt == previous.get('updatedAt', null))
+        );
     }
 
     // A user may point their own profile cache at a household only when their
@@ -244,9 +280,12 @@ service cloud.firestore {
     // Notifications
     // ---------------------------------------------------------------------
 
+    // An in-app path: one leading slash not followed by a slash or backslash,
+    // and no control characters anywhere (URL parsing drops tabs and newlines,
+    // so "/<tab>/evil" would otherwise open as "//evil").
     function validDeepLink(data) {
       return !('deepLink' in data) ||
-        (data.deepLink is string && data.deepLink.matches('^/([^/\\\\].*)?$') && data.deepLink.size() <= 300);
+        (data.deepLink is string && data.deepLink.matches('^/([^/\\\\\\x00-\\x1f\\x7f][^\\x00-\\x1f\\x7f]*)?$') && data.deepLink.size() <= 300);
     }
 
     function validNotificationTarget(householdId, data) {
@@ -611,12 +650,11 @@ service cloud.firestore {
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 
-      // Home Assistant credentials hold a long-lived token. Only members who may
-      // manage automation (and could replace the token anyway) can read it; the
-      // server reads it with the Admin SDK after authorizing the caller.
+      // Home Assistant credentials hold a long-lived token. No client may read or
+      // write them, owners included: the server authorizes the caller and then
+      // reads and writes them with the Admin SDK (src/app/automation/actions.ts).
       match /home-automation/{configId} {
-        allow read: if hasHouseholdPermission(householdId, 'automation.manage');
-        allow create, update, delete: if hasHouseholdPermission(householdId, 'automation.manage');
+        allow read, write: if false;
       }
 
       match /{unknownPath=**} {
@@ -677,11 +715,22 @@ service cloud.firestore {
         request.resource.data.email == userEmail &&
         request.resource.data.get('householdId', null) == null &&
         request.resource.data.role in ['member', 'user'] &&
+        !request.resource.data.keys().hasAny(['birthday', 'gender', 'fcmTokens']) &&
         (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid);
       allow update: if updatesOwnProfileOnly(userEmail) ||
         updatesOwnMembershipCache(userEmail) ||
         managerUpdatesMemberProfileCache();
       allow delete: if isProfileOwner(userEmail);
+
+      // Owner-only data housemates must never see. Only the push-token document
+      // exists; Cloud Functions read it with the Admin SDK to send pushes.
+      match /private/{docId} {
+        allow read, delete: if isProfileOwner(userEmail) && docId == 'push';
+        allow create: if isProfileOwner(userEmail) && docId == 'push' &&
+          validPushTokenDoc(request.resource.data, null);
+        allow update: if isProfileOwner(userEmail) && docId == 'push' &&
+          validPushTokenDoc(request.resource.data, resource.data);
+      }
 
       // Legacy per-user inbox: readable and dismissible by its owner only.
       // New notifications are household-scoped.

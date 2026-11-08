@@ -14,6 +14,7 @@ import {
   signOut,
   updatePassword,
   signInWithPopup,
+  getAdditionalUserInfo,
   type User as FirebaseAuthUser,
   GoogleAuthProvider,
 } from 'firebase/auth';
@@ -85,25 +86,27 @@ const slugifyHouseholdName = (name: string) => {
 
 const generateHouseholdId = (name: string) => `${slugifyHouseholdName(name)}-${generateShortCode(4).toLowerCase()}`;
 
+/**
+ * The Google ID-token claims Firebase Auth already returns at sign-in
+ * (`getAdditionalUserInfo(result).profile`). Only the default `openid email
+ * profile` scopes are requested, so there is no extra Google API call and no
+ * birthday or gender.
+ */
 type GoogleProfileData = {
-  names?: Array<{
-    displayName?: string;
-    givenName?: string;
-    familyName?: string;
-  }>;
-  birthdays?: Array<{
-    date?: {
-      month?: number;
-      day?: number;
-    };
-  }>;
-  genders?: Array<{
-    value?: string;
-  }>;
-  photos?: Array<{
-    url?: string;
-  }>;
+  name?: string;
+  given_name?: string;
+  family_name?: string;
+  picture?: string;
 };
+
+const textClaim = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+
+const googleProfileFrom = (profile: Record<string, unknown> | null | undefined): GoogleProfileData => ({
+  name: textClaim(profile?.name),
+  given_name: textClaim(profile?.given_name),
+  family_name: textClaim(profile?.family_name),
+  picture: textClaim(profile?.picture),
+});
 
 const hasErrorCode = (error: unknown): error is Error & { code: string } => {
   if (!(error instanceof Error) || !('code' in error)) {
@@ -171,21 +174,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { uid: firebaseUser.uid, ...dataToSave } as User;
     }
 
-    const names = googleProfileData.names?.[0] || {};
-    const birthdays = googleProfileData.birthdays?.[0]?.date || {};
-    const genders = googleProfileData.genders?.[0]?.value;
-
     const newUserProfile: Partial<Omit<User, 'uid'>> = {
       email: firebaseUser.email,
-      displayName: names.displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0],
-      firstName: names.givenName,
-      lastName: names.familyName,
-      avatarUrl: googleProfileData.photos?.[0]?.url || firebaseUser.photoURL,
+      displayName: googleProfileData.name || firebaseUser.displayName || firebaseUser.email.split('@')[0],
+      firstName: googleProfileData.given_name,
+      lastName: googleProfileData.family_name,
+      avatarUrl: googleProfileData.picture || firebaseUser.photoURL,
       role: 'member',
       forcePasswordChange: false,
       householdId: null,
-      birthday: birthdays?.month && birthdays?.day ? `${birthdays.month}/${birthdays.day}` : undefined,
-      gender: genders,
     };
     
     const dataToSave = Object.fromEntries(
@@ -341,30 +338,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = useCallback(async (): Promise<void> => {
     setLoading(true);
+    // Default scopes only (openid, email, profile). Name and photo come from
+    // the ID token Firebase Auth already returns; nothing else is requested.
     const googleProvider = new GoogleAuthProvider();
-    googleProvider.addScope("https://www.googleapis.com/auth/user.birthday.read");
-    googleProvider.addScope("https://www.googleapis.com/auth/user.gender.read");
-    googleProvider.setCustomParameters({ prompt: "consent" });
 
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const { user: firebaseUser } = result;
+      const googleProfileData = googleProfileFrom(getAdditionalUserInfo(result)?.profile);
 
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      const accessToken = credential?.accessToken;
-
-      if (!accessToken) throw new Error("No access token from Google Sign-In.");
-      
-      const peopleRes = await fetch(
-        "https://people.googleapis.com/v1/people/me?personFields=names,birthdays,genders,emailAddresses,photos",
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-
-      if (!peopleRes.ok) throw new Error(`Google People API failed with status: ${peopleRes.status}`);
-      
-      const googleProfileData = await peopleRes.json() as GoogleProfileData;
-      
-      // The user profile is created or fetched immediately after sign-in with the full data.
+      // The user profile is created or fetched immediately after sign-in.
       const userProfile = await fetchOrCreateUserProfile(firebaseUser, googleProfileData);
 
       if (userProfile) {

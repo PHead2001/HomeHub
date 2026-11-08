@@ -7,8 +7,11 @@ import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { BellRing, Loader2 } from 'lucide-react';
-import { getFirebaseMessaging } from '@/lib/firebase';
+import { db, getFirebaseMessaging } from '@/lib/firebase';
 import { getToken } from 'firebase/messaging';
+import { deleteField, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { awaitWriteUnlessOffline } from '@/lib/firestore-offline';
+import { nextPushTokens } from '@/lib/push-tokens';
 import { registerHomeHubServiceWorker } from '@/lib/service-worker';
 
 
@@ -16,7 +19,7 @@ import { registerHomeHubServiceWorker } from '@/lib/service-worker';
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
 
 export function PushNotificationSettings() {
-    const { currentUser, updateUser } = useAuth();
+    const { currentUser } = useAuth();
     const { toast } = useToast();
     const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default');
     const [isSubscribing, setIsSubscribing] = useState(false);
@@ -65,8 +68,22 @@ export function PushNotificationSettings() {
             });
             
             if (currentToken) {
-                const newTokens = Array.from(new Set([...(currentUser.fcmTokens || []), currentToken]));
-                await updateUser({ fcmTokens: newTokens });
+                // Tokens live in an owner-only document so housemates, who can read
+                // the profile, never see them. Any legacy profile tokens move along,
+                // and past the rules' cap of 20 the oldest tokens make room.
+                const pushRef = doc(db, 'users', currentUser.email, 'private', 'push');
+                const stored = await getDoc(pushRef);
+                const batch = writeBatch(db);
+                batch.set(pushRef, {
+                    fcmTokens: nextPushTokens(stored.get('fcmTokens'), currentUser.fcmTokens, currentToken),
+                    updatedAt: serverTimestamp(),
+                });
+                if (currentUser.fcmTokens) {
+                    batch.update(doc(db, 'users', currentUser.email), { fcmTokens: deleteField() });
+                }
+                await awaitWriteUnlessOffline(batch.commit(), error => {
+                    console.error('Push subscription could not be saved.', error instanceof Error ? error : String(error));
+                });
                 toast({ title: 'Subscription Successful!', description: 'Push notifications are now active on this device.' });
             } else {
                  throw new Error('Failed to retrieve FCM token.');
