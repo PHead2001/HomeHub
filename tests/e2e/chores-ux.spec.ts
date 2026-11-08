@@ -254,7 +254,7 @@ test.describe('chore library and empty household', () => {
       await page.getByRole('button', { name: 'Chore Manager' }).click();
       await page.getByRole('menuitem', { name: 'Chore library' }).click();
       const library = page.getByRole('dialog', { name: 'Chore library' });
-      await expect(library.getByRole('cell', { name: task })).toBeVisible();
+      await expect(library.getByRole('cell', { name: task, exact: true })).toBeVisible();
 
       // Cancel keeps it.
       await library.getByRole('button', { name: `Delete ${task}`, exact: true }).click();
@@ -270,7 +270,7 @@ test.describe('chore library and empty household', () => {
       await expect.poll(async () => (await template.get()).exists).toBe(false);
       await expect.poll(async () => (await openChore.get()).exists).toBe(false);
       await expect(page.getByRole('region', { name: /notification/i }).getByText('Chore deleted', { exact: true })).toBeVisible();
-      await expect(library.getByRole('cell', { name: task })).toHaveCount(0);
+      await expect(library.getByRole('cell', { name: task, exact: true })).toHaveCount(0);
     } finally {
       await template.delete();
       await openChore.delete();
