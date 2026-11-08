@@ -53,12 +53,33 @@ function firebaseToolsCredential(location) {
 }
 
 /**
- * The firebase-admin credential for the parsed options, and a label to print.
- * @param {{ auth: 'adc' | 'firebase-tools', firebaseToolsFrom: string | null }} options
+ * A Firestore client for the parsed options, and a label to print.
+ *
+ * firebase-admin's Firestore only accepts a service-account or Application
+ * Default credential, so the firebase-tools login cannot go through
+ * initializeApp(). That path builds @google-cloud/firestore (the copy
+ * firebase-admin itself uses, so FieldValue and FieldPath from
+ * 'firebase-admin/firestore' work with it) on an OAuth client whose refresh
+ * handler asks firebase-tools for a token when one is needed.
+ * @param {{ projectId: string, auth: 'adc' | 'firebase-tools', firebaseToolsFrom: string | null }} options
  */
-export function opsCredential(options) {
+export async function opsFirestore(options) {
+  const { projectId } = options;
   if (options.auth === 'firebase-tools') {
-    return { credential: firebaseToolsCredential(options.firebaseToolsFrom), label: 'firebase-tools login' };
+    const source = firebaseToolsCredential(options.firebaseToolsFrom);
+    const local = requireFrom(null);
+    const firestorePath = local.resolve('@google-cloud/firestore');
+    const { Firestore } = local(firestorePath);
+    const { OAuth2Client } = createRequire(firestorePath)('google-auth-library');
+    const authClient = new OAuth2Client();
+    authClient.refreshHandler = async () => {
+      const token = await source.getAccessToken();
+      return { access_token: token.access_token, expiry_date: Date.now() + token.expires_in * 1000 };
+    };
+    return { db: new Firestore({ projectId, authClient }), label: 'firebase-tools login' };
   }
-  return { credential: applicationDefault(), label: 'Application Default Credentials' };
+  const { initializeApp } = await import('firebase-admin/app');
+  const { getFirestore } = await import('firebase-admin/firestore');
+  const app = initializeApp({ credential: applicationDefault(), projectId });
+  return { db: getFirestore(app), label: 'Application Default Credentials' };
 }

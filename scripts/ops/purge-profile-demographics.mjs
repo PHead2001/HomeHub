@@ -19,21 +19,18 @@
 // reads only the two fields (a projection), so the other profile data is never
 // downloaded. --apply deletes just those fields with FieldValue.delete(), in
 // batches of at most 400 writes; nothing else on the profile changes.
-import { initializeApp } from 'firebase-admin/app';
-import { FieldPath, FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { DEMOGRAPHIC_FIELDS, countDemographics, demographicFieldsToDelete, parseOpsArgs } from './profile-privacy.mjs';
-import { opsCredential } from './credentials.mjs';
+import { opsFirestore } from './credentials.mjs';
 
 const PAGE_SIZE = 400;
 
 const options = parseOpsArgs(process.argv.slice(2), process.env);
 const { projectId, apply } = options;
-const { credential, label } = opsCredential(options);
+const { db, label } = await opsFirestore(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (fields will be deleted)' : 'dry run (no writes)'}.`);
 
-const app = initializeApp({ credential, projectId });
-const db = getFirestore(app);
 
 const totals = { scanned: 0, birthday: 0, gender: 0 };
 let updated = 0;

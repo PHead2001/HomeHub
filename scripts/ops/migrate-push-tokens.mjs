@@ -20,21 +20,18 @@
 // Output is counts only: never emails, document IDs or tokens. Each profile is
 // moved in its own transaction (read both documents, write the merged list,
 // delete the legacy field), so a token registered meanwhile is not lost.
-import { initializeApp } from 'firebase-admin/app';
-import { FieldPath, FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { mergePushTokens, parseOpsArgs } from './profile-privacy.mjs';
-import { opsCredential } from './credentials.mjs';
+import { opsFirestore } from './credentials.mjs';
 
 const PAGE_SIZE = 400;
 
 const options = parseOpsArgs(process.argv.slice(2), process.env);
 const { projectId, apply } = options;
-const { credential, label } = opsCredential(options);
+const { db, label } = await opsFirestore(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (tokens will move)' : 'dry run (no writes)'}.`);
 
-const app = initializeApp({ credential, projectId });
-const db = getFirestore(app);
 
 let scanned = 0;
 let withLegacyField = 0;
