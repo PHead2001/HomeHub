@@ -34,6 +34,8 @@ import type { HouseholdMember, HouseholdRole, InviteCode, PermissionOverrides } 
 import { EmptyState } from '@/components/empty-state';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { MemberAvatarStack } from '@/components/member-avatar';
+import { NumberTicker } from '@/components/motion/number-ticker';
+import { Stagger } from '@/components/motion/stagger';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -580,9 +582,13 @@ export function HouseholdManagementClient() {
     );
   }
 
-  const memberStatValue = pendingMembers.length > 0
+  const memberStatText = pendingMembers.length > 0
     ? `${approvedMembers.length} · ${pendingMembers.length} pending`
     : String(approvedMembers.length);
+  // Counts tick in (H12); the text form is the card's title.
+  const memberStatValue = pendingMembers.length > 0
+    ? <><NumberTicker value={approvedMembers.length} /> · <NumberTicker value={pendingMembers.length} /> pending</>
+    : <NumberTicker value={approvedMembers.length} />;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -624,6 +630,7 @@ export function HouseholdManagementClient() {
                 icon={Users}
                 label="Members"
                 value={memberStatValue}
+                title={memberStatText}
                 extra={approvedMembers.length > 1 ? (
                   <MemberAvatarStack
                     members={approvedMembers.map((m) => ({ uid: m.uid, name: memberName(m), photoUrl: m.avatarUrl }))}
@@ -634,7 +641,7 @@ export function HouseholdManagementClient() {
                 ) : null}
               />
               <SummaryCard icon={Shield} label="Your role" value={currentMember ? roleLabel(currentMember.role) : 'Member'} />
-              <SummaryCard icon={UserPlus} label="Active invites" value={String(activeInvites.length)} />
+              <SummaryCard icon={UserPlus} label="Active invites" value={<NumberTicker value={activeInvites.length} />} title={String(activeInvites.length)} />
             </div>
             <Card>
               <CardHeader>
@@ -801,7 +808,7 @@ export function HouseholdManagementClient() {
                 </Card>
               </>
             ) : (
-              <div className="grid gap-3 md:grid-cols-2">
+              <Stagger className="grid gap-3 md:grid-cols-2" data-testid="household-member-list">
                 {(canManageMembers ? approvedMembers : members).map((member) => (
                   <MemberCard
                     key={member.uid}
@@ -816,7 +823,7 @@ export function HouseholdManagementClient() {
                     onRemove={askRemove}
                   />
                 ))}
-              </div>
+              </Stagger>
             )}
           </TabsContent>
 
@@ -960,21 +967,24 @@ function SummaryCard({
   icon: Icon,
   label,
   value,
+  title,
   extra,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
-  value: string;
+  /** Text, or a live number (`NumberTicker`) with `title` as its text form. */
+  value: React.ReactNode;
+  title?: string;
   extra?: React.ReactNode;
 }) {
   return (
-    <Card className="min-w-0">
+    <Card className="min-w-0" data-testid={`household-stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
       <CardContent className="flex h-full min-w-0 items-start gap-3 p-3 sm:p-4">
         <Icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
         <div className="min-w-0 flex-1">
           <p className="text-xs text-muted-foreground sm:text-sm">{label}</p>
           {/* Long names wrap (at most three lines) instead of running under the next card. */}
-          <p className="line-clamp-3 break-words font-semibold [overflow-wrap:anywhere]" title={value}>{value}</p>
+          <p className="line-clamp-3 break-words font-semibold [overflow-wrap:anywhere]" title={title ?? (typeof value === 'string' ? value : undefined)} data-testid="household-stat-value">{value}</p>
           {extra}
         </div>
       </CardContent>

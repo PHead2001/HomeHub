@@ -26,6 +26,7 @@ import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
 import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
 import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
 import { useAppBadge } from "@/hooks/use-app-badge";
+import { NumberTicker } from "@/components/motion/number-ticker";
 import { EmptyState } from "@/components/empty-state";
 import { activeBellNotifications, caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
 import styles from "@/components/dashboard/dashboard.module.css";
@@ -217,7 +218,8 @@ export function NotificationBell() {
               aria-hidden
               className={cn("absolute right-0 top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-0.5 text-[10px] font-semibold text-destructive-foreground", ringKey > 0 && styles.pop)}
             >
-              {unreadCount > 9 ? "9+" : unreadCount}
+              {/* Ticks to a new count (H12); the button's label carries the number. */}
+              {unreadCount > 9 ? "9+" : <NumberTicker value={unreadCount} animateOnMount={false} />}
             </span>
           )}
         </Button>

@@ -5,7 +5,7 @@ import { getOpenAiClient } from '@/ai/openai-client';
 import { toStrictOutputSchema } from '@/ai/strict-output-schema';
 import { buildUntrustedDataPrompt, HOMEHUB_AI_SYSTEM_INSTRUCTION } from '@/ai/system-instruction';
 
-export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary' | 'overview';
+export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary' | 'overview' | 'command-parse';
 export type AiReasoningEffort = 'low' | 'medium' | 'high';
 
 export type AiGenerationUsage = {
@@ -126,9 +126,62 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
     };
   }
 
+  if (flowName === 'command-parse') return deterministicCommandParse(input);
+
   const summaryInput = input as { log: string };
   const cleanLog = summaryInput.log.replace(/ai-test:[a-z-]+/gi, '').trim();
   return { summary: `Maintenance summary: ${cleanLog.slice(0, 220)}` };
+};
+
+/**
+ * Emulator stand-in for the quick-add reader: a mileage reading is a maintenance
+ * log for the first vehicle, "every <weekday>" is a weekly chore for a member the
+ * text names; anything else is "none". It also invents a mileage the text does not
+ * contain when asked (`ai-test:invented-mileage`), so tests can prove the
+ * sanitizer drops it.
+ */
+const deterministicCommandParse = (input: unknown) => {
+  const command = input as {
+    text: string;
+    allowedKinds: string[];
+    members: Array<{ ref: string; name: string }>;
+    vehicles: Array<{ ref: string; name: string }>;
+  };
+  const text = command.text.toLowerCase();
+  const reading = text.replace(/(\d),(?=\d{3})/g, '$1').match(/\b(\d{4,7})\b/);
+  if (command.allowedKinds.includes('maintenance') && (reading || text.includes('ai-test:invented-mileage'))) {
+    return {
+      kind: 'maintenance',
+      maintenance: {
+        title: text.includes('oil') ? 'Oil change' : 'Maintenance',
+        mileage: text.includes('ai-test:invented-mileage') ? 123_456 : Number(reading![1]),
+        vehicleRef: command.vehicles[0]?.ref ?? null,
+      },
+      chore: null,
+      shopping: null,
+      feeding: null,
+    };
+  }
+  const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const day = days.findIndex((name) => text.includes(name));
+  if (command.allowedKinds.includes('chore') && day >= 0) {
+    const member = command.members.find((candidate) => text.includes(candidate.name.split(' ')[0].toLowerCase()));
+    const task = text.includes('recycling') ? 'Recycling' : text.includes('trash') ? 'Trash' : 'Chore';
+    return {
+      kind: 'chore',
+      chore: {
+        task,
+        dueDate: null,
+        repeat: { frequency: 'weekly', dayOfWeek: day, dayOfMonth: null },
+        assigneeRef: member?.ref ?? 'm99',
+        roomRef: null,
+      },
+      maintenance: null,
+      shopping: null,
+      feeding: null,
+    };
+  }
+  return { kind: 'none', chore: null, maintenance: null, shopping: null, feeding: null };
 };
 
 const withTimeout = async <T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number) => {

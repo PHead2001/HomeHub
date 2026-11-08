@@ -41,12 +41,12 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     test.skip(testInfo.project.name !== 'desktop-chromium', 'One Chromium project covers the explicit width matrix.');
     await page.setViewportSize({ width: 360, height: 900 });
     await openAuthenticated(page);
-    await page.getByRole('button', { name: 'Generate Overview' }).click();
+    await page.getByRole('button', { name: 'Rewrite the brief with AI' }).click();
     await expect(page.getByTestId('home-ai-overview-result')).toBeVisible();
 
     for (const width of [360, 390, 412]) {
       await page.setViewportSize({ width, height: 900 });
-      await expect(page.getByRole('button', { name: 'Regenerate Overview' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Rewrite the brief with AI' })).toBeVisible();
       const bounds = await page.evaluate(() => ({
         clientWidth: document.documentElement.clientWidth,
         scrollWidth: document.documentElement.scrollWidth,
@@ -122,14 +122,16 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     }
   });
 
+  // The AI Overview is folded into the morning brief (H04): its sparkle asks the same
+  // overview flow, and the result shows HomeHub's exact counts under the AI-written line.
   test('overview is on-demand, exact, transient, and useful through deterministic provider failures', async ({ page }, testInfo) => {
     const choreRef = adminDb.collection('households').doc(householdA).collection('chores').doc('chore-kitchen');
     await openAuthenticated(page);
-    await expect(page.getByRole('button', { name: 'Generate Overview' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Rewrite the brief with AI' })).toBeVisible();
     await expect(page.getByTestId('home-ai-overview-result')).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Generate Overview' }).click();
-    await expect(page.getByRole('button', { name: 'Generating...' })).toBeDisabled();
+    await page.getByRole('button', { name: 'Rewrite the brief with AI' }).click();
+    await expect(page.getByRole('button', { name: 'Rewriting the brief with AI' })).toBeDisabled();
     const result = page.getByTestId('home-ai-overview-result');
     await expect(result).toBeVisible();
     const exactSeededMetrics = {
@@ -149,7 +151,7 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
         await expect(metric.getByText(text, { exact: true })).toBeVisible();
       }
     }
-    await expect(page.getByRole('button', { name: 'Regenerate Overview' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Rewrite the brief with AI' })).toBeVisible();
 
     for (const [scenario, message] of [
       ['rate-limit', 'rate limited'],
@@ -158,7 +160,7 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
       ['provider-error', 'temporarily unavailable'],
     ] as const) {
       await choreRef.update({ task: `AI-TEST:${scenario} Reset the kitchen` });
-      await page.getByRole('button', { name: 'Regenerate Overview' }).click();
+      await page.getByRole('button', { name: 'Rewrite the brief with AI' }).click();
       await expect(result.getByText(new RegExp(message, 'i'))).toBeVisible();
       await expect(result.getByText('Your open chores')).toBeVisible();
     }
@@ -166,7 +168,7 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
 
     await page.reload();
     await expect(page.getByTestId('home-ai-overview-result')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Generate Overview' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Rewrite the brief with AI' })).toBeVisible();
   });
 
   test('limited user sees only authorized overview sections', async ({ browser }) => {
@@ -175,7 +177,7 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     await page.clock.setFixedTime(fixedNow);
     await page.goto('/e2e-login?uid=e2e-limited-uid');
     await expect(page).toHaveURL('/');
-    await page.getByRole('button', { name: 'Generate Overview' }).click();
+    await page.getByRole('button', { name: 'Rewrite the brief with AI' }).click();
     const result = page.getByTestId('home-ai-overview-result');
     await expect(result.getByText('Pets', { exact: true })).toBeVisible();
     await expect(result.getByText('Needed items')).toHaveCount(0);

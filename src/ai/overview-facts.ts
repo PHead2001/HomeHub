@@ -4,10 +4,13 @@ import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import type { AuthorizedHouseholdUser } from '@/ai/action-auth';
 import { adminDb } from '@/lib/server/firebase-admin';
 import type { HomeOverviewFacts } from '@/ai/overview-types';
+import { redactEmails } from '@/ai/redact';
 
 const DAY_MS = 86_400_000;
+// Free-text labels (notification titles, item names) can contain an email
+// address; it is replaced before the facts go to the model.
 const label = (value: unknown, fallback: string) => typeof value === 'string'
-  ? value.trim().replace(/\s+/g, ' ').slice(0, 100) || fallback
+  ? redactEmails(value.trim()).replace(/\s+/g, ' ').slice(0, 100) || fallback
   : fallback;
 
 const toDate = (value: unknown): Date | null => {

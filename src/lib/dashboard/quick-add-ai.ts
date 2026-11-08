@@ -1,0 +1,230 @@
+/**
+ * The AI fallback for quick add (H13), on the client side: what is sent to the
+ * reader (`src/ai/tasks/parse-command.ts`) and how its answer becomes the same
+ * `QuickAddIntent` the deterministic parser produces, so the palette shows the
+ * same preview card and writes through the same code. Pure (no Firebase, no
+ * React), so it is unit tested.
+ *
+ * Only display names leave the device, each paired with a short reference (`m1`,
+ * `r1`, `v1`…) that is resolved back here; emails, ids and other fields stay local,
+ * a name that is (or contains) an email becomes a neutral label (`modelSafeName`),
+ * and an email typed into the sentence itself is replaced before it is sent.
+ */
+import type { ParseCommandInput, ParseCommandOutput } from '@/ai/tasks/parse-command';
+import { containsEmail, redactEmails } from '@/ai/redact';
+import { dayKey, startOfLocalDay } from './dates';
+import {
+  firstDateForRepeat,
+  normalizeRepeat,
+  type QuickAddContext,
+  type QuickAddIntent,
+  type QuickAddList,
+  type QuickAddMember,
+  type QuickAddPet,
+  type QuickAddRepeat,
+  type QuickAddRoom,
+  type QuickAddVehicle,
+  type Weekday,
+} from './quick-add';
+
+export type AiParseRefs = {
+  members: Map<string, QuickAddMember>;
+  rooms: Map<string, QuickAddRoom>;
+  pets: Map<string, QuickAddPet>;
+  lists: Map<string, QuickAddList>;
+  vehicles: Map<string, QuickAddVehicle>;
+};
+
+const LIMITS = { members: 30, rooms: 60, pets: 30, lists: 30, vehicles: 20 } as const;
+const clip = (value: string) => value.trim().replace(/\s+/g, ' ').slice(0, 80) || 'Unnamed';
+
+/**
+ * The name the model may see. Display names fall back to email addresses for
+ * members without one, and a household may type an email into any name, so a name
+ * that contains an email, or equals the member's email name ("sam.member"), is
+ * replaced with a neutral label ("Member 2"). The opaque reference still maps the
+ * answer back to the record.
+ */
+export function modelSafeName(name: string, neutral: string, email?: string): string {
+  const clipped = clip(name);
+  const local = email?.split('@')[0]?.trim().toLowerCase();
+  if (containsEmail(clipped) || clipped.includes('@')) return neutral;
+  if (local && clipped.toLowerCase() === local) return neutral;
+  return clipped;
+}
+
+function withRefs<T extends { name: string; email?: string }>(items: readonly T[], prefix: string, max: number, noun: string) {
+  const map = new Map<string, T>();
+  const named = items.slice(0, max).map((item, index) => {
+    const ref = `${prefix}${index + 1}`;
+    map.set(ref, item);
+    return { ref, name: modelSafeName(item.name, `${noun} ${index + 1}`, item.email) };
+  });
+  return { map, named };
+}
+
+const vehicleLabel = (vehicle: QuickAddVehicle) =>
+  [vehicle.name, [vehicle.make, vehicle.model].filter(Boolean).join(' ')].filter((part) => part && part.trim()).join(' · ');
+
+/** The reader's input for `text`, plus the references to resolve its answer. */
+export function buildAiParseRequest(text: string, context: QuickAddContext): { input: ParseCommandInput; refs: AiParseRefs } {
+  const members = withRefs(context.members, 'm', LIMITS.members, 'Member');
+  const rooms = withRefs(context.rooms ?? [], 'r', LIMITS.rooms, 'Room');
+  const pets = withRefs(context.pets, 'p', LIMITS.pets, 'Pet');
+  const lists = withRefs(context.lists, 'l', LIMITS.lists, 'List');
+  const vehicles = withRefs((context.vehicles ?? []).map((vehicle) => ({ ...vehicle, name: vehicleLabel(vehicle) || vehicle.name })), 'v', LIMITS.vehicles, 'Vehicle');
+  // Map back to the original vehicle records (the label is only for the model).
+  const vehicleMap = new Map<string, QuickAddVehicle>();
+  vehicles.map.forEach((_, ref) => {
+    const index = Number(ref.slice(1)) - 1;
+    const original = context.vehicles?.[index];
+    if (original) vehicleMap.set(ref, original);
+  });
+  return {
+    input: {
+      text: redactEmails(text.trim().replace(/\s+/g, ' ')).slice(0, 200),
+      today: dayKey(context.now),
+      members: members.named,
+      rooms: rooms.named,
+      pets: pets.named,
+      lists: lists.named,
+      vehicles: vehicles.named,
+    },
+    refs: { members: members.map, rooms: rooms.map, pets: pets.map, lists: lists.map, vehicles: vehicleMap },
+  };
+}
+
+/**
+ * Offer "Read it with AI" when the deterministic parser found nothing, or only a
+ * bare-words shopping guess, for something that reads like a sentence.
+ */
+export function shouldOfferAiParse(text: string, intent: QuickAddIntent | null): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 6 || trimmed.length > 200 || trimmed.split(/\s+/).length < 2) return false;
+  return intent === null || (intent.kind === 'shopping' && !intent.explicit);
+}
+
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+function toRepeat(repeat: NonNullable<NonNullable<ParseCommandOutput['chore']>['repeat']>): QuickAddRepeat | null {
+  if (repeat.frequency === 'daily') return { frequency: 'daily' };
+  if (repeat.frequency === 'monthly') return repeat.dayOfMonth ? { frequency: 'monthly', dayOfMonth: repeat.dayOfMonth } : null;
+  return repeat.dayOfWeek !== undefined ? { frequency: repeat.frequency, dayOfWeek: repeat.dayOfWeek as Weekday } : null;
+}
+
+/**
+ * The palette intent for the reader's answer, or null for "none" (the palette then
+ * says it could not read the sentence and stays on search). References resolve to
+ * the member's own records; an unresolvable pet means no intent. A due date in the
+ * past is moved to today.
+ */
+export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs, context: QuickAddContext): QuickAddIntent | null {
+  const today = dayKey(startOfLocalDay(context.now));
+  if (output.kind === 'chore' && output.chore) {
+    const asked = output.chore.repeat ? toRepeat(output.chore.repeat) : null;
+    const normalized = asked ? normalizeRepeat(asked) : null;
+    const repeat = normalized?.repeat ?? null;
+    const due = repeat
+      ? dayKey(firstDateForRepeat(repeat, context.now))
+      : output.chore.dueDate && DAY.test(output.chore.dueDate) && output.chore.dueDate >= today ? output.chore.dueDate : today;
+    return {
+      kind: 'chore',
+      task: capitalize(output.chore.task.trim()).slice(0, 100),
+      dueDate: due,
+      assignee: (output.chore.assigneeRef && refs.members.get(output.chore.assigneeRef)) || null,
+      repeat,
+      room: (output.chore.roomRef && refs.rooms.get(output.chore.roomRef)) || null,
+      repeatNote: normalized?.note ?? null,
+    };
+  }
+  if (output.kind === 'maintenance' && output.maintenance) {
+    const vehicle = output.maintenance.vehicleRef ? refs.vehicles.get(output.maintenance.vehicleRef) : undefined;
+    return {
+      kind: 'maintenance',
+      title: capitalize(output.maintenance.title.trim()).slice(0, 100),
+      mileage: output.maintenance.mileage ?? null,
+      target: vehicle ? { kind: 'vehicle', vehicle } : null,
+    };
+  }
+  if (output.kind === 'shopping' && output.shopping) {
+    const list = (output.shopping.listRef && refs.lists.get(output.shopping.listRef))
+      || context.lists.find((candidate) => candidate.type === 'Grocery')
+      || context.lists[0]
+      || null;
+    return {
+      kind: 'shopping',
+      items: output.shopping.items.map((item) => ({ name: capitalize(item.name.trim()), quantity: item.quantity })),
+      list,
+      explicit: true,
+    };
+  }
+  if (output.kind === 'feeding' && output.feeding) {
+    const pet = refs.pets.get(output.feeding.petRef);
+    if (!pet) return null;
+    return { kind: 'feeding', pet, amount: output.feeding.amount ?? null, unit: output.feeding.unit ?? null };
+  }
+  return null;
+}
+
+export type RevisionGuard = {
+  /** Starts a request: returns its revision and makes every older one stale. */
+  next: () => number;
+  /** Makes every outstanding request stale (the input or the preview changed). */
+  invalidate: () => void;
+  /** True while `revision` is still the latest and nothing invalidated it. */
+  isCurrent: (revision: number) => boolean;
+  /** True while the latest request is still running and nothing invalidated it. */
+  isPending: () => boolean;
+  /** Marks `revision` as finished (a no-op for any other revision). */
+  settle: (revision: number) => void;
+};
+
+/**
+ * Ties async AI reads to the input they were made for: only the latest request,
+ * and only until the input or the open preview changes, may update the palette.
+ */
+export function createRevisionGuard(): RevisionGuard {
+  let current = 0;
+  let running: number | null = null;
+  return {
+    next: () => {
+      current += 1;
+      running = current;
+      return current;
+    },
+    invalidate: () => {
+      current += 1;
+    },
+    isCurrent: (revision) => revision === current,
+    isPending: () => running !== null && running === current,
+    settle: (revision) => {
+      if (running === revision) running = null;
+    },
+  };
+}
+
+/**
+ * Runs `task` as the guard's latest request and hands its result or error to the
+ * handlers only if nothing made it stale meanwhile (a newer request, or
+ * `guard.invalidate()` when the member goes back). `settled` runs either way for
+ * the latest request, so a loading state never sticks; it does not run for a
+ * stale one, whose owner has already moved on.
+ */
+export async function runLatest<T>(
+  guard: RevisionGuard,
+  task: () => Promise<T>,
+  handlers: { onResult: (value: T) => void; onError: (error: unknown) => void; settled?: () => void },
+): Promise<'applied' | 'stale'> {
+  const revision = guard.next();
+  try {
+    const value = await task();
+    if (!guard.isCurrent(revision)) return 'stale';
+    handlers.onResult(value);
+  } catch (error) {
+    if (!guard.isCurrent(revision)) return 'stale';
+    handlers.onError(error);
+  }
+  handlers.settled?.();
+  return 'applied';
+}

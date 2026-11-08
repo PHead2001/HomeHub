@@ -13,6 +13,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { isComposingKey, isTypingTarget, matchShortcut, SHORTCUTS } from '@/lib/dashboard/shortcuts';
 import type { HouseholdPermission } from '@/lib/types';
 import dynamic from 'next/dynamic';
+import { ShortcutKeys } from '@/components/ui/shortcut-keys';
 
 // The palette searches and writes household data (Firestore); it is its own chunk,
 // loaded only once a signed-in member can use it (`enabled`).
@@ -116,16 +117,9 @@ export function CommandCenter() {
           </DialogHeader>
           <ul className="max-h-[60vh] space-y-1 overflow-y-auto" data-testid="shortcut-list">
             {visible.map((shortcut) => (
-              <li key={`${shortcut.keys.join('+')}-${shortcut.label}`} className="flex items-center justify-between gap-3 py-1 text-sm">
+              <li key={shortcut.id} className="flex items-center justify-between gap-3 py-1 text-sm">
                 <span>{shortcut.label}</span>
-                <span className="flex shrink-0 items-center gap-1">
-                  {shortcut.keys.map((key, i) => (
-                    <span key={key} className="flex items-center gap-1">
-                      {i > 0 && <span className="text-xs text-muted-foreground">{shortcut.keys[0] === 'Ctrl' ? '+' : 'then'}</span>}
-                      <kbd className="min-w-6 rounded border bg-muted px-1.5 py-0.5 text-center text-xs">{key === 'Ctrl' ? 'Ctrl / ⌘' : key}</kbd>
-                    </span>
-                  ))}
-                </span>
+                <ShortcutKeys shortcut={shortcut.id} />
               </li>
             ))}
           </ul>
