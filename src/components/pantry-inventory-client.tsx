@@ -35,7 +35,7 @@ import {
   DialogPortal,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { LiveCount } from '@/components/shopping/live-count';
+import { NumberTicker } from '@/components/motion/number-ticker';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import {
   AlertDialog,
@@ -1114,9 +1114,9 @@ export function PantryInventoryClient() {
               <CardTitle className="font-headline">Pantry Inventory</CardTitle>
               {(expiringSoon > 0 || expired > 0) && (
                 <p className="mt-1 text-sm">
-                  {expiringSoon > 0 && <span className="text-warning"><LiveCount value={expiringSoon} /> {expiringSoon === 1 ? 'item' : 'items'} expiring soon</span>}
+                  {expiringSoon > 0 && <span className="text-warning"><NumberTicker value={expiringSoon} animateOnMount={false} /> {expiringSoon === 1 ? 'item' : 'items'} expiring soon</span>}
                   {expiringSoon > 0 && expired > 0 && <span className="text-muted-foreground"> · </span>}
-                  {expired > 0 && <span className="text-destructive"><LiveCount value={expired} /> expired</span>}
+                  {expired > 0 && <span className="text-destructive"><NumberTicker value={expired} animateOnMount={false} /> expired</span>}
                 </p>
               )}
             </div>
@@ -1192,7 +1192,7 @@ export function PantryInventoryClient() {
                     return (
                         <AccordionItem value={loc} key={loc} className="min-w-0 rounded-lg border bg-background px-3 sm:px-4">
                             <AccordionTrigger className="hover:no-underline font-headline text-lg">
-                                <span>{loc} (<LiveCount value={itemsInLocation.length} />)</span>
+                                <span>{loc} (<NumberTicker value={itemsInLocation.length} animateOnMount={false} />)</span>
                             </AccordionTrigger>
                             <AccordionContent>
                                 <div className="divide-y sm:hidden" data-testid={`mobile-inventory-${loc.toLowerCase()}`}>

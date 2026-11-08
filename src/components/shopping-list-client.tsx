@@ -56,11 +56,11 @@ import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
 import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
 import { useInPageMorph } from './shopping/use-in-page-morph';
-import { LiveCount } from './shopping/live-count';
+import { NumberTicker } from '@/components/motion/number-ticker';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { morphStyle, sharedId, staggerDelay } from '@/lib/motion';
-import { ADD_SHOPPING_ITEM_SHORTCUT, shortcutTitle } from '@/lib/shopping/shortcut-hint';
+import { ShortcutHint } from '@/components/ui/shortcut-hint';
 
 const itemSchema = z.object({
   name: z.string().trim().min(1, 'Item name is required.').max(120, 'Keep the name under 120 characters.'),
@@ -973,9 +973,11 @@ export function ShoppingListClient({
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
                         {currentUser?.householdId && <ManageCategoriesDialog categories={categories} setCategories={setCategories} householdId={currentUser.householdId} listId={selectedList.id} isListOpen={() => selectedListIdRef.current === selectedList.id} onUpdate={() => fetchItemsAndCategories(selectedList.id, { silent: true })}/>}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
+                        <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
-                            <Button className="w-full sm:w-auto" title={shortcutTitle('Add item', ADD_SHOPPING_ITEM_SHORTCUT)}><PlusCircle className="mr-2" aria-hidden /> Add Item</Button>
+                            <Button className="w-full sm:w-auto"><PlusCircle className="mr-2" aria-hidden /> Add Item</Button>
                         </DialogTrigger>
+                        </ShortcutHint>
                         <DialogContent>
                             <DialogHeader>
                                 <DialogTitle className="font-headline">Add Item to List</DialogTitle>
@@ -1077,7 +1079,7 @@ export function ShoppingListClient({
                       <>
                          <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full">
                             <AccordionItem value="needed">
-                            <AccordionTrigger className="font-headline text-lg"><span>Needed (<LiveCount value={neededItems.length} />)</span></AccordionTrigger>
+                            <AccordionTrigger className="font-headline text-lg"><span>Needed (<NumberTicker value={neededItems.length} animateOnMount={false} />)</span></AccordionTrigger>
                             <AccordionContent>
                                 {neededItems.length === 0 ? (
                                   <EmptyState
@@ -1118,7 +1120,7 @@ export function ShoppingListClient({
                             </AccordionItem>
                             <AccordionItem value="purchased" ref={purchasedSectionRef}>
                             <div className="flex items-center">
-                                <AccordionTrigger className="flex-1 font-headline text-lg"><span>Purchased (<LiveCount value={purchasedItems.length} />)</span></AccordionTrigger>
+                                <AccordionTrigger className="flex-1 font-headline text-lg"><span>Purchased (<NumberTicker value={purchasedItems.length} animateOnMount={false} />)</span></AccordionTrigger>
                                 {purchasedItems.length > 0 && canDelete && (
                                     <Button variant="ghost" size="sm" onClick={() => setIsClearAlertOpen(true)} className="text-muted-foreground hover:text-destructive">
                                         <ArchiveX className="mr-2 h-4 w-4" aria-hidden /> Clear

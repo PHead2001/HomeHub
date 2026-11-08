@@ -377,7 +377,11 @@ test.describe('shopping trip', () => {
     await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
     await expect(page.getByTestId('open-list')).toBeVisible();
     expect(await morphs()).toEqual(['list-weekly-groceries-card']);
-    await expect(page.getByRole('button', { name: 'Add Item' })).toHaveAttribute('title', 'Add item (A)');
+    const addItem = page.getByRole('button', { name: 'Add Item' });
+    await expect(addItem).toHaveAttribute('aria-keyshortcuts', 'A');
+    await addItem.hover();
+    await expect(page.getByTestId('shortcut-hint-add-item')).toContainText('Add an item from anywhere');
+    await page.mouse.move(0, 0);
 
     await page.getByRole('button', { name: 'Back to all lists' }).click();
     await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();

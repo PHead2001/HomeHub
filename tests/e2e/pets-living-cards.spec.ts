@@ -156,7 +156,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await openPets(page);
     const pixel = page.getByTestId('pet-card-pixel');
     const button = pixel.getByRole('button', { name: 'Feed Pixel, 1 can' });
-    await expect(button).toHaveAttribute('title', 'Log a feeding from anywhere: press F');
+    await expect(button).toHaveAttribute('aria-keyshortcuts', 'F');
     await button.click();
     // No confirmation on the card: the tap logged.
     await expect(page.getByTestId('feed-confirm')).toHaveCount(0);
