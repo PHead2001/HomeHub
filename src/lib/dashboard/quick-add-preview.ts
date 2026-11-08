@@ -28,6 +28,16 @@ const SECTION_WORDS: Record<IndexSection, string> = {
   assets: 'home assets',
 };
 
+/**
+ * True when a section's read cannot be trusted as the household's records: the
+ * read failed (`null`), or it came back empty from the offline cache, which only
+ * holds what this device has seen and so cannot prove there are none. A cached
+ * read that has records is kept: it is what the member last saw.
+ */
+export function sectionUnreadable(result: { empty: boolean; metadata: { fromCache: boolean } } | null): boolean {
+  return result === null || (result.empty && result.metadata.fromCache);
+}
+
 /** The failed sections this intent depends on (empty when it can trust what loaded). */
 export function failedSectionsFor(intent: QuickAddIntent, failed: readonly IndexSection[]): IndexSection[] {
   return NEEDS[intent.kind].filter((section) => failed.includes(section));

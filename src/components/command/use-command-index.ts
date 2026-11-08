@@ -12,7 +12,7 @@ import { db } from '@/lib/firebase';
 import { getDocsOfflineAware } from '@/lib/firestore-offline';
 import { useAuth } from '@/hooks/use-auth';
 import type { QuickAddAsset, QuickAddList, QuickAddMember, QuickAddPet, QuickAddRoom, QuickAddVehicle } from '@/lib/dashboard/quick-add';
-import { INDEX_SECTIONS, type IndexSection } from '@/lib/dashboard/quick-add-preview';
+import { INDEX_SECTIONS, sectionUnreadable, type IndexSection } from '@/lib/dashboard/quick-add-preview';
 import { shoppingListHref } from '@/lib/dashboard/links';
 import { feedingPlan } from '@/lib/pets/care';
 import type { PetProfile } from '@/lib/pets/types';
@@ -68,7 +68,8 @@ export function useCommandIndex(open: boolean): CommandIndex {
         permissions['maintenance.view'] ? safe(getDocsOfflineAware(base('vehicles'))) : null,
         permissions['chores.view'] ? safe(getDocsOfflineAware(base('rooms'))) : null,
       ]);
-      // A section that was asked for and came back null failed (not "empty").
+      // A section that was asked for and failed, or came back empty from the offline
+      // cache (which cannot prove there are none), is unknown, never "empty".
       const requested: Record<IndexSection, boolean> = {
         members: true,
         lists: Boolean(permissions['shopping.view']),
@@ -77,8 +78,8 @@ export function useCommandIndex(open: boolean): CommandIndex {
         vehicles: Boolean(permissions['maintenance.view']),
         assets: Boolean(permissions['maintenance.view']),
       };
-      const results: Record<IndexSection, unknown> = { members, lists, pets, rooms, vehicles, assets };
-      const failed = INDEX_SECTIONS.filter((section) => requested[section] && results[section] === null);
+      const results: Record<IndexSection, QuerySnapshot<DocumentData> | null> = { members, lists, pets, rooms, vehicles, assets };
+      const failed = INDEX_SECTIONS.filter((section) => requested[section] && sectionUnreadable(results[section]));
       const listRows = lists ? rows(lists) : [];
       const items = permissions['shopping.view']
         ? (await Promise.all(listRows.map(async (list) => {

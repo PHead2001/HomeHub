@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, normalizeRepeat, MONTHLY_MAX_DAY, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
-import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, quickAddConfirmBlocker, INDEX_SECTIONS } from '../../src/lib/dashboard/quick-add-preview';
+import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, quickAddConfirmBlocker, sectionUnreadable, INDEX_SECTIONS } from '../../src/lib/dashboard/quick-add-preview';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, modelSafeName, runLatest, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
 import { containsEmail, redactEmails } from '../../src/ai/redact';
 import { mileageNote, quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
@@ -339,6 +339,15 @@ describe('stale AI reads are ignored (review 4503881859)', () => {
     assert.equal(guard.isCurrent(second), false, 'its answer, error and status are all ignored');
     const third = guard.next();
     assert.equal(guard.isCurrent(third), true);
+  });
+});
+
+describe('an empty offline cache is not "none" (review 4504980983)', () => {
+  it('treats failed reads and empty cached reads as unknown, and keeps real results', () => {
+    assert.equal(sectionUnreadable(null), true, 'the read failed');
+    assert.equal(sectionUnreadable({ empty: true, metadata: { fromCache: true } }), true, 'offline with nothing cached');
+    assert.equal(sectionUnreadable({ empty: false, metadata: { fromCache: true } }), false, 'cached records are what the member last saw');
+    assert.equal(sectionUnreadable({ empty: true, metadata: { fromCache: false } }), false, 'the server says there are none');
   });
 });
 
