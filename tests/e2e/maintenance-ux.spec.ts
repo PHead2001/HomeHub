@@ -44,13 +44,28 @@ const HVAC_NOTIFICATION = getDeterministicNotificationId({
  * Puts the maintenance records this spec reads back to the seed exactly: schedules, mileage, the HVAC
  * reminder notification, no extra photo, and no logs linked to seeded assets/vehicles except the
  * seeded ones. Runs before each test too, because other specs (verification-findings' completion
- * test) leave a completion log behind, and the health score counts recent logs.
+ * test) leave a completion log behind, and the health score counts recent logs. It also removes
+ * leftover "Test … E2E" assets and vehicles (and their attachments) that another spec created and
+ * could not delete after a failure: their schedules would change the home health score.
  */
 async function restoreMaintenanceSeed() {
-  const [logs, photos] = await Promise.all([
+  const [logs, photos, extraAssets, extraVehicles] = await Promise.all([
     household.collection('maintenance').get(),
     household.collection('maintenance-attachments').where('fileName', '==', 'maintenance-ux-photo.png').get(),
+    household.collection('home-assets').get(),
+    household.collection('vehicles').get(),
   ]);
+  const isLeftover = (document: { id: string; get: (field: string) => unknown }, nameField: string) => {
+    const name = document.get(nameField);
+    return !SEEDED_TARGETS.has(document.id) && typeof name === 'string' && /^Test .* E2E$/.test(name);
+  };
+  const leftovers = [
+    ...extraAssets.docs.filter((document) => isLeftover(document, 'name')),
+    ...extraVehicles.docs.filter((document) => isLeftover(document, 'nickname')),
+  ];
+  const leftoverAttachments = leftovers.length === 0 ? [] : (await Promise.all(leftovers.map((document) => (
+    household.collection('maintenance-attachments').where('targetId', '==', document.id).get()
+  )))).flatMap((snapshot) => snapshot.docs);
   const strayLogs = logs.docs.filter((log) => !SEEDED_LOG_IDS.has(log.id)
     && (SEEDED_TARGETS.has(log.get('assetId')) || SEEDED_TARGETS.has(log.get('vehicleId'))));
   await Promise.all([
@@ -73,6 +88,8 @@ async function restoreMaintenanceSeed() {
     }),
     ...strayLogs.map((log) => log.ref.delete()),
     ...photos.docs.map((photo) => photo.ref.delete()),
+    ...leftoverAttachments.map((attachment) => attachment.ref.delete()),
+    ...leftovers.map((document) => document.ref.delete()),
   ]);
 }
 
