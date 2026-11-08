@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import Link from "next/link";
-import { formatDistanceToNow } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { CheckCheck, Clock, ExternalLink, Loader2, X } from "lucide-react";
 import { collection, doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { Badge } from "@/components/ui/badge";
@@ -17,10 +17,13 @@ import { db } from "@/lib/firebase";
 import type { Notification, NotificationCategory, NotificationUserAction } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
+import { NumberTicker } from "@/components/motion/number-ticker";
+import { Stagger } from "@/components/motion/stagger";
+import { PeekCard, PeekFacts } from "@/components/ui/peek-link";
 import { canSeeCategory } from "@functions/shared/push-audience";
 import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
 import { friendlyError } from "@/lib/friendly-error";
-import { caughtUpLine, groupNotifications, notificationSourceLabel } from "@/lib/dashboard/notification-display";
+import { caughtUpLine, groupNotifications, notificationDestination, notificationSourceLabel } from "@/lib/dashboard/notification-display";
 import {
   createNotificationAction,
   deduplicateNotifications,
@@ -82,7 +85,21 @@ function NotificationCenterItem({
   const hasDeepLink = getNotificationLink(notification) !== "#";
   const sourceLabel = notificationSourceLabel(notification.sourceType);
 
+  const destination = notificationDestination(getNotificationLink(notification));
+  // Peek (H26): the exact time and where the link goes, beyond the card's relative time.
+  const peek = (
+    <PeekFacts
+      title={notification.title || "HomeHub"}
+      facts={[
+        ["When", format(notification.createdAt, "EEE d MMM, p")],
+        ...(destination ? [["Opens", destination] as [string, string]] : []),
+        ...(resolvedName ? [["Completed by", resolvedName] as [string, string]] : []),
+      ]}
+    />
+  );
+
   return (
+    <PeekCard peek={peek}>
     <div
       {...swipe.handlers}
       data-testid="notification-card"
@@ -157,6 +174,7 @@ function NotificationCenterItem({
         </Button>
       )}
     </div>
+    </PeekCard>
   );
 }
 
@@ -249,6 +267,15 @@ export function NotificationCenterClient() {
     }
   };
 
+  const unreadCount = useMemo(() => {
+    if (!currentUser?.uid || !currentUser.email) return 0;
+    return validNotifications.filter((notification) =>
+      isNotificationVisibleToUser(notification, currentUser)
+      && canSeeCategory(notification.category, (permission) => Boolean(permissions[permission]))
+      && !isNotificationDismissedBy(notification, currentUser.uid)
+      && !isNotificationReadBy(notification, currentUser.uid)).length;
+  }, [currentUser, permissions, validNotifications]);
+
   const activeVisibleCount = currentUser?.uid
     ? filteredNotifications.filter((notification) => !isNotificationDismissedBy(notification, currentUser.uid)).length
     : 0;
@@ -280,6 +307,15 @@ export function NotificationCenterClient() {
             onClick={() => setActiveFilter(filter.value)}
           >
             {filter.label}
+            {filter.value === "unread" && !isLoading && !error && unreadCount > 0 && (
+              <>
+                {/* A real space, so the button reads and is named "Unread 3". */}
+                {" "}
+                <span className="rounded-full bg-background/20 px-1.5 text-xs font-semibold" data-testid="notification-unread-count">
+                  <NumberTicker value={unreadCount} animateOnMount={false} />
+                </span>
+              </>
+            )}
           </Button>
         ))}
       </div>
@@ -313,7 +349,8 @@ export function NotificationCenterClient() {
           {groupNotifications(filteredNotifications, new Date()).map((group) => (
             <section key={group.id} aria-labelledby={`notification-group-${group.id}`}>
               <h2 id={`notification-group-${group.id}`} className="mb-2 text-sm font-medium text-muted-foreground">{group.label}</h2>
-              <div className="space-y-3">
+              {/* Keyed by filter, so switching filters plays the entrance again. */}
+              <Stagger key={activeFilter} className="space-y-3">
                 {group.items.map((notification) => (
                     <NotificationCenterItem
                       key={notification.id}
@@ -324,7 +361,7 @@ export function NotificationCenterClient() {
                       onOpen={handleOpenNotification}
                     />
                 ))}
-              </div>
+              </Stagger>
             </section>
           ))}
         </div>

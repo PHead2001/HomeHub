@@ -1,18 +1,28 @@
 'use client';
 
+/**
+ * AI rewrite of the morning brief (H04). The brief itself is deterministic and
+ * always shown first; this asks the existing overview flow (`generateHomeOverview`)
+ * on demand, from the small sparkle button on the brief. That flow computes the
+ * exact facts on the server from the sections the member may view, then (quota
+ * permitting) lets the model write a summary of only those facts. The result is
+ * shown in the brief's place with an "AI-written" marker, the exact counts it was
+ * written from, and "Show plain brief" to go back. Nothing is stored.
+ */
 import * as React from 'react';
 import Link from 'next/link';
-import { AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
 import { generateHomeOverview } from '@/ai/flows/generate-home-overview';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import type { HomeOverviewResult, OverviewSection } from '@/ai/overview-types';
 import { overviewSectionRoutes } from '@/ai/overview-types';
-import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/use-auth';
+import { friendlyError } from '@/lib/friendly-error';
+import { createRevisionGuard, runLatest } from '@/lib/dashboard/quick-add-ai';
 
 type Metric = { section: OverviewSection; label: string; value: number; detail?: string };
 
-const getMetrics = (result: HomeOverviewResult): Metric[] => {
+/** HomeHub's exact counts from the overview facts (never the model's). */
+export const overviewMetrics = (result: HomeOverviewResult): Metric[] => {
   const { facts } = result;
   return [
     ...(facts.chores ? [{ section: 'chores' as const, label: 'Your open chores', value: facts.chores.assignedIncomplete, detail: `${facts.chores.overdue} overdue` }] : []),
@@ -26,7 +36,7 @@ const getMetrics = (result: HomeOverviewResult): Metric[] => {
   ];
 };
 
-const aiUnavailableMessage: Record<Exclude<HomeOverviewResult['aiStatus'], 'generated'>, string> = {
+export const aiUnavailableMessage: Record<Exclude<HomeOverviewResult['aiStatus'], 'generated'>, string> = {
   configuration_unavailable: 'AI-written summary is not configured. Exact household facts are still available.',
   rate_limited: 'AI-written summary is temporarily rate limited. Exact household facts are still available.',
   quota_exceeded: "Today's AI requests are used up (they reset at midnight UTC). Exact household facts are still available.",
@@ -35,102 +45,92 @@ const aiUnavailableMessage: Record<Exclude<HomeOverviewResult['aiStatus'], 'gene
   invalid_response: 'AI-written summary could not be validated. Exact household facts are still available.',
 };
 
-export function HomeAiOverview() {
+export type BriefRewrite = {
+  result: HomeOverviewResult | null;
+  loading: boolean;
+  error: string | null;
+  /** Asks AI to rewrite the brief (one overview request; quota handled by the flow). */
+  rewrite: () => Promise<void>;
+  /** Back to the plain, deterministic brief. */
+  reset: () => void;
+};
+
+export function useBriefRewrite(): BriefRewrite {
   const { currentUser } = useAuth();
   const [result, setResult] = React.useState<HomeOverviewResult | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Each rewrite belongs to one revision: "Show plain brief" (reset) or a newer
+  // rewrite makes it stale, and a stale answer or error is ignored, so a late
+  // response never brings the AI brief back after the member chose the plain one.
+  const [requests] = React.useState(createRevisionGuard);
 
-  const generate = async () => {
+  const rewrite = React.useCallback(async () => {
     const householdId = currentUser?.householdId;
-    if (!householdId || loading) return;
+    if (!householdId) return;
     setLoading(true);
     setError(null);
-    try {
-      setResult(unwrapAiActionResult(await generateHomeOverview(await getAiActionContext(householdId))));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Overview could not be generated.');
-    } finally {
-      setLoading(false);
-    }
-  };
+    await runLatest(requests, async () => unwrapAiActionResult(await generateHomeOverview(await getAiActionContext(householdId))), {
+      onResult: setResult,
+      onError: (caught) => setError(caught instanceof Error && caught.message ? caught.message : friendlyError(caught)),
+      settled: () => setLoading(false),
+    });
+  }, [currentUser?.householdId, requests]);
 
-  const metrics = result ? getMetrics(result) : [];
+  const reset = React.useCallback(() => {
+    requests.invalidate();
+    setResult(null);
+    setError(null);
+    setLoading(false);
+  }, [requests]);
 
+  return { result, loading, error, rewrite, reset };
+}
+
+/**
+ * Under the AI-written brief: the model's priorities (linked to their section) and
+ * HomeHub's exact counts the text was written from, so every number can be checked.
+ */
+export function BriefAiDetails({ result }: { result: HomeOverviewResult }) {
+  const metrics = overviewMetrics(result);
   return (
-    <section aria-labelledby="ai-overview-heading" className="mb-8 rounded-xl border bg-card/60 p-4 shadow-raised">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Sparkles className="size-5 text-primary" aria-hidden="true" />
-            <h2 id="ai-overview-heading" className="font-headline text-xl font-semibold">AI Overview</h2>
-          </div>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Ask AI for a written summary of the sections you can access. The counts above are always HomeHub&apos;s own.
-          </p>
-        </div>
-        <Button onClick={generate} disabled={loading || !currentUser?.householdId} variant="outline" size="sm" className="w-full shrink-0 sm:w-auto">
-          {loading ? <RefreshCw className="mr-2 size-4 animate-spin" aria-hidden="true" /> : <Sparkles className="mr-2 size-4" aria-hidden="true" />}
-          {loading ? 'Generating...' : result ? 'Regenerate Overview' : 'Generate Overview'}
-        </Button>
-      </div>
-
-      <div role="status" aria-live="polite" className="mt-4">
-        {loading && <p className="text-sm text-muted-foreground">Calculating authorized household facts and writing a summary...</p>}
-        {error && (
-          <div className="flex flex-wrap items-center gap-3 text-sm text-destructive">
-            <AlertCircle className="size-4" aria-hidden="true" />
-            <span>{error}</span>
-            <Button variant="outline" size="sm" onClick={generate}>Try Again</Button>
-          </div>
-        )}
-      </div>
-
-      {result && (
-        <div className="mt-5 space-y-5" data-testid="home-ai-overview-result">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-            {metrics.map(metric => (
+    <div className="mt-3 space-y-3" data-testid="home-ai-overview-result">
+      {!result.narrative && (
+        <p className="text-sm text-muted-foreground">
+          {aiUnavailableMessage[result.aiStatus as Exclude<HomeOverviewResult['aiStatus'], 'generated'>]}
+        </p>
+      )}
+      {result.narrative && result.narrative.priorities.length > 0 && (
+        <ul className="grid gap-2 md:grid-cols-2" aria-label="AI-suggested priorities">
+          {result.narrative.priorities.slice(0, 4).map((priority, index) => (
+            <li key={`${priority.sourceSection}-${index}`} className="min-w-0 rounded-md border-l-4 border-primary bg-muted/30 px-3 py-2">
+              <Link href={overviewSectionRoutes[priority.sourceSection]} className="font-medium underline-offset-4 hover:underline">
+                {priority.title}
+              </Link>
+              <p className="text-sm text-muted-foreground">{priority.explanation}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div>
+        <p className="mb-1.5 text-xs text-muted-foreground">HomeHub&apos;s exact counts</p>
+        <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          {metrics.map((metric) => (
+            <li key={metric.section} className="min-w-0">
               <Link
-                key={metric.section}
                 href={overviewSectionRoutes[metric.section]}
                 data-testid={`overview-metric-${metric.section}`}
-                className="min-w-0 border p-3 transition-colors hover:bg-muted/40 "
+                className="block min-w-0 rounded-md border px-3 py-1.5 transition-ui hover:bg-muted/40"
               >
-                <p className="truncate text-xs text-muted-foreground">{metric.label}</p>
-                <p className="mt-1 text-2xl font-semibold tabular-nums">{metric.value}</p>
-                {metric.detail && <p className="truncate text-xs text-muted-foreground">{metric.detail}</p>}
+                <span className="block truncate text-xs text-muted-foreground">{metric.label}</span>
+                <span className="block text-lg font-semibold tabular-nums">{metric.value}</span>
+                {metric.detail && <span className="block truncate text-xs text-muted-foreground">{metric.detail}</span>}
               </Link>
-            ))}
-          </div>
-
-          {result.narrative ? (
-            <div className="space-y-3">
-              <div>
-                <h3 className="font-headline text-lg font-semibold">{result.narrative.headline}</h3>
-                <p className="text-sm text-muted-foreground">{result.narrative.summary}</p>
-              </div>
-              {result.narrative.priorities.length > 0 && (
-                <ul className="grid gap-2 md:grid-cols-2">
-                  {result.narrative.priorities.map((priority, index) => (
-                    <li key={`${priority.sourceSection}-${index}`} className="border-l-4 border-primary bg-muted/30 px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium">{priority.title}</span>
-                        <span className="text-xs uppercase text-muted-foreground">{priority.level}</span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{priority.explanation}</p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {aiUnavailableMessage[result.aiStatus as Exclude<HomeOverviewResult['aiStatus'], 'generated'>]}
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">Generated {new Date(result.generatedAt).toLocaleString()}</p>
-        </div>
-      )}
-    </section>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <p className="text-xs text-muted-foreground">Written {new Date(result.generatedAt).toLocaleString()}</p>
+    </div>
   );
 }

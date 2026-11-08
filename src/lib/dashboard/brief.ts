@@ -6,7 +6,16 @@
 import type { DashboardFacts } from './facts';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from './links';
 
-export type BriefSegment = { text: string; href?: string };
+/** What a linked phrase points at, so the UI can show its peek card (H26). */
+export type BriefPeek =
+  | { kind: 'chores' }
+  | { kind: 'pet'; id: string }
+  | { kind: 'pets' }
+  | { kind: 'pantry' }
+  | { kind: 'maintenance' }
+  | { kind: 'shopping' };
+
+export type BriefSegment = { text: string; href?: string; peek?: BriefPeek };
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
@@ -39,11 +48,11 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   if (chores) {
     const today = chores.mineDueToday;
     if (chores.mineOverdue > 0 && today > 0) {
-      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores' }, { text: ` (${chores.mineOverdue} overdue)` }]);
+      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: { kind: 'chores' } }, { text: ` (${chores.mineOverdue} overdue)` }]);
     } else if (chores.mineOverdue > 0) {
-      phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: '/chores' }]);
+      phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: '/chores', peek: { kind: 'chores' } }]);
     } else if (today > 0) {
-      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores' }]);
+      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: { kind: 'chores' } }]);
     }
   }
 
@@ -52,30 +61,30 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
     // Only pets known to be unfed; an unavailable history (fed === null) makes no claim.
     const hungry = pets.pets.filter((pet) => pet.fed === false);
     if (hungry.length === 1) {
-      phrases.push([{ text: `${hungry[0].name}'s next meal`, href: petFeedingHref(hungry[0].id) }, { text: ' is due' }]);
+      phrases.push([{ text: `${hungry[0].name}'s next meal`, href: petFeedingHref(hungry[0].id), peek: { kind: 'pet', id: hungry[0].id } }, { text: ' is due' }]);
     } else if (hungry.length > 1) {
-      phrases.push([{ text: `${plural(hungry.length, 'pet')} to feed`, href: '/pets' }]);
+      phrases.push([{ text: `${plural(hungry.length, 'pet')} to feed`, href: '/pets', peek: { kind: 'pets' } }]);
     }
   }
 
   const pantry = facts.pantry;
   if (pantry && pantry.nearest.length > 0 && pantry.nearest[0].days <= 2) {
     const item = pantry.nearest[0];
-    phrases.push([{ text: `the ${item.name.toLowerCase()}`, href: PANTRY_HREF }, { text: ` ${item.label}` }]);
+    phrases.push([{ text: `the ${item.name.toLowerCase()}`, href: PANTRY_HREF, peek: { kind: 'pantry' } }, { text: ` ${item.label}` }]);
   } else if (pantry && pantry.expired > 0) {
-    phrases.push([{ text: `${plural(pantry.expired, 'pantry item')} expired`, href: PANTRY_HREF }]);
+    phrases.push([{ text: `${plural(pantry.expired, 'pantry item')} expired`, href: PANTRY_HREF, peek: { kind: 'pantry' } }]);
   }
 
   const maintenance = facts.maintenance;
   if (maintenance && maintenance.overdue > 0) {
-    phrases.push([{ text: `${plural(maintenance.overdue, 'maintenance task')} overdue`, href: MAINTENANCE_REMINDERS_HREF }]);
+    phrases.push([{ text: `${plural(maintenance.overdue, 'maintenance task')} overdue`, href: MAINTENANCE_REMINDERS_HREF, peek: { kind: 'maintenance' } }]);
   } else if (maintenance?.next && maintenance.next.status === 'due_today') {
     // The reminder's own status (date or mileage), never recomputed from dates.
-    phrases.push([{ text: maintenance.next.label, href: maintenance.next.href }, { text: ` (${maintenance.next.statusLabel.toLowerCase()})` }]);
+    phrases.push([{ text: maintenance.next.label, href: maintenance.next.href, peek: { kind: 'maintenance' } }, { text: ` (${maintenance.next.statusLabel.toLowerCase()})` }]);
   }
 
   if (phrases.length === 0 && facts.shopping && facts.shopping.neededItems > 0) {
-    phrases.push([{ text: `${plural(facts.shopping.neededItems, 'item')} on your lists`, href: '/shopping' }]);
+    phrases.push([{ text: `${plural(facts.shopping.neededItems, 'item')} on your lists`, href: '/shopping', peek: { kind: 'shopping' } }]);
   }
 
   const incomplete = Boolean(facts.unavailable?.length || facts.pets?.unknown);

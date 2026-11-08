@@ -101,3 +101,22 @@ export function caughtUpLine(now: Date): string {
   ];
   return lines[(now.getFullYear() * 400 + now.getMonth() * 31 + now.getDate()) % lines.length];
 }
+
+/** Where a notification's link goes, in words, for its peek card (H26). */
+const DESTINATIONS: Array<[string, string]> = [
+  ['/chores', 'Chores'],
+  ['/calendar', 'Calendar'],
+  ['/shopping', 'Shopping'],
+  ['/pets', 'Pets'],
+  ['/maintenance', 'Maintenance'],
+  ['/automation', 'Automation'],
+  ['/household', 'Household'],
+  ['/notifications', 'Notification Center'],
+];
+
+export function notificationDestination(link: string): string | null {
+  if (!link || link === '#') return null;
+  const path = link.split(/[?#]/)[0];
+  if (path === '/') return 'Home';
+  return DESTINATIONS.find(([prefix]) => path === prefix || path.startsWith(`${prefix}/`))?.[1] ?? null;
+}

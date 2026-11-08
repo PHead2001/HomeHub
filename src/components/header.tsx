@@ -18,7 +18,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { MemberAvatar } from './member-avatar';
+import { LazyShortcutHint as ShortcutHint } from './ui/lazy-shortcut-hint';
+import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import dynamic from 'next/dynamic';
 import { Logo } from './brand/logo';
 import { openCommandPalette } from './command/events';
@@ -49,13 +51,17 @@ const NAV_LINKS: Array<{ href: string; label: string; permission: HouseholdPermi
   { href: '/automation', label: 'Automation', permission: 'automation.view' },
 ];
 
+/** The `G` then letter shortcut for a nav link, when it has one (hint in its tooltip). */
+const goShortcut = (href: string) => Object.values(GO_TARGETS).find((target) => target.href === href)?.id;
+
 export function Header() {
   const { currentUser, currentMember, permissions, logout } = useAuth();
   const pathname = usePathname() || '/';
   const isPendingNewUser = currentMember?.role === 'newuser';
 
   return (
-    <header className="surface-glass sticky top-0 z-50 w-full border-b border-border-subtle">
+    // data-site-header: kept out of the page crossfade during route view transitions.
+    <header data-site-header className="surface-glass sticky top-0 z-50 w-full border-b border-border-subtle">
       <div className="container mx-auto flex h-14 items-center px-4">
         <Link href="/" aria-label="HomeHub home" className="flex items-center gap-2 mr-6">
           <Logo size={24} animated />
@@ -64,7 +70,8 @@ export function Header() {
         <nav aria-label="Main" className="hidden md:flex items-center gap-1 text-sm">
           {NAV_LINKS.filter((link) => permissions[link.permission]).map((link) => {
             const active = isActiveRoute(pathname, link.href);
-            return (
+            const shortcut = goShortcut(link.href);
+            const anchor = (
               <Link
                 key={link.href}
                 href={link.href}
@@ -80,32 +87,39 @@ export function Header() {
                 )}
               </Link>
             );
+            return shortcut ? (
+              <ShortcutHint key={link.href} shortcut={shortcut}>{anchor}</ShortcutHint>
+            ) : anchor;
           })}
         </nav>
         <div className="flex flex-1 items-center justify-end gap-2">
             {currentUser ? (
               <>
                  {currentUser.householdId && currentMember && !isPendingNewUser && (
-                   <Button
-                     variant="ghost"
-                     size="icon"
-                     onClick={() => openCommandPalette()}
-                     aria-label="Search or quick add"
-                     aria-keyshortcuts="Control+K Meta+K"
-                     title="Search or quick add (Ctrl+K)"
-                     data-testid="header-search"
-                   >
-                     <Search className="h-5 w-5" aria-hidden />
-                   </Button>
+                   <ShortcutHint shortcut="palette" label="Search or quick add">
+                     <Button
+                       variant="ghost"
+                       size="icon"
+                       onClick={() => openCommandPalette()}
+                       aria-label="Search or quick add"
+                       data-testid="header-search"
+                     >
+                       <Search className="h-5 w-5" aria-hidden />
+                     </Button>
+                   </ShortcutHint>
                  )}
                  {permissions['notifications.view'] && !isPendingNewUser && <NotificationBell />}
                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="Account menu">
-                      <Avatar className="h-9 w-9" aria-hidden>
-                         <AvatarImage src={currentUser.avatarUrl ?? undefined} alt={currentUser.displayName} />
-                        <AvatarFallback>{currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U'}</AvatarFallback>
-                      </Avatar>
+                      {/* The shared gradient avatar (H24); the button carries the name. */}
+                      <MemberAvatar
+                        uid={currentUser.uid}
+                        name={currentUser.displayName || currentUser.email || 'Member'}
+                        photoUrl={currentUser.avatarUrl}
+                        decorative
+                        className="h-9 w-9 text-xs"
+                      />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent className="w-56" align="end" forceMount>

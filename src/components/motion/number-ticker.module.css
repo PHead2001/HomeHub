@@ -1,0 +1,23 @@
+/* NumberTicker (H12). The element always holds exactly one text node: the final
+   value, so the label around it reads, and is named, exactly ("To Do (1)").
+   While a change animates, that text is drawn transparent and the moving digits
+   are painted by ::after from data-display, an inline pseudo-element pulled back
+   over the real text by its width (--ticker-w). It adds no text (textContent and
+   innerText ignore pseudo content), no accessible name (alt text ""), and no
+   width: the displayed string is padded to the final value's length with figure
+   spaces, which are digit-wide in tabular figures. */
+.ticker {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ticker[data-counting] {
+  -webkit-text-fill-color: transparent;
+}
+.ticker[data-counting]::after {
+  /* Fallback for engines without alt text in `content` (still visible). */
+  content: attr(data-display);
+  content: attr(data-display) / "";
+  -webkit-text-fill-color: currentcolor;
+  margin-inline-start: calc(-1 * var(--ticker-w, 0px));
+  pointer-events: none;
+}

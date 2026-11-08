@@ -88,7 +88,8 @@ test.describe('dashboard, shell and notifications', () => {
     await expect(page.getByRole('heading', { name: 'Your Dashboard' })).toBeVisible();
     await expect(page.getByTestId('dashboard-tile-shopping')).toContainText('3');
     await expect(page.getByTestId('dashboard-tile-shopping')).toContainText('Whole milk');
-    await expect(page.getByTestId('dashboard-tile-chores')).toContainText('of');
+    // Exact text (NumberTicker keeps one text node with the final value), never a loose partial match.
+    await expect(page.getByTestId('dashboard-tile-chores').getByText(`${choreFacts.todayDone} of ${choreFacts.todayTotal} done`, { exact: true })).toBeVisible();
     await expect(page.getByTestId('dashboard-tile-pets')).toContainText('Pixel');
     await expect(page.getByTestId('dashboard-tile-maintenance')).toContainText('Replace air filter');
 

@@ -237,6 +237,46 @@
   mix-blend-mode: normal;
 }
 
+/* Route view transitions (H12, src/components/motion/route-transition.ts). Only
+   while <html> carries data-route-transition: page content crossfades with an
+   8 px settle (old out in 120 ms, new in over --duration-ui); the header and the
+   phone tab bar are captured on their own and shown live, so they stay put above
+   the page. Shared elements named with morphStyle() keep the default morph. */
+:root[data-route-transition] [data-page-transition] {
+  view-transition-name: page-content;
+}
+:root[data-route-transition] [data-site-header] {
+  view-transition-name: site-header;
+}
+:root[data-route-transition] nav[aria-label='Primary'] {
+  view-transition-name: site-tab-bar;
+}
+::view-transition-group(page-content) {
+  animation: none;
+}
+::view-transition-old(page-content) {
+  animation: route-out 120ms var(--ease-standard) both;
+}
+::view-transition-new(page-content) {
+  animation: route-in var(--duration-ui) var(--ease-standard) both;
+}
+::view-transition-group(site-header),
+::view-transition-group(site-tab-bar),
+::view-transition-new(site-header),
+::view-transition-new(site-tab-bar) {
+  animation: none;
+}
+::view-transition-old(site-header),
+::view-transition-old(site-tab-bar) {
+  display: none;
+}
+@keyframes route-out {
+  to { opacity: 0; }
+}
+@keyframes route-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
 /* Reduced motion: instant end states everywhere. */
 @media (prefers-reduced-motion: reduce) {
   *,

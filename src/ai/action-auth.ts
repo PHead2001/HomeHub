@@ -30,9 +30,12 @@ const requestWindows = globalGuardState.__homeHubAiRequestWindows || new Map<str
 globalGuardState.__homeHubAiInFlight = inFlight;
 globalGuardState.__homeHubAiRequestWindows = requestWindows;
 
+/** One permission, or a list of which the member needs at least one. */
+export type AiActionPermission = HouseholdPermission | readonly HouseholdPermission[];
+
 export const authorizeHouseholdAction = async (
   context: AiActionContext,
-  permission?: HouseholdPermission
+  permission?: AiActionPermission
 ): Promise<AuthorizedHouseholdUser> => {
   if (!context?.idToken || !context.householdId) throw new HomeHubAiError('unauthenticated');
 
@@ -56,7 +59,11 @@ export const authorizeHouseholdAction = async (
   if (!householdSnapshot.exists) throw new HomeHubAiError('forbidden');
 
   const authority = resolveHouseholdAuthority({ uid: decodedToken.uid, member: memberSnapshot.data() });
-  if (permission && !authority.permissions[permission]) throw new HomeHubAiError('forbidden');
+  if (permission !== undefined) {
+    const anyOf: readonly HouseholdPermission[] = typeof permission === 'string' ? [permission] : permission;
+    // An empty list grants nothing.
+    if (!anyOf.some(name => authority.permissions[name])) throw new HomeHubAiError('forbidden');
+  }
 
   return { uid: decodedToken.uid, email, householdId: context.householdId, ...authority };
 };
@@ -143,7 +150,8 @@ export const executeAuthorizedAiAction = async <T>({
   context: AiActionContext;
   /** The action's client input, size-checked before authorization and validation. */
   input?: unknown;
-  permission: HouseholdPermission;
+  /** Required permission, or a list of which at least one is required. */
+  permission: AiActionPermission;
   flowName: string;
   maxRequestsPerMinute: number;
   /**

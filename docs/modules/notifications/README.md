@@ -6,13 +6,14 @@ This module owns household notification records, bell/history presentation, per-
 
 ## User-Facing Capabilities
 
-- View recent active notifications from the header bell, grouped into Today, This week and Earlier. The bell is named "Notifications" (with the unread count), rings briefly and pops its badge when a new unread notification arrives, and shows an "All caught up" illustration when empty.
+- View recent active notifications from the header bell, grouped into Today, This week and Earlier. The bell is named "Notifications" (with the unread count), rings briefly and pops its badge when a new unread notification arrives (the badge's number ticks to the new count with `NumberTicker`; "9+" above nine), and shows an "All caught up" illustration when empty.
 - Open seven-day history at `/notifications`, grouped into Today, This week and Earlier. Cards show the title, message, age, a plain-language source ("Home maintenance", "Warranty", "Chore assignment", "New member"...) and who dismissed or completed it; internal source names and expiry stamps are never shown.
 - An empty Unread filter shows the shared `EmptyState` (notifications illustration, "All caught up" with a friendly line that stays the same all day); other empty filters offer "Show all".
 - On a hovering pointer, a card's dismiss button appears on hover or when the card has keyboard focus. On touch screens (touch, or a pen on a coarse-pointer device) the dismiss button is always shown and swiping a card left dismisses it; a mouse drag does nothing. Only the card's visual layer slides; the card and its link stay in place, so taps land where they were aimed. With reduced motion nothing slides: the dismiss hint fades in over the card and a completed swipe dismisses it in place.
 - Every dismissal (swipe, button, Dismiss visible, Dismiss all) shows a toast with Undo for 5 seconds; Undo removes the member's own dismissal. Only one toast shows at a time, so dismissals made within 5 seconds of each other accumulate: the newest toast counts them all ("2 notifications dismissed") and its Undo restores them all. The window runs from the latest dismissal (`src/app/notifications/undo-batch.ts`, one batch per household and member shared by the bell and the center).
 - Pushes show the app icon (`/icons/icon-192.png`), a monochrome house badge for the Android status bar (`/icons/badge-96.png`), and, when the notification is about a pet or a product with a photo stored in the household, that photo as the large image.
-- Filter unread, all, dismissed, and feature categories.
+- Filter unread, all, dismissed, and feature categories. The Unread filter shows the unread count (a `NumberTicker`, same visibility rules as the list). Each group's cards enter staggered (`Stagger`, replayed when the filter changes, instant under reduced motion).
+- On a hovering pointer, resting on a Notification Center card (or focusing its link from the keyboard) for 400 ms shows a peek card (`PeekCard`, H26) with the exact time, where the link opens (`notificationDestination`) and who completed it. The peek wraps the whole card, so the card and its link keep their own structure and hit targets; touch never shows it.
 - Mark a notification read by opening it.
 - Dismiss one or all active notifications without deleting history.
 - Follow supported deep links to source pages.
