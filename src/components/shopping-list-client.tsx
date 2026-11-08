@@ -55,6 +55,12 @@ import { useCartFlight } from './shopping/cart-flight';
 import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
 import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
+import { useInPageMorph } from './shopping/use-in-page-morph';
+import { LiveCount } from './shopping/live-count';
+import { Stagger, StaggerItem } from '@/components/motion/stagger';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { morphStyle, sharedId, staggerDelay } from '@/lib/motion';
+import { ADD_SHOPPING_ITEM_SHORTCUT, shortcutTitle } from '@/lib/shopping/shortcut-hint';
 
 const itemSchema = z.object({
   name: z.string().trim().min(1, 'Item name is required.').max(120, 'Keep the name under 120 characters.'),
@@ -176,6 +182,12 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
 
 type AddResult = { name: string; merged: boolean; saved: 'saved' | 'queued'; usedFallback: boolean; reason?: string; category: string };
 
+/** Entrance delay of one needed row, in walk order across the aisle groups (≤ 30 ms each, ≤ 400 ms total). */
+const rowDelay = (groups: Array<{ items: unknown[] }>, groupIndex: number, itemIndex: number, total: number) => {
+  const before = groups.slice(0, groupIndex).reduce((sum, group) => sum + group.items.length, 0);
+  return (before + itemIndex) * staggerDelay(total);
+};
+
 const fallbackReasonText = (reason?: string) => reason === 'timeout'
   ? 'Automatic categorization timed out.'
   : reason === 'rate_limited'
@@ -207,6 +219,15 @@ export function ShoppingListClient({
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
   const cartFlight = useCartFlight();
+  const reduced = useReducedMotion();
+  // List card -> open list shared-element morph (H12); both live on /shopping.
+  const listMorph = useInPageMorph();
+  const { settle: settleListMorph } = listMorph;
+  useEffect(() => {
+    settleListMorph();
+  }, [selectedListId, settleListMorph]);
+  // The list whose rows already played their staggered entrance.
+  const enteredRowsRef = useRef<string | null>(null);
 
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [counts, setCounts] = useState<Record<string, ListCounts>>({});
@@ -236,6 +257,11 @@ export function ShoppingListClient({
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
 
   const selectedList = useMemo(() => lists.find((list) => list.id === selectedListId) ?? null, [lists, selectedListId]);
+  // After the first render of a loaded list, later rows (added, re-sorted) enter without the stagger.
+  useEffect(() => {
+    if (!selectedListId) enteredRowsRef.current = null;
+    else if (!loadingItems && selectedList) enteredRowsRef.current = selectedListId;
+  });
   listItemsRef.current = listItems;
 
   // Re-reads the list once Firestore has settled every queued write, so the screen
@@ -862,6 +888,8 @@ export function ShoppingListClient({
 
   // View for showing the selected list's items
   if (selectedList) {
+    const listMorphName = sharedId('list', selectedList.id);
+    const staggerRows = !reduced && !loadingItems && enteredRowsRef.current !== selectedList.id;
     const neededItems = listItems.filter(i => i.status === 'needed');
     const purchasedItems = listItems.filter(i => i.status === 'purchased').sort((a, b) => a.name.localeCompare(b.name));
     const groups = groupItemsByAisle(neededItems, categories);
@@ -927,10 +955,10 @@ export function ShoppingListClient({
               onConfirm={sendToPantry}
             />
             )}
-            <div className="rounded-xl border bg-card text-card-foreground shadow-raised">
+            <div className="rounded-xl border bg-card text-card-foreground shadow-raised" data-testid="open-list" style={morphStyle(listMorph.morphName === listMorphName ? listMorphName : null)}>
                 <div className="flex flex-col items-stretch gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
                     <div className="min-w-0">
-                        <Button variant="ghost" onClick={() => onSelectList(null)} className="mb-3 pl-1">
+                        <Button variant="ghost" onClick={(event) => listMorph.run(listMorphName, () => onSelectList(null), { event })} className="mb-3 pl-1">
                            <ArrowLeft className="mr-2" aria-hidden /> Back to all lists
                         </Button>
                         <div className="flex items-center gap-3">
@@ -946,7 +974,7 @@ export function ShoppingListClient({
                         {currentUser?.householdId && <ManageCategoriesDialog categories={categories} setCategories={setCategories} householdId={currentUser.householdId} listId={selectedList.id} isListOpen={() => selectedListIdRef.current === selectedList.id} onUpdate={() => fetchItemsAndCategories(selectedList.id, { silent: true })}/>}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <DialogTrigger asChild>
-                            <Button className="w-full sm:w-auto"><PlusCircle className="mr-2" aria-hidden /> Add Item</Button>
+                            <Button className="w-full sm:w-auto" title={shortcutTitle('Add item', ADD_SHOPPING_ITEM_SHORTCUT)}><PlusCircle className="mr-2" aria-hidden /> Add Item</Button>
                         </DialogTrigger>
                         <DialogContent>
                             <DialogHeader>
@@ -1049,7 +1077,7 @@ export function ShoppingListClient({
                       <>
                          <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full">
                             <AccordionItem value="needed">
-                            <AccordionTrigger className="font-headline text-lg">Needed ({neededItems.length})</AccordionTrigger>
+                            <AccordionTrigger className="font-headline text-lg"><span>Needed (<LiveCount value={neededItems.length} />)</span></AccordionTrigger>
                             <AccordionContent>
                                 {neededItems.length === 0 ? (
                                   <EmptyState
@@ -1062,7 +1090,7 @@ export function ShoppingListClient({
                                 ) : (
                                 <div>
                                   <AnimatePresence initial={false}>
-                                    {groups.flatMap((group) => [
+                                    {groups.flatMap((group, groupIndex) => [
                                       <motion.h3
                                         key={`aisle:${group.category}`}
                                         layout="position"
@@ -1071,9 +1099,10 @@ export function ShoppingListClient({
                                       >
                                         {group.category}
                                       </motion.h3>,
-                                      ...group.items.map((item) => (
+                                      ...group.items.map((item, itemIndex) => (
                                         <ShoppingItemRow
                                           key={`item:${item.id}`}
+                                          enterDelay={staggerRows ? rowDelay(groups, groupIndex, itemIndex, neededItems.length) : undefined}
                                           item={item}
                                           canToggle={canEdit}
                                           canDelete={canDelete}
@@ -1089,7 +1118,7 @@ export function ShoppingListClient({
                             </AccordionItem>
                             <AccordionItem value="purchased" ref={purchasedSectionRef}>
                             <div className="flex items-center">
-                                <AccordionTrigger className="flex-1 font-headline text-lg">Purchased ({purchasedItems.length})</AccordionTrigger>
+                                <AccordionTrigger className="flex-1 font-headline text-lg"><span>Purchased (<LiveCount value={purchasedItems.length} />)</span></AccordionTrigger>
                                 {purchasedItems.length > 0 && canDelete && (
                                     <Button variant="ghost" size="sm" onClick={() => setIsClearAlertOpen(true)} className="text-muted-foreground hover:text-destructive">
                                         <ArchiveX className="mr-2 h-4 w-4" aria-hidden /> Clear
@@ -1175,18 +1204,23 @@ export function ShoppingListClient({
               </Button>
             </div>
           )}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {lists.map(list => (
-              <ListCard
-                key={list.id}
-                list={list}
-                counts={counts[list.id]}
-                onSelect={() => onSelectList(list.id)}
-                onEdit={canEdit ? () => { setListToEdit(list); setIsListDialogOpen(true); } : undefined}
-                onDelete={canDelete ? () => setListToDelete(list) : undefined}
-              />
-            ))}
-          </div>
+          <Stagger className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {lists.map(list => {
+              const morph = sharedId('list', list.id);
+              return (
+                <StaggerItem key={list.id}>
+                  <ListCard
+                    list={list}
+                    counts={counts[list.id]}
+                    style={morphStyle(listMorph.morphName === morph ? morph : null)}
+                    onSelect={(event) => listMorph.run(morph, () => onSelectList(list.id), { event })}
+                    onEdit={canEdit ? () => { setListToEdit(list); setIsListDialogOpen(true); } : undefined}
+                    onDelete={canDelete ? () => setListToDelete(list) : undefined}
+                  />
+                </StaggerItem>
+              );
+            })}
+          </Stagger>
         </>
       )}
     </>

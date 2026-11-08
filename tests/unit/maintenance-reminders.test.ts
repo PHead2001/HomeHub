@@ -12,10 +12,12 @@ import {
   completedVehicleSchedule,
   findReminderSchedule,
   quickCompletionValues,
+  reminderCycleKey,
   scheduleKeyFor,
+  serviceCompletionValues,
   snoozedDueDate,
 } from '../../src/lib/maintenance/schedules';
-import type { HomeAsset, MaintenanceAttachment, Vehicle } from '../../src/lib/types';
+import type { HomeAsset, HomeAssetSchedule, MaintenanceAttachment, Vehicle } from '../../src/lib/types';
 
 const TZ = 'America/Chicago';
 const TODAY = '2026-08-01';
@@ -139,6 +141,36 @@ describe('reminder actions', () => {
     if (noMiles) assert.equal(quickCompletionValues(noMiles, TODAY), null);
   });
 
+  it('keys reminder UI state by cycle: an early completion shows the next cycle unchecked (Codex 4503879033)', () => {
+    // A weekly schedule due in 3 days is completed today; the next cycle (due in 7 days) is
+    // still in the due-soon window and the builder gives it the same reminder id.
+    const weekly: HomeAsset = { ...hvac, schedules: [{ id: 'weekly', mode: 'scheduled', scheduleName: 'Wipe filter', frequencyType: 'days', intervalValue: 7, nextDueDate: '2026-08-04' }] };
+    const before = buildMaintenanceReminders([weekly], [], TODAY, TZ).find((item) => item.title === 'Wipe filter')!;
+    const target = findReminderSchedule(before, [weekly], [])!;
+    const done = completedAssetSchedule(target.schedule as HomeAssetSchedule, quickCompletionValues(target, TODAY)!);
+    const after = buildMaintenanceReminders([{ ...weekly, schedules: [done] }], [], TODAY, TZ).find((item) => item.title === 'Wipe filter')!;
+    assert.equal(after.id, before.id);
+    assert.notEqual(reminderCycleKey(after), reminderCycleKey(before));
+    // The same cycle keeps its key as its status changes.
+    assert.equal(reminderCycleKey({ ...before, status: 'overdue' } as typeof before), reminderCycleKey(before));
+    assert.notEqual(reminderCycleKey({ ...before, dueMileage: 50_000 }), reminderCycleKey({ ...before, dueMileage: 56_000 }));
+  });
+
+  it('never completes a schedule into one with no next due (Codex 4503879037)', () => {
+    const oneOff = { targetType: 'home_asset' as const, asset: hvac, scheduleIndex: 0, schedule: { id: 'x', mode: 'scheduled' as const, scheduleName: 'One-off', nextDueDate: '2026-08-05' } };
+    assert.equal(serviceCompletionValues(oneOff, TODAY), null);
+    const byMileageOnly = { targetType: 'vehicle' as const, vehicle: suv, scheduleIndex: 0, schedule: { id: 'y', mode: 'scheduled' as const, serviceName: 'Timing belt', nextDueMileage: 60_000 } };
+    assert.equal(serviceCompletionValues(byMileageOnly, TODAY, 48_750), null);
+    const dateOnly = { ...byMileageOnly, schedule: { id: 'z', mode: 'scheduled' as const, serviceName: 'Inspection', nextDueDate: '2026-09-01' } };
+    assert.equal(serviceCompletionValues(dateOnly, TODAY), null);
+    // A mileage interval needs the mileage from the log.
+    const tires = findReminderSchedule(find('Tire rotation'), [hvac], [suv])!;
+    assert.equal(serviceCompletionValues(tires, '2026-07-30'), null);
+    assert.deepEqual(serviceCompletionValues(tires, '2026-07-30', 49_100), { completedDate: '2026-07-30', mileage: 49_100, nextDueDate: undefined, nextDueMileage: 55_100 });
+    // Mark done uses the same rule at today's date and the recorded mileage.
+    assert.deepEqual(quickCompletionValues(tires, TODAY), serviceCompletionValues(tires, TODAY, 48_750));
+  });
+
   it('advances schedules the same way as the completion dialog', () => {
     assert.deepEqual(completedAssetSchedule(hvac.schedules![0], { completedDate: TODAY }), {
       ...hvac.schedules![0], lastCompletedDate: TODAY, nextDueDate: '2026-11-01',
@@ -148,8 +180,10 @@ describe('reminder actions', () => {
     assert.equal(tires.nextDueMileage, 54_750);
     assert.equal(tires.lastCompletedMileage, 48_750);
     const brakes = completedVehicleSchedule(suv.serviceSchedules![1], { completedDate: TODAY });
-    assert.equal(brakes.nextDueDate, '2028-08-01');
-
+    assert.equal(brakes.nextDueDate, '2028-08-01');
+
+
+
     // Completion ends a snooze even when the new cycle lands on the snoozed date (snooze + done the same day).
     const snoozed = { ...hvac.schedules![0], nextDueDate: '2026-08-08', snoozedUntil: '2026-08-08' };
     const done = completedAssetSchedule(snoozed, { completedDate: TODAY, nextDueDate: '2026-08-08' });

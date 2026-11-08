@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useState } from 'react';
 import Image from 'next/image';
 import { motion, useMotionValue, useTransform, type PanInfo } from 'motion/react';
 import { Check, ExternalLink, Trash2 } from 'lucide-react';
+import { PeekCard } from '@/components/dashboard/peek-card';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import type { ShoppingListItem } from '@/lib/types';
@@ -18,14 +19,32 @@ function ItemSourceLink({ item }: { item: ShoppingListItem }) {
   // Re-validate on render: stored data is not trusted to be http(s).
   const href = normalizeSourceUrl(item.sourceUrl);
   if (!href) return null;
+  // Peek (H26): what the link is before it opens a new tab.
+  const peek = (
+    <div className="space-y-1">
+      <p className="font-headline font-semibold">{item.name}</p>
+      <p className="text-muted-foreground">{[`x${item.quantity}`, item.category].filter(Boolean).join(' · ')}</p>
+      <p className="truncate text-xs text-muted-foreground">Opens {hostOf(href)}</p>
+    </div>
+  );
   return (
-    <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-      <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`Open saved link for ${item.name}`}>
-        <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden />
-      </a>
-    </Button>
+    <PeekCard peek={peek} className="shrink-0">
+      <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+        <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`Open saved link for ${item.name}`}>
+          <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden />
+        </a>
+      </Button>
+    </PeekCard>
   );
 }
+
+const hostOf = (href: string) => {
+  try {
+    return new URL(href).hostname.replace(/^www\./, '');
+  } catch {
+    return 'the saved link';
+  }
+};
 
 /** True on touch-first devices, where rows can be swiped. */
 function useCoarsePointer() {
@@ -49,6 +68,8 @@ type RowProps = {
   canDelete: boolean;
   onToggle: (item: ShoppingListItem) => void;
   onDelete: (item: ShoppingListItem) => void;
+  /** Seconds: set on the rows of a freshly opened list for the staggered entrance (H12). */
+  enterDelay?: number;
 };
 
 /**
@@ -59,7 +80,7 @@ type RowProps = {
  * from above. Reduced motion shows every end state at once (MotionConfig).
  */
 export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function ShoppingItemRow(
-  { item, canToggle, canDelete, onToggle, onDelete },
+  { item, canToggle, canDelete, onToggle, onDelete, enterDelay },
   ref,
 ) {
   const purchased = item.status === 'purchased';
@@ -94,8 +115,8 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
     <motion.div
       ref={ref}
       layout="position"
-      initial={purchased ? { opacity: 0, y: -8 } : false}
-      animate={{ opacity: 1, y: 0, transition: { duration: DURATION.ui, ease: EASE.standard } }}
+      initial={enterDelay !== undefined ? { opacity: 0, y: 6 } : purchased ? { opacity: 0, y: -8 } : false}
+      animate={{ opacity: 1, y: 0, transition: { duration: DURATION.ui, ease: EASE.standard, delay: enterDelay ?? 0 } }}
       exit={{ opacity: 0, pointerEvents: 'none', transition: { duration: 0.12, delay: DURATION.micro, ease: EASE.exit } }}
       className="relative overflow-hidden rounded-md"
       data-testid={`shopping-item-${item.id}`}
