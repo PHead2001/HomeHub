@@ -83,6 +83,8 @@ export type MaintenanceIntent = {
   mileage: number | null;
   /** The vehicle or asset the sentence names; null when it names none. */
   target?: MaintenanceTarget | null;
+  /** A name ("Honda") that fits more than one vehicle or asset: the preview asks which. */
+  targetQuery?: string | null;
 };
 
 export type QuickAddIntent = ShoppingIntent | FeedingIntent | ChoreIntent | MaintenanceIntent;
@@ -304,24 +306,38 @@ const vehicleNames = (vehicle: QuickAddVehicle) => [vehicle.name, vehicle.make &
   .map((name) => name.trim())
   .filter((name) => name.length >= 2);
 
+const targetKey = (target: MaintenanceTarget) => (target.kind === 'vehicle' ? `vehicle:${target.vehicle.id}` : `asset:${target.asset.id}`);
+
 /**
  * The vehicle or asset a maintenance sentence names (whole words, longest first).
  * "for the Civic" / "on my Civic" is removed from the title; a bare name stays.
+ * When the matched name belongs to more than one record (two Hondas, two
+ * "Furnace" assets), `target` is null and `ambiguous` holds the name, so the
+ * preview asks which one instead of picking the first.
  */
 export function findMaintenanceTarget(
   text: string,
   vehicles: readonly QuickAddVehicle[],
   assets: readonly QuickAddAsset[],
-): { target: MaintenanceTarget; consumed: RegExp | null } | null {
+): { target: MaintenanceTarget | null; consumed: RegExp | null; ambiguous?: string } | null {
   const candidates: Array<{ name: string; target: MaintenanceTarget }> = [
     ...vehicles.flatMap((vehicle) => vehicleNames(vehicle).map((name) => ({ name, target: { kind: 'vehicle' as const, vehicle } }))),
     ...assets.filter((asset) => asset.name.trim().length >= 2).map((asset) => ({ name: asset.name.trim(), target: { kind: 'asset' as const, asset } })),
   ].sort((a, b) => b.name.length - a.name.length);
+  // Every distinct record that answers to `name` (case-insensitive).
+  const resolve = (name: string, consumed: RegExp | null) => {
+    const matches = new Map<string, MaintenanceTarget>();
+    for (const other of candidates) {
+      if (other.name.toLowerCase() === name.toLowerCase()) matches.set(targetKey(other.target), other.target);
+    }
+    const distinct = [...matches.values()];
+    return distinct.length === 1 ? { target: distinct[0], consumed } : { target: null, consumed, ambiguous: name };
+  };
   for (const candidate of candidates) {
     const name = namePattern(candidate.name);
     const phrase = new RegExp(`${WORD_BEFORE}(?:for|on|in)\\s+(?:the\\s+|my\\s+|our\\s+)?${name}${WORD_AFTER}`, 'iu');
-    if (phrase.test(text)) return { target: candidate.target, consumed: phrase };
-    if (new RegExp(`${WORD_BEFORE}${name}${WORD_AFTER}`, 'iu').test(text)) return { target: candidate.target, consumed: null };
+    if (phrase.test(text)) return resolve(candidate.name, phrase);
+    if (new RegExp(`${WORD_BEFORE}${name}${WORD_AFTER}`, 'iu').test(text)) return resolve(candidate.name, null);
   }
   return null;
 }
@@ -400,6 +416,7 @@ function parseMaintenance(text: string, context: QuickAddContext): MaintenanceIn
     title: capitalize(title).slice(0, 100),
     mileage: mileage !== null && mileage > 0 && mileage < 2_000_000 ? mileage : null,
     target: found?.target ?? null,
+    targetQuery: found?.ambiguous ?? null,
   };
 }
 

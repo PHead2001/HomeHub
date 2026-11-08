@@ -16,6 +16,8 @@ import { describeRepeat, type MaintenanceTarget, type QuickAddIntent, type Quick
 export function defaultMaintenanceTarget(intent: QuickAddIntent, vehicles: readonly QuickAddVehicle[]): MaintenanceTarget | null {
   if (intent.kind !== 'maintenance') return null;
   if (intent.target) return intent.target;
+  // A name that fits several records is never resolved for the member.
+  if (intent.targetQuery) return null;
   if (intent.mileage !== null && vehicles.length === 1) return { kind: 'vehicle', vehicle: vehicles[0] };
   return null;
 }
@@ -42,6 +44,9 @@ export function quickAddConfirmBlocker({
   chosenAssignee?: QuickAddMember | null;
 }): string | null {
   if (indexLoading) return "Loading your household's members, rooms, lists and vehicles…";
+  if (intent.kind === 'maintenance' && intent.targetQuery && !intent.target && !chosenTarget) {
+    return `More than one ${intent.mileage !== null ? 'vehicle' : 'vehicle or asset'} matches ${intent.targetQuery}. Choose which one.`;
+  }
   if (intent.kind === 'chore' && intent.assigneeQuery && !intent.assignee && !chosenAssignee) {
     return `More than one member is called ${intent.assigneeQuery}. Choose who this chore is for.`;
   }
@@ -86,7 +91,7 @@ export function describeIntent(intent: QuickAddIntent, self: QuickAddMember | nu
     case 'maintenance': {
       const parts = [
         intent.mileage ? `at ${intent.mileage.toLocaleString()} miles` : null,
-        maintenanceTargetName(intent.target) ?? 'General log',
+        maintenanceTargetName(intent.target) ?? (intent.targetQuery ? `which ${intent.targetQuery}?` : 'General log'),
         'today',
       ].filter(Boolean);
       return { title: `Log maintenance: ${intent.title}`, detail: parts.join(' · ') };

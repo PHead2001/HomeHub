@@ -165,7 +165,7 @@ function BriefLine({ facts, name, now }: { facts: DashboardFacts; name?: string 
         </button>
       </div>
 
-      {ai.result && (
+      {(ai.result || ai.loading) && (
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {narrative && (
             <span className="inline-flex items-center gap-1" data-testid="brief-ai-marker">

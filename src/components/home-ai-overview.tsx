@@ -17,6 +17,7 @@ import type { HomeOverviewResult, OverviewSection } from '@/ai/overview-types';
 import { overviewSectionRoutes } from '@/ai/overview-types';
 import { useAuth } from '@/hooks/use-auth';
 import { friendlyError } from '@/lib/friendly-error';
+import { createRevisionGuard, runLatest } from '@/lib/dashboard/quick-add-ai';
 
 type Metric = { section: OverviewSection; label: string; value: number; detail?: string };
 
@@ -59,28 +60,29 @@ export function useBriefRewrite(): BriefRewrite {
   const [result, setResult] = React.useState<HomeOverviewResult | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const busy = React.useRef(false);
+  // Each rewrite belongs to one revision: "Show plain brief" (reset) or a newer
+  // rewrite makes it stale, and a stale answer or error is ignored, so a late
+  // response never brings the AI brief back after the member chose the plain one.
+  const [requests] = React.useState(createRevisionGuard);
 
   const rewrite = React.useCallback(async () => {
     const householdId = currentUser?.householdId;
-    if (!householdId || busy.current) return;
-    busy.current = true;
+    if (!householdId) return;
     setLoading(true);
     setError(null);
-    try {
-      setResult(unwrapAiActionResult(await generateHomeOverview(await getAiActionContext(householdId))));
-    } catch (caught) {
-      setError(caught instanceof Error && caught.message ? caught.message : friendlyError(caught));
-    } finally {
-      busy.current = false;
-      setLoading(false);
-    }
-  }, [currentUser?.householdId]);
+    await runLatest(requests, async () => unwrapAiActionResult(await generateHomeOverview(await getAiActionContext(householdId))), {
+      onResult: setResult,
+      onError: (caught) => setError(caught instanceof Error && caught.message ? caught.message : friendlyError(caught)),
+      settled: () => setLoading(false),
+    });
+  }, [currentUser?.householdId, requests]);
 
   const reset = React.useCallback(() => {
+    requests.invalidate();
     setResult(null);
     setError(null);
-  }, []);
+    setLoading(false);
+  }, [requests]);
 
   return { result, loading, error, rewrite, reset };
 }

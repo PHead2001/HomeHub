@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, normalizeRepeat, MONTHLY_MAX_DAY, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { defaultMaintenanceTarget, describeIntent, quickAddConfirmBlocker } from '../../src/lib/dashboard/quick-add-preview';
-import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
+import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, modelSafeName, runLatest, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
+import { containsEmail, redactEmails } from '../../src/ai/redact';
 import { mileageNote, quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
 import { dayKey } from '../../src/lib/dashboard/dates';
 import { GO_TARGETS, SHORTCUTS, ariaKeyShortcuts, isShortcutSequence, shortcutById, shortcutText } from '../../src/lib/dashboard/shortcuts';
@@ -49,7 +50,7 @@ describe('quick add: the two sentences from the audit (H13)', () => {
 
   it('"oil change 48,200 miles" is a maintenance log with the odometer reading', () => {
     const intent = parseQuickAdd('oil change 48,200 miles', context);
-    assert.deepEqual(intent, { kind: 'maintenance', title: 'Oil change', mileage: 48_200, target: null });
+    assert.deepEqual(intent, { kind: 'maintenance', title: 'Oil change', mileage: 48_200, target: null, targetQuery: null });
     if (intent?.kind !== 'maintenance') return;
     assert.equal(describeIntent(intent, null).detail, 'at 48,200 miles · General log · today');
     const withVehicle = { ...intent, target: { kind: 'vehicle' as const, vehicle: context.vehicles![0] } };
@@ -80,7 +81,7 @@ describe('quick add: rooms, vehicles and assets', () => {
     const civic = parseQuickAdd('oil change on the Civic 48,200 miles', context);
     assert.equal(civic?.kind === 'maintenance' && civic.target?.kind === 'vehicle' && civic.target.vehicle.id, 'civic');
     assert.equal(civic?.kind === 'maintenance' && civic.title, 'Oil change');
-    assert.equal(findMaintenanceTarget('tire rotation for the work truck', context.vehicles!, [])?.target.kind, 'vehicle');
+    assert.equal(findMaintenanceTarget('tire rotation for the work truck', context.vehicles!, [])?.target?.kind, 'vehicle');
     const furnace = parseQuickAdd('log replaced furnace filter', context);
     assert.equal(furnace?.kind === 'maintenance' && furnace.target?.kind, 'asset');
     // A mileage never lands on a home asset.
@@ -162,6 +163,41 @@ describe('quick add AI fallback (client side)', () => {
     assert.equal(serialized.includes('civic"'), false);
     assert.equal(refs.members.get('m2')?.uid, 'sam');
     assert.equal(refs.vehicles.get('v1')?.id, 'civic');
+  });
+
+  it('a member whose name fell back to an email (or the email name) is sent as a neutral label (code-scanning 4503938468)', () => {
+    const withEmails: QuickAddContext = {
+      ...context,
+      members: [
+        { uid: 'owner', email: 'alex@example.test', name: 'Alex Owner' },
+        { uid: 'jamie', email: 'jamie.pending@example.test', name: 'jamie.pending@example.test' },
+        { uid: 'riley', email: 'riley.legacy@example.test', name: 'riley.legacy' },
+        { uid: 'kim', email: 'kim@example.test', name: 'Kim (kim@example.test)' },
+      ],
+      pets: [{ id: 'maple', name: 'Maple' }, { id: 'odd', name: 'vet@clinic.test' }],
+    };
+    const { input, refs } = buildAiParseRequest('feed the pets', withEmails);
+    assert.deepEqual(input.members, [
+      { ref: 'm1', name: 'Alex Owner' },
+      { ref: 'm2', name: 'Member 2' },
+      { ref: 'm3', name: 'Member 3' },
+      { ref: 'm4', name: 'Member 4' },
+    ]);
+    assert.deepEqual(input.pets[1], { ref: 'p2', name: 'Pet 2' });
+    const serialized = JSON.stringify(input);
+    assert.equal(serialized.includes('@'), false);
+    for (const local of ['jamie.pending', 'riley.legacy', 'kim@', 'example.test', 'clinic.test']) {
+      assert.equal(serialized.includes(local), false, local);
+    }
+    // The opaque reference still maps the answer back to the right member.
+    assert.equal(refs.members.get('m2')?.uid, 'jamie');
+    assert.equal(modelSafeName('Sam Member', 'Member 1', 'sam.member@example.test'), 'Sam Member');
+  });
+
+  it('overview labels never carry an email to the model either', () => {
+    assert.equal(redactEmails('New member jamie.pending@example.test wants to join'), 'New member a member wants to join');
+    assert.equal(containsEmail('Reset the kitchen'), false);
+    assert.equal(containsEmail('ping bob@x.io'), true);
   });
 
   it('turns the reader\'s answer into the same intents (and previews) as the parser', () => {
@@ -411,5 +447,82 @@ describe('NumberTicker frames never change the width (H12 text contract)', () =>
   it('declines a count that would be wider than the final value (it then changes at once)', () => {
     assert.equal(tickerFrame('12', '9', '12'), null);
     assert.equal(tickerFrame('10', '9', '12'), null);
+  });
+});
+
+describe('ambiguous vehicle or asset names are left for the member (review 4504033858)', () => {
+  const twoHondas: QuickAddContext = {
+    ...context,
+    vehicles: [
+      { id: 'civic', name: 'Family Civic', make: 'Honda', model: 'Civic' },
+      { id: 'accord', name: 'Work Accord', make: 'Honda', model: 'Accord' },
+    ],
+    assets: [{ id: 'furnace-up', name: 'Furnace' }, { id: 'furnace-down', name: 'Furnace' }, { id: 'heater', name: 'Water Heater' }],
+  };
+
+  it('"on the Honda" fits two vehicles: no target, the name is asked about, Confirm waits for a pick', () => {
+    const intent = parseQuickAdd('oil change on the Honda at 48,200 miles', twoHondas);
+    assert.equal(intent?.kind, 'maintenance');
+    if (intent?.kind !== 'maintenance') return;
+    assert.equal(intent.title, 'Oil change');
+    assert.equal(intent.mileage, 48_200);
+    assert.equal(intent.target, null);
+    assert.equal(intent.targetQuery, 'Honda');
+    assert.equal(defaultMaintenanceTarget(intent, twoHondas.vehicles!), null);
+    assert.match(describeIntent(intent, null).detail, /which Honda\?/);
+    assert.match(quickAddConfirmBlocker({ intent, indexLoading: false, vehicleCount: 2, chosenTarget: null }) ?? '', /More than one vehicle matches Honda/);
+    const picked = { kind: 'vehicle' as const, vehicle: twoHondas.vehicles![1] };
+    assert.equal(quickAddConfirmBlocker({ intent, indexLoading: false, vehicleCount: 2, chosenTarget: picked }), null);
+  });
+
+  it('a unique name still resolves; assets follow the same rule', () => {
+    const civic = parseQuickAdd('oil change on the Civic at 48,200 miles', twoHondas);
+    assert.equal(civic?.kind === 'maintenance' && civic.target?.kind === 'vehicle' && civic.target.vehicle.id, 'civic');
+    assert.equal(civic?.kind === 'maintenance' && civic.targetQuery, null);
+    const furnace = parseQuickAdd('log replaced furnace filter', twoHondas);
+    assert.equal(furnace?.kind === 'maintenance' && furnace.target, null);
+    assert.equal(furnace?.kind === 'maintenance' && furnace.targetQuery, 'Furnace');
+    const heater = parseQuickAdd('log serviced the water heater', twoHondas);
+    assert.equal(heater?.kind === 'maintenance' && heater.target?.kind === 'asset' && heater.target.asset.id, 'heater');
+  });
+});
+
+describe('a stale brief rewrite never comes back (review 4504033862)', () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+
+  it('"Show plain brief" during a rewrite drops its late result and error', async () => {
+    const guard = createRevisionGuard();
+    const seen: string[] = [];
+    const late = deferred<string>();
+    const running = runLatest(guard, () => late.promise, { onResult: (v) => seen.push(`result:${v}`), onError: () => seen.push('error'), settled: () => seen.push('settled') });
+    guard.invalidate(); // the member clicks "Show plain brief"
+    late.resolve('AI brief');
+    assert.equal(await running, 'stale');
+    assert.equal(seen.length, 0);
+
+    const failing = deferred<string>();
+    const failed = runLatest(guard, () => failing.promise, { onResult: () => seen.push('result'), onError: () => seen.push('error') });
+    guard.invalidate();
+    failing.reject(new Error('timeout'));
+    assert.equal(await failed, 'stale');
+    assert.equal(seen.length, 0);
+  });
+
+  it('the latest rewrite applies, and an older one finishing later does not override it', async () => {
+    const guard = createRevisionGuard();
+    const seen: string[] = [];
+    const first = deferred<string>();
+    const second = deferred<string>();
+    const a = runLatest(guard, () => first.promise, { onResult: (v) => seen.push(v), onError: () => seen.push('error'), settled: () => seen.push('settled') });
+    const b = runLatest(guard, () => second.promise, { onResult: (v) => seen.push(v), onError: () => seen.push('error'), settled: () => seen.push('settled') });
+    second.resolve('newer');
+    first.resolve('older');
+    assert.deepEqual([await a, await b], ['stale', 'applied']);
+    assert.deepEqual(seen, ['newer', 'settled']);
   });
 });

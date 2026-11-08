@@ -6,9 +6,11 @@
  * React), so it is unit tested.
  *
  * Only display names leave the device, each paired with a short reference (`m1`,
- * `r1`, `v1`…) that is resolved back here; emails, ids and other fields stay local.
+ * `r1`, `v1`…) that is resolved back here; emails, ids and other fields stay local,
+ * and a name that is (or contains) an email becomes a neutral label (`modelSafeName`).
  */
 import type { ParseCommandInput, ParseCommandOutput } from '@/ai/tasks/parse-command';
+import { containsEmail } from '@/ai/redact';
 import { dayKey, startOfLocalDay } from './dates';
 import {
   firstDateForRepeat,
@@ -35,12 +37,27 @@ export type AiParseRefs = {
 const LIMITS = { members: 30, rooms: 60, pets: 30, lists: 30, vehicles: 20 } as const;
 const clip = (value: string) => value.trim().replace(/\s+/g, ' ').slice(0, 80) || 'Unnamed';
 
-function withRefs<T extends { name: string }>(items: readonly T[], prefix: string, max: number) {
+/**
+ * The name the model may see. Display names fall back to email addresses for
+ * members without one, and a household may type an email into any name, so a name
+ * that contains an email, or equals the member's email name ("sam.member"), is
+ * replaced with a neutral label ("Member 2"). The opaque reference still maps the
+ * answer back to the record.
+ */
+export function modelSafeName(name: string, neutral: string, email?: string): string {
+  const clipped = clip(name);
+  const local = email?.split('@')[0]?.trim().toLowerCase();
+  if (containsEmail(clipped) || clipped.includes('@')) return neutral;
+  if (local && clipped.toLowerCase() === local) return neutral;
+  return clipped;
+}
+
+function withRefs<T extends { name: string; email?: string }>(items: readonly T[], prefix: string, max: number, noun: string) {
   const map = new Map<string, T>();
   const named = items.slice(0, max).map((item, index) => {
     const ref = `${prefix}${index + 1}`;
     map.set(ref, item);
-    return { ref, name: clip(item.name) };
+    return { ref, name: modelSafeName(item.name, `${noun} ${index + 1}`, item.email) };
   });
   return { map, named };
 }
@@ -50,11 +67,11 @@ const vehicleLabel = (vehicle: QuickAddVehicle) =>
 
 /** The reader's input for `text`, plus the references to resolve its answer. */
 export function buildAiParseRequest(text: string, context: QuickAddContext): { input: ParseCommandInput; refs: AiParseRefs } {
-  const members = withRefs(context.members, 'm', LIMITS.members);
-  const rooms = withRefs(context.rooms ?? [], 'r', LIMITS.rooms);
-  const pets = withRefs(context.pets, 'p', LIMITS.pets);
-  const lists = withRefs(context.lists, 'l', LIMITS.lists);
-  const vehicles = withRefs((context.vehicles ?? []).map((vehicle) => ({ ...vehicle, name: vehicleLabel(vehicle) || vehicle.name })), 'v', LIMITS.vehicles);
+  const members = withRefs(context.members, 'm', LIMITS.members, 'Member');
+  const rooms = withRefs(context.rooms ?? [], 'r', LIMITS.rooms, 'Room');
+  const pets = withRefs(context.pets, 'p', LIMITS.pets, 'Pet');
+  const lists = withRefs(context.lists, 'l', LIMITS.lists, 'List');
+  const vehicles = withRefs((context.vehicles ?? []).map((vehicle) => ({ ...vehicle, name: vehicleLabel(vehicle) || vehicle.name })), 'v', LIMITS.vehicles, 'Vehicle');
   // Map back to the original vehicle records (the label is only for the model).
   const vehicleMap = new Map<string, QuickAddVehicle>();
   vehicles.map.forEach((_, ref) => {
@@ -174,4 +191,29 @@ export function createRevisionGuard(): RevisionGuard {
     },
     isCurrent: (revision) => revision === current,
   };
+}
+
+/**
+ * Runs `task` as the guard's latest request and hands its result or error to the
+ * handlers only if nothing made it stale meanwhile (a newer request, or
+ * `guard.invalidate()` when the member goes back). `settled` runs either way for
+ * the latest request, so a loading state never sticks; it does not run for a
+ * stale one, whose owner has already moved on.
+ */
+export async function runLatest<T>(
+  guard: RevisionGuard,
+  task: () => Promise<T>,
+  handlers: { onResult: (value: T) => void; onError: (error: unknown) => void; settled?: () => void },
+): Promise<'applied' | 'stale'> {
+  const revision = guard.next();
+  try {
+    const value = await task();
+    if (!guard.isCurrent(revision)) return 'stale';
+    handlers.onResult(value);
+  } catch (error) {
+    if (!guard.isCurrent(revision)) return 'stale';
+    handlers.onError(error);
+  }
+  handlers.settled?.();
+  return 'applied';
 }
