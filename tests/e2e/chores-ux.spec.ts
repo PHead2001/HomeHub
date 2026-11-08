@@ -271,9 +271,10 @@ test.describe('chore library and empty household', () => {
 
       await library.getByRole('button', { name: `Delete ${task}`, exact: true }).click();
       await confirm.getByRole('button', { name: 'Delete Chore' }).click();
+      // The toast first: it auto-dismisses, so check it before the slower Firestore polls.
+      await expect(page.getByRole('region', { name: /notification/i }).getByText('Chore deleted', { exact: true })).toBeVisible();
       await expect.poll(async () => (await template.get()).exists).toBe(false);
       await expect.poll(async () => (await openChore.get()).exists).toBe(false);
-      await expect(page.getByRole('region', { name: /notification/i }).getByText('Chore deleted', { exact: true })).toBeVisible();
       await expect(library.getByRole('cell', { name: task, exact: true })).toHaveCount(0);
     } finally {
       await template.delete();
