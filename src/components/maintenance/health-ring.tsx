@@ -69,7 +69,7 @@ export function HealthRing({
         />
       </svg>
       <span aria-hidden className={cn('absolute font-headline font-semibold tabular-nums', text)}>
-        {size === 'lg' ? <NumberTicker value={score} /> : score}
+        <NumberTicker value={score} />
       </span>
     </div>
   );

@@ -28,16 +28,23 @@ export const isImageAttachment = (attachment: Pick<MaintenanceAttachment, 'conte
   );
 
 /**
- * The picture for an asset card (H30): the newest image attached to the asset,
- * preferring the "photo" category over receipts or manuals that happen to be
- * images. Null means the card shows its tokenized category art instead.
+ * The picture for an asset or vehicle card (H30): the newest image attached to
+ * it, preferring the "photo" category over receipts or manuals that happen to be
+ * images. Null means the card shows the brand logo or category art instead.
  */
-export const pickAssetPhoto = (attachments: MaintenanceAttachment[], assetId: string): MaintenanceAttachment | null => {
+export const pickTargetPhoto = (
+  attachments: MaintenanceAttachment[],
+  targetType: 'home_asset' | 'vehicle',
+  targetId: string,
+): MaintenanceAttachment | null => {
   const images = attachments
-    .filter((attachment) => attachment.targetType === 'home_asset' && attachment.targetId === assetId && isImageAttachment(attachment))
+    .filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId && isImageAttachment(attachment))
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   return images.find((attachment) => attachment.category === 'photo') || images[0] || null;
 };
+
+export const pickAssetPhoto = (attachments: MaintenanceAttachment[], assetId: string) => pickTargetPhoto(attachments, 'home_asset', assetId);
+export const pickVehiclePhoto = (attachments: MaintenanceAttachment[], vehicleId: string) => pickTargetPhoto(attachments, 'vehicle', vehicleId);
 
 export type DetailField = { label: string; value: string };
 

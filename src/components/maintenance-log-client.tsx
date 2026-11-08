@@ -51,8 +51,14 @@ import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { AssetCard } from '@/components/maintenance/asset-card';
 import { HealthPanel } from '@/components/maintenance/health-panel';
 import { HealthRing } from '@/components/maintenance/health-ring';
-import { ReminderList, type ReminderBusy } from '@/components/maintenance/reminder-list';
-import { Odometer } from '@/components/maintenance/odometer';
+import { ReminderList, type MarkDoneResult, type ReminderBusy } from '@/components/maintenance/reminder-list';
+import { VehicleCard } from '@/components/maintenance/vehicle-card';
+import { BrandLogo } from '@/components/brand/brand-logo';
+import { PeekCard } from '@/components/dashboard/peek-card';
+import { LiveCount } from '@/components/shopping/live-count';
+import { Stagger, StaggerItem } from '@/components/motion/stagger';
+import { useInPageMorph } from '@/components/shopping/use-in-page-morph';
+import { morphStyle, sharedId } from '@/lib/motion';
 import { Badge } from '@/components/ui/badge';
 import {
   AlertDialog,
@@ -84,7 +90,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { playFeedback } from '@/lib/feedback';
-import { pickAssetPhoto, presentFields, shouldOfferAiSummary } from '@/lib/maintenance/display';
+import { pickAssetPhoto, pickVehiclePhoto, presentFields, shouldOfferAiSummary } from '@/lib/maintenance/display';
 import { computeHomeHealth, healthKey, type HealthDeduction, type HealthResult } from '@/lib/maintenance/health';
 import { warrantyCountdown } from '@/lib/maintenance/warranty';
 import {
@@ -97,6 +103,7 @@ import {
   getAssetScheduleMode,
   getVehicleScheduleMode,
   quickCompletionValues,
+  serviceCompletionValues,
   scheduleKeyFor,
   snoozedDueDate,
   type ScheduleCompletionTarget,
@@ -203,6 +210,8 @@ type LogPreset = {
   targetType?: MaintenanceTargetType;
   assetId?: string;
   vehicleId?: string;
+  title?: string;
+  mileage?: string;
 };
 
 type AssetScheduleForm = {
@@ -282,14 +291,14 @@ const emptyLogForm = (preset?: LogPreset): LogFormValues => ({
   targetType: preset?.targetType || 'general',
   assetId: preset?.assetId || '',
   vehicleId: preset?.vehicleId || '',
-  title: '',
+  title: preset?.title || '',
   date: todayInputValue(),
   type: 'routine',
   notes: '',
   cost: '',
   partsUsed: '',
   serviceProvider: '',
-  mileage: '',
+  mileage: preset?.mileage || '',
 });
 
 const emptyScheduleCompletionForm = (): ScheduleCompletionFormValues => ({
@@ -439,11 +448,15 @@ const getAttachmentsForTarget = (
 function SummaryCard({
   title,
   value,
+  format,
   detail,
   icon: Icon,
 }: {
   title: string;
-  value: string;
+  /** A count or amount: rendered as a LiveCount (H12). */
+  value: number;
+  /** Intl options for the value, e.g. currency. */
+  format?: Intl.NumberFormatOptions;
   detail: string;
   icon: React.ElementType;
 }) {
@@ -454,7 +467,7 @@ function SummaryCard({
         <Icon className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
+        <div className="text-2xl font-bold"><LiveCount value={value} format={format} animateOnMount /></div>
         <p className="text-xs text-muted-foreground">{detail}</p>
       </CardContent>
     </Card>
@@ -777,6 +790,8 @@ export function MaintenanceLogClient() {
   const [activeTab, setActiveTab] = useState<MaintenanceTab>('overview');
   const appliedSearch = useRef<string | null>(null);
   const [reminderBusy, setReminderBusy] = useState<ReminderBusy>(null);
+  // Card -> detail panel shared-element morphs (H12), within this page.
+  const detailMorph = useInPageMorph();
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
@@ -796,6 +811,8 @@ export function MaintenanceLogClient() {
   const [scheduleToRemove, setScheduleToRemove] = useState<ScheduleRemovalTarget | null>(null);
   const [deletingRecord, setDeletingRecord] = useState<string | null>(null);
   const [scheduleCompletionTarget, setScheduleCompletionTarget] = useState<ScheduleCompletionTarget | null>(null);
+  /** The schedule a "Log service" log completes when saved (D16). */
+  const [logScheduleTarget, setLogScheduleTarget] = useState<ScheduleCompletionTarget | null>(null);
   const [assetScheduleForms, setAssetScheduleForms] = useState<AssetScheduleForm[]>([]);
   const [vehicleScheduleForms, setVehicleScheduleForms] = useState<VehicleScheduleForm[]>([]);
   const [assetScheduleErrors, setAssetScheduleErrors] = useState<Record<string, string>>({});
@@ -1231,8 +1248,9 @@ export function MaintenanceLogClient() {
     setVehicleDialogOpen(true);
   };
 
-  const openLogDialog = (preset?: LogPreset, log?: MaintenanceLog) => {
+  const openLogDialog = (preset?: LogPreset, log?: MaintenanceLog, schedule: ScheduleCompletionTarget | null = null) => {
     setEditingLog(log || null);
+    setLogScheduleTarget(log ? null : schedule);
     logForm.reset(log ? {
       targetType: getLogTargetType(log),
       assetId: log.assetId || '',
@@ -1507,6 +1525,48 @@ export function MaintenanceLogClient() {
       return;
     }
 
+    // Log service: a new log for the reminder's own asset or vehicle also
+    // completes that schedule cycle. Switching the form to another target makes it
+    // an ordinary log.
+    const linked = !editingLog && logScheduleTarget && (
+      logScheduleTarget.targetType === 'home_asset'
+        ? values.targetType === 'home_asset' && values.assetId === logScheduleTarget.asset.id
+        : values.targetType === 'vehicle' && values.vehicleId === logScheduleTarget.vehicle.id
+    ) ? logScheduleTarget : null;
+    if (linked) {
+      // Never write a schedule without a next due: the advanced values must be
+      // computable from the log (Log service opens only for such schedules, so
+      // the only way to miss is a cleared mileage on a mileage-interval service).
+      const completion = serviceCompletionValues(
+        linked,
+        values.date,
+        linked.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
+      );
+      if (!completion) {
+        logForm.setError('mileage', { message: 'Enter the mileage so the next service can be scheduled.' }, { shouldFocus: true });
+        return;
+      }
+      try {
+        const done = await applyScheduleCompletion(linked, { ...completion, notes: values.notes }, {
+          title: values.title.trim(),
+          type: values.type,
+          cost: toNumber(values.cost),
+          partsUsed: trimOptional(values.partsUsed),
+          serviceProvider: trimOptional(values.serviceProvider),
+        });
+        if (!done) return;
+        setLogDialogOpen(false);
+        setLogScheduleTarget(null);
+        playFeedback('complete');
+        toast({ title: 'Service logged', description: `${getScheduleCompletionName(linked)} is marked done.` });
+        await refreshMaintenanceData();
+      } catch (saveError) {
+        console.error('Error logging service:', saveError);
+        toastError(saveError, 'Could not log the service');
+      }
+      return;
+    }
+
     const now = new Date().toISOString();
     const logId = editingLog?.id || slugify(values.title);
     const logData: Omit<MaintenanceLog, 'id'> = {
@@ -1558,6 +1618,8 @@ export function MaintenanceLogClient() {
   const applyScheduleCompletion = async (
     target: ScheduleCompletionTarget,
     values: { completedDate: string; mileage?: number; nextDueDate?: string; nextDueMileage?: number; notes?: string },
+    /** Details from the full log form (Log service); a quick completion has none. */
+    details?: Pick<MaintenanceLog, 'title' | 'type' | 'cost' | 'partsUsed' | 'serviceProvider'>,
   ) => {
     const householdId = currentUser?.householdId;
     const logsCollection = getCollectionRef('maintenance');
@@ -1566,7 +1628,7 @@ export function MaintenanceLogClient() {
     if (!householdId || !logsCollection || !assetsCollection || !vehiclesCollection) return false;
 
     const now = new Date().toISOString();
-    const scheduleName = getScheduleCompletionName(target);
+    const scheduleName = details?.title || getScheduleCompletionName(target);
     const logId = `${slugify(`${scheduleName}-${values.completedDate}`)}-${Date.now()}`;
     const logData: Omit<MaintenanceLog, 'id'> = {
       householdId,
@@ -1576,8 +1638,11 @@ export function MaintenanceLogClient() {
       title: scheduleName,
       item: scheduleName,
       date: values.completedDate,
-      type: 'routine',
+      type: details?.type || 'routine',
       notes: trimOptional(values.notes),
+      cost: details?.cost,
+      partsUsed: details?.partsUsed,
+      serviceProvider: details?.serviceProvider,
       mileage: target.targetType === 'vehicle' ? values.mileage : undefined,
       createdAt: now,
       updatedAt: now,
@@ -1649,34 +1714,68 @@ export function MaintenanceLogClient() {
    * cannot be worked out (no interval, or no recorded mileage), the completion
    * dialog opens instead so nothing is guessed.
    */
-  const markReminderDone = async (reminder: MaintenanceReminder) => {
-    if (reminderBusy || !canComplete) return;
+  const reminderCompletesInPlace = (reminder: MaintenanceReminder) => {
+    const target = findReminderSchedule(reminder, assets, vehicles);
+    return Boolean(target && quickCompletionValues(target, today));
+  };
+
+  const markReminderDone = async (reminder: MaintenanceReminder): Promise<MarkDoneResult> => {
+    if (reminderBusy || !canComplete) return 'failed';
     const target = findReminderSchedule(reminder, assets, vehicles);
     if (!target) {
       openReminderTarget(reminder);
-      return;
+      return 'deferred';
     }
     const values = quickCompletionValues(target, today);
     if (!values) {
       openScheduleCompletionDialog(target);
-      return;
+      return 'deferred';
     }
     setReminderBusy({ id: reminder.id, action: 'done' });
     try {
       const done = await applyScheduleCompletion(target, values);
-      if (!done) return;
+      if (!done) return 'failed';
       playFeedback('complete');
       toast({
         title: 'Marked done',
         description: `${reminder.title} for ${reminder.relatedName} is logged.${values.nextDueDate ? ` Next due ${formatDate(values.nextDueDate)}.` : ''}`,
       });
       await refreshMaintenanceData();
+      return 'done';
     } catch (saveError) {
       console.error('Error completing maintenance from a reminder:', saveError);
       toastError(saveError, 'Could not mark it done');
+      return 'failed';
     } finally {
       setReminderBusy(null);
     }
+  };
+
+  /**
+   * Log service (D16): the full log form, filled in for the reminder's asset or
+   * vehicle and schedule (title, type, today, current mileage). Saving it records
+   * the log and completes that schedule cycle, like Mark done but with the
+   * details. A reminder without a schedule (it was removed) opens a plain log
+   * for the same asset or vehicle.
+   */
+  const openLogService = (reminder: MaintenanceReminder) => {
+    if (!canCreateLogs) return;
+    const target = findReminderSchedule(reminder, assets, vehicles);
+    // Like Mark done: a schedule whose next due cannot be advanced from its
+    // interval (an explicit date or mileage with no repeat) is completed in the
+    // completion dialog, where the next due values are entered.
+    if (target && canComplete && !quickCompletionValues(target, today)) {
+      openScheduleCompletionDialog(target);
+      return;
+    }
+    const vehicle = reminder.targetType === 'vehicle' ? vehicles.find((item) => item.id === reminder.targetId) : undefined;
+    openLogDialog({
+      targetType: reminder.targetType,
+      assetId: reminder.targetType === 'home_asset' ? reminder.targetId : undefined,
+      vehicleId: reminder.targetType === 'vehicle' ? reminder.targetId : undefined,
+      title: target ? getScheduleCompletionName(target) : reminder.title,
+      mileage: typeof vehicle?.currentMileage === 'number' ? vehicle.currentMileage.toString() : undefined,
+    }, undefined, canComplete ? target : null);
   };
 
   /**
@@ -1948,11 +2047,58 @@ export function MaintenanceLogClient() {
   const reminderListProps = {
     today,
     canComplete,
+    canLog: canCreateLogs,
     canSnooze: canEdit,
     busy: reminderBusy,
+    completesInPlace: reminderCompletesInPlace,
     onOpen: openReminderTarget,
-    onMarkDone: (reminder: MaintenanceReminder) => void markReminderDone(reminder),
+    onMarkDone: markReminderDone,
+    onLogService: openLogService,
     onSnooze: (reminder: MaintenanceReminder) => void snoozeReminder(reminder),
+  };
+
+  // Peek cards (H26) for links that leave the current view: key facts at a glance.
+  const healthLine = (result?: HealthResult) => (result ? `Health ${result.score}` : null);
+  const assetPeek = (asset: HomeAsset) => {
+    const facts = [healthLine(healthFor('home_asset', asset.id)), asset.location].filter(Boolean).join(' · ');
+    return (
+      <div className="space-y-1">
+        <p className="font-headline font-semibold">{asset.name}</p>
+        <p className="text-muted-foreground">{[asset.brand, asset.model].filter(Boolean).join(' ') || asset.category}</p>
+        {facts && <p className="text-xs text-muted-foreground">{facts}</p>}
+      </div>
+    );
+  };
+  const vehiclePeek = (vehicle: Vehicle) => {
+    const mileage = typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString('en-US')} mi` : null;
+    const facts = [healthLine(healthFor('vehicle', vehicle.id)), mileage].filter(Boolean).join(' · ');
+    return (
+      <div className="space-y-1">
+        <p className="font-headline font-semibold">{vehicle.nickname}</p>
+        <p className="text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+        {facts && <p className="text-xs text-muted-foreground">{facts}</p>}
+      </div>
+    );
+  };
+
+  const renderVehicleCard = (vehicle: Vehicle, inactive: boolean) => {
+    const morph = sharedId('vehicle', vehicle.id);
+    const selected = selectedVehicle?.id === vehicle.id;
+    return (
+      <VehicleCard
+        vehicle={vehicle}
+        photo={pickVehiclePhoto(attachments, vehicle.id)}
+        health={healthFor('vehicle', vehicle.id)}
+        selected={selected}
+        inactive={inactive}
+        statusLabel={inactive ? humanizeLabel(vehicle.status) : undefined}
+        style={morphStyle(detailMorph.morphName === morph && !selected ? morph : null)}
+        onSelect={(event) => {
+          if (selected) return;
+          detailMorph.run(morph, () => setSelectedVehicleId(vehicle.id), { sync: true, event });
+        }}
+      />
+    );
   };
 
   const flaggedAssets = assets.filter((asset) => asset.status === 'needs_attention');
@@ -2077,11 +2223,11 @@ export function MaintenanceLogClient() {
             )}
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <SummaryCard title="Home Assets" value={assets.length.toString()} detail="Registered household assets" icon={Home} />
-              <SummaryCard title="Vehicles" value={vehicles.length.toString()} detail="Registered vehicles" icon={Car} />
-              <SummaryCard title="Logged, Last 30 Days" value={summary.recentLogs.length.toString()} detail="Logs dated in the last 30 days" icon={ClipboardList} />
-              <SummaryCard title="Needs Attention" value={summary.needingAttention.toString()} detail="Assets or vehicles flagged" icon={AlertCircle} />
-              <SummaryCard title="Spent, Last 30 Days" value={formatCurrency(summary.recentCost)} detail="Costs on logs from the last 30 days" icon={DollarSign} />
+              <SummaryCard title="Home Assets" value={assets.length} detail="Registered household assets" icon={Home} />
+              <SummaryCard title="Vehicles" value={vehicles.length} detail="Registered vehicles" icon={Car} />
+              <SummaryCard title="Logged, Last 30 Days" value={summary.recentLogs.length} detail="Logs dated in the last 30 days" icon={ClipboardList} />
+              <SummaryCard title="Needs Attention" value={summary.needingAttention} detail="Assets or vehicles flagged" icon={AlertCircle} />
+              <SummaryCard title="Spent, Last 30 Days" value={summary.recentCost} format={{ style: 'currency', currency: 'USD' }} detail="Costs on logs from the last 30 days" icon={DollarSign} />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
@@ -2106,26 +2252,34 @@ export function MaintenanceLogClient() {
                   ) : (
                     <>
                       {flaggedAssets.map(asset => (
-                        <button
-                          key={asset.id}
-                          type="button"
-                          className="w-full rounded-lg border p-3 text-left transition-ui hover:bg-accent"
-                          onClick={() => openTarget({ targetType: 'home_asset', targetId: asset.id, deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}` })}
-                        >
-                          <p className="font-medium">{asset.name}</p>
-                          <p className="text-sm text-muted-foreground">{[asset.category, asset.location].filter(Boolean).join(' · ')}</p>
-                        </button>
+                        <PeekCard key={asset.id} peek={assetPeek(asset)}>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-ui hover:bg-accent"
+                            onClick={() => openTarget({ targetType: 'home_asset', targetId: asset.id, deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}` })}
+                          >
+                            <BrandLogo brand={asset.brand} size="sm" className="text-muted-foreground" />
+                            <span className="min-w-0">
+                              <span className="block font-medium">{asset.name}</span>
+                              <span className="block text-sm text-muted-foreground">{[asset.category, asset.location].filter(Boolean).join(' · ')}</span>
+                            </span>
+                          </button>
+                        </PeekCard>
                       ))}
                       {flaggedVehicles.map(vehicle => (
-                        <button
-                          key={vehicle.id}
-                          type="button"
-                          className="w-full rounded-lg border p-3 text-left transition-ui hover:bg-accent"
-                          onClick={() => openTarget({ targetType: 'vehicle', targetId: vehicle.id, deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}` })}
-                        >
-                          <p className="font-medium">{vehicle.nickname}</p>
-                          <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
-                        </button>
+                        <PeekCard key={vehicle.id} peek={vehiclePeek(vehicle)}>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-ui hover:bg-accent"
+                            onClick={() => openTarget({ targetType: 'vehicle', targetId: vehicle.id, deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}` })}
+                          >
+                            <BrandLogo brand={vehicle.make} size="sm" decorative className="text-muted-foreground" />
+                            <span className="min-w-0">
+                              <span className="block font-medium">{vehicle.nickname}</span>
+                              <span className="block text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</span>
+                            </span>
+                          </button>
+                        </PeekCard>
                       ))}
                     </>
                   )}
@@ -2154,24 +2308,34 @@ export function MaintenanceLogClient() {
             ) : (
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
                 {/* content-start: cards keep their own height instead of stretching to the detail panel (B7). */}
-                <div className="grid content-start gap-3 sm:grid-cols-2">
-                  {assets.map((asset) => (
-                    <AssetCard
-                      key={asset.id}
-                      asset={asset}
-                      photo={pickAssetPhoto(attachments, asset.id)}
-                      health={healthFor('home_asset', asset.id)}
-                      warranty={warrantyCountdown(asset, today)}
-                      selected={selectedAsset?.id === asset.id}
-                      onSelect={() => setSelectedAssetId(asset.id)}
-                    />
-                  ))}
-                </div>
+                <Stagger className="grid content-start gap-3 sm:grid-cols-2">
+                  {assets.map((asset) => {
+                    const morph = sharedId('asset', asset.id);
+                    const selected = selectedAsset?.id === asset.id;
+                    return (
+                      <StaggerItem key={asset.id} className="flex" style={morphStyle(detailMorph.morphName === morph && !selected ? morph : null)}>
+                        <AssetCard
+                          asset={asset}
+                          photo={pickAssetPhoto(attachments, asset.id)}
+                          health={healthFor('home_asset', asset.id)}
+                          warranty={warrantyCountdown(asset, today)}
+                          selected={selected}
+                          onSelect={(event) => {
+                            if (selected) return;
+                            detailMorph.run(morph, () => setSelectedAssetId(asset.id), { sync: true, event });
+                          }}
+                        />
+                      </StaggerItem>
+                    );
+                  })}
+                </Stagger>
 
                 {selectedAsset && (
-                  <Card className="min-w-0">
+                  <Card className="min-w-0" data-testid="asset-detail" style={morphStyle(detailMorph.morphName === sharedId('asset', selectedAsset.id) ? sharedId('asset', selectedAsset.id) : null)}>
                     <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                      <div className="min-w-0">
+                      {/* The brand is listed as text in the details below, so the mark is decorative. */}
+                      <BrandLogo brand={selectedAsset.brand} size="md" decorative className="text-primary" />
+                      <div className="min-w-0 flex-1">
                         <CardTitle className="font-headline">{selectedAsset.name}</CardTitle>
                         <CardDescription>{selectedAsset.category}</CardDescription>
                       </div>
@@ -2295,35 +2459,13 @@ export function MaintenanceLogClient() {
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
                 <div className="space-y-4">
                   {activeVehicles.length > 0 ? (
-                    <div className="grid content-start gap-3 sm:grid-cols-2">
-                      {activeVehicles.map((vehicle) => {
-                        const vehicleHealth = healthFor('vehicle', vehicle.id);
-                        return (
-                          <button
-                            key={vehicle.id}
-                            type="button"
-                            onClick={() => setSelectedVehicleId(vehicle.id)}
-                            aria-current={selectedVehicle?.id === vehicle.id ? 'true' : undefined}
-                            className={cn(
-                              'glow-card rounded-lg border bg-card p-4 text-left shadow-raised transition-ui hover:bg-accent',
-                              selectedVehicle?.id === vehicle.id && 'border-primary'
-                            )}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-headline font-semibold">{vehicle.nickname}</p>
-                                <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
-                              </div>
-                              {vehicleHealth && <HealthRing score={vehicleHealth.score} band={vehicleHealth.band} label={`${vehicle.nickname} health`} />}
-                            </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                              {typeof vehicle.currentMileage === 'number' ? <Odometer miles={vehicle.currentMileage} /> : <span>Mileage not recorded</span>}
-                              {vehicle.status === 'needs_attention' && <Badge variant="destructive">Needs attention</Badge>}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <Stagger className="grid content-start gap-3 sm:grid-cols-2">
+                      {activeVehicles.map((vehicle) => (
+                        <StaggerItem key={vehicle.id} className="flex">
+                          {renderVehicleCard(vehicle, false)}
+                        </StaggerItem>
+                      ))}
+                    </Stagger>
                   ) : (
                     <EmptyState compact headingLevel={3} title="No active vehicles" description="Sold and retired vehicles are kept out of the main vehicle list." />
                   )}
@@ -2343,24 +2485,7 @@ export function MaintenanceLogClient() {
                       {showInactiveVehicles && (
                         <div className="mt-3 grid content-start gap-3 sm:grid-cols-2">
                           {inactiveVehicles.map((vehicle) => (
-                            <button
-                              key={vehicle.id}
-                              type="button"
-                              onClick={() => setSelectedVehicleId(vehicle.id)}
-                              aria-current={selectedVehicle?.id === vehicle.id ? 'true' : undefined}
-                              className={cn(
-                                'glow-card rounded-lg border bg-muted/30 p-4 text-left transition-ui hover:bg-accent',
-                                selectedVehicle?.id === vehicle.id && 'border-primary'
-                              )}
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <p className="font-headline font-semibold">{vehicle.nickname}</p>
-                                  <p className="text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
-                                </div>
-                                <Badge variant="outline">{humanizeLabel(vehicle.status)}</Badge>
-                              </div>
-                            </button>
+                            <div key={vehicle.id} className="flex">{renderVehicleCard(vehicle, true)}</div>
                           ))}
                         </div>
                       )}
@@ -2369,9 +2494,11 @@ export function MaintenanceLogClient() {
                 </div>
 
                 {selectedVehicle && (
-                  <Card className="min-w-0">
+                  <Card className="min-w-0" data-testid="vehicle-detail" style={morphStyle(detailMorph.morphName === sharedId('vehicle', selectedVehicle.id) ? sharedId('vehicle', selectedVehicle.id) : null)}>
                     <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                      <div className="min-w-0">
+                      {/* The make is part of the description below, so the mark is decorative. */}
+                      <BrandLogo brand={selectedVehicle.make} size="md" decorative className="text-primary" />
+                      <div className="min-w-0 flex-1">
                         <CardTitle className="font-headline">{selectedVehicle.nickname}</CardTitle>
                         <CardDescription>{[selectedVehicle.year, selectedVehicle.make, selectedVehicle.model, selectedVehicle.trim].filter(Boolean).join(' ') || 'Vehicle details'}</CardDescription>
                       </div>
@@ -2477,10 +2604,10 @@ export function MaintenanceLogClient() {
 
           <TabsContent value="reminders" className="space-y-4 pt-4">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <SummaryCard title="Due Soon" value={dueSoonReminders.length.toString()} detail={`Within ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles`} icon={CalendarDays} />
-              <SummaryCard title="Overdue" value={overdueReminders.length.toString()} detail="Past due date or mileage" icon={AlertCircle} />
-              <SummaryCard title="Warranty Watch" value={warrantyReminders.length.toString()} detail="Warranties ending or ended" icon={FileText} />
-              <SummaryCard title="Vehicle Service" value={vehicleServiceReminders.length.toString()} detail="Service, registration, and inspection" icon={Car} />
+              <SummaryCard title="Due Soon" value={dueSoonReminders.length} detail={`Within ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles`} icon={CalendarDays} />
+              <SummaryCard title="Overdue" value={overdueReminders.length} detail="Past due date or mileage" icon={AlertCircle} />
+              <SummaryCard title="Warranty Watch" value={warrantyReminders.length} detail="Warranties ending or ended" icon={FileText} />
+              <SummaryCard title="Vehicle Service" value={vehicleServiceReminders.length} detail="Service, registration, and inspection" icon={Car} />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
@@ -2926,12 +3053,19 @@ export function MaintenanceLogClient() {
 
       <Dialog open={logDialogOpen} onOpenChange={(open) => {
         setLogDialogOpen(open);
-        if (!open) setEditingLog(null);
+        if (!open) {
+          setEditingLog(null);
+          setLogScheduleTarget(null);
+        }
       }}>
         <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingLog ? 'Edit Maintenance Log' : 'Add Maintenance Log'}</DialogTitle>
-            <DialogDescription>Link a log to a home asset, vehicle, or keep it general.</DialogDescription>
+            <DialogDescription>
+              {logScheduleTarget
+                ? `Saving marks ${getScheduleCompletionName(logScheduleTarget)} done for ${logScheduleTarget.targetType === 'home_asset' ? logScheduleTarget.asset.name : logScheduleTarget.vehicle.nickname} and sets when it is next due.`
+                : 'Link a log to a home asset, vehicle, or keep it general.'}
+            </DialogDescription>
           </DialogHeader>
           <Form {...logForm}>
             <form onSubmit={logForm.handleSubmit(saveLog)} className="flex min-h-0 flex-1 flex-col">

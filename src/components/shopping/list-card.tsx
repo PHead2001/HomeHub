@@ -1,6 +1,9 @@
 'use client';
 
+import type { CSSProperties, MouseEvent } from 'react';
 import { Edit, MoreVertical, Trash2 } from 'lucide-react';
+import { PeekCard } from '@/components/dashboard/peek-card';
+import { LiveCount } from './live-count';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import type { ShoppingList } from '@/lib/types';
@@ -13,7 +16,9 @@ export type ListCounts = { needed: number; purchased: number };
 
 /**
  * One list on the Shopping Lists overview: tinted icon, name, what is left to buy
- * and a trip progress bar. Edit/Delete appear only for members who may do them.
+ * (live tickers) and a trip progress bar. Edit/Delete appear only for members who
+ * may do them. Open List has a peek card (H26) and morphs into the open list
+ * (H12) through `style` (the shared-element name, set only while morphing).
  */
 export function ListCard({
   list,
@@ -21,12 +26,14 @@ export function ListCard({
   onSelect,
   onEdit,
   onDelete,
+  style,
 }: {
   list: ShoppingList;
   counts?: ListCounts;
-  onSelect: () => void;
+  onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
   onEdit?: () => void;
   onDelete?: () => void;
+  style?: CSSProperties;
 }) {
   const tint = listTint(list);
   const total = counts ? counts.needed + counts.purchased : 0;
@@ -36,11 +43,28 @@ export function ListCard({
     : total === 0
       ? 'Empty'
       : counts.needed === 0
-        ? `All ${pluralize(counts.purchased, 'item')} in the cart`
-        : `${counts.needed} to buy${counts.purchased > 0 ? ` · ${counts.purchased} in the cart` : ''}`;
+        ? <>All <LiveCount value={counts.purchased} /> {counts.purchased === 1 ? 'item' : 'items'} in the cart</>
+        : (
+          <>
+            <LiveCount value={counts.needed} /> to buy
+            {counts.purchased > 0 && <> · <LiveCount value={counts.purchased} /> in the cart</>}
+          </>
+        );
+  const peek = (
+    <div className="space-y-1">
+      <p className="font-headline font-semibold">{list.name}</p>
+      <p className="text-muted-foreground">{list.type} list</p>
+      {counts && (
+        <p className="text-xs text-muted-foreground">
+          {total === 0 ? 'No items yet' : `${pluralize(counts.needed, 'item')} to buy · ${counts.purchased} in the cart · ${progress}% done`}
+        </p>
+      )}
+      {list.description && <p className="line-clamp-2 text-xs text-muted-foreground">{list.description}</p>}
+    </div>
+  );
 
   return (
-    <div className="glow-card flex flex-col justify-between gap-4 rounded-xl border bg-card p-5 text-card-foreground shadow-raised">
+    <div style={style} data-testid={`list-card-${list.id}`} className="glow-card flex h-full flex-col justify-between gap-4 rounded-xl border bg-card p-5 text-card-foreground shadow-raised">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl', tint.classes.softChip)}>
@@ -81,7 +105,9 @@ export function ListCard({
         </div>
       </div>
 
-      <Button className="w-full" aria-label={`Open ${list.name}`} onClick={onSelect}>Open List</Button>
+      <PeekCard peek={peek}>
+        <Button className="w-full" aria-label={`Open ${list.name}`} onClick={onSelect}>Open List</Button>
+      </PeekCard>
     </div>
   );
 }
