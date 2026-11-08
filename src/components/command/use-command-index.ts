@@ -6,12 +6,13 @@
  * pets, lists, rooms, vehicles and assets the quick-add parser resolves names
  * against.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { collection, query, where, type DocumentData, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getDocsOfflineAware } from '@/lib/firestore-offline';
 import { useAuth } from '@/hooks/use-auth';
 import type { QuickAddAsset, QuickAddList, QuickAddMember, QuickAddPet, QuickAddRoom, QuickAddVehicle } from '@/lib/dashboard/quick-add';
+import { INDEX_SECTIONS, type IndexSection } from '@/lib/dashboard/quick-add-preview';
 import { shoppingListHref } from '@/lib/dashboard/links';
 import { feedingPlan } from '@/lib/pets/care';
 import type { PetProfile } from '@/lib/pets/types';
@@ -28,10 +29,17 @@ export type CommandIndex = {
   vehicles: QuickAddVehicle[];
   /** Home assets that are not retired. */
   assets: QuickAddAsset[];
+  /**
+   * Sections the member may view whose read failed. Kept apart from "loaded and
+   * empty", so a preview never treats "no vehicles" as "none could be read".
+   */
+  failed: IndexSection[];
   loading: boolean;
+  /** Reads the index again (after a failure). */
+  retry: () => void;
 };
 
-const EMPTY: CommandIndex = { entries: [], members: [], pets: [], lists: [], rooms: [], vehicles: [], assets: [], loading: false };
+const EMPTY: Omit<CommandIndex, 'retry'> = { entries: [], members: [], pets: [], lists: [], rooms: [], vehicles: [], assets: [], failed: [], loading: false };
 const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 const str = (value: unknown, fallback = '') => (typeof value === 'string' && value.trim() ? value.trim() : fallback);
 const rows = (snapshot: QuerySnapshot<DocumentData>) => snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Record<string, unknown> & { id: string }));
@@ -39,8 +47,9 @@ const rows = (snapshot: QuerySnapshot<DocumentData>) => snapshot.docs.map((d) =>
 export function useCommandIndex(open: boolean): CommandIndex {
   const { currentUser, currentMember, permissions } = useAuth();
   const householdId = currentUser?.householdId ?? null;
-  const [index, setIndex] = useState<CommandIndex>(EMPTY);
+  const [index, setIndex] = useState<Omit<CommandIndex, 'retry'>>(EMPTY);
   const [loaded, setLoaded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const approved = Boolean(currentMember && currentMember.role !== 'newuser');
 
   useEffect(() => {
@@ -59,6 +68,17 @@ export function useCommandIndex(open: boolean): CommandIndex {
         permissions['maintenance.view'] ? safe(getDocsOfflineAware(base('vehicles'))) : null,
         permissions['chores.view'] ? safe(getDocsOfflineAware(base('rooms'))) : null,
       ]);
+      // A section that was asked for and came back null failed (not "empty").
+      const requested: Record<IndexSection, boolean> = {
+        members: true,
+        lists: Boolean(permissions['shopping.view']),
+        pets: Boolean(permissions['pets.view']),
+        rooms: Boolean(permissions['chores.view']),
+        vehicles: Boolean(permissions['maintenance.view']),
+        assets: Boolean(permissions['maintenance.view']),
+      };
+      const results: Record<IndexSection, unknown> = { members, lists, pets, rooms, vehicles, assets };
+      const failed = INDEX_SECTIONS.filter((section) => requested[section] && results[section] === null);
       const listRows = lists ? rows(lists) : [];
       const items = permissions['shopping.view']
         ? (await Promise.all(listRows.map(async (list) => {
@@ -111,19 +131,29 @@ export function useCommandIndex(open: boolean): CommandIndex {
         assets: assets
           ? rows(assets).filter((asset) => asset.status !== 'retired').map((asset) => ({ id: asset.id, name: str(asset.name, 'Home asset') }))
           : [],
+        failed,
         loading: false,
       });
       setLoaded(true);
     })().catch(() => {
-      if (!cancelled) setLoaded(true);
+      if (cancelled) return;
+      // Nothing could be read: every section counts as failed, never as empty.
+      setIndex({ ...EMPTY, failed: [...INDEX_SECTIONS] });
+      setLoaded(true);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [open, householdId, approved, permissions]);
+  }, [open, householdId, approved, permissions, attempt]);
 
-  return { ...index, loading: open && !loaded };
+  const retry = useCallback(() => {
+    setLoaded(false);
+    setIndex(EMPTY);
+    setAttempt((value) => value + 1);
+  }, []);
+
+  return { ...index, loading: open && !loaded, retry };
 }
 
 /** Case-insensitive match score: 0 none, higher is better. */

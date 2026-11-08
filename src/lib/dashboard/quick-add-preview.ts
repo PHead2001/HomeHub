@@ -7,6 +7,32 @@ import { DEFAULT_PORTION, formatPortion } from '../pets/care';
 import type { PortionUnit } from '../pets/types';
 import { describeRepeat, type MaintenanceTarget, type QuickAddIntent, type QuickAddMember, type QuickAddVehicle } from './quick-add';
 
+/** Palette index collections a preview can depend on. */
+export const INDEX_SECTIONS = ['members', 'lists', 'pets', 'rooms', 'vehicles', 'assets'] as const;
+export type IndexSection = (typeof INDEX_SECTIONS)[number];
+
+/** What each quick-add kind picks from (its preview's choices and its write). */
+const NEEDS: Record<QuickAddIntent['kind'], readonly IndexSection[]> = {
+  chore: ['members', 'rooms'],
+  maintenance: ['vehicles', 'assets'],
+  shopping: ['lists'],
+  feeding: ['pets'],
+};
+
+const SECTION_WORDS: Record<IndexSection, string> = {
+  members: 'members',
+  lists: 'shopping lists',
+  pets: 'pets',
+  rooms: 'rooms',
+  vehicles: 'vehicles',
+  assets: 'home assets',
+};
+
+/** The failed sections this intent depends on (empty when it can trust what loaded). */
+export function failedSectionsFor(intent: QuickAddIntent, failed: readonly IndexSection[]): IndexSection[] {
+  return NEEDS[intent.kind].filter((section) => failed.includes(section));
+}
+
 /**
  * The vehicle or asset a maintenance preview starts with: the one the sentence
  * named, else the household's only vehicle for a mileage reading, else none.
@@ -35,6 +61,7 @@ export function quickAddConfirmBlocker({
   vehicleCount,
   chosenTarget,
   chosenAssignee = null,
+  failedSections = [],
 }: {
   intent: QuickAddIntent;
   indexLoading: boolean;
@@ -42,8 +69,19 @@ export function quickAddConfirmBlocker({
   chosenTarget: MaintenanceTarget | null;
   /** The assignee picked in the preview (needed when the sentence's name was ambiguous). */
   chosenAssignee?: QuickAddMember | null;
+  /**
+   * Index sections whose read failed. A failure is never treated as "none": a
+   * mileage would otherwise be saved as a general log because no vehicle loaded.
+   */
+  failedSections?: readonly IndexSection[];
 }): string | null {
   if (indexLoading) return "Loading your household's members, rooms, lists and vehicles…";
+  const missing = failedSectionsFor(intent, failedSections);
+  if (missing.length > 0) {
+    const words = missing.map((section) => SECTION_WORDS[section]);
+    const list = words.length === 1 ? words[0] : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+    return `Couldn't load your household's ${list}, so this can't be saved yet. Try again, or close the palette and open it again.`;
+  }
   if (intent.kind === 'maintenance' && intent.targetQuery && !intent.target && !chosenTarget) {
     return `More than one ${intent.mileage !== null ? 'vehicle' : 'vehicle or asset'} matches ${intent.targetQuery}. Choose which one.`;
   }

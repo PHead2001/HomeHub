@@ -48,7 +48,7 @@ import type { HouseholdPermission } from '@/lib/types';
 import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote } from '@/lib/dashboard/quick-add-writes';
-import { defaultMaintenanceTarget, describeIntent, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker } from '@/lib/dashboard/quick-add-preview';
+import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker, type IndexSection } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
@@ -435,6 +435,16 @@ export function CommandPalette({
             // Remounts once the index has loaded, so its choices start from the full records.
             key={index.loading ? 'loading' : 'ready'}
             indexLoading={index.loading}
+            failedSections={index.failed}
+            // Back to the input and read again: the suggestion is then rebuilt from the full records.
+            onRetryIndex={() => {
+              invalidateAi();
+              setPending(null);
+              setPendingFromAi(false);
+              setRetryMessage(null);
+              index.retry();
+              window.setTimeout(() => inputRef.current?.focus(), 0);
+            }}
             intent={pending}
             self={self}
             members={assignable}
@@ -538,6 +548,8 @@ function VoiceWave() {
 function QuickAddPreview({
   intent,
   indexLoading,
+  failedSections,
+  onRetryIndex,
   self,
   members,
   rooms,
@@ -552,6 +564,10 @@ function QuickAddPreview({
   intent: QuickAddIntent;
   /** The palette index is still loading: no choice can be trusted yet. */
   indexLoading: boolean;
+  /** Index sections whose read failed (never treated as empty). */
+  failedSections: readonly IndexSection[];
+  /** Reads the index again. */
+  onRetryIndex: () => void;
   self: QuickAddMember | null;
   members: QuickAddMember[];
   rooms: QuickAddRoom[];
@@ -592,7 +608,8 @@ function QuickAddPreview({
   })();
   // A mileage belongs to a vehicle: with vehicles to choose from, pick one first.
   const needsVehicle = !indexLoading && intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length > 0 && target?.kind !== 'vehicle';
-  const blocker = quickAddConfirmBlocker({ intent, indexLoading, vehicleCount: vehicles.length, chosenTarget: target, chosenAssignee: assignee });
+  const blocker = quickAddConfirmBlocker({ intent, indexLoading, vehicleCount: vehicles.length, chosenTarget: target, chosenAssignee: assignee, failedSections });
+  const indexFailed = !indexLoading && failedSectionsFor(intent, failedSections).length > 0;
   const shown: QuickAddIntent = intent.kind === 'chore'
     ? { ...intent, assignee: assignee ?? resolved.assignee, room }
     : intent.kind === 'maintenance' ? { ...intent, target } : intent;
@@ -668,9 +685,14 @@ function QuickAddPreview({
         </label>
       )}
       {blocker && (
-        <p role="status" className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-blocker">{blocker}</p>
+        <p role="status" className={cn('mt-3 text-sm', indexFailed ? 'text-destructive' : 'text-muted-foreground')} data-testid="quick-add-blocker">{blocker}</p>
       )}
-      {!indexLoading && intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 0 && (
+      {indexFailed && (
+        <Button type="button" variant="outline" size="sm" className="mt-2" onClick={onRetryIndex} data-testid="quick-add-retry-index">
+          Try again
+        </Button>
+      )}
+      {!indexLoading && !indexFailed && intent.kind === 'maintenance' && intent.mileage !== null && vehicles.length === 0 && (
         <p className="mt-3 text-sm text-muted-foreground">No vehicles yet, so this is a general log with the reading in its notes.</p>
       )}
       {note && <p className="mt-3 text-sm text-warning" data-testid="quick-add-mileage-note">{note}</p>}

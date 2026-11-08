@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, normalizeRepeat, MONTHLY_MAX_DAY, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
-import { defaultMaintenanceTarget, describeIntent, quickAddConfirmBlocker } from '../../src/lib/dashboard/quick-add-preview';
+import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, quickAddConfirmBlocker, INDEX_SECTIONS } from '../../src/lib/dashboard/quick-add-preview';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, modelSafeName, runLatest, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
 import { containsEmail, redactEmails } from '../../src/ai/redact';
 import { mileageNote, quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
@@ -524,5 +524,39 @@ describe('a stale brief rewrite never comes back (review 4504033862)', () => {
     first.resolve('older');
     assert.deepEqual([await a, await b], ['stale', 'applied']);
     assert.deepEqual(seen, ['newer', 'settled']);
+  });
+});
+
+describe('a failed index read is never treated as empty (review 4504259979)', () => {
+  const oil = parseQuickAdd('oil change 48,200 miles', context)!;
+  const filter = parseQuickAdd('log replaced filters', context)!;
+  const chore = parseQuickAdd('trash every Tuesday for Sam', context)!;
+  const shopping = parseQuickAdd('add milk', context)!;
+  const feeding = parseQuickAdd('fed Maple', context)!;
+  const ready = { indexLoading: false, chosenTarget: null } as const;
+
+  it('maintenance: failed vehicles or assets block Confirm; loaded-empty does not', () => {
+    // Failed: never a general log with the reading in its notes.
+    assert.match(quickAddConfirmBlocker({ intent: oil, ...ready, vehicleCount: 0, failedSections: ['vehicles'] }) ?? '', /Couldn't load your household's vehicles/);
+    assert.match(quickAddConfirmBlocker({ intent: filter, ...ready, vehicleCount: 0, failedSections: ['assets'] }) ?? '', /home assets/);
+    // Loaded and truly empty: a general log is the right shape.
+    assert.equal(quickAddConfirmBlocker({ intent: oil, ...ready, vehicleCount: 0, failedSections: [] }), null);
+    assert.equal(quickAddConfirmBlocker({ intent: filter, ...ready, vehicleCount: 0 }), null);
+  });
+
+  it('chores: failed members or rooms block Confirm; loaded-empty rooms do not', () => {
+    assert.match(quickAddConfirmBlocker({ intent: chore, ...ready, vehicleCount: 0, failedSections: ['members'] }) ?? '', /members/);
+    assert.match(quickAddConfirmBlocker({ intent: chore, ...ready, vehicleCount: 0, failedSections: ['rooms'] }) ?? '', /rooms/);
+    assert.match(quickAddConfirmBlocker({ intent: chore, ...ready, vehicleCount: 0, failedSections: ['members', 'rooms'] }) ?? '', /members and rooms/);
+    assert.equal(quickAddConfirmBlocker({ intent: chore, ...ready, vehicleCount: 0, failedSections: [] }), null);
+  });
+
+  it('shopping and feedings depend on lists and pets only', () => {
+    assert.match(quickAddConfirmBlocker({ intent: shopping, ...ready, vehicleCount: 0, failedSections: ['lists'] }) ?? '', /shopping lists/);
+    assert.match(quickAddConfirmBlocker({ intent: feeding, ...ready, vehicleCount: 0, failedSections: ['pets'] }) ?? '', /pets/);
+    // A failure elsewhere does not block an intent that does not need it.
+    assert.equal(quickAddConfirmBlocker({ intent: shopping, ...ready, vehicleCount: 0, failedSections: ['vehicles', 'rooms'] }), null);
+    assert.deepEqual(failedSectionsFor(oil, ['lists', 'vehicles', 'assets']), ['vehicles', 'assets']);
+    assert.deepEqual(failedSectionsFor(chore, [...INDEX_SECTIONS]), ['members', 'rooms']);
   });
 });
