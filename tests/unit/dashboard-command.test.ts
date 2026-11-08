@@ -342,6 +342,32 @@ describe('stale AI reads are ignored (review 4503881859)', () => {
   });
 });
 
+describe('AI quick add: typed emails and repeated reads (review 4504613903, 4504626757)', () => {
+  it('replaces an email typed into the sentence before it is sent', () => {
+    const { input } = buildAiParseRequest('remind alex@example.com to take out the trash', context);
+    assert.equal(containsEmail(input.text), false);
+    assert.match(input.text, /^remind a member to take out the trash$/);
+  });
+
+  it('reports a read as pending until it settles or the input changes', () => {
+    const guard = createRevisionGuard();
+    assert.equal(guard.isPending(), false);
+    const first = guard.next();
+    assert.equal(guard.isPending(), true, 'a second press is ignored while the first read runs');
+    guard.settle(first);
+    assert.equal(guard.isPending(), false, 'a new read may start once the first one finished');
+    const second = guard.next();
+    guard.invalidate(); // the member edits the sentence
+    assert.equal(guard.isPending(), false, 'the edited sentence may be read straight away');
+    guard.settle(second);
+    const third = guard.next();
+    guard.settle(second); // a stale read finishing late does not clear the newer one
+    assert.equal(guard.isPending(), true);
+    guard.settle(third);
+    assert.equal(guard.isPending(), false);
+  });
+});
+
 describe('tab entrance follows activation (review 4503881852)', () => {
   it('plays only on inactive to active, never for the first active panel, and clears when hidden', () => {
     assert.equal(tabEnterChange('active', 'active'), 'keep');

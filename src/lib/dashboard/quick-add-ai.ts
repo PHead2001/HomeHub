@@ -7,10 +7,11 @@
  *
  * Only display names leave the device, each paired with a short reference (`m1`,
  * `r1`, `v1`…) that is resolved back here; emails, ids and other fields stay local,
- * and a name that is (or contains) an email becomes a neutral label (`modelSafeName`).
+ * a name that is (or contains) an email becomes a neutral label (`modelSafeName`),
+ * and an email typed into the sentence itself is replaced before it is sent.
  */
 import type { ParseCommandInput, ParseCommandOutput } from '@/ai/tasks/parse-command';
-import { containsEmail } from '@/ai/redact';
+import { containsEmail, redactEmails } from '@/ai/redact';
 import { dayKey, startOfLocalDay } from './dates';
 import {
   firstDateForRepeat,
@@ -81,7 +82,7 @@ export function buildAiParseRequest(text: string, context: QuickAddContext): { i
   });
   return {
     input: {
-      text: text.trim().replace(/\s+/g, ' ').slice(0, 200),
+      text: redactEmails(text.trim().replace(/\s+/g, ' ')).slice(0, 200),
       today: dayKey(context.now),
       members: members.named,
       rooms: rooms.named,
@@ -173,6 +174,10 @@ export type RevisionGuard = {
   invalidate: () => void;
   /** True while `revision` is still the latest and nothing invalidated it. */
   isCurrent: (revision: number) => boolean;
+  /** True while the latest request is still running and nothing invalidated it. */
+  isPending: () => boolean;
+  /** Marks `revision` as finished (a no-op for any other revision). */
+  settle: (revision: number) => void;
 };
 
 /**
@@ -181,15 +186,21 @@ export type RevisionGuard = {
  */
 export function createRevisionGuard(): RevisionGuard {
   let current = 0;
+  let running: number | null = null;
   return {
     next: () => {
       current += 1;
+      running = current;
       return current;
     },
     invalidate: () => {
       current += 1;
     },
     isCurrent: (revision) => revision === current,
+    isPending: () => running !== null && running === current,
+    settle: (revision) => {
+      if (running === revision) running = null;
+    },
   };
 }
 

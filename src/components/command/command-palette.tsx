@@ -169,9 +169,10 @@ export function CommandPalette({
 
   // No suggestion until the index (members, rooms, lists, pets, vehicles, assets)
   // has loaded: a sentence read against half the records could pick the wrong (or
-  // no) assignee, room, list or vehicle.
+  // no) assignee, room, list or vehicle. Each new sentence is read against the
+  // current time, so "tomorrow" stays right if the palette is open past midnight.
   const intent = useMemo(
-    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, quickContext)) : null),
+    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, { ...quickContext, now: new Date() })) : null),
     [text, quickContext, permitted, index.loading],
   );
 
@@ -193,13 +194,17 @@ export function CommandPalette({
   const readWithAi = useCallback(async () => {
     const householdId = currentUser?.householdId;
     if (!householdId || !quickContext) return;
+    // A second press (double click, Enter twice) while this sentence is being read
+    // would discard the first, already charged answer; wait for it instead.
+    if (aiRequests.isPending()) return;
     const revision = aiRequests.next();
+    const context = { ...quickContext, now: new Date() };
     setAiState({ status: 'reading' });
     try {
-      const { input, refs } = buildAiParseRequest(text, quickContext);
+      const { input, refs } = buildAiParseRequest(text, context);
       const output = unwrapAiActionResult(await parseCommand(input, await getAiActionContext(householdId)));
       if (!aiRequests.isCurrent(revision)) return;
-      const read = permitted(intentFromAiParse(output, refs, quickContext));
+      const read = permitted(intentFromAiParse(output, refs, context));
       if (!read) {
         setAiState({ status: 'none' });
         return;
@@ -211,6 +216,8 @@ export function CommandPalette({
     } catch (error) {
       if (!aiRequests.isCurrent(revision)) return;
       setAiState({ status: 'error', message: error instanceof Error && error.message ? error.message : friendlyError(error) });
+    } finally {
+      aiRequests.settle(revision);
     }
   }, [currentUser?.householdId, quickContext, text, permitted, aiRequests]);
 
