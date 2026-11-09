@@ -69,6 +69,11 @@ describe('repeat-visit fast path (H01)', () => {
     assert.equal((load.match(/if \(!active\) return undefined;/g) ?? []).length, 2);
   });
 
+  it('builds the profile forms only from the server-confirmed profile', () => {
+    const page = readFileSync(resolve(__dirname, '../../src/app/profile/page.tsx'), 'utf8');
+    assert.match(page, /profileConfirmed \? \(\s*<ProfileClient \/>/);
+  });
+
   it('syncs appearance only from the server-confirmed profile', () => {
     const source = readFileSync(resolve(__dirname, '../../src/components/appearance-provider.tsx'), 'utf8');
     const sync = source.slice(source.indexOf('const syncedProfileFor = useRef'));
