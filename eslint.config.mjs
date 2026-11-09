@@ -40,6 +40,7 @@ const eslintConfig = defineConfig([
       "src/components/dashboard/dashboard-skeleton.tsx",
       "src/lib/dashboard/house-layout.ts",
       "src/lib/auth/cached-session.ts",
+      "src/lib/dashboard/house-snapshot.ts",
     ],
     rules: {
       "no-restricted-imports": ["error", {

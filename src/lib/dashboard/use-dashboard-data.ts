@@ -30,6 +30,8 @@ import { dayKey, startOfLocalDay } from './dates';
 import type { DashboardFacts, RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
 import { leaderboardEnabledFrom } from './streaks';
+import { deviceStorage, readHouseSnapshot, writeHouseSnapshot } from './house-snapshot';
+import type { ChoreFacts } from './facts';
 import { HEALTH_RULES } from '../maintenance/health';
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
@@ -230,5 +232,25 @@ export function useDashboardData(enabled = true): DashboardData {
     { viewer: { uid, email }, now, timeZone, recentFeedings: RECENT_FEEDINGS },
   ), [raw, failed, now, uid, email, timeZone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
 
-  return { facts, loading, failed, now };
+  const shown = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
+
+  return { facts: shown, loading, failed, now };
+}
+
+/**
+ * H01: until the live chores listeners deliver, the house draws its rooms from the last
+ * snapshot saved on this device for exactly this user, household and day (see
+ * house-snapshot.ts). Live data always replaces it, a failed chores section never falls back
+ * to it, and every change to the live rooms is saved for the next visit.
+ */
+function useHouseSnapshot(facts: DashboardFacts, householdId: string | null, uid: string, today: string): DashboardFacts {
+  const live: ChoreFacts | undefined = facts.chores;
+  const choresFailed = Boolean(facts.unavailable?.includes('chores'));
+  // Read only while the live chores are missing (the first moments of a visit).
+  const snapshot = !live && householdId && !choresFailed ? readHouseSnapshot(deviceStorage(), uid, householdId, today) : null;
+  const liveRooms = live ? JSON.stringify(live) : null;
+  useEffect(() => {
+    if (liveRooms && householdId && uid) writeHouseSnapshot(deviceStorage(), uid, householdId, today, liveRooms);
+  }, [liveRooms, householdId, uid, today]);
+  return snapshot ? { ...facts, chores: snapshot } : facts;
 }
