@@ -49,13 +49,18 @@ describe('repeat-visit fast path (H01)', () => {
     assert.match(source, /getDocFromCache\(/);
   });
 
-  it('never marks an unchanged profile as loading (that would never end)', () => {
+  it('never leaves the household loading: loading is set ahead only with a change that re-runs the load', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
-    const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));
-    const server = restore.slice(restore.indexOf('fetchOrCreateUserProfile(firebaseUser)'), restore.indexOf('setProfileConfirmed(true)'));
-    // setHouseholdLoading(true) appears only inside the "profile changed" branch.
-    assert.match(server, /if \(!sameProfile\(currentUserRef\.current, userProfile\)\) \{\s+setHouseholdLoading\(true\);\s+setCurrentUser\(userProfile\);\s+\}/);
-    assert.equal((server.match(/setHouseholdLoading\(true\)/g) ?? []).length, 1);
+    const publish = source.slice(source.indexOf('const publishProfile = useCallback'), source.indexOf('}, []);', source.indexOf('const publishProfile = useCallback')));
+    // Unchanged profile: nothing happens at all.
+    assert.match(publish, /if \(sameProfile\(shown, profile\)\) return;/);
+    // Loading is set in advance only when uid or householdId (household-effect dependencies) change.
+    assert.match(publish, /if \(shown\?\.uid !== profile\.uid \|\| \(shown\?\.householdId \?\? null\) !== \(profile\.householdId \?\? null\)\) setHouseholdLoading\(true\);/);
+    // Both server-profile paths (session restore and the sign-in handler) go through it, and no
+    // caller sets householdLoading(true) itself any more.
+    assert.equal((source.match(/publishProfile\(userProfile\)/g) ?? []).length, 2);
+    const outside = source.replace(publish, '').replace(/const fetchHousehold = async[\s\S]*?fetchHousehold\(\);/, '');
+    assert.equal((outside.match(/setHouseholdLoading\(true\)/g) ?? []).length, 0);
   });
 
   it('uses the cache only for the session restore, and survives the new-profile race', () => {

@@ -156,6 +156,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The latest user, readable synchronously inside the Auth listener.
   const currentUserRef = useRef<User | null>(null);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+
   const [household, setHousehold] = useState<Household | null>(null);
   const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
   const [loading, setLoading] = useState(true);
@@ -166,6 +167,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The first Auth callback of a page load is the session restore: the only one the cache
   // fast path helps. Later callbacks (a sign-in on this page) keep the server-only path.
   const restoringSession = useRef(true);
+
+  // Publishes a profile from the server. The household effect owns `householdLoading`; it is
+  // set here in advance only when the uid or householdId changes (so the onboarding screen
+  // never flashes before that effect runs), which are exactly the changes that re-run the
+  // effect and end loading. An unchanged profile changes nothing, so loading can't be left on.
+  const publishProfile = useCallback((profile: User) => {
+    const shown = currentUserRef.current;
+    if (sameProfile(shown, profile)) return;
+    if (shown?.uid !== profile.uid || (shown?.householdId ?? null) !== (profile.householdId ?? null)) setHouseholdLoading(true);
+    currentUserRef.current = profile;
+    setCurrentUser(profile);
+  }, []);
   const [householdLoadFailed, setHouseholdLoadFailed] = useState(false);
   const [householdLoadAttempt, setHouseholdLoadAttempt] = useState(0);
   const retryHouseholdLoad = useCallback(() => setHouseholdLoadAttempt(attempt => attempt + 1), []);
@@ -414,14 +427,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // On refresh, we only fetch the existing profile. Creation happens at sign-in.
         const userProfile = await fetchOrCreateUserProfile(firebaseUser);
         if (userProfile) {
-            // Only a real change restarts the household load (and so may show loading): an
-            // unchanged profile, already shown and loaded (for example by the sign-in
-            // handler moments ago), keeps its state. Marking it loading without a re-run
-            // would leave it loading for good.
-            if (!sameProfile(currentUserRef.current, userProfile)) {
-              setHouseholdLoading(true);
-              setCurrentUser(userProfile);
-            }
+            publishProfile(userProfile);
             setProfileConfirmed(true);
         } else {
         setCurrentUser(null);
@@ -444,7 +450,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => unsubscribeAuth();
-  }, [fetchOrCreateUserProfile]);
+  }, [fetchOrCreateUserProfile, publishProfile]);
 
 
   const signInWithGoogle = useCallback(async (): Promise<void> => {
@@ -462,8 +468,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const userProfile = await fetchOrCreateUserProfile(firebaseUser, googleProfileData);
 
       if (userProfile) {
-        setHouseholdLoading(true);
-        setCurrentUser(userProfile);
+        publishProfile(userProfile);
         setProfileConfirmed(true);
         toast({ title: 'Login Successful', description: 'Welcome!' });
       }
@@ -478,7 +483,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
         setLoading(false);
     }
-  }, [fetchOrCreateUserProfile, toast]);
+  }, [fetchOrCreateUserProfile, publishProfile, toast]);
 
   const logout = useCallback(async () => {
     // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
