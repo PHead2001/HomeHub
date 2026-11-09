@@ -214,6 +214,27 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await context.close();
   });
 
+  test('H03: a signed-out visitor never downloads Firestore or App Check, even after load and idle', async ({ browser }) => {
+    // The deferred shell (service worker, toasts) mounts after load and an idle
+    // moment; the push listener, which imports @/lib/firebase, waits for a member.
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
+    const scripts: Promise<string>[] = [];
+    page.on('response', (response) => {
+      if (response.request().resourceType() === 'script') scripts.push(response.text().catch(() => ''));
+    });
+    await page.goto('/');
+    await expect(page.getByTestId('landing')).toBeVisible();
+    await page.waitForFunction(() => document.readyState === 'complete');
+    await page.waitForTimeout(4500); // idle callback timeout is 3 s
+    const bodies = await Promise.all(scripts);
+    expect(bodies.length).toBeGreaterThan(0);
+    // Markers inside the SDK code itself: Firestore's gRPC service name and App Check's exchange call.
+    expect(bodies.filter((body) => body.includes('google.firestore.v1.Firestore')), 'Firestore SDK downloaded while signed out').toHaveLength(0);
+    expect(bodies.filter((body) => body.includes('exchangeRecaptchaEnterpriseToken')), 'App Check downloaded while signed out').toHaveLength(0);
+    await context.close();
+  });
+
   test('sign-in: the landing button opens the Auth emulator popup and signs the visitor in', async ({ browser }) => {
     // Real signInWithPopup (CI otherwise signs in with custom tokens): catches a broken
     // popup resolver, which rejects before any popup opens. Runs on both projects; the

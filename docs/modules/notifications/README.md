@@ -27,7 +27,8 @@ This module owns household notification records, bell/history presentation, per-
 - `src/components/notification-bell.tsx`
 - `src/app/notifications/swipe-dismiss.ts`, `src/app/notifications/use-dismiss-notifications.tsx`, `src/app/notifications/undo-batch.ts`, `src/app/notifications/notification-query.ts`
 - `functions/src/shared/push-media.ts`
-- `src/components/PushNotificationManager.tsx`
+- `src/components/PushNotificationManager.tsx` (service worker registration, every visitor)
+- `src/components/push-foreground-listener.tsx` (foreground push toasts, signed-in members only)
 - `src/components/PushNotificationSettings.tsx`
 - `src/app/api/sw/route.ts`; `functions/src/shared/push-link.ts` (`safePushLink`, the one push-link check, re-exported by `src/app/api/sw/push-link.ts` and used by `safeDeepLink`)
 - `src/lib/push-tokens.ts` (`nextPushTokens`, the token list written on subscribe)
