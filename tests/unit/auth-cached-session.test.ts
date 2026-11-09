@@ -49,6 +49,15 @@ describe('repeat-visit fast path (H01)', () => {
     assert.match(source, /getDocFromCache\(/);
   });
 
+  it('never marks an unchanged profile as loading (that would never end)', () => {
+    const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
+    const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));
+    const server = restore.slice(restore.indexOf('fetchOrCreateUserProfile(firebaseUser)'), restore.indexOf('setProfileConfirmed(true)'));
+    // setHouseholdLoading(true) appears only inside the "profile changed" branch.
+    assert.match(server, /if \(!sameProfile\(currentUserRef\.current, userProfile\)\) \{\s+setHouseholdLoading\(true\);\s+setCurrentUser\(userProfile\);\s+\}/);
+    assert.equal((server.match(/setHouseholdLoading\(true\)/g) ?? []).length, 1);
+  });
+
   it('uses the cache only for the session restore, and survives the new-profile race', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
     const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));

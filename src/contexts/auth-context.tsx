@@ -153,6 +153,9 @@ const browserTimeZone = () => {
 // --- Provider Component ---
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // The latest user, readable synchronously inside the Auth listener.
+  const currentUserRef = useRef<User | null>(null);
+  useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   const [household, setHousehold] = useState<Household | null>(null);
   const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
   const [loading, setLoading] = useState(true);
@@ -411,8 +414,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // On refresh, we only fetch the existing profile. Creation happens at sign-in.
         const userProfile = await fetchOrCreateUserProfile(firebaseUser);
         if (userProfile) {
-            if (!cached) setHouseholdLoading(true);
-            setCurrentUser(prev => (sameProfile(prev, userProfile) ? prev : userProfile));
+            // Only a real change restarts the household load (and so may show loading): an
+            // unchanged profile, already shown and loaded (for example by the sign-in
+            // handler moments ago), keeps its state. Marking it loading without a re-run
+            // would leave it loading for good.
+            if (!sameProfile(currentUserRef.current, userProfile)) {
+              setHouseholdLoading(true);
+              setCurrentUser(userProfile);
+            }
             setProfileConfirmed(true);
         } else {
         setCurrentUser(null);
