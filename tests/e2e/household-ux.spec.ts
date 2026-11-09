@@ -197,7 +197,10 @@ test.describe('household tabs and invites', () => {
       // No pinned clock here: the rules compare the invite's expiry with the server's time.
       await page.goto('/household?tab=invites');
       await expect(page.getByRole('tab', { name: 'Invite Codes' })).toHaveAttribute('aria-selected', 'true');
-      await page.getByRole('button', { name: 'Create invite code', exact: true }).click();
+      // Enabled only once the household and permissions have loaded (never a silent no-op).
+      const create = page.getByRole('button', { name: 'Create invite code', exact: true });
+      await expect(create).toBeEnabled();
+      await create.click();
 
       const toasts = page.getByRole('region', { name: /notification/i });
       await expect(toasts.getByText('Invite code ready', { exact: true })).toBeVisible();

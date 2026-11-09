@@ -229,8 +229,12 @@ export function HouseholdManagementClient() {
     }
   };
 
+  // The buttons stay disabled until this is true, so a tap is never silently ignored
+  // while the household or the member's permissions are still loading.
+  const inviteReady = Boolean(household?.id && currentUser?.email && canManageInvites);
+
   const generateInvite = async () => {
-    if (!household?.id || !currentUser?.email || !canManageInvites) return;
+    if (!inviteReady || !household?.id || !currentUser?.email) return;
     setIsGeneratingInvite(true);
     try {
       let createdInviteCode: string | null = null;
@@ -706,7 +710,7 @@ export function HouseholdManagementClient() {
                 <CardContent className="space-y-4">
                   {invites.length > 0 && (
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <Button onClick={generateInvite} disabled={isGeneratingInvite}>
+                      <Button onClick={generateInvite} disabled={isGeneratingInvite || !inviteReady}>
                         {isGeneratingInvite ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
                         Create invite code
                       </Button>
@@ -723,7 +727,7 @@ export function HouseholdManagementClient() {
                       headingLevel={3}
                       title="No invite codes yet"
                       description="Create a code and share it with someone you live with. It works once and lasts 30 minutes."
-                      action={{ label: isGeneratingInvite ? 'Creating…' : 'Create invite code', icon: <UserPlus className="mr-2 h-4 w-4" />, onClick: () => { if (!isGeneratingInvite) void generateInvite(); } }}
+                      action={{ label: isGeneratingInvite ? 'Creating…' : 'Create invite code', icon: <UserPlus className="mr-2 h-4 w-4" />, onClick: () => { if (!isGeneratingInvite) void generateInvite(); }, disabled: isGeneratingInvite || !inviteReady }}
                     />
                   ) : (
                     <ul className="grid gap-3">
