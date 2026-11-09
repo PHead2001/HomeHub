@@ -37,6 +37,8 @@ const eslintConfig = defineConfig([
       "src/lib/dashboard/use-weather.ts",
       "src/components/password-change-handler.tsx",
       "src/components/login-dialog.tsx",
+      "src/components/dashboard/dashboard-skeleton.tsx",
+      "src/lib/dashboard/house-layout.ts",
     ],
     rules: {
       "no-restricted-imports": ["error", {

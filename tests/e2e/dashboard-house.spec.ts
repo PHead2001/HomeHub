@@ -271,6 +271,26 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await context.close();
   });
 
+  test('H01: the house outline is in the server HTML, before any app script or auth', async ({ browser }) => {
+    // A device that was signed in: the inline gate script picks the dashboard skeleton.
+    // App chunks are blocked, so nothing hydrates and Auth never restores: what shows is
+    // the server HTML alone, which must already hold the house (H01 load target).
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:9002',
+      storageState: { cookies: [], origins: [{ origin: 'http://127.0.0.1:9002', localStorage: [{ name: 'homehub.session', value: '1' }] }] },
+    });
+    const page = await context.newPage();
+    await page.route(/\/_next\/static\/chunks\/.*\.js/, (route) => route.abort());
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    const outline = page.getByRole('main').getByTestId('living-house-placeholder');
+    await expect(outline).toBeVisible();
+    await expect(outline.locator('svg rect')).not.toHaveCount(0);
+    // Data-free and static: no room links, no live house.
+    await expect(outline.locator('a, button')).toHaveCount(0);
+    await expect(page.getByTestId('living-house')).toHaveCount(0);
+    await context.close();
+  });
+
   test('H03: a stale signed-in hint never leaves a signed-out visitor on the skeleton', async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: 'http://127.0.0.1:9002',
