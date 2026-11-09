@@ -11,7 +11,7 @@ export const EMPTY_STATE_KINDS: readonly EmptyStateKind[] = ['chores', 'lists', 
 
 /** A real `<button>` (onClick) or a real link (href). */
 export type EmptyStateAction = { label: string; icon?: React.ReactNode } & (
-  | { onClick: () => void; href?: never }
+  | { onClick: () => void; href?: never; /** Not clickable yet (for example while its data loads). */ disabled?: boolean }
   | { href: string; onClick?: never }
 );
 
@@ -167,7 +167,7 @@ function ActionControl({ action, variant }: { action: EmptyStateAction; variant:
     );
   }
   return (
-    <Button type="button" variant={variant} onClick={action.onClick}>
+    <Button type="button" variant={variant} onClick={action.onClick} disabled={action.disabled}>
       {content}
     </Button>
   );
