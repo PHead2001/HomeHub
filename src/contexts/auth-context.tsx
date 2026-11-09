@@ -8,6 +8,7 @@ import {
   type ReactNode,
   useCallback,
   useMemo,
+  useRef,
 } from 'react';
 import {
   onAuthStateChanged,
@@ -68,6 +69,12 @@ interface AuthContextType {
   permissions: PermissionMap;
   loading: boolean;
   householdLoading: boolean;
+  /**
+   * False while `currentUser` is the provisional copy from this device's cache (repeat-visit
+   * fast path), true once the server profile has confirmed it. Anything that acts on the
+   * profile (writes, one-time syncs) waits for true.
+   */
+  profileConfirmed: boolean;
   /** True when membership could not be loaded for an operational reason (offline, timeout). */
   householdLoadFailed: boolean;
   retryHouseholdLoad: () => void;
@@ -150,6 +157,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
   const [loading, setLoading] = useState(true);
   const [householdLoading, setHouseholdLoading] = useState(true);
+  const [profileConfirmed, setProfileConfirmed] = useState(false);
+  // Household shown from the cache (by id), so the confirmed run doesn't flash back to loading.
+  const cachedHouseholdShown = useRef<string | null>(null);
   const [householdLoadFailed, setHouseholdLoadFailed] = useState(false);
   const [householdLoadAttempt, setHouseholdLoadAttempt] = useState(0);
   const retryHouseholdLoad = useCallback(() => setHouseholdLoadAttempt(attempt => attempt + 1), []);
@@ -226,8 +236,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [toast]);
   
 
-  // This effect runs when the householdId on the currentUser changes.
+  // This effect runs when the householdId on the currentUser changes, or when the cached
+  // profile is confirmed by the server.
   useEffect(() => {
+    // A newer run supersedes this one (the profile changed or was confirmed, or the provider
+    // unmounted): from then on this run neither updates state nor writes to the profile.
+    let active = true;
     const cleanupLegacyInviteCode = async (householdData: Household, role: HouseholdMember['role']) => {
       if (role !== 'owner' || !householdData.inviteCode) return;
       try {
@@ -248,11 +262,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const { db, doc, getDoc } = await loadData();
       const memberSnap = await getDoc(doc(db, 'households', householdId, 'members', currentUser.uid));
+      if (!active) return undefined;
       if (!memberSnap.exists()) return null;
 
       const normalizedMember = normalizeMember(memberSnap.data() as HouseholdMember, currentUser.uid);
 
       const householdSnap = await getDoc(doc(db, 'households', householdId));
+      if (!active) return undefined;
       if (!householdSnap.exists()) return null;
 
       const householdData = { id: householdSnap.id, ...householdSnap.data() } as Household;
@@ -277,44 +293,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     const clearStaleHousehold = async () => {
+      if (!active) return;
       setHousehold(null);
       setCurrentMember(null);
       if (!currentUser?.email || !currentUser.householdId) return;
       try {
         const { db, doc, setDoc } = await loadData();
+        if (!active) return;
         await setDoc(doc(db, 'users', currentUser.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
+        if (!active) return;
         setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : prev);
       } catch (error) {
         console.warn('Could not clear a stale household reference from the profile.', error);
       }
     };
 
+    // Repeat visit: show this member's cached household at once (display only, no network).
+    const showCachedHousehold = async (householdId: string, uid: string) => {
+      if (cachedHouseholdShown.current === householdId) return;
+      const [cachedMember, cachedHousehold] = await Promise.all([
+        readCached(['households', householdId, 'members', uid]),
+        readCached(['households', householdId]),
+      ]);
+      if (!active || !cachedMember || !cachedHousehold) return;
+      setHousehold({ id: cachedHousehold.id, ...cachedHousehold.data() } as Household);
+      setCurrentMember(normalizeMember(cachedMember.data() as HouseholdMember, uid));
+      cachedHouseholdShown.current = householdId;
+      setHouseholdLoading(false);
+    };
+
     const fetchHousehold = async () => {
-      setHouseholdLoading(true);
+      const householdId = currentUser?.householdId;
+      // Provisional (cached) profile: at most show the cached household. The server reads,
+      // the stale-household cleanup and the end of loading wait for the confirmed profile,
+      // so an outdated cached profile can never clear or replace a valid household.
+      if (!profileConfirmed) {
+        if (householdId && currentUser?.uid) await showCachedHousehold(householdId, currentUser.uid);
+        return;
+      }
       setHouseholdLoadFailed(false);
+      if (cachedHouseholdShown.current !== householdId) setHouseholdLoading(true);
       try {
-        if (!currentUser?.householdId) {
+        if (!householdId) {
           setHousehold(null);
           setCurrentMember(null);
           return;
         }
-        // Repeat visit: show this member's cached household at once, then confirm with the
-        // server below (which still clears a stale membership or reports a failed load).
-        if (currentUser.uid) {
-          const [cachedMember, cachedHousehold] = await Promise.all([
-            readCached(['households', currentUser.householdId, 'members', currentUser.uid]),
-            readCached(['households', currentUser.householdId]),
-          ]);
-          if (cachedMember && cachedHousehold) {
-            setHousehold({ id: cachedHousehold.id, ...cachedHousehold.data() } as Household);
-            setCurrentMember(normalizeMember(cachedMember.data() as HouseholdMember, currentUser.uid));
-            setHouseholdLoading(false);
-          }
-        }
+        if (currentUser?.uid) await showCachedHousehold(householdId, currentUser.uid);
+        if (!active) return;
         try {
-          const member = await loadMembership(currentUser.householdId);
-          if (!member) await clearStaleHousehold();
+          const member = await loadMembership(householdId);
+          if (member === null) await clearStaleHousehold();
         } catch (error) {
+          if (!active) return;
           // Only a definitive denial means this account is not a member. Offline or
           // transient failures keep the profile's reference so loading can be retried.
           console.warn('Household membership could not be loaded.', error);
@@ -323,15 +354,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           } else {
             setHousehold(null);
             setCurrentMember(null);
+            cachedHouseholdShown.current = null;
             setHouseholdLoadFailed(true);
           }
         }
       } finally {
-        setHouseholdLoading(false);
+        if (active) setHouseholdLoading(false);
       }
     };
 
     fetchHousehold();
+    return () => { active = false; };
   }, [
     currentUser?.avatarUrl,
     currentUser?.displayName,
@@ -341,6 +374,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     currentUser?.role,
     currentUser?.uid,
     householdLoadAttempt,
+    profileConfirmed,
   ]);
 
   // This is for session management ONLY (on page refresh)
@@ -352,7 +386,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // below replaces it only if something changed.
         const cached = firebaseUser.email ? await readCached(['users', firebaseUser.email]) : null;
         if (cached) {
-          setHouseholdLoading(true);
+          setProfileConfirmed(false);
           setCurrentUser({ uid: firebaseUser.uid, ...cached.data() } as User);
           setLoading(false);
         }
@@ -361,17 +395,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (userProfile) {
             if (!cached) setHouseholdLoading(true);
             setCurrentUser(prev => (sameProfile(prev, userProfile) ? prev : userProfile));
+            setProfileConfirmed(true);
         } else {
         setCurrentUser(null);
+        setProfileConfirmed(false);
         setHousehold(null);
         setCurrentMember(null);
+        cachedHouseholdShown.current = null;
         setHouseholdLoading(false);
       }
       } else {
         // User is not logged in
         setCurrentUser(null);
+        setProfileConfirmed(false);
         setHousehold(null);
         setCurrentMember(null);
+        cachedHouseholdShown.current = null;
         setHouseholdLoading(false);
       }
       setLoading(false);
@@ -398,6 +437,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (userProfile) {
         setHouseholdLoading(true);
         setCurrentUser(userProfile);
+        setProfileConfirmed(true);
         toast({ title: 'Login Successful', description: 'Welcome!' });
       }
 
@@ -427,8 +467,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     if (firestoreStopped) return;
     setCurrentUser(null);
+    setProfileConfirmed(false);
     setHousehold(null);
     setCurrentMember(null);
+    cachedHouseholdShown.current = null;
     setHouseholdLoading(false);
     toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
@@ -648,6 +690,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     permissions,
     loading,
     householdLoading,
+    profileConfirmed,
     householdLoadFailed,
     retryHouseholdLoad,
     signInWithGoogle,

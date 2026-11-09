@@ -36,16 +36,42 @@ describe('repeat-visit fast path (H01)', () => {
 
   it('reads the cache only after Auth restores the session, then still confirms with the server', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
-    // The cached profile is read inside the onAuthStateChanged callback, keyed by the restored user...
+    // The cached profile is read inside the onAuthStateChanged callback, keyed by the restored user,
+    // marked provisional, and the server fetch still follows it and confirms it.
     const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));
-    assert.match(restore.slice(0, 1200), /readCached\(\['users', firebaseUser\.email\]\)/);
-    // ...and the server fetch still follows it.
-    assert.ok(restore.indexOf('fetchOrCreateUserProfile(firebaseUser)') > restore.indexOf("readCached(['users'"));
-    // The cached household phase runs before the unchanged server membership check.
-    const fetchHousehold = source.slice(source.indexOf('const fetchHousehold = async'));
-    assert.ok(fetchHousehold.indexOf("readCached(['households'") < fetchHousehold.indexOf('await loadMembership('));
-    assert.match(fetchHousehold, /if \(!member\) await clearStaleHousehold\(\);/);
+    const cachedAt = restore.indexOf("readCached(['users', firebaseUser.email])");
+    assert.ok(cachedAt > 0 && cachedAt < 1200);
+    assert.ok(restore.indexOf('setProfileConfirmed(false)') > cachedAt);
+    const serverAt = restore.indexOf('fetchOrCreateUserProfile(firebaseUser)');
+    assert.ok(serverAt > cachedAt);
+    assert.ok(restore.indexOf('setProfileConfirmed(true)') > serverAt);
     // The cache read never touches the network.
     assert.match(source, /getDocFromCache\(/);
+  });
+
+  it('never lets a provisional profile or a superseded load clear the household', () => {
+    const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
+    const fetchHousehold = source.slice(source.indexOf('const fetchHousehold = async'), source.indexOf('fetchHousehold();'));
+    // Provisional profile: only the cached household is shown, then it returns, before any
+    // server read or the stale-household cleanup.
+    const provisional = fetchHousehold.indexOf('if (!profileConfirmed)');
+    assert.ok(provisional > 0);
+    assert.ok(fetchHousehold.indexOf('return;', provisional) < fetchHousehold.indexOf('loadMembership('));
+    assert.ok(fetchHousehold.indexOf('return;', provisional) < fetchHousehold.indexOf('clearStaleHousehold()'));
+    // Only a definite "not a member" (null), never a superseded load (undefined), clears it.
+    assert.match(fetchHousehold, /if \(member === null\) await clearStaleHousehold\(\);/);
+    // Each run is cancelled by the next, and a cancelled run neither writes nor updates state.
+    assert.match(source, /return \(\) => \{ active = false; \};/);
+    const clear = source.slice(source.indexOf('const clearStaleHousehold = async'), source.indexOf('const showCachedHousehold'));
+    assert.match(clear, /^const clearStaleHousehold = async \(\) => \{\s+if \(!active\) return;/);
+    assert.ok(clear.indexOf('if (!active) return;', clear.indexOf('loadData()')) < clear.indexOf('setDoc('));
+    const load = source.slice(source.indexOf('const loadMembership = async'), source.indexOf('const clearStaleHousehold'));
+    assert.equal((load.match(/if \(!active\) return undefined;/g) ?? []).length, 2);
+  });
+
+  it('syncs appearance only from the server-confirmed profile', () => {
+    const source = readFileSync(resolve(__dirname, '../../src/components/appearance-provider.tsx'), 'utf8');
+    const sync = source.slice(source.indexOf('const syncedProfileFor = useRef'));
+    assert.ok(sync.indexOf('if (!profileConfirmed) return;') < sync.indexOf('syncedProfileFor.current = currentUser.email'));
   });
 });
