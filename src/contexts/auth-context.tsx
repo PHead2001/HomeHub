@@ -20,7 +20,9 @@ import {
 } from 'firebase/auth';
 import { useToast } from '@/hooks/use-toast';
 import { auth, firebaseEmulatorMode } from '@/lib/firebase-app';
-import { getMemberPermissions, normalizeRole } from '@/lib/permissions';
+import { getMemberPermissions } from '@/lib/permissions';
+import { normalizeMember, sameProfile } from '@/lib/auth/cached-session';
+import { SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { friendlyError } from '@/lib/friendly-error';
 import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
@@ -41,6 +43,23 @@ type PermissionMap = Record<HouseholdPermission, boolean>;
  */
 const loadData = () => Promise.all([import('@/lib/firebase'), import('firebase/firestore')])
   .then(([firebase, firestore]) => ({ ...firestore, db: firebase.db, clearLocalFirestoreCache: firebase.clearLocalFirestoreCache }));
+
+/**
+ * Repeat-visit fast path (H01): reads a document from Firestore's local cache only, with no
+ * network and no App Check round trip. The cache holds only what this signed-in user has read
+ * on this device and is cleared on sign-out. `null` when it isn't cached (first visit, the
+ * emulator's memory cache). Callers still confirm with the server afterwards.
+ */
+const readCached = async (path: string[]) => {
+  const { db, doc, getDocFromCache } = await loadData();
+  try {
+    const [first, ...rest] = path;
+    const snap = await getDocFromCache(doc(db, first, ...rest));
+    return snap.exists() ? snap : null;
+  } catch {
+    return null;
+  }
+};
 
 interface AuthContextType {
   currentUser: User | null;
@@ -134,6 +153,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [householdLoadFailed, setHouseholdLoadFailed] = useState(false);
   const [householdLoadAttempt, setHouseholdLoadAttempt] = useState(0);
   const retryHouseholdLoad = useCallback(() => setHouseholdLoadAttempt(attempt => attempt + 1), []);
+
+  // On a device where someone was signed in, start loading the data layer (Firestore and
+  // App Check) alongside Auth's session restore instead of after it. Signed-out visitors
+  // (no hint) never download it (H03 first-paint budget).
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(SESSION_HINT_KEY) === '1') void loadData();
+    } catch {
+      // Storage blocked: load on demand as usual.
+    }
+  }, []);
   const { toast } = useToast();
 
   const fetchOrCreateUserProfile = useCallback(async (firebaseUser: FirebaseAuthUser, googleProfileData?: GoogleProfileData): Promise<User | null> => {
@@ -220,13 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const memberSnap = await getDoc(doc(db, 'households', householdId, 'members', currentUser.uid));
       if (!memberSnap.exists()) return null;
 
-      const memberData = memberSnap.data() as HouseholdMember;
-      const normalizedMember = {
-        ...memberData,
-        uid: currentUser.uid,
-        role: normalizeRole(memberData.role),
-        status: memberData.status || (memberData.role === 'newuser' ? 'pending' : 'active'),
-      } as HouseholdMember;
+      const normalizedMember = normalizeMember(memberSnap.data() as HouseholdMember, currentUser.uid);
 
       const householdSnap = await getDoc(doc(db, 'households', householdId));
       if (!householdSnap.exists()) return null;
@@ -274,6 +298,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setCurrentMember(null);
           return;
         }
+        // Repeat visit: show this member's cached household at once, then confirm with the
+        // server below (which still clears a stale membership or reports a failed load).
+        if (currentUser.uid) {
+          const [cachedMember, cachedHousehold] = await Promise.all([
+            readCached(['households', currentUser.householdId, 'members', currentUser.uid]),
+            readCached(['households', currentUser.householdId]),
+          ]);
+          if (cachedMember && cachedHousehold) {
+            setHousehold({ id: cachedHousehold.id, ...cachedHousehold.data() } as Household);
+            setCurrentMember(normalizeMember(cachedMember.data() as HouseholdMember, currentUser.uid));
+            setHouseholdLoading(false);
+          }
+        }
         try {
           const member = await loadMembership(currentUser.householdId);
           if (!member) await clearStaleHousehold();
@@ -311,11 +348,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
       if (firebaseUser) {
+        // Repeat visit: render from this user's cached profile at once; the server copy
+        // below replaces it only if something changed.
+        const cached = firebaseUser.email ? await readCached(['users', firebaseUser.email]) : null;
+        if (cached) {
+          setHouseholdLoading(true);
+          setCurrentUser({ uid: firebaseUser.uid, ...cached.data() } as User);
+          setLoading(false);
+        }
         // On refresh, we only fetch the existing profile. Creation happens at sign-in.
         const userProfile = await fetchOrCreateUserProfile(firebaseUser);
         if (userProfile) {
-            setHouseholdLoading(true);
-            setCurrentUser(userProfile);
+            if (!cached) setHouseholdLoading(true);
+            setCurrentUser(prev => (sameProfile(prev, userProfile) ? prev : userProfile));
         } else {
         setCurrentUser(null);
         setHousehold(null);
