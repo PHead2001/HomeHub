@@ -224,7 +224,7 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
       if (response.request().resourceType() === 'script') scripts.push(response.text().catch(() => ''));
     });
     await page.goto('/');
-    await expect(page.getByTestId('landing')).toBeVisible();
+    await expect(page.getByRole('main').getByTestId('landing')).toBeVisible();
     await page.waitForFunction(() => document.readyState === 'complete');
     await page.waitForTimeout(4500); // idle callback timeout is 3 s
     const bodies = await Promise.all(scripts);
