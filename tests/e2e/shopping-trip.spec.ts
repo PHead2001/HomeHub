@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore, type CollectionReference } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore, type CollectionReference } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 
 // Shopping trip, pantry shelves and Barcode Library polish (audit section 3/4, D14, H07, H08, H30).
@@ -525,6 +525,52 @@ test.describe('barcode library', () => {
     } finally {
       await library.doc('100000000099').delete();
       await library.doc('100000000098').delete();
+    }
+  });
+});
+
+test.describe('list templates and peeks', () => {
+  test('list-template tiles have accessible names', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/shopping');
+    await page.getByRole('button', { name: 'Create New List' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Create New List' });
+    await expect(dialog).toBeVisible();
+    for (const name of ['Groceries', 'Auto', 'Hardware', 'Pet Supplies']) {
+      await expect(dialog.getByRole('button', { name: `Create a ${name} list`, exact: true })).toBeVisible();
+    }
+    await expect(dialog.getByRole('button', { name: 'Custom list', exact: true })).toBeVisible();
+    // Nothing is created by looking: close without choosing.
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test('H26: Open List and a saved item link show peek cards on hover', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const apples = groceryItems.doc('apples');
+    await apples.update({ status: 'needed', sourceUrl: 'https://www.example.com/honeycrisp' });
+    try {
+      await open(page, '/shopping');
+      const peek = page.locator('[data-peek-card]');
+      const openList = page.getByRole('button', { name: 'Open Weekly Groceries' });
+      await openList.hover();
+      await expect(peek).toBeVisible();
+      await expect(peek).toContainText('Weekly Groceries');
+      await expect(peek).toContainText('Grocery list');
+
+      // Pressing closes the card; the list opens.
+      await openList.click();
+      await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
+      await expect(peek).toHaveCount(0);
+
+      const link = page.getByRole('link', { name: 'Open saved link for Honeycrisp apples' });
+      await link.hover();
+      await expect(peek).toBeVisible();
+      await expect(peek).toContainText('Honeycrisp apples');
+      await expect(peek).toContainText('Produce');
+      await expect(peek).toContainText('Opens example.com');
+    } finally {
+      await apples.update({ status: 'needed', sourceUrl: FieldValue.delete() });
     }
   });
 });

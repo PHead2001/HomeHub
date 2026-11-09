@@ -251,3 +251,73 @@ test.describe('chores wave 2', () => {
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
   });
 });
+
+test.describe('chore library and empty household', () => {
+  test('deleting a library chore asks to confirm, then removes it and its open chores', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const task = 'Chores UX library delete';
+    const template = household.collection('chore-templates').doc('chores-ux-library-delete');
+    const openChore = household.collection('chores').doc('chores-ux-library-open');
+    await template.set({ task, roomIds: ['kitchen'] });
+    await seedChore(openChore.id, { task, templateId: template.id });
+    try {
+      await open(page, '/chores', 'Chore Chart');
+      await page.getByRole('button', { name: 'Chore Manager' }).click();
+      await page.getByRole('menuitem', { name: 'Chore library' }).click();
+      const library = page.getByRole('dialog', { name: 'Chore library' });
+      await expect(library.getByRole('cell', { name: task, exact: true })).toBeVisible();
+
+      // Cancel keeps it.
+      await library.getByRole('button', { name: `Delete ${task}`, exact: true }).click();
+      const confirm = page.getByRole('alertdialog', { name: `Delete ${task}?` });
+      await expect(confirm).toBeVisible();
+      await expect(confirm).toContainText('deletes its open chores');
+      await confirm.getByRole('button', { name: 'Cancel' }).click();
+      await expect(confirm).toHaveCount(0);
+      expect((await template.get()).exists).toBe(true);
+
+      await library.getByRole('button', { name: `Delete ${task}`, exact: true }).click();
+      await confirm.getByRole('button', { name: 'Delete Chore' }).click();
+      // The toast first: it auto-dismisses, so check it before the slower Firestore polls.
+      // The open library dialog is modal, so the notifications region is aria-hidden behind it.
+      await expect(page.getByRole('region', { name: /notification/i, includeHidden: true }).getByText('Chore deleted', { exact: true })).toBeVisible();
+      await expect.poll(async () => (await template.get()).exists).toBe(false);
+      await expect.poll(async () => (await openChore.get()).exists).toBe(false);
+      await expect(library.getByRole('cell', { name: task, exact: true })).toHaveCount(0);
+    } finally {
+      await template.delete();
+      await openChore.delete();
+    }
+  });
+
+  test('an empty household gets a call to action that opens Add Chore', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    // Household B (seeded with one private chore) is emptied for this test and restored after.
+    const otter = adminDb.collection('households').doc('the-otter-residence-e2e');
+    const [chores, templates] = await Promise.all([otter.collection('chores').get(), otter.collection('chore-templates').get()]);
+    const saved = [...chores.docs, ...templates.docs].map((d) => ({ ref: d.ref, data: d.data() }));
+    await Promise.all(saved.map(({ ref }) => ref.delete()));
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark' });
+    try {
+      const page = await context.newPage();
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto('/e2e-login?uid=e2e-household-b-owner-uid');
+      await expect(page).toHaveURL('/');
+      await open(page, '/chores', 'Chore Chart');
+      await expect(page.getByRole('heading', { name: 'No chores yet', exact: true })).toBeVisible();
+      const cta = page.getByRole('button', { name: 'Add your first chore', exact: true });
+      await expect(cta).toBeVisible();
+      await cta.click();
+      const dialog = page.getByRole('dialog', { name: 'Add chore' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel('Chore', { exact: true })).toBeVisible();
+      // Closing without saving writes nothing.
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      expect((await otter.collection('chores').get()).size).toBe(0);
+    } finally {
+      await context.close();
+      await Promise.all(saved.map(({ ref, data }) => ref.set(data)));
+    }
+  });
+});

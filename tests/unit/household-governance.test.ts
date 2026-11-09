@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   HOUSEHOLD_NAME_MAX,
   OWNER_ONLY_PERMISSIONS,
@@ -212,5 +214,30 @@ describe('Home Assistant states', () => {
     assert.equal(entityStateTone('unavailable'), 'unavailable');
     assert.equal(entityStateLabel(''), 'No state');
     assert.equal(entityStateTone('on'), 'on');
+  });
+});
+
+describe('create household form', () => {
+  // A browser submits a form when Enter is pressed in its only text field, as long as
+  // the field sits inside the <form>, the form has a submit button and nothing on the
+  // field swallows the key. No browser runs here, so this checks exactly that wiring.
+  const source = readFileSync(resolve(process.cwd(), 'src/components/household-manager.tsx'), 'utf8').replace(/\r\n/g, '\n');
+  const start = source.indexOf('function CreateHouseholdForm');
+  const form = source.slice(start, source.indexOf('function JoinHouseholdForm', start));
+
+  it('keeps the name field inside the form with a submit button, so Enter submits', () => {
+    assert.ok(start >= 0, 'CreateHouseholdForm exists');
+    const open = form.indexOf('<form');
+    const field = form.indexOf("fieldErrorProps('householdName'");
+    const submit = form.indexOf('<Button type="submit"');
+    const close = form.indexOf('</form>');
+    assert.ok(open >= 0 && open < field && field < submit && submit < close, 'field and submit button sit inside the form');
+    assert.equal(form.match(/<Input\b/g)?.length, 1, 'one text field, so implicit submission applies');
+    assert.doesNotMatch(form, /onKeyDown|onKeyPress|onKeyUp/, 'nothing intercepts Enter');
+    assert.match(form, /enterKeyHint="go"/);
+  });
+
+  it('handles the submit itself: no page reload, validates, then creates with the trimmed name', () => {
+    assert.match(form, /onSubmit=\{\(event\) => \{\s*event\.preventDefault\(\);\s*setSubmitted\(true\);\s*if \(!householdNameError\(name\) && !isCreating\) onCreate\(name\.trim\(\)\);/);
   });
 });

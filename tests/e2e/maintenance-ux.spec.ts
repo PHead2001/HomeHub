@@ -380,3 +380,34 @@ test.describe('maintenance center UX', () => {
     await context.close();
   });
 });
+
+test.describe('maintenance peeks', () => {
+  test.beforeEach(async () => { await restoreMaintenanceSeed(); });
+  test.afterEach(async () => { await restoreMaintenanceSeed(); });
+
+  test('H26: an Attention Queue item and a reminder Open link show peek cards on hover', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance');
+    const peek = page.locator('[data-peek-card]');
+    // The seeded HVAC is flagged as needing attention.
+    const queue = page.locator('div')
+      .filter({ has: page.getByText('Attention Queue', { exact: true }) })
+      .filter({ has: page.getByRole('button', { name: /Main HVAC System/ }) })
+      .last();
+    await queue.getByRole('button', { name: /Main HVAC System/ }).hover();
+    await expect(peek).toBeVisible();
+    await expect(peek).toContainText('Main HVAC System');
+    await expect(peek).toContainText('Carrier Comfort 16');
+    await expect(peek).toContainText('Utility Closet');
+    await page.mouse.move(0, 0);
+    await expect(peek).toHaveCount(0);
+
+    await page.getByRole('tab', { name: 'Reminders' }).click();
+    const openReminder = page.getByRole('button', { name: 'Open: Replace air filter for Main HVAC System' }).first();
+    await openReminder.hover();
+    await expect(peek).toBeVisible();
+    await expect(peek).toContainText('Main HVAC System');
+    await expect(peek).toContainText('Replace air filter');
+    await expect(peek).toContainText('Opens the home asset');
+  });
+});

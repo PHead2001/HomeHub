@@ -77,7 +77,7 @@ Firestore rules require `shopping.view` to read, `shopping.edit` to create or up
 
 - Recipe generation rejects fewer than two inventory items, although the UI button can be enabled with one.
 - Invalid or missing Firestore dates are handled defensively for display.
-- A failed, timed-out, rate-limited, refused, or malformed recipe request leaves inventory unchanged, keeps the dialog open, reports a sanitized error, and offers retry.
+- A failed, timed-out, rate-limited, refused, or malformed recipe request leaves inventory unchanged, keeps the dialog open, reports a sanitized error (the AI action's public message for `AiClientError`, otherwise `friendlyError`), and offers retry.
 - Delete-and-return-to-shopping is not atomic; a shopping failure can occur after inventory deletion.
 - Slug-derived IDs can collide for names that normalize to the same slug.
 - Pantry, fridge, and freezer mobile lists must keep item actions and long names within the document bounds at 360 px and wider supported viewports.

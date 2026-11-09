@@ -150,3 +150,69 @@ test.describe('profile and automation', () => {
     await expect(page.getByPlaceholder('https://your-home.ui.nabu.casa')).toBeVisible();
   });
 });
+
+test.describe('household tabs and invites', () => {
+  test('B8: ?tab= opens that tab directly and choosing a tab updates the URL', async ({ page }) => {
+    await openHousehold(page, 'members');
+    await expect(page.getByRole('tab', { name: /^Members/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('region', { name: 'Approve Jamie?' })).toBeVisible();
+
+    await openHousehold(page, 'roles');
+    await expect(page.getByRole('tab', { name: 'Roles' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'false');
+
+    // Choosing a tab replaces the URL (Overview has no parameter) and survives a reload.
+    await page.getByRole('tab', { name: 'Danger Zone' }).click();
+    await expect(page).toHaveURL(/\/household\?tab=danger$/);
+    await page.getByRole('tab', { name: 'Overview' }).click();
+    await expect(page).toHaveURL(/\/household$/);
+    await page.getByRole('tab', { name: /^Members/ }).click();
+    await expect(page).toHaveURL(/\/household\?tab=members$/);
+    await page.reload();
+    await expect(page.getByRole('tab', { name: /^Members/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('region', { name: 'Approve Jamie?' })).toBeVisible();
+  });
+
+  test('B3: a blocked clipboard still reports the invite as created and shows its code', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Both copy paths fail, as on iOS after an await: the Clipboard API rejects and
+    // the legacy execCommand fallback copies nothing.
+    await page.addInitScript(() => {
+      const w = window as unknown as { __clipboardWrites: number };
+      w.__clipboardWrites = 0;
+      Object.defineProperty(Navigator.prototype, 'clipboard', {
+        configurable: true,
+        get: () => ({
+          writeText: () => {
+            w.__clipboardWrites += 1;
+            return Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'));
+          },
+        }),
+      });
+      Document.prototype.execCommand = () => false;
+    });
+    const invites = getFirestore(adminApp).collection('inviteCodes');
+    const before = new Set((await invites.where('householdId', '==', 'the-foxy-residence-e2e').get()).docs.map((d) => d.id));
+    try {
+      // No pinned clock here: the rules compare the invite's expiry with the server's time.
+      await page.goto('/household?tab=invites');
+      await expect(page.getByRole('tab', { name: 'Invite Codes' })).toHaveAttribute('aria-selected', 'true');
+      await page.getByRole('button', { name: 'Create invite code', exact: true }).click();
+
+      const toasts = page.getByRole('region', { name: /notification/i });
+      await expect(toasts.getByText('Invite code ready', { exact: true })).toBeVisible();
+      const description = toasts.getByText(/^Share [A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{2} within 30 minutes\. It is also listed below\.$/);
+      await expect(description).toBeVisible();
+      expect(await page.evaluate(() => (window as unknown as { __clipboardWrites: number }).__clipboardWrites)).toBeGreaterThan(0);
+      await expect(toasts.getByText('Could not create an invite code')).toHaveCount(0);
+
+      // The code in the toast is the one that was created and is listed on the tab.
+      const code = (await description.textContent())!.match(/[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{2}/)![0];
+      await expect(page.getByRole('tabpanel').getByText(code, { exact: true })).toBeVisible();
+      await expect.poll(async () => (await invites.doc(code).get()).exists).toBe(true);
+    } finally {
+      const after = await invites.where('householdId', '==', 'the-foxy-residence-e2e').get();
+      await Promise.all(after.docs.filter((d) => !before.has(d.id)).map((d) => d.ref.delete()));
+    }
+  });
+});

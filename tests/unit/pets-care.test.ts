@@ -421,10 +421,14 @@ describe('pets components use tokens only', () => {
     const loop = css.match(/\.idle \{[^}]*animation: pet-idle (\d+)s/);
     assert.ok(loop, 'the idle loop exists');
     assert.ok(Number(loop![1]) >= 20, 'ambient loops are 20 s or longer');
-    // Small amplitude: at most 2 px and 2 degrees.
-    const frames = css.slice(css.indexOf('@keyframes pet-idle'), css.indexOf('}', css.indexOf('@keyframes pet-idle') + 200) + 1);
-    for (const [, px] of frames.matchAll(/translateY\((-?[\d.]+)px\)/g)) assert.ok(Math.abs(Number(px)) <= 2);
-    for (const [, deg] of frames.matchAll(/rotate\((-?[\d.]+)deg\)/g)) assert.ok(Math.abs(Number(deg)) <= 2);
+    // Small amplitude: at most 2 px and 2 degrees at the strongest preset intensity
+    // (7%, so 7/6 of the base amplitude scaled by --ambient-scale).
+    const start = css.indexOf('@keyframes pet-idle');
+    const frames = css.slice(start, css.indexOf('\n}', start) + 2);
+    const px = [...frames.matchAll(/translateY\(calc\((-?[\d.]+)px \* var\(--ambient-scale, 1\)\)\)/g)];
+    const deg = [...frames.matchAll(/rotate\(calc\((-?[\d.]+)deg \* var\(--ambient-scale, 1\)\)\)/g)];
+    assert.ok(px.length > 0 && deg.length > 0, 'the sway scales with the ambient token');
+    for (const [, value] of [...px, ...deg]) assert.ok(Math.abs(Number(value)) * (0.07 / 0.06) <= 2);
     assert.match(css, /html\[data-visibility='hidden'\]\) \.idle/);
     assert.match(css, /html\[data-motion='reduce'\]\) \.idle/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.eyes,\s*\.idle,/);

@@ -89,7 +89,7 @@ function RoomShape({ placement, room, lit, active }: { placement: RoomPlacement;
       <polygon points={points([{ x: x + w, y }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + w - i, y: y + i }])} className="fill-muted/30" />
       <polygon points={points([{ x, y: y + h }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + i, y: y + h - i }])} className="fill-secondary" />
       <rect x={x + w - 34} y={y + i + 6} width="16" height="12" rx="1.5" className="fill-background stroke-border" strokeWidth="1" />
-      <rect x={x + w - 33} y={y + i + 7} width="14" height="10" rx="1" className={cn(styles.windowLight, 'fill-warning')} style={{ opacity: lit ? 0.75 : 0 }} />
+      <rect x={x + w - 33} y={y + i + 7} width="14" height="10" rx="1" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.75 : 0 } as CSSProperties} />
       {room.status === 'overdue' && (
         <rect x={x + 2} y={y + 2} width={w - 4} height={h - 4} rx="2" className={cn(styles.overdueGlow, 'fill-none stroke-warning')} strokeWidth="3" />
       )}
@@ -127,7 +127,7 @@ function Scenery({ layout, season, golden, lit }: { layout: HouseLayout; season:
       <polygon points={points(layout.roofSide)} className={cn(golden ? 'fill-warning/60' : 'fill-muted', 'stroke-border')} strokeWidth="1.5" strokeLinejoin="round" />
       <polygon points={points(layout.roofFront)} className={cn(golden ? 'fill-warning/80 stroke-warning' : 'fill-secondary stroke-border')} strokeWidth="2" strokeLinejoin="round" />
       <circle cx={apex.x} cy={body.y - 22} r="10" className="fill-background stroke-border" strokeWidth="2" />
-      <circle cx={apex.x} cy={body.y - 22} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ opacity: lit ? 0.85 : 0 }} />
+      <circle cx={apex.x} cy={body.y - 22} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.85 : 0 } as CSSProperties} />
       <rect x={body.x} y={body.y} width={body.w} height={body.h} className="fill-background/40 stroke-border" strokeWidth="2" />
       {layout.emptyCells.map((cell) => (
         <g key={`${cell.x}-${cell.y}`}>

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { DAY_PHASES, dominantPhase, greeting, phaseWeights, seasonFor, windowsLit } from '../../src/lib/dashboard/ambience';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { DAY_PHASES, dominantPhase, GOLDEN_ROOF_CHORES, greeting, isGoldenRoof, phaseWeights, seasonFor, windowsLit } from '../../src/lib/dashboard/ambience';
 import { activeBellNotifications, caughtUpLine, groupNotifications, notificationGroupFor, notificationSourceLabel } from '../../src/lib/dashboard/notification-display';
 import { deduplicateNotifications, isNotificationReadBy } from '../../src/lib/notifications';
 import type { Notification } from '../../src/lib/types';
@@ -94,5 +96,27 @@ describe('notification presentation', () => {
     assert.equal(active.filter((n) => !isNotificationReadBy(n, user.uid)).length, 1, 'the read copy marks its twin read');
     // Counting raw documents would have said 3.
     assert.equal(raw.filter((n) => !isNotificationReadBy(n, user.uid)).length, 3);
+  });
+});
+
+describe('golden roof (H29)', () => {
+  it('turns the roof gold at exactly 100 completed chores and stays gold after', () => {
+    assert.equal(GOLDEN_ROOF_CHORES, 100);
+    assert.equal(isGoldenRoof(0), false);
+    assert.equal(isGoldenRoof(99), false);
+    assert.equal(isGoldenRoof(100), true);
+    assert.equal(isGoldenRoof(101), true);
+    assert.equal(isGoldenRoof(5000), true);
+  });
+
+  it('never turns gold from an unreadable count', () => {
+    assert.equal(isGoldenRoof(Number.NaN), false);
+    assert.equal(isGoldenRoof(-1), false);
+  });
+
+  it('is the condition the dashboard uses for its completed-chore count', () => {
+    const dashboard = readFileSync(resolve(process.cwd(), 'src/components/dashboard/dashboard.tsx'), 'utf8');
+    assert.match(dashboard, /golden: isGoldenRoof\(snapshot\.data\(\)\.count\)/);
+    assert.match(dashboard, /where\('isCompleted', '==', true\)/);
   });
 });

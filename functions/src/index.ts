@@ -1,6 +1,14 @@
 import {onDocumentCreated} from "firebase-functions/v2/firestore";
 import {onSchedule} from "firebase-functions/v2/scheduler";
-import * as admin from "firebase-admin";
+import {getApp, initializeApp} from "firebase-admin/app";
+import {
+  FieldValue,
+  getFirestore,
+  Timestamp,
+  type DocumentReference,
+  type WriteResult,
+} from "firebase-admin/firestore";
+import {getMessaging, type MulticastMessage} from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
 import {runHouseholdReminders} from "./reminders";
 import {
@@ -18,17 +26,17 @@ import {
   type PushImage,
 } from "./shared/push-media";
 
-admin.initializeApp();
+initializeApp();
 
-const db = admin.firestore();
-const messaging = admin.messaging();
+const db = getFirestore();
+const messaging = getMessaging();
 
 type TokenOwner = {
   token: string;
   // Every document that holds this token: the owner-only
   // users/{email}/private/push doc and, until the migration empties it, the
   // legacy users/{email}.fcmTokens field.
-  refs: admin.firestore.DocumentReference[];
+  refs: DocumentReference[];
   showImage: boolean;
 };
 
@@ -68,7 +76,7 @@ export const sendPushOnNewNotification = onDocumentCreated(
 
     const image: PushImage | null = await resolvePushImage(
       readDoc, householdId, notificationData,
-      admin.app().options.storageBucket ?? "");
+      getApp().options.storageBucket ?? "");
     // Only recipients who could open the pet or product in the app see its
     // picture; everyone else gets the same push without the image.
     const canSeeImage = (email: string): boolean => {
@@ -118,11 +126,11 @@ export const sendPushOnNewNotification = onDocumentCreated(
       .map((withImage) => tokenOwners.filter((o) => o.showImage === withImage))
       .filter((group) => group.length > 0);
 
-    const tokensToRemove: Promise<admin.firestore.WriteResult>[] = [];
+    const tokensToRemove: Promise<WriteResult>[] = [];
     for (const group of groups) {
       const options = webpushNotification(
         tag, group[0].showImage && image ? image.url : null);
-      const payload: admin.messaging.MulticastMessage = {
+      const payload: MulticastMessage = {
         notification: {title, body},
         webpush: {
           fcmOptions: {link: safeDeepLink(notificationData.deepLink)},
@@ -151,7 +159,7 @@ export const sendPushOnNewNotification = onDocumentCreated(
         ) {
           for (const ref of group[index].refs) {
             tokensToRemove.push(ref.update({
-              fcmTokens: admin.firestore.FieldValue.arrayRemove(
+              fcmTokens: FieldValue.arrayRemove(
                 group[index].token),
             }));
           }
@@ -170,7 +178,7 @@ export const householdUpkeep = onSchedule(
   {schedule: "every 60 minutes", timeZone: "UTC", retryCount: 0},
   async () => {
     const now = new Date();
-    const ts = (d: Date) => admin.firestore.Timestamp.fromDate(d);
+    const ts = (d: Date) => Timestamp.fromDate(d);
     const households = await db.collection("households").select().get();
     const totals = {households: 0, failed: 0, generatedChores: 0,
       purgedChores: 0, createdNotifications: 0, refreshedNotifications: 0,

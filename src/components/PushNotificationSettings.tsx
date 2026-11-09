@@ -13,10 +13,10 @@ import { deleteField, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/
 import { awaitWriteUnlessOffline } from '@/lib/firestore-offline';
 import { nextPushTokens } from '@/lib/push-tokens';
 import { registerHomeHubServiceWorker } from '@/lib/service-worker';
+import { friendlyError } from '@/lib/friendly-error';
 
-
-
-const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
+/** Failures this component words for people itself; anything else goes through friendlyError. */
+class SubscribeError extends Error {}
 
 export function PushNotificationSettings() {
     const { currentUser } = useAuth();
@@ -50,12 +50,13 @@ export function PushNotificationSettings() {
 
             const messaging = await getFirebaseMessaging();
             if (!messaging) {
-                throw new Error('Firebase Messaging is not supported in this browser.');
+                throw new SubscribeError('Push notifications are not supported in this browser.');
             }
             
             const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
             if (!vapidKey) {
-                throw new Error('VAPID key is not configured. Please add NEXT_PUBLIC_FIREBASE_VAPID_KEY to your .env file.');
+                console.error('NEXT_PUBLIC_FIREBASE_VAPID_KEY is not configured.');
+                throw new SubscribeError('Push notifications are not set up for HomeHub yet.');
             }
 
             // Register (or reuse) the combined push + offline service worker at /api/sw
@@ -86,12 +87,12 @@ export function PushNotificationSettings() {
                 });
                 toast({ title: 'Subscription Successful!', description: 'Push notifications are now active on this device.' });
             } else {
-                 throw new Error('Failed to retrieve FCM token.');
+                 throw new SubscribeError('This device did not return a push token. Please try again.');
             }
 
         } catch (err) {
             console.error('An error occurred while subscribing to notifications. ', err instanceof Error ? err : String(err));
-            toast({ variant: 'destructive', title: 'Subscription Failed', description: getErrorMessage(err) || 'An unexpected error occurred.' });
+            toast({ variant: 'destructive', title: 'Subscription Failed', description: err instanceof SubscribeError ? err.message : friendlyError(err) });
         } finally {
             setIsSubscribing(false);
         }

@@ -19,7 +19,8 @@ import { DURATION, EASE } from '@/lib/motion';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
-import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
+import { AiClientError, getAiActionContext, unwrapAiActionResult } from '@/ai/client';
+import { friendlyError } from '@/lib/friendly-error';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 
 import { Button } from '@/components/ui/button';
@@ -67,7 +68,9 @@ import { Checkbox } from './ui/checkbox';
 import { EmptyState } from './empty-state';
 import { PantryShelves } from './shopping/pantry-shelves';
 
-const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : undefined;
+/** AI failures already carry a public message; anything else goes through friendlyError. */
+const recipeErrorMessage = (error: unknown) =>
+  error instanceof AiClientError && error.message ? error.message : friendlyError(error);
 
 const allPantryUnits = [
   ...pantryItemUnitCategories.Weight,
@@ -434,8 +437,8 @@ function RecipeGeneratorDialog({
             setPhase(!reduced && liftedOnScreen > 0 ? 'lifting' : 'shown');
             setRecipe(result);
         } catch (error) {
-            const message = getErrorMessage(error) || 'Could not generate a recipe.';
-            console.error('Recipe generation failed', message);
+            const message = recipeErrorMessage(error);
+            console.error('Recipe generation failed', error instanceof Error ? error : String(error));
             setErrorMessage(message);
             toast({ variant: 'destructive', title: 'Generation Failed', description: message });
         } finally {

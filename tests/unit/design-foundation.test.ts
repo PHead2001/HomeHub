@@ -174,3 +174,60 @@ describe('motion tokens', () => {
     assert.equal(sharedId('pet', 'abc 123/x', 'photo'), 'pet-abc_123_x-photo');
   });
 });
+
+describe('ambient intensity guardrail (G5)', () => {
+  /** The body of the first `selector {` rule or `@keyframes name {` block, braces included. */
+  function block(css: string, start: string): string {
+    const at = css.indexOf(start);
+    assert.ok(at >= 0, `missing ${start}`);
+    let depth = 0;
+    for (let i = css.indexOf('{', at); i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      if (css[i] === '}' && --depth === 0) return css.slice(at, i + 1);
+    }
+    throw new Error(`unclosed ${start}`);
+  }
+
+  const read = (path: string) => readFileSync(resolve(root, path), 'utf8').replace(/\r\n/g, '\n');
+  const pets = read('src/components/pets/pets.module.css');
+  const dashboard = read('src/components/dashboard/dashboard.module.css');
+  const house = read('src/components/dashboard/living-house.tsx');
+  const scaleRule = /--ambient-scale: calc\(var\(--ambient-intensity, 0\.06\) \/ 0\.06\)/;
+
+  it('derives the pet and house ambient scale from the one --ambient-intensity token', () => {
+    assert.match(block(pets, '.eyes,\n.idle {'), scaleRule);
+    assert.match(block(dashboard, '.pulse,\n.windowLight {'), scaleRule);
+  });
+
+  it('scales the pet idle sway and blink amplitude, so intensity 0 is still', () => {
+    const idle = block(pets, '@keyframes pet-idle');
+    const moving = idle.match(/translateY\([^;]*\)|rotate\([^;]*\)/g) ?? [];
+    for (const step of idle.split('\n').filter((line) => /^\s+\d+% \{/.test(line) && !/translateY\(0\)/.test(line))) {
+      assert.match(step, /translateY\(calc\(-?[\d.]+px \* var\(--ambient-scale, 1\)\)\)/, step);
+      assert.match(step, /rotate\(calc\(-?[\d.]+deg \* var\(--ambient-scale, 1\)\)\)/, step);
+    }
+    assert.ok(moving.length > 0);
+    assert.match(block(pets, '@keyframes pet-blink'), /scaleY\(max\(0\.1, calc\(1 - 0\.9 \* var\(--ambient-scale, 1\)\)\)\)/);
+  });
+
+  it('scales the fridge pulse and the window lights by the same token', () => {
+    const pulse = block(dashboard, '@keyframes soft-pulse');
+    assert.match(pulse, /scale\(calc\(1 \+ [\d.]+ \* var\(--ambient-scale, 1\)\)\)/);
+    assert.match(pulse, /opacity: max\([\d.]+, calc\(1 - [\d.]+ \* var\(--ambient-scale, 1\)\)\)/);
+    assert.match(block(dashboard, '*/\n.windowLight {'),/opacity: min\(1, calc\(var\(--window-glow, 0\) \* var\(--ambient-scale, 1\)\)\)/);
+    // The scene sets only the lit level; an inline opacity would bypass the token.
+    assert.match(house, /'--window-glow': lit \? [\d.]+ : 0/);
+    assert.doesNotMatch(house, /windowLight[^\n]*style=\{\{ opacity/);
+  });
+
+  it('keeps both reduced-motion selectors for the scaled effects', () => {
+    for (const name of ['.eyes', '.idle']) {
+      assert.ok(pets.includes(`:global(html[data-motion='reduce']) ${name}`), name);
+    }
+    for (const name of ['.pulse', '.windowLight']) {
+      assert.ok(dashboard.includes(`:global(:root[data-motion='reduce']) ${name}`), name);
+    }
+    assert.match(pets, /@media \(prefers-reduced-motion: reduce\) \{\s*\.eyes,\s*\.idle,/);
+    assert.match(block(dashboard, '@media (prefers-reduced-motion: reduce)'), /\.pulse,[\s\S]*\.windowLight,/);
+  });
+});
