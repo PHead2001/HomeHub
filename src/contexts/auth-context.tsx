@@ -160,6 +160,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profileConfirmed, setProfileConfirmed] = useState(false);
   // Household shown from the cache (by id), so the confirmed run doesn't flash back to loading.
   const cachedHouseholdShown = useRef<string | null>(null);
+  // The first Auth callback of a page load is the session restore: the only one the cache
+  // fast path helps. Later callbacks (a sign-in on this page) keep the server-only path.
+  const restoringSession = useRef(true);
   const [householdLoadFailed, setHouseholdLoadFailed] = useState(false);
   const [householdLoadAttempt, setHouseholdLoadAttempt] = useState(0);
   const retryHouseholdLoad = useCallback(() => setHouseholdLoadAttempt(attempt => attempt + 1), []);
@@ -184,6 +187,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { db, doc, getDoc, setDoc } = await loadData();
     const userDocRef = doc(db, 'users', firebaseUser.email);
     const docSnap = await getDoc(userDocRef);
+    // A brand-new user's profile can be created by two paths at once (the sign-in handler
+    // and the Auth state listener). Whichever writes second is an update the rules deny; it
+    // then reads the profile the other path created instead of failing.
+    const createProfile = async (data: Record<string, unknown>): Promise<User> => {
+      try {
+        await setDoc(userDocRef, data);
+        return { uid: firebaseUser.uid, ...data } as User;
+      } catch (error) {
+        if ((error as { code?: string })?.code !== 'permission-denied') throw error;
+        const existing = await getDoc(userDocRef);
+        if (!existing.exists()) throw error;
+        return { uid: firebaseUser.uid, ...existing.data() } as User;
+      }
+    };
 
     if (docSnap.exists()) {
       const profile = { uid: firebaseUser.uid, ...docSnap.data() } as User;
@@ -210,8 +227,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         forcePasswordChange: false,
         householdId: null,
       }
-      await setDoc(userDocRef, dataToSave);
-      return { uid: firebaseUser.uid, ...dataToSave } as User;
+      return createProfile(dataToSave);
     }
 
     const newUserProfile: Partial<Omit<User, 'uid'>> = {
@@ -229,9 +245,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       Object.entries(newUserProfile).filter(([, value]) => value !== undefined && value !== null)
     ) as Partial<Omit<User, 'uid'>>;
 
-    await setDoc(userDocRef, dataToSave);
+    const created = await createProfile(dataToSave);
     toast({ title: "Welcome!", description: "Your new account has been created." });
-    return { uid: firebaseUser.uid, ...dataToSave } as User;
+    return created;
 
   }, [toast]);
   
@@ -380,11 +396,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // This is for session management ONLY (on page refresh)
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      const restoring = restoringSession.current;
+      restoringSession.current = false;
       setLoading(true);
       if (firebaseUser) {
         // Repeat visit: render from this user's cached profile at once; the server copy
         // below replaces it only if something changed.
-        const cached = firebaseUser.email ? await readCached(['users', firebaseUser.email]) : null;
+        const cached = restoring && firebaseUser.email ? await readCached(['users', firebaseUser.email]) : null;
         if (cached) {
           setProfileConfirmed(false);
           setCurrentUser({ uid: firebaseUser.uid, ...cached.data() } as User);

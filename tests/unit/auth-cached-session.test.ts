@@ -49,6 +49,20 @@ describe('repeat-visit fast path (H01)', () => {
     assert.match(source, /getDocFromCache\(/);
   });
 
+  it('uses the cache only for the session restore, and survives the new-profile race', () => {
+    const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
+    const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));
+    // Captured and cleared before any branch, so a sign-in after a signed-out first callback
+    // never takes the cache path.
+    assert.ok(restore.indexOf('restoringSession.current = false;') < restore.indexOf('if (firebaseUser)'));
+    assert.match(restore, /const cached = restoring && firebaseUser\.email/);
+    // A denied create re-reads the profile the other path created instead of throwing.
+    const create = source.slice(source.indexOf('const createProfile = async'), source.indexOf('if (docSnap.exists())'));
+    assert.match(create, /code !== 'permission-denied'\) throw error;/);
+    assert.match(create, /const existing = await getDoc\(userDocRef\);/);
+    assert.equal((source.match(/await setDoc\(userDocRef, dataToSave\)/g) ?? []).length, 0);
+  });
+
   it('never lets a provisional profile or a superseded load clear the household', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
     const fetchHousehold = source.slice(source.indexOf('const fetchHousehold = async'), source.indexOf('fetchHousehold();'));
