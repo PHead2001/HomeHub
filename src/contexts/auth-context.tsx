@@ -24,6 +24,7 @@ import { auth, firebaseEmulatorMode } from '@/lib/firebase-app';
 import { getMemberPermissions } from '@/lib/permissions';
 import { normalizeMember, sameProfile } from '@/lib/auth/cached-session';
 import { SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
+import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { friendlyError } from '@/lib/friendly-error';
 import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
@@ -438,7 +439,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setHouseholdLoading(false);
       }
       } else {
-        // User is not logged in
+        // User is not logged in: nothing of the last user's house stays on this device.
+        clearHouseSnapshot(deviceStorage());
         setCurrentUser(null);
         setProfileConfirmed(false);
         setHousehold(null);
@@ -486,6 +488,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchOrCreateUserProfile, publishProfile, toast]);
 
   const logout = useCallback(async () => {
+    // The last-known house rooms go first, before anything that can fail or reload.
+    clearHouseSnapshot(deviceStorage());
     // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
     // the rules reject them once signed out. Then remove this household's cached data
     // from the device. A terminated Firestore instance cannot be reused, so the page
