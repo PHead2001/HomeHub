@@ -231,7 +231,7 @@ test.describe('dashboard, shell and notifications', () => {
     const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark', storageState: { cookies: [], origins: [] } });
     const page = await context.newPage();
     await page.goto('/');
-    await expect(page.getByTestId('landing')).toBeVisible();
+    await expect(page.getByRole('main').getByTestId('landing')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Primary' })).toHaveCount(0);
     await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link')).toHaveCount(0);

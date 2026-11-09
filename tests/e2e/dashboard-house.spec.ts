@@ -24,6 +24,9 @@ async function openDashboard(page: Page) {
   await expect(page.getByTestId('header-search')).toBeVisible();
 }
 
+// Landing locators are scoped to <main>: under a slow dev server React can leave the streamed
+// landing behind in its hidden <div hidden id="S:0"> holding area after the client has rendered
+// it, a duplicate no visitor sees. Production (inline swap script) was checked: one copy, no leftover.
 test.describe('dashboard house (H01, H02, H22, H03)', () => {
   test('H01: clicking a room zooms into it and opens Chores filtered to that room', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
@@ -192,15 +195,15 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', storageState: { cookies: [], origins: [] } });
     const page = await context.newPage();
     await page.goto('/');
-    const house = page.getByTestId('landing-house');
+    const house = page.getByRole('main').getByTestId('landing-house');
     await expect(house).toBeVisible();
     const last = LANDING_STEPS[LANDING_STEPS.length - 1].module;
     expect(Number(await house.getAttribute('data-stage'))).toBeLessThan(FINAL_STAGE);
-    await expect(page.getByTestId(`landing-chip-${last}`)).toHaveAttribute('data-on', 'false');
+    await expect(page.getByRole('main').getByTestId(`landing-chip-${last}`)).toHaveAttribute('data-on', 'false');
     for (const step of LANDING_STEPS) {
       // Scroll the way a reader does: each step up to the middle of the screen.
-      await page.getByTestId(`landing-step-${step.module}`).evaluate((element) => element.scrollIntoView({ block: 'center' }));
-      await expect(page.getByTestId(`landing-chip-${step.module}`)).toHaveAttribute('data-on', 'true');
+      await page.getByRole('main').getByTestId(`landing-step-${step.module}`).evaluate((element) => element.scrollIntoView({ block: 'center' }));
+      await expect(page.getByRole('main').getByTestId(`landing-chip-${step.module}`)).toHaveAttribute('data-on', 'true');
     }
     await expect(house).toHaveAttribute('data-stage', String(FINAL_STAGE));
     await expect(page.getByRole('button', { name: 'Sign in with Google' })).toHaveCount(1);
@@ -241,7 +244,7 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
 
     // Signed in: a brand-new member gets the create-or-join screen, not the landing.
     await expect(page.getByText('Welcome to HomeHub!', { exact: true })).toBeVisible();
-    await expect(page.getByTestId('landing')).toHaveCount(0);
+    await expect(page.getByRole('main').getByTestId('landing')).toHaveCount(0);
     await expect(page.getByText('Login Failed')).toHaveCount(0);
     expect(pageErrors).toEqual([]);
     await context.close();
@@ -255,7 +258,7 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     const page = await context.newPage();
     await page.goto('/');
     // The hint picks the skeleton before auth resolves; signed out, the landing must win.
-    await expect(page.getByTestId('landing')).toBeVisible();
+    await expect(page.getByRole('main').getByTestId('landing')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Welcome Home', level: 1 })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeEnabled();
@@ -272,14 +275,14 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     });
     const page = await context.newPage();
     await page.goto('/');
-    const house = page.getByTestId('landing-house');
+    const house = page.getByRole('main').getByTestId('landing-house');
     await expect(house).toHaveAttribute('data-stage', String(FINAL_STAGE));
     for (const piece of ['foundation', 'rooms', 'roof', 'pets', 'details']) {
       await expect(house.locator(`[data-piece="${piece}"]`)).toHaveCSS('opacity', '1');
     }
     for (const step of LANDING_STEPS) {
-      await expect(page.getByTestId(`landing-chip-${step.module}`)).toHaveAttribute('data-on', 'true');
-      await expect(page.getByTestId(`landing-chip-${step.module}`)).toHaveCSS('opacity', '1');
+      await expect(page.getByRole('main').getByTestId(`landing-chip-${step.module}`)).toHaveAttribute('data-on', 'true');
+      await expect(page.getByRole('main').getByTestId(`landing-chip-${step.module}`)).toHaveCSS('opacity', '1');
     }
     await context.close();
   });
