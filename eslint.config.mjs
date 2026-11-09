@@ -39,6 +39,7 @@ const eslintConfig = defineConfig([
       "src/components/login-dialog.tsx",
       "src/components/dashboard/dashboard-skeleton.tsx",
       "src/lib/dashboard/house-layout.ts",
+      "src/lib/auth/cached-session.ts",
     ],
     rules: {
       "no-restricted-imports": ["error", {

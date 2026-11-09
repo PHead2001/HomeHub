@@ -3,19 +3,33 @@
 import dynamic from 'next/dynamic';
 import { DashboardSkeleton } from '@/components/dashboard/dashboard-skeleton';
 import { Landing } from '@/components/dashboard/landing';
-import { SESSION_GATE_SCRIPT } from '@/lib/dashboard/session-hint';
+import { useEffect } from 'react';
+import { SESSION_GATE_SCRIPT, SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
 import { useAuth } from '@/hooks/use-auth';
 import styles from '@/components/dashboard/dashboard.module.css';
 
+const loadDashboard = () => import('@/components/dashboard/dashboard');
+
 // The dashboard (Firestore listeners, the house, tiles, AI Overview) is its own
 // chunk, so the signed-out landing page stays light (H03: Lighthouse >= 90 on mobile).
-const Dashboard = dynamic(() => import('@/components/dashboard/dashboard').then((mod) => mod.Dashboard), {
+const Dashboard = dynamic(() => loadDashboard().then((mod) => mod.Dashboard), {
   ssr: false,
   loading: () => <DashboardSkeleton />,
 });
 
 export default function Home() {
   const { currentUser, loading } = useAuth();
+
+  // A device where someone was signed in starts fetching the dashboard chunk while Auth
+  // restores the session, so it's ready the moment the user is known (H01). Without the
+  // hint (signed-out visitors) nothing extra loads (H03).
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(SESSION_HINT_KEY) === '1') void loadDashboard();
+    } catch {
+      // Storage blocked: the chunk loads when the dashboard renders.
+    }
+  }, []);
 
   if (!loading && currentUser) return <Dashboard />;
 

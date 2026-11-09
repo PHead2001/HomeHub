@@ -3,9 +3,10 @@
 import { useAuth } from "@/hooks/use-auth";
 import { ProfileClient } from "@/components/profile-client";
 import { SignInPrompt } from "@/components/profile/sign-in-prompt";
+import { CardSkeleton } from "@/components/route-skeletons";
 
 export default function ProfilePage() {
-    const { currentUser } = useAuth();
+    const { currentUser, profileConfirmed } = useAuth();
     return (
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8">
@@ -13,7 +14,25 @@ export default function ProfilePage() {
                 <p className="text-muted-foreground">Manage your personal information and settings.</p>
             </div>
 
-            {currentUser ? <ProfileClient /> : <SignInPrompt what="see your profile" />}
+            {/* The forms take their starting values from the profile once, so they wait for the
+                server-confirmed copy: a provisional cached one may predate an edit made on
+                another device, and saving would write it back. */}
+            {!currentUser ? (
+                <SignInPrompt what="see your profile" />
+            ) : profileConfirmed ? (
+                <ProfileClient />
+            ) : (
+                <div role="status" aria-busy="true" className="mx-auto grid max-w-6xl grid-cols-1 gap-8 md:grid-cols-3">
+                    <span className="sr-only">Loading your profile…</span>
+                    <div aria-hidden className="space-y-8 md:col-span-2">
+                        <CardSkeleton lines={6} className="h-96" />
+                    </div>
+                    <div aria-hidden className="space-y-8 md:col-span-1">
+                        <CardSkeleton lines={5} className="h-96" />
+                        <CardSkeleton lines={3} className="h-56" />
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

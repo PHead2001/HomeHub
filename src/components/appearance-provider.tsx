@@ -177,7 +177,7 @@ function revealPreset(id: PresetId, origin: RevealOrigin, allowMotion: boolean, 
  * ------------------------------------------------------------------------- */
 
 export function AppearanceProvider({ children }: { children: ReactNode }) {
-  const { currentUser, updateUser } = useAuth();
+  const { currentUser, profileConfirmed, updateUser } = useAuth();
   const hydrated = useHydrated();
   const preferences = useSyncExternalStore(subscribeStore, getStoredPreferences, getServerPreferences);
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)');
@@ -188,17 +188,20 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
 
   // A signed-in member's synced profile preferences win over this device's copy
   // (once per sign-in; later changes on this device are written back to the profile).
+  // Only the server-confirmed profile counts: the provisional cached copy shown on a repeat
+  // visit may predate a change made on another device.
   const syncedProfileFor = useRef<string | null>(null);
   useEffect(() => {
     if (!currentUser?.email) {
       syncedProfileFor.current = null;
       return;
     }
+    if (!profileConfirmed) return;
     if (syncedProfileFor.current === currentUser.email) return;
     syncedProfileFor.current = currentUser.email;
     const fromProfile = appearanceFromProfile(currentUser.theme);
     if (fromProfile) storePreferences({ ...getStoredPreferences(), ...fromProfile });
-  }, [currentUser?.email, currentUser?.theme]);
+  }, [currentUser?.email, currentUser?.theme, profileConfirmed]);
 
   // Keep <html> in sync after hydration (the pre-paint script handled first paint):
   // System mode following the OS, profile sync, and changes from other tabs.
