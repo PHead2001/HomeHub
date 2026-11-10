@@ -247,7 +247,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
               <TabsTrigger value="care"><Sparkles className="mr-2" /> Care</TabsTrigger>
             </TabsList>
             <TabsContent value="feeding">
-              <FeedingLogClient petId={pet.id} plan={plan} />
+              <FeedingLogClient petId={pet.id} petName={pet.name} plan={plan} />
             </TabsContent>
             <TabsContent value="medication">
               <MedicationLogClient petId={pet.id} />

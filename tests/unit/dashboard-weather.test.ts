@@ -11,8 +11,13 @@ import {
   temperatureUnitFor,
   weatherFromCode,
   weatherSummary,
+  isWeatherStale,
   WEATHER_CACHE_KEY,
+  WEATHER_RETRY_MS,
+  WEATHER_STALE_MAX_MS,
   WEATHER_TTL_MS,
+  weatherAfterFetch,
+  weatherRefreshDelay,
   writeCachedWeather,
   type WeatherReport,
 } from '../../src/lib/dashboard/weather';
@@ -130,5 +135,28 @@ describe('weather cache', () => {
     assert.equal(readCachedWeather(storage, 'Dallas', 'fahrenheit', 1_000_001), null);
     assert.equal(readCachedWeather(null, 'Dallas', 'fahrenheit', 1), null);
     assert.doesNotThrow(() => writeCachedWeather({ getItem: () => null, setItem: () => { throw new Error('full'); } }, report()));
+  });
+});
+
+describe('weather refresh (HP-6a, HP-6b)', () => {
+  it('keeps the last good report, marked stale, when a refresh fails', () => {
+    const good = weatherAfterFetch(undefined, report(), 1_000_000);
+    assert.equal(isWeatherStale(good), false);
+    const failed = weatherAfterFetch(good, null, 1_000_000 + WEATHER_TTL_MS);
+    assert.deepEqual(failed.report, report());
+    assert.equal(isWeatherStale(failed), true);
+    assert.equal(weatherAfterFetch(failed, report({ fetchedAt: 3_000_000 }), 3_000_000).failedAt, null, 'a good answer clears it');
+  });
+
+  it('drops a report too old to show, and shows nothing without one', () => {
+    assert.equal(weatherAfterFetch({ report: report(), failedAt: null }, null, 1_000_000 + WEATHER_STALE_MAX_MS).report, null);
+    assert.equal(weatherAfterFetch(undefined, null, 5).report, null);
+  });
+
+  it('schedules the next load at fetchedAt + TTL, or a retry after a failure', () => {
+    assert.equal(weatherRefreshDelay(undefined, 0), 0);
+    assert.equal(weatherRefreshDelay({ report: report(), failedAt: null }, 1_000_000 + 60_000), WEATHER_TTL_MS - 60_000);
+    assert.equal(weatherRefreshDelay({ report: report(), failedAt: null }, 1_000_000 + WEATHER_TTL_MS + 5), 0);
+    assert.equal(weatherRefreshDelay({ report: report(), failedAt: 2_000_000 }, 2_000_000), WEATHER_RETRY_MS);
   });
 });
