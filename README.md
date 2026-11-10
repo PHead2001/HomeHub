@@ -174,7 +174,7 @@ TypeScript-only checking is also available:
 npm run typecheck
 ```
 
-Run the design-foundation unit tests (theme preset WCAG contrast, the pre-paint theme script, member colors, feedback, motion tokens):
+Run every unit test (`tests/unit/*.test.ts`; a new test file is picked up automatically):
 
 ```bash
 npm run test:unit
