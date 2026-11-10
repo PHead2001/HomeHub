@@ -19,6 +19,11 @@ export default {
       },
     },
     extend: {
+      // `coarse:` applies on touch screens (D-2: 48 px targets there, 44 px elsewhere).
+      // Raw media screens come after the width breakpoints, so `coarse:` wins over `md:`.
+      screens: {
+        coarse: { raw: '(pointer: coarse)' },
+      },
       fontFamily: {
         body: ['var(--font-inter)', 'sans-serif'],
         headline: ['var(--font-space-grotesk)', 'sans-serif'],
