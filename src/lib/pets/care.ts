@@ -314,12 +314,27 @@ export type FeedingStatus = {
   last: { date: Date; by: string | null } | null;
 };
 
+/**
+ * Feedings are stamped with server time (PE-5), so on a device whose clock runs
+ * slow a feeding from another device looks a little "in the future". Up to this
+ * far ahead it counts as just now (and today) instead of being hidden; anything
+ * further ahead is treated as a bad date and ignored.
+ */
+export const FEEDING_CLOCK_SKEW_MS = 12 * HOUR;
+
+/** A feeding's date as this device should read it: clock-skew futures become now; null when unusable. */
+export function seenFeedingDate(value: unknown, now: Date): Date | null {
+  const date = toDate(value);
+  if (!date || date.getTime() > now.getTime() + FEEDING_CLOCK_SKEW_MS) return null;
+  return date > now ? now : date;
+}
+
 export function feedingStatus(logs: FeedingEntry[], plan: Pick<FeedingPlan, 'perDay'>, now: Date): FeedingStatus {
   let fedToday = 0;
   let last: FeedingStatus['last'] = null;
   for (const log of logs) {
-    const date = toDate(log.date);
-    if (!date || date.getTime() > now.getTime() + MINUTE) continue;
+    const date = seenFeedingDate(log.date, now);
+    if (!date) continue;
     if (isSameLocalDay(date, now)) fedToday += 1;
     if (!last || date > last.date) last = { date, by: log.loggedByName?.trim() || null };
   }

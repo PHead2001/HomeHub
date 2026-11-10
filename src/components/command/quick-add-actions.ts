@@ -8,9 +8,10 @@
  *   Shopping list's own transaction (`findMergeTarget` + `mergeIntoNeededItem`),
  *   otherwise created with `buildShoppingListItem` and the shared category
  *   resolution (the guarded, quota-counted categorizer; "Other" offline);
- * - feedings: the Pets module's `addFeedingLog`, defaulting to the pet's usual
- *   portion (`feedingPlan`) and the latest feeding's food type (`knownFoodType`),
- *   exactly like the one-tap feed button;
+ * - feedings: the Pets module's shared feed operation (`feedPet`), defaulting to
+ *   the pet's usual portion (`feedingPlan`) and the latest feeding's food type
+ *   (`knownFoodType`), exactly like the one-tap feed button, including its
+ *   "Feed again?" check (the palette asks before logging again);
  * - one-time chores: a temporary task (chore + targeted assignment notification,
  *   skipped when you assign it to yourself), as Chores creates them;
  * - repeating chores: a chore template with the Chores dialog's recurrence shape
@@ -28,11 +29,13 @@ import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { auth, db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { addFeedingLog, petLogsCollection } from '@/components/pets/pet-log-api';
+import { petLogsCollection } from '@/components/pets/pet-log-api';
+import { knownFromLogs } from '@/lib/pets/feed-decision';
+import { feedPet, type FeedPetResult } from '@/lib/pets/feed-operation';
 import { foodTypeFromLatest } from '@/lib/dashboard/quick-add';
 import type { RawDoc } from '@/lib/dashboard/facts';
 import { loggerName } from '@/lib/pets/care';
-import type { FoodType, PortionUnit } from '@/lib/pets/types';
+import type { PortionUnit } from '@/lib/pets/types';
 import { findMergeTarget, type QuickAddEntry } from '@/lib/shopping/items';
 import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
 import { mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
@@ -75,44 +78,62 @@ export async function addShoppingItems(
   return shoppingAddOutcome(items, settled);
 }
 
-// Feedings go through the Pets module's own writer, so quick-add entries carry the
-// same shape (including who logged them) as the one-tap button and the full form.
-export async function logFeeding(
-  householdId: string,
-  petId: string,
-  amount: number,
-  unit: PortionUnit,
-  viewer: User,
-  onLateError: (error: unknown) => void,
-) {
+// Feedings go through the Pets module's shared feed operation, so quick-add
+// entries carry the same shape (including who logged them) and the same
+// duplicate-feed check as the one-tap button and the full form.
+export async function logFeeding({
+  householdId,
+  petId,
+  amount,
+  unit,
+  viewer,
+  timeZone,
+  confirm = false,
+  onLateError,
+}: {
+  householdId: string;
+  petId: string;
+  amount: number;
+  unit: PortionUnit;
+  viewer: User;
+  timeZone?: string | null;
+  /** The member answered "Feed again?" with yes. */
+  confirm?: boolean;
+  onLateError: (error: unknown) => void;
+}): Promise<FeedPetResult> {
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
   // type of the pet's latest feeding, and no comment.
-  const foodType = await latestFoodType(householdId, petId);
-  return awaitWriteUnlessOffline(addFeedingLog(householdId, petId, {
-    amount,
-    unit,
-    foodType,
-    loggedByUid: viewer.uid,
-    loggedByName: loggerName(viewer),
-  }), onLateError);
+  const latest = await latestFeedings(householdId, petId);
+  const known = { ...knownFromLogs(latest.flat(), new Date(), timeZone), countToday: null };
+  return feedPet({
+    householdId,
+    petId,
+    portion: { amount, unit },
+    food: foodTypeFromLatest(latest),
+    confirm,
+    timeZone,
+    known,
+    user: { uid: viewer.uid, name: loggerName(viewer) },
+    onLateError,
+  });
 }
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
 
 /**
- * The food type to reuse for a quick-logged meal, as the Pets workflow picks it:
- * `knownFoodType` of the latest feeding, read in both date shapes (Timestamps and
- * older ISO strings, which Firestore orders separately) with offline-aware reads.
- * Dry only when there is no readable history (Pets' own default).
+ * The newest feeding in each date shape (Timestamps and older ISO strings, which
+ * Firestore orders separately) with offline-aware reads: the food type to reuse
+ * (`foodTypeFromLatest`: `knownFoodType` of the latest, Dry without readable
+ * history, as Pets picks it) and the last-fed fallback for a pet without a
+ * feeding-state document.
  */
-async function latestFoodType(householdId: string, petId: string): Promise<FoodType> {
+async function latestFeedings(householdId: string, petId: string): Promise<(RawDoc & { date: unknown })[][]> {
   const logs = petLogsCollection(householdId, petId, 'feeding-logs');
   const latest = (floor: unknown) => getDocsOfflineAware(query(logs, where('date', '>=', floor), orderBy('date', 'desc'), limit(1)))
     .then((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as RawDoc & { date: unknown }))
     .catch(() => []);
-  const [stamped, strings] = await Promise.all([latest(MIN_TIMESTAMP), latest('')]);
-  return foodTypeFromLatest([stamped, strings]);
+  return Promise.all([latest(MIN_TIMESTAMP), latest('')]);
 }
 
 export async function createOneTimeChore({
