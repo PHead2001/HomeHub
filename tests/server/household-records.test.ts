@@ -116,6 +116,23 @@ describe('create household', () => {
     assert.deepEqual(entries[0].details, { householdName: 'Maple Street' });
   });
 
+  test('a photo removed in Profile stays removed; with no avatarUrl field the token photo is used', async () => {
+    await adminDb.collection('users').doc(creator.email).set({ email: creator.email, uid: creator.uid, avatarUrl: null, householdId: null });
+    const cleared = await createHousehold(creator, { name: 'No Photo' }, NOW);
+    assert.equal('avatarUrl' in ((await memberRef(creator, cleared.household.id).get()).data() || {}), false);
+    assert.equal('avatarUrl' in cleared.member, false);
+
+    await adminDb.recursiveDelete(house(cleared.household.id));
+    await adminDb.collection('users').doc(creator.email).set({ email: creator.email, uid: creator.uid, householdId: null });
+    const missing = await createHousehold(creator, { name: 'Token Photo' }, NOW);
+    assert.equal((await memberRef(creator, missing.household.id).get()).data()?.avatarUrl, creator.avatarUrl);
+
+    await adminDb.recursiveDelete(house(missing.household.id));
+    await adminDb.collection('users').doc(creator.email).set({ email: creator.email, uid: creator.uid, avatarUrl: 'https://example.test/chosen.png', householdId: null });
+    const chosen = await createHousehold(creator, { name: 'Chosen Photo' }, NOW);
+    assert.equal((await memberRef(creator, chosen.household.id).get()).data()?.avatarUrl, 'https://example.test/chosen.png');
+  });
+
   test('an invalid or missing time zone is left out', async () => {
     const result = await createHousehold(creator, { name: 'Zoneless', timeZone: 'Not/AZone' }, NOW);
     assert.equal('timeZone' in ((await house(result.household.id).get()).data() || {}), false);

@@ -494,7 +494,11 @@ export const createHousehold = async (
     const iso = now.toISOString();
     // The name and photo the person chose in HomeHub; the token's are the fallback.
     const displayName = typeof profile.displayName === 'string' && profile.displayName ? profile.displayName : caller.displayName;
-    const avatarUrl = typeof profile.avatarUrl === 'string' && profile.avatarUrl ? profile.avatarUrl : caller.avatarUrl;
+    // A photo removed in Profile is saved as `avatarUrl: null`: that removal is kept.
+    // The token's photo is used only when the profile has no avatarUrl field at all.
+    const avatarUrl = 'avatarUrl' in profile
+      ? (typeof profile.avatarUrl === 'string' && profile.avatarUrl ? profile.avatarUrl : undefined)
+      : caller.avatarUrl;
     const householdData: Omit<Household, 'id'> = {
       name,
       ownerEmail: caller.email,
