@@ -5,6 +5,7 @@ import { Timestamp, collection, doc, onSnapshot, query, where, type Query, type 
 import { db } from '@/lib/firebase';
 import { inviteDateToIso } from '@/lib/invite-codes';
 import type { AuditLog, HouseholdMember, InviteCode } from '@/lib/types';
+import { withContactEmails } from '@functions/shared/member-contact';
 import { choreStatsByMember, mergeChoresById, sortMembers, startOfNextWeek, startOfWeek, type ChoreLike, type MemberChoreStats } from './household-model';
 
 type ChoreParts = { key: string; open?: ChoreLike[]; server?: ChoreLike[]; legacy?: ChoreLike[]; failed?: boolean };
@@ -31,6 +32,12 @@ type Options = {
   canListInvites: boolean;
   canReadAudit: boolean;
   canViewChores: boolean;
+  /**
+   * Holders of `household.manageMembers` read each member's protected contact
+   * document (`members/{uid}/private/contact`) for the email shown on member
+   * cards and the approval banner. Nobody else ever requests it.
+   */
+  canManageMembers?: boolean;
 };
 
 const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
@@ -41,7 +48,7 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
  * role can read that path under the rules, and each fails independently, so a
  * denied invite or audit read never blanks the member list.
  */
-export function useHouseholdLiveData({ householdId, currentMember, canListInvites, canReadAudit, canViewChores }: Options): HouseholdLiveData {
+export function useHouseholdLiveData({ householdId, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false }: Options): HouseholdLiveData {
   const [name, setName] = useState<string | null>(null);
   const [rawMembers, setRawMembers] = useState<HouseholdMember[] | null>(null);
   const [membersFailed, setMembersFailed] = useState(false);
@@ -52,6 +59,8 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
   // household never shows the previous week's numbers.
   const choresKey = `${householdId ?? ''}|${weekStart.getTime()}`;
   const [choreParts, setChoreParts] = useState<ChoreParts>({ key: '' });
+  // Contact documents by uid, tagged with the household they were read for.
+  const [contacts, setContacts] = useState<{ householdId: string; byUid: Map<string, unknown> }>({ householdId: '', byUid: new Map() });
 
   // Move the "this week" boundary at local Monday midnight, and re-check when a
   // suspended or hidden tab comes back (timers may not fire while suspended).
@@ -154,13 +163,41 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
     return () => stops.forEach((stop) => stop());
   }, [canViewChores, choresKey, householdId, weekStart]);
 
+  // One listener per member, only for member managers. A missing or unreadable
+  // contact document is simply absent: the card then falls back to the email on
+  // the membership record (still written during the move) or shows none.
+  const contactUids = useMemo(
+    () => (canManageMembers && rawMembers ? rawMembers.map((m) => m.uid).sort().join('|') : ''),
+    [canManageMembers, rawMembers],
+  );
+  useEffect(() => {
+    if (!householdId || !contactUids) return;
+    const stops = contactUids.split('|').map((uid) => onSnapshot(
+      doc(db, 'households', householdId, 'members', uid, 'private', 'contact'),
+      (snapshot) => setContacts((prev) => {
+        const byUid = new Map(prev.householdId === householdId ? prev.byUid : []);
+        if (snapshot.exists()) byUid.set(uid, snapshot.data());
+        else byUid.delete(uid);
+        return { householdId, byUid };
+      }),
+      () => setContacts((prev) => {
+        if (prev.householdId !== householdId || !prev.byUid.has(uid)) return prev;
+        const byUid = new Map(prev.byUid);
+        byUid.delete(uid);
+        return { householdId, byUid };
+      }),
+    ));
+    return () => stops.forEach((stop) => stop());
+  }, [contactUids, householdId]);
+
   const members = useMemo(() => {
     if (!rawMembers) return [];
-    const list = [...rawMembers];
+    const readable = canManageMembers && contacts.householdId === householdId ? contacts.byUid : null;
+    const list = readable ? withContactEmails(rawMembers, readable) : [...rawMembers];
     // Without list access (or before it loads) the caller still sees themselves.
     if (currentMember && !list.some((m) => m.uid === currentMember.uid)) list.push(currentMember);
     return sortMembers(list);
-  }, [currentMember, rawMembers]);
+  }, [canManageMembers, contacts, currentMember, householdId, rawMembers]);
 
   // Stats exist only when all three chore listeners answered for this household and
   // week, and none failed: a failed or pending read is never shown as 0 done / 0 open.

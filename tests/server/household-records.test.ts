@@ -99,6 +99,9 @@ describe('create household', () => {
     assert.equal(owned?.displayName, 'Cora C.');
     assert.equal(owned?.avatarUrl, creator.avatarUrl);
     assert.deepEqual(result.member, owned);
+    // The owner's protected contact document, written in the same transaction.
+    const contact = (await memberRef(creator, id).collection('private').doc('contact').get()).data();
+    assert.deepEqual(contact, { email: creator.email, updatedAt: NOW.toISOString() });
 
     const cache = await profile(creator);
     assert.equal(cache?.householdId, id);
