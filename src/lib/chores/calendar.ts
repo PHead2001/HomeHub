@@ -6,6 +6,8 @@ import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '.
 import { toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { choreOccurrenceKey, recurringChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
+import { occurrenceAssigneeKey, resolveAssigneeUid } from '../../../functions/src/shared/assignee';
+import { publicDisplayName } from '../member-directory';
 import { currentMedications, type MedicationDue as MedicationCountdown } from '../pets/care';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
@@ -37,19 +39,21 @@ export type CalendarEvent = {
   medicationDue?: Pick<MedicationCountdown, 'state' | 'label'>;
 };
 
-export type CalendarMember = { uid: string; email: string; name: string };
+/** `email` only matches chores written before `assignedToUid` existed; it is never shown. */
+export type CalendarMember = { uid: string; name: string; email?: string };
 
 export function choreEvents(chores: readonly ChoreRecord[], members: readonly CalendarMember[], today: string): CalendarEvent[] {
-  const byEmail = new Map(members.map(member => [member.email, member]));
+  const byUid = new Map(members.map(member => [member.uid, member]));
   return chores.flatMap(chore => {
     const day = choreDueKey(chore);
     if (!day) return [];
-    const member = byEmail.get(chore.assignedToEmail);
+    const assignee = resolveAssigneeUid(chore, members);
+    const member = assignee ? byUid.get(assignee) : undefined;
     return [{
       id: `chore:${chore.id}`,
       kind: 'chore' as const,
       title: chore.task,
-      subtitle: member?.name || chore.assignedToDisplayName || chore.assignedToEmail || 'Unassigned',
+      subtitle: member?.name || publicDisplayName(chore.assignedToDisplayName, 'Unassigned'),
       day,
       memberUid: member?.uid,
       overdue: !chore.isCompleted && day < today,
@@ -258,6 +262,7 @@ export type RecurringTemplate = {
   id: string;
   task: string;
   roomIds?: string[];
+  assignedToUid?: string | null;
   assignedToEmail?: string | null;
   recurrence?: (RecurrenceInput & { assignedToEmail?: string }) | null;
 };
@@ -299,7 +304,7 @@ export function plannedRecurringEvents(
   rangeStart: string,
   rangeEnd: string,
 ): CalendarEvent[] {
-  const byEmail = new Map(members.map(member => [member.email, member]));
+  const byUid = new Map(members.map(member => [member.uid, member]));
   const existing = new Set(chores.map(c => c.id));
   // A day already has its chore when any chore holds its occurrence key, whoever
   // it is assigned to now (a completed day stays done after a reassignment).
@@ -311,8 +316,10 @@ export function plannedRecurringEvents(
   const events: CalendarEvent[] = [];
   for (const template of templates) {
     const recurrence = normalizeRecurrence(template.recurrence, today);
-    const assignee = template.assignedToEmail || template.recurrence?.assignedToEmail;
-    const member = assignee ? byEmail.get(assignee) : undefined;
+    // Same assignee rules and occurrence key as the server (functions/src/shared/assignee.ts).
+    const assignee = occurrenceAssigneeKey(template);
+    const assigneeUid = resolveAssigneeUid(template, members);
+    const member = assigneeUid ? byUid.get(assigneeUid) : undefined;
     if (!recurrence || !member || !assignee) continue;
     for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
       if (!occursOn(day, recurrence)) continue;

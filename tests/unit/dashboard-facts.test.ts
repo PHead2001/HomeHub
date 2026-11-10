@@ -443,7 +443,8 @@ describe('Home Wrapped aggregation', () => {
     assert.equal(totals.consistent, true);
     assert.equal(totals.attempts, 2, 'the first, torn snapshot was retried');
     assert.equal(statsReads, 4);
-    const summary = summarizeChores(totals.retained, 2026, { stats: totals.consistent ? totals.stats : undefined, timeZone: 'UTC' });
+    // Names come from member records (never derived from the email).
+    const summary = summarizeChores(totals.retained, 2026, { names: new Map([['sam@example.test', 'Sam Member']]), stats: totals.consistent ? totals.stats : undefined, timeZone: 'UTC' });
     assert.equal(summary.choresDone, 13, 'chore "a" counted once: 11 archived + 2 retained, not 11 + 3');
     assert.equal(summary.champion?.count, 13);
 

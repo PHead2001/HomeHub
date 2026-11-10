@@ -13,6 +13,7 @@
  *   still matches, so an Undo can never revert someone else's later completion.
  */
 import { UNDO_WINDOW_MS } from '../undo-window';
+import { publicDisplayName } from '../member-directory';
 import { addDays, isDayString, localDay, safeTimeZone, toDay, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 
 /** Undo is offered this long after completing. */
@@ -230,12 +231,16 @@ export function planReopen(chore: StoredChore): { kind: 'noop' } | { kind: 'reop
   return chore.isCompleted === true ? { kind: 'reopen' } : { kind: 'noop' };
 }
 
-/** Plain-language name for who completed a chore ("Done by Sam"), or null when not recorded. */
+/**
+ * Plain-language name for who completed a chore ("Done by Sam"), or null when not
+ * recorded: the current member name for `completedByUid`, else the stored name.
+ * Never an email address (HO-9): housemates never see each other's emails.
+ */
 export function completerLabel(
-  chore: Pick<StoredChore, 'completedByName' | 'completedByEmail'>,
-  nameForEmail?: (email: string) => string | undefined,
+  chore: Pick<StoredChore, 'completedByUid' | 'completedByName'>,
+  nameForUid?: (uid: string) => string | undefined,
 ): string | null {
-  const email = str(chore.completedByEmail);
-  const known = email && nameForEmail ? nameForEmail(email) : undefined;
-  return known || str(chore.completedByName) || email;
+  const uid = str(chore.completedByUid);
+  const known = uid && nameForUid ? nameForUid(uid) : undefined;
+  return known || publicDisplayName(chore.completedByName, '') || null;
 }

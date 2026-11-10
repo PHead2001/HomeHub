@@ -493,7 +493,7 @@ export function BentoGrid({
         icon={Flame}
         testId="dashboard-tile-streaks"
         hint={hint('streaks', 'chores')}
-        details={streaks.top.map((entry) => ({ key: entry.email, label: entry.name, value: `${streakDaysLabel(entry.streak)}${entry.activeToday ? '' : ', not yet today'}` }))}
+        details={streaks.top.map((entry) => ({ key: entry.uid, label: entry.name, value: `${streakDaysLabel(entry.streak)}${entry.activeToday ? '' : ', not yet today'}` }))}
       >
         {/* One sentence for screen readers; the ticking number and labels below are visual only. */}
         <span className="sr-only" data-testid="streaks-summary">{streakSummary(streaks)}</span>

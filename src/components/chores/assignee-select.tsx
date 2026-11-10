@@ -1,12 +1,13 @@
 'use client';
 
-import type { User as HomeHubUser } from '@/lib/types';
+import { publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { MemberAvatar } from '@/components/member-avatar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-export const memberName = (user: Pick<HomeHubUser, 'displayName' | 'email'>) => user.displayName || user.email;
+/** A member's name as housemates see it: never their email address. */
+export const memberName = (user: Pick<HouseholdPerson, 'displayName'>) => publicDisplayName(user.displayName);
 
-/** Assignee picker: each member with their avatar. */
+/** Assignee picker: each member with their avatar. Values are member uids. */
 export function AssigneeSelect({
   id,
   users,
@@ -17,9 +18,9 @@ export function AssigneeSelect({
   describedBy,
 }: {
   id: string;
-  users: HomeHubUser[];
+  users: HouseholdPerson[];
   value: string;
-  onChange: (email: string) => void;
+  onChange: (uid: string) => void;
   disabled?: boolean;
   invalid?: boolean;
   describedBy?: string;
@@ -31,9 +32,9 @@ export function AssigneeSelect({
       </SelectTrigger>
       <SelectContent>
         {users.map(user => (
-          <SelectItem key={user.email} value={user.email}>
+          <SelectItem key={user.uid} value={user.uid}>
             <span className="flex items-center gap-2">
-              <MemberAvatar uid={user.uid || user.email} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />
+              <MemberAvatar uid={user.uid} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />
               {memberName(user)}
             </span>
           </SelectItem>

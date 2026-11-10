@@ -76,9 +76,9 @@ describe('computeChoreStats', () => {
     chore({ assignedToEmail: 'alex@example.test', isCompleted: true, completedAt: iso(2026, 8, 8), originalDueDate: key(2026, 8, 8) }),
   ];
   const stats = computeChoreStats(chores, members, now);
-  const sam = stats.members.find(m => m.email === 'sam@example.test')!;
-  const alex = stats.members.find(m => m.email === 'alex@example.test')!;
-  const kid = stats.members.find(m => m.email === 'kid@example.test')!;
+  const sam = stats.members.find(m => m.uid === 'sam')!;
+  const alex = stats.members.find(m => m.uid === 'alex')!;
+  const kid = stats.members.find(m => m.uid === 'kid')!;
 
   it('uses a Monday-Sunday week', () => {
     assert.equal(stats.weekStart, '2026-08-03');
@@ -113,7 +113,7 @@ describe('computeChoreStats', () => {
 
   it('ranks the podium by weekly points', () => {
     const podium = weeklyPodium(stats);
-    assert.equal(podium[0].email, 'sam@example.test');
+    assert.equal(podium[0].uid, 'sam');
     assert.ok(podium.length <= 3);
     assert.ok(podium.every(member => member.weekPoints > 0));
   });
@@ -123,7 +123,7 @@ describe('computeChoreStats', () => {
     assert.equal(nextMonday.weekStart, '2026-08-10');
     assert.ok(nextMonday.members.every(member => member.weekPoints === 0));
     // Sam's last completion was Aug 6 (or the skewed Aug 8 for Alex): streaks have lapsed by Monday.
-    assert.equal(nextMonday.members.find(m => m.email === 'sam@example.test')!.streak, 0);
+    assert.equal(nextMonday.members.find(m => m.uid === 'sam')!.streak, 0);
   });
 
   it('shows the podium on Sundays only', () => {
