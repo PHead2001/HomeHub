@@ -498,15 +498,28 @@ service cloud.firestore {
       return email == null || email == '' || email == request.auth.token.email;
     }
 
+    // The uid assignee written alongside the email (member privacy release A). Without
+    // chores.assign a uid is accepted only when it is verifiably the assignee the email
+    // names: none, the caller's own uid beside the caller's own email, or a member of this
+    // household whose member document carries that email.
+    function choreAssigneeUidMatchesEmail(householdId, uid, email) {
+      return uid == null || uid == '' ||
+        (uid == request.auth.uid && email == request.auth.token.email) ||
+        (email is string && email != '' &&
+          exists(/databases/$(database)/documents/households/$(householdId)/members/$(uid)) &&
+          get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data.get('email', null) == email);
+    }
+
     function validChoreFields(data, keys) {
       return keys.hasOnly([
-          'task', 'notes', 'assignedToEmail', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
+          'task', 'notes', 'assignedToEmail', 'assignedToUid', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
           'roomIds', 'isCompleted', 'completedAt', 'completedAtServer', 'completedSubTasks', 'subTasks',
           'templateId', 'sourceType'
         ]) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
         (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320)) &&
+        (!('assignedToUid' in keys) || optionalString(data.assignedToUid, 128)) &&
         (!('assignedToDisplayName' in keys) || optionalString(data.assignedToDisplayName, 200)) &&
         (!('dueDate' in keys) || boundedString(data.dueDate, 40)) &&
         (!('originalDueDate' in keys) || boundedString(data.originalDueDate, 40)) &&
@@ -523,13 +536,22 @@ service cloud.firestore {
     // Creating a chore for someone else needs chores.assign; chores.create alone
     // covers a chore for yourself or an unassigned one.
     function choreCreateAssignmentAllowed(householdId) {
-      return choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) ||
+      return (choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) &&
+          choreAssigneeUidMatchesEmail(householdId, request.resource.data.get('assignedToUid', null),
+            request.resource.data.get('assignedToEmail', null))) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
     // Any change of a chore's assignee needs chores.assign.
+    // Filling in (or correcting) the uid of the assignee already named by email is not a
+    // reassignment, as long as the uid verifiably belongs to that email; any other change
+    // of the assignee needs chores.assign.
     function choreReassignmentAllowed(householdId) {
-      return request.resource.data.get('assignedToEmail', null) == resource.data.get('assignedToEmail', null) ||
+      let after = request.resource.data;
+      let before = resource.data;
+      return (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) &&
+          (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
+            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
@@ -564,13 +586,14 @@ service cloud.firestore {
     }
 
     function validChoreTemplateFields(data, keys) {
-      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail']) &&
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid']) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
         (!('roomIds' in keys) || boundedList(data.roomIds, 50)) &&
         (!('subTasks' in keys) || boundedList(data.subTasks, 100)) &&
         (!('recurrence' in keys) || validRecurrence(data.recurrence)) &&
-        (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320));
+        (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320)) &&
+        (!('assignedToUid' in keys) || optionalString(data.assignedToUid, 128));
     }
 
     function recurrenceAssignee(data) {
@@ -586,7 +609,9 @@ service cloud.firestore {
           (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) ||
             choreAssigneeIsCallerOrNone(after.get('assignedToEmail', null))) &&
           (recurrenceAssignee(after) == recurrenceAssignee(before) ||
-            choreAssigneeIsCallerOrNone(recurrenceAssignee(after)))
+            choreAssigneeIsCallerOrNone(recurrenceAssignee(after))) &&
+          (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
+            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))
         ) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
