@@ -98,19 +98,32 @@ describe('notification queries filter categories before the cap', () => {
     assert.ok(viewableNotificationCategories(() => false)!.length <= 30);
   });
 
-  test('the category filter is part of the query, before the limit', async () => {
+  test('the audience and category filters are part of the query, before the limit', async () => {
     const { initializeApp } = await import('firebase/app');
     const { collection, getFirestore } = await import('firebase/firestore');
-    const { notificationWindowQuery } = await import('../../src/app/notifications/notification-query');
+    const { notificationWindowQuery, notificationsBySourceQuery } = await import('../../src/app/notifications/notification-query');
     const db = getFirestore(initializeApp({ projectId: 'demo-unit' }, 'notification-query-unit'));
     const ref = collection(db, 'households', 'h', 'notifications');
     // Inspect the query's internal constraints (stable in the firebase JS SDK).
-    const internal = (q: unknown) => (q as { _query: { filters: { field: { toString(): string }; op: string; value: unknown }[]; limit: number | null } })._query;
-    const restricted = internal(notificationWindowQuery(ref, new Date(0), ['chores', 'system', 'general'], 30));
-    assert.deepEqual(restricted.filters.map((f) => [f.field.toString(), f.op]), [['category', 'in'], ['createdAt', '>=']]);
+    type Filter = { field: { toString(): string }; op: string; value: unknown };
+    const internal = (q: unknown) => (q as { _query: { filters: Filter[]; limit: number | null } })._query;
+    const shape = (filters: Filter[]) => filters.map((f) => [f.field.toString(), f.op]);
+    const audienceValues = (filters: Filter[]) => {
+      const value = filters.find((f) => f.field.toString() === 'audience')?.value as { arrayValue?: { values?: { stringValue?: string }[] } };
+      return value?.arrayValue?.values?.map((v) => v.stringValue);
+    };
+    const restricted = internal(notificationWindowQuery(ref, 'uid-1', new Date(0), ['chores', 'system', 'general'], 30));
+    assert.deepEqual(shape(restricted.filters), [['audience', 'array-contains-any'], ['category', 'in'], ['createdAt', '>=']]);
+    assert.deepEqual(audienceValues(restricted.filters), ['uid-1', '*']);
     assert.equal(restricted.limit, 30);
-    const full = internal(notificationWindowQuery(ref, new Date(0), null));
-    assert.deepEqual(full.filters.map((f) => [f.field.toString(), f.op]), [['createdAt', '>=']]);
+    const full = internal(notificationWindowQuery(ref, 'uid-1', new Date(0), null));
+    assert.deepEqual(shape(full.filters), [['audience', 'array-contains-any'], ['createdAt', '>=']]);
     assert.equal(full.limit, null);
+    // Maintenance Center resolvers.
+    const resolver = internal(notificationsBySourceQuery(ref, 'uid-1', ['maintenance_asset_schedule'], ['a:1', 'a-0:overdue']));
+    assert.deepEqual(shape(resolver.filters), [['audience', 'array-contains-any'], ['sourceType', '=='], ['sourceId', 'in']]);
+    assert.deepEqual(audienceValues(resolver.filters), ['uid-1', '*']);
+    const registry = internal(notificationsBySourceQuery(ref, 'uid-1', ['maintenance_asset_schedule', 'maintenance_asset_warranty']));
+    assert.deepEqual(shape(registry.filters), [['audience', 'array-contains-any'], ['sourceType', 'in']]);
   });
 });

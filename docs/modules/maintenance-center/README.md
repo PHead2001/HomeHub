@@ -34,7 +34,7 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 
 ## Architecture and Data Flow
 
-`MaintenanceLogClient` loads four collections together: assets, vehicles, logs, and attachment metadata. It does not query notifications on load; it reads them only when deleting a registry record, to resolve that record's active reminders. Assets and vehicles embed schedule arrays. Reminder cards and server notifications share one builder (`functions/src/shared/maintenance-reminders.ts`) evaluated in the household timezone. Retired assets and retired/sold vehicles produce no reminders; warranties and vehicle documents "expire" rather than become "overdue". Notification documents are created by the server, not by opening this page.
+`MaintenanceLogClient` loads four collections together: assets, vehicles, logs, and attachment metadata. It does not query notifications on load; it reads them only to resolve reminders: when a schedule is completed or snoozed (one `sourceType`, `sourceId` in the schedule id plus its legacy ids) and when a registry record is deleted (the record's source types; the id prefix is matched in the browser). Both queries are audience-constrained (`notificationsBySourceQuery`, `array-contains-any [uid, '*']`); maintenance reminders are household-wide (`['*']`), so every member finds all of them, while a reminder without `audience` (not backfilled) is not found and stays open until it expires. Assets and vehicles embed schedule arrays. Reminder cards and server notifications share one builder (`functions/src/shared/maintenance-reminders.ts`) evaluated in the household timezone. Retired assets and retired/sold vehicles produce no reminders; warranties and vehicle documents "expire" rather than become "overdue". Notification documents are created by the server, not by opening this page.
 
 Completing a schedule creates a routine log and writes the updated embedded schedule. Vehicle completion can also update current mileage. The completion dialog and one-tap Mark done share one implementation (`applyScheduleCompletion`, advancement from `src/lib/maintenance/schedules.ts`).
 
@@ -135,7 +135,7 @@ Shape validation (QA-8): logs, home assets and vehicles may only set the fields 
 - Home Assets layout: the asset card grid uses `content-start`, so cards keep their content height instead of stretching to the selected asset's detail panel, and the page never scrolls sideways (regression-tested at 1009 px in `tests/e2e/navigation-layout.spec.ts`). The attachment Upload control is a label around a plain visually hidden `<input type="file">` with `relative overflow-hidden`; the shared `Input` component is not used there because its `w-full` overrides `sr-only` and widened the page.
 - Asset and vehicle deletion require confirmation and are blocked while direct attachments exist. Embedded schedules/checklists are deleted with the owning registry document.
 - Maintenance summary requests require verified household membership plus `maintenance.view`; provider failures are sanitized and non-destructive.
-- Registry deletion reads current logs and notifications immediately before committing one batch. Linked logs become general history, and active schedule/warranty/registration/inspection notifications for the deleted record are resolved. Unrelated records are unchanged.
+- Registry deletion reads current logs and the record's audience-constrained reminder notifications immediately before committing one batch. Linked logs become general history, and active schedule/warranty/registration/inspection notifications for the deleted record are resolved. Unrelated records are unchanged.
 - Log, attachment, and embedded schedule/checklist removal use target-specific confirmation dialogs; attachment Storage cleanup remains best effort under the existing metadata workflow.
 - Storage is deleted before metadata; a missing object is tolerated.
 - Loading uses one `Promise.all`; one denied/failed collection query moves the entire center to its error state.
@@ -155,3 +155,5 @@ Shape validation (QA-8): logs, home assets and vehicles may only set the fields 
 ## When This Document Must Be Updated
 
 Update this README when asset/vehicle/log/schedule/attachment fields or paths, reminder thresholds or generation, reminder actions, the health score formula, completion advancement, delete cleanup, AI summaries, notification integration, permission enforcement, or maintenance security rules change.
+
+Session restore (release 2.1, SL-11): while the signed-in session is still being restored the page shows its own loading skeleton, never the sign-in prompt; a genuinely signed-out visitor still gets the prompt. The shared gate is described in [Application Shell](../application-shell/README.md).

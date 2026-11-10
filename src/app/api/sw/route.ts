@@ -1,6 +1,7 @@
 
 import { NextResponse } from 'next/server';
 import { safePushLink } from './push-link';
+import { BUILD_MESSAGE, BUILD_QUERY_MESSAGE } from '@/lib/shell/update-check';
 
 // HomeHub's single service worker, served from /api/sw with a root scope.
 //
@@ -18,6 +19,12 @@ import { safePushLink } from './push-link';
 // Bump SHELL_VERSION whenever the caching logic or precache list changes; the
 // activate step deletes caches from older versions.
 const SHELL_VERSION = 'v1';
+
+// The build this worker belongs to (next.config.ts). Embedding it makes every
+// deploy ship a byte-different worker, so browsers install it (and refresh the
+// precached shells) on their next update check; open pages compare it with
+// their own build to offer "HomeHub updated" (src/lib/shell/update-check.ts).
+const BUILD_ID = process.env.NEXT_PUBLIC_HOMEHUB_BUILD_ID || '';
 
 export async function GET() {
   const firebaseConfig = {
@@ -204,7 +211,19 @@ export async function GET() {
           .filter((name) => name.startsWith('homehub-') && !CURRENT_CACHES.includes(name))
           .map((name) => caches.delete(name)));
         await self.clients.claim();
+        // Tell open pages which build is now active (they offer a Reload when newer).
+        const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        windows.forEach((client) => client.postMessage({ type: BUILD_MESSAGE, buildId: BUILD_ID }));
       })());
+    });
+
+    // ---- Build id (update detection) -----------------------------------------
+    const BUILD_ID = ${JSON.stringify(BUILD_ID)};
+    const BUILD_MESSAGE = ${JSON.stringify(BUILD_MESSAGE)};
+    const BUILD_QUERY_MESSAGE = ${JSON.stringify(BUILD_QUERY_MESSAGE)};
+    self.addEventListener('message', (event) => {
+      if (!event.data || event.data.type !== BUILD_QUERY_MESSAGE || !event.source) return;
+      event.source.postMessage({ type: BUILD_MESSAGE, buildId: BUILD_ID });
     });
 
     const offlineFallback = async (pathname) => {

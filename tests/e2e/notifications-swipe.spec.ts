@@ -26,6 +26,7 @@ async function seedNotification(testInfo: TestInfo, label: string) {
     createdAt: Timestamp.fromDate(new Date(fixedNow.getTime() - 60 * 60 * 1000)),
     expiresAt: Timestamp.fromDate(new Date(fixedNow.getTime() + 6 * 24 * 60 * 60 * 1000)),
     deepLink: '/chores',
+    audience: ['*'],
     readBy: {},
     dismissedBy: {},
   });
