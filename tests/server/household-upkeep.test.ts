@@ -5,7 +5,7 @@ import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { parseNotificationDoc } from '../../src/lib/notifications';
 import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
-import { choreStatsAssigneeKey, deterministicNotificationId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, deterministicNotificationId, recurringChoreId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -72,6 +72,33 @@ describe('household upkeep', () => {
     const second = await run(now);
     assert.equal(second.generatedChores, 0);
     assert.equal((await house().collection('chores').get()).size, 30);
+  });
+
+  test('generated chores carry the assignee uid as well as the email, under the ids they always had', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const chore = (await house().collection('chores').doc(recurringChoreId('trash', 'general', '2026-11-05', 'owner@example.test')).get()).data();
+    assert.equal(chore?.assignedToUid, 'o1');
+    assert.equal(chore?.assignedToEmail, 'owner@example.test');
+    assert.equal(chore?.assignedToDisplayName, 'Owner');
+  });
+
+  test('a template assigned by uid only (email no longer known to its writer) still generates', async () => {
+    await house().collection('chore-templates').doc('trash').delete();
+    await house().collection('chore-templates').doc('mop').set({
+      task: 'Mop', assignedToUid: 'o1', assignedToEmail: '', roomIds: ['kitchen'],
+      recurrence: { frequency: 'daily', assignedToEmail: '' },
+    });
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const chore = (await house().collection('chores').doc(recurringChoreId('mop', 'kitchen', '2026-11-05', 'o1')).get()).data();
+    assert.equal(chore?.assignedToUid, 'o1');
+    assert.equal(chore?.assignedToEmail, 'owner@example.test', 'dual-written from the member record while it has the email');
+    // A uid that is not an approved member gets nothing.
+    await house().collection('chore-templates').doc('mop').update({ assignedToUid: 'p1' });
+    await adminDb.recursiveDelete(house().collection('chores'));
+    await run(now);
+    assert.equal((await house().collection('chores').where('task', '==', 'Mop').get()).size, 0);
   });
 
   test('maintenance reminders are created once and refreshed while still overdue', async () => {
