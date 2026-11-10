@@ -147,6 +147,9 @@ export function assembleDashboardFacts(
     facts.streaks = streakTileModel(computeChoreStats(raw.completedChores as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now));
   }
 
+  // HP-11b: the golden roof counts the same completions listener, so it turns gold live.
+  if (access.chores && !failed.has(STREAKS_FAILURE) && raw.completedChores) facts.completedChores = raw.completedChores.length;
+
   // Home health: Maintenance's own score, in the household's time zone.
   if (access.maintenance && !failed.has('maintenance') && !failed.has(HEALTH_FAILURE) && raw.assets && raw.vehicles && raw.logs) {
     facts.health = computeHomeHealth({
