@@ -124,3 +124,5 @@ The homepage AI Overview includes only incomplete chores assigned to the verifie
 ## When This Document Must Be Updated
 
 Update this README when chore/template/room/preference fields or paths, recurrence normalization/generation, assignment/completion, scoring, history retention, reminder timing, member cleanup, permission enforcement, calendar sources, or notification behavior changes.
+
+Completion rules, stage R1 (ahead of the shared completion operation): chore writes may carry `completedByUid`, `completedByEmail`, `completedByName`, `completionId` and `occurrenceKey`, but only the server (Admin SDK) writes the first four; clients can never set, change or remove them, and a client completion is refused while the chore still carries someone's completion attribution. `occurrenceKey` is immutable for clients. Older clients can still toggle `isCompleted` with stamped writes until stage R2.
