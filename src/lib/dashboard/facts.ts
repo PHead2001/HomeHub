@@ -9,6 +9,7 @@ import { relativeDays, toDateValue } from './dates';
 import { choreDueKey, completionInstant, diffDayKeys, type ChoreRecord } from '../chores/dates';
 import { collapseMissedRecurring } from '../chores/list';
 import { daysUntilExpiry } from '../shopping/pantry';
+import { isUsedUpPantryDoc } from '../shopping/pantry-batches';
 import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
 import type { PetProfile } from '../pets/types';
 import type { HealthResult } from '../maintenance/health';
@@ -327,8 +328,13 @@ export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string
   return { activeLists: lists.length, neededItems, firstItems, lists: summary };
 }
 
-/** Pantry facts with the Shopping module's expiry day math (`daysUntilExpiry`). */
-export function computePantryFacts(items: RawDoc[], now: Date): PantryFacts {
+/**
+ * Pantry facts with the Shopping module's expiry day math (`daysUntilExpiry`).
+ * Used-up v2 batches (`packages` 0, still stored until deleted) are not stock and
+ * are left out of every count; legacy documents without `packages` still count.
+ */
+export function computePantryFacts(allItems: RawDoc[], now: Date): PantryFacts {
+  const items = allItems.filter((item) => !isUsedUpPantryDoc(item));
   const dated = items
     .map((item) => ({ item, days: daysUntilExpiry(typeof item.expiryDate === 'string' ? item.expiryDate : null, now) }))
     .filter((entry): entry is { item: RawDoc; days: number } => entry.days !== null);

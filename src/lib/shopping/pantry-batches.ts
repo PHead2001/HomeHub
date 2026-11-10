@@ -120,6 +120,19 @@ export function readPantryBatch(id: string, data: Record<string, unknown> | null
   };
 }
 
+/**
+ * True for a used-up v2 batch (stored `packages` of 0 or less): hidden on the
+ * Inventory tab and kept stored until an online member's idle-delete removes it
+ * (regular members have no `shopping.delete`). Summaries that count stock (the
+ * dashboard's `computePantryFacts`, the AI overview facts) skip it. A legacy
+ * document (no numeric `packages`, the same test as `readPantryBatch`) is never
+ * used up here: it keeps counting as before.
+ */
+export function isUsedUpPantryDoc(data: Record<string, unknown> | null | undefined): boolean {
+  const packages = finiteNumber(data?.packages);
+  return packages !== null && packages <= 0;
+}
+
 /** The `quantity` a v2 write also stores, for older pages: packages for counted units, the package size for measured ones. */
 export function legacyQuantity(batch: Pick<PantryBatch, 'unit' | 'packages' | 'packageSize'>): number {
   if (isCountUnit(batch.unit)) return batch.packages;
@@ -138,6 +151,38 @@ export function findPantryMergeTarget<T extends PantryBatch>(batches: readonly T
   const key = pantryMergeKey(incoming);
   const matches = batches.filter((batch) => pantryMergeKey(batch) === key);
   return matches.find((batch) => batch.packages > 0) ?? matches[0];
+}
+
+export type PantryMergeDecision =
+  /** Add the packages to `target`, the batch as just re-read (inside the transaction). */
+  | { kind: 'merge'; target: PantryBatch }
+  /** Create a separate batch: offline, the target is gone, or its merge key changed. */
+  | { kind: 'create' };
+
+/**
+ * Whether adding stock still merges into the batch the form matched (SH-23a). The
+ * match was made from what was on screen; another member may since have changed
+ * that batch's name, shelf, package size, unit or expiry, or deleted it. Online,
+ * the caller re-reads the target inside a transaction and passes it as `stored`;
+ * the packages merge only while its merge key still equals the incoming one.
+ * Offline nothing can be verified (a queued increment would credit whatever the
+ * batch has become by the time it syncs), so a separate batch is created; two
+ * batches with the same key are shown on one tile anyway.
+ */
+export function decidePantryMerge({
+  offline, targetId, stored, incoming, timeZone,
+}: {
+  offline: boolean;
+  targetId: string;
+  /** The target as read now, or null/undefined when it is missing or could not be read. */
+  stored: Record<string, unknown> | null | undefined;
+  incoming: PantryMergeFields;
+  timeZone?: string | null;
+}): PantryMergeDecision {
+  if (offline || !stored) return { kind: 'create' };
+  const target = readPantryBatch(targetId, stored, timeZone);
+  if (!target.nameKey || pantryMergeKey(target) !== pantryMergeKey(incoming)) return { kind: 'create' };
+  return { kind: 'merge', target };
 }
 
 /** A product on one shelf: the batches of one name in one location, shown as one tile. */
@@ -317,22 +362,40 @@ export function productSummary(product: Pick<PantryProduct, 'batches'>, today: s
     .join(', ');
 }
 
+/** One line of stock sent to the recipe flow. `unit` is free text there (a stored unit, or a pack label). */
+export type RecipeStockItem = { name: string; quantity: number; unit: string };
+
+/** The recipe unit for packages of a measured product whose size is unknown: "packs of unknown size (g)". */
+export const unknownSizeRecipeUnit = (unit: PantryItemUnit, packages: number) =>
+  `${packages === 1 ? 'pack' : 'packs'} of unknown size (${unit})`;
+
 /**
  * Stock a recipe may use (SH-27e): products with packages left whose soonest
- * usable batch has not expired. Expired batches are left out; the amount sent is
- * the package count for counted units and packages × size for measured ones.
+ * usable batch has not expired. Expired batches are left out. Counted units send
+ * the package count; measured units with a known size send packages × size,
+ * summed per unit. A measured batch with no package size has no amount in its
+ * unit, so its packages are sent as their own line ("2 packs of unknown size
+ * (g)") and never added to, or passed off as, grams or litres.
  */
-export function usableRecipeItems(products: readonly PantryProduct[], today: string): { name: string; quantity: number; unit: PantryItemUnit }[] {
-  const items: { name: string; quantity: number; unit: PantryItemUnit }[] = [];
+export function usableRecipeItems(products: readonly PantryProduct[], today: string): RecipeStockItem[] {
+  const items: RecipeStockItem[] = [];
+  const round = (value: number) => Math.min(MAX_PACKAGE_SIZE, Math.round(value * 100) / 100);
   for (const product of products) {
-    const byUnit = new Map<PantryItemUnit, number>();
+    const measured = new Map<PantryItemUnit, number>();
+    const unknownSize = new Map<PantryItemUnit, number>();
     for (const batch of product.batches) {
       if (batch.packages <= 0 || (batch.expiryDate !== null && batch.expiryDate < today)) continue;
-      const amount = isCountUnit(batch.unit) || batch.packageSize === null ? batch.packages : batch.packages * batch.packageSize;
-      byUnit.set(batch.unit, (byUnit.get(batch.unit) ?? 0) + amount);
+      if (!isCountUnit(batch.unit) && batch.packageSize === null) {
+        unknownSize.set(batch.unit, (unknownSize.get(batch.unit) ?? 0) + batch.packages);
+        continue;
+      }
+      const amount = isCountUnit(batch.unit) ? batch.packages : batch.packages * batch.packageSize!;
+      measured.set(batch.unit, (measured.get(batch.unit) ?? 0) + amount);
     }
-    for (const [unit, quantity] of byUnit) {
-      items.push({ name: product.name, quantity: Math.min(MAX_PACKAGE_SIZE, Math.round(quantity * 100) / 100), unit });
+    for (const [unit, quantity] of measured) items.push({ name: product.name, quantity: round(quantity), unit });
+    for (const [unit, packages] of unknownSize) {
+      const quantity = round(packages);
+      items.push({ name: product.name, quantity, unit: unknownSizeRecipeUnit(unit, quantity) });
     }
   }
   return items;

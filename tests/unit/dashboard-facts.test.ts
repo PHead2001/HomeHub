@@ -118,6 +118,22 @@ describe('shopping, pantry, maintenance and pets', () => {
     assert.equal(facts.nearest[0].label, 'expires in 3 days');
   });
 
+  it('leaves used-up v2 batches out and keeps counting legacy documents', () => {
+    const facts = computePantryFacts([
+      { id: 'yogurt', name: 'Greek yogurt', location: 'Fridge', expiryDate: '2026-08-04', packages: 2, schemaVersion: 2 },
+      // Used up (packages 0), still stored until an idle-delete removes it.
+      { id: 'cream', name: 'Cream', location: 'Fridge', expiryDate: '2026-08-02', packages: 0, schemaVersion: 2 },
+      { id: 'old', name: 'Old milk', location: 'Fridge', expiryDate: '2026-07-20', packages: 0, schemaVersion: 2 },
+      // Legacy (no packages field): counted as before, even at quantity 0.
+      { id: 'legacy', name: 'Butter', location: 'Fridge', expiryDate: '2026-08-03', quantity: 0 },
+    ], now);
+    assert.equal(facts.total, 2);
+    assert.equal(facts.fridgeItems, 2);
+    assert.equal(facts.expired, 0);
+    assert.equal(facts.expiringSoon, 2);
+    assert.deepEqual(facts.nearest.map((entry) => entry.name), ['Butter', 'Greek yogurt']);
+  });
+
   it('never calls a warranty overdue and flags HVAC and vehicle service', () => {
     const facts = computeMaintenanceFacts(
       [{

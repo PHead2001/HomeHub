@@ -4,28 +4,9 @@ import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import type { AuthorizedHouseholdUser } from '@/ai/action-auth';
 import { adminDb } from '@/lib/server/firebase-admin';
 import type { HomeOverviewFacts } from '@/ai/overview-types';
-import { redactEmails } from '@/ai/redact';
+import { DAY_MS, dayDistance, label, summarizeOverviewPantry, toDate } from '@/ai/overview-fact-helpers';
 import { isAddressedToMember } from '@functions/shared/notification-audience';
 
-const DAY_MS = 86_400_000;
-// Free-text labels (notification titles, item names) can contain an email
-// address; it is replaced before the facts go to the model.
-const label = (value: unknown, fallback: string) => typeof value === 'string'
-  ? redactEmails(value.trim()).replace(/\s+/g, ' ').slice(0, 100) || fallback
-  : fallback;
-
-const toDate = (value: unknown): Date | null => {
-  if (value instanceof Date) return value;
-  if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
-    return value.toDate();
-  }
-  if (typeof value !== 'string' && typeof value !== 'number') return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-
-const startOfUtcDay = (value: Date) => new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
-const dayDistance = (date: Date, now: Date) => Math.round((startOfUtcDay(date).getTime() - startOfUtcDay(now).getTime()) / DAY_MS);
 const getNow = () => {
   const configured = process.env.HOMEHUB_TEST_NOW;
   const parsed = configured ? new Date(configured) : new Date();
@@ -79,23 +60,7 @@ export const aggregateHomeOverviewFacts = async (user: AuthorizedHouseholdUser):
     };
 
     const pantry = docsData(await household.collection('pantry-inventory').get());
-    const expirations = pantry.map(item => ({ item, date: toDate(item.expiryDate) })).filter(item => item.date);
-    facts.pantry = {
-      totalItems: pantry.length,
-      expired: expirations.filter(item => dayDistance(item.date!, now) < 0).length,
-      expiringWithinSevenDays: expirations.filter(item => {
-        const distance = dayDistance(item.date!, now);
-        return distance >= 0 && distance <= 7;
-      }).length,
-      expiringWithinThirtyDays: expirations.filter(item => {
-        const distance = dayDistance(item.date!, now);
-        return distance >= 0 && distance <= 30;
-      }).length,
-      nearestExpirations: expirations
-        .sort((left, right) => left.date!.getTime() - right.date!.getTime())
-        .slice(0, 5)
-        .map(item => ({ label: label(item.item.name, 'Pantry item'), due: item.date!.toISOString().slice(0, 10) })),
-    };
+    facts.pantry = summarizeOverviewPantry(pantry, now);
 
     facts.barcode = { savedProducts: (await household.collection('barcode-library').count().get()).data().count };
   }

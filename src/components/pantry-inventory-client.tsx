@@ -12,8 +12,8 @@ import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
-import { addToGroceryList, changePackages, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { addToGroceryList, changePackages, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
@@ -475,7 +475,7 @@ function RecipeGeneratorDialog({
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
     /** Usable stock only (SH-27e): products with packages left, expired batches left out. */
-    recipeItems: { name: string; quantity: number; unit: PantryItemUnit }[];
+    recipeItems: RecipeStockItem[];
     householdId: string;
     /**
      * Receives each generated recipe so the shelves can lift the items it uses;
@@ -859,8 +859,12 @@ export function PantryInventoryClient() {
   // Bumped when the tab is hidden: a "Put on a shopping list" still reading the
   // lists then never opens its picker over the other tab.
   const addToListRequestRef = useRef(0);
+  // Bumped too: a used-up tap whose write is still pending then never opens its
+  // "Add to list?" prompt over the other tab.
+  const promptRequestRef = useRef(0);
   const tabActive = useOnTabDeactivate(() => {
     addToListRequestRef.current += 1;
+    promptRequestRef.current += 1;
     setIsItemDialogOpen(false);
     setItemToEdit(null);
     setItemToDelete(null);
@@ -1009,13 +1013,14 @@ export function PantryInventoryClient() {
       toast({ variant: 'destructive', title: 'Nothing to add', description: 'Add at least one package.' });
       return false;
     }
-    // Adding stock that matches a batch exactly (name, shelf, size, unit, expiry) adds to it.
+    // Adding stock that matches a batch exactly (name, shelf, size, unit, expiry) adds to it,
+    // once saveBatch has re-checked that batch online; otherwise it becomes a separate batch.
     const mergeInto = id ? undefined : findPantryMergeTarget(batches, fields);
     try {
-      const saved = await saveBatch(householdId, input, uid, { editId: id, mergeInto }, (error) => toastError(error, `Could not sync ${fields.name}`));
+      const saved = await saveBatch(householdId, input, uid, { editId: id, mergeInto, timeZone }, (error) => toastError(error, `Could not sync ${fields.name}`));
       toast({
-        title: saved === 'queued' ? 'Saved offline' : 'Item Saved',
-        description: mergeInto
+        title: saved.outcome === 'queued' ? 'Saved offline' : 'Item Saved',
+        description: saved.merged
           ? `${pluralize(fields.packages, 'package')} added to ${fields.name}.`
           : `${fields.name} has been saved to your inventory.`,
       });
@@ -1044,17 +1049,21 @@ export function PantryInventoryClient() {
     setAskAdd((current) => (current?.token === token ? null : current));
     const onError = (error: unknown) => toastError(error, `Could not undo ${name}`);
     try {
-      await Promise.all(changes.map(({ batch, delta }) => changePackages(householdId, { ...batch, legacy: false }, -delta, uid, onError)));
+      await changePackagesTogether(householdId, changes.map(({ batch, delta }) => ({ batch: { ...batch, legacy: false }, delta: -delta })), uid, onError);
     } catch (error) {
       onError(error);
     }
   }, [householdId, uid, toastError]);
 
+  // Every change of one tap commits in one write batch (all or nothing); the Undo
+  // and the zero prompt are offered only once it has. A prompt whose write is still
+  // pending when the tab is hidden is dropped (promptRequestRef).
   const applyChanges = async (name: string, changes: PackageChange[], reachedZero: boolean, title: string, description: string) => {
     if (!householdId || !uid || changes.length === 0) return;
     const onError = (error: unknown) => toastError(error, `Could not update ${name}`);
+    const request = promptRequestRef.current;
     try {
-      await Promise.all(changes.map(({ batch, delta }) => changePackages(householdId, batch, delta, uid, onError)));
+      await changePackagesTogether(householdId, changes, uid, onError);
     } catch (error) {
       onError(error);
       return;
@@ -1070,7 +1079,7 @@ export function PantryInventoryClient() {
         </ToastAction>
       ),
     });
-    if (reachedZero) setAskAdd({ name, token });
+    if (reachedZero && request === promptRequestRef.current) setAskAdd({ name, token });
   };
 
   // SH-22a / SH-29a: one package from the soonest-expiring batch, never 1 g of a measured amount.
@@ -1220,7 +1229,7 @@ export function PantryInventoryClient() {
         onOpenChange={(open) => !open && setListPick(null)}
         onItemAdd={(list, itemName, quantity) => void addToList(list, itemName, quantity)}
       />
-      <AlertDialog open={!!askAdd} onOpenChange={(open) => !open && setAskAdd(null)}>
+      <AlertDialog open={tabActive && !!askAdd} onOpenChange={(open) => !open && setAskAdd(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Add {askAdd?.name} to the list?</AlertDialogTitle>

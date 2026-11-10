@@ -25,7 +25,7 @@ import { slugify } from '@/lib/utils';
 import { findMergeTarget } from './items';
 import { mergeIntoNeededItem } from './item-transactions';
 import {
-  isCountUnit, pantryBatchFields, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
+  decidePantryMerge, isCountUnit, pantryBatchFields, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
   type PantryBatch, type PantryBatchInput,
 } from './pantry-batches';
 
@@ -47,22 +47,75 @@ export function changePackages(householdId: string, batch: PantryBatch, delta: n
 }
 
 /**
- * Saves the add/edit form. Editing writes the batch by id. Adding merges into an
- * existing batch with the same merge key (`mergeInto`, found by the caller with
- * `findPantryMergeTarget`) by adding packages, otherwise creates a new batch.
+ * Changes several batches' packages in ONE write batch ("Out of this" across a
+ * product's batches, and its Undo): either every change commits or none does, so
+ * a refused write never leaves part of a product used up with no Undo. Offline
+ * the batch is queued as one unit.
  */
-export function saveBatch(
+export function changePackagesTogether(
+  householdId: string,
+  changes: readonly { batch: PantryBatch; delta: number }[],
+  uid: string,
+  onLateError: (error: unknown) => void,
+) {
+  const batch = writeBatch(db);
+  for (const { batch: entry, delta } of changes) batch.update(doc(pantryCollection(householdId), entry.id), packageChange(entry, delta, uid));
+  return awaitWriteUnlessOffline(batch.commit(), onLateError);
+}
+
+export type SaveBatchResult = {
+  outcome: 'saved' | 'queued';
+  /** The packages were added to the matched batch; false when a new batch was created. */
+  merged: boolean;
+};
+
+const isUnavailable = (error: unknown) =>
+  typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'unavailable';
+
+/**
+ * Saves the add/edit form. Editing writes the batch by id. Adding with a merge
+ * target (`mergeInto`, found by the caller with `findPantryMergeTarget` from what
+ * is on screen) re-reads that batch in a transaction and adds the packages only
+ * while its merge key (name, shelf, package size, unit, expiry) still matches
+ * (`decidePantryMerge`); otherwise, offline, or when the server cannot be reached
+ * to verify it, a separate batch is created instead.
+ */
+export async function saveBatch(
   householdId: string,
   input: PantryBatchInput,
   uid: string,
-  { editId, mergeInto }: { editId?: string; mergeInto?: PantryBatch } = {},
+  { editId, mergeInto, timeZone }: { editId?: string; mergeInto?: PantryBatch; timeZone?: string | null } = {},
   onLateError: (error: unknown) => void = () => undefined,
-) {
+): Promise<SaveBatchResult> {
   const pantry = pantryCollection(householdId);
   const fields = pantryBatchFields(input);
-  if (editId) return awaitWriteUnlessOffline(updateDoc(doc(pantry, editId), { ...fields, ...touched(uid) }), onLateError);
-  if (mergeInto) return changePackages(householdId, mergeInto, fields.packages, uid, onLateError);
-  return awaitWriteUnlessOffline(setDoc(doc(pantry, slugify(fields.name)), { ...fields, addedByUid: uid, ...touched(uid) }), onLateError);
+  const created = () => ({ ...fields, addedByUid: uid, ...touched(uid) });
+  if (editId) {
+    return { outcome: await awaitWriteUnlessOffline(updateDoc(doc(pantry, editId), { ...fields, ...touched(uid) }), onLateError), merged: false };
+  }
+  if (mergeInto && !isBrowserOffline()) {
+    const ref = doc(pantry, mergeInto.id);
+    try {
+      const merged = await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(ref);
+        const decision = decidePantryMerge({
+          offline: false, targetId: mergeInto.id, stored: snapshot.exists() ? snapshot.data() : null, incoming: fields, timeZone,
+        });
+        if (decision.kind === 'merge') {
+          transaction.update(ref, packageChange(decision.target, fields.packages, uid));
+          return true;
+        }
+        transaction.set(doc(pantry, slugify(fields.name)), created());
+        return false;
+      });
+      return { outcome: 'saved', merged };
+    } catch (error) {
+      // Could not reach the server to verify the target (nothing was committed):
+      // fall through and create a separate batch, which queues if need be.
+      if (!isUnavailable(error)) throw error;
+    }
+  }
+  return { outcome: await awaitWriteUnlessOffline(setDoc(doc(pantry, slugify(fields.name)), created()), onLateError), merged: false };
 }
 
 /** Moves every batch of a product to another shelf in one batch write. */

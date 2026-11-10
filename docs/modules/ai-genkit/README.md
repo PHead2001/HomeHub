@@ -27,6 +27,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 - `src/ai/action-auth.ts`
 - `src/ai/household-authority.ts`
 - `src/ai/overview-facts.ts`
+- `src/ai/overview-fact-helpers.ts`
 - `src/ai/overview-types.ts`
 - `src/ai/tasks/*`
 - `src/ai/flows/*`
@@ -34,6 +35,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 - `tests/ai/parse-command.test.ts`
 - `tests/unit/ai-strict-schema.test.ts`
 - `tests/unit/ai-openai-provider.test.ts`
+- `tests/unit/overview-facts.test.ts`
 - `tests/e2e/ai-openai.spec.ts`
 - `tests/e2e/ai-hardening.spec.ts`
 - `scripts/ai/openai-live-smoke.ts`
@@ -46,7 +48,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 
 Each model capability is a plain exported async function under `src/ai/tasks/` (`parseCommandFlow`, `categorizeGroceryItemFlow`, `generateRecipeFlow`, `summarizeMaintenanceLogFlow`, `generateHomeOverviewNarrativeFlow`). Each validates its input with its Zod schema first (a failure is `invalid_input` and no model call happens), then calls `generateStructured`, then validates its final output. Public `"use server"` actions under `src/ai/flows/` verify Firebase identity and permissions before invoking those tasks. `src/ai/structured-generation.ts` sends one Chat Completions request with the shared `HOMEHUB_AI_SYSTEM_INSTRUCTION` as the `system` message and the task instruction plus the bounded household input (inside an untrusted-data delimiter) as the `user` message. It applies per-flow timeouts through an abort signal, `max_completion_tokens` and (overview only) `reasoning_effort`, validates structured output with Zod, and logs only flow/model/duration/outcome metadata. Token usage is returned as `{ inputTokens, outputTokens, totalTokens }`.
 
-The homepage overview first uses Firebase Admin to aggregate a bounded facts object from only collections allowed by the caller's effective permissions. Personal chore facts include only assignments to the verified token email. Notification facts include only documents addressed to the caller: a stored `audience` decides on its own (`isAddressedToMember` in `functions/src/shared/notification-audience.ts`), and only documents without one fall back to the old target fields. Every free-text label in the facts (chore, item, asset and notification titles) has email-like parts replaced (`redactEmails` in `src/ai/redact.ts`) before it reaches the model. Exact metrics are rendered by the client independently of the optional narrative. The model receives no database handle, credentials, member identifiers, raw documents, Home Assistant credentials, arbitrary routes, or data from omitted sections. Overview output section references are filtered against supplied fact keys and route links come from application-owned mappings.
+The homepage overview first uses Firebase Admin to aggregate a bounded facts object from only collections allowed by the caller's effective permissions. Personal chore facts include only assignments to the verified token email. Notification facts include only documents addressed to the caller: a stored `audience` decides on its own (`isAddressedToMember` in `functions/src/shared/notification-audience.ts`), and only documents without one fall back to the old target fields. Pantry facts (`summarizeOverviewPantry` in `src/ai/overview-fact-helpers.ts`, pure and unit tested with the shared `label`, `toDate` and `dayDistance` helpers) leave out used-up Pantry v2 batches (`packages` 0, still stored until deleted; `isUsedUpPantryDoc`) and count legacy documents without `packages` as before. Every free-text label in the facts (chore, item, asset and notification titles) has email-like parts replaced (`redactEmails` in `src/ai/redact.ts`) before it reaches the model. Exact metrics are rendered by the client independently of the optional narrative. The model receives no database handle, credentials, member identifiers, raw documents, Home Assistant credentials, arbitrary routes, or data from omitted sections. Overview output section references are filtered against supplied fact keys and route links come from application-owned mappings.
 
 ### Structured output: strict JSON schema
 

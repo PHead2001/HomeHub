@@ -8,11 +8,13 @@ import {
   chooseUsedUpBatch,
   dayFromPicker,
   daysUntilDay,
+  decidePantryMerge,
   expiryFromChip,
   findPantryMergeTarget,
   groceryListChoice,
   groupPantryBatches,
   householdToday,
+  isUsedUpPantryDoc,
   legacyQuantity,
   msUntilHouseholdMidnight,
   pantryBatchFields,
@@ -181,7 +183,7 @@ describe('tiles group a product and "used one" takes from the soonest batch (SH-
   test('the client wires D-8: Add merges through the list path, Not now adds nothing', () => {
     const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'pantry-inventory-client.tsx'), 'utf8');
     assert.match(client, /<AlertDialogCancel>Not now<\/AlertDialogCancel>/);
-    assert.match(client, /if \(reachedZero\) setAskAdd\(/);
+    assert.match(client, /if \(reachedZero && request === promptRequestRef\.current\) setAskAdd\(/);
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
     assert.match(writes, /findMergeTarget\(needed, name\)/);
     assert.match(writes, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), quantity\)/);
@@ -291,5 +293,93 @@ describe('every v2 update carries the attribution the rules check', () => {
     assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
     assert.match(handoff, /upgradeLegacyBatch\(batch, plan\.add\), \.\.\.stamp\(\)/);
     assert.match(handoff, /quantity: increment\(plan\.add\), \.\.\.stamp\(\)/);
+  });
+});
+
+describe('used-up v2 batches are not stock (PR #129 review)', () => {
+  test('a v2 batch with 0 packages is used up; legacy documents and stocked batches are not', () => {
+    assert.equal(isUsedUpPantryDoc({ name: 'Rice', packages: 0, schemaVersion: 2, quantity: 450, unit: 'g' }), true);
+    assert.equal(isUsedUpPantryDoc({ name: 'Rice', packages: 2, schemaVersion: 2 }), false);
+    // Legacy: no packages field, even with quantity 0, counts as before.
+    assert.equal(isUsedUpPantryDoc({ name: 'Milk', quantity: 0, unit: 'items' }), false);
+    assert.equal(isUsedUpPantryDoc({ name: 'Milk', quantity: 2, unit: 'items' }), false);
+    assert.equal(isUsedUpPantryDoc(undefined), false);
+  });
+});
+
+describe('recipes never turn unknown-size packages into grams (PR #129 review)', () => {
+  const today = '2026-11-10';
+
+  test('2 bags of flour with no size are 2 packs, not 2 g, and are not summed into known-size grams', () => {
+    const products = groupPantryBatches([
+      batch('bags', { name: 'Flour', nameKey: 'flour', packages: 2, packageSize: null }),
+      batch('sized', { name: 'Flour', nameKey: 'flour', packages: 1, packageSize: 1000, expiryDate: '2026-12-01' }),
+    ]);
+    assert.deepEqual(usableRecipeItems(products, today), [
+      { name: 'Flour', quantity: 1000, unit: 'g' },
+      { name: 'Flour', quantity: 2, unit: 'packs of unknown size (g)' },
+    ]);
+  });
+
+  test('one unknown-size pack on its own', () => {
+    const products = groupPantryBatches([batch('milk', { name: 'Milk', nameKey: 'milk', unit: 'L', packages: 1, packageSize: null })]);
+    assert.deepEqual(usableRecipeItems(products, today), [{ name: 'Milk', quantity: 1, unit: 'pack of unknown size (L)' }]);
+  });
+});
+
+describe('adding stock re-checks the merge target (PR #129 review)', () => {
+  const incoming = { nameKey: 'rice', location: 'Pantry' as const, packageSize: 450, unit: 'g' as const, expiryDate: '2026-12-01' };
+  const stored = { name: 'Rice', location: 'Pantry', unit: 'g', packages: 1, packageSize: 450, expiryDate: '2026-12-01', schemaVersion: 2 };
+
+  test('merges while the stored batch still has the same key', () => {
+    const decision = decidePantryMerge({ offline: false, targetId: 'rice-1', stored, incoming, timeZone: CENTRAL });
+    assert.equal(decision.kind, 'merge');
+    assert.equal(decision.kind === 'merge' && decision.target.id, 'rice-1');
+  });
+
+  test('creates a separate batch when another device changed the size, unit, shelf, expiry or name', () => {
+    for (const change of [
+      { packageSize: 1 }, { packageSize: 1, unit: 'kg' }, { location: 'Fridge' }, { expiryDate: '2026-12-02' }, { expiryDate: null }, { name: 'Brown rice' },
+    ]) {
+      const decision = decidePantryMerge({ offline: false, targetId: 'rice-1', stored: { ...stored, ...change }, incoming, timeZone: CENTRAL });
+      assert.equal(decision.kind, 'create', JSON.stringify(change));
+    }
+  });
+
+  test('creates a separate batch when the target is gone, or offline where it cannot be verified', () => {
+    assert.equal(decidePantryMerge({ offline: false, targetId: 'rice-1', stored: null, incoming, timeZone: CENTRAL }).kind, 'create');
+    assert.equal(decidePantryMerge({ offline: true, targetId: 'rice-1', stored, incoming, timeZone: CENTRAL }).kind, 'create');
+  });
+
+  test('saveBatch re-reads the target in a transaction and never queues a blind merge increment', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
+    const save = writes.slice(writes.indexOf('export async function saveBatch'), writes.indexOf('/** Moves every batch'));
+    assert.match(save, /if \(mergeInto && !isBrowserOffline\(\)\)/);
+    assert.match(save, /runTransaction\(db, async \(transaction\) =>/);
+    assert.match(save, /decidePantryMerge\(\{/);
+    assert.doesNotMatch(save, /changePackages\(/);
+  });
+});
+
+describe('"Out of this" and its Undo commit together; late prompts stay off other tabs (PR #129 review)', () => {
+  const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'pantry-inventory-client.tsx'), 'utf8');
+
+  test('the package changes of one tap, and of its Undo, go through one write batch', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
+    const together = writes.slice(writes.indexOf('export function changePackagesTogether'), writes.indexOf('export type SaveBatchResult'));
+    assert.match(together, /const batch = writeBatch\(db\);/);
+    assert.match(together, /batch\.commit\(\)/);
+    const apply = client.slice(client.indexOf('const applyChanges'), client.indexOf('// SH-22a / SH-29a'));
+    assert.match(apply, /await changePackagesTogether\(householdId, changes, uid, onError\);/);
+    assert.doesNotMatch(apply, /Promise\.all/);
+    const undo = client.slice(client.indexOf('const undoChanges'), client.indexOf('const applyChanges'));
+    assert.match(undo, /changePackagesTogether\(/);
+    assert.doesNotMatch(undo, /Promise\.all/);
+  });
+
+  test('hiding the tab drops a pending zero prompt, and the prompt is gated by tabActive', () => {
+    assert.match(client, /useOnTabDeactivate\(\(\) => \{[^}]*promptRequestRef\.current \+= 1;/);
+    assert.match(client, /const request = promptRequestRef\.current;/);
+    assert.match(client, /<AlertDialog open=\{tabActive && !!askAdd\}/);
   });
 });
