@@ -4,7 +4,7 @@
  * are never shown to people.
  */
 import { startOfLocalDay } from './dates';
-import { isNotificationDismissedBy, isNotificationExpired, isNotificationVisibleToUser } from '../notifications';
+import { isNotificationDismissedBy, isNotificationExpired, isNotificationReadBy, isNotificationVisibleToUser } from '../notifications';
 import type { Notification } from '../types';
 import { canSeeCategory, type ViewPermission } from '@functions/shared/push-audience';
 
@@ -30,6 +30,25 @@ export function activeBellNotifications(
     .filter((notification) => !notification.resolvedAt)
     .filter((notification) => !isNotificationDismissedBy(notification, user.uid))
     .slice(0, BELL_LIMIT);
+}
+
+/** The bell's (and the dashboard's) notification window. */
+export const NOTIFICATION_WINDOW_DAYS = 7;
+
+/**
+ * Unread among the bell's active list at `now`: the last {@link NOTIFICATION_WINDOW_DAYS}
+ * days, then {@link activeBellNotifications} (expiry, audience, category, resolved,
+ * dismissed, cap). Recomputed as time passes from the retained documents, so a notice
+ * that expires (or leaves the window) drops out of the count without a new snapshot.
+ */
+export function unreadBellCount(
+  notifications: Notification[],
+  user: { uid: string; email: string; canView?: (permission: ViewPermission) => boolean },
+  now: Date,
+): number {
+  const since = now.getTime() - NOTIFICATION_WINDOW_DAYS * 86_400_000;
+  const recent = notifications.filter((notification) => notification.createdAt.getTime() >= since);
+  return activeBellNotifications(recent, user, now).filter((notification) => !isNotificationReadBy(notification, user.uid)).length;
 }
 
 export type NotificationGroupId = 'today' | 'week' | 'earlier';

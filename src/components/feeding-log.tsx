@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format, parse } from 'date-fns';
-import { CalendarIcon, ChevronDown, PlusCircle, Trash2 } from 'lucide-react';
+import { CalendarIcon, ChevronDown, Loader2, PlusCircle, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -13,7 +13,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { formatPortion, isValidPortion, knownFoodType, loggerName, PORTION_MAX, type FeedingPlan } from '@/lib/pets/care';
+import { formatPortion, isValidPortion, knownFoodType, PORTION_MAX, type FeedingPlan } from '@/lib/pets/care';
+import { authorMayDelete, knownFromLogs } from '@/lib/pets/feed-decision';
+import { undoFeed } from '@/lib/pets/feed-operation';
 import { FOOD_TYPES, PORTION_UNITS, type FoodType, type PetFeedingLog } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { Skeleton } from './ui/skeleton';
@@ -25,7 +27,9 @@ import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { addFeedingLog, deletePetLog, usePetLogs } from './pets/pet-log-api';
+import { usePetLogs } from './pets/pet-log-api';
+import { FeedAgainDialog, useFeedAction } from './pets/use-feed-action';
+import { useNow } from './pets/use-now';
 
 const logSchema = z.object({
   date: z.date(),
@@ -44,6 +48,8 @@ type LogValues = z.infer<typeof logSchema>;
 
 interface FeedingLogProps {
   petId: string;
+  /** For the "Feed again?" question and toasts. */
+  petName?: string;
   /** Planned portion; the form defaults to it (section 3: no more "1" when the plan says 1.5). */
   plan: FeedingPlan;
 }
@@ -61,9 +67,21 @@ function defaults(plan: FeedingPlan, foodType: FoodType = 'Dry'): LogValues {
   };
 }
 
-export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
-  const { currentUser, permissions } = useAuth();
+/** A chosen time within a minute of now is a live feeding, not a backdated one. */
+const BACKDATE_MARGIN_MS = 60_000;
+
+/** `future`: refuse; otherwise the backdated time, or undefined for a live feeding. */
+function backdateFor(chosen: Date | null): { future: true } | { future: false; backdatedAt?: Date } {
+  if (!chosen) return { future: false };
+  const nowMs = Date.now();
+  if (chosen.getTime() > nowMs + BACKDATE_MARGIN_MS) return { future: true };
+  return { future: false, backdatedAt: chosen.getTime() < nowMs - BACKDATE_MARGIN_MS ? chosen : undefined };
+}
+
+export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingLogProps) {
+  const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
+  const now = useNow();
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
@@ -72,6 +90,17 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const lastFoodType = knownFoodType(logs[0]?.foodType);
+  // Every feeding, live or backdated, goes through the shared feed operation.
+  const feeding = useFeedAction(petId, petName, {
+    onFed: () => {
+      playFeedback('complete');
+      setFormOpen(false);
+    },
+    describe: () => {
+      const values = form.getValues();
+      return { title: 'Feeding logged', description: `${formatPortion(values.cups, values.foodAmountType)} of ${values.foodType.toLowerCase()} food.` };
+    },
+  });
 
   const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),
@@ -86,31 +115,31 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
 
   const onSubmit = async (values: LogValues) => {
     if (!householdId || !currentUser) return;
-    const date = useCurrentTime
-      ? new Date()
+    const chosen = useCurrentTime
+      ? null
       : parse(`${format(values.date, 'yyyy-MM-dd')} ${values.time} ${values.ampm}`, 'yyyy-MM-dd hh:mm a', new Date());
-    try {
-      await addFeedingLog(householdId, petId, {
-        amount: values.cups,
-        unit: values.foodAmountType,
-        foodType: values.foodType,
-        comments: values.comments ?? '',
-        date,
-        loggedByUid: currentUser.uid,
-        loggedByName: loggerName(currentUser),
-      });
-      playFeedback('complete');
-      toast({ title: 'Feeding logged', description: `${formatPortion(values.cups, values.foodAmountType)} of ${values.foodType.toLowerCase()} food.` });
-      setFormOpen(false);
-    } catch (submitError) {
-      toastError(submitError, "Couldn't log the feeding");
+    const when = backdateFor(chosen);
+    if (when.future) {
+      form.setError('time', { message: 'Pick a time that has already passed.' });
+      return;
     }
+    // A chosen past time is a backdated entry (its own date, no "Feed again?");
+    // otherwise the feeding is live (server time) and runs the last-fed check.
+    const { backdatedAt } = when;
+    await feeding.run({
+      portion: { amount: values.cups, unit: values.foodAmountType },
+      food: values.foodType,
+      comments: values.comments ?? '',
+      backdatedAt,
+      known: loading || error ? null : knownFromLogs(logs, now, household?.timeZone),
+    });
   };
 
   const deleteLog = async (logId: string) => {
     if (!householdId) return;
     try {
-      await deletePetLog(householdId, petId, 'feeding-logs', logId);
+      // Keeps feeding-state in step (restores the previous feed when this was the latest).
+      await undoFeed({ householdId, petId, logId, timeZone: household?.timeZone, onLateError: (lateError) => toastError(lateError, "Couldn't remove the log") });
       toast({ title: 'Log removed' });
     } catch (deleteError) {
       toastError(deleteError, "Couldn't remove the log");
@@ -119,6 +148,7 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
 
   return (
     <>
+    <FeedAgainDialog action={feeding} petName={petName} />
     <PetLogDeleteAlert
       open={!!logToDelete}
       logType="feeding"
@@ -291,7 +321,9 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
                 )}
               />
               <div className="flex flex-wrap gap-2">
-                <Button type="submit" size="sm" disabled={form.formState.isSubmitting}><PlusCircle className="mr-2 h-4 w-4" /> Save feeding</Button>
+                <Button type="submit" size="sm" disabled={form.formState.isSubmitting || feeding.saving}>
+                  {feeding.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <PlusCircle className="mr-2 h-4 w-4" />} Save feeding
+                </Button>
                 <Button type="button" size="sm" variant="ghost" onClick={() => setFormOpen(false)}>
                   <ChevronDown className="mr-2 h-4 w-4 rotate-180" /> Cancel
                 </Button>
@@ -328,7 +360,8 @@ export function FeedingLogClient({ petId, plan }: FeedingLogProps) {
                   </p>
                   {log.comments && <p className="mt-1 text-muted-foreground">{log.comments}</p>}
                 </div>
-                {canDelete && (
+                {/* pets.deleteLogs, or the author within 10 minutes of logging (PE-2). */}
+                {(canDelete || authorMayDelete(log, currentUser?.uid, now)) && (
                   <Button variant="ghost" size="icon" aria-label={`Delete feeding log from ${when}`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
                     <Trash2 className="h-4 w-4" />
                   </Button>

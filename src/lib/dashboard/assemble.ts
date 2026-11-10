@@ -13,8 +13,10 @@ import { computeChoreStats } from '../chores/stats';
 import type { ChoreRecord } from '../chores/dates';
 import { computeHomeHealth } from '../maintenance/health';
 import type { HomeAsset, MaintenanceLog, Vehicle } from '../types';
-import { localDay, safeTimeZone } from '../../../functions/src/shared/calendar';
-import { dayKey } from './dates';
+import { householdDayZone, householdToday } from '../household-day';
+import type { Notification } from '../types';
+import type { ViewPermission } from '@functions/shared/push-audience';
+import { unreadBellCount } from './notification-display';
 import { mayShowRanking, streakMembersFrom, streakTileModel } from './streaks';
 import {
   computeChoreFacts,
@@ -50,7 +52,8 @@ export type DashboardRaw = {
   pets?: RawDoc[];
   /** Recent feedings per pet and date shape; a missing shape has not answered yet. */
   feedings?: Record<string, Partial<Record<FeedingShape, RawDoc[]>>>;
-  unread?: number;
+  /** The notification window's documents, merged with `deduplicateNotifications` (counted at `now`). */
+  notifications?: Notification[];
   /** Completed chores (every retained completion), for streaks. */
   completedChores?: RawDoc[];
   /**
@@ -79,9 +82,20 @@ export function assembleDashboardFacts(
   raw: DashboardRaw,
   failed: ReadonlySet<string>,
   access: DashboardAccess,
-  context: { viewer: DashboardViewer; now: Date; timeZone?: string | null; recentFeedings: number },
+  context: {
+    viewer: DashboardViewer;
+    now: Date;
+    timeZone?: string | null;
+    recentFeedings: number;
+    /** The member's view permissions, for the bell's category check (none: every category). */
+    canView?: (permission: ViewPermission) => boolean;
+  },
 ): { facts: DashboardFacts; loading: boolean } {
   const facts: DashboardFacts = {};
+  // D-6: one household day for chores, maintenance and home health (device zone only
+  // when the household has none).
+  const zone = householdDayZone(context.timeZone);
+  const today = householdToday(zone, context.now);
   const unavailable: DashboardSection[] = [];
   let loading = false;
   const section = (name: DashboardSection, ready: boolean, build: () => void) => {
@@ -96,7 +110,7 @@ export function assembleDashboardFacts(
     // (computeChoreFacts then reads its completion with `completionInstant`).
     const merged = new Map<string, RawDoc>();
     [...raw.openChores!, ...raw.todayChores!, ...raw.doneToday!, ...raw.doneTodayServer!].forEach((chore) => merged.set(chore.id, chore));
-    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, dayKey(context.now)));
+    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone);
   });
 
   const listsReady = Boolean(raw.lists && raw.lists.every((list) => raw.items?.[list.id] !== undefined));
@@ -109,7 +123,7 @@ export function assembleDashboardFacts(
   });
 
   section('maintenance', Boolean(raw.assets && raw.vehicles), () => {
-    facts.maintenance = computeMaintenanceFacts(raw.assets!, raw.vehicles!, context.now, context.timeZone);
+    facts.maintenance = computeMaintenanceFacts(raw.assets!, raw.vehicles!, context.now, zone);
   });
 
   section('pets', raw.pets !== undefined, () => {
@@ -135,18 +149,19 @@ export function assembleDashboardFacts(
 
   // Home health: Maintenance's own score, in the household's time zone.
   if (access.maintenance && !failed.has('maintenance') && !failed.has(HEALTH_FAILURE) && raw.assets && raw.vehicles && raw.logs) {
-    const timeZone = safeTimeZone(context.timeZone);
     facts.health = computeHomeHealth({
       assets: raw.assets as unknown as HomeAsset[],
       vehicles: raw.vehicles as unknown as Vehicle[],
       logs: raw.logs as unknown as MaintenanceLog[],
-      today: localDay(context.now, timeZone),
-      timeZone,
+      today,
+      timeZone: zone,
     }).overall;
   }
 
-  section('notifications', raw.unread !== undefined, () => {
-    facts.notifications = { unread: raw.unread! };
+  // Counted here from the documents at `now` (expiry and the 7-day window move with time),
+  // exactly as the bell counts them, never a number frozen at the last snapshot.
+  section('notifications', raw.notifications !== undefined, () => {
+    facts.notifications = { unread: unreadBellCount(raw.notifications!, { ...context.viewer, canView: context.canView }, context.now) };
   });
 
   if (unavailable.length > 0) facts.unavailable = unavailable;
