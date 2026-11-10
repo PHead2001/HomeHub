@@ -62,7 +62,8 @@ const QUICK_ACTIONS: QuickAction[] = [
 ];
 
 const LONG_PRESS_MS = 500;
-const FAN_RADIUS = 84;
+// In rem, like the fan buttons, so the fan keeps its spacing at every text size.
+const FAN_RADIUS_REM = 5.25;
 
 const isActive = isActiveRoute;
 
@@ -120,7 +121,7 @@ function QuickAddFab({ actions }: { actions: QuickAction[] }) {
   // Fan across the upper half-circle, evenly spaced, left to right.
   const positions = actions.map((_, index) => {
     const angle = Math.PI * (count === 1 ? 0.5 : 0.1 + (0.8 * index) / (count - 1));
-    return { x: -Math.cos(angle) * FAN_RADIUS, y: -Math.sin(angle) * FAN_RADIUS };
+    return { x: -Math.cos(angle) * FAN_RADIUS_REM, y: -Math.sin(angle) * FAN_RADIUS_REM };
   });
 
   return (
@@ -145,10 +146,10 @@ function QuickAddFab({ actions }: { actions: QuickAction[] }) {
               aria-label={action.label}
               tabIndex={open ? 0 : -1}
               onClick={() => run(action)}
-              className={cn(styles.fanItem, 'absolute left-0 top-0 flex h-14 w-14 flex-col items-center justify-center gap-0.5 rounded-full border bg-popover text-[10px] font-medium text-popover-foreground shadow-overlay')}
+              className={cn(styles.fanItem, 'absolute left-0 top-0 flex h-14 w-14 flex-col items-center justify-center gap-0.5 rounded-full border bg-popover text-[0.625rem] font-medium text-popover-foreground shadow-overlay')}
               style={{
                 transform: open
-                  ? `translate(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px))`
+                  ? `translate(calc(-50% + ${x.toFixed(3)}rem), calc(-50% + ${y.toFixed(3)}rem))`
                   : 'translate(-50%, -50%) scale(0.4)',
                 opacity: open ? 1 : 0,
                 transitionDelay: open && !reduced ? `${index * 30}ms` : undefined,
@@ -203,7 +204,7 @@ export function MobileTabBar() {
   const moreActive = more.some((item) => isActive(pathname, item.href));
 
   const tabClass = (active: boolean) => cn(
-    'flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg py-1.5 text-[11px] font-medium transition-colors',
+    'flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg py-1.5 text-[0.6875rem] font-medium transition-colors',
     active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
   );
 

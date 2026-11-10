@@ -30,6 +30,16 @@
       0 8px 24px -6px hsl(var(--shadow) / var(--shadow-opacity)),
       0 24px 48px -12px hsl(var(--shadow) / calc(var(--shadow-opacity) * 0.8));
 
+    /* Minimum touch target (D-2): 44 px, 48 px on coarse (touch) pointers. In rem,
+       so it grows with the per-device text size. Read by `.hit-slop` and used as the
+       height of inputs, select triggers and default buttons and the min height of
+       menu items (`h-[var(--target-min)]`: a caller's own `h-*` replaces it cleanly). */
+    --target-min: 2.75rem;
+
+    /* Tallest a dialog may be: the dynamic viewport (shrinks with mobile browser
+       chrome) minus the notch/home-indicator safe areas and a 1 rem margin each side. */
+    --dialog-max-h: calc(100vh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+
     /* One focus-visible ring for every interactive element. */
     --focus-ring-width: 2px;
     --focus-ring-offset: 2px;
@@ -43,6 +53,28 @@
     --ease-exit: cubic-bezier(0.4, 0, 1, 1);
     /* Generated with motion's spring(0.25, 0.2); kept in sync by tests/unit/motion-tokens.test.ts. */
     --ease-spring: linear(0, 0.1504, 0.421, 0.6644, 0.8358, 0.9381, 0.9898, 1.0106, 1.0152, 1.0129, 1.0088, 1.0051, 1.0025, 1.0009, 1.0002, 1, 1);
+  }
+
+  @supports (height: 100dvh) {
+    :root {
+      --dialog-max-h: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    }
+  }
+
+  @media (pointer: coarse) {
+    :root {
+      --target-min: 3rem;
+    }
+  }
+
+  /* Per-device text size (Profile > Appearance, D-4): the pre-paint script sets
+     data-text-scale on <html>; every rem-based size (text, spacing, control
+     heights) scales with it. Percentages keep the browser's own font setting. */
+  :root[data-text-scale='115'] {
+    font-size: 115%;
+  }
+  :root[data-text-scale='130'] {
+    font-size: 130%;
   }
 
   * {
@@ -189,6 +221,20 @@
 }
 
 @layer utilities {
+  /* Invisible hit area of at least --target-min around a small control (D-2), so
+     icon buttons, checkboxes and switches stay visually compact. Needs a positioned
+     element (the primitives add `relative`). The focus ring is the element's own
+     outline, so it still hugs the visible control. */
+  .hit-slop::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, var(--target-min));
+    height: max(100%, var(--target-min));
+    transform: translate(-50%, -50%);
+  }
+
   /* The one scoped transition for interactive UI (replaces `transition-all`). */
   .transition-ui {
     transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity,

@@ -10,6 +10,7 @@ import {
   DEFAULT_APPEARANCE,
   appearanceFromProfile,
   applyPresetToDocument,
+  applyTextScaleToDocument,
   parseAppearance,
   profileAppearance,
   resolvePresetId,
@@ -217,6 +218,11 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     if (reducedMotion) root.setAttribute('data-motion', 'reduce');
     else root.removeAttribute('data-motion');
   }, [reducedMotion, hydrated]);
+
+  // Text size is device-local (never synced); the pre-paint script set it for first paint.
+  useEffect(() => {
+    if (hydrated) applyTextScaleToDocument(preferences.textScale);
+  }, [preferences.textScale, hydrated]);
 
   useEffect(() => {
     configureFeedback({ sound: preferences.sound, haptics: preferences.haptics });
