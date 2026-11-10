@@ -226,3 +226,14 @@ export function withoutIds<T extends { id: string }>(items: readonly T[], ids: I
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+/**
+ * The document an Undo-after-delete writes back: the item exactly as it was read,
+ * keeping its original `addedByUid`, plus `restoredByUid` naming the signed-in
+ * member who restored it (the rules accept another member's `addedByUid` on a
+ * create only together with the writer's own `restoredByUid`). Without a signed-in
+ * uid the snapshot is returned unchanged.
+ */
+export function restoreItemData<T extends object>(snapshot: T, restorerUid: string | null | undefined): T & { restoredByUid?: string } {
+  return restorerUid ? { ...snapshot, restoredByUid: restorerUid } : { ...snapshot };
+}

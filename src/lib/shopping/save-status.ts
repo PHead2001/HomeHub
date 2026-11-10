@@ -186,3 +186,26 @@ export function offlineTickNote(storedLocally: boolean): string {
     ? 'You are offline. Ticks are saved on this device and sync when you reconnect.'
     : 'You are offline. Ticks sync when you reconnect; keep HomeHub open until then.';
 }
+
+/**
+ * What a tick does after its write was tracked: report a failure, run the
+ * trip-completion check now (acknowledged in time), or wait for the late answer.
+ */
+export function tickFollowUp(state: SaveState): 'fail' | 'check-now' | 'check-after-settle' {
+  if (state === 'failed') return 'fail';
+  return state === 'saved' ? 'check-now' : 'check-after-settle';
+}
+
+/** A tick's late answer: a rejection is reported; an acknowledgement still runs the completion check. */
+export function settledTickFollowUp(final: SettledState): 'fail' | 'check' {
+  return final === 'failed' ? 'fail' : 'check';
+}
+
+/** Wraps `run` so it executes at most once; later calls return the first call's promise. */
+export function once<T>(run: () => Promise<T>): () => Promise<T> {
+  let first: Promise<T> | null = null;
+  return () => {
+    first ??= run();
+    return first;
+  };
+}

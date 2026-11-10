@@ -45,7 +45,7 @@ import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
-import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, unconfirmedShoppingMessage, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote } from '@/lib/dashboard/quick-add-writes';
 import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker, type IndexSection } from '@/lib/dashboard/quick-add-preview';
@@ -126,6 +126,10 @@ export function CommandPalette({
   const [pending, setPending] = useState<QuickAddIntent | null>(null);
   const [saving, setSaving] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
+  // Shopping entries saved but not confirmed yet ("Still sending…"): the preview
+  // keeps them (retry state) and Confirm waits until they settle.
+  const [unconfirmedMessage, setUnconfirmedMessage] = useState<string | null>(null);
+  const unconfirmedTokenRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const optionId = (i: number) => `${listId}-option-${i}`;
@@ -323,11 +327,42 @@ export function CommandPalette({
     setSaving(true);
     try {
       if (pending.kind === 'shopping' && pending.list) {
-        const outcome = await addShoppingItems(householdId, pending.list, pending.items, lateError);
+        const list = pending.list;
+        const outcome = await addShoppingItems(householdId, list, pending.items, lateError);
         if (outcome.saved.length > 0) {
-          notifyDataChanged({ module: 'shopping', householdId, listId: pending.list.id });
-          toast({ title: outcome.queued ? 'Saved offline' : 'Added to the list', description: `${outcome.saved.map((item) => item.name).join(', ')} on ${pending.list.name}.` });
+          notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
+          // Only a durable local copy may say "saved on this device".
+          toast({ title: outcome.queued ? 'Saved, will sync' : 'Added to the list', description: outcome.queued
+            ? `${outcome.saved.map((item) => item.name).join(', ')} saved on this device for ${list.name}; syncs when the connection is back.`
+            : `${outcome.saved.map((item) => item.name).join(', ')} on ${list.name}.` });
           playFeedback('add');
+        }
+        if (outcome.unconfirmed.length > 0) {
+          // Not confirmed: keep them (and any failures) in the preview, say so, and
+          // decide when they settle. Closing the palette meanwhile drops nothing:
+          // a late failure is still reported through lateError.
+          unconfirmedTokenRef.current += 1;
+          const token = unconfirmedTokenRef.current;
+          setPending({ ...pending, items: [...outcome.unconfirmed, ...outcome.failed] });
+          setUnconfirmedMessage(unconfirmedShoppingMessage(outcome));
+          setRetryMessage(outcome.failed.length > 0 ? `${quickAddRetryMessage(outcome.failed)} ${friendlyError(outcome.firstError)}` : null);
+          void outcome.settled.then(({ failed: lateFailed }) => {
+            if (unconfirmedTokenRef.current !== token) return;
+            setUnconfirmedMessage(null);
+            const confirmed = outcome.unconfirmed.filter((entry) => !lateFailed.includes(entry));
+            if (confirmed.length > 0) {
+              notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
+              toast({ title: 'Added to the list', description: `${confirmed.map((item) => item.name).join(', ')} on ${list.name}.` });
+            }
+            const remaining = [...lateFailed, ...outcome.failed];
+            if (remaining.length === 0) {
+              close();
+              return;
+            }
+            setPending((current) => current && current.kind === 'shopping' ? { ...current, items: remaining } : current);
+            setRetryMessage(quickAddRetryMessage(remaining));
+          });
+          return;
         }
         if (outcome.failed.length > 0) {
           // Keep only what failed, so Confirm retries those and never re-adds the saved ones.
@@ -459,9 +494,12 @@ export function CommandPalette({
             vehicles={index.vehicles}
             assets={index.assets}
             fromAi={pendingFromAi}
-            saving={saving}
+            saving={saving || unconfirmedMessage !== null}
             message={retryMessage}
+            status={unconfirmedMessage}
             onBack={() => {
+              unconfirmedTokenRef.current += 1;
+              setUnconfirmedMessage(null);
               invalidateAi();
               setPending(null);
               setPendingFromAi(false);
@@ -565,6 +603,7 @@ function QuickAddPreview({
   fromAi,
   saving,
   message,
+  status,
   onBack,
   onConfirm,
 }: {
@@ -585,6 +624,8 @@ function QuickAddPreview({
   saving: boolean;
   /** Inline note after a partial save: which entries are left to retry. */
   message?: string | null;
+  /** Entries saved but not confirmed yet ("Still sending…"); Confirm waits for them. */
+  status?: string | null;
   onBack: () => void;
   onConfirm: (choices: PreviewChoices) => void;
 }) {
@@ -703,6 +744,7 @@ function QuickAddPreview({
         <p className="mt-3 text-sm text-muted-foreground">No vehicles yet, so this is a general log with the reading in its notes.</p>
       )}
       {note && <p className="mt-3 text-sm text-warning" data-testid="quick-add-mileage-note">{note}</p>}
+      {status && <p role="status" className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-unconfirmed">{status}</p>}
       {message && <p role="alert" className="mt-3 text-sm text-destructive" data-testid="quick-add-retry">{message}</p>}
       <div className="mt-4 flex justify-between gap-2">
         <Button type="button" variant="ghost" onClick={onBack} disabled={saving}>

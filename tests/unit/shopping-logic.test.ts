@@ -18,6 +18,7 @@ import {
   canMergeInto,
   isStillPurchased,
   isTripComplete,
+  restoreItemData,
 } from '../../src/lib/shopping/items';
 import {
   daysUntilExpiry,
@@ -481,4 +482,16 @@ describe('shopping UI uses tokens only (D14)', () => {
       assert.doesNotMatch(source, /style=\{\{\s*(?:color|backgroundColor):\s*\w*\.?color/, 'stored list color as inline style');
     });
   }
+});
+
+describe('undo after delete keeps attribution', () => {
+  test('the restore keeps addedByUid and names the restorer', () => {
+    const snapshot = { name: 'Milk', quantity: 1, status: 'needed', addedByUid: 'sam' };
+    assert.deepEqual(restoreItemData(snapshot, 'alex'), { ...snapshot, restoredByUid: 'alex' });
+    assert.deepEqual(restoreItemData(snapshot, 'sam'), { ...snapshot, restoredByUid: 'sam' });
+    const legacy = { name: 'Eggs', quantity: 2, status: 'needed' };
+    assert.deepEqual(restoreItemData(legacy, 'alex'), { ...legacy, restoredByUid: 'alex' });
+    assert.deepEqual(restoreItemData(snapshot, null), snapshot);
+    assert.notEqual(restoreItemData(snapshot, null), snapshot, 'a copy, never the cached object');
+  });
 });

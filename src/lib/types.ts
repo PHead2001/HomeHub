@@ -104,6 +104,8 @@ export type ShoppingListItem = {
   nameKey?: string;
   /** Who added the item (the signed-in uid at creation; immutable). Shown on rows from S3. */
   addedByUid?: string;
+  /** Who restored the item with Undo after a delete (the writer of that re-create); `addedByUid` stays the original adder. */
+  restoredByUid?: string;
   /** Where `category` came from (QA-6): manual, remembered, local, ai, fallback or pending. */
   categorySource?: 'manual' | 'remembered' | 'local' | 'ai' | 'fallback' | 'pending';
   /** Package size of a scanned product ("450" of 450 g); never the quantity (BL-1). */

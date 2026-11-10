@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, unconfirmedShoppingMessage, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { isComposingKey, matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
@@ -156,18 +156,36 @@ describe('shopping quick-add outcomes', () => {
     const entries = [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 2 }, { name: 'Bread', quantity: 1 }];
     const error = new Error('offline');
     const outcome = shoppingAddOutcome(entries, [
-      { status: 'fulfilled', value: 'saved' },
-      { status: 'rejected', reason: error },
-      { status: 'fulfilled', value: 'queued' },
+      { state: 'saved' },
+      { state: 'failed', error },
+      { state: 'stored-locally' },
     ]);
     assert.deepEqual(outcome.saved.map((entry) => entry.name), ['Milk', 'Bread']);
     assert.deepEqual(outcome.failed, [{ name: 'Eggs', quantity: 2 }]);
-    assert.equal(outcome.queued, true);
+    assert.deepEqual(outcome.unconfirmed, []);
+    assert.equal(outcome.unconfirmedLabel, null);
+    assert.equal(outcome.queued, true, 'only stored-locally counts as saved on this device');
     assert.equal(outcome.firstError, error);
     assert.equal(quickAddRetryMessage(outcome.failed), "Couldn't add Eggs. It is still here; press Confirm to try again.");
     assert.equal(quickAddRetryMessage([]), null);
-    const allSaved = shoppingAddOutcome(entries.slice(0, 1), [{ status: 'fulfilled', value: 'saved' }]);
-    assert.deepEqual(allSaved, { saved: [entries[0]], failed: [], queued: false });
+    const allSaved = shoppingAddOutcome(entries.slice(0, 1), [{ state: 'saved' }]);
+    assert.deepEqual(allSaved, { saved: [entries[0]], failed: [], unconfirmed: [], unconfirmedLabel: null, queued: false });
+  });
+
+  it('keeps sending and uncertain entries unconfirmed, never "saved on this device"', () => {
+    const entries = [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 2 }, { name: 'Bread', quantity: 1 }];
+    const sending = shoppingAddOutcome(entries, [{ state: 'sending' }, { state: 'saved' }, { state: 'sending' }]);
+    assert.deepEqual(sending.saved, [entries[1]]);
+    assert.deepEqual(sending.unconfirmed, [entries[0], entries[2]]);
+    assert.equal(sending.unconfirmedLabel, 'Still sending…');
+    assert.equal(sending.queued, false);
+    assert.equal('firstError' in sending, false);
+    assert.match(unconfirmedShoppingMessage(sending)!, /^Still sending… Milk, Bread not confirmed yet/);
+
+    const checking = shoppingAddOutcome(entries.slice(0, 2), [{ state: 'uncertain' }, { state: 'sending' }]);
+    assert.equal(checking.unconfirmedLabel, 'Checking…', 'an unanswered merge transaction is not queued');
+    assert.equal(checking.queued, false);
+    assert.equal(unconfirmedShoppingMessage(shoppingAddOutcome(entries.slice(0, 1), [{ state: 'saved' }])), null);
   });
 });
 

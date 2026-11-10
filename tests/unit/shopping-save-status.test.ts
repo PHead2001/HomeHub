@@ -7,6 +7,9 @@ import {
   isPendingState,
   isSettledForInput,
   offlineTickNote,
+  once,
+  settledTickFollowUp,
+  tickFollowUp,
   saveStateLabel,
   summarizeStates,
   trackWrite,
@@ -201,5 +204,41 @@ describe('submission guard (SH-4c)', () => {
     assert.equal(guard.busy, false);
     assert.equal(guard.begin('a'), false, 'the same submission is never sent twice');
     assert.equal(guard.begin('b'), true);
+  });
+});
+
+describe('tick follow-up on a weak connection', () => {
+  test('a tick acknowledged in time checks trip completion now; a late one checks after it settles', () => {
+    assert.equal(tickFollowUp('saved'), 'check-now');
+    assert.equal(tickFollowUp('failed'), 'fail');
+    for (const state of ['sending', 'stored-locally', 'uncertain'] as const) assert.equal(tickFollowUp(state), 'check-after-settle');
+    assert.equal(settledTickFollowUp('saved'), 'check', 'a late success still opens the receipt');
+    assert.equal(settledTickFollowUp('failed'), 'fail');
+  });
+
+  test('the completion check runs once, however often it is asked for', async () => {
+    let runs = 0;
+    const check = once(async () => { runs += 1; return runs; });
+    const [a, b] = await Promise.all([check(), check()]);
+    assert.equal(await check(), 1);
+    assert.deepEqual([a, b, runs], [1, 1, 1]);
+  });
+
+  test('a tick that exceeds the timeout and then succeeds leads to exactly one completion check', async () => {
+    const write = deferred<void>();
+    const { deps: d, timer } = deps({ persistence: 'memory' });
+    let checks = 0;
+    const check = once(async () => { checks += 1; });
+    const pending = trackWrite(write.promise, d);
+    await flush();
+    timer.fire();
+    const tracked = await pending;
+    assert.equal(tickFollowUp(tracked.state), 'check-after-settle');
+    const late = tracked.settled.then((final) => (settledTickFollowUp(final.state) === 'check' ? check() : undefined));
+    assert.equal(checks, 0, 'nothing is decided before the answer');
+    write.resolve();
+    await late;
+    await check();
+    assert.equal(checks, 1);
   });
 });

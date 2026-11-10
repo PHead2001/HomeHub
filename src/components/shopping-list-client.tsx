@@ -36,9 +36,9 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
-import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, saveStateLabel, summarizeStates, trackWrite } from '@/lib/shopping/save-status';
+import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
-import { groupItemsByAisle, normalizeItemName, pluralize, type QuickAddEntry } from '@/lib/shopping/items';
+import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
 import { isListLinkMissing, isOpenListDeleted } from '@/lib/shopping/live-state';
 import { deleteShoppingList } from '@/app/shopping/actions';
@@ -629,24 +629,31 @@ export function ShoppingListClient({
         persistence: getLocalPersistence,
         offline: isBrowserOffline,
       });
-      if (tracked.state === 'failed') {
+      // Online, "trip complete" is decided by the server (another member may have
+      // added an item a moment ago): one count query, not a re-read of the list.
+      // It runs once the tick is acknowledged, also when that happens after the
+      // timeout on a weak connection (never twice: `once`).
+      const checkTripComplete = once(async () => {
+        if (!isCheckingOff || !isListOpen()) return;
+        const stillNeeded = await countNeededOnServer(householdId, list.id).catch(() => null);
+        if (stillNeeded === 0 && isListOpen()) {
+          playFeedback('celebrate');
+          setIsReceiptOpen(true);
+        }
+      });
+      const plan = tickFollowUp(tracked.state);
+      if (plan === 'fail') {
         failToggle();
         return;
       }
-      if (tracked.state !== 'saved') {
+      if (plan === 'check-after-settle') {
         void tracked.settled.then((final) => {
-          if (final.state === 'failed') failToggle();
+          if (settledTickFollowUp(final.state) === 'fail') failToggle();
+          else void checkTripComplete();
         });
         return;
       }
-      // Online, "trip complete" is decided by the server (another member may have
-      // added an item a moment ago): one count query, not a re-read of the list.
-      if (!isCheckingOff || !isListOpen()) return;
-      const stillNeeded = await countNeededOnServer(householdId, list.id).catch(() => null);
-      if (stillNeeded === 0 && isListOpen()) {
-        playFeedback('celebrate');
-        setIsReceiptOpen(true);
-      }
+      await checkTripComplete();
   };
 
   // Whether the durable cache already shows a tick queued offline.
@@ -697,11 +704,10 @@ export function ShoppingListClient({
     }
     const { id: _id, ...snapshot } = item;
     void _id;
-    // The restore re-creates the item, and the rules accept `addedByUid` on a create
-    // only as the writer's own uid: someone else's attribution is dropped until the
-    // restore precondition (restoreOpId) lands in S3.
-    const { addedByUid, ...rest } = snapshot;
-    const data = addedByUid && addedByUid === currentUser?.uid ? snapshot : rest;
+    // The restore re-creates the item as it was, keeping who added it, and names the
+    // restorer in `restoredByUid` (the rules accept another member's `addedByUid`
+    // on a create only as a restore by the writer; see rules PR 121).
+    const data = restoreItemData(snapshot, currentUser?.uid);
     toast({
       title: `${item.name} removed`,
       duration: 5000,

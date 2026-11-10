@@ -10,7 +10,7 @@
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
 import { knownFoodType, newestFirst, parsePortion } from '../pets/care';
 import type { FoodType, PortionUnit } from '../pets/types';
-import { parseQuickAdd as parseShoppingEntries, splitSettled, type QuickAddEntry } from '../shopping/items';
+import { parseQuickAdd as parseShoppingEntries, type QuickAddEntry } from '../shopping/items';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Matches `value` only as whole words (a letter or digit on either side does not count). */
@@ -538,27 +538,54 @@ export function resolveChoreAssignee(
   return { assignee: fallback, restricted: Boolean(requested && fallback && requested.email !== fallback.email) };
 }
 
+/** Shopping's save states (src/lib/shopping/save-status.ts), repeated here so this module stays Firebase-free. */
+export type ShoppingEntryState = 'saved' | 'stored-locally' | 'sending' | 'uncertain' | 'failed';
+
 export type ShoppingAddOutcome = {
+  /** Confirmed: the server answered, or the durable cache on this device holds them. */
   saved: QuickAddEntry[];
   failed: QuickAddEntry[];
-  /** True when at least one saved entry is only queued (offline). */
+  /**
+   * Not confirmed yet (`sending`: queued but not known to survive a reload;
+   * `uncertain`: a merge transaction with no answer). They stay in the palette's
+   * retry state until they settle.
+   */
+  unconfirmed: QuickAddEntry[];
+  /** "Checking…" when any unconfirmed entry is an unanswered transaction, else "Still sending…"; null without any. */
+  unconfirmedLabel: string | null;
+  /** True when at least one saved entry is only stored on this device (`stored-locally`). */
   queued: boolean;
   firstError?: unknown;
 };
 
 /**
- * Per-entry outcome of a quick-add shopping submission, with Shopping's
- * `splitSettled`: which entries were saved (or queued offline) and which failed.
- * The palette keeps only the failed ones in the preview for a retry.
+ * Per-entry outcome of a quick-add shopping submission: which entries are
+ * confirmed (saved, or stored durably on this device), which are not confirmed
+ * yet, and which failed. Only `stored-locally` counts as "saved on this device";
+ * `sending` and `uncertain` never do. The palette keeps unconfirmed and failed
+ * entries in the preview, so a retry never loses or repeats one.
  */
 export function shoppingAddOutcome(
   entries: readonly QuickAddEntry[],
-  settled: readonly PromiseSettledResult<'saved' | 'queued'>[],
+  results: readonly { state: ShoppingEntryState; error?: unknown }[],
 ): ShoppingAddOutcome {
-  const { failed, firstError } = splitSettled(entries, settled);
-  const saved = entries.filter((_, index) => settled[index]?.status === 'fulfilled');
-  const queued = settled.some((result) => result.status === 'fulfilled' && result.value === 'queued');
-  return firstError === undefined ? { saved, failed, queued } : { saved, failed, queued, firstError };
+  const pick = (states: readonly ShoppingEntryState[]) => entries.filter((_, index) => states.includes(results[index]?.state ?? 'failed'));
+  const saved = pick(['saved', 'stored-locally']);
+  const unconfirmed = pick(['sending', 'uncertain']);
+  const failed = pick(['failed']);
+  const states = results.map((result) => result.state);
+  const unconfirmedLabel = unconfirmed.length === 0 ? null : states.includes('uncertain') ? 'Checking…' : 'Still sending…';
+  const queued = states.includes('stored-locally');
+  const failedIndex = entries.findIndex((_, index) => (results[index]?.state ?? 'failed') === 'failed');
+  const outcome: ShoppingAddOutcome = { saved, failed, unconfirmed, unconfirmedLabel, queued };
+  if (failedIndex >= 0) outcome.firstError = results[failedIndex]?.error ?? new Error('save-failed');
+  return outcome;
+}
+
+/** Status line while entries are unconfirmed: "Still sending… Milk, Eggs". */
+export function unconfirmedShoppingMessage(outcome: Pick<ShoppingAddOutcome, 'unconfirmed' | 'unconfirmedLabel'>): string | null {
+  if (outcome.unconfirmed.length === 0 || !outcome.unconfirmedLabel) return null;
+  return `${outcome.unconfirmedLabel} ${outcome.unconfirmed.map((entry) => entry.name).join(', ')} not confirmed yet. Keep this open; it updates when they are.`;
 }
 
 /** Inline message for entries that could not be added; they stay in the preview. */

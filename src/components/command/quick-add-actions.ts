@@ -45,7 +45,7 @@ export async function addShoppingItems(
   list: QuickAddList,
   items: QuickAddEntry[],
   onLateError: (error: unknown) => void,
-): Promise<ShoppingAddOutcome> {
+): Promise<ShoppingAddOutcome & { settled: Promise<{ failed: QuickAddEntry[] }> }> {
   const categoriesSnapshot = await getDocOfflineAware(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
   const itemsRef = collection(db, 'households', householdId, 'shopping-lists', list.id, 'items');
@@ -66,13 +66,15 @@ export async function addShoppingItems(
     active: () => ({ householdId: auth.currentUser ? householdId : null, listId: list.id }),
     onLateError: (_name, error) => onLateError(error),
   });
-  // The palette's contract is saved / queued / failed. A write without an answer yet
-  // (`sending`, `uncertain`) is kept as "queued": Firestore still holds it, and a
-  // later rejection is reported through onLateError, so a retry never adds it twice.
-  const settled: PromiseSettledResult<'saved' | 'queued'>[] = outcomes.map((outcome) => outcome.state === 'failed'
-    ? { status: 'rejected', reason: outcome.error ?? new Error('save-failed') }
-    : { status: 'fulfilled', value: outcome.state === 'saved' ? 'saved' : 'queued' });
-  return shoppingAddOutcome(items, settled);
+  // Each save state is kept: only `saved` and `stored-locally` are confirmed;
+  // `sending` and `uncertain` stay unconfirmed until `settled` says how they ended.
+  const outcome = shoppingAddOutcome(items, outcomes);
+  const settled = Promise.all(outcomes.map(async (entryOutcome, index) => (
+    entryOutcome.state === 'sending' || entryOutcome.state === 'uncertain'
+      ? ((await entryOutcome.settled) === 'failed' ? items[index] : null)
+      : null
+  ))).then((late) => ({ failed: late.filter((entry): entry is QuickAddEntry => entry !== null) }));
+  return { ...outcome, settled };
 }
 
 // Feedings go through the Pets module's own writer, so quick-add entries carry the
