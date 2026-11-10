@@ -105,6 +105,10 @@ export const canManageInvites = (actor: PolicyMember | null | undefined): Policy
 export const canRenameHousehold = (actor: PolicyMember | null | undefined): PolicyDecision =>
   requirePermission(actor, 'household.manageMembers');
 
+/** Send the daily "still needs a role" reminder about pending people (they can approve them). */
+export const canRemindPendingMembers = (actor: PolicyMember | null | undefined): PolicyDecision =>
+  requirePermission(actor, 'household.manageMembers');
+
 /** Shared guard: an active actor acting on someone else of strictly lower rank. */
 const outranks = (actor: PolicyMember, target: PolicyMember | null | undefined): PolicyDecision => {
   if (!target) return refuse('not_member');
