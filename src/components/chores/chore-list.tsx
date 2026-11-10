@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useRef } from 'react';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, useIsPresent } from 'motion/react';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { MemberAvatar } from '@/components/member-avatar';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chores/list';
+import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
 import { cn, stableSlugify } from '@/lib/utils';
@@ -30,6 +31,10 @@ export type ChoreListHandlers = {
 type ChoreListProps = ChoreListHandlers & {
   entries: ToDoEntry[];
   today: string;
+  /** Today in the household's timezone: completion opens on the chore's due day there (as on the server). */
+  householdToday: string;
+  /** The household's timezone, for reading due dates the way the server does. */
+  timeZone: string | undefined;
   usersByUid: Map<string, HouseholdPerson>;
   users: HouseholdPerson[];
   colors: Map<string, MemberColor>;
@@ -50,12 +55,19 @@ function dueLabel(day: string, today: string): string {
 
 function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps }) {
   const { chore, missed } = entry;
+  // A row that is leaving (completed, so it moved to Completed) is only a visual
+  // echo during its exit slide: hidden from assistive tech and inert, so each
+  // chore has exactly one actionable row across To Do, Future and Completed.
+  const leaving = !useIsPresent();
   const detailsId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);
   const { capabilities, today } = props;
   const due = choreDueKey(chore);
   const isCompleted = chore.isCompleted;
   const isOverdue = !isCompleted && due !== '' && due < today;
+  // Chores can be completed from their due day on, judged in the household's
+  // timezone exactly as the server judges it (it refuses earlier ones, CH-2).
+  const isFuture = !isCompleted && isDueAfterHouseholdDay(chore, props.householdToday, props.timeZone);
   const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
   const isOpen = props.openIds.has(chore.id);
   // `assignedToUid` was resolved when the page loaded (functions/src/shared/assignee.ts).
@@ -65,6 +77,10 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   const remaining = openSubTasks(chore).length;
   const total = chore.subTasks?.length || 0;
   const completedAt = completionInstant(chore);
+  const completedBy = isCompleted ? completerLabel(chore, uid => {
+    const completer = props.usersByUid.get(uid);
+    return completer ? memberName(completer) : undefined;
+  }) : null;
 
   const avatar = (
     <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size="sm" decorative />
@@ -80,8 +96,12 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         'rounded-lg border bg-card',
         isOverdue && 'border-l-4 border-l-destructive',
         props.selectedIds.has(chore.id) && 'border-primary',
+        leaving && 'pointer-events-none',
       )}
-      data-chore-id={chore.id}
+      data-chore-id={leaving ? undefined : chore.id}
+      aria-hidden={leaving || undefined}
+      // React 18 sets `inert` only from a string value (its types say boolean).
+      {...(leaving ? { inert: '' as unknown as boolean } : {})}
     >
       <div className="flex items-start gap-1 p-1 md:gap-2 md:p-1.5">
         {props.selectMode && !isCompleted ? (
@@ -89,6 +109,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             <Checkbox
               checked={props.selectedIds.has(chore.id)}
               onCheckedChange={() => props.onToggleSelect(chore)}
+              disabled={isFuture}
               aria-label={`Select ${chore.task}`}
               className="h-5 w-5"
             />
@@ -97,7 +118,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
           <CompletionCheck
             ref={checkRef}
             checked={isCompleted}
-            disabled={!capabilities.canComplete}
+            disabled={!capabilities.canComplete || isFuture}
             label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
             onToggle={() => props.onToggleDone(chore, checkRef.current)}
           />
@@ -124,7 +145,9 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             </span>
           )}
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            {isCompleted && completedAt ? <span>Done {format(completedAt, 'MMM d')}</span> : <span>{dueLabel(due, today)}</span>}
+            {isCompleted && completedAt
+              ? <span>{completedBy ? `Done by ${completedBy} · ${format(completedAt, 'MMM d')}` : `Done ${format(completedAt, 'MMM d')}`}</span>
+              : <span>{dueLabel(due, today)}</span>}
             {isOverdue && <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 font-medium text-destructive">Overdue</span>}
             {total > 0 && !isCompleted && <span>{total - remaining}/{total} steps</span>}
             {missed.length > 0 && (

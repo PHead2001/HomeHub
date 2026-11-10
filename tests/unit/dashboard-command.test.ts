@@ -295,7 +295,7 @@ describe('peeks (H26)', () => {
     } as unknown as DashboardFacts;
     const brief = buildMorningBrief(facts, { greeting: 'Morning', name: 'Alex' });
     const linked = brief.segments.filter((segment) => segment.href);
-    assert.deepEqual(linked.map((segment) => segment.peek), [{ kind: 'chores' }, { kind: 'pet', id: 'maple' }]);
+    assert.deepEqual(linked.map((segment) => segment.peek), [{ kind: 'chores', scope: 'mine' }, { kind: 'pet', id: 'maple' }]);
   });
 });
 

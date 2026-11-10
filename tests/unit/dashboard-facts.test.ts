@@ -77,6 +77,29 @@ describe('computeChoreFacts', () => {
     assert.equal(facts.nextUp[0].overdue, true);
   });
 
+  it("'Your chores' lists only the viewer's own open work within the week (HP-11a)", () => {
+    assert.deepEqual(facts.mineNext.map((chore) => chore.id), ['late', 'kitchen', 'nowhere']);
+    assert.ok(facts.mineNext.every((chore) => chore.mine));
+    assert.ok(facts.nextUp.some((chore) => !chore.mine), 'the household list still has everyone');
+  });
+
+  it("a room lists overdue, then today's, then the soonest, and drops far-future repeats (HP-10)", () => {
+    const kitchen = [
+      { id: 'far1', task: 'Descale kettle', dueDate: '2026-09-20', isCompleted: false, roomIds: ['kitchen'] },
+      { id: 'soon', task: 'Clean fridge', dueDate: '2026-08-04', isCompleted: false, roomIds: ['kitchen'] },
+      { id: 'far2', task: 'Defrost freezer', dueDate: '2026-10-01', isCompleted: false, roomIds: ['kitchen'] },
+      { id: 'today', task: 'Dishes', dueDate: '2026-08-01', originalDueDate: '2026-08-01', isCompleted: false, roomIds: ['kitchen'] },
+      { id: 'undated', task: 'Sort drawer', isCompleted: false, roomIds: ['kitchen'] },
+      { id: 'late2', task: 'Mop floor', dueDate: '2026-07-31', isCompleted: false, roomIds: ['kitchen'] },
+      { id: 'late5', task: 'Wipe cabinets', dueDate: '2026-07-27', isCompleted: false, roomIds: ['kitchen'] },
+    ];
+    const room = computeChoreFacts(kitchen, rooms, viewer, now).rooms.find((entry) => entry.id === 'kitchen')!;
+    assert.deepEqual(room.chores.map((chore) => chore.id), ['late5', 'late2', 'today']);
+    const later = computeChoreFacts(kitchen.filter((chore) => chore.id.startsWith('far') || chore.id === 'soon' || chore.id === 'undated'), rooms, viewer, now)
+      .rooms.find((entry) => entry.id === 'kitchen')!;
+    assert.deepEqual(later.chores.map((chore) => chore.id), ['soon', 'undated'], 'beyond the upcoming window is left out');
+  });
+
   it('marks a room clear and done when today’s chore there was finished', () => {
     const done = computeChoreFacts([{ ...chores[0], isCompleted: true, completedAt: new Date(2026, 7, 1, 9).toISOString() }], rooms, viewer, now);
     const kitchen = done.rooms.find((room) => room.id === 'kitchen')!;
@@ -115,7 +138,8 @@ describe('shopping, pantry, maintenance and pets', () => {
     assert.equal(facts.expiringSoon, 1);
     assert.equal(facts.expired, 1);
     assert.equal(facts.fridgeItems, 2);
-    assert.equal(facts.nearest[0].label, 'expires in 3 days');
+    assert.equal(facts.nearest[0].label, 'expiring in 3 days');
+    assert.equal(facts.total, 3, 'the house pantry counts every item, wherever it is kept (HP-9)');
   });
 
   it('never calls a warranty overdue and flags HVAC and vehicle service', () => {
@@ -138,6 +162,7 @@ describe('shopping, pantry, maintenance and pets', () => {
     assert.equal(facts.next?.days, 0);
     assert.equal(facts.overdue, 0);
     assert.equal(facts.needsAttention, 1);
+    assert.equal(facts.climateAssets, 1);
     assert.equal(facts.next?.href, '/maintenance?asset=hvac&schedule=hvac%3Alegacy-0-replace-air-filter');
   });
 
@@ -263,13 +288,38 @@ describe('buildMorningBrief', () => {
       pantry: computePantryFacts([{ id: 'milk', name: 'Milk', location: 'Fridge', expiryDate: '2026-08-02' }], now),
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });
-    assert.equal(brief.text, "Good morning, Alex. 1 chore today (1 overdue), Pixel's next meal is due, and the milk expires tomorrow.");
+    assert.equal(brief.text, "Good morning, Alex. 1 chore today (1 overdue), Pixel's next meal is due, and the Milk expiring tomorrow.");
     assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores', '/pets/pixel?tab=feeding', '/shopping?tab=pantry']);
   });
 
   it('has a calm line when nothing needs attention', () => {
     const brief = buildMorningBrief({}, { greeting: 'Good evening' });
     assert.equal(brief.text, 'Good evening. Nothing needs you right now. Enjoy the quiet.');
+  });
+
+  it('keeps the item name as written, with no verb to agree (HP-22a)', () => {
+    const pantry = computePantryFacts([{ id: 'eggs', name: 'Eggs', expiryDate: '2026-08-02' }], now);
+    assert.equal(buildMorningBrief({ pantry }, { greeting: 'Hi' }).text, 'Hi. The Eggs expiring tomorrow.');
+    const brand = computePantryFacts([{ id: 'y', name: 'Chobani yogurt', expiryDate: '2026-08-01' }], now);
+    assert.equal(buildMorningBrief({ pantry: brand }, { greeting: 'Hi' }).text, 'Hi. The Chobani yogurt expiring today.');
+  });
+
+  it('falls back to household totals when the reader has nothing of their own (HP-3a)', () => {
+    const others = chores.map((chore) => ({ ...chore, assignedToEmail: 'sam@example.test' }));
+    const facts = { chores: computeChoreFacts(others, rooms, viewer, now) };
+    const brief = buildMorningBrief(facts, { greeting: 'Hi' });
+    assert.equal(brief.text, 'Hi. 2 household chores today (1 overdue).');
+    assert.deepEqual(brief.segments.find((segment) => segment.href)?.peek, { kind: 'chores', scope: 'household' });
+
+    const overdueOnly = { chores: computeChoreFacts(others.filter((chore) => chore.id === 'late'), rooms, viewer, now) };
+    const line = buildMorningBrief(overdueOnly, { greeting: 'Hi' }).text;
+    assert.equal(line, 'Hi. 1 overdue household chore.');
+    assert.doesNotMatch(line, /Nothing needs you/);
+  });
+
+  it("uses the reader's own counts when there are any", () => {
+    const brief = buildMorningBrief({ chores: computeChoreFacts(chores, rooms, viewer, now) }, { greeting: 'Hi' });
+    assert.deepEqual(brief.segments.find((segment) => segment.href)?.peek, { kind: 'chores', scope: 'mine' });
   });
 });
 

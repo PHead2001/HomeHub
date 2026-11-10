@@ -24,7 +24,7 @@ import { feedingFailureKey } from '@/lib/dashboard/assemble';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
-import { temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
+import { dailyLabel, temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
 import { useLiveWeatherState } from '@/lib/dashboard/use-weather';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
@@ -47,7 +47,8 @@ function Tile({
   hint,
   children,
 }: {
-  href: string;
+  /** Omitted for a tile with nowhere to go (weather, HP-24): it is not a link. */
+  href?: string;
   title: string;
   icon: LucideIcon;
   testId: string;
@@ -72,6 +73,23 @@ function Tile({
     event.currentTarget.style.removeProperty('--tilt-x');
     event.currentTarget.style.removeProperty('--tilt-y');
   };
+  const body = (
+    <>
+      <span className={cn('flex items-center gap-2 text-sm font-medium text-muted-foreground', quickAdd && 'pr-8')}>
+        <Icon aria-hidden className="h-4 w-4 text-primary" />
+        <span className="truncate">{title}</span>
+        {hint && <span className="ml-auto shrink-0 text-xs font-normal" data-testid={`${testId}-stale`}>{hint}</span>}
+      </span>
+      {children}
+    </>
+  );
+  if (!href) {
+    return (
+      <div data-testid={testId} className={cn('relative min-w-0', className)}>
+        <div className="flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised">{body}</div>
+      </div>
+    );
+  }
   return (
     <PeekCard peek={peek ?? null} className={cn('relative min-w-0', className)}>
       <Link
@@ -82,12 +100,7 @@ function Tile({
         onPointerLeave={onPointerLeave}
       >
         <span className={cn(styles.tiltLayer, 'glow-card flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised transition-ui hover:border-primary/40')}>
-          <span className={cn('flex items-center gap-2 text-sm font-medium text-muted-foreground', quickAdd && 'pr-8')}>
-            <Icon aria-hidden className="h-4 w-4 text-primary" />
-            <span className="truncate">{title}</span>
-            {hint && <span className="ml-auto shrink-0 text-xs font-normal" data-testid={`${testId}-stale`}>{hint}</span>}
-          </span>
-          {children}
+          {body}
         </span>
       </Link>
       {quickAdd && <TileQuickAdd {...quickAdd} />}
@@ -159,10 +172,11 @@ function TileSkeleton({ className }: { className?: string }) {
   return <div aria-hidden className={cn('min-h-[8.5rem] animate-pulse rounded-xl border bg-muted/40', className)} />;
 }
 
-function ProgressRing({ done, total }: { done: number; total: number }) {
+/** HP-2b: an empty track when nothing is scheduled; full (green) only when today's work is all done. */
+function ProgressRing({ done, total, settled }: { done: number; total: number; settled: boolean }) {
   const radius = 30;
   const circumference = 2 * Math.PI * radius;
-  const ratio = total > 0 ? done / total : 1;
+  const ratio = total > 0 ? Math.min(1, done / total) : 0;
   return (
     <svg viewBox="0 0 72 72" className="h-20 w-20 shrink-0 -rotate-90" aria-hidden>
       <circle cx="36" cy="36" r={radius} fill="none" strokeWidth="7" className="stroke-muted" />
@@ -173,7 +187,8 @@ function ProgressRing({ done, total }: { done: number; total: number }) {
         fill="none"
         strokeWidth="7"
         strokeLinecap="round"
-        className={cn(ratio >= 1 ? 'stroke-success' : 'stroke-primary')}
+        // Green only when the day is done and nothing is overdue: never a celebration over overdue work.
+        className={cn(ratio >= 1 && settled ? 'stroke-success' : 'stroke-primary')}
         strokeDasharray={circumference}
         strokeDashoffset={circumference * (1 - ratio)}
         style={{ transition: 'stroke-dashoffset 600ms var(--ease-standard)' }}
@@ -230,16 +245,33 @@ export function BentoGrid({
         ) : null}
       >
         <span className="flex flex-1 items-center gap-4">
-          <ProgressRing done={chores.todayDone} total={chores.todayTotal} />
-          <span className="min-w-0">
-            <span className="block font-headline text-2xl font-semibold tabular-nums">
-              <NumberTicker value={chores.todayDone} /> of <NumberTicker value={chores.todayTotal} /> done
+          <ProgressRing done={chores.todayDone} total={chores.todayTotal} settled={chores.overdueTotal === 0} />
+          {chores.todayTotal === 0 ? (
+            // HP-2a: 0 of 0 is an empty state, with the overdue count as the headline when there is one.
+            <span className="min-w-0" data-testid="chores-tile-empty">
+              {chores.overdueTotal > 0 ? (
+                <span className="block font-headline text-2xl font-semibold tabular-nums text-warning">
+                  <NumberTicker value={chores.overdueTotal} /> overdue
+                </span>
+              ) : null}
+              <span className={cn('block', chores.overdueTotal > 0 ? 'text-sm text-muted-foreground' : 'font-headline text-xl font-semibold')}>
+                Nothing scheduled today
+              </span>
+              {chores.mineOpen > 0 && (
+                <span className="block text-sm text-muted-foreground"><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</span>
+              )}
             </span>
-            <span className="block text-sm text-muted-foreground">
-              {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</>}
-              {chores.overdueTotal > 0 && <span className="text-warning">{` · ${chores.overdueTotal} overdue`}</span>}
+          ) : (
+            <span className="min-w-0">
+              <span className="block font-headline text-2xl font-semibold tabular-nums">
+                <NumberTicker value={chores.todayDone} /> of <NumberTicker value={chores.todayTotal} /> done
+              </span>
+              <span className="block text-sm text-muted-foreground">
+                {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</>}
+                {chores.overdueTotal > 0 && <span className="text-warning">{` · ${chores.overdueTotal} overdue`}</span>}
+              </span>
             </span>
-          </span>
+          )}
         </span>
         {chores.nextUp.length > 0 && (
           <span className="hidden text-sm text-muted-foreground lg:block">
@@ -361,11 +393,18 @@ export function BentoGrid({
     const pantry = facts.pantry;
     tiles.push(pantry ? (
       <Tile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" hint={hint('pantry')}>
-        <Big value={pantry.expiringSoon} suffix={pantry.expired > 0 ? `· ${pantry.expired} expired` : 'this week'} />
-        {pantry.nearest[0] ? (
-          <span className="truncate text-sm text-muted-foreground">{pantry.nearest[0].name} {pantry.nearest[0].label}</span>
+        {pantry.expiringSoon === 0 && pantry.expired === 0 ? (
+          // HP-22d: said once, not "0 this week" over "Nothing close to expiring".
+          <span className="font-headline text-xl font-semibold" data-testid="pantry-tile-empty">Nothing expiring this week</span>
         ) : (
-          <span className="text-sm text-muted-foreground">Nothing close to expiring.</span>
+          <>
+            {/* HP-22e: the count keeps "this week"; expired items get their own line. */}
+            <Big value={pantry.expiringSoon} suffix="this week" />
+            {pantry.expired > 0 && <span className="text-sm text-warning" data-testid="pantry-tile-expired">{pantry.expired} expired</span>}
+          </>
+        )}
+        {pantry.nearest[0] && (
+          <span className="truncate text-sm text-muted-foreground">{pantry.nearest[0].name} {pantry.nearest[0].label}</span>
         )}
       </Tile>
     ) : failed.has('pantry') ? <UnavailableTile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" unauthorized={unauthorized('pantry')} onRetry={onRetry} /> : loading ? <TileSkeleton key="pantry" /> : null);
@@ -423,10 +462,11 @@ export function BentoGrid({
   }
 
   if (weather) {
+    const daily = dailyLabel(weather);
     tiles.push(
+      // HP-24: not a link (there is no forecast page to open); the house holds the settings.
       <Tile
         key="weather"
-        href="#weather-settings"
         title="Weather"
         icon={CloudSun}
         testId="dashboard-tile-weather"
@@ -436,6 +476,7 @@ export function BentoGrid({
         <span className="sr-only">{weatherSummary(weather)}</span>
         <span aria-hidden className="font-headline text-3xl font-semibold tabular-nums">{temperatureLabel(weather)}</span>
         <span aria-hidden className="truncate text-sm text-muted-foreground">{weather.label} in {weather.place}</span>
+        {daily && <span aria-hidden className="truncate text-xs text-muted-foreground" data-testid="weather-tile-daily">{daily}</span>}
       </Tile>,
     );
   }

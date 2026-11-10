@@ -45,12 +45,43 @@ export function windowsLit(date: Date): boolean {
   return weights.night + weights.dusk * 0.6 > 0.5;
 }
 
-/** "Good morning" / "Good afternoon" / "Good evening" for the brief. */
-export function greeting(date: Date): string {
-  const hour = date.getHours();
-  if (hour >= 4 && hour < 12) return 'Good morning';
-  if (hour >= 12 && hour < 17) return 'Good afternoon';
+/**
+ * The hour (0-23) of `date` in `timeZone` (the household's zone, D-6); the device's hour
+ * without a zone or when the zone is not valid.
+ */
+export function hourIn(date: Date, timeZone?: string | null): number {
+  if (!timeZone) return date.getHours();
+  try {
+    const part = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone })
+      .formatToParts(date)
+      .find((entry) => entry.type === 'hour');
+    const hour = Number(part?.value);
+    return Number.isInteger(hour) ? hour % 24 : date.getHours();
+  } catch {
+    return date.getHours();
+  }
+}
+
+/**
+ * The brief's greeting in the household's zone (HP-22c): "Hello" from midnight to 4:00
+ * (never "Good evening" in the small hours), "Good morning" to noon, "Good afternoon" to
+ * 17:00, then "Good evening".
+ */
+export function greeting(date: Date, timeZone?: string | null): string {
+  const hour = hourIn(date, timeZone);
+  if (hour < 4) return 'Hello';
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
   return 'Good evening';
+}
+
+/** HP-22b: the brief's name matches the time of day ("Morning brief" only in the morning). */
+export function briefLabel(date: Date, timeZone?: string | null): string {
+  const hour = hourIn(date, timeZone);
+  if (hour < 4) return "Today's brief";
+  if (hour < 12) return 'Morning brief';
+  if (hour < 17) return 'Afternoon brief';
+  return 'Evening brief';
 }
 
 export type Season = 'winter' | 'halloween' | 'holidays' | null;

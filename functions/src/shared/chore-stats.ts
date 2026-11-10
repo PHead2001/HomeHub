@@ -19,7 +19,32 @@ export type PurgedChore = {
   assignedToUid?: unknown;
   assignedToEmail?: unknown;
   assignedToDisplayName?: unknown;
+  /** Who completed it (D-7: the completer gets the credit). */
+  completedByEmail?: unknown;
+  completedByName?: unknown;
   completedAt: string;
+};
+
+const filled = (value: unknown): value is string =>
+  typeof value === "string" && value.trim() !== "";
+
+/**
+ * Who a completed chore counts for: the person who completed it when the
+ * server recorded them (`completedByEmail`), else its assignee (completions
+ * made before attribution existed). The same rule as the Chores page.
+ * @param {PurgedChore} chore Chore fields.
+ * @return {{email: string, name: unknown} | null} Credited person, or null.
+ */
+export const creditedPerson = (
+  chore: Omit<PurgedChore, "completedAt">,
+): {email: string; name: unknown} | null => {
+  if (filled(chore.completedByEmail)) {
+    return {email: chore.completedByEmail, name: chore.completedByName};
+  }
+  if (filled(chore.assignedToEmail)) {
+    return {email: chore.assignedToEmail, name: chore.assignedToDisplayName};
+  }
+  return null;
 };
 
 /**
@@ -74,7 +99,8 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
 };
 
 /**
- * Adds purged chores to a year's stats.
+ * Adds purged chores to a year's stats. Each counts for its completer, else
+ * its assignee (`creditedPerson`).
  * @param {ChoreStatsDoc} stats Current stats.
  * @param {PurgedChore[]} chores Chores being deleted, all in that year.
  * @return {ChoreStatsDoc} New stats.
@@ -86,15 +112,13 @@ export const addPurgedChores = (
   const byAssignee = {...stats.byAssignee};
   const names = {...stats.names};
   for (const chore of chores) {
-    if (typeof chore.assignedToEmail !== "string" ||
-        !chore.assignedToEmail.trim()) continue;
-    const key = choreStatsAssigneeKey(chore.assignedToEmail);
+    const person = creditedPerson(chore);
+    if (!person) continue;
+    const key = choreStatsAssigneeKey(person.email);
     byAssignee[key] = (byAssignee[key] ?? 0) + 1;
     // Labels only, readable by everyone who sees chores: never the email.
-    if (typeof chore.assignedToDisplayName === "string" &&
-        chore.assignedToDisplayName.trim() &&
-        !chore.assignedToDisplayName.includes("@")) {
-      names[key] = chore.assignedToDisplayName.trim();
+    if (filled(person.name) && !person.name.includes("@")) {
+      names[key] = person.name.trim();
     }
   }
   return {

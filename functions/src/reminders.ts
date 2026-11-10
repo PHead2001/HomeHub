@@ -5,7 +5,8 @@
 // functions package and the web app's (newer) firebase-admin provide; the web
 // app type-checks this file through the @functions alias.
 import type {
-  DocumentReference, Firestore, Timestamp as FirestoreTimestamp,
+  DocumentReference, Firestore, QuerySnapshot,
+  Timestamp as FirestoreTimestamp,
 } from "firebase-admin/firestore";
 import {
   addDays, localDay, safeTimeZone, zonedMidnightIso,
@@ -18,7 +19,10 @@ import {
 import {
   assigneeFields, occurrenceAssigneeKey, resolveAssigneeUid,
 } from "./shared/assignee";
-import {deterministicNotificationId, recurringChoreId} from "./shared/ids";
+import {
+  choreOccurrenceKey, deterministicNotificationId, recurringChoreId,
+  storedOccurrenceKey,
+} from "./shared/ids";
 import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
@@ -138,9 +142,26 @@ export const runHouseholdReminders = async (
         op.kind === "purge" ? [op.year] : []))];
       const statsRefs = statsYears.map((year) =>
         house.collection("stats").doc(choreStatsDocId(year)));
-      const [home, ...rest] = await tx.getAll(
-        house, ...templateRefs, ...ops.map((op) => op.ref), ...statsRefs);
+      // Occurrences that already have a chore under another id (reassigned
+      // or created by an overlapping run): never create a second one.
+      const keys = [...new Set(ops.flatMap((op) =>
+        op.kind === "create" && typeof op.data.occurrenceKey === "string" ?
+          [op.data.occurrenceKey] : []))];
+      const keyQueries: Promise<QuerySnapshot>[] = [];
+      for (let index = 0; index < keys.length; index += 30) {
+        keyQueries.push(tx.get(house.collection("chores")
+          .where("occurrenceKey", "in", keys.slice(index, index + 30))));
+      }
+      const [[home, ...rest], keySnaps] = await Promise.all([
+        tx.getAll(house, ...templateRefs, ...ops.map((op) => op.ref),
+          ...statsRefs),
+        Promise.all(keyQueries),
+      ]);
       if (!home.exists || home.get("deletingAt")) return null;
+      const takenKeys = new Map<string, string>();
+      for (const snap of keySnaps) {
+        for (const d of snap.docs) takenKeys.set(d.get("occurrenceKey"), d.id);
+      }
       const templates = new Map(templateRefs.map((ref, index) =>
         [ref.path, rest[index]]));
       const current = rest.slice(templateRefs.length,
@@ -155,9 +176,13 @@ export const runHouseholdReminders = async (
           const template = templates.get(op.template.path);
           const unchanged = Boolean(template?.exists && op.templateVersion &&
             template.updateTime?.isEqual(op.templateVersion));
-          if (unchanged && !snap.exists) {
+          const key = op.data.occurrenceKey;
+          const taken = typeof key === "string" && takenKeys.has(key) &&
+            takenKeys.get(key) !== op.ref.id;
+          if (unchanged && !snap.exists && !taken) {
             tx.create(op.ref, op.data);
             created++;
+            if (typeof key === "string") takenKeys.set(key, op.ref.id);
           }
         } else if (snap.exists && snap.get("isCompleted") === true &&
             snap.get("completedAt") === op.completedAt) {
@@ -170,6 +195,8 @@ export const runHouseholdReminders = async (
             assignedToUid: snap.get("assignedToUid"),
             assignedToEmail: snap.get("assignedToEmail"),
             assignedToDisplayName: snap.get("assignedToDisplayName"),
+            completedByEmail: snap.get("completedByEmail"),
+            completedByName: snap.get("completedByName"),
             completedAt: op.completedAt,
           });
           purgedByYear.set(op.year, list);
@@ -209,8 +236,15 @@ export const runHouseholdReminders = async (
       }>;
   const memberByUid = new Map(members.map((m) => [m.uid, m]));
 
-  // Recurring chores: create the next occurrences that do not exist yet.
+  // Recurring chores: create the next occurrences that do not exist yet. An
+  // occurrence exists when its deterministic id does, or when any chore holds
+  // its occurrence key (template, room and day, whoever it is assigned to),
+  // so a completed day is never regenerated after a reassignment or edit.
   const choreIds = new Set(choresSnap.docs.map((d) => d.id));
+  const occurrenceKeys = new Set(choresSnap.docs.flatMap((d) => {
+    const key = storedOccurrenceKey(d.id, d.data());
+    return key ? [key] : [];
+  }));
   const choreOps: ChoreOp[] = [];
   const stopped = {...result, generatedChores: 0, purgedChores: 0};
   for (const templateDoc of templatesSnap.docs) {
@@ -230,8 +264,10 @@ export const runHouseholdReminders = async (
       RECURRING_LOOKAHEAD)) {
       for (const roomId of rooms) {
         const id = recurringChoreId(templateDoc.id, roomId, day, assignee);
-        if (choreIds.has(id)) continue;
+        const occurrenceKey = choreOccurrenceKey(templateDoc.id, roomId, day);
+        if (choreIds.has(id) || occurrenceKeys.has(occurrenceKey)) continue;
         choreIds.add(id);
+        occurrenceKeys.add(occurrenceKey);
         const choreRef = house.collection("chores").doc(id);
         const chore = {
           task: template.task,
@@ -244,6 +280,7 @@ export const runHouseholdReminders = async (
           completedSubTasks: [],
           templateId: templateDoc.id,
           originalDueDate: day,
+          occurrenceKey,
           roomIds: roomId === "general" ? [] : [roomId],
         };
         choreOps.push({

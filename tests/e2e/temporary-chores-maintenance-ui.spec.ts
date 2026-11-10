@@ -184,7 +184,12 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await page.reload();
     await page.getByRole('button', { name: /^Future \(/ }).click();
     await expect(page.getByText(taskName, { exact: true })).toBeVisible();
-    // Checkboxes now complete in one tap; bulk completion lives in Select mode.
+    // A chore due later cannot be completed before its day (CH-2): its boxes are disabled.
+    await expect(page.getByRole('checkbox', { name: `Mark ${taskName} done` })).toBeDisabled();
+    // Make it due today, then complete it in Select mode (bulk completion).
+    await chore.ref.update({ originalDueDate: '2026-08-01', dueDate: '2026-08-01T17:00:00.000Z' });
+    await page.reload();
+    await expect(page.getByText(taskName, { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Select', exact: true }).click();
     await page.getByRole('checkbox', { name: `Select ${taskName}` }).click();
     await page.getByRole('button', { name: 'Complete selected' }).click();
