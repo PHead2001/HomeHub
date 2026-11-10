@@ -5,7 +5,7 @@ import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
-import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { type DocumentData, collection, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { format } from 'date-fns';
 import type { ChoreTemplate, HouseholdMember, Recurrence, Room, User as HomeHubUser } from '@/lib/types';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -31,7 +31,8 @@ import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
-import { completionSnapshot, completionUpdate, undoCompletionUpdate, type CompletionSnapshot } from '@/lib/chores/completion';
+import { completerLabel } from '@/lib/chores/completion';
+import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, isPodiumDay } from '@/lib/chores/stats';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
@@ -41,8 +42,8 @@ import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
-import { useToday } from '@/components/chores/use-today';
-import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
+import { useHouseholdToday, useToday } from '@/components/chores/use-today';
+import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { morphStyle } from '@/lib/motion';
@@ -53,7 +54,6 @@ import { ALL_ROOMS, choresRoomHref, effectiveChoresRoom, parseChoresRoom, roomSh
 import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/chores/house-clean';
 
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
-
 
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
 const statsNow = (today: string) => { const d = dayFromKey(today); d.setHours(23, 59, 59, 999); return d; };
@@ -74,7 +74,7 @@ function writeFlag(key: string) {
 }
 
 export function ChoreChartClient() {
-  const { currentUser, currentMember, permissions } = useAuth();
+  const { currentUser, currentMember, household, permissions } = useAuth();
   const { toast, toastError } = useToast();
   const capabilities = useMemo(() => choreCapabilities(permissions), [permissions]);
   const isManager = currentMember?.role === 'owner' || currentMember?.role === 'admin';
@@ -504,6 +504,8 @@ export function ChoreChartClient() {
   /* ---------------------------------------------------------------------- */
 
   const today = useToday();
+  // Completion eligibility follows the household's day, as on the server (CH-2).
+  const householdDay = useHouseholdToday(household?.timeZone);
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
@@ -522,88 +524,142 @@ export function ChoreChartClient() {
     playFeedback('celebrate');
   }, [currentUser?.householdId, today, rooms]);
 
-  const undoCompletion = useCallback(async (snapshots: Map<string, CompletionSnapshot>) => {
+  // Completion, Undo and reopen go through the server (complete-client.ts): it
+  // refuses chores due after today and records who completed each one (H3).
+  const undoCompletion = useCallback(async (tickets: readonly UndoTicket[]) => {
+    const householdId = currentUser?.householdId;
+    if (!householdId || tickets.length === 0) return;
+    const ids = tickets.map(ticket => ticket.choreId);
+    const saved = new Map(choresRef.current.filter(c => ids.includes(c.id)).map(c => [c.id, completionFields(c)]));
+    patchChores(ids, chore => ({ ...chore, ...reopenedChoreFields() }));
+    const results = await Promise.all(tickets.map(ticket => undoCompletionOnServer(householdId, ticket)));
+    // Undone, or already reopened by someone else ('open'): the chore stays open.
+    // Only a request that never ran puts back the saved completion; a chore that
+    // changed since ('stale': completed again, 'missing': deleted) is re-read, as
+    // the saved snapshot is outdated.
+    const settled = settleUndo(ids, results);
+    setAssignedChores(current => applyUndoSettlement(current, settled, saved));
+    const failure = results.find(result => !result.ok);
+    if (failure && !failure.ok) toast({ variant: 'destructive', title: completionFailureMessage(failure, 'undo') });
+    if (settled.refresh.length === 0) return;
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection) return;
-    const batch = writeBatch(db);
-    const locals = new Map<string, ReturnType<typeof undoCompletionUpdate>['local']>();
-    snapshots.forEach((snapshot, id) => {
-      const { update, local } = undoCompletionUpdate(snapshot);
-      batch.update(doc(choresCollection, id), update);
-      locals.set(id, local);
-    });
-    const saved = new Map(choresRef.current.filter(c => snapshots.has(c.id)).map(c => [c.id, completionFields(c)]));
-    patchChores([...snapshots.keys()], chore => ({ ...chore, ...locals.get(chore.id) }));
-    try {
-      await batch.commit();
-    } catch (error) {
-      // Put back only these chores' completion fields; keep anything else that changed meanwhile.
-      setAssignedChores(current => restoreChoreFields(current, saved));
-      toastError(error, "Couldn't undo");
+    const fresh = new Map<string, Record<string, unknown> | null>();
+    if (choresCollection) {
+      await Promise.all(settled.refresh.map(async id => {
+        try {
+          const snap = await getDoc(doc(choresCollection, id));
+          fresh.set(id, snap.exists() ? snap.data() : null);
+        } catch {
+          // Unreadable now: fall back to the saved snapshot below.
+        }
+      }));
     }
-  }, [getCollectionRef, patchChores, toastError]);
+    const unread = new Map(settled.refresh.flatMap(id => (!fresh.has(id) && saved.has(id) ? [[id, saved.get(id)!] as const] : [])));
+    setAssignedChores(current => restoreChoreFields(applyRefreshedChores(current, fresh), unread));
+    if (!failure) toast({ title: 'Already changed', description: 'Someone changed this chore since, so it was left as it is.' });
+  }, [currentUser?.householdId, getCollectionRef, patchChores, toast]);
 
   const completeChores = useCallback(async (chores: readonly ChoreRecord[], origin: DOMRect | null) => {
-    const choresCollection = getCollectionRef('chores');
-    if (!choresCollection || chores.length === 0) return;
-    const snapshots = new Map<string, CompletionSnapshot>();
-    const locals = new Map<string, Partial<ChoreRecord>>();
-    const batch = writeBatch(db);
-    for (const chore of chores) {
-      snapshots.set(chore.id, completionSnapshot(chore));
-      // One tap completes, including any open steps; Undo restores them exactly.
-      const { update, local } = completionUpdate(chore, openSubTasks(chore).length > 0);
-      batch.update(doc(choresCollection, chore.id), update);
-      locals.set(chore.id, local);
-    }
+    const householdId = currentUser?.householdId;
+    if (!householdId || chores.length === 0) return;
+    const ids = chores.map(chore => chore.id);
+    // Optimistic: the rows leave To Do at once; only chores the server did not complete come back.
     const before = choresRef.current;
-    const after = before.map(chore => (locals.has(chore.id) ? { ...chore, ...locals.get(chore.id) } as ChoreRecord : chore));
-    const saved = new Map(before.filter(c => locals.has(c.id)).map(c => [c.id, completionFields(c)]));
-    setAssignedChores(current => restoreChoreFields(current, locals));
-    setSelectedChoreIds(previous => previous.filter(id => !locals.has(id)));
-    try {
-      await batch.commit();
-    } catch (error) {
-      // Roll back only this completion's chores (a parallel completion may have succeeded).
+    const saved = new Map(before.filter(c => ids.includes(c.id)).map(c => [c.id, completionFields(c)]));
+    const optimistic = new Map(chores.map(chore => [chore.id, {
+      isCompleted: true,
+      completedAt: new Date().toISOString(),
+      ...(openSubTasks(chore).length > 0 ? { completedSubTasks: [...(chore.subTasks || [])] } : {}),
+    } as Partial<ChoreRecord>]));
+    setAssignedChores(current => restoreChoreFields(current, optimistic));
+    setSelectedChoreIds(previous => previous.filter(id => !optimistic.has(id)));
+
+    // One tap completes, including any open steps; Undo restores them.
+    const result = await completeChoresOnServer(householdId, ids, { completeSubTasks: true });
+    if (!result.ok) {
       setAssignedChores(current => restoreChoreFields(current, saved));
-      toastError(error, chores.length === 1 ? "Couldn't complete the chore" : "Couldn't complete the chores");
+      toast({ variant: 'destructive', title: completionFailureMessage(result, 'complete') });
       return;
     }
+    const outcomes = new Map(result.data.map(outcome => [outcome.choreId, outcome]));
+    const applied = new Map<string, Partial<ChoreRecord>>();
+    for (const id of ids) {
+      const outcome = outcomes.get(id);
+      if (outcome && outcome.status !== 'refused') applied.set(id, completedChoreFields(outcome.completion));
+      else applied.set(id, saved.get(id) ?? {});
+    }
+    setAssignedChores(current => restoreChoreFields(current, applied));
+
+    const completed = chores.filter(chore => outcomes.get(chore.id)?.status === 'completed');
+    const already = chores.filter(chore => outcomes.get(chore.id)?.status === 'already');
+    const early = chores.filter(chore => {
+      const outcome = outcomes.get(chore.id);
+      return outcome?.status === 'refused' && outcome.refused === 'early';
+    });
+    const notDone = chores.filter(chore => !outcomes.has(chore.id) || outcomes.get(chore.id)?.status === 'refused');
+    if (early.length > 0) {
+      const first = early[0];
+      toast({
+        title: early.length === 1 ? 'Not due yet' : `${pluralize(early.length, 'chore')} not due yet`,
+        description: early.length === 1
+          ? `${first.task} is due ${format(dayFromKey(choreDueKey(first)), 'EEE, MMM d')}. It can be completed from that day.`
+          : 'Chores can be completed from the day they are due.',
+      });
+    } else if (notDone.length > 0) {
+      toast({ variant: 'destructive', title: notDone.length === 1 ? `${notDone[0].task} was not completed.` : `${pluralize(notDone.length, 'chore')} were not completed.` });
+    }
+    if (already.length > 0 && completed.length === 0) {
+      const outcome = outcomes.get(already[0].id);
+      const by = outcome && outcome.status === 'already' ? completerLabel(outcome.completion, email => {
+        const user = usersByEmail.get(email);
+        return user ? memberName(user) : undefined;
+      }) : null;
+      toast({ title: 'Already done', description: by ? `${already[0].task} was already done by ${by}.` : `${already[0].task} was already done.` });
+    }
+    if (completed.length === 0) return;
 
     playFeedback('complete');
-    const fresh = chores.filter(chore => !celebrated.current.has(chore.id));
+    const fresh = completed.filter(chore => !celebrated.current.has(chore.id));
     fresh.forEach(chore => celebrated.current.add(chore.id));
     if (fresh.length > 0 && origin) {
       burst(origin, Math.min(40, fresh.reduce((sum, chore) => sum + confettiCount(chore), 0)));
     }
 
-    const label = chores.length === 1 ? chores[0].task : `${chores.length} chores`;
+    const tickets = completed.flatMap(chore => {
+      const outcome = outcomes.get(chore.id);
+      const ticket = outcome && outcome.status === 'completed' ? undoTicket(outcome) : null;
+      return ticket ? [ticket] : [];
+    });
+    const label = completed.length === 1 ? completed[0].task : `${completed.length} chores`;
     const handle = toast({
       group: 'chore-complete',
-      title: chores.length === 1 ? 'Done' : 'Chores done',
+      title: completed.length === 1 ? 'Done' : 'Chores done',
       description: `${label} marked complete.`,
-      duration: UNDO_WINDOW_MS,
+      duration: CHORE_UNDO_MS,
       action: (
-        <ToastAction altText={`Undo completing ${label}`} onClick={() => { handle.dismiss(); void undoCompletion(snapshots); }}>
+        <ToastAction altText={`Undo completing ${label}`} onClick={() => { handle.dismiss(); void undoCompletion(tickets); }}>
           Undo
         </ToastAction>
       ),
     });
+    const after = before.map(chore => (applied.has(chore.id) ? { ...chore, ...applied.get(chore.id) } as ChoreRecord : chore));
     maybeCelebrateHouse(before, after);
-  }, [getCollectionRef, toast, toastError, burst, undoCompletion, maybeCelebrateHouse]);
+  }, [currentUser?.householdId, toast, burst, undoCompletion, maybeCelebrateHouse, usersByEmail]);
 
   const reopenChore = useCallback(async (chore: ChoreRecord) => {
-    const choresCollection = getCollectionRef('chores');
-    if (!choresCollection) return;
+    const householdId = currentUser?.householdId;
+    if (!householdId) return;
     const saved = new Map([[chore.id, completionFields(chore)]]);
-    patchChores([chore.id], c => ({ ...c, isCompleted: false, completedAt: undefined, completedAtServer: undefined }));
-    try {
-      await updateDoc(doc(choresCollection, chore.id), { isCompleted: false, completedAt: deleteField(), completedAtServer: deleteField() });
-    } catch (error) {
+    patchChores([chore.id], c => ({ ...c, ...reopenedChoreFields() }));
+    const result = await reopenChoreOnServer(householdId, chore.id);
+    if (!result.ok) {
       setAssignedChores(current => restoreChoreFields(current, saved));
-      toastError(error, "Couldn't reopen the chore");
+      toast({ variant: 'destructive', title: completionFailureMessage(result, 'reopen') });
+    } else if (result.data.status === 'missing') {
+      setAssignedChores(current => restoreChoreFields(current, saved));
+      toast({ variant: 'destructive', title: "Couldn't reopen the chore", description: 'It was deleted.' });
     }
-  }, [getCollectionRef, patchChores, toastError]);
+  }, [currentUser?.householdId, patchChores, toast]);
 
   const handleToggleDone = useCallback((chore: ChoreRecord, origin: HTMLElement | null) => {
     if (!capabilities.canComplete) return;
@@ -769,6 +825,8 @@ export function ChoreChartClient() {
 
   const listProps = {
     today,
+    householdToday: householdDay,
+    timeZone: household?.timeZone,
     usersByEmail,
     users: householdUsers as HomeHubUser[],
     colors: memberColors,

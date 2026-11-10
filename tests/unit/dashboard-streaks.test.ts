@@ -4,6 +4,7 @@ import { computeChoreStats } from '../../src/lib/chores/stats';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { leaderboardEnabledFrom, mayShowRanking, streakDaysLabel, streakMembersFrom, streakSummary, streakTileModel } from '../../src/lib/dashboard/streaks';
 import { assembleDashboardFacts, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardAccess, type DashboardRaw } from '../../src/lib/dashboard/assemble';
+import { isGoldenRoof } from '../../src/lib/dashboard/ambience';
 
 const now = new Date(2026, 7, 5, 12); // Wednesday
 const iso = (day: number, hour = 9) => new Date(2026, 7, day, hour).toISOString();
@@ -74,6 +75,16 @@ describe('assemble: streaks and home health', () => {
     assert.equal(assembleDashboardFacts({ completedChores: raw.completedChores }, new Set(), access, context).facts.streaks, undefined);
     assert.equal(assembleDashboardFacts(raw, new Set([STREAKS_FAILURE]), access, context).facts.streaks, undefined);
     assert.equal(assembleDashboardFacts(raw, new Set(), { ...access, chores: false }, context).facts.streaks, undefined);
+  });
+
+  it('counts completed chores for the golden roof from the running listener, whatever the leaderboard (HP-11b)', () => {
+    const completions = Array.from({ length: 100 }, (_, i) => done(`c${i}`, 'alex@example.test', 5)) as never;
+    const live = assembleDashboardFacts({ completedChores: completions, leaderboard: 'off' }, new Set(), access, context).facts;
+    assert.equal(live.completedChores, 100);
+    assert.equal(isGoldenRoof(live.completedChores!), true);
+    assert.equal(assembleDashboardFacts({}, new Set(), access, context).facts.completedChores, undefined, 'unknown while loading, never 0');
+    assert.equal(assembleDashboardFacts({ completedChores: completions }, new Set([STREAKS_FAILURE]), access, context).facts.completedChores, undefined);
+    assert.equal(assembleDashboardFacts({ completedChores: completions }, new Set(), { ...access, chores: false }, context).facts.completedChores, undefined);
   });
 
   it('scores home health with Maintenance own formula, null with nothing to score', () => {

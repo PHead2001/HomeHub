@@ -8,8 +8,10 @@
  *   chores due today, and sparkles once when today's work there is done;
  * - fed pets wander between rooms; a pet not fed on schedule sits by its bowl; a
  *   pet whose feeding history is unavailable rests without any claim;
- * - the fridge shows how stocked it is and pulses when food expires soon;
- * - the car and the outdoor HVAC unit show a wrench when service is due;
+ * - the pantry (drawn as a fridge) shows how stocked it is and pulses when food
+ *   expires soon, both counted over the whole pantry (HP-9);
+ * - the car and the outdoor HVAC unit (only when the home has a climate asset, HP-8)
+ *   show a wrench when service is due;
  * - a home health badge mirrors Maintenance's score (H10);
  * - windows light up in the evening and live weather is drawn over it (H02), with
  *   seasonal touches (H27), a Konami-code disco mode and pet sounds (H29).
@@ -19,7 +21,11 @@
  * room (Tab, or arrow keys between rooms) and readable without the picture.
  * Clicking a room zooms into it and morphs into Chores filtered to that room
  * (`/chores?room=<roomId>`); under reduced motion it is a plain navigation and the
- * scene is fully static.
+ * scene is fully static. The zoom resets if the navigation does not happen (HP-11c).
+ *
+ * While the chores load (HP-7) the house keeps an outline: an earlier day's room layout
+ * (names only, each labelled "Loading…") or a plain four-room outline, never the
+ * no-permission copy and never "All clear".
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
@@ -37,6 +43,7 @@ import { healthSummaryText, type HealthResult } from '@/lib/maintenance/health';
 import { playPetSound } from '@/lib/dashboard/pet-sound';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
 import { staleHint, type SectionState } from '@/lib/dashboard/dashboard-store';
+import type { HouseOutlineRoom } from '@/lib/dashboard/house-snapshot';
 import { useDayLight, WeatherLayer } from './time-of-day';
 import { WeatherControls } from './weather-controls';
 import { PeekCard } from './peek-card';
@@ -46,6 +53,16 @@ const SEASONAL_KEY = 'homehub.dashboard.seasonal';
 const DISCO_MS = 10_000;
 /** Camera move into a room before the route morph starts (scene budget 400–900 ms). */
 const ZOOM_MS = 420;
+/** HP-11c: a zoom still showing this long after the navigation started is undone. */
+const ZOOM_RESET_MS = 3_000;
+/** Anonymous rooms of the loading outline when no earlier layout is known (as the skeleton). */
+const OUTLINE_IDS = ['outline-a', 'outline-b', 'outline-c', 'outline-d'];
+const LOADING_LABEL = 'Loading…';
+
+/** A room with no counts, drawn while the chores load. */
+const placeholderRoom = (id: string, name: string): RoomState => ({
+  id, name, overdue: 0, dueToday: 0, upcoming: 0, doneToday: 0, status: 'clear', chores: [],
+});
 const LONG_PRESS_MS = 550;
 const NAV_KEYS = new Set<string>(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
 
@@ -177,6 +194,7 @@ function RoomLink({
   placement,
   sparkle,
   morphing,
+  loading = false,
   onActive,
   onNavigate,
 }: {
@@ -184,12 +202,14 @@ function RoomLink({
   placement: RoomPlacement;
   sparkle: boolean;
   morphing: boolean;
+  /** HP-7b: drawn from an earlier day's layout while the chores load; no counts are claimed. */
+  loading?: boolean;
   onActive: (id: string | null) => void;
   onNavigate: (event: MouseEvent<HTMLAnchorElement>, room: RoomState, placement: RoomPlacement, href: string) => void;
 }) {
-  const summary = roomSummary(room);
+  const summary = loading ? LOADING_LABEL : roomSummary(room);
   const href = choresRoomHref(room.id);
-  const peek = room.chores.length > 0 ? (
+  const peek = !loading && room.chores.length > 0 ? (
     <div>
       <p className="font-medium">{room.name}</p>
       <ul className="mt-1 space-y-1">
@@ -212,7 +232,8 @@ function RoomLink({
         <Link
           href={href}
           aria-label={`${room.name}: ${summary}`}
-          data-room-status={room.status}
+          aria-busy={loading || undefined}
+          data-room-status={loading ? 'loading' : room.status}
           data-room-id={room.id}
           data-testid={`house-room-${room.id}`}
           // The click zooms first and then morphs (useMorphNavigation), so the
@@ -233,7 +254,7 @@ function RoomLink({
           >
             <span className="flex min-w-0 items-start justify-between gap-1">
               <span className="truncate text-xs font-semibold sm:text-sm">{room.name}</span>
-              {room.overdue > 0 ? (
+              {loading ? null : room.overdue > 0 ? (
                 <span aria-hidden className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-warning px-1 text-[10px] font-semibold text-warning-foreground sm:h-5 sm:min-w-5 sm:text-[11px]">
                   {room.overdue}
                 </span>
@@ -368,6 +389,7 @@ export function LivingHouse({
   golden = false,
   now,
   rooms: roomsSection,
+  outline = null,
   timeZone,
   onRetry,
 }: {
@@ -377,6 +399,8 @@ export function LivingHouse({
   now: Date;
   /** The chores section's state (GOAL-states): stale shows a hint, unauthorized and failed say so. */
   rooms?: SectionState;
+  /** HP-7b: an earlier day's room layout (names only) to draw while the chores load. */
+  outline?: HouseOutlineRoom[] | null;
   timeZone?: string;
   onRetry?: () => void;
 }) {
@@ -423,6 +447,17 @@ export function LivingHouse({
     if (zoomTimer.current !== null) window.clearTimeout(zoomTimer.current);
   }, []);
 
+  // HP-11c: a page restored from the back/forward cache never keeps a stuck zoom.
+  useEffect(() => {
+    const reset = () => {
+      if (zoomTimer.current !== null) window.clearTimeout(zoomTimer.current);
+      zoomTimer.current = null;
+      setZoom(null);
+    };
+    window.addEventListener('pageshow', reset);
+    return () => window.removeEventListener('pageshow', reset);
+  }, []);
+
   const toggleSeasonal = () => {
     const next = !seasonalOn;
     setSeasonalOn(next);
@@ -433,7 +468,14 @@ export function LivingHouse({
     }
   };
 
-  const rooms = useMemo(() => facts.chores?.rooms ?? [], [facts.chores]);
+  // HP-7: the chores are still loading (the member can view them and nothing failed).
+  const choresLoading = !facts.chores && roomsSection !== undefined && !facts.unavailable?.includes('chores');
+  const outlineKey = choresLoading && outline ? JSON.stringify(outline) : '';
+  const outlineRooms = useMemo(
+    () => (outlineKey ? (JSON.parse(outlineKey) as HouseOutlineRoom[]).map((room) => placeholderRoom(room.id, room.name)) : []),
+    [outlineKey],
+  );
+  const rooms = useMemo(() => facts.chores?.rooms ?? outlineRooms, [facts.chores, outlineRooms]);
   // With more rooms than fit, rooms that need attention (overdue, then due today,
   // including the "Unknown Room" bucket) are shown first; display keeps name order.
   const shownRooms = useMemo(() => {
@@ -441,8 +483,13 @@ export function LivingHouse({
     const visibleIds = new Set([...rooms].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_HOUSE_ROOMS).map((room) => room.id));
     return rooms.filter((room) => visibleIds.has(room.id));
   }, [rooms]);
-  const hiddenRooms = rooms.length - shownRooms.length;
-  const layout = useMemo(() => layoutHouse(shownRooms.map((room) => room.id)), [shownRooms]);
+  const hiddenRooms = facts.chores ? rooms.length - shownRooms.length : 0;
+  // Loading with no earlier layout: the same four-room outline as the skeleton, no links.
+  const drawnRooms = useMemo(
+    () => (choresLoading && shownRooms.length === 0 ? OUTLINE_IDS.map((id) => placeholderRoom(id, '')) : shownRooms),
+    [choresLoading, shownRooms],
+  );
+  const layout = useMemo(() => layoutHouse(drawnRooms.map((room) => room.id)), [drawnRooms]);
   const pets = useMemo(() => facts.pets?.pets ?? [], [facts.pets]);
   const petPlacements = useMemo(
     () => placePets(pets, layout, Object.fromEntries(shownRooms.map((room) => [room.id, room.name]))),
@@ -451,12 +498,14 @@ export function LivingHouse({
   const maintenance = facts.maintenance;
   const pantry = facts.pantry;
   const activeSeason = seasonalOn ? season : null;
-  const fullness = pantry ? Math.min(1, pantry.fridgeItems / 10) : 0;
+  // HP-9: the label, the fill and the pulse all count the whole pantry.
+  const fullness = pantry ? Math.min(1, pantry.total / 10) : 0;
   const climateItem = maintenance?.items.find((item) => item.climate && (item.overdue || item.dueSoon));
   const vehicleItem = maintenance?.items.find((item) => item.kind === 'vehicle' && (item.overdue || item.dueSoon));
   const lit = Boolean(light?.lit);
 
   const summary = [
+    choresLoading ? 'Rooms are loading.' : null,
     facts.chores ? (rooms.some((room) => room.status === 'overdue')
       ? `Rooms with overdue chores: ${rooms.filter((room) => room.status === 'overdue').map((room) => room.name).join(', ')}.`
       : 'No room has overdue chores.') : null,
@@ -472,7 +521,20 @@ export function LivingHouse({
     event.preventDefault();
     if (zoom) return;
     setZoom({ id: room.id, x: placement.center.x, y: placement.center.y });
-    zoomTimer.current = window.setTimeout(() => navigate(href), ZOOM_MS);
+    const reset = () => {
+      zoomTimer.current = null;
+      setZoom(null);
+    };
+    zoomTimer.current = window.setTimeout(() => {
+      try {
+        navigate(href);
+      } catch {
+        reset();
+        return;
+      }
+      // HP-11c: a navigation that never lands (a failed chunk after a deploy) unzooms.
+      zoomTimer.current = window.setTimeout(reset, ZOOM_RESET_MS);
+    }, ZOOM_MS);
   };
 
   const onRoomsKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
@@ -491,7 +553,8 @@ export function LivingHouse({
 
   const roomsState = facts.chores
     ? (shownRooms.length > 0 ? 'rooms' : 'empty')
-    : facts.unavailable?.includes('chores') ? (roomsSection?.status === 'unauthorized' ? 'unauthorized' : 'unavailable') : 'none';
+    : facts.unavailable?.includes('chores') ? (roomsSection?.status === 'unauthorized' ? 'unauthorized' : 'unavailable')
+      : choresLoading ? (shownRooms.length > 0 ? 'rooms' : 'loading') : 'none';
   const roomsHint = facts.chores ? staleHint(roomsSection, timeZone) : null;
   const bodyBox = {
     left: `${(layout.body.x / layout.width) * 100}%`,
@@ -541,7 +604,7 @@ export function LivingHouse({
             <svg aria-hidden viewBox={`0 0 ${layout.width} ${layout.height}`} className="absolute inset-0 h-full w-full overflow-visible">
               <Scenery layout={layout} season={activeSeason} golden={golden} lit={lit} />
               {layout.rooms.map((placement) => {
-                const room = shownRooms[placement.index];
+                const room = drawnRooms[placement.index];
                 return <RoomShape key={room.id} placement={placement} room={room} lit={lit} active={activeRoom === room.id} />;
               })}
               {petPlacements.map((placement) => (placement.mode === 'bowl' && placement.bowl ? (
@@ -569,6 +632,7 @@ export function LivingHouse({
                       placement={placement}
                       sparkle={room.status === 'clear' && room.doneToday > 0}
                       morphing={zoom?.id === room.id}
+                      loading={!facts.chores}
                       onActive={setActiveRoom}
                       onNavigate={onRoomNavigate}
                     />
@@ -594,6 +658,8 @@ export function LivingHouse({
                   <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unauthorized">
                     Rooms are not shared with you.
                   </p>
+                ) : roomsState === 'loading' ? (
+                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-loading" aria-busy="true">{LOADING_LABEL}</p>
                 ) : (
                   <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">Welcome home.</p>
                 )}
@@ -612,21 +678,22 @@ export function LivingHouse({
             <YardObject
               href={PANTRY_HREF}
               testId="house-fridge"
-              label={`Fridge: ${pantry.fridgeItems} ${pantry.fridgeItems === 1 ? 'item' : 'items'}${pantry.expiringSoon ? `, ${pantry.expiringSoon} expiring soon` : ''}`}
+              label={`Pantry: ${pantry.total} ${pantry.total === 1 ? 'item' : 'items'}${pantry.expiringSoon ? `, ${pantry.expiringSoon} expiring soon` : ''}`}
             >
               <span className="relative flex h-9 w-7 items-end overflow-hidden rounded-md border bg-card">
                 <span aria-hidden className="absolute inset-x-0 bottom-0 bg-info/30" style={{ height: `${Math.round(fullness * 100)}%` }} />
                 <Refrigerator aria-hidden className={cn('relative m-auto h-4 w-4', pantry.expiringSoon > 0 && !reduced && styles.pulse)} />
                 {pantry.expiringSoon > 0 && <span aria-hidden className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-warning" />}
               </span>
-              <span>Fridge</span>
+              <span>Pantry</span>
             </YardObject>
           )}
-          {maintenance && (
+          {/* HP-8: only a home with a climate asset has an outdoor unit to report on. */}
+          {maintenance && maintenance.climateAssets > 0 && (
             <YardObject
               href={climateItem?.href ?? MAINTENANCE_REMINDERS_HREF}
               testId="house-hvac"
-              label={maintenance.climateDue ? `Heating and cooling: ${climateItem ? `${climateItem.label}, ${climateItem.statusLabel.toLowerCase()}` : 'needs attention'}` : 'Heating and cooling: all good'}
+              label={maintenance.climateDue ? `Heating and cooling: ${climateItem ? `${climateItem.label}, ${climateItem.statusLabel.toLowerCase()}` : 'needs attention'}` : 'Heating and cooling: no service due'}
             >
               <span className="relative flex h-9 w-9 items-center justify-center rounded-md border bg-card">
                 <AirVent aria-hidden className="h-4 w-4" />

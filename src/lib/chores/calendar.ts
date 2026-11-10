@@ -5,7 +5,7 @@
 import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
 import { toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
-import { recurringChoreId } from '../../../functions/src/shared/ids';
+import { choreOccurrenceKey, recurringChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
 import { currentMedications, type MedicationDue as MedicationCountdown } from '../pets/care';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
@@ -269,8 +269,17 @@ export type RecurringTemplate = {
  * Delegates to the server's `recurringChoreId` and mirrors its room fallback.
  */
 export function occurrenceIds(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string, assignee: string): string[] {
+  return occurrences(template, day, assignee).map(occurrence => occurrence.id);
+}
+
+/**
+ * Each room instance of an occurrence: its document id and its occurrence key
+ * (`templateId|roomId|day`, independent of the assignee), the two identities the
+ * server checks before generating it.
+ */
+export function occurrences(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string, assignee: string): { id: string; key: string }[] {
   const rooms = Array.isArray(template.roomIds) && template.roomIds.length > 0 ? template.roomIds : ['general'];
-  return rooms.map(roomId => recurringChoreId(template.id, roomId, day, assignee));
+  return rooms.map(roomId => ({ id: recurringChoreId(template.id, roomId, day, assignee), key: choreOccurrenceKey(template.id, roomId, day) }));
 }
 
 /**
@@ -278,7 +287,8 @@ export function occurrenceIds(template: Pick<RecurringTemplate, 'id' | 'roomIds'
  * whose chore document does not exist yet. The server only generates the next
  * 30 occurrences, so without these a month far ahead would look empty. Uses the
  * server's recurrence rules and occurrence IDs: an occurrence whose document
- * exists (even if it was moved or completed) is never planned again. One event
+ * exists (even if it was moved or completed), or whose occurrence key a chore
+ * already holds (it was reassigned), is never planned again. One event
  * per missing room instance, as the server would create; none for non-members.
  */
 export function plannedRecurringEvents(
@@ -291,6 +301,12 @@ export function plannedRecurringEvents(
 ): CalendarEvent[] {
   const byEmail = new Map(members.map(member => [member.email, member]));
   const existing = new Set(chores.map(c => c.id));
+  // A day already has its chore when any chore holds its occurrence key, whoever
+  // it is assigned to now (a completed day stays done after a reassignment).
+  const existingKeys = new Set(chores.flatMap(c => {
+    const key = storedOccurrenceKey(c.id, c);
+    return key ? [key] : [];
+  }));
   const start = rangeStart > today ? rangeStart : today;
   const events: CalendarEvent[] = [];
   for (const template of templates) {
@@ -300,8 +316,8 @@ export function plannedRecurringEvents(
     if (!recurrence || !member || !assignee) continue;
     for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
       if (!occursOn(day, recurrence)) continue;
-      for (const id of occurrenceIds(template, day, assignee)) {
-        if (existing.has(id)) continue;
+      for (const { id, key } of occurrences(template, day, assignee)) {
+        if (existing.has(id) || existingKeys.has(key)) continue;
         events.push({
           id: `planned:${id}`,
           kind: 'chore',
