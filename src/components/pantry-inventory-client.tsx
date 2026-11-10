@@ -105,6 +105,11 @@ function PantryItemDialog({
   itemToEdit: PantryItem | null,
 }) {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // The scanner is a sibling portaled dialog, not inside the item dialog: it closes
+  // (unmounting BarcodeScanner, which releases the camera) when the Pantry tab is
+  // hidden and whenever the item dialog itself closes.
+  useOnTabDeactivate(() => setIsScannerOpen(false));
+  if (!isOpen && isScannerOpen) setIsScannerOpen(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
   const { toast, toastError } = useToast();

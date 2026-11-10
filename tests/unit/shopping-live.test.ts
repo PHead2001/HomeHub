@@ -325,4 +325,17 @@ describe('tab overlays close when their tab is hidden', () => {
       assert.match(readFileSync(file, 'utf8'), /useOnTabDeactivate\(\(\) => \{/, `${file} closes its overlays`);
     }
   });
+
+  test('nested scanners close with their tab and their parent dialog, and the camera is released', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pantry = readFileSync('src/components/pantry-inventory-client.tsx', 'utf8');
+    const itemDialog = pantry.slice(pantry.indexOf('function PantryItemDialog'), pantry.indexOf('<Dialog open={isScannerOpen}'));
+    assert.match(itemDialog, /useOnTabDeactivate\(\(\) => setIsScannerOpen\(false\)\)/);
+    assert.match(itemDialog, /if \(!isOpen && isScannerOpen\) setIsScannerOpen\(false\)/);
+    const list = readFileSync('src/components/shopping-list-client.tsx', 'utf8');
+    assert.match(list, /if \(!isAddItemDialogOpen && isScannerOpen\) setIsScannerOpen\(false\)/);
+    assert.match(list, /useOnTabDeactivate\(\(\) => \{[^}]*setIsScannerOpen\(false\)/);
+    const scanner = readFileSync('src/components/barcode-scanner.tsx', 'utf8');
+    assert.match(scanner, /getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\)/);
+  });
 });

@@ -278,6 +278,10 @@ export function ShoppingListClient({
     setHandoffMode(null);
   });
 
+  // The Add Item scanner is nested in the Add Item dialog: it never outlives it
+  // (otherwise reopening Add Item would bring the camera back).
+  if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
+
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
