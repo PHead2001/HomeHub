@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
-import { Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { parseNotificationDoc } from '../../src/lib/notifications';
@@ -74,13 +74,32 @@ describe('household upkeep', () => {
     assert.equal((await house().collection('chores').get()).size, 30);
   });
 
-  test('generated chores carry the assignee uid as well as the email, under the ids they always had', async () => {
+  test('generated chores carry the assignee uid only, under the ids they always had', async () => {
     const now = new Date('2026-11-05T15:00:00Z');
     await run(now);
     const chore = (await house().collection('chores').doc(recurringChoreId('trash', 'general', '2026-11-05', 'owner@example.test')).get()).data();
     assert.equal(chore?.assignedToUid, 'o1');
-    assert.equal(chore?.assignedToEmail, 'owner@example.test');
+    assert.equal(chore?.assignedToEmail, undefined, 'member privacy release C: no email on generated chores');
     assert.equal(chore?.assignedToDisplayName, 'Owner');
+  });
+
+  test('a template whose email is scrubbed (release C) generates by uid without a second copy of any day', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    assert.equal((await run(now)).generatedChores, 30);
+    // scripts/ops/scrub-shared-emails.mjs: the uid is set and both email copies removed.
+    await house().collection('chore-templates').doc('trash').update({
+      assignedToUid: 'o1', assignedToEmail: FieldValue.delete(), 'recurrence.assignedToEmail': FieldValue.delete(),
+    });
+    // A week later: the 29 open days generated under the email-keyed ids are still there.
+    const later = new Date('2026-11-12T15:00:00Z');
+    const result = await run(later);
+    assert.equal(result.generatedChores, 1, 'only the one new day at the end of the window');
+    const chores = (await house().collection('chores').get()).docs.map(d => d.data());
+    const days = chores.map(c => c.originalDueDate);
+    assert.equal(new Set(days).size, days.length, 'no day twice');
+    const fresh = await house().collection('chores').doc(recurringChoreId('trash', 'general', '2027-06-03', 'o1')).get();
+    assert.equal(fresh.exists, true, 'new days are keyed by uid');
+    assert.equal(fresh.data()?.assignedToEmail, undefined);
   });
 
   test('a template assigned by uid only (email no longer known to its writer) still generates', async () => {
@@ -93,7 +112,7 @@ describe('household upkeep', () => {
     await run(now);
     const chore = (await house().collection('chores').doc(recurringChoreId('mop', 'kitchen', '2026-11-05', 'o1')).get()).data();
     assert.equal(chore?.assignedToUid, 'o1');
-    assert.equal(chore?.assignedToEmail, 'owner@example.test', 'dual-written from the member record while it has the email');
+    assert.equal(chore?.assignedToEmail, undefined);
     // A uid that is not an approved member gets nothing.
     await house().collection('chore-templates').doc('mop').update({ assignedToUid: 'p1' });
     await adminDb.recursiveDelete(house().collection('chores'));

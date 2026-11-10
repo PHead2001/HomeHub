@@ -28,7 +28,8 @@ export type MonthlyNthWeekday = {
 export type Recurrence = {
   frequency: RecurrenceFrequency;
   interval: number; // e.g., every 1 week, every 2 weeks
-  assignedToEmail: string; // The email of the user this recurrence is assigned to
+  /** Legacy copy of the assignee's email on older templates; never written since member privacy release C. */
+  assignedToEmail?: string;
   startDate?: string; // yyyy-MM-dd anchor date for interval-based schedules
   dailyOptions?: {
     excludeWeekends: boolean;
@@ -286,18 +287,19 @@ export type ChoreTemplate = {
     notes?: string;
     subTasks?: string[];
     recurrence?: Recurrence | null;
-    /** Assignee's Auth uid (dual-written with the email; see functions/src/shared/assignee.ts). */
+    /** Assignee's Auth uid, the only assignee field written since member privacy release C (functions/src/shared/assignee.ts). */
     assignedToUid?: string | null;
+    /** Legacy assignee email on older templates; read as a fallback, never written. */
     assignedToEmail?: string | null;
 }
 
 export type Chore = {
   id: string;
   task: string;
-  /** Assignee's Auth uid; older chores have only the email. Read through functions/src/shared/assignee.ts. */
+  /** Assignee's Auth uid ("" when unassigned); very old chores have only the email. Read through functions/src/shared/assignee.ts. */
   assignedToUid?: string;
-  /** Legacy assignee key, still dual-written; "" when unassigned or not known to the writer. */
-  assignedToEmail: string;
+  /** Legacy assignee key on older chores; read as a fallback, never written since member privacy release C. */
+  assignedToEmail?: string;
   assignedToDisplayName?: string;
   dueDate: string;
   isCompleted: boolean;
@@ -430,10 +432,10 @@ export type User = {
 export type Household = {
     id: string;
     name: string;
-    /** Legacy display data (never grants access); being phased out, absent while pending. */
+    /** Legacy display data (never grants access); no longer written (member privacy release C), scrubbed by ops. */
     ownerEmail?: string;
     ownerUid?: string;
-    /** Legacy display data (never grants access); being phased out, absent while pending. */
+    /** Legacy display data (never grants access); no longer written (member privacy release C), scrubbed by ops. */
     memberEmails?: string[];
     /** ISO string; absent while pending (the person only knows the name). */
     createdAt?: string;

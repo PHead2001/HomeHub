@@ -7,10 +7,13 @@ import { SERVICE_WORKER_SCOPE, shouldAutoRegisterServiceWorker } from '@/lib/ser
 import { isShellBusy, subscribeShellBusy } from '@/lib/shell/busy';
 import {
   BUILD_QUERY_MESSAGE,
+  FORCED_RELOAD_KEY,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_PROMPTED_KEY,
-  buildIdFromMessage,
+  buildInfoFromMessage,
+  decideRequiredReload,
   decideUpdatePrompt,
+  parseForcedReload,
   shouldCheckOnVisible,
 } from '@/lib/shell/update-check';
 
@@ -49,6 +52,41 @@ function showUpdatedToast() {
   });
 }
 
+const readForcedReload = () => {
+  try {
+    return parseForcedReload(window.sessionStorage.getItem(FORCED_RELOAD_KEY));
+  } catch {
+    return null;
+  }
+};
+const writeForcedReload = (buildId: string) => {
+  try {
+    window.sessionStorage.setItem(FORCED_RELOAD_KEY, JSON.stringify({ buildId, at: Date.now() }));
+  } catch {
+    // Blocked storage: no loop guard, but a reload only happens while this build is too old.
+  }
+};
+
+// Shown once per page while it is older than the published minimum; stays until reload.
+let requiredNoticeShown = false;
+function showReloadRequiredToast(manual: boolean) {
+  if (requiredNoticeShown) return;
+  requiredNoticeShown = true;
+  toast({
+    title: 'HomeHub needs to reload',
+    description: manual
+      ? 'This version is out of date. Reload to keep using HomeHub.'
+      : "This version is out of date. HomeHub will reload as soon as you finish what you're doing.",
+    holdsAction: false,
+    duration: Infinity,
+    action: (
+      <ToastAction altText="Reload HomeHub now" onClick={() => window.location.reload()}>
+        Reload
+      </ToastAction>
+    ),
+  });
+}
+
 /**
  * SL-2: keeps the service worker fresh while a page stays open and offers a
  * Reload once a newer build is live. Checks `registration.update()` every 45
@@ -56,6 +94,12 @@ function showUpdatedToast() {
  * asks the active worker for its build id, and listens for the worker's
  * activation message. The toast appears once per build per tab, waits while the
  * shell is busy (a save, an Undo, unsaved input), and never reloads on its own.
+ *
+ * Minimum build (member privacy release C): the worker also publishes the
+ * oldest build allowed to keep running (`minimumBuildId`). A page older than it
+ * says "HomeHub needs to reload" and reloads by itself as soon as the shell is
+ * idle and the browser is online (`decideRequiredReload`), at most once per
+ * page build within 10 minutes; after that it waits for the member's tap.
  * Production only (the worker is not auto-registered in development).
  */
 export function UpdateWatcher() {
@@ -64,7 +108,45 @@ export function UpdateWatcher() {
     const container = navigator.serviceWorker;
     let lastCheckAt = Date.now();
     let stopWaiting: (() => void) | null = null;
+    let stopWaitingRequired: (() => void) | null = null;
     let disposed = false;
+
+    const stopRequiredWait = () => {
+      stopWaitingRequired?.();
+      stopWaitingRequired = null;
+    };
+
+    const considerMinimum = (minimum: string) => {
+      const decision = decideRequiredReload({
+        pageBuildId: PAGE_BUILD_ID,
+        minimumBuildId: minimum,
+        busy: isShellBusy(),
+        online: navigator.onLine !== false,
+        lastForcedReload: readForcedReload(),
+        now: Date.now(),
+      });
+      if (decision === 'none') return;
+      showReloadRequiredToast(decision === 'manual');
+      if (decision === 'reload') {
+        stopRequiredWait();
+        writeForcedReload(PAGE_BUILD_ID);
+        window.location.reload();
+      } else if (decision === 'wait' && !stopWaitingRequired) {
+        // Re-decide when the shell goes idle or the browser comes back online.
+        const retry = () => {
+          stopRequiredWait();
+          if (!disposed) considerMinimum(minimum);
+        };
+        const unsubscribe = subscribeShellBusy((busy) => {
+          if (!busy) retry();
+        });
+        window.addEventListener('online', retry);
+        stopWaitingRequired = () => {
+          unsubscribe();
+          window.removeEventListener('online', retry);
+        };
+      }
+    };
 
     const consider = (workerBuildId: string) => {
       const decision = decideUpdatePrompt({
@@ -100,8 +182,10 @@ export function UpdateWatcher() {
     };
 
     const onMessage = (event: MessageEvent) => {
-      const buildId = buildIdFromMessage(event.data);
-      if (buildId) consider(buildId);
+      const info = buildInfoFromMessage(event.data);
+      if (!info) return;
+      if (info.minimumBuildId) considerMinimum(info.minimumBuildId);
+      consider(info.buildId);
     };
     const onVisibility = () => {
       if (document.visibilityState === 'visible' && shouldCheckOnVisible(lastCheckAt, Date.now())) void check();
@@ -117,6 +201,7 @@ export function UpdateWatcher() {
     return () => {
       disposed = true;
       stopWaiting?.();
+      stopRequiredWait();
       container.removeEventListener('message', onMessage);
       container.removeEventListener('controllerchange', askActiveWorker);
       document.removeEventListener('visibilitychange', onVisibility);

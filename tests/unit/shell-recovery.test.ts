@@ -13,7 +13,13 @@ import {
 import {
   BUILD_MESSAGE,
   buildIdFromMessage,
+  buildInfoFromMessage,
+  decideRequiredReload,
   decideUpdatePrompt,
+  FORCED_RELOAD_GUARD_MS,
+  MINIMUM_SUPPORTED_BUILD_ID,
+  minimumBuildId,
+  parseForcedReload,
   formatBuildId,
   isBuildId,
   shouldCheckOnVisible,
@@ -154,6 +160,54 @@ describe('update detection', () => {
     assert.ok(UPDATE_CHECK_INTERVAL_MS >= 30 * 60_000 && UPDATE_CHECK_INTERVAL_MS <= 60 * 60_000);
     assert.equal(shouldCheckOnVisible(0, VISIBLE_RECHECK_MIN_MS - 1), false);
     assert.equal(shouldCheckOnVisible(0, VISIBLE_RECHECK_MIN_MS), true);
+  });
+});
+
+describe('minimum supported build (member privacy release C)', () => {
+  const old = '20261101T000000000Z';
+  const current = '20261112T000000000Z';
+  const base = { pageBuildId: old, minimumBuildId: MINIMUM_SUPPORTED_BUILD_ID, busy: false, online: true, lastForcedReload: null, now: 1_000_000 };
+
+  test('the floor is the release A merge time, and an override can only raise it', () => {
+    assert.ok(isBuildId(MINIMUM_SUPPORTED_BUILD_ID));
+    assert.equal(MINIMUM_SUPPORTED_BUILD_ID, '20261110T203402000Z');
+    assert.equal(minimumBuildId(undefined), MINIMUM_SUPPORTED_BUILD_ID);
+    assert.equal(minimumBuildId('not-a-build'), MINIMUM_SUPPORTED_BUILD_ID);
+    assert.equal(minimumBuildId(old), MINIMUM_SUPPORTED_BUILD_ID);
+    assert.equal(minimumBuildId(current), current);
+  });
+
+  test('reads the published minimum from the build message (older workers send none)', () => {
+    assert.deepEqual(buildInfoFromMessage({ type: BUILD_MESSAGE, buildId: current, minimumBuildId: MINIMUM_SUPPORTED_BUILD_ID }),
+      { buildId: current, minimumBuildId: MINIMUM_SUPPORTED_BUILD_ID });
+    assert.deepEqual(buildInfoFromMessage({ type: BUILD_MESSAGE, buildId: current }), { buildId: current, minimumBuildId: null });
+    assert.deepEqual(buildInfoFromMessage({ type: BUILD_MESSAGE, buildId: current, minimumBuildId: 'x' }), { buildId: current, minimumBuildId: null });
+    assert.equal(buildInfoFromMessage({ type: 'other', buildId: current }), null);
+  });
+
+  test('a build older than the minimum reloads, but only when idle and online', () => {
+    assert.equal(decideRequiredReload(base), 'reload');
+    assert.equal(decideRequiredReload({ ...base, busy: true }), 'wait');
+    assert.equal(decideRequiredReload({ ...base, online: false }), 'wait');
+  });
+
+  test('a build at or after the minimum, or an unknown build or minimum, never reloads', () => {
+    assert.equal(decideRequiredReload({ ...base, pageBuildId: MINIMUM_SUPPORTED_BUILD_ID }), 'none');
+    assert.equal(decideRequiredReload({ ...base, pageBuildId: current }), 'none');
+    assert.equal(decideRequiredReload({ ...base, pageBuildId: undefined }), 'none');
+    assert.equal(decideRequiredReload({ ...base, minimumBuildId: null }), 'none');
+  });
+
+  test('never reloads in a loop: a second time within the guard asks the member instead', () => {
+    const justReloaded = { buildId: old, at: base.now - 1000 };
+    assert.equal(decideRequiredReload({ ...base, lastForcedReload: justReloaded }), 'manual');
+    assert.equal(decideRequiredReload({ ...base, lastForcedReload: { buildId: old, at: base.now - FORCED_RELOAD_GUARD_MS } }), 'reload');
+    // A reload recorded for another build does not count.
+    assert.equal(decideRequiredReload({ ...base, lastForcedReload: { buildId: '20261001T000000000Z', at: base.now } }), 'reload');
+    assert.deepEqual(parseForcedReload(JSON.stringify(justReloaded)), justReloaded);
+    assert.equal(parseForcedReload('{'), null);
+    assert.equal(parseForcedReload(JSON.stringify({ buildId: 'x', at: 1 })), null);
+    assert.equal(parseForcedReload(null), null);
   });
 });
 

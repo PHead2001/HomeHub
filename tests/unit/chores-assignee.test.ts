@@ -114,11 +114,15 @@ describe('chore assignee (uid with email fallback)', () => {
     assert.equal(isAssignedTo({ assignedToUid: 'uid-ana', assignedToEmail: '' }, { uid: 'uid-ana' }), true);
   });
 
-  test('writers dual-write, and unassigning clears both', () => {
-    assert.deepEqual(assigneeFields({ uid: 'uid-sam', email: ' sam@example.test ' }), { assignedToUid: 'uid-sam', assignedToEmail: 'sam@example.test' });
-    assert.deepEqual(assigneeFields({ uid: 'uid-sam' }), { assignedToUid: 'uid-sam', assignedToEmail: '' });
+  test('writers store the uid only (member privacy release C), and unassigning clears it', () => {
+    assert.deepEqual(assigneeFields({ uid: 'uid-sam', email: ' sam@example.test ' }), { assignedToUid: 'uid-sam' });
+    assert.deepEqual(assigneeFields({ uid: 'uid-sam' }), { assignedToUid: 'uid-sam' });
+    // Every reader finds a uid-only record by uid, whether or not it can see emails.
+    assert.equal(resolveAssigneeUid(assigneeFields({ uid: 'uid-sam' }), people), 'uid-sam');
+    assert.equal(isAssignedTo(assigneeFields({ uid: 'uid-sam' }), people[1]), true);
+    assert.equal(isAssignedTo(assigneeFields({ uid: 'uid-sam' }), people[0]), false);
     const unassigned = unassignedChoreFields();
-    assert.deepEqual(unassigned, { assignedToUid: '', assignedToEmail: '', assignedToDisplayName: 'Unassigned' });
+    assert.deepEqual(unassigned, { assignedToUid: '', assignedToDisplayName: 'Unassigned' });
     assert.equal(resolveAssigneeUid(unassigned, people), null);
   });
 
@@ -127,6 +131,8 @@ describe('chore assignee (uid with email fallback)', () => {
     assert.equal(occurrenceAssigneeKey({ recurrence: { assignedToEmail: 'ana@example.test' } }), 'ana@example.test');
     assert.equal(occurrenceAssigneeKey({ assignedToUid: 'uid-sam', assignedToEmail: '' }), 'uid-sam');
     assert.equal(occurrenceAssigneeKey({}), '');
+    // A template written since release C (or scrubbed) is keyed by its uid.
+    assert.equal(occurrenceAssigneeKey(assigneeFields({ uid: 'uid-sam', email: 'sam@example.test' })), 'uid-sam');
     // Same ids as before the uid existed, for a template with an email.
     assert.deepEqual(occurrenceIds({ id: 't1', roomIds: ['kitchen'] }, '2026-11-09', 'sam@example.test'),
       [recurringChoreId('t1', 'kitchen', '2026-11-09', 'sam@example.test')]);

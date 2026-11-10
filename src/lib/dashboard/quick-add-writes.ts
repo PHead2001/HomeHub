@@ -60,7 +60,6 @@ export type RepeatingChoreTemplate = {
   subTasks: string[];
   recurrence: Recurrence;
   assignedToUid: string;
-  assignedToEmail: string;
 };
 
 export function repeatingChoreTemplate({
@@ -73,17 +72,16 @@ export function repeatingChoreTemplate({
   /** null or "general" is "Around the house" (no room), as in the dialog. */
   roomId: string | null;
   recurrence: Omit<Recurrence, 'assignedToEmail'>;
-  /** Dual-write: uid always, email while the writer knows it (functions/src/shared/assignee.ts). */
+  /** Stored by uid only; an email the caller knows is never written (functions/src/shared/assignee.ts). */
   assignee: { uid: string; email?: string | null };
 }): RepeatingChoreTemplate {
-  const fields = assigneeFields(assignee);
   return {
     task,
     notes: '',
     roomIds: roomId && roomId !== 'general' ? [roomId] : [],
     subTasks: [],
-    recurrence: { ...recurrence, assignedToEmail: fields.assignedToEmail },
-    ...fields,
+    recurrence: { ...recurrence },
+    ...assigneeFields(assignee),
   };
 }
 

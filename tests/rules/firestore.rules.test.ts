@@ -1443,6 +1443,45 @@ describe('content shapes: chores and templates', () => {
     await assertFails(setDoc(template(noAssign, 'uid-other'), { ...repeating(noAssign.email), assignedToUid: users.member.uid }));
     await assertSucceeds(updateDoc(template(users.member, 'uid-weekly'), { recurrence: null, assignedToEmail: null, assignedToUid: null }));
   });
+
+  // Member privacy release C: writers store the uid alone and delete any email they replace.
+  test('uid-only assignees are accepted for yourself, and someone else still needs chores.assign', async () => {
+    const uidOnlyChore = (assignedToUid: string) => {
+      const { assignedToEmail: _email, ...rest } = oneTime('', { assignedToUid });
+      void _email;
+      return rest;
+    };
+    const uidOnlyTemplate = (assignedToUid: string) => ({
+      task: 'Trash night', notes: '', roomIds: [], subTasks: [],
+      recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1, 3] } }, assignedToUid,
+    });
+    // chores.create alone: yourself (uid, no email) or unassigned.
+    await assertSucceeds(addDoc(chores(noAssign), uidOnlyChore(noAssign.uid)));
+    await assertSucceeds(addDoc(chores(noAssign), uidOnlyChore('')));
+    await assertFails(addDoc(chores(noAssign), uidOnlyChore(users.member.uid)));
+    await assertSucceeds(addDoc(chores(users.member), uidOnlyChore(users.owner.uid)));
+    await assertSucceeds(setDoc(template(noAssign, 'c-mine'), uidOnlyTemplate(noAssign.uid)));
+    await assertFails(setDoc(template(noAssign, 'c-other'), uidOnlyTemplate(users.member.uid)));
+    await assertSucceeds(setDoc(template(users.member, 'c-assigned'), uidOnlyTemplate(users.child.uid)));
+    // Editing a template's schedule onto yourself removes the older assignee's email (handleUpdateRecurringTask).
+    await assertSucceeds(updateDoc(template(noAssign, 'existing'), {
+      assignedToUid: noAssign.uid, assignedToEmail: deleteField(), recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1] } },
+    }));
+    await assertFails(updateDoc(template(noAssign, 'existing'), {
+      assignedToUid: users.child.uid, assignedToEmail: deleteField(), recurrence: { frequency: 'daily', interval: 1 },
+    }));
+    // Library assignment merges onto the template and deletes both email copies (handleAssignChores).
+    await assertSucceeds(setDoc(template(users.member, 'existing'), {
+      recurrence: { frequency: 'daily', interval: 1, assignedToEmail: deleteField() }, assignedToUid: users.child.uid, assignedToEmail: deleteField(),
+    }, { merge: true }));
+    // Reassigning a chore (handleReassign) needs chores.assign, as before.
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { assignedToUid: users.child.uid, assignedToEmail: deleteField(), assignedToDisplayName: 'Child A' }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: noAssign.uid, assignedToEmail: deleteField() }));
+    // Even once no email is left, taking someone's chore by uid needs chores.assign.
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: noAssign.uid }));
+    // Stop repeating (handleDeleteRecurringTask).
+    await assertSucceeds(updateDoc(template(noAssign, 'c-mine'), { recurrence: null, assignedToEmail: deleteField(), assignedToUid: null }));
+  });
 });
 
 // The restore document the S3 client writes (src/lib/shopping/items.ts restoreItemData +

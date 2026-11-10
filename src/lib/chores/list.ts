@@ -47,8 +47,9 @@ export type ToDoEntry<T extends ChoreRecord = ChoreRecord> = {
  */
 const seriesKey = (chore: ChoreRecord, recurringTemplateIds: ReadonlySet<string>) =>
   chore.templateId && !chore.sourceType && recurringTemplateIds.has(chore.templateId)
-    // Email first while records carry it (it is the field older builds still rewrite), else the uid.
-    ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${chore.assignedToEmail?.toLowerCase() || chore.assignedToUid || ''}`
+    // The uid first: since member privacy release C generated chores carry only the uid, while
+    // older ones of the same series carry both (backfilled); the email only for a record without a uid.
+    ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${chore.assignedToUid || chore.assignedToEmail?.toLowerCase() || ''}`
     : null;
 
 /**

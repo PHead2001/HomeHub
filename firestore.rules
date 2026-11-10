@@ -510,6 +510,15 @@ service cloud.firestore {
           get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data.get('email', null) == email);
     }
 
+    // Since member privacy release C writers store the uid alone (no email). Creating a
+    // chore or setting a template for yourself that way needs no chores.assign, as with
+    // your own email; any other uid is checked as above. Not used for chore updates:
+    // changing a chore's assignee, even to yourself, still needs chores.assign.
+    function choreAssigneeUidIsCallerOrMatches(householdId, uid, email) {
+      return (uid == request.auth.uid && (email == null || email == '')) ||
+        choreAssigneeUidMatchesEmail(householdId, uid, email);
+    }
+
     function validChoreFields(data, keys) {
       return keys.hasOnly([
           'task', 'notes', 'assignedToEmail', 'assignedToUid', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
@@ -567,7 +576,7 @@ service cloud.firestore {
     // covers a chore for yourself or an unassigned one.
     function choreCreateAssignmentAllowed(householdId) {
       return (choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) &&
-          choreAssigneeUidMatchesEmail(householdId, request.resource.data.get('assignedToUid', null),
+          choreAssigneeUidIsCallerOrMatches(householdId, request.resource.data.get('assignedToUid', null),
             request.resource.data.get('assignedToEmail', null))) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
@@ -630,7 +639,8 @@ service cloud.firestore {
       return data.get('recurrence', null) is map ? data.recurrence.get('assignedToEmail', null) : null;
     }
 
-    // A template is assigned through `assignedToEmail` and `recurrence.assignedToEmail`.
+    // A template is assigned through `assignedToUid` (and, on older templates,
+    // `assignedToEmail` and `recurrence.assignedToEmail`).
     // Setting either to someone other than the caller needs chores.assign.
     function templateAssignmentAllowed(householdId) {
       let after = request.resource.data;
@@ -641,7 +651,7 @@ service cloud.firestore {
           (recurrenceAssignee(after) == recurrenceAssignee(before) ||
             choreAssigneeIsCallerOrNone(recurrenceAssignee(after))) &&
           (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
-            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))
+            choreAssigneeUidIsCallerOrMatches(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))
         ) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }

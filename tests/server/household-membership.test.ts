@@ -72,6 +72,8 @@ describe('invite redemption', () => {
     const member = (await house.collection('members').doc(newcomer.uid).get()).data();
     assert.equal(member?.role, 'newuser');
     assert.equal(member?.status, 'pending');
+    // The household document gets no email (member privacy release C); the legacy list is untouched.
+    assert.deepEqual((await house.get()).data()?.memberEmails, [owner.email, admin.email, guest.email]);
     const used = (await adminDb.collection('inviteCodes').doc('ABCD-EFGH-JK').get()).data();
     assert.equal(used?.useCount, 1);
     const profile = (await adminDb.collection('users').doc(newcomer.email).get()).data();
@@ -194,7 +196,7 @@ describe('leaving and deleting', () => {
     await leaveHousehold(guest, HOUSE, NOW);
     assert.equal((await house.collection('members').doc(guest.uid).get()).exists, false);
     assert.equal((await house.collection('members').doc(guest.uid).collection('private').doc('contact').get()).exists, false);
-    assert.equal((await house.collection('chores').doc('c1').get()).data()?.assignedToEmail, '');
+    assert.equal((await house.collection('chores').doc('c1').get()).data()?.assignedToEmail, undefined);
     assert.equal((await house.collection('chores').doc('c2').get()).data()?.assignedToEmail, guest.email);
     const template = (await house.collection('chore-templates').doc('t1').get()).data();
     assert.equal(template?.assignedToEmail, undefined);
@@ -218,7 +220,7 @@ describe('leaving and deleting', () => {
     for (const id of ['u1', 'u2']) {
       const chore = (await house.collection('chores').doc(id).get()).data();
       assert.equal(chore?.assignedToUid, '', id);
-      assert.equal(chore?.assignedToEmail, '', id);
+      assert.equal(chore?.assignedToEmail, undefined, id);
     }
     const moved = (await house.collection('chores').doc('moved').get()).data();
     assert.equal(moved?.assignedToEmail, admin.email);

@@ -5,7 +5,7 @@ import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
-import { type DocumentData, collection, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
 import { format } from 'date-fns';
@@ -266,15 +266,14 @@ export function ChoreChartClient() {
       } else {
         // Readable slug + auto-id: never collides with a template this page has not seen.
         const templateId = newChoreDocId(input.task, doc(templatesCollection).id);
-        const fields = assigneeFields(assignee);
-        const recurrence: Recurrence = { ...input.recurrence, assignedToEmail: fields.assignedToEmail };
+        const recurrence: Recurrence = { ...input.recurrence };
         await setDoc(doc(templatesCollection, templateId), {
           task: input.task,
           notes: input.notes,
           roomIds,
           subTasks: [],
           recurrence,
-          ...fields,
+          ...assigneeFields(assignee),
         });
         if (shouldNotify(assignee.uid)) {
           await setDoc(doc(notificationsCollection), buildNotificationDocument({
@@ -374,8 +373,13 @@ export function ChoreChartClient() {
     const batch = writeBatch(db);
     if (schedule.type === 'recurring') {
       for (const template of templatesToAssign) {
-        const recurrence: Recurrence = { ...schedule.recurrence, assignedToEmail: fields.assignedToEmail };
-        batch.set(doc(templatesCollection, template.id), { recurrence, ...fields }, { merge: true });
+        // A merge keeps fields it does not name, so an older assignee's email (top level
+        // and inside `recurrence`) is removed explicitly: it would otherwise win over the uid.
+        batch.set(doc(templatesCollection, template.id), {
+          recurrence: { ...schedule.recurrence, assignedToEmail: deleteField() },
+          ...fields,
+          assignedToEmail: deleteField(),
+        }, { merge: true });
       }
     } else {
       const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
@@ -495,12 +499,12 @@ export function ChoreChartClient() {
       toastError({ code: 'not-found' }, "Couldn't update the schedule");
       return false;
     }
-    const fields = assigneeFields(user);
-    return replaceRecurrence(choreId, { ...fields, recurrence: { ...recurrence, assignedToEmail: fields.assignedToEmail } }, 'Repeating chore updated', "Couldn't update the schedule");
+    // The recurrence map is replaced as a whole; the top-level legacy email is removed.
+    return replaceRecurrence(choreId, { ...assigneeFields(user), assignedToEmail: deleteField(), recurrence: { ...recurrence } }, 'Repeating chore updated', "Couldn't update the schedule");
   };
 
   const handleDeleteRecurringTask = async (choreId: string) => {
-    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: null, assignedToUid: null }, 'Stopped repeating', "Couldn't stop the schedule");
+    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: deleteField(), assignedToUid: null }, 'Stopped repeating', "Couldn't stop the schedule");
   };
 
   /* ---------------------------------------------------------------------- */
@@ -721,9 +725,10 @@ export function ChoreChartClient() {
     if (!choresCollection || !user || uid === chore.assignedToUid) return;
     const updates = { ...assigneeFields(user), assignedToDisplayName: memberName(user) };
     const previous = { assignedToUid: chore.assignedToUid ?? '', assignedToEmail: chore.assignedToEmail, assignedToDisplayName: chore.assignedToDisplayName };
-    patchChores([chore.id], c => ({ ...c, ...updates }));
+    patchChores([chore.id], c => ({ ...c, ...updates, assignedToEmail: undefined }));
     try {
-      await updateDoc(doc(choresCollection, chore.id), updates);
+      // An older assignee's email is removed: it would otherwise win over the new uid.
+      await updateDoc(doc(choresCollection, chore.id), { ...updates, assignedToEmail: deleteField() });
       toast({ title: 'Chore reassigned', description: `${chore.task} is now ${memberName(user)}'s.` });
     } catch (error) {
       patchChores([chore.id], c => ({ ...c, ...previous }));
