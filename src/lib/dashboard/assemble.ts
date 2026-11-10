@@ -14,6 +14,9 @@ import type { ChoreRecord } from '../chores/dates';
 import { computeHomeHealth } from '../maintenance/health';
 import type { HomeAsset, MaintenanceLog, Vehicle } from '../types';
 import { householdDayZone, householdToday } from '../household-day';
+import type { Notification } from '../types';
+import type { ViewPermission } from '@functions/shared/push-audience';
+import { unreadBellCount } from './notification-display';
 import { mayShowRanking, streakMembersFrom, streakTileModel } from './streaks';
 import {
   computeChoreFacts,
@@ -49,7 +52,8 @@ export type DashboardRaw = {
   pets?: RawDoc[];
   /** Recent feedings per pet and date shape; a missing shape has not answered yet. */
   feedings?: Record<string, Partial<Record<FeedingShape, RawDoc[]>>>;
-  unread?: number;
+  /** The notification window's documents, merged with `deduplicateNotifications` (counted at `now`). */
+  notifications?: Notification[];
   /** Completed chores (every retained completion), for streaks. */
   completedChores?: RawDoc[];
   /**
@@ -78,7 +82,14 @@ export function assembleDashboardFacts(
   raw: DashboardRaw,
   failed: ReadonlySet<string>,
   access: DashboardAccess,
-  context: { viewer: DashboardViewer; now: Date; timeZone?: string | null; recentFeedings: number },
+  context: {
+    viewer: DashboardViewer;
+    now: Date;
+    timeZone?: string | null;
+    recentFeedings: number;
+    /** The member's view permissions, for the bell's category check (none: every category). */
+    canView?: (permission: ViewPermission) => boolean;
+  },
 ): { facts: DashboardFacts; loading: boolean } {
   const facts: DashboardFacts = {};
   // D-6: one household day for chores, maintenance and home health (device zone only
@@ -147,8 +158,10 @@ export function assembleDashboardFacts(
     }).overall;
   }
 
-  section('notifications', raw.unread !== undefined, () => {
-    facts.notifications = { unread: raw.unread! };
+  // Counted here from the documents at `now` (expiry and the 7-day window move with time),
+  // exactly as the bell counts them, never a number frozen at the last snapshot.
+  section('notifications', raw.notifications !== undefined, () => {
+    facts.notifications = { unread: unreadBellCount(raw.notifications!, { ...context.viewer, canView: context.canView }, context.now) };
   });
 
   if (unavailable.length > 0) facts.unavailable = unavailable;

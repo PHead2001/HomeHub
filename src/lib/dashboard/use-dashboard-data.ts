@@ -36,8 +36,8 @@ import {
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
 import { householdDayStart, householdDayZone, useHouseholdToday } from '@/lib/household-day';
-import { deduplicateNotifications, isNotificationReadBy, parseNotificationDoc } from '@/lib/notifications';
-import { activeBellNotifications } from './notification-display';
+import { deduplicateNotifications, parseNotificationDoc } from '@/lib/notifications';
+import { NOTIFICATION_WINDOW_DAYS } from './notification-display';
 import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
 import type { DashboardFacts, RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
@@ -130,7 +130,8 @@ const PLAN = [
   { id: 'maintenance.vehicles', group: 'maintenance', access: 'maintenance', scope: 'context' },
   { id: 'health.logs', group: HEALTH_FAILURE, access: 'maintenance', scope: 'day' },
   { id: 'pets', group: 'pets', access: 'pets', scope: 'context' },
-  { id: 'notifications', group: 'notifications', access: 'notifications', scope: 'context' },
+  // Day-scoped: the 7-day query window moves forward each household day.
+  { id: 'notifications', group: 'notifications', access: 'notifications', scope: 'day' },
 ] as const satisfies ReadonlyArray<{ id: string; group: string; access: keyof Access; scope: 'context' | 'day' }>;
 
 type PlanId = (typeof PLAN)[number]['id'];
@@ -179,6 +180,12 @@ export function useDashboardData(enabled = true): DashboardData {
   const access: Access = useMemo(() => ({
     chores: canChores, shopping: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid),
   }), [canChores, canShopping, canMaintenance, canPets, canNotifications, uid]);
+
+  // The bell's category check (module view permissions).
+  const canView = useCallback((permission: string) => ({
+    'chores.view': canChores, 'shopping.view': canShopping, 'maintenance.view': canMaintenance,
+    'pets.view': canPets, 'automation.view': canAutomation,
+  } as Record<string, boolean>)[permission] === true, [canChores, canShopping, canMaintenance, canPets, canAutomation]);
 
   const running = useRef<{ context: string; set: ReturnType<typeof createListenerSet>; handles: Set<ResilientHandle> } | null>(null);
 
@@ -344,7 +351,9 @@ export function useDashboardData(enabled = true): DashboardData {
         };
       },
       notifications: () => {
-        const since = new Date(Date.now() - 7 * 86_400_000);
+        // From the household's midnight 7 days back: until the next day's resubscribe the
+        // window always covers the last 7 days; the count applies the exact window at `now`.
+        const since = new Date(dayStart.getTime() - NOTIFICATION_WINDOW_DAYS * 86_400_000);
         // Same category filter as the bell (module view permissions; all in the context),
         // applied in the query so the 30-item cap counts only visible notifications.
         const views: Record<string, boolean> = {
@@ -352,13 +361,11 @@ export function useDashboardData(enabled = true): DashboardData {
           'pets.view': canPets, 'automation.view': canAutomation,
         };
         const categories = viewableNotificationCategories((permission) => Boolean(views[permission]));
-        return watchQuery('notifications', 'notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s, r) => {
-          // The bell's own pipeline: deduplicate, then the same filters and cap.
-          const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), {
-            uid, email, canView: (permission) => Boolean(views[permission]),
-          });
-          return { ...r, unread: active.filter((n) => !isNotificationReadBy(n, uid)).length };
-        });
+        // The documents are kept (deduplicated as the bell does); the unread count is
+        // computed from them at `now` in assembleDashboardFacts, so expiry is applied live.
+        return watchQuery('notifications', 'notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s, r) => ({
+          ...r, notifications: deduplicateNotifications(s.docs.map(parseNotificationDoc)),
+        }));
       },
     };
 
@@ -392,8 +399,8 @@ export function useDashboardData(enabled = true): DashboardData {
     current.raw,
     failed,
     { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid) },
-    { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS },
-  ), [current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
+    { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS, canView },
+  ), [current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canNotifications, canView]);
 
   // A pet whose feeding history is stale says so wherever its count or fed state shows.
   const facts = useMemo(() => withFeedingHints(assembled, sections, zone), [assembled, sections, zone]);
