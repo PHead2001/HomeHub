@@ -5,6 +5,7 @@ import { fixedNow } from './test-helpers';
 import { computeChoreFacts, computePetFacts, recurringTemplateIdsFrom, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
+import { roomLinkName } from '../../src/lib/dashboard/touch';
 
 const projectId = 'demo-homehub-e2e';
 const householdId = 'the-foxy-residence-e2e';
@@ -73,7 +74,8 @@ test.describe('dashboard, shell and notifications', () => {
     const choreFacts = await expectedChoreFacts();
     const kitchen = choreFacts.rooms.find((room) => room.id === 'kitchen');
     expect(kitchen?.dueToday ?? 0, 'the seed has at least one Kitchen chore due today').toBeGreaterThanOrEqual(1);
-    await expect(house.getByRole('link', { name: `Kitchen: ${roomSummary(kitchen!)}`, exact: true })).toBeVisible();
+    // HP-28b: the room link's name is the summary followed by its chore titles.
+    await expect(house.getByRole('link', { name: roomLinkName(kitchen!, roomSummary(kitchen!)), exact: true })).toBeVisible();
     const petFacts = await expectedPetFacts();
     expect(petFacts.pets.length, 'the seed has pets').toBeGreaterThanOrEqual(2);
     for (const pet of petFacts.pets) {
