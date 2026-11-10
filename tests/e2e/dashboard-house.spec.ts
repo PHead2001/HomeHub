@@ -158,7 +158,7 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
       expect([...geocode.searchParams.keys()].sort()).toEqual(['count', 'format', 'language', 'name']);
       expect(geocode.searchParams.get('name')).toBe('Austin');
       const forecast = requests.find((url) => url.pathname === '/v1/forecast')!;
-      expect([...forecast.searchParams.keys()].sort()).toEqual(['current', 'latitude', 'longitude', 'temperature_unit', 'timezone']);
+      expect([...forecast.searchParams.keys()].sort()).toEqual(['current', 'daily', 'forecast_days', 'latitude', 'longitude', 'temperature_unit', 'timezone']);
 
       // Stored per user on the profile, and kept on reload (served from the 30-minute cache).
       await expect.poll(async () => (await userDoc.get()).get('preferences.weather')).toEqual({ enabled: true, city: 'Austin' });
