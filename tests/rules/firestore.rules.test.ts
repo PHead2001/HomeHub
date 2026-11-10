@@ -1337,6 +1337,36 @@ describe('content shapes: shopping', () => {
     await assertFails(setDoc(categories, { list: 'Dairy' }));
     await assertFails(setDoc(categories, { list: [], extra: true }));
   });
+
+  test('items and categories of a list that does not exist (deleted) are refused', async () => {
+    const gone = (user: Identity, ...path: string[]) => doc(dbFor(user), 'households', householdA, 'shopping-lists', 'deleted-list', ...path);
+    await environment.withSecurityRulesDisabled(async context => {
+      // An orphan left by an older client that deleted only the list document.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'shopping-lists', 'deleted-list', 'items', 'orphan'), {
+        name: 'Orphan', quantity: 1, category: 'Other', status: 'needed', createdAt: now(),
+      });
+    });
+    // No add, tick, quantity merge, restore or category edit lands on a missing list.
+    await assertFails(setDoc(gone(users.member, 'items', 'milk'), built()));
+    await assertFails(updateDoc(gone(users.member, 'items', 'orphan'), { status: 'purchased' }));
+    await assertFails(updateDoc(gone(users.member, 'items', 'orphan'), { quantity: increment(1) }));
+    await assertFails(setDoc(gone(users.owner, 'items', 'orphan'), built()));
+    await assertFails(setDoc(gone(users.member, 'config', 'categories'), { list: ['Other'] }));
+    // Cleanup of what is left stays allowed.
+    await assertSucceeds(deleteDoc(gone(users.owner, 'items', 'orphan')));
+
+    // The same writes on a list that exists are allowed.
+    await assertSucceeds(setDoc(item(users.member, 'fresh'), built()));
+    await assertSucceeds(updateDoc(item(users.member, 'fresh'), { status: 'purchased' }));
+    await assertSucceeds(setDoc(doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'groceries', 'config', 'categories'), { list: ['Other'] }));
+
+    // A list deleted after it was written to refuses further writes.
+    await assertSucceeds(setDoc(doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'short-lived'), { name: 'Short-lived' }));
+    const shortLived = doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'short-lived', 'items', 'bread');
+    await assertSucceeds(setDoc(shortLived, built({ name: 'Bread' })));
+    await assertSucceeds(deleteDoc(doc(dbFor(users.owner), 'households', householdA, 'shopping-lists', 'short-lived')));
+    await assertFails(updateDoc(shortLived, { status: 'purchased' }));
+  });
 });
 
 describe('content shapes: pet logs', () => {

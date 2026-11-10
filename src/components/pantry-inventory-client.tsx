@@ -10,11 +10,12 @@ import type { BarcodeLibraryItem, PantryItem, PantryItemUnit, PantryItemLocation
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
-import { collection, doc, deleteDoc, writeBatch, query, orderBy, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, deleteDoc, writeBatch, query, setDoc, updateDoc } from 'firebase/firestore';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
+import { useLivePantry } from '@/lib/shopping/live';
 import { DURATION, EASE } from '@/lib/motion';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
@@ -724,8 +725,12 @@ export function PantryInventoryClient() {
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
 
-  const [items, setItems] = useState<PantryItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Live (SH-1c): one listener on the pantry, so another member's additions, moves
+  // and deletions show without a reload, and this device's own writes show at once
+  // (a rejected one is rolled back in the listener). No re-read after a write.
+  const pantryState = useLivePantry(currentUser?.householdId);
+  const items = pantryState.value;
+  const loading = pantryState.status === 'loading';
   // The chosen view is a per-device convenience (this tab only renders client-side, after sign-in).
   const [view, setView] = useState<PantryView>(() => {
     try {
@@ -768,25 +773,14 @@ export function PantryInventoryClient() {
     return collection(db, 'households', currentUser.householdId, 'pantry-inventory');
   }, [currentUser]);
 
-  const fetchItems = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection) {
-      setItems([]);
-      setLoading(false);
-      return;
-    }
-    if (!silent) setLoading(true);
-    try {
-      const q = query(pantryCollection, orderBy('name'));
-      const querySnapshot = await getDocsOfflineAware(q);
-      const itemsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PantryItem));
-      setItems(itemsData);
-    } catch (error) {
-      toastError(error, 'Could not load the pantry');
-    } finally {
-      setLoading(false);
-    }
-  }, [getPantryCollectionRef, toastError]);
+  // A pantry that cannot load says so once (the listener keeps retrying).
+  const reportedPantryErrorRef = useRef<unknown>(null);
+  useEffect(() => {
+    const error = pantryState.error;
+    if (!error || reportedPantryErrorRef.current === error) return;
+    reportedPantryErrorRef.current = error;
+    toastError(error, 'Could not load the pantry');
+  }, [pantryState.error, toastError]);
 
   const fetchShoppingLists = useCallback(async () => {
     if (!currentUser?.householdId) return;
@@ -808,13 +802,11 @@ export function PantryInventoryClient() {
     }
   }, [currentUser]);
 
+  // Shopping lists are read on demand (when an item is put on a list); the photo
+  // library once per household.
   useEffect(() => {
-    if (currentUser?.householdId) {
-      fetchItems();
-      fetchShoppingLists().catch(() => undefined);
-      fetchLibrary();
-    }
-  }, [currentUser, fetchItems, fetchShoppingLists, fetchLibrary]);
+    if (currentUser?.householdId) fetchLibrary();
+  }, [currentUser, fetchLibrary]);
 
   const photos = useMemo(() => Object.fromEntries(items.map(item => [item.id, productPhotoForName(item.name, library)])), [items, library]);
 
@@ -890,7 +882,6 @@ export function PantryInventoryClient() {
       const itemRef = doc(pantryCollection, itemId);
       await setDoc(itemRef, itemData, { merge: true });
       toast({ title: 'Item Saved', description: `${itemData.name} has been saved to your inventory.` });
-      await fetchItems({ silent: true });
       return true;
     } catch (error) {
       toastError(error, 'Could not save the item');
@@ -901,15 +892,13 @@ export function PantryInventoryClient() {
   const moveItem = async (item: PantryItem, location: PantryItemLocation) => {
     const pantryCollection = getPantryCollectionRef();
     if (!pantryCollection || item.location === location) return;
-    setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing, location } : existing));
+    // The listener moves the tile at once; a rejected write moves it back.
     try {
       await awaitWriteUnlessOffline(updateDoc(doc(pantryCollection, item.id), { location }), (error) => {
         toastError(error, `Could not move ${item.name}`);
-        void fetchItems({ silent: true });
       });
     } catch (error) {
       toastError(error, `Could not move ${item.name}`);
-      await fetchItems({ silent: true });
     }
   };
 
@@ -920,7 +909,6 @@ export function PantryInventoryClient() {
 
     try {
       await deleteDoc(doc(pantryCollection, itemToDelete.id));
-      await fetchItems({ silent: true });
       toast({ title: "Item Deleted", description: `${itemToDelete.name} removed from pantry.` });
       setItemToDelete(null);
     } catch (error) {
@@ -940,7 +928,6 @@ export function PantryInventoryClient() {
     try {
         await batch.commit();
         toast({ title: 'Items Deleted', description: `${pluralize(selectedItems.length, 'item')} removed.` });
-        await fetchItems({ silent: true });
         setSelectedItems([]);
     } catch (error) {
         toastError(error, 'Could not delete the selected items');
@@ -981,7 +968,6 @@ export function PantryInventoryClient() {
       toastError(error, 'Could not delete the item');
       return;
     }
-    await fetchItems({ silent: true });
     setItemToDelete(null);
     await offerAddToList(originalItemName);
   };

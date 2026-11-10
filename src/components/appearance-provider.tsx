@@ -5,6 +5,7 @@ import { MotionConfig } from 'motion/react';
 import { useAuth } from '@/hooks/use-auth';
 import { configureFeedback } from '@/lib/feedback';
 import { DURATION } from '@/lib/motion';
+import { settleViewTransition } from '@/lib/view-transition';
 import {
   APPEARANCE_STORAGE_KEY,
   DEFAULT_APPEARANCE,
@@ -130,7 +131,7 @@ function originPoint(origin: RevealOrigin): { x: number; y: number } {
 }
 
 type ViewTransitionDocument = Document & {
-  startViewTransition?: (update: () => void) => { ready: Promise<void>; finished: Promise<void> };
+  startViewTransition?: (update: () => void) => { ready: Promise<void>; finished: Promise<void>; updateCallbackDone?: Promise<void> };
 };
 
 /**
@@ -154,10 +155,11 @@ function revealPreset(id: PresetId, origin: RevealOrigin, allowMotion: boolean, 
   const { x, y } = originPoint(origin);
   const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
   try {
-    const transition = doc.startViewTransition(() => {
+    // Every promise handled: a skipped or timed-out transition never reaches the console (SH-10i).
+    const transition = settleViewTransition(doc.startViewTransition(() => {
       applyPresetToDocument(id);
       commit();
-    });
+    }));
     transition.ready
       .then(() => {
         document.documentElement.animate(

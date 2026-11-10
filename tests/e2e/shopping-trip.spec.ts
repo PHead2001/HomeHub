@@ -149,10 +149,10 @@ test.describe('shopping trip', () => {
       await expect(page.getByRole('checkbox', { name: /E2E stale bread/ })).toBeVisible();
       await expect(field).toHaveValue('');
 
-      // Another member buys it; this device still shows it as needed.
+      // Another member buys it; the live list moves it out of Needed (SH-1).
       const [created] = (await groceryItems.where('name', '==', name).get()).docs;
       await created.ref.update({ status: 'purchased' });
-      await expect(page.locator(`#item-needed-${created.id}`)).toBeVisible();
+      await expect(page.locator(`#item-needed-${created.id}`)).toHaveCount(0);
 
       await field.fill(name);
       await field.press('Enter');

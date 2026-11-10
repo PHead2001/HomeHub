@@ -203,10 +203,14 @@ describe('clearing purchased items', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
     const clear = source.slice(source.indexOf('const clearPurchasedItems'), source.indexOf('const sendToPantry'));
     assert.match(clear, /deleteStillPurchasedItems\(/);
-    assert.match(clear, /withoutIds\(prev, deleted\)/);
     assert.match(clear, /isBrowserOffline\(\)/);
-    assert.match(clear, /const confirmed = await fetchItemsAndCategories/);
+    // "Empty" comes from the server (a count query), not from the live list on screen.
+    assert.match(clear, /const remaining = await countAllOnServer\(/);
     assert.doesNotMatch(clear, /status === '(?:needed|purchased)'/);
+    // The ids cleared are the ones captured when Clear was pressed.
+    const openClear = source.slice(source.indexOf('const openClear'), source.indexOf('const adjustQuantity'));
+    assert.match(openClear, /setClearIds\(/);
+    assert.match(source, /clearPurchasedItems\(clearIds\)/);
   });
 });
 

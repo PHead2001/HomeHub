@@ -70,8 +70,10 @@ export function ShoppingCenterClient() {
         <TabsTrigger value="lists"><ClipboardList className="mr-2" aria-hidden /> Shopping Lists</TabsTrigger>
         <TabsTrigger value="inventory"><Archive className="mr-2" aria-hidden /> Pantry Inventory</TabsTrigger>
       </TabsList>
-      {/* min-h keeps the page height steady while a tab's content loads. */}
-      <TabsContent value="lists" className="min-h-[24rem]">
+      {/* Both tabs stay mounted (SH-25b): switching keeps their live listeners and
+          state instead of re-reading everything; the inactive one is hidden.
+          min-h keeps the page height steady while a tab's content loads. */}
+      <TabsContent value="lists" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
         <ShoppingListClient
           selectedListId={state.listId}
           onSelectList={handleSelectList}
@@ -80,7 +82,7 @@ export function ShoppingCenterClient() {
           onQuickAddHandled={handleQuickAddHandled}
         />
       </TabsContent>
-      <TabsContent value="inventory" className="min-h-[24rem]">
+      <TabsContent value="inventory" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
         <PantryInventoryClient />
       </TabsContent>
     </Tabs>

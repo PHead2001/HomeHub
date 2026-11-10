@@ -12,7 +12,7 @@ const result = spawnSync(process.execPath, [
   E2E_PROJECT_ID,
   '--only',
   'firestore,auth,storage',
-  'node --conditions=react-server --import tsx --test --test-concurrency=1 tests/server/household-membership.test.ts tests/server/home-assistant.test.ts tests/server/push-policy.test.ts tests/server/notification-dedup.test.ts tests/server/home-assistant-store.test.ts tests/server/ai-quota.test.ts tests/server/ai-payload-limit.test.ts tests/server/reminders-shared.test.ts tests/server/household-upkeep.test.ts tests/server/push-media.test.ts tests/server/ai-action-auth.test.ts',
+  'node --conditions=react-server --import tsx --test --test-concurrency=1 tests/server/household-membership.test.ts tests/server/home-assistant.test.ts tests/server/push-policy.test.ts tests/server/notification-dedup.test.ts tests/server/home-assistant-store.test.ts tests/server/ai-quota.test.ts tests/server/ai-payload-limit.test.ts tests/server/reminders-shared.test.ts tests/server/household-upkeep.test.ts tests/server/push-media.test.ts tests/server/ai-action-auth.test.ts tests/server/shopping-delete-list.test.ts',
 ], {
   cwd: process.cwd(),
   env: e2eEnvironment,

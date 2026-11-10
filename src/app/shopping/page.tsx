@@ -8,12 +8,17 @@ import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ScanBarcode } from "lucide-react";
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ShoppingCenterSkeleton } from '@/components/shopping/shopping-skeletons';
 
 export default function ShoppingPage() {
-    const { currentUser, currentMember, permissions, householdLoading } = useAuth();
+    const { currentUser, currentMember, permissions, loading, householdLoading } = useAuth();
     const canView = Boolean(permissions['shopping.view']);
-    // Permissions are known once the member record has loaded; until then show nothing extra.
+    // Permissions are known once the member record has loaded.
     const denied = Boolean(currentUser && !householdLoading && currentMember && !canView);
+    // Until then the page keeps drawing the route skeleton's shape (SH-25a), so the
+    // header button, tabs and cards never shift between skeleton, blank and content.
+    const pending = currentUser ? !canView && !denied && householdLoading : loading;
     return (
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -21,6 +26,7 @@ export default function ShoppingPage() {
                     <h1 className="w-full font-headline text-3xl font-bold tracking-tight">Shopping Center</h1>
                     <p className="text-muted-foreground">Lists in the order you walk the store, and a pantry that shows what is on the shelves.</p>
                 </div>
+                {pending && <Skeleton className="h-10 w-full shrink-0 sm:w-36" aria-hidden />}
                 {currentUser && canView && (
                     <Button asChild variant="outline" className="w-full sm:w-auto">
                         <Link href="/library">
@@ -30,7 +36,9 @@ export default function ShoppingPage() {
                 )}
             </div>
 
-            {!currentUser && <SignInPrompt what="manage your shopping lists and inventory" />}
+            {pending && <ShoppingCenterSkeleton />}
+
+            {!currentUser && !loading && <SignInPrompt what="manage your shopping lists and inventory" />}
 
             {denied && (
                 <EmptyState
@@ -44,7 +52,7 @@ export default function ShoppingPage() {
 
             {currentUser && canView && (
                 // ShoppingCenterClient reads useSearchParams (URL-driven tab and list).
-                <Suspense fallback={null}>
+                <Suspense fallback={<ShoppingCenterSkeleton />}>
                     <ShoppingCenterClient />
                 </Suspense>
             )}

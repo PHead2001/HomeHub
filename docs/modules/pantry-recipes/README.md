@@ -6,7 +6,8 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 ## User-Facing Capabilities
 
-- Use the Pantry Inventory tab on `/shopping` (linkable as `/shopping?tab=pantry`).
+- Use the Pantry Inventory tab on `/shopping` (linkable as `/shopping?tab=pantry`). The tab stays mounted while the Shopping Lists tab is shown, so switching back re-reads nothing.
+- The pantry is live (SH-1c): another member's additions, edits, moves and deletions show without a reload.
 - See the pantry as shelves (default): Pantry, Fridge and Freezer are shelves of item tiles showing a product photo from the barcode library (matched by exact name) or a food emoji. Items expiring within three days glow amber, expired items fade and tilt, freezer tiles have a frost edge, and the header counts what is expiring soon or expired.
 - Move an item to another shelf by dragging its handle (mouse or touch), by keyboard (focus the handle, Enter or Space to pick up, arrow keys to choose a shelf, Enter or Space to drop, Escape to cancel), by tapping the handle and then **Move here** on a shelf, or from the tile's ⋯ menu.
 - Switch to the list view (the previous table on wider screens and stacked rows on phones); the choice is remembered per device in `localStorage["homehub.pantry.view"]`.
@@ -26,6 +27,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 - `src/components/shopping/pantry-shelves.tsx`
 - `src/lib/shopping/pantry.ts` (shelf, expiry, emoji, recipe-matching and handoff planning helpers)
 - `src/lib/shopping/pantry-writes.ts` (batch handoff writer)
+- `src/lib/shopping/live.ts` (`useLivePantry`, the shared live-listener helpers)
 - `src/ai/flows/generate-recipe-flow.ts`
 - Shared types in `src/lib/types.ts`
 
@@ -35,11 +37,11 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 The dashboard overview uses the same verified `shopping.view` boundary to calculate inventory and expiration counts server-side. It sends only bounded labels/dates and counts to the optional narrative, not full inventory documents.
 
-Inventory reads use `getDocsOfflineAware`. The shelves view renders `PantryShelves`; moving a tile updates only `location` (optimistic, through Firestore's queue; a rejected write shows a `toastError` and re-reads). Product photos come from one read of `barcode-library`; a failure there only drops photos. The recipe dialog composes the shared dialog parts (`DialogPortal`, `DialogOverlay`, Radix `Content`) itself, only so the scrim can step aside during the lift; it keeps the standard dialog markup, focus trap, Escape and close button. Recipe matching (`matchRecipeIngredients`) marks an item as used when its full name, or the last word of three or more letters in it, appears in one of the recipe's "from your pantry" lines.
+The inventory is one `onSnapshot` listener ordered by name (`useLivePantry`, with metadata changes, bounded-backoff retry and resubscribe on `online`/visibility; see [Shopping](../shopping/README.md) for `keepListening`). It serves the cache offline. Firestore applies this device's writes to the listener at once and rolls a rejected one back there, so saves, moves and deletes never re-read the pantry. The shelves view renders `PantryShelves`; moving a tile updates only `location` (shown at once through the listener and Firestore's queue; a rejected write shows a `toastError` and the tile moves back). The shopping lists for "Put on a shopping list" are read on demand when that is chosen. Product photos come from one read of `barcode-library`; a failure there only drops photos. The recipe dialog composes the shared dialog parts (`DialogPortal`, `DialogOverlay`, Radix `Content`) itself, only so the scrim can step aside during the lift; it keeps the standard dialog markup, focus trap, Escape and close button. Recipe matching (`matchRecipeIngredients`) marks an item as used when its full name, or the last word of three or more letters in it, appears in one of the recipe's "from your pantry" lines.
 
 In the list view, inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
 
-Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins.
+Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins. The shopping write is refused by the rules if that list was deleted meanwhile (items may only be written to a list document that exists).
 
 ## Data Model and Persistence
 
