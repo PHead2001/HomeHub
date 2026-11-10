@@ -99,28 +99,85 @@ export function pushSignInAction(input: {
 }
 
 /**
- * What sign-out does about push on this device. Nothing when no token is
- * remembered (never subscribed, unsupported browser, already removed). The token
- * is removed from the account only when that account is the one signing out; the
- * device registration is revoked whenever a token is remembered. Offline, nothing
- * can reach the server, so the work is skipped and the token is left for
- * replacement at the next sign-in (`deferred`).
+ * What sign-out's cleanup does about push on this device. The token is removed
+ * from the account only when a token is remembered and that account is the one
+ * signing out. The device registration is revoked in every case, also without a
+ * record: a subscription can exist without one (a device subscribed before the
+ * record existed, or a registration that sign-out interrupted). Offline, nothing
+ * can reach the server, so the work is skipped and left for the next sign-in
+ * (`deferred`).
  */
 export type PushSignOutPlan = { removeFromAccount: boolean; revoke: boolean; deferred: boolean };
 export function pushSignOutPlan(record: PushDeviceRecord | null, email: string | null | undefined, offline: boolean): PushSignOutPlan {
-  if (!record) return { removeFromAccount: false, revoke: false, deferred: false };
   if (offline) return { removeFromAccount: false, revoke: false, deferred: true };
-  return { removeFromAccount: Boolean(email) && record.email === email, revoke: true, deferred: false };
+  return { removeFromAccount: Boolean(record) && Boolean(email) && record?.email === email, revoke: true, deferred: false };
+}
+
+/** Stands in for the token when a cleanup is unfinished and no token is remembered. */
+export const PUSH_UNKNOWN_TOKEN = 'unknown';
+
+/**
+ * Marks this device's push cleanup as unfinished: the remembered token loses its
+ * account, or, with no token remembered, a placeholder is stored. Either way the
+ * next sign-in revokes the device registration before registering.
+ */
+export function markPushSignOutUnfinished(storage: DeviceStorage | null): void {
+  const record = readPushDevice(storage);
+  if (record) writePushDevice(storage, record.token, '', record.at);
+  else writePushDevice(storage, PUSH_UNKNOWN_TOKEN, '', 0);
 }
 
 /**
- * The device record after a sign-out attempt: gone when the registration was
- * fully removed, otherwise kept without an account so the next sign-in replaces
- * the token instead of trusting it.
+ * Sign-out gate for push registrations. A registration takes a pass when it
+ * starts and asks `allows(pass)` after every step that takes time; once sign-out
+ * has begun, no pass taken earlier is ever valid again (also after `end`), and
+ * none is handed out until `end`. Registrations are tracked so sign-out can wait
+ * for them (`drain`). No Firebase here: the auth provider imports this statically.
  */
-export function settlePushSignOut(storage: DeviceStorage | null, record: PushDeviceRecord, removed: boolean): void {
-  if (removed) clearPushDevice(storage);
-  else writePushDevice(storage, record.token, '', record.at);
+export function createPushSignOutGate() {
+  let epoch = 0;
+  let signingOut = false;
+  const pending = new Set<Promise<unknown>>();
+  return {
+    /** A pass for a registration starting now, or null while sign-out is running. */
+    pass: (): number | null => (signingOut ? null : epoch),
+    allows: (pass: number | null): boolean => pass !== null && !signingOut && pass === epoch,
+    /** Sign-out started: every pass handed out so far is void. */
+    begin(): void {
+      signingOut = true;
+      epoch += 1;
+    },
+    /** Sign-out is over (signed out in place, or it failed): registrations may start again. */
+    end(): void {
+      signingOut = false;
+    },
+    track<T>(work: Promise<T>): Promise<T> {
+      pending.add(work);
+      const done = () => { pending.delete(work); };
+      work.then(done, done);
+      return work;
+    },
+    busy: (): boolean => pending.size > 0,
+    /** Resolves when every registration running now has finished or failed. */
+    drain: (): Promise<void> => Promise.allSettled([...pending]).then(() => undefined),
+  };
+}
+export type PushSignOutGate = ReturnType<typeof createPushSignOutGate>;
+export const pushSignOutGate = createPushSignOutGate();
+
+/**
+ * What a registration does after a step, given whether its pass is still valid:
+ * - `continue`: no sign-out began;
+ * - `stop`: sign-out began before a token was requested: nothing to clean up;
+ * - `discard`: a token was obtained but not stored: revoke the device registration;
+ * - `undo`: the token was already written to the account: remove it from the
+ *   account and revoke the device registration.
+ */
+export type PushRegistrationStage = 'start' | 'token' | 'written';
+export type PushRegistrationStep = 'continue' | 'stop' | 'discard' | 'undo';
+export function pushRegistrationStep(stage: PushRegistrationStage, allowed: boolean): PushRegistrationStep {
+  if (allowed) return 'continue';
+  return stage === 'start' ? 'stop' : stage === 'token' ? 'discard' : 'undo';
 }
 
 /**
@@ -150,4 +207,31 @@ export function settleWithin<T>(work: () => Promise<T>, ms: number, fallback: T,
       finish(fallback);
     });
   });
+}
+
+/**
+ * Sign-out's push cleanup, as one time budget. The caller has already called
+ * `gate.begin()`. Nothing is loaded when this device has no remembered token, no
+ * registration in flight and no push subscription (`hasSubscription`). Otherwise
+ * `cleanup` runs (it loads the Firebase module, waits for registrations in flight
+ * and removes the registration; true when fully removed). Loading counts toward
+ * the budget. Never rejects; when the cleanup fails or is not done after `ms`,
+ * sign-out carries on and the device is marked so the next sign-in finishes it.
+ */
+export type PushSignOutResult = 'nothing' | 'removed' | 'unfinished';
+export async function runPushSignOut(input: {
+  storage: DeviceStorage | null;
+  hasSubscription: () => Promise<boolean>;
+  cleanup: () => Promise<boolean>;
+  gate?: Pick<PushSignOutGate, 'busy'>;
+  ms?: number;
+  onError?: (error: unknown) => void;
+}): Promise<PushSignOutResult> {
+  const { storage, hasSubscription, cleanup, gate = pushSignOutGate, ms = PUSH_SIGN_OUT_TIMEOUT_MS, onError } = input;
+  const result = await settleWithin<PushSignOutResult>(async () => {
+    if (!readPushDevice(storage) && !gate.busy() && !(await hasSubscription())) return 'nothing';
+    return (await cleanup()) ? 'removed' : 'unfinished';
+  }, ms, 'unfinished', onError);
+  if (result === 'unfinished') markPushSignOutUnfinished(storage);
+  return result;
 }

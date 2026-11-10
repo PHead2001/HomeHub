@@ -25,7 +25,8 @@ import { getMemberPermissions } from '@/lib/permissions';
 import { normalizeMember, sameProfile } from '@/lib/auth/cached-session';
 import { SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
 import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
-import { readPushDevice } from '@/lib/push-tokens';
+import { pushSignOutGate, runPushSignOut } from '@/lib/push-tokens';
+import { hasPushSubscription } from '@/lib/service-worker';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { friendlyError } from '@/lib/friendly-error';
 import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
@@ -493,20 +494,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // A second tap while the first sign-out is still flushing does nothing.
     if (logoutInFlight.current) return;
     logoutInFlight.current = true;
+    // From here on no push registration may complete for this account: one still
+    // in flight is discarded and cleaned up (see push-tokens).
+    pushSignOutGate.begin();
     let reloading = false;
     try {
       // The last-known house rooms go first, before anything that can fail or reload.
       clearHouseSnapshot(deviceStorage());
       // This device stops receiving the account's pushes: while still signed in, its
-      // token leaves the account's private push document and FCM (at most 2 s, never
-      // blocks sign-out). Skipped, without loading Messaging, when no token is remembered.
-      if (readPushDevice(deviceStorage())) {
-        try {
-          await (await import('@/lib/push-registration')).unregisterPushOnThisDevice();
-        } catch (error) {
-          console.warn('Push could not be removed from this device on sign-out.', error instanceof Error ? error.message : String(error));
-        }
-      }
+      // token leaves the account's private push document and FCM. Loading the module
+      // and the cleanup share one 2 s budget and never block sign-out; what is left
+      // is finished at the next sign-in. Nothing is loaded when this device has no
+      // token, no registration in flight and no push subscription.
+      await runPushSignOut({
+        storage: deviceStorage(),
+        hasSubscription: hasPushSubscription,
+        cleanup: async () => (await import('@/lib/push-registration')).unregisterPushOnThisDevice(),
+        onError: (error) => console.warn('Push could not be fully removed from this device on sign-out.', error instanceof Error ? error.message : String(error)),
+      });
       // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
       // the rules reject them once signed out. Then remove this household's cached data
       // from the device. A terminated Firestore instance cannot be reused, so the page
@@ -529,7 +534,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       toast({ title: "Logged Out", description: "You have been successfully logged out." });
     } finally {
       // The page is about to reload after a full sign-out; otherwise sign-out is possible again.
-      if (!reloading) logoutInFlight.current = false;
+      if (!reloading) {
+        logoutInFlight.current = false;
+        pushSignOutGate.end();
+      }
     }
   },[toast]);
   
