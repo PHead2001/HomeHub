@@ -175,4 +175,27 @@ describe('avatars', () => {
     await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.owner.email}/avatars/spoof.png`), png, image));
     await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.member.email}/avatars/doc.pdf`), pdf, { contentType: 'application/pdf' }));
   });
+
+  test('avatars under the account ID: only that account writes; signed-in people read; same limits', async () => {
+    const own = (name: string) => ref(storageFor(users.member), `users/${users.member.uid}/avatars/${name}`);
+    await assertSucceeds(uploadBytes(own('me.png'), png, image));
+    await assertSucceeds(uploadBytes(own('me.png'), png, { contentType: 'image/webp' }));
+    await assertSucceeds(getBytes(ref(storageFor(users.owner), `users/${users.member.uid}/avatars/me.png`)));
+    await assertSucceeds(getBytes(ref(storageFor(users.stranger), `users/${users.member.uid}/avatars/me.png`)));
+    await assertFails(getBytes(ref(environment.unauthenticatedContext().storage(), `users/${users.member.uid}/avatars/me.png`)));
+    await assertFails(uploadBytes(ref(storageFor(users.owner), `users/${users.member.uid}/avatars/spoof.png`), png, image));
+    await assertFails(uploadBytes(own('doc.pdf'), pdf, { contentType: 'application/pdf' }));
+    await assertSucceeds(uploadBytes(own('limit.png'), new Uint8Array(5 * 1024 * 1024), image));
+    await assertFails(uploadBytes(own('over.png'), new Uint8Array(5 * 1024 * 1024 + 1), image));
+    await assertFails(deleteObject(ref(storageFor(users.owner), `users/${users.member.uid}/avatars/me.png`)));
+    await assertSucceeds(deleteObject(own('me.png')));
+  });
+
+  test('the email path still works for its owner during the move', async () => {
+    const legacy = ref(storageFor(users.member), `users/${users.member.email}/avatars/old.png`);
+    await assertSucceeds(uploadBytes(legacy, png, image));
+    await assertSucceeds(getBytes(ref(storageFor(users.guest), `users/${users.member.email}/avatars/old.png`)));
+    await assertFails(deleteObject(ref(storageFor(users.guest), `users/${users.member.email}/avatars/old.png`)));
+    await assertSucceeds(deleteObject(legacy));
+  });
 });

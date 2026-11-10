@@ -71,15 +71,46 @@ export async function opsFirestore(options) {
     const firestorePath = local.resolve('@google-cloud/firestore');
     const { Firestore } = local(firestorePath);
     const { OAuth2Client } = createRequire(firestorePath)('google-auth-library');
-    const authClient = new OAuth2Client();
-    authClient.refreshHandler = async () => {
-      const token = await source.getAccessToken();
-      return { access_token: token.access_token, expiry_date: Date.now() + token.expires_in * 1000 };
-    };
+    const authClient = firebaseToolsAuthClient(source, OAuth2Client);
     return { db: new Firestore({ projectId, authClient }), label: 'firebase-tools login' };
   }
-  const { initializeApp } = await import('firebase-admin/app');
   const { getFirestore } = await import('firebase-admin/firestore');
-  const app = initializeApp({ credential: applicationDefault(), projectId });
-  return { db: getFirestore(app), label: 'Application Default Credentials' };
+  return { db: getFirestore(await adcApp(projectId)), label: 'Application Default Credentials' };
+}
+
+const adcApp = async projectId => {
+  const { getApps, initializeApp } = await import('firebase-admin/app');
+  return getApps()[0] ?? initializeApp({ credential: applicationDefault(), projectId });
+};
+
+// An OAuth client whose refresh handler asks firebase-tools for a token.
+const firebaseToolsAuthClient = (source, OAuth2Client) => {
+  const authClient = new OAuth2Client();
+  authClient.refreshHandler = async () => {
+    const token = await source.getAccessToken();
+    return { access_token: token.access_token, expiry_date: Date.now() + token.expires_in * 1000 };
+  };
+  return authClient;
+};
+
+/**
+ * A Cloud Storage client for the parsed options (same credentials as
+ * opsFirestore). Returns a function that opens a bucket by name.
+ * @param {{ projectId: string, auth: 'adc' | 'firebase-tools', firebaseToolsFrom: string | null }} options
+ * @returns {Promise<(name: string) => import('@google-cloud/storage').Bucket>}
+ */
+export async function opsStorage(options) {
+  const { projectId } = options;
+  if (options.auth === 'firebase-tools') {
+    const source = firebaseToolsCredential(options.firebaseToolsFrom);
+    const local = requireFrom(null);
+    const storagePath = local.resolve('@google-cloud/storage');
+    const { Storage } = local(storagePath);
+    const { OAuth2Client } = createRequire(storagePath)('google-auth-library');
+    const storage = new Storage({ projectId, authClient: firebaseToolsAuthClient(source, OAuth2Client) });
+    return name => storage.bucket(name);
+  }
+  const { getStorage } = await import('firebase-admin/storage');
+  const storage = getStorage(await adcApp(projectId));
+  return name => storage.bucket(name);
 }

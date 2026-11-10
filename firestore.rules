@@ -1175,6 +1175,15 @@ service cloud.firestore {
             (isAdminRole(householdId)) ||
             (signedIn() && request.auth.uid == memberUid)
           );
+
+        // The member's contact document (`contact`: their email), written only by
+        // the server. Readable by the person and by holders of household.manageMembers.
+        match /private/{docId} {
+          allow get: if docId == 'contact' &&
+            ((signedIn() && request.auth.uid == memberUid) ||
+              hasHouseholdPermission(householdId, 'household.manageMembers'));
+          allow list, write: if false;
+        }
       }
 
       match /notifications/{notificationId} {

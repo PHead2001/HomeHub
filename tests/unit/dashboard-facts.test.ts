@@ -94,7 +94,7 @@ describe('computeChoreFacts', () => {
       { id: 'late5', task: 'Wipe cabinets', dueDate: '2026-07-27', isCompleted: false, roomIds: ['kitchen'] },
     ];
     const room = computeChoreFacts(kitchen, rooms, viewer, now).rooms.find((entry) => entry.id === 'kitchen')!;
-    assert.deepEqual(room.chores.map((chore) => chore.id), ['late5', 'late2', 'today']);
+    assert.deepEqual(room.chores.map((chore) => chore.id), ['late5', 'late2', 'today', 'soon', 'undated']);
     const later = computeChoreFacts(kitchen.filter((chore) => chore.id.startsWith('far') || chore.id === 'soon' || chore.id === 'undated'), rooms, viewer, now)
       .rooms.find((entry) => entry.id === 'kitchen')!;
     assert.deepEqual(later.chores.map((chore) => chore.id), ['soon', 'undated'], 'beyond the upcoming window is left out');

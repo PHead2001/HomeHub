@@ -11,6 +11,12 @@
  * permissions and the member's weather opt-in, so the loading skeleton and the real
  * grid match and the last row is always full. Sections still loading show a
  * skeleton in their own cell, so nothing shifts.
+ *
+ * Touch (HP-13b, HP-14b): a tile's peek details come from one row list (`details`).
+ * With a fine, hovering pointer they open as the peek; everywhere else the first rows
+ * render inline in the tile (two in the wide layout), so next up, the shopping lists,
+ * later maintenance and the streak names never need hover. The tile "+" and Retry are
+ * 44 px (48 px on touch).
  */
 import { useMemo, type PointerEvent, type ReactNode } from 'react';
 import Link from 'next/link';
@@ -36,6 +42,25 @@ import { PeekCard } from './peek-card';
 import { TileCell, TileSkeleton } from './tile-grid-skeleton';
 import styles from './dashboard.module.css';
 
+/** One peek row: "Mop floor · due today", warning-coloured when overdue. */
+type DetailRow = { key: string; label: string; value: string; warn?: boolean };
+
+/** Rows shown inline on touch (HP-13b); the wide layout shows the first two. */
+const INLINE_DETAIL_ROWS = 3;
+
+function DetailRows({ rows, className, testId }: { rows: DetailRow[]; className?: string; testId?: string }) {
+  return (
+    <ul className={cn('space-y-1', className)} data-testid={testId}>
+      {rows.map((row) => (
+        <li key={row.key} className="flex justify-between gap-2">
+          <span className="truncate">{row.label}</span>
+          <span className={cn('shrink-0 text-xs', row.warn ? 'text-warning' : 'text-muted-foreground')}>{row.value}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const fineHover = () => typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -46,7 +71,8 @@ function Tile({
   icon: Icon,
   testId,
   className,
-  peek,
+  details,
+  inlineDetails,
   quickAdd,
   hint,
   children,
@@ -57,7 +83,10 @@ function Tile({
   icon: LucideIcon;
   testId: string;
   className?: string;
-  peek?: ReactNode;
+  /** Peek rows (fine pointers), also listed inline on touch (HP-13b). */
+  details?: DetailRow[];
+  /** The inline rows when they differ from the peek (the tile already shows the first). */
+  inlineDetails?: DetailRow[];
   /** A quick-add button in the corner (outside the link), with its shortcut hint. */
   quickAdd?: { shortcut: ShortcutId; label: string };
   /** Stale data: "Reconnecting…" or "Updated 9:41" next to the title. */
@@ -65,6 +94,8 @@ function Tile({
   children: ReactNode;
 }) {
   const reduced = useReducedMotion();
+  const peek = details && details.length > 0 ? <DetailRows rows={details} /> : null;
+  const touchRows = (inlineDetails ?? details ?? []).slice(0, INLINE_DETAIL_ROWS);
   // The link box is the click target and never moves; only the inner visual layer tilts.
   const onPointerMove = (event: PointerEvent<HTMLAnchorElement>) => {
     if (reduced || event.pointerType !== 'mouse' || !fineHover()) return;
@@ -79,12 +110,15 @@ function Tile({
   };
   const body = (
     <>
-      <span className={cn('flex items-center gap-2 text-sm font-medium text-muted-foreground', quickAdd && 'pr-8')}>
+      <span className={cn('flex items-center gap-2 text-sm font-medium text-muted-foreground', quickAdd && 'pr-12')}>
         <Icon aria-hidden className="h-4 w-4 text-primary" />
         <span className="truncate">{title}</span>
         {hint && <span className="ml-auto shrink-0 text-xs font-normal" data-testid={`${testId}-stale`}>{hint}</span>}
       </span>
       {children}
+      {touchRows.length > 0 && (
+        <DetailRows rows={touchRows} className={cn(styles.touchOnly, styles.tileDetails, 'text-sm')} testId={`${testId}-details`} />
+      )}
     </>
   );
   if (!href) {
@@ -95,7 +129,7 @@ function Tile({
     );
   }
   return (
-    <PeekCard peek={peek ?? null} className={cn('relative h-full min-w-0', className)}>
+    <PeekCard peek={peek} className={cn('relative h-full min-w-0', className)}>
       <Link
         href={href}
         data-testid={testId}
@@ -127,7 +161,7 @@ function TileQuickAdd({ shortcut, label }: { shortcut: ShortcutId; label: string
         aria-label={label}
         data-testid={`tile-quick-add-${shortcut}`}
         onClick={() => openCommandPalette({ text: prefix })}
-        className="absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-muted hover:text-foreground"
+        className={cn(styles.target, 'absolute right-1 top-1 z-10 inline-flex items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-muted hover:text-foreground')}
       >
         <Plus aria-hidden className="h-4 w-4" />
       </button>
@@ -163,7 +197,7 @@ function UnavailableTile({
           type="button"
           onClick={onRetry}
           data-testid={`${testId}-retry`}
-          className="absolute bottom-3 left-4 rounded-md border px-2 py-1 text-xs font-medium text-foreground transition-ui hover:bg-muted"
+          className={cn(styles.target, 'absolute bottom-2 left-3 inline-flex items-center rounded-md border px-3 text-sm font-medium text-foreground transition-ui hover:bg-muted')}
         >
           Retry
         </button>
@@ -240,16 +274,7 @@ export function BentoGrid({
         testId="dashboard-tile-chores"
         hint={hint('chores')}
         quickAdd={permissions['chores.create'] ? { shortcut: 'new-chore', label: 'Add a chore' } : undefined}
-        peek={chores.nextUp.length > 0 ? (
-          <ul className="space-y-1">
-            {chores.nextUp.map((chore) => (
-              <li key={chore.id} className="flex justify-between gap-2">
-                <span className="truncate">{chore.task}</span>
-                <span className={cn('shrink-0 text-xs', chore.overdue ? 'text-warning' : 'text-muted-foreground')}>{chore.dueLabel}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+        details={chores.nextUp.map((chore) => ({ key: chore.id, label: chore.task, value: chore.dueLabel, warn: chore.overdue }))}
       >
         <span className="flex flex-1 items-center gap-4">
           <ProgressRing done={chores.todayDone} total={chores.todayTotal} settled={chores.overdueTotal === 0} />
@@ -281,7 +306,8 @@ export function BentoGrid({
           )}
         </span>
         {chores.nextUp.length > 0 && (
-          <span className={cn(styles.wideHide, 'hidden text-sm text-muted-foreground lg:block')}>
+          // On touch the inline rows list next up, so this line is for hover screens.
+          <span className={cn(styles.wideHide, styles.peekOnly, 'hidden text-sm text-muted-foreground lg:block')}>
             Next: <span className="text-foreground">{chores.nextUp[0].task}</span> ({chores.nextUp[0].dueLabel})
           </span>
         )}
@@ -300,13 +326,7 @@ export function BentoGrid({
         testId="dashboard-tile-shopping"
         hint={hint('shopping')}
         quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
-        peek={shopping.lists.length > 0 ? (
-          <ul className="space-y-1">
-            {shopping.lists.map((list) => (
-              <li key={list.id} className="flex justify-between gap-2"><span className="truncate">{list.name}</span><span className="text-muted-foreground">{list.needed}</span></li>
-            ))}
-          </ul>
-        ) : null}
+        details={shopping.lists.map((list) => ({ key: list.id, label: list.name, value: String(list.needed) }))}
       >
         <Big value={shopping.neededItems} suffix={shopping.neededItems === 1 ? 'item needed' : 'items needed'} />
         {shopping.firstItems.length > 0 ? (
@@ -365,18 +385,9 @@ export function BentoGrid({
         icon={Wrench}
         testId="dashboard-tile-maintenance"
         hint={hint('maintenance')}
-        peek={maintenance.items.length > 0 ? (
-          <ul className="space-y-1">
-            {maintenance.items.map((item, index) => (
-              <li key={`${item.label}-${index}`} className="flex justify-between gap-2">
-                <span className="truncate">{item.label}</span>
-                <span className={cn('shrink-0 text-xs', item.overdue ? 'text-warning' : 'text-muted-foreground')}>
-                  {item.statusLabel}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+        details={maintenance.items.map((item, index) => ({ key: `${item.label}-${index}`, label: item.label, value: item.statusLabel, warn: item.overdue }))}
+        // The tile already shows the next item; inline lists the ones after it.
+        inlineDetails={maintenance.items.slice(1).map((item, index) => ({ key: `${item.label}-${index + 1}`, label: item.label, value: item.statusLabel, warn: item.overdue }))}
       >
         {next ? (
           <>
@@ -442,23 +453,15 @@ export function BentoGrid({
         icon={Flame}
         testId="dashboard-tile-streaks"
         hint={hint('streaks', 'chores')}
-        peek={streaks.top.length > 0 ? (
-          <ul className="space-y-1">
-            {streaks.top.map((entry) => (
-              <li key={entry.uid} className="flex justify-between gap-2">
-                <span className="truncate">{entry.name}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">{streakDaysLabel(entry.streak)}{entry.activeToday ? '' : ', not yet today'}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+        details={streaks.top.map((entry) => ({ key: entry.uid, label: entry.name, value: `${streakDaysLabel(entry.streak)}${entry.activeToday ? '' : ', not yet today'}` }))}
       >
         {/* One sentence for screen readers; the ticking number and labels below are visual only. */}
         <span className="sr-only" data-testid="streaks-summary">{streakSummary(streaks)}</span>
         {streaks.longest > 0 ? (
           <span aria-hidden className="flex min-w-0 flex-col gap-2">
             <Big value={streaks.longest} suffix={`${streaks.longest === 1 ? 'day' : 'days'} best streak`} />
-            <span className="truncate text-sm text-muted-foreground" data-testid="streaks-leader">
+            {/* On touch the inline rows name everyone on a streak instead. */}
+            <span className={cn(styles.peekOnly, 'truncate text-sm text-muted-foreground')} data-testid="streaks-leader">
               {streaks.top[0].name}{streaks.running > 1 ? ` and ${streaks.running - 1} more on a streak` : ''}
             </span>
           </span>
