@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { legacyQuantity, readPantryBatch } from '../../src/lib/shopping/pantry-batches';
-import { expiryDay, pantryMigrationDecision, pantryV2Values } from '../../scripts/ops/pantry-v2.mjs';
+import { legacyQuantity, readPantryBatch, splitPackages as appSplitPackages } from '../../src/lib/shopping/pantry-batches';
+import { expiryDay, pantryMigrationDecision, pantryV2Values, splitPackages } from '../../scripts/ops/pantry-v2.mjs';
 
 const CENTRAL = 'America/Chicago';
 
@@ -53,5 +53,46 @@ describe('migrate-pantry-v2 mapping (scripts/ops/pantry-v2.mjs)', () => {
     assert.equal(expiryDay('2026-11-14', CENTRAL), '2026-11-14');
     assert.equal(expiryDay('', CENTRAL), null);
     assert.equal(pantryV2Values({ expiryDate: '2026-11-14T06:00:00.000Z' }, 'Not/AZone').expiryDate, '2026-11-14', 'unknown zone falls back to Chicago');
+  });
+
+  test('splitPackages agrees with the app', () => {
+    for (const total of [0, 1, 9_999, 10_000, 10_001, 15_000, 25_000, 100_000, 12_345.6, -5]) {
+      assert.deepEqual(splitPackages(total), appSplitPackages(total), String(total));
+    }
+  });
+
+  test('legacy counted stock above 10,000 is split across batches, never truncated', () => {
+    const legacy = { name: 'Napkins', quantity: 15_000, unit: 'items', location: 'Pantry', addedAt: '2025-01-01', expiryDate: null };
+    const decision = pantryMigrationDecision(legacy, CENTRAL);
+    assert.equal(decision.kind, 'split');
+    if (decision.kind !== 'split') return;
+    assert.deepEqual([decision.update.packages, decision.update.quantity], [10_000, 10_000]);
+    assert.equal('name' in decision.update, false, 'the name stays as stored');
+    assert.equal(decision.newBatches.length, 1);
+    assert.deepEqual(decision.newBatches[0], {
+      name: 'Napkins', quantity: 5_000, unit: 'items', location: 'Pantry', addedAt: '2025-01-01', expiryDate: null,
+      nameKey: 'napkins', packages: 5_000, packageSize: null, schemaVersion: 2,
+    });
+
+    const large = pantryMigrationDecision({ name: 'Rivets', quantity: 25_000, unit: 'pieces' }, CENTRAL);
+    assert.equal(large.kind, 'split');
+    if (large.kind !== 'split') return;
+    const counts = [large.update.packages, ...large.newBatches.map(batch => batch.packages)];
+    assert.deepEqual(counts, [10_000, 10_000, 5_000]);
+    assert.equal(counts.reduce((sum, count) => sum + (count as number), 0), 25_000, 'the total is kept');
+    for (const batch of large.newBatches) assert.equal(batch.quantity, batch.packages);
+  });
+
+  test('exactly 10,000 counted is an ordinary conversion', () => {
+    const decision = pantryMigrationDecision({ name: 'Pins', quantity: 10_000, unit: 'items' }, CENTRAL);
+    assert.equal(decision.kind, 'legacy');
+    assert.deepEqual(decision.kind === 'legacy' && [decision.update.packages, decision.update.quantity], [10_000, 10_000]);
+  });
+
+  test('legacy measured stock above 100,000 is refused, not zeroed', () => {
+    assert.deepEqual(pantryMigrationDecision({ name: 'Water', quantity: 150_000, unit: 'ml' }, CENTRAL), { kind: 'oversized' });
+    const atLimit = pantryMigrationDecision({ name: 'Water', quantity: 100_000, unit: 'ml' }, CENTRAL);
+    assert.equal(atLimit.kind, 'legacy');
+    assert.deepEqual(atLimit.kind === 'legacy' && [atLimit.update.packages, atLimit.update.packageSize], [1, 100_000]);
   });
 });
