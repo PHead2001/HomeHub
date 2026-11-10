@@ -1,21 +1,19 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import { SERVICE_WORKER_SCOPE, shouldAutoRegisterServiceWorker } from '@/lib/service-worker';
 import { isShellBusy, subscribeShellBusy } from '@/lib/shell/busy';
 import {
   BUILD_QUERY_MESSAGE,
-  FORCED_RELOAD_KEY,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_PROMPTED_KEY,
   buildInfoFromMessage,
-  decideRequiredReload,
   decideUpdatePrompt,
-  parseForcedReload,
+  isBelowMinimumBuild,
   shouldCheckOnVisible,
-  waitForReloadChance,
 } from '@/lib/shell/update-check';
 
 const PAGE_BUILD_ID = process.env.NEXT_PUBLIC_HOMEHUB_BUILD_ID;
@@ -53,39 +51,26 @@ function showUpdatedToast() {
   });
 }
 
-const readForcedReload = () => {
-  try {
-    return parseForcedReload(window.sessionStorage.getItem(FORCED_RELOAD_KEY));
-  } catch {
-    return null;
-  }
-};
-const writeForcedReload = (buildId: string) => {
-  try {
-    window.sessionStorage.setItem(FORCED_RELOAD_KEY, JSON.stringify({ buildId, at: Date.now() }));
-  } catch {
-    // Blocked storage: no loop guard, but a reload only happens while this build is too old.
-  }
-};
-
-// Shown once per page while it is older than the published minimum; stays until reload.
-let requiredNoticeShown = false;
-function showReloadRequiredToast(manual: boolean) {
-  if (requiredNoticeShown) return;
-  requiredNoticeShown = true;
-  toast({
-    title: 'HomeHub needs to reload',
-    description: manual
-      ? 'This version is out of date. Reload to keep using HomeHub.'
-      : "This version is out of date. HomeHub will reload as soon as you finish what you're doing.",
-    holdsAction: false,
-    duration: Infinity,
-    action: (
-      <ToastAction altText="Reload HomeHub now" onClick={() => window.location.reload()}>
-        Reload
-      </ToastAction>
-    ),
-  });
+/**
+ * Minimum build (member privacy release C): shown while this page is older than the
+ * build the worker publishes as the minimum. It stays (no close button, no timeout)
+ * until the member reloads; it never reloads by itself, so nothing being typed is lost.
+ */
+function UpdateRequiredBanner() {
+  return (
+    <div
+      role="alert"
+      data-testid="update-required-banner"
+      className="fixed inset-x-0 top-0 z-[100] flex flex-wrap items-center justify-center gap-3 border-b border-border bg-card px-4 py-3 text-card-foreground shadow-md"
+      style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+    >
+      <p className="text-sm">
+        <span className="font-semibold">HomeHub needs to update.</span>{' '}
+        Finish what you are doing, then reload to keep using HomeHub.
+      </p>
+      <Button size="sm" onClick={() => window.location.reload()}>Reload</Button>
+    </div>
+  );
 }
 
 /**
@@ -98,58 +83,19 @@ function showReloadRequiredToast(manual: boolean) {
  *
  * Minimum build (member privacy release C): the worker also publishes the
  * oldest build allowed to keep running (`minimumBuildId`). A page older than it
- * says "HomeHub needs to reload" and reloads by itself as soon as the shell is
- * idle and the browser is online (`decideRequiredReload`), at most once per
- * page build within 10 minutes; after that it waits for the member's tap.
+ * shows a persistent "HomeHub needs to update" banner with Reload
+ * (`isBelowMinimumBuild`); it never reloads by itself.
  * Production only (the worker is not auto-registered in development).
  */
 export function UpdateWatcher() {
+  const [updateRequired, setUpdateRequired] = useState(false);
+
   useEffect(() => {
     if (!PAGE_BUILD_ID || !shouldAutoRegisterServiceWorker() || !('serviceWorker' in navigator)) return;
     const container = navigator.serviceWorker;
     let lastCheckAt = Date.now();
     let stopWaiting: (() => void) | null = null;
-    let stopWaitingRequired: (() => void) | null = null;
     let disposed = false;
-
-    const stopRequiredWait = () => {
-      stopWaitingRequired?.();
-      stopWaitingRequired = null;
-    };
-
-    const considerMinimum = (minimum: string) => {
-      const decision = decideRequiredReload({
-        pageBuildId: PAGE_BUILD_ID,
-        minimumBuildId: minimum,
-        busy: isShellBusy(),
-        online: navigator.onLine !== false,
-        lastForcedReload: readForcedReload(),
-        now: Date.now(),
-      });
-      if (decision === 'none') return;
-      showReloadRequiredToast(decision === 'manual');
-      if (decision === 'reload') {
-        stopRequiredWait();
-        writeForcedReload(PAGE_BUILD_ID);
-        window.location.reload();
-      } else if (decision === 'wait' && !stopWaitingRequired) {
-        // Re-decide once the shell is idle and the browser online. One subscription for
-        // the whole wait, so an idle notice while offline never re-subscribes mid-dispatch.
-        stopWaitingRequired = waitForReloadChance({
-          subscribeBusy: subscribeShellBusy,
-          addOnlineListener: (listener) => {
-            window.addEventListener('online', listener);
-            return () => window.removeEventListener('online', listener);
-          },
-          isBusy: isShellBusy,
-          isOnline: () => navigator.onLine !== false,
-          onChance: () => {
-            stopWaitingRequired = null;
-            if (!disposed) considerMinimum(minimum);
-          },
-        });
-      }
-    };
 
     const consider = (workerBuildId: string) => {
       const decision = decideUpdatePrompt({
@@ -187,7 +133,7 @@ export function UpdateWatcher() {
     const onMessage = (event: MessageEvent) => {
       const info = buildInfoFromMessage(event.data);
       if (!info) return;
-      if (info.minimumBuildId) considerMinimum(info.minimumBuildId);
+      if (isBelowMinimumBuild(PAGE_BUILD_ID, info.minimumBuildId)) setUpdateRequired(true);
       consider(info.buildId);
     };
     const onVisibility = () => {
@@ -204,7 +150,6 @@ export function UpdateWatcher() {
     return () => {
       disposed = true;
       stopWaiting?.();
-      stopRequiredWait();
       container.removeEventListener('message', onMessage);
       container.removeEventListener('controllerchange', askActiveWorker);
       document.removeEventListener('visibilitychange', onVisibility);
@@ -212,5 +157,5 @@ export function UpdateWatcher() {
     };
   }, []);
 
-  return null;
+  return updateRequired ? <UpdateRequiredBanner /> : null;
 }

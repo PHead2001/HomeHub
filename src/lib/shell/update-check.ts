@@ -99,81 +99,13 @@ export function buildInfoFromMessage(data: unknown): { buildId: string; minimumB
   return { buildId, minimumBuildId: isBuildId(minimum) ? minimum : null };
 }
 
-/** sessionStorage: the last forced reload in this tab (`{ buildId, at }`), so it never loops. */
-export const FORCED_RELOAD_KEY = 'homehub.shell.forced-reload';
-/** A page that already reloaded for being too old within this window is not reloaded again. */
-export const FORCED_RELOAD_GUARD_MS = 10 * 60 * 1000;
-
-export type ForcedReloadRecord = { buildId: string; at: number };
-
-export function parseForcedReload(raw: string | null | undefined): ForcedReloadRecord | null {
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw) as { buildId?: unknown; at?: unknown };
-    return isBuildId(value.buildId) && typeof value.at === 'number' && Number.isFinite(value.at)
-      ? { buildId: value.buildId, at: value.at }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-export type RequiredReloadDecision = 'none' | 'wait' | 'reload' | 'manual';
-
 /**
- * Whether this page must reload because its build is older than the published minimum.
- * - `none`: no valid minimum, or this build is not older than it.
- * - `wait`: older, but the shell is busy (a save, an Undo toast, unsaved input) or the
- *   browser is offline (a reload would land on the offline page); reload once idle and online.
- * - `manual`: older, but this tab already reloaded for that reason within
- *   `FORCED_RELOAD_GUARD_MS` and is still old (the server kept serving an old page):
- *   ask the member instead of reloading in a loop.
- * - `reload`: reload now.
+ * Whether this page is older than the published minimum build. Never a reason to
+ * reload by itself: most forms keep their drafts only in component state and do
+ * not mark the shell busy, so an automatic reload could discard what the member
+ * is typing. The page shows a persistent "HomeHub needs to update" banner with a
+ * Reload button instead, and the member reloads when they are done.
  */
-export function decideRequiredReload(input: {
-  pageBuildId: string | null | undefined;
-  minimumBuildId: string | null | undefined;
-  busy: boolean;
-  online: boolean;
-  lastForcedReload: ForcedReloadRecord | null;
-  now: number;
-}): RequiredReloadDecision {
-  const { pageBuildId, minimumBuildId: minimum, busy, online, lastForcedReload, now } = input;
-  if (!isBuildId(pageBuildId) || !isBuildId(minimum) || pageBuildId >= minimum) return 'none';
-  if (lastForcedReload && lastForcedReload.buildId === pageBuildId && now - lastForcedReload.at < FORCED_RELOAD_GUARD_MS) return 'manual';
-  return busy || !online ? 'wait' : 'reload';
-}
-
-/**
- * Waits for a moment to reload: the shell idle and the browser online. Keeps one
- * busy subscription and one `online` listener for as long as it waits (an idle
- * notice while offline, or coming online while busy, keeps waiting rather than
- * re-subscribing), and calls `onChance` once, after removing both, when both
- * hold. Returns the cancel function.
- */
-export function waitForReloadChance(deps: {
-  subscribeBusy: (listener: (busy: boolean) => void) => () => void;
-  addOnlineListener: (listener: () => void) => () => void;
-  isBusy: () => boolean;
-  isOnline: () => boolean;
-  onChance: () => void;
-}): () => void {
-  let done = false;
-  let unsubscribeBusy: (() => void) | null = null;
-  let removeOnline: (() => void) | null = null;
-  const stop = () => {
-    done = true;
-    unsubscribeBusy?.();
-    removeOnline?.();
-    unsubscribeBusy = null;
-    removeOnline = null;
-  };
-  const check = () => {
-    if (done || deps.isBusy() || !deps.isOnline()) return;
-    stop();
-    deps.onChance();
-  };
-  unsubscribeBusy = deps.subscribeBusy(() => check());
-  removeOnline = deps.addOnlineListener(check);
-  return stop;
+export function isBelowMinimumBuild(pageBuildId: string | null | undefined, minimum: string | null | undefined): boolean {
+  return isBuildId(pageBuildId) && isBuildId(minimum) && pageBuildId < minimum;
 }

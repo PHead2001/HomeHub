@@ -14,13 +14,10 @@ import {
   BUILD_MESSAGE,
   buildIdFromMessage,
   buildInfoFromMessage,
-  decideRequiredReload,
   decideUpdatePrompt,
-  waitForReloadChance,
-  FORCED_RELOAD_GUARD_MS,
+  isBelowMinimumBuild,
   MINIMUM_SUPPORTED_BUILD_ID,
   minimumBuildId,
-  parseForcedReload,
   formatBuildId,
   isBuildId,
   shouldCheckOnVisible,
@@ -167,7 +164,6 @@ describe('update detection', () => {
 describe('minimum supported build (member privacy release C)', () => {
   const old = '20261101T000000000Z';
   const current = '20261112T000000000Z';
-  const base = { pageBuildId: old, minimumBuildId: MINIMUM_SUPPORTED_BUILD_ID, busy: false, online: true, lastForcedReload: null, now: 1_000_000 };
 
   test('the floor is the release A merge time, and an override can only raise it', () => {
     assert.ok(isBuildId(MINIMUM_SUPPORTED_BUILD_ID));
@@ -186,89 +182,24 @@ describe('minimum supported build (member privacy release C)', () => {
     assert.equal(buildInfoFromMessage({ type: 'other', buildId: current }), null);
   });
 
-  test('a build older than the minimum reloads, but only when idle and online', () => {
-    assert.equal(decideRequiredReload(base), 'reload');
-    assert.equal(decideRequiredReload({ ...base, busy: true }), 'wait');
-    assert.equal(decideRequiredReload({ ...base, online: false }), 'wait');
-  });
-
-  test('a build at or after the minimum, or an unknown build or minimum, never reloads', () => {
-    assert.equal(decideRequiredReload({ ...base, pageBuildId: MINIMUM_SUPPORTED_BUILD_ID }), 'none');
-    assert.equal(decideRequiredReload({ ...base, pageBuildId: current }), 'none');
-    assert.equal(decideRequiredReload({ ...base, pageBuildId: undefined }), 'none');
-    assert.equal(decideRequiredReload({ ...base, minimumBuildId: null }), 'none');
-  });
-
-  test('never reloads in a loop: a second time within the guard asks the member instead', () => {
-    const justReloaded = { buildId: old, at: base.now - 1000 };
-    assert.equal(decideRequiredReload({ ...base, lastForcedReload: justReloaded }), 'manual');
-    assert.equal(decideRequiredReload({ ...base, lastForcedReload: { buildId: old, at: base.now - FORCED_RELOAD_GUARD_MS } }), 'reload');
-    // A reload recorded for another build does not count.
-    assert.equal(decideRequiredReload({ ...base, lastForcedReload: { buildId: '20261001T000000000Z', at: base.now } }), 'reload');
-    assert.deepEqual(parseForcedReload(JSON.stringify(justReloaded)), justReloaded);
-    assert.equal(parseForcedReload('{'), null);
-    assert.equal(parseForcedReload(JSON.stringify({ buildId: 'x', at: 1 })), null);
-    assert.equal(parseForcedReload(null), null);
+  test('only a build older than the minimum needs the update banner; it never reloads by itself', () => {
+    assert.equal(isBelowMinimumBuild(old, MINIMUM_SUPPORTED_BUILD_ID), true);
+    assert.equal(isBelowMinimumBuild(MINIMUM_SUPPORTED_BUILD_ID, MINIMUM_SUPPORTED_BUILD_ID), false);
+    assert.equal(isBelowMinimumBuild(current, MINIMUM_SUPPORTED_BUILD_ID), false);
+    assert.equal(isBelowMinimumBuild(undefined, MINIMUM_SUPPORTED_BUILD_ID), false);
+    assert.equal(isBelowMinimumBuild(old, null), false);
+    assert.equal(isBelowMinimumBuild(old, 'not-a-build'), false);
   });
 });
 
-describe('waiting to reload (review finding on #140)', () => {
-  const setup = (online: { value: boolean }) => {
-    const onlineListeners = new Set<() => void>();
-    let chances = 0;
-    let subscriptions = 0;
-    const stop = waitForReloadChance({
-      subscribeBusy: (listener) => {
-        subscriptions += 1;
-        return subscribeShellBusy(listener);
-      },
-      addOnlineListener: (listener) => {
-        onlineListeners.add(listener);
-        return () => onlineListeners.delete(listener);
-      },
-      isBusy: isShellBusy,
-      isOnline: () => online.value,
-      onChance: () => { chances += 1; },
-    });
-    return { stop, onlineListeners, chances: () => chances, subscriptions: () => subscriptions };
-  };
-
-  test('going idle while offline keeps the one subscription and does not loop', () => {
-    const online = { value: false };
-    const release = markBusy('save');
-    const waiter = setup(online);
-    release(); // idle, but offline: keeps waiting
-    assert.equal(waiter.chances(), 0);
-    assert.equal(waiter.subscriptions(), 1);
-    online.value = true;
-    waiter.onlineListeners.forEach((listener) => listener());
-    assert.equal(waiter.chances(), 1);
-    assert.equal(waiter.onlineListeners.size, 0, 'both listeners removed');
-    markBusy('save')();
-    assert.equal(waiter.chances(), 1, 'called once');
-  });
-
-  test('coming online while busy waits for idle; cancel stops it', () => {
-    const online = { value: false };
-    const release = markBusy('save');
-    const waiter = setup(online);
-    online.value = true;
-    waiter.onlineListeners.forEach((listener) => listener());
-    assert.equal(waiter.chances(), 0);
-    release();
-    assert.equal(waiter.chances(), 1);
-    const other = setup({ value: true });
-    other.stop();
-    markBusy('save')();
-    assert.equal(other.chances(), 0);
-  });
-
+describe('busy listeners (review finding on #140)', () => {
   test('a listener added during a busy dispatch is not called in that dispatch', () => {
     let calls = 0;
     const release = markBusy('save');
     const first = subscribeShellBusy(() => {
       first();
-      subscribeShellBusy(() => { calls += 1; });
+      const second = subscribeShellBusy(() => { calls += 1; });
+      queueMicrotask(second);
     });
     release();
     assert.equal(calls, 0);
