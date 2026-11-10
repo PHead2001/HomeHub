@@ -322,6 +322,14 @@ export type Chore = {
   sourceType?: 'template' | 'temporary';
   originalDueDate: string; // To identify which instance of a recurring chore this is
   roomIds?: string[];
+  /** Generated chores: "templateId|roomId|day", fixed at generation (CH-3). Server-written. */
+  occurrenceKey?: string;
+  /** Who completed it (D-7), written only by the completion server action. */
+  completedByUid?: string | null;
+  completedByEmail?: string | null;
+  completedByName?: string | null;
+  /** Random id of the current completion; Undo succeeds only while it still matches. */
+  completionId?: string | null;
 };
 
 export type UserRole = 'owner' | 'admin' | 'member' | 'child' | 'guest' | 'newuser' | 'super-admin' | 'user';
