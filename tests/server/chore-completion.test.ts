@@ -73,8 +73,8 @@ describe('completing chores on the server', () => {
     ];
     // Stats read the server stamp (real time, not the pinned `now`), so score them as of now.
     const stats = computeChoreStats([{ id: 'dishes', ...stored } as ChoreRecord], members, new Date());
-    assert.equal(stats.members.find(m => m.email === sam.email)!.totalPoints > 0, true);
-    assert.equal(stats.members.find(m => m.email === owner.email)!.totalPoints, 0);
+    assert.equal(stats.members.find(m => m.uid === sam.uid)!.totalPoints > 0, true);
+    assert.equal(stats.members.find(m => m.uid === owner.uid)!.totalPoints, 0);
   });
 
   test('two people completing the same chore at once yield one completion', async () => {

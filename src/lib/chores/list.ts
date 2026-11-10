@@ -47,7 +47,8 @@ export type ToDoEntry<T extends ChoreRecord = ChoreRecord> = {
  */
 const seriesKey = (chore: ChoreRecord, recurringTemplateIds: ReadonlySet<string>) =>
   chore.templateId && !chore.sourceType && recurringTemplateIds.has(chore.templateId)
-    ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${chore.assignedToEmail}`
+    // Email first while records carry it (it is the field older builds still rewrite), else the uid.
+    ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${chore.assignedToEmail?.toLowerCase() || chore.assignedToUid || ''}`
     : null;
 
 /**

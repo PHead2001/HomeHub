@@ -6,7 +6,7 @@ import {
   HOUSEHOLD_NAME_MAX,
   OWNER_ONLY_PERMISSIONS,
   changedPermissions,
-  choreStatsByEmail,
+  choreStatsByMember,
   mergeChoresById,
   customizedPermissions,
   describeAuditAction,
@@ -28,6 +28,8 @@ import { avatarFileError, AVATAR_MAX_BYTES } from '../../src/components/profile/
 import { entityStateLabel, entityStateTone } from '../../src/components/automation/entity-state';
 import { getEffectivePermissions, getRolePresetPermissions } from '../../src/lib/permissions';
 import type { HouseholdMember } from '../../src/lib/types';
+
+const statsPeople = [{ uid: 'uid-sam', email: 'sam@example.test' }, { uid: 'uid-ana', email: 'ana@example.test' }];
 
 const member = (uid: string, role: HouseholdMember['role'], displayName?: string): HouseholdMember => ({
   uid,
@@ -84,19 +86,34 @@ describe('members', () => {
 
   it('uses the first name for short prompts', () => {
     assert.equal(memberFirstName(member('j', 'newuser', 'Jamie Pending')), 'Jamie');
-    assert.equal(memberFirstName(member('jamie.p', 'newuser')), 'jamie.p');
+    // No display name: a neutral word, never the email or its local part.
+    assert.equal(memberFirstName(member('jamie.p', 'newuser')), 'Member');
   });
 
   it('counts chores done this week and still open per assignee', () => {
     const weekStart = new Date('2026-07-27T00:00:00Z');
-    const stats = choreStatsByEmail([
+    const stats = choreStatsByMember([
       { assignedToEmail: 'Sam@example.test', isCompleted: true, completedAt: '2026-07-28T10:00:00Z' },
       { assignedToEmail: 'sam@example.test', isCompleted: true, completedAt: '2026-07-20T10:00:00Z' },
       { assignedToEmail: 'sam@example.test', isCompleted: false },
+      // Newer chores carry the uid (and the email while it is known).
+      { assignedToUid: 'uid-sam', assignedToEmail: '', isCompleted: false },
       { assignedToEmail: '', isCompleted: false },
-    ], weekStart);
-    assert.deepEqual(stats.get('sam@example.test'), { doneThisWeek: 1, open: 1 });
+      { assignedToUid: 'uid-gone', isCompleted: false },
+    ], statsPeople, weekStart);
+    assert.deepEqual(stats.get('uid-sam'), { doneThisWeek: 1, open: 2 });
     assert.equal(stats.size, 1);
+  });
+
+  it('counts a chore an older build reassigned by email to the new assignee', () => {
+    const weekStart = new Date('2026-07-27T00:00:00Z');
+    // An older build rewrites only the email and leaves the previous uid behind.
+    const stats = choreStatsByMember([
+      { assignedToUid: 'uid-ana', assignedToEmail: 'sam@example.test', isCompleted: false },
+    ], statsPeople, weekStart);
+    assert.deepEqual([...stats.keys()], ['uid-sam']);
+    // Once emails are no longer readable, the uid decides.
+    assert.deepEqual([...choreStatsByMember([{ assignedToUid: 'uid-ana', assignedToEmail: '', isCompleted: false }], [{ uid: 'uid-ana' }], weekStart).keys()], ['uid-ana']);
   });
 
   it('counts this week by the server stamp, and a chore found by both completion queries once', () => {
@@ -111,10 +128,10 @@ describe('members', () => {
     // The server-stamp query and the legacy query can both return the same document.
     const merged = mergeChoresById([open], [stamped, legacy], [legacy]);
     assert.equal(merged.length, 3);
-    assert.deepEqual(choreStatsByEmail(merged, weekStart).get('sam@example.test'), { doneThisWeek: 2, open: 1 });
+    assert.deepEqual(choreStatsByMember(merged, statsPeople, weekStart).get('uid-sam'), { doneThisWeek: 2, open: 1 });
     // A server stamp from last week wins over a client string from this week.
     const backdated = { id: 'b', assignedToEmail: 'sam@example.test', isCompleted: true, completedAt: '2026-07-28T10:00:00Z', completedAtServer: { seconds: Date.parse('2026-07-20T10:00:00Z') / 1000 } };
-    assert.equal(choreStatsByEmail([backdated], weekStart).get('sam@example.test'), undefined);
+    assert.equal(choreStatsByMember([backdated], statsPeople, weekStart).get('uid-sam'), undefined);
   });
 
   it('starts the week on Monday', () => {
@@ -133,11 +150,12 @@ describe('members', () => {
     // Just after the rollover, the current week starts there, so last week's
     // completions fall before the boundary.
     assert.equal(startOfWeek(new Date(2026, 7, 3, 0, 1)).getTime(), next.getTime());
-    const stats = choreStatsByEmail(
+    const stats = choreStatsByMember(
       [{ assignedToEmail: 'a@example.test', isCompleted: true, completedAt: new Date(2026, 7, 1, 12).toISOString() }],
+      [{ uid: 'uid-a', email: 'a@example.test' }],
       startOfWeek(new Date(2026, 7, 3, 0, 1)),
     );
-    assert.equal(stats.get('a@example.test'), undefined);
+    assert.equal(stats.get('uid-a'), undefined);
   });
 
   it('formats relative times', () => {
