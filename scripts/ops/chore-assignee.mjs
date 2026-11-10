@@ -50,17 +50,24 @@ export function resolveAssigneeUidJs(data, people) {
     if (byEmail) return byEmail.uid;
   }
   const uid = text(data?.assignedToUid);
-  return uid && people.some(person => person.uid === uid) ? uid : null;
+  const byUid = uid ? people.find(person => person.uid === uid) : undefined;
+  if (!byUid) return null;
+  // A uid whose member's email differs from the stored email is stale.
+  const uidEmail = lower(byUid.email);
+  if (email && uidEmail && uidEmail !== email) return null;
+  return byUid.uid;
 }
 
 /**
  * What the backfill does with one chore or chore-template document.
  * @param {Record<string, unknown> | null | undefined} data Document data.
  * @param {Map<string, string>} uidByEmail From memberUidsByEmail.
- * @returns {{ kind: 'present' | 'unassigned' | 'former' } | { kind: 'missing' | 'mismatch', assignedToUid: string }}
+ * @returns {{ kind: 'present' | 'unassigned' | 'former' } | { kind: 'missing' | 'mismatch' | 'stale', assignedToUid: string }}
  *   - `present`: the stored uid already agrees (or there is no email to check it against);
  *   - `unassigned`: no email and no uid;
  *   - `former`: an email that names nobody in the household (left, or never joined); left alone;
+ *   - `stale`: such an email next to the uid of a current member (an older build
+ *     reassigned it to someone who has since left): clear the uid (`''`);
  *   - `missing`: no uid yet, the email names a member: write that member's uid;
  *   - `mismatch`: the stored uid disagrees with the member the email names (an
  *     older build reassigned it by email): write the email's member uid.
@@ -70,7 +77,13 @@ export function assigneeBackfillDecision(data, uidByEmail) {
   const stored = text(data?.assignedToUid);
   if (!email) return stored ? { kind: 'present' } : { kind: 'unassigned' };
   const resolved = uidByEmail.get(email);
-  if (!resolved) return { kind: 'former' };
+  if (!resolved) {
+    // The email names nobody here. A stored uid of a current member is then a
+    // leftover of an older build's reassignment: clear it so it can never be
+    // read as that member's chore once emails are gone.
+    const current = stored && [...uidByEmail.values()].includes(stored);
+    return current ? { kind: 'stale', assignedToUid: '' } : { kind: 'former' };
+  }
   if (!stored) return { kind: 'missing', assignedToUid: resolved };
   return stored === resolved ? { kind: 'present' } : { kind: 'mismatch', assignedToUid: resolved };
 }

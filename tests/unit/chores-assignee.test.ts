@@ -58,13 +58,43 @@ describe('chore assignee (uid with email fallback)', () => {
       'uid, email unknown to the writer': 'uid-sam',
       'uid of a former member': null,
       'email of a former member': null,
-      'former email, current uid': 'uid-ana',
+      'former email, current uid': null,
       unassigned: null,
       'unassigned by the server': null,
       'template: email only in recurrence': 'uid-ana',
       'template: stopped by an older build': 'uid-sam',
       'not strings': null,
     });
+  });
+
+  test('a stale uid never wins over the stored email', () => {
+    // Alice's chore reassigned to Bob by an older build: email Bob, uid still Alice's.
+    const alice = { uid: 'uid-alice', email: 'alice@example.test' };
+    const bob = { uid: 'uid-bob', email: 'bob@example.test' };
+    const moved = { assignedToUid: 'uid-alice', assignedToEmail: 'bob@example.test' };
+    // Stale uid + current member email: Bob's.
+    assert.equal(resolveAssigneeUid(moved, [alice, bob]), 'uid-bob');
+    assert.equal(isAssignedTo(moved, alice), false);
+    assert.equal(isAssignedTo(moved, bob), true);
+    // Stale uid + departed member email: nobody's, never Alice's.
+    assert.equal(resolveAssigneeUid(moved, [alice]), null);
+    assert.equal(resolveAssigneeUidJs(moved, [alice]), null);
+    assert.equal(isAssignedTo(moved, alice), false);
+    const done = { id: 'd', task: 'd', dueDate: '2026-11-09', originalDueDate: '2026-11-09', isCompleted: true, completedAt: '2026-11-09T09:00:00Z', ...moved } as unknown as ChoreRecord;
+    const stats = computeChoreStats([done], [{ uid: alice.uid, name: 'Alice', email: alice.email }], new Date('2026-11-09T20:00:00Z'));
+    assert.equal(stats.members[0].weekCompleted, 0, "Bob's completed work never becomes Alice's points");
+    // Uid only (legacy email missing): the uid decides.
+    for (const record of [{ assignedToUid: 'uid-alice' }, { assignedToUid: 'uid-alice', assignedToEmail: '' }, { assignedToUid: 'uid-alice', assignedToEmail: null }]) {
+      assert.equal(resolveAssigneeUid(record, [alice, bob]), 'uid-alice');
+      assert.equal(isAssignedTo(record, alice), true);
+    }
+    // Matching pair, in any case.
+    const pair = { assignedToUid: 'uid-alice', assignedToEmail: 'Alice@Example.test' };
+    assert.equal(resolveAssigneeUid(pair, [alice, bob]), 'uid-alice');
+    assert.equal(isAssignedTo(pair, alice), true);
+    assert.equal(isAssignedTo(pair, bob), false);
+    // A reader who cannot see the uid's member email keeps the uid.
+    assert.equal(resolveAssigneeUid(moved, [{ uid: 'uid-alice' }]), 'uid-alice');
   });
 
   test('without readable emails, the uid decides', () => {
@@ -76,7 +106,6 @@ describe('chore assignee (uid with email fallback)', () => {
     for (const [name, record] of cases) {
       for (const person of people) {
         const expected = resolveAssigneeUid(record, people) === person.uid;
-        if (name === 'former email, current uid') continue; // email decides for the person, see below
         assert.equal(isAssignedTo(record, person), expected, `${name} / ${person.uid}`);
       }
     }
@@ -116,6 +145,8 @@ describe('chore assignee (uid with email fallback)', () => {
     assert.deepEqual(decisions['uid, email unknown to the writer'], { kind: 'present' });
     assert.deepEqual(decisions['email of a former member'], { kind: 'former' });
     assert.deepEqual(decisions.unassigned, { kind: 'unassigned' });
+    assert.deepEqual(decisions['former email, current uid'], { kind: 'stale', assignedToUid: '' });
+    assert.deepEqual(decisions['uid of a former member'], { kind: 'present' });
     assert.deepEqual(decisions['template: email only in recurrence'], { kind: 'missing', assignedToUid: 'uid-ana' });
     // Every write the backfill makes matches what readers already resolve.
     for (const [name, record] of cases) {
@@ -123,6 +154,7 @@ describe('chore assignee (uid with email fallback)', () => {
       if (decision.kind === 'missing' || decision.kind === 'mismatch') {
         assert.equal(decision.assignedToUid, resolveAssigneeUid(record, people), name);
       }
+      if (decision.kind === 'stale') assert.equal(resolveAssigneeUid(record, people), null, name);
     }
   });
 

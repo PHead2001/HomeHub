@@ -10,7 +10,9 @@
 //   email, because an older build that reassigns a chore rewrites only the
 //   email and leaves the previous assignee's uid behind;
 // - a record whose email is empty, or whose email the reader cannot see,
-//   is matched by uid.
+//   is matched by uid;
+// - a uid whose member's (readable) email differs from the stored email is
+//   stale and matches nobody, even when the email names a former member.
 
 export type AssigneeRecord = {
   assignedToUid?: unknown;
@@ -65,8 +67,15 @@ export const resolveAssigneeUid = (
     if (byEmail) return byEmail.uid;
   }
   const uid = assigneeUidOf(record);
-  if (uid && people.some((person) => person.uid === uid)) return uid;
-  return null;
+  const byUid = uid ? people.find((person) => person.uid === uid) : undefined;
+  if (!byUid) return null;
+  // The uid counts only when it cannot contradict the email: its member's
+  // email is unknown to this reader, or there is no stored email. A stored
+  // email naming someone else (even a former member) means an older build
+  // reassigned the record and the uid is stale.
+  const uidEmail = lower(byUid.email);
+  if (email && uidEmail && uidEmail !== email) return null;
+  return byUid.uid;
 };
 
 /**

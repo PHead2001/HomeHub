@@ -1,6 +1,7 @@
 // Adds `assignedToUid` to chores and chore templates that only name their
-// assignee by email (chores README, "Assignee identity"), and repairs a uid
-// that an older build left behind when it reassigned a chore by email only.
+// assignee by email (chores README, "Assignee identity"), repairs a uid that an
+// older build left behind when it reassigned a chore by email only, and clears
+// such a leftover uid when the email it sits next to names a former member.
 // The uid comes from the household's member documents (email to uid). Records
 // that are unassigned, already agree, or name someone who is no longer a member
 // are left alone, so the script can be stopped and re-run at any time. Run it
@@ -35,7 +36,7 @@ const { db, label } = await opsFirestore(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (assignedToUid will be written)' : 'dry run (no writes)'}.`);
 
-const empty = () => ({ scanned: 0, present: 0, unassigned: 0, former: 0, missing: 0, mismatch: 0, written: 0, changed: 0 });
+const empty = () => ({ scanned: 0, present: 0, unassigned: 0, former: 0, missing: 0, mismatch: 0, stale: 0, written: 0, changed: 0 });
 const totals = { households: 0, chores: empty(), 'chore-templates': empty() };
 
 const skippable = error => error?.code === NOT_FOUND || error?.code === FAILED_PRECONDITION;
@@ -80,7 +81,7 @@ const backfillCollection = async (household, name, uidByEmail) => {
       counts.scanned += 1;
       const decision = assigneeBackfillDecision(record.data(), uidByEmail);
       counts[decision.kind] += 1;
-      if (decision.kind === 'missing' || decision.kind === 'mismatch') {
+      if (decision.kind === 'missing' || decision.kind === 'mismatch' || decision.kind === 'stale') {
         writes.push({ ref: record.ref, assignedToUid: decision.assignedToUid, updateTime: record.updateTime });
       }
     }
@@ -115,6 +116,7 @@ for (const name of COLLECTIONS) {
   console.log(`  email names no current member (left alone): ${counts.former}`);
   console.log(`  uid missing: ${counts.missing}`);
   console.log(`  uid disagrees with the email (reassigned by an older build): ${counts.mismatch}`);
+  console.log(`  uid of a current member next to a former member's email (uid cleared): ${counts.stale}`);
   if (apply) console.log(`  updated: ${counts.written}; changed or deleted meanwhile and skipped: ${counts.changed}`);
 }
 if (!apply) console.log('Dry run only. Re-run with --apply to write the field.');
