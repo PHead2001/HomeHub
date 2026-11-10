@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useRef } from 'react';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, useIsPresent } from 'motion/react';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import type { User as HomeHubUser } from '@/lib/types';
@@ -51,6 +51,10 @@ function dueLabel(day: string, today: string): string {
 
 function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps }) {
   const { chore, missed } = entry;
+  // A row that is leaving (completed, so it moved to Completed) is only a visual
+  // echo during its exit slide: hidden from assistive tech and inert, so each
+  // chore has exactly one actionable row across To Do, Future and Completed.
+  const leaving = !useIsPresent();
   const detailsId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);
   const { capabilities, today } = props;
@@ -86,8 +90,12 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         'rounded-lg border bg-card',
         isOverdue && 'border-l-4 border-l-destructive',
         props.selectedIds.has(chore.id) && 'border-primary',
+        leaving && 'pointer-events-none',
       )}
-      data-chore-id={chore.id}
+      data-chore-id={leaving ? undefined : chore.id}
+      aria-hidden={leaving || undefined}
+      // React 18 sets `inert` only from a string value (its types say boolean).
+      {...(leaving ? { inert: '' as unknown as boolean } : {})}
     >
       <div className="flex items-start gap-1 p-1 md:gap-2 md:p-1.5">
         {props.selectMode && !isCompleted ? (

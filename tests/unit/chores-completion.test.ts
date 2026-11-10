@@ -220,3 +220,12 @@ describe('occurrence key backfill (scripts/ops)', () => {
     assert.deepEqual(occurrenceKeyDecision(cases[5][0], cases[5][1]), { kind: 'oneTime' });
   });
 });
+
+describe('one actionable row per chore', () => {
+  it('a row leaving To Do (exit slide) is hidden and inert while the chore shows in Completed', () => {
+    const list = readFileSync(resolve(process.cwd(), 'src/components/chores/chore-list.tsx'), 'utf8');
+    assert.match(list, /const leaving = !useIsPresent\(\)/);
+    assert.match(list, /aria-hidden=\{leaving \|\| undefined\}/);
+    assert.match(list, /leaving \? \{ inert: '' as unknown as boolean \}/);
+  });
+});
