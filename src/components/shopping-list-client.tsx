@@ -40,7 +40,7 @@ import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offli
 import { buildShoppingListItem } from '@/lib/shopping-items';
 import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, splitSettled, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
-import { isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
+import { deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
@@ -291,6 +291,9 @@ export function ShoppingListClient({
   if (selectedList && householdId && (seen?.list !== selectedList || seen.householdId !== householdId)) setSeen({ householdId, list: selectedList });
   const seenList = seen && seen.householdId === householdId ? seen.list : null;
   const listIds = useMemo(() => lists.map((list) => list.id), [lists]);
+  // The marker covers only the deletion in flight: once this device has left the
+  // list and the snapshot no longer holds it, it is cleared.
+  if (deletionSettled({ deletingListId, selectedListId, listIds })) setDeletingListId(null);
   // Deleted while open (here: by another member or device): the list's document is
   // gone from the snapshot. Its screen says so and offers no write controls (SH-1e).
   const deletedList = isOpenListDeleted({
