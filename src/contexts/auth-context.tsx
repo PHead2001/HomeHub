@@ -25,6 +25,8 @@ import { getMemberPermissions } from '@/lib/permissions';
 import { normalizeMember, sameProfile } from '@/lib/auth/cached-session';
 import { SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
 import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
+import { pushSignOutGate, runPushSignOut } from '@/lib/push-tokens';
+import { hasPushSubscription } from '@/lib/service-worker';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { memberProfileDiffers, pendingHouseholdView } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
@@ -513,28 +515,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchOrCreateUserProfile, publishProfile, toast]);
 
+  const logoutInFlight = useRef(false);
   const logout = useCallback(async () => {
-    // The last-known house rooms go first, before anything that can fail or reload.
-    clearHouseSnapshot(deviceStorage());
-    // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
-    // the rules reject them once signed out. Then remove this household's cached data
-    // from the device. A terminated Firestore instance cannot be reused, so the page
-    // reloads afterwards. (Emulator runs hold only synthetic data and keep the live
-    // instance.)
-    const firestoreStopped = !firebaseEmulatorMode && await (await loadData()).clearLocalFirestoreCache();
+    // A second tap while the first sign-out is still flushing does nothing.
+    if (logoutInFlight.current) return;
+    logoutInFlight.current = true;
+    // From here on no push registration may complete for this account: one still
+    // in flight is discarded and cleaned up (see push-tokens).
+    pushSignOutGate.begin();
+    let reloading = false;
     try {
-      await signOut(auth);
+      // The last-known house rooms go first, before anything that can fail or reload.
+      clearHouseSnapshot(deviceStorage());
+      // This device stops receiving the account's pushes: while still signed in, its
+      // token leaves the account's private push document and FCM. Loading the module
+      // and the cleanup share one 2 s budget and never block sign-out; what is left
+      // is finished at the next sign-in. Nothing is loaded when this device has no
+      // token, no registration in flight and no push subscription.
+      await runPushSignOut({
+        storage: deviceStorage(),
+        hasSubscription: hasPushSubscription,
+        cleanup: async () => (await import('@/lib/push-registration')).unregisterPushOnThisDevice(),
+        onError: (error) => console.warn('Push could not be fully removed from this device on sign-out.', error instanceof Error ? error.message : String(error)),
+      });
+      // Flush queued writes (e.g. offline shopping ticks) while still signed in, since
+      // the rules reject them once signed out. Then remove this household's cached data
+      // from the device. A terminated Firestore instance cannot be reused, so the page
+      // reloads afterwards. (Emulator runs hold only synthetic data and keep the live
+      // instance.)
+      const firestoreStopped = !firebaseEmulatorMode && await (await loadData()).clearLocalFirestoreCache();
+      reloading = firestoreStopped;
+      try {
+        await signOut(auth);
+      } finally {
+        if (firestoreStopped) window.location.assign("/");
+      }
+      if (firestoreStopped) return;
+      setCurrentUser(null);
+      setProfileConfirmed(false);
+      setHousehold(null);
+      setCurrentMember(null);
+      cachedHouseholdShown.current = null;
+      setHouseholdLoading(false);
+      toast({ title: "Logged Out", description: "You have been successfully logged out." });
     } finally {
-      if (firestoreStopped) window.location.assign("/");
+      // The page is about to reload after a full sign-out; otherwise sign-out is possible again.
+      if (!reloading) {
+        logoutInFlight.current = false;
+        pushSignOutGate.end();
+      }
     }
-    if (firestoreStopped) return;
-    setCurrentUser(null);
-    setProfileConfirmed(false);
-    setHousehold(null);
-    setCurrentMember(null);
-    cachedHouseholdShown.current = null;
-    setHouseholdLoading(false);
-    toast({ title: "Logged Out", description: "You have been successfully logged out." });
   },[toast]);
   
   const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string, options?: { silent?: boolean }) => {
