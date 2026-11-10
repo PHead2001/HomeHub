@@ -2,6 +2,8 @@
  * Dashboard motion and scene styles (H01, H02, H11, H22, H27, H29).
  * Colors are tokens only (hsl(var(--token))). Every animation is opacity/transform,
  * pauses while the tab is hidden, and is removed under both reduced-motion selectors.
+ * Attention animations (overdue glow, pet walk, pantry pulse) run three cycles and hold
+ * (HP-16a); the scene remounts the element when its state changes, so it runs again.
  */
 
 /* ---------- Living house ---------- */
@@ -40,11 +42,12 @@
 }
 
 .overdueGlow {
-  animation: glow-pulse 2.4s ease-in-out infinite;
+  animation: glow-pulse 2.4s ease-in-out 3;
 }
+/* Starts and ends fully on, so the held glow (and reduced motion) is the steady state. */
 @keyframes glow-pulse {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
 .sparkle {
@@ -75,7 +78,8 @@
 
 /* Fed pets walk between rooms: three waypoints in SVG units (set inline), transform only. */
 .petWalk {
-  animation: pet-walk 24s ease-in-out infinite;
+  /* Three walks, then the pet rests at its first waypoint (its inline position). */
+  animation: pet-walk 24s ease-in-out 3;
 }
 @keyframes pet-walk {
   0%, 100% { transform: translate(var(--p0x), var(--p0y)); }
@@ -116,7 +120,7 @@
 }
 
 .pulse {
-  animation: soft-pulse 1.8s ease-in-out infinite;
+  animation: soft-pulse 1.8s ease-in-out 3;
 }
 @keyframes soft-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }
@@ -507,7 +511,7 @@
 @media (min-width: 1024px) and (orientation: landscape) {
   .page {
     /* Header (h-14 + border) + page padding + subtitle line + house card rows + slack. */
-    --house-stage-max-h: max(14rem, calc(100vh - 16.25rem - 1px));
+    --house-stage-max-h: max(14rem, calc(100vh - 16.75rem - 1px));
     display: grid;
     grid-template-columns: fit-content(50%) minmax(0, 1fr);
     column-gap: 1.5rem;
@@ -516,7 +520,7 @@
   }
   @supports (height: 100dvh) {
     .page {
-      --house-stage-max-h: max(14rem, calc(100dvh - 16.25rem - 1px));
+      --house-stage-max-h: max(14rem, calc(100dvh - 16.75rem - 1px));
     }
   }
   .stageFrame {
@@ -574,6 +578,202 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border-width: 0;
+  }
+}
+
+/* ---------- Touch (HP-13, HP-14, HP-19, D-2) ---------- */
+/*
+ * D-2: every dashboard control is at least 44 px on any pointer and 48 px on touch.
+ * Written as plain media queries so it works with or without the shared `--target-min`
+ * token. `.target` sizes the control itself; `.hitSlop` keeps a small visual (the
+ * health badge) and grows only its hit area; `.menuItem` sizes menu rows.
+ */
+.target {
+  min-width: 44px;
+  min-height: 44px;
+}
+.menuItem {
+  min-height: 44px;
+}
+.hitSlop {
+  position: relative;
+}
+.hitSlop::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+  transform: translate(-50%, -50%);
+}
+@media (pointer: coarse) {
+  .target {
+    min-width: 48px;
+    min-height: 48px;
+  }
+  .menuItem {
+    min-height: 48px;
+  }
+  .hitSlop::after {
+    width: max(100%, 48px);
+    height: max(100%, 48px);
+  }
+}
+
+/*
+ * Peek details (HP-13): peek cards open only with a fine, hovering pointer, so
+ * everywhere else (touch, pen, no pointer) the same details render inline. `.touchOnly`
+ * is the inline copy, `.peekOnly` a line the inline copy replaces. The `html` prefix
+ * outranks the utility class that sets the element's own display.
+ */
+@media (hover: hover) and (pointer: fine) {
+  :global(html) .touchOnly {
+    display: none;
+  }
+}
+@media (hover: none), (pointer: coarse), (pointer: none) {
+  :global(html) .peekOnly {
+    display: none;
+  }
+}
+
+/* HP-19a: the keyboard shortcuts hint needs a keyboard-and-mouse screen. */
+:global(html) .fineHoverOnly {
+  display: none;
+}
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  :global(html) .fineHoverOnly {
+    display: inline-flex;
+  }
+}
+
+/*
+ * HP-13a: a room's inline chores. The block is a size container filling the room below
+ * its name and state, and a line shows only when the container is tall enough for it
+ * (1.125rem a line, the tallest line height used here; rem, so the thresholds move with
+ * the text scale), never more than three from 640 px or five in the wide layout. On
+ * phones (below 640 px) the rooms are too short, so the lines move under the house
+ * (`.roomDetails`, two per room) and the in-room block is hidden.
+ */
+.roomChores {
+  container: room-chores / size;
+  flex: 1 1 0%;
+  min-height: 0;
+  margin-top: 0.125rem;
+  overflow: hidden;
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+.roomChores > * {
+  display: none;
+}
+@container room-chores (min-height: 1.125rem) {
+  .roomChores > :nth-child(1) {
+    display: block;
+  }
+}
+@container room-chores (min-height: 2.25rem) {
+  .roomChores > :nth-child(2) {
+    display: block;
+  }
+}
+@container room-chores (min-height: 3.375rem) {
+  .roomChores > :nth-child(3) {
+    display: block;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) {
+  @container room-chores (min-height: 4.5rem) {
+    .roomChores > :nth-child(4) {
+      display: block;
+    }
+  }
+  @container room-chores (min-height: 5.625rem) {
+    .roomChores > :nth-child(5) {
+      display: block;
+    }
+  }
+}
+@media (max-width: 639.98px) {
+  :global(html) .roomChores {
+    display: none;
+  }
+}
+@media (min-width: 640px) {
+  :global(html) .roomDetails {
+    display: none;
+  }
+}
+/*
+ * HP-13b: inline tile details; at most two rows in the compact tiles beside the house,
+ * and only as many as the screen height leaves room for (HP-12d: the wide layout is one
+ * screen at 100% text). Each row adds about 1.5rem to two tile rows, so one row needs a
+ * screen at least 50rem (800 px) tall and two rows 54rem (864 px); below 50rem
+ * (1024x768) the details stay on the module pages.
+ */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .tileGrid .tileDetails > :nth-child(n + 3) {
+    display: none;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) and (max-height: 53.99rem) {
+  .tileGrid .tileDetails > :nth-child(n + 2) {
+    display: none;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) and (max-height: 49.99rem) {
+  .tileGrid .tileDetails {
+    display: none;
+  }
+}
+
+/* HP-19b: the roof takes taps without the double-tap zoom delay. */
+.stage {
+  touch-action: manipulation;
+}
+
+/* HP-14a: the coarse-pointer type scale (rem, so the D-4 text size still scales it). */
+@media (pointer: coarse) {
+  :global(html) .roomName {
+    font-size: 1rem;
+    line-height: 1.25rem;
+  }
+  :global(html) .roomState {
+    display: block;
+    font-size: 0.875rem;
+    line-height: 1.125rem;
+  }
+  :global(html) .roomBadge {
+    height: 1.375rem;
+    min-width: 1.375rem;
+    font-size: 0.8125rem;
+  }
+  :global(html) .roomDot {
+    height: 0.625rem;
+    width: 0.625rem;
+  }
+  :global(html) .yardLabel {
+    font-size: 0.875rem;
+    line-height: 1.125rem;
+  }
+  :global(html) .petName {
+    max-width: 6rem;
+  }
+  :global(html) .healthText {
+    font-size: 0.875rem;
+  }
+}
+@media (pointer: coarse) and (min-width: 640px) {
+  .roomChores {
+    font-size: 0.875rem;
+    line-height: 1.125rem;
+  }
+}
+@media (pointer: coarse) and (min-width: 1024px) and (orientation: landscape) {
+  :global(html) .roomName {
+    font-size: 1.125rem;
+    line-height: 1.5rem;
   }
 }
 
