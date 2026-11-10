@@ -222,22 +222,17 @@ describe('membership is authoritative; legacy fields grant nothing', () => {
     }
   });
 
-  test('a pending member who deletes their own record loses access instead of gaining it', async () => {
+  test('a pending member reads their own record and the household, and cannot delete or rewrite either', async () => {
     const db = dbFor(users.pending);
     await assertSucceeds(getDoc(doc(db, 'households', householdA)));
+    await assertSucceeds(getDoc(doc(db, 'households', householdA, 'members', users.pending.uid)));
+    await assertFails(getDoc(doc(db, 'households', householdA, 'members', users.owner.uid)));
+    await assertFails(getDocs(collection(db, 'households', householdA, 'members')));
     await assertFails(getDoc(doc(db, 'households', householdA, 'chores', 'task')));
-    await assertSucceeds(deleteDoc(doc(db, 'households', householdA, 'members', users.pending.uid)));
-    await assertFails(getDoc(doc(db, 'households', householdA)));
-    await assertFails(getDoc(doc(db, 'households', householdA, 'chores', 'task')));
+    await assertFails(deleteDoc(doc(db, 'households', householdA, 'members', users.pending.uid)));
     await assertFails(setDoc(doc(db, 'households', householdA, 'members', users.pending.uid), {
       uid: users.pending.uid, email: users.pending.email, role: 'member', status: 'active',
     }));
-  });
-
-  test('a child who deletes their own record cannot come back with more power', async () => {
-    const db = dbFor(users.child);
-    await assertSucceeds(deleteDoc(doc(db, 'households', householdA, 'members', users.child.uid)));
-    await assertFails(setDoc(doc(db, 'households', householdA, 'chores', 'new'), { task: 'x' }));
   });
 
   test('a pending member cannot promote themselves or edit the member list', async () => {
@@ -260,13 +255,21 @@ describe('membership is authoritative; legacy fields grant nothing', () => {
     }));
   });
 
+  test('approved members list and read membership records', async () => {
+    for (const user of [users.owner, users.admin, users.member, users.child, users.guest]) {
+      await assertSucceeds(getDocs(collection(dbFor(user), 'households', householdA, 'members')));
+      await assertSucceeds(getDoc(doc(dbFor(user), 'households', householdA, 'members', users.owner.uid)));
+    }
+    await assertFails(getDocs(collection(dbFor(users.ownerB), 'households', householdA, 'members')));
+  });
+
   test('households cannot be listed', async () => {
     await assertFails(getDocs(collection(dbFor(users.owner), 'households')));
   });
 });
 
-describe('household creation', () => {
-  test('a new user creates a household together with their owner record', async () => {
+describe('household creation is server-only', () => {
+  test('a new user cannot create a household, even together with their owner record', async () => {
     const db = dbFor(users.stranger);
     const batch = writeBatch(db);
     batch.set(doc(db, 'households', 'new-house'), {
@@ -280,74 +283,59 @@ describe('household creation', () => {
     batch.set(doc(db, 'households', 'new-house', 'members', users.stranger.uid), {
       uid: users.stranger.uid, email: users.stranger.email, role: 'owner', status: 'active', permissions: {},
     });
-    batch.set(doc(db, 'users', users.stranger.email), { householdId: 'new-house', role: 'owner', permissions: {} }, { merge: true });
-    batch.set(doc(collection(db, 'households', 'new-house', 'auditLogs')), {
-      actorUid: users.stranger.uid,
-      actorEmail: users.stranger.email,
-      action: 'household.created',
-      createdAt: '2026-08-01T12:00:00.000Z',
-    });
-    await assertSucceeds(batch.commit());
-  });
-
-  test('a household cannot be created without its owner record or for someone else', async () => {
-    const db = dbFor(users.stranger);
+    await assertFails(batch.commit());
     await assertFails(setDoc(doc(db, 'households', 'orphan'), {
       name: 'Orphan', ownerUid: users.stranger.uid, ownerEmail: users.stranger.email, memberEmails: [],
     }));
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'households', 'spoof'), {
-      name: 'Spoof', ownerUid: users.owner.uid, ownerEmail: users.owner.email, memberEmails: [],
-    });
-    batch.set(doc(db, 'households', 'spoof', 'members', users.stranger.uid), {
-      uid: users.stranger.uid, email: users.stranger.email, role: 'owner', status: 'active',
-    });
-    await assertFails(batch.commit());
+    await assertFails(setDoc(doc(db, 'households', 'lone-owner', 'members', users.stranger.uid), {
+      uid: users.stranger.uid, email: users.stranger.email, role: 'owner', status: 'active', permissions: {},
+    }));
   });
 
-  test('creating over an existing household id is denied', async () => {
+  test('a household the server created works for its owner straight away', async () => {
+    // What createHousehold (Admin SDK) writes: the household, the owner record and the profile cache.
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'households', 'new-house'), {
+        name: 'New House', ownerUid: users.stranger.uid, ownerEmail: users.stranger.email,
+        memberEmails: [users.stranger.email], timeZone: 'America/Chicago',
+      });
+      await setDoc(doc(db, 'households', 'new-house', 'members', users.stranger.uid), {
+        uid: users.stranger.uid, email: users.stranger.email, role: 'owner', status: 'active', permissions: {},
+      });
+      await updateDoc(doc(db, 'users', users.stranger.email), { householdId: 'new-house', role: 'owner', permissions: {} });
+    });
     const db = dbFor(users.stranger);
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'households', householdA), {
-      name: 'Takeover', ownerUid: users.stranger.uid, ownerEmail: users.stranger.email, memberEmails: [],
-    });
-    batch.set(doc(db, 'households', householdA, 'members', users.stranger.uid), {
-      uid: users.stranger.uid, email: users.stranger.email, role: 'owner', status: 'active',
-    });
-    await assertFails(batch.commit());
+    await assertSucceeds(getDoc(doc(db, 'households', 'new-house')));
+    await assertSucceeds(getDoc(doc(db, 'households', 'new-house', 'members', users.stranger.uid)));
+    await assertSucceeds(setDoc(doc(db, 'households', 'new-house', 'shopping-lists', 'first'), { name: 'First' }));
   });
 });
 
-describe('roles and ownership', () => {
-  test('owners and admins approve pending members; members cannot', async () => {
-    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA, 'members', users.pending.uid), {
-      role: 'member', status: 'active',
-    }));
-    await assertSucceeds(updateDoc(doc(dbFor(users.admin), 'households', householdA, 'members', users.pending.uid), {
-      role: 'member', status: 'active',
-    }));
+describe('membership and household writes are server-only', () => {
+  test('nobody approves, changes roles or permissions, or removes members from the client', async () => {
+    for (const actor of [users.owner, users.admin, users.member]) {
+      const db = dbFor(actor);
+      await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.pending.uid), {
+        role: 'member', status: 'active',
+      }));
+      await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), { role: 'admin' }));
+      await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.child.uid), {
+        permissions: { 'shopping.edit': false },
+      }));
+      await assertFails(deleteDoc(doc(db, 'households', householdA, 'members', users.guest.uid)));
+    }
   });
 
-  test('admins cannot create or modify owners', async () => {
-    const db = dbFor(users.admin);
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), { role: 'owner' }));
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.owner.uid), { role: 'member' }));
-    await assertFails(deleteDoc(doc(db, 'households', householdA, 'members', users.owner.uid)));
+  test('nobody edits or deletes their own record from the client (leaving is a server operation)', async () => {
+    for (const actor of [users.owner, users.admin, users.member, users.child, users.pending]) {
+      const db = dbFor(actor);
+      await assertFails(updateDoc(doc(db, 'households', householdA, 'members', actor.uid), { displayName: 'New name' }));
+      await assertFails(deleteDoc(doc(db, 'households', householdA, 'members', actor.uid)));
+    }
   });
 
-  test('members cannot change their own role', async () => {
-    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA, 'members', users.member.uid), { role: 'admin' }));
-  });
-
-  test('the last owner cannot demote or remove themselves without a transfer', async () => {
-    const db = dbFor(users.owner);
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.owner.uid), { role: 'admin' }));
-    await assertFails(deleteDoc(doc(db, 'households', householdA, 'members', users.owner.uid)));
-    await assertFails(updateDoc(doc(db, 'households', householdA), { ownerUid: users.admin.uid }));
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), { role: 'owner' }));
-  });
-
-  test('ownership transfer succeeds as one consistent batch', async () => {
+  test('ownership cannot be transferred from the client', async () => {
     const db = dbFor(users.owner);
     const batch = writeBatch(db);
     batch.update(doc(db, 'households', householdA), {
@@ -355,73 +343,50 @@ describe('roles and ownership', () => {
     });
     batch.update(doc(db, 'households', householdA, 'members', users.admin.uid), { role: 'owner', status: 'active', permissions: {} });
     batch.update(doc(db, 'households', householdA, 'members', users.owner.uid), { role: 'admin', status: 'active', permissions: {} });
-    batch.set(doc(db, 'users', users.admin.email), { role: 'owner', permissions: {} }, { merge: true });
-    batch.set(doc(db, 'users', users.owner.email), { role: 'admin', permissions: {} }, { merge: true });
-    await assertSucceeds(batch.commit());
+    await assertFails(batch.commit());
+    await assertFails(updateDoc(doc(db, 'households', householdA), { ownerUid: users.admin.uid }));
+    await assertFails(updateDoc(doc(db, 'households', householdA), { ownerEmail: users.admin.email }));
   });
 
-  test('member identity fields cannot be rewritten', async () => {
-    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA, 'members', users.member.uid), {
-      uid: users.stranger.uid,
-    }));
+  test('nobody renames the household or edits memberEmails from the client', async () => {
+    for (const actor of [users.owner, users.admin, users.member]) {
+      const db = dbFor(actor);
+      await assertFails(updateDoc(doc(db, 'households', householdA), { name: 'Renamed', updatedAt: 'x' }));
+      await assertFails(updateDoc(doc(db, 'households', householdA), {
+        memberEmails: [users.owner.email, users.stranger.email], updatedAt: 'x',
+      }));
+    }
+    // The legacy permanent invite code is not a client field either.
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { inviteCode: deleteField(), updatedAt: 'x' }));
   });
 
-  test('owners rename; admins rename; members cannot', async () => {
-    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: 'Renamed', updatedAt: 'x' }));
-    await assertSucceeds(updateDoc(doc(dbFor(users.admin), 'households', householdA), { name: 'Renamed again', updatedAt: 'y' }));
-    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { name: 'Nope', updatedAt: 'z' }));
-    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: '' }));
+  test('a role change the server wrote takes effect for the member', async () => {
+    // changeMemberRole (Admin SDK) approves the pending person.
+    await environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'households', householdA, 'members', users.pending.uid), { role: 'member', status: 'active' }));
+    await assertSucceeds(getDoc(doc(dbFor(users.pending), 'households', householdA, 'chores', 'task')));
+    await assertSucceeds(getDocs(collection(dbFor(users.pending), 'households', householdA, 'members')));
   });
 
-  test('a household without ownerUid (legacy) blocks owner edits until backfilled', async () => {
+  test('a household without ownerUid (legacy) keeps module access', async () => {
     await environment.withSecurityRulesDisabled(async context => {
       await setDoc(doc(context.firestore(), 'households', householdA), {
         name: 'Legacy', ownerEmail: users.owner.email, memberEmails: [users.owner.email],
       });
     });
-    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: 'Legacy 2', updatedAt: 'x' }));
-    // Module access is unaffected because it depends only on membership records.
+    // Module access depends only on membership records.
     await assertSucceeds(getDoc(doc(dbFor(users.member), 'households', householdA, 'chores', 'task')));
   });
 });
 
 describe('independent review regressions', () => {
-  test('an admin cannot edit their own record or lift restrictions', async () => {
-    const db = dbFor(users.admin);
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), { permissions: {} }));
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), {
-      permissions: { 'household.delete': true },
-    }));
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), {
-      permissions: { 'household.transferOwnership': true },
-    }));
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), { uid: 'x', role: 'member' }));
-    await assertSucceeds(updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), {
-      permissions: { 'shopping.edit': false },
-    }));
-  });
-
-  test('owners cannot grant owner-only permissions or invent fields', async () => {
-    const db = dbFor(users.owner);
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), {
-      permissions: { 'household.delete': true },
-    }));
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), { superPower: true }));
-  });
-
-  test('ownership cannot end up with two owners or a pending owner', async () => {
-    const db = dbFor(users.owner);
-    const twoOwners = writeBatch(db);
-    twoOwners.update(doc(db, 'households', householdA), { ownerUid: users.admin.uid, ownerEmail: users.admin.email });
-    twoOwners.update(doc(db, 'households', householdA, 'members', users.admin.uid), { role: 'owner', status: 'active' });
-    await assertFails(twoOwners.commit());
-    await assertFails(updateDoc(doc(db, 'households', householdA, 'members', users.owner.uid), { status: 'pending' }));
-  });
-
   test('owners and admins set the household timezone; members save their own', async () => {
     await assertSucceeds(updateDoc(doc(dbFor(users.admin), 'households', householdA), { timeZone: 'America/New_York' }));
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { timeZone: 'UTC', updatedAt: 'x' }));
     await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { timeZone: 'UTC' }));
-    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: 'Fine', timeZone: 'x'.repeat(100) }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { timeZone: 'x'.repeat(100) }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { timeZone: 7 }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: 'Fine', timeZone: 'UTC' }));
     await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Denver' }));
   });
 
@@ -450,22 +415,6 @@ describe('independent review regressions', () => {
     }));
   });
 
-  test('invites need a real expiry within two hours', async () => {
-    const base = {
-      householdId: householdA, createdByUid: users.owner.uid, createdByEmail: users.owner.email,
-      createdAt: 'x', maxUses: 1, useCount: 0,
-    };
-    const db = dbFor(users.owner);
-    await assertFails(setDoc(doc(db, 'inviteCodes', 'STRG-EXPI-RE'), { ...base, code: 'STRG-EXPI-RE', expiresAt: '2099-01-01' }));
-    await assertFails(setDoc(doc(db, 'inviteCodes', 'LONG-EXPI-RE'), { ...base, code: 'LONG-EXPI-RE', expiresAt: inMinutes(60 * 24) }));
-    await assertFails(setDoc(doc(db, 'inviteCodes', 'PAST-EXPI-RE'), { ...base, code: 'PAST-EXPI-RE', expiresAt: inMinutes(-1) }));
-    await assertSucceeds(setDoc(doc(db, 'inviteCodes', 'GOOD-EXPI-RE'), { ...base, code: 'GOOD-EXPI-RE', expiresAt: inMinutes(30) }));
-    // The deployed client writes ISO strings; accepted, and the server caps every invite
-    // at two hours from Firestore's own create time.
-    await assertSucceeds(setDoc(doc(db, 'inviteCodes', 'ISOS-TRIN-GG'), { ...base, code: 'ISOS-TRIN-GG', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }));
-    await assertFails(setDoc(doc(db, 'inviteCodes', 'JUNK-STRI-NG'), { ...base, code: 'JUNK-STRI-NG', expiresAt: 'tomorrow' }));
-  });
-
   test('a member may remind themselves about chores, and only themselves', async () => {
     const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'notifications');
     const reminder = (target: string) => notification({ sourceType: 'chore-reminder', sourceId: 'reminder-x', targetUserUid: target, targetUserEmail: users.child.email });
@@ -477,14 +426,7 @@ describe('independent review regressions', () => {
     await assertFails(addDoc(col(users.member), notification({ message: 'x'.repeat(1001) })));
   });
 
-  test('a leaving member records their own departure in the same batch', async () => {
-    const leave = (user: Identity, extra: (batch: ReturnType<typeof writeBatch>, db: ReturnType<typeof dbFor>) => void) => {
-      const db = dbFor(user);
-      const batch = writeBatch(db);
-      batch.delete(doc(db, 'households', householdA, 'members', user.uid));
-      extra(batch, db);
-      return batch.commit();
-    };
+  test('departure records cannot be written from the client, even while deleting your own record', async () => {
     const audit = (user: Identity) => ({
       actorUid: user.uid, actorEmail: user.email, actorName: 'X', action: 'member.left',
       targetUid: user.uid, targetEmail: user.email, targetName: 'X', createdAt: 'x',
@@ -493,24 +435,16 @@ describe('independent review regressions', () => {
       category: 'system', title: 'Member left household', message: 'X left the household.',
       deepLink: '/household?tab=members', sourceType: 'household-member-left', sourceId: user.uid,
     });
-    // Without leaving, nobody may write a departure record.
-    await assertFails(addDoc(collection(dbFor(users.member), 'households', householdA, 'auditLogs'), audit(users.member)));
-    await assertFails(addDoc(collection(dbFor(users.member), 'households', householdA, 'notifications'), notice(users.member)));
-    // Departure records must describe the leaver.
-    await assertFails(leave(users.member, (b, db) => b.set(doc(collection(db, 'households', householdA, 'auditLogs')), { ...audit(users.member), targetUid: users.owner.uid })));
-    await assertSucceeds(leave(users.admin, (b, db) => {
-      b.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(users.admin));
-      b.set(doc(collection(db, 'households', householdA, 'notifications')), notice(users.admin));
-    }));
-    await assertSucceeds(leave(users.member, (b, db) => {
-      b.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(users.member));
-      b.set(doc(collection(db, 'households', householdA, 'notifications')), notice(users.member));
-    }));
-  });
-
-  test('owners can check that a new code is free inside the generation transaction', async () => {
-    await assertSucceeds(getDoc(doc(dbFor(users.owner), 'inviteCodes', 'FREE-CODE-00')));
-    await assertFails(getDoc(doc(dbFor(users.member), 'inviteCodes', 'AAAA-BBBB-CC')));
+    for (const user of [users.admin, users.member]) {
+      const db = dbFor(user);
+      await assertFails(addDoc(collection(db, 'households', householdA, 'auditLogs'), audit(user)));
+      await assertFails(addDoc(collection(db, 'households', householdA, 'notifications'), notice(user)));
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'households', householdA, 'members', user.uid));
+      batch.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(user));
+      batch.set(doc(collection(db, 'households', householdA, 'notifications')), notice(user));
+      await assertFails(batch.commit());
+    }
   });
 
   test('reading a missing profile is a plain denial', async () => {
@@ -519,38 +453,64 @@ describe('independent review regressions', () => {
 });
 
 describe('invite codes', () => {
-  test('owners and admins create and revoke invites; others cannot', async () => {
-    const invite = {
-      code: 'ZZZZ-YYYY-XX', householdId: householdA, createdByUid: users.admin.uid, createdByEmail: users.admin.email,
-      createdAt: 'x', expiresAt: inMinutes(30), maxUses: 1, useCount: 0,
-    };
-    await assertSucceeds(setDoc(doc(dbFor(users.admin), 'inviteCodes', 'ZZZZ-YYYY-XX'), invite));
-    await assertFails(setDoc(doc(dbFor(users.member), 'inviteCodes', 'MMMM-MMMM-MM'), {
-      ...invite, code: 'MMMM-MMMM-MM', createdByUid: users.member.uid, createdByEmail: users.member.email,
-    }));
-    await assertFails(setDoc(doc(dbFor(users.ownerB), 'inviteCodes', 'BBBB-BBBB-BB'), {
-      ...invite, code: 'BBBB-BBBB-BB', createdByUid: users.ownerB.uid, createdByEmail: users.ownerB.email,
-    }));
-    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'inviteCodes', 'AAAA-BBBB-CC'), { revokedAt: 'now' }));
+  const invite = (creator: Identity, code: string, household = householdA) => ({
+    code, householdId: household, createdByUid: creator.uid, createdByEmail: creator.email,
+    createdAt: 'x', expiresAt: inMinutes(30), maxUses: 1, useCount: 0,
+  });
+  const grantChild = (permissions: Record<string, boolean>) => environment.withSecurityRulesDisabled(context =>
+    updateDoc(doc(context.firestore(), 'households', householdA, 'members', users.child.uid), { permissions }));
+  const householdCodes = (user: Identity, household = householdA) =>
+    getDocs(query(collection(dbFor(user), 'inviteCodes'), where('householdId', '==', household)));
+
+  test('nobody creates invite codes from the client', async () => {
+    for (const actor of [users.owner, users.admin, users.member]) {
+      await assertFails(setDoc(doc(dbFor(actor), 'inviteCodes', 'ZZZZ-YYYY-XX'), invite(actor, 'ZZZZ-YYYY-XX')));
+    }
+    await grantChild({ 'household.manageInvites': true });
+    await assertFails(setDoc(doc(dbFor(users.child), 'inviteCodes', 'CCCC-CCCC-CC'), invite(users.child, 'CCCC-CCCC-CC')));
+    await assertFails(setDoc(doc(dbFor(users.ownerB), 'inviteCodes', 'BBBB-BBBB-BB'), invite(users.ownerB, 'BBBB-BBBB-BB', householdB)));
   });
 
-  test('invites cannot be pre-used or created with unlimited uses', async () => {
-    const db = dbFor(users.owner);
-    await assertFails(setDoc(doc(db, 'inviteCodes', 'PPPP-PPPP-PP'), {
-      code: 'PPPP-PPPP-PP', householdId: householdA, createdByUid: users.owner.uid, createdByEmail: users.owner.email,
-      createdAt: 'x', expiresAt: inMinutes(30), maxUses: 1000, useCount: 0,
-    }));
+  test('nobody revokes, redeems or resets invite codes from the client', async () => {
+    for (const actor of [users.owner, users.admin, users.stranger]) {
+      const ref = doc(dbFor(actor), 'inviteCodes', 'AAAA-BBBB-CC');
+      await assertFails(updateDoc(ref, { revokedAt: 'now' }));
+      await assertFails(updateDoc(ref, { useCount: 1, usedByUid: actor.uid, usedAt: 'now' }));
+      await assertFails(updateDoc(ref, { maxUses: 10 }));
+      await assertFails(deleteDoc(ref));
+    }
   });
 
-  test('outsiders cannot read, redeem or reset invite codes from the client', async () => {
-    const db = dbFor(users.stranger);
-    await assertFails(getDoc(doc(db, 'inviteCodes', 'AAAA-BBBB-CC')));
-    await assertFails(updateDoc(doc(db, 'inviteCodes', 'AAAA-BBBB-CC'), {
-      useCount: 1, usedByUid: users.stranger.uid, usedAt: 'now',
-    }));
-    // Even owners cannot rewrite the redemption counter; only the server does.
-    await assertFails(updateDoc(doc(dbFor(users.owner), 'inviteCodes', 'AAAA-BBBB-CC'), { useCount: 1 }));
-    await assertFails(updateDoc(doc(dbFor(users.owner), 'inviteCodes', 'AAAA-BBBB-CC'), { maxUses: 10 }));
+  test('holders of household.manageInvites list and read their household’s codes', async () => {
+    await assertSucceeds(householdCodes(users.owner));
+    await assertSucceeds(householdCodes(users.admin));
+    await assertSucceeds(getDoc(doc(dbFor(users.admin), 'inviteCodes', 'AAAA-BBBB-CC')));
+    // An override counts both ways.
+    await grantChild({ 'household.manageInvites': true });
+    await assertSucceeds(householdCodes(users.child));
+    await assertSucceeds(getDoc(doc(dbFor(users.child), 'inviteCodes', 'AAAA-BBBB-CC')));
+    await environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'households', householdA, 'members', users.admin.uid), {
+        permissions: { 'household.manageInvites': false },
+      }));
+    await assertFails(householdCodes(users.admin));
+  });
+
+  test('everyone else cannot read codes, and nobody probes for free ones', async () => {
+    for (const reader of [users.member, users.child, users.guest, users.pending, users.legacy, users.ownerB, users.stranger]) {
+      await assertFails(householdCodes(reader));
+      await assertFails(getDoc(doc(dbFor(reader), 'inviteCodes', 'AAAA-BBBB-CC')));
+    }
+    await assertFails(householdCodes(users.owner, householdB));
+    await assertFails(getDoc(doc(dbFor(users.owner), 'inviteCodes', 'FREE-CODE-00')));
+  });
+
+  test('a code the server created appears for invite managers', async () => {
+    // createInvite (Admin SDK) writes the code.
+    await environment.withSecurityRulesDisabled(context =>
+      setDoc(doc(context.firestore(), 'inviteCodes', 'SRVR-MADE-01'), invite(users.admin, 'SRVR-MADE-01')));
+    const snapshot = await assertSucceeds(householdCodes(users.owner));
+    assert.ok(snapshot.docs.some(d => d.id === 'SRVR-MADE-01'));
   });
 });
 
@@ -562,18 +522,38 @@ describe('profiles', () => {
     await assertFails(getDoc(doc(dbFor(users.ownerB), 'users', users.stranger.email)));
   });
 
-  test('owners update or clear the profiles of their own members only', async () => {
-    const db = dbFor(users.owner);
-    await assertSucceeds(updateDoc(doc(db, 'users', users.member.email), { role: 'admin', permissions: {} }));
-    await assertSucceeds(updateDoc(doc(db, 'users', users.guest.email), { householdId: null, role: 'member', permissions: {} }));
-    await assertFails(updateDoc(doc(db, 'users', users.ownerB.email), { role: 'member' }));
-    await assertFails(updateDoc(doc(db, 'users', users.member.email), { householdId: householdB }));
+  test('nobody updates or clears another person’s household fields from the client', async () => {
+    for (const actor of [users.owner, users.admin]) {
+      const db = dbFor(actor);
+      await assertFails(updateDoc(doc(db, 'users', users.member.email), { role: 'admin', permissions: {} }));
+      await assertFails(updateDoc(doc(db, 'users', users.guest.email), { householdId: null, role: 'member', permissions: {} }));
+      await assertFails(updateDoc(doc(db, 'users', users.ownerB.email), { role: 'member' }));
+      await assertFails(updateDoc(doc(db, 'users', users.member.email), { householdId: householdB }));
+    }
   });
 
-  test('users cannot point their own profile at a household they do not belong to', async () => {
+  test('users cannot point their own profile at a household, even one they belong to', async () => {
     await assertFails(updateDoc(doc(dbFor(users.stranger), 'users', users.stranger.email), {
       householdId: householdA, role: 'member', permissions: {},
     }));
+    // A member's profile cache is written by the server; re-pointing it from the client is denied.
+    await environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'users', users.member.email), { householdId: null, role: 'member', permissions: {} }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'users', users.member.email), {
+      householdId: householdA, role: 'member', permissions: {},
+    }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { role: 'admin' }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { permissions: { 'household.manageMembers': true } }));
+  });
+
+  test('users clear their own stale household pointer, and only to the defaults', async () => {
+    const ref = (user: Identity) => doc(dbFor(user), 'users', user.email);
+    // What AuthProvider writes when the membership record is gone.
+    await assertSucceeds(setDoc(ref(users.member), { householdId: null, role: 'member', permissions: {} }, { merge: true }));
+    await assertSucceeds(updateDoc(ref(users.child), { householdId: null, role: 'member' }));
+    await assertFails(updateDoc(ref(users.guest), { householdId: null, role: 'owner', permissions: {} }));
+    await assertFails(updateDoc(ref(users.denied), { householdId: null, role: 'member', permissions: { 'household.delete': true } }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'users', users.admin.email), { householdId: null, role: 'member', permissions: {} }));
   });
 
   test('people without a household cannot read each other', async () => {
@@ -616,7 +596,6 @@ describe('profile demographics (no longer collected)', () => {
     await assertSucceeds(getDoc(doc(dbFor(users.owner), 'users', users.member.email)));
     await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { displayName: 'Still works' }));
     await assertSucceeds(setDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Chicago' }, { merge: true }));
-    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'users', users.member.email), { role: 'admin', permissions: {} }));
   });
 
   test('the owner may remove them but nobody may change them', async () => {
@@ -1020,30 +999,40 @@ describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)
 });
 
 describe('audit log', () => {
-  test('owners and admins write known actions as themselves; others cannot write at all', async () => {
-    const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'auditLogs');
-    await assertSucceeds(addDoc(col(users.admin), {
-      actorUid: users.admin.uid, actorEmail: users.admin.email, action: 'invite.generated', createdAt: 'x',
-    }));
-    await assertFails(addDoc(col(users.owner), {
-      actorUid: users.owner.uid, actorEmail: users.owner.email, action: 'anything.else', createdAt: 'x',
-    }));
-    await assertFails(addDoc(col(users.owner), {
-      actorUid: users.owner.uid, actorEmail: users.owner.email, action: 'member.removed', createdAt: 'x', extra: true,
-    }));
-    for (const user of [users.member, users.child, users.guest]) {
-      await assertFails(addDoc(col(user), {
-        actorUid: user.uid, actorEmail: user.email, action: 'ownership.transferred', createdAt: '2020-01-01',
-      }));
+  const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'auditLogs');
+  const entry = (user: Identity, action: string) => ({
+    actorUid: user.uid, actorEmail: user.email, action, createdAt: '2026-08-01T12:00:00.000Z',
+  });
+
+  beforeEach(async () => {
+    // Entries are written by the server actions (Admin SDK).
+    await environment.withSecurityRulesDisabled(context =>
+      setDoc(doc(context.firestore(), 'households', householdA, 'auditLogs', 'created'), entry(users.owner, 'household.created')));
+  });
+
+  test('nobody writes, edits or deletes audit entries from the client', async () => {
+    for (const user of [users.owner, users.admin, users.member, users.child, users.guest, users.pending]) {
+      await assertFails(addDoc(col(user), entry(user, 'invite.generated')));
+      await assertFails(updateDoc(doc(col(user), 'created'), { action: 'member.removed' }));
+      await assertFails(deleteDoc(doc(col(user), 'created')));
     }
-    await assertFails(addDoc(col(users.member), {
-      actorUid: users.owner.uid, actorEmail: users.owner.email, action: 'member.removed', createdAt: 'x',
-    }));
-    await assertFails(addDoc(col(users.pending), {
-      actorUid: users.pending.uid, actorEmail: users.pending.email, action: 'member.removed', createdAt: 'x',
-    }));
+  });
+
+  test('holders of household.manageMembers read the log; everyone else cannot', async () => {
     await assertSucceeds(getDocs(col(users.owner)));
-    await assertFails(getDocs(col(users.member)));
+    await assertSucceeds(getDocs(col(users.admin)));
+    await assertSucceeds(getDoc(doc(col(users.admin), 'created')));
+    for (const user of [users.member, users.child, users.guest, users.denied, users.pending, users.legacy, users.ownerB, users.stranger]) {
+      await assertFails(getDocs(col(user)));
+    }
+    // An override counts both ways.
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await updateDoc(doc(db, 'households', householdA, 'members', users.member.uid), { permissions: { 'household.manageMembers': true } });
+      await updateDoc(doc(db, 'households', householdA, 'members', users.admin.uid), { permissions: { 'household.manageMembers': false } });
+    });
+    await assertSucceeds(getDocs(col(users.member)));
+    await assertFails(getDocs(col(users.admin)));
   });
 });
 
