@@ -12,6 +12,13 @@ export async function registerHomeHubServiceWorker(): Promise<ServiceWorkerRegis
   return navigator.serviceWorker.register(SERVICE_WORKER_URL, { scope: SERVICE_WORKER_SCOPE });
 }
 
+/** True when HomeHub's worker holds a browser push subscription. Registers nothing. */
+export async function hasPushSubscription(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false;
+  const registration = await navigator.serviceWorker.getRegistration(SERVICE_WORKER_SCOPE);
+  return Boolean(await registration?.pushManager?.getSubscription());
+}
+
 /**
  * Production builds register the worker on every visit so the app is
  * installable and the shopping lists open offline. Development (and the
