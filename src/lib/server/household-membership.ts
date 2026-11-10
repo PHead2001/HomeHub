@@ -4,6 +4,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import type { Household, HouseholdMember } from '@/lib/types';
+import { notificationAudience } from '@functions/shared/notification-audience';
 
 export class MembershipError extends Error {
   constructor(public readonly userMessage: string) {
@@ -153,6 +154,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
         stateKey: String(now.getTime()),
         sourceId: caller.uid,
         targetUserUid: approver.id,
+        audience: notificationAudience({ targetUserUid: approver.id }),
         readBy: {},
         dismissedBy: {},
       });
@@ -190,6 +192,7 @@ const approverNotices = (
       expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
       deepLink: '/household?tab=members',
       targetUserUid: approver.id,
+      audience: notificationAudience({ targetUserUid: approver.id }),
       readBy: {},
       dismissedBy: {},
       // Per-event state: a repeat event must not inherit earlier read/dismissed state.
