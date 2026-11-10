@@ -5,7 +5,9 @@ import { describe, it } from 'node:test';
 import {
   CHORE_UNDO_MS, completerLabel, completionEligibility, householdDueDay, planCompletion, planReopen, planUndo,
 } from '../../src/lib/chores/completion';
-import { computeChoreStats, creditedUid } from '../../src/lib/chores/stats';
+import { computeChoreStats, creditedUid, statsMemberFrom } from '../../src/lib/chores/stats';
+import { approvedPeople } from '../../src/lib/member-directory';
+import { streakMembersFrom } from '../../src/lib/dashboard/streaks';
 import { occurrences, plannedRecurringEvents } from '../../src/lib/chores/calendar';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { choreOccurrenceKey, choreStatsAssigneeKey, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
@@ -126,6 +128,29 @@ describe('the completer gets the points (CH-12, D-7)', () => {
     assert.equal(sam.streak, 1);
     assert.equal(alex.weekPoints, 0);
     assert.equal(alex.weekAssigned, 1, 'fair share still counts the assignment');
+  });
+
+  it('credits an older completedByEmail-only completion the same on the Chores page and the dashboard', () => {
+    const records = [
+      { uid: 'u-alex', email: 'alex@example.test', displayName: 'Alex', role: 'owner', status: 'active' },
+      { uid: 'u-sam', email: 'sam@example.test', displayName: 'Sam', role: 'member', status: 'active' },
+    ];
+    // Chores page: approved people from the member records, then statsMemberFrom.
+    const choresPage = approvedPeople(records.map(data => ({ id: data.uid, data }))).map(statsMemberFrom);
+    const dashboard = streakMembersFrom(records);
+    assert.deepEqual(choresPage, dashboard);
+    // No completedByUid: the completer's email is the only link to Sam.
+    const older = chore({ completedByEmail: 'SAM@example.test' });
+    assert.equal(creditedUid(older, choresPage), 'u-sam');
+    const pageStats = computeChoreStats([older], choresPage, now);
+    const dashStats = computeChoreStats([older], dashboard, now);
+    assert.deepEqual(pageStats, dashStats);
+    const sam = pageStats.members.find(m => m.uid === 'u-sam')!;
+    assert.equal(sam.weekPoints, 15);
+    assert.equal(sam.stickers, 1);
+    assert.equal(sam.streak, 1);
+    // The email is a matching key only: it never reaches the stats output or a name.
+    assert.ok(!JSON.stringify(pageStats).includes('@'));
   });
 
   it('labels who did it', () => {

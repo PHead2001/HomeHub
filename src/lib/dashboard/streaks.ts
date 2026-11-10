@@ -2,7 +2,7 @@
  * Household streaks tile (H22, from H06). Built only from Chores' own
  * `computeChoreStats`, so the tile always agrees with the Chores leaderboard.
  */
-import type { ChoreStats, StatsMember } from '../chores/stats';
+import { statsMemberFrom, type ChoreStats, type StatsMember } from '../chores/stats';
 import { approvedPeople } from '../member-directory';
 
 export type StreakEntry = { uid: string; name: string; streak: number; activeToday: boolean };
@@ -23,12 +23,12 @@ const TOP = 3;
 /**
  * Members for `computeChoreStats`, as the Chores page builds them: approved
  * (`status` active, not `newuser`) membership records, named by their public
- * display name (never an email; src/lib/member-directory.ts). A record's email,
- * while it still has one, only matches older chores.
+ * display name (never an email; src/lib/member-directory.ts) via `statsMemberFrom`.
+ * A record's email, while it still has one, only matches older chores.
  */
 export function streakMembersFrom(records: ReadonlyArray<Record<string, unknown>>): StatsMember[] {
   return approvedPeople(records.map((record) => ({ id: typeof record.id === 'string' ? record.id : '', data: record })))
-    .map((person) => ({ uid: person.uid, name: person.displayName, role: person.role, ...(person.email ? { email: person.email } : {}) }));
+    .map(statsMemberFrom);
 }
 
 export function streakTileModel(stats: ChoreStats): StreakTileModel {

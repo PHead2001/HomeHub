@@ -7,6 +7,7 @@
  */
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { addDaysToKey, choreDueKey, completionInstant, dayKey, weekStartKey, type ChoreRecord } from './dates';
+import { publicDisplayName, type HouseholdPerson } from '../member-directory';
 
 export const POINTS = {
   /** Every completed chore. */
@@ -19,6 +20,22 @@ export const POINTS = {
 
 /** `email` only matches chores written before `assignedToUid` existed; it is never shown. */
 export type StatsMember = { uid: string; name: string; role?: string; email?: string };
+
+/**
+ * The stats member for a household person, the same on the Chores page and the
+ * dashboard streaks tile. The email, while records still carry one, is kept only
+ * as a matching key so `creditedUid` and `resolveAssigneeUid` can credit older
+ * chores (`completedByEmail` / `assignedToEmail` without a uid); it never reaches
+ * `MemberChoreStats` or any label.
+ */
+export function statsMemberFrom(person: Pick<HouseholdPerson, 'uid' | 'displayName' | 'role' | 'email'>): StatsMember {
+  return {
+    uid: person.uid,
+    name: publicDisplayName(person.displayName),
+    role: person.role,
+    ...(person.email ? { email: person.email } : {}),
+  };
+}
 
 export type MemberChoreStats = {
   uid: string;

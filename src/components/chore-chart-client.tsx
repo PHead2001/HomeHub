@@ -35,7 +35,7 @@ import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type 
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
-import { computeChoreStats, isPodiumDay } from '@/lib/chores/stats';
+import { computeChoreStats, isPodiumDay, statsMemberFrom } from '@/lib/chores/stats';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
@@ -751,9 +751,9 @@ export function ChoreChartClient() {
   /* Derived data                                                            */
   /* ---------------------------------------------------------------------- */
 
-  const statsMembers = useMemo(() => householdUsers.map(user => ({
-    uid: user.uid, name: memberName(user), role: user.role,
-  })), [householdUsers]);
+  // Same members as the dashboard streaks tile (`statsMemberFrom`): the email is a
+  // matching key for older `completedByEmail` / `assignedToEmail` chores, never shown.
+  const statsMembers = useMemo(() => householdUsers.map(statsMemberFrom), [householdUsers]);
   // Follows `today`, so the week, streaks and podium roll over at midnight.
   const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today)), [assignedChores, statsMembers, today]);
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
