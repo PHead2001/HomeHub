@@ -36,6 +36,7 @@ import { layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout
 import { healthSummaryText, type HealthResult } from '@/lib/maintenance/health';
 import { playPetSound } from '@/lib/dashboard/pet-sound';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
+import { staleHint, type SectionState } from '@/lib/dashboard/dashboard-store';
 import { useDayLight, WeatherLayer } from './time-of-day';
 import { WeatherControls } from './weather-controls';
 import { PeekCard } from './peek-card';
@@ -63,7 +64,9 @@ function PetIcon({ type, ...props }: { type: string } & LucideProps) {
 }
 
 /** "1 of 2 today. Fed 2 h ago by Sam", or the Pets module's unavailable line. */
-const petStatus = (pet: PetState) => (pet.fed === null ? pet.headline : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`);
+const petStatus = (pet: PetState) => (pet.fed === null
+  ? pet.headline
+  : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}${pet.feedingHint ? ` (${pet.feedingHint})` : ''}`);
 
 /* ------------------------------------------------------------------------- */
 /* SVG layers (decorative)                                                    */
@@ -265,6 +268,8 @@ function PetChip({ pet, describedBy, onSound }: { pet: PetState; describedBy: st
       aria-keyshortcuts="Space"
       data-testid={`house-pet-${pet.id}`}
       data-fed={pet.fed === null ? 'unknown' : String(pet.fed)}
+      data-feeding-stale={pet.feedingHint ? 'true' : undefined}
+      title={pet.feedingHint ? `${pet.name}: ${pet.feedingHint}` : undefined}
       className="relative flex shrink-0 select-none flex-col items-center gap-0.5 rounded-lg px-1 py-0.5 text-[11px] [-webkit-touch-callout:none]"
       onPointerDown={() => {
         longPressed.current = false;
@@ -293,7 +298,7 @@ function PetChip({ pet, describedBy, onSound }: { pet: PetState; describedBy: st
       }}
     >
       <span className="flex items-end gap-0.5">
-        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.fed === false && 'border-warning')}>
+        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.fed === false && 'border-warning', pet.feedingHint && 'border-dashed opacity-70')}>
           <PetIcon type={pet.type} aria-hidden className="h-4 w-4" />
         </span>
         {pet.fed === false && (
@@ -362,11 +367,18 @@ export function LivingHouse({
   title,
   golden = false,
   now,
+  rooms: roomsSection,
+  timeZone,
+  onRetry,
 }: {
   facts: DashboardFacts;
   title: string;
   golden?: boolean;
   now: Date;
+  /** The chores section's state (GOAL-states): stale shows a hint, unauthorized and failed say so. */
+  rooms?: SectionState;
+  timeZone?: string;
+  onRetry?: () => void;
 }) {
   const reduced = useReducedMotion();
   const light = useDayLight();
@@ -479,7 +491,8 @@ export function LivingHouse({
 
   const roomsState = facts.chores
     ? (shownRooms.length > 0 ? 'rooms' : 'empty')
-    : facts.unavailable?.includes('chores') ? 'unavailable' : 'none';
+    : facts.unavailable?.includes('chores') ? (roomsSection?.status === 'unauthorized' ? 'unauthorized' : 'unavailable') : 'none';
+  const roomsHint = facts.chores ? staleHint(roomsSection, timeZone) : null;
   const bodyBox = {
     left: `${(layout.body.x / layout.width) * 100}%`,
     top: `${(layout.body.y / layout.height) * 100}%`,
@@ -500,6 +513,7 @@ export function LivingHouse({
           <div className="flex min-w-0 items-center gap-2">
             <h2 id="living-house-title" className="min-w-0 truncate font-headline text-lg font-semibold">{title}</h2>
             {facts.health && <HealthBadge health={facts.health} />}
+            {roomsHint && <span className="shrink-0 text-xs text-muted-foreground" data-testid="house-rooms-stale">{roomsHint}</span>}
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             <WeatherControls />
@@ -571,7 +585,14 @@ export function LivingHouse({
                 ) : roomsState === 'unavailable' ? (
                   <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
                     Rooms are unavailable right now.{' '}
+                    {onRetry && (
+                      <button type="button" onClick={onRetry} data-testid="house-rooms-retry" className="font-medium text-primary underline-offset-4 hover:underline">Retry</button>
+                    )}{onRetry ? ' · ' : null}
                     <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+                  </p>
+                ) : roomsState === 'unauthorized' ? (
+                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unauthorized">
+                    Rooms are not shared with you.
                   </p>
                 ) : (
                   <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">Welcome home.</p>
