@@ -44,7 +44,7 @@ export const CartIndicator = forwardRef<HTMLButtonElement, CartIndicatorProps>(f
       data-count={shown}
       onClick={onClick}
       aria-label={count === 1 ? 'Show the 1 item in the cart' : `Show the ${count} items in the cart`}
-      className={cn('relative inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border bg-card transition-ui hover:bg-accent', className)}
+      className={cn('relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border bg-card transition-ui hover:bg-accent [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12', className)}
     >
       <motion.span animate={controls} className="inline-flex" aria-hidden>
         <ShoppingCart className="h-5 w-5" />

@@ -39,6 +39,29 @@ import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOut
 import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
+import { editUpdate, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
+import {
+  CHANGED_ELSEWHERE_TITLE,
+  UNDO_WINDOW_MS,
+  browserJournalStorage,
+  dropJournal,
+  fromJournalData,
+  isChangedElsewhere,
+  journalFor,
+  newOpId,
+  nextFocusId,
+  planRemoveUndo,
+  planTickUndo,
+  pushJournal,
+  readJournal,
+  remainingMs,
+  toJournalData,
+  type KnownItem,
+  type UndoEntry,
+} from '@/lib/shopping/undo';
+import { attributionLabel } from '@/lib/shopping/attribution';
+import { useMemberNames } from '@/lib/shopping/member-names';
+import type { ItemEditChanges } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
 import { isListLinkMissing, isOpenListDeleted } from '@/lib/shopping/live-state';
 import { deleteShoppingList } from '@/app/shopping/actions';
@@ -53,6 +76,8 @@ import { ListCardsSkeleton } from './shopping/shopping-skeletons';
 import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
+import { ItemEditSheet } from './shopping/item-edit-sheet';
+import { UndoSnackbar, type SnackbarEntry } from './shopping/undo-snackbar';
 import { CartIndicator } from './shopping/cart-indicator';
 import { useCartFlight } from './shopping/cart-flight';
 import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
@@ -163,8 +188,8 @@ function ManageCategoriesDialog({ categories, householdId, listId }: { categorie
                 <li key={category} className="flex items-center gap-1 rounded-full bg-secondary px-3 py-1 text-sm text-secondary-foreground">
                   {category}
                   {category !== 'Other' && (
-                    <button aria-label={`Remove ${category} category`} onClick={() => void removeCategory(category)} className="ml-1 rounded-full p-0.5 hover:bg-muted">
-                      <X className="h-3 w-3" aria-hidden />
+                    <button aria-label={`Remove ${category} category`} onClick={() => void removeCategory(category)} className="-my-2 -mr-2 ml-0.5 flex h-11 w-11 items-center justify-center rounded-full hover:bg-muted [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12">
+                      <X className="h-4 w-4" aria-hidden />
                     </button>
                   )}
                 </li>
@@ -260,6 +285,42 @@ export function ShoppingListClient({
   // The open list as last seen in this household's lists snapshot (shown when it is
   // deleted elsewhere). Scoped by household, so another household's list never shows.
   const [seen, setSeen] = useState<{ householdId: string; list: ShoppingList } | null>(null);
+  const uid = currentUser?.uid ?? null;
+  // Display names for "Sam added · 2d" (SH-28b); never emails.
+  const memberNames = useMemberNames(householdId);
+  // The item whose edit sheet is open (SH-8a/b), by id so the sheet follows live changes.
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  // The Undo snackbar's entries (one per group), mirrored in the journal.
+  const [undoEntries, setUndoEntries] = useState<UndoEntry[]>([]);
+  // Where focus goes when the edit sheet closes after a delete (a checkbox id; '' = the cart).
+  const focusAfterSheetRef = useRef<string | null>(null);
+  const itemsReadyRef = useRef(false);
+  // Row ids in screen order, per section (for focus after a tick or delete).
+  const rowOrderRef = useRef<{ needed: string[]; purchased: string[] }>({ needed: [], purchased: [] });
+  // "2d" in attributions; refreshed every minute.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // After a reload (or a sign-in or household switch), re-offer what is left of
+  // this member's Undo windows in this household (SH-15, UNDO-10s).
+  useEffect(() => {
+    setUndoEntries(journalFor(readJournal(browserJournalStorage(), Date.now()), uid, householdId));
+  }, [uid, householdId]);
+  // Each Undo leaves when its window ends (timed from when it was scheduled, so a
+  // frozen clock cannot keep it forever).
+  useEffect(() => {
+    if (undoEntries.length === 0) return;
+    const start = Date.now();
+    const delay = Math.max(50, Math.min(...undoEntries.map((entry) => remainingMs(entry, start))));
+    const timer = window.setTimeout(() => {
+      const deadline = start + delay + 50;
+      setUndoEntries((current) => current.filter((entry) => entry.expiresAt > deadline));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [undoEntries]);
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
@@ -286,6 +347,12 @@ export function ShoppingListClient({
     else if (!loadingItems && selectedList) enteredRowsRef.current = selectedListId;
   });
   listItemsRef.current = listItems;
+  itemsReadyRef.current = itemsState.status === 'ready';
+  const editingItem = editingItemId ? listItems.find((listItem) => listItem.id === editingItemId) ?? null : null;
+  // The item left (deleted here or elsewhere): the sheet closes and stays closed.
+  useEffect(() => {
+    if (editingItemId && itemsState.status === 'ready' && !editingItem) setEditingItemId(null);
+  }, [editingItemId, editingItem, itemsState.status]);
 
   // The open list's id (from the URL), so async results for another list are never shown.
   selectedListIdRef.current = selectedListId;
@@ -564,6 +631,109 @@ export function ShoppingListClient({
     }
   };
 
+  // --- Undo (S3: SH-15a/b, UNDO-10s) ---
+  // One 10 s Undo per group (the latest tick, the latest delete), shown in the
+  // snackbar above the quick-add bar. Each is journaled in localStorage, so a
+  // reload re-offers what is left of its window; the Undo itself is an ordinary
+  // queued write (works offline) that the rules accept only while nobody else has
+  // changed the item meanwhile (purchaseOpId / restore-if-absent).
+  const addUndo = useCallback((entry: UndoEntry) => {
+    setUndoEntries((current) => [...current.filter((existing) => existing.group !== entry.group), entry]);
+    pushJournal(browserJournalStorage(), entry, Date.now());
+  }, []);
+  const dropUndo = useCallback((opId: string) => {
+    setUndoEntries((current) => current.filter((entry) => entry.opId !== opId));
+    dropJournal(browserJournalStorage(), opId, Date.now());
+  }, []);
+
+  // What this screen knows about an Undo's item: from the open list's listener when
+  // it is that list (null = gone), otherwise unknown (the rules decide).
+  const knownItem = (entry: UndoEntry): KnownItem => {
+    if (entry.householdId !== householdIdRef.current || entry.listId !== selectedListIdRef.current || !itemsReadyRef.current) return undefined;
+    return listItemsRef.current.find((listItem) => listItem.id === entry.itemId) ?? null;
+  };
+
+  // Sends a write without waiting on a weak connection (at most ~4 s, not at all
+  // offline); a rejection now or later goes to `onFail`.
+  const sendWrite = async (write: Promise<unknown>, onFail: (error: unknown) => void) => {
+    const tracked = await trackWrite(write, { kind: 'write', persistence: getLocalPersistence, offline: isBrowserOffline });
+    if (tracked.state === 'failed') {
+      onFail(tracked.error);
+      return false;
+    }
+    if (isPendingState(tracked.state)) {
+      void tracked.settled.then((final) => {
+        if (final.state === 'failed') onFail(final.error);
+      });
+    }
+    return true;
+  };
+
+  const notUndone = (name: string, error?: unknown) => {
+    if (error === undefined || isChangedElsewhere(error)) {
+      toast({ title: CHANGED_ELSEWHERE_TITLE, description: `${name} was changed on another device after this, so that change stays.` });
+    } else {
+      toastError(error, `Could not undo ${name}`);
+    }
+  };
+
+  const undoTick = async (entry: UndoEntry) => {
+    dropUndo(entry.opId);
+    const plan = planTickUndo(knownItem(entry), entry.opId);
+    if (plan === 'already') return;
+    if (plan === 'refused') {
+      notUndone(entry.name);
+      return;
+    }
+    if (entry.listId === selectedListIdRef.current) setIsReceiptOpen(false);
+    // Only the status and the purchase stamps, never a copy of the item.
+    const itemRef = doc(db, 'households', entry.householdId, 'shopping-lists', entry.listId, 'items', entry.itemId);
+    await sendWrite(updateDoc(itemRef, undoTickUpdate(entry.opId)), (error) => notUndone(entry.name, error));
+    focusRowWhenShown(`item-needed-${entry.itemId}`);
+  };
+
+  const undoRemove = async (entry: UndoEntry) => {
+    if (entry.group !== 'shopping-remove') return;
+    dropUndo(entry.opId);
+    // Re-created only if absent: an item that is back already is left alone (and
+    // the rules refuse a restore over an existing item).
+    if (planRemoveUndo(knownItem(entry)) === 'already') return;
+    const itemRef = doc(db, 'households', entry.householdId, 'shopping-lists', entry.listId, 'items', entry.itemId);
+    await sendWrite(setDoc(itemRef, fromJournalData(entry.data)), (error) => notUndone(entry.name, error));
+    focusRowWhenShown(`item-${entry.data.status === 'purchased' ? 'purchased' : 'needed'}-${entry.itemId}`);
+  };
+
+  // --- Focus (SH-26a) ---
+  // After a tick or delete the row leaves; focus goes to the next row of the same
+  // section (else the previous one, else the cart), never to <body>.
+  const focusRowWhenShown = (checkboxId: string | null, attempts = 10) => {
+    requestAnimationFrame(() => {
+      const target = checkboxId ? document.getElementById(checkboxId) : null;
+      if (target) {
+        target.focus({ preventScroll: true });
+        return;
+      }
+      if (attempts > 0 && checkboxId) {
+        focusRowWhenShown(checkboxId, attempts - 1);
+        return;
+      }
+      if (!checkboxId) document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"]')?.focus({ preventScroll: true });
+    });
+  };
+  const nextRowFocusId = (item: ShoppingListItem) => {
+    const section = item.status === 'purchased' ? 'purchased' : 'needed';
+    const next = nextFocusId(rowOrderRef.current[section], item.id);
+    return next ? `item-${section}-${next}` : null;
+  };
+  // Moves focus only when it was on this row (or nowhere), so a tick never steals
+  // focus from a field the member is typing in.
+  const moveFocusAfter = (item: ShoppingListItem) => {
+    const active = document.activeElement;
+    const row = document.querySelector(`[data-row-id="${CSS.escape(item.id)}"]`);
+    if (active && active !== document.body && !(row && row.contains(active))) return;
+    focusRowWhenShown(nextRowFocusId(item));
+  };
+
   const toggleItemStatus = async (item: ShoppingListItem) => {
       if (!householdId || !selectedList) return;
 
@@ -571,7 +741,7 @@ export function ShoppingListClient({
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
       const list = selectedList;
       // The write always targets the item's own list; the screen is only touched while
-      // that list is still the open one (an Undo can arrive after switching lists).
+      // that list is still the open one.
       const isListOpen = () => selectedListIdRef.current === list.id;
       const lastNeeded = isCheckingOff && isListOpen()
         && listItemsRef.current.filter(listItem => listItem.status === 'needed' && listItem.id !== item.id).length === 0;
@@ -589,14 +759,17 @@ export function ShoppingListClient({
       // the row leaves) into the cart icon; skipped under reduced motion.
       if (isCheckingOff && isListOpen()) {
         const row = document.querySelector(`[data-testid="shopping-item-${CSS.escape(item.id)}"]`);
-        cartFlight.launch(row?.querySelector('label') ?? row ?? null, item.name);
+        cartFlight.launch(row?.querySelector('[data-item-name]') ?? row ?? null, item.name);
       }
+      moveFocusAfter(item);
 
-      // The listener shows the tick at once (Firestore applies local writes to it
-      // immediately). Offline, the write waits in Firestore's queue and syncs when
-      // the connection returns.
+      // A tick names its buyer, the server's time and a fresh purchaseOpId (the one
+      // its Undo must match); un-ticking from Purchased clears the purchase. The
+      // listener shows the write at once; offline it waits in Firestore's queue and
+      // syncs when the connection returns.
+      const purchaseOpId = isCheckingOff ? newOpId() : null;
       const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
-      const write = updateDoc(itemRef, { status: newStatus });
+      const write = updateDoc(itemRef, purchaseOpId ? tickUpdate(uid, purchaseOpId) : untickUpdate());
 
       // Ticking never leaves the list: the pantry is offered at the end of the trip
       // (receipt) or when clearing purchased items, never per tick.
@@ -609,18 +782,18 @@ export function ShoppingListClient({
           setIsReceiptOpen(true);
         }
         write.catch(failToggle);
-        // The first offline tick carries the offline note inside its Undo toast (SH-7c);
-        // the note says "saved on this device" only when the durable cache shows it.
+        // The first offline tick carries the offline note in its Undo (SH-7c); the
+        // note says "saved on this device" only when the durable cache shows it.
         const firstOffline = !offlineNoticeShownRef.current;
         offlineNoticeShownRef.current = true;
         const stored = firstOffline && await tickStoredLocally(itemRef, newStatus);
         const note = firstOffline ? offlineTickNote(stored) : undefined;
-        if (isCheckingOff) showTickUndo(item, note);
+        if (purchaseOpId) showTickUndo(item, list.id, purchaseOpId, note);
         else if (note) toast({ title: 'You are offline', description: note });
         return;
       }
 
-      if (isCheckingOff) showTickUndo(item);
+      if (purchaseOpId) showTickUndo(item, list.id, purchaseOpId);
 
       // Online, a weak signal can leave the write unanswered; the listener already
       // shows it, so only a rejection (now or later) is reported.
@@ -667,32 +840,32 @@ export function ShoppingListClient({
     }
   };
 
-  // "Milk is in the cart · Undo" for five seconds after a tick; the first offline
-  // tick adds the offline note to the same toast (and stays up a little longer).
-  const showTickUndo = (item: ShoppingListItem, note?: string) => {
-    toast({
-      title: `${item.name} is in the cart`,
-      ...(note ? { description: note } : {}),
-      duration: note ? 8000 : 5000,
-      action: (
-        <ToastAction
-          altText={`Undo ticking ${item.name}`}
-          onClick={() => {
-            setIsReceiptOpen(false);
-            void toggleItemStatus({ ...item, status: 'purchased' });
-          }}
-        >
-          Undo
-        </ToastAction>
-      ),
+  // "Milk is in the cart · Undo" for 10 seconds after a tick (replacing the
+  // previous tick's Undo); the first offline tick adds the offline note.
+  const showTickUndo = (item: ShoppingListItem, listId: string, purchaseOpId: string, note?: string) => {
+    if (!uid || !householdId) return;
+    addUndo({
+      group: 'shopping-tick',
+      uid,
+      householdId,
+      listId,
+      itemId: item.id,
+      name: item.name,
+      opId: purchaseOpId,
+      expiresAt: Date.now() + UNDO_WINDOW_MS,
+      ...(note ? { note } : {}),
     });
   };
 
-  // Deletes at once, with five seconds to undo (the item is written back as it was).
-  // The listener removes and restores the row; a rejected write is rolled back there.
+  // Deletes at once (from the edit sheet), with 10 seconds to undo: the Undo
+  // re-creates the item only if it is absent, as it was read (keeping who added
+  // it), with restoredByUid = the restorer and a fresh restoreOpId. The listener
+  // removes and restores the row; a rejected write is rolled back there.
   const deleteItem = async (item: ShoppingListItem) => {
     const list = selectedList;
     if (!householdId || !list) return;
+    focusAfterSheetRef.current = nextRowFocusId(item) ?? '';
+    setEditingItemId(null);
     const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
     try {
       await awaitWriteUnlessOffline(deleteDoc(itemRef), (error) => {
@@ -702,33 +875,64 @@ export function ShoppingListClient({
       toastError(error, `Could not delete ${item.name}`);
       return;
     }
+    if (!canEdit || !uid) {
+      toast({ title: `${item.name} removed` });
+      return;
+    }
     const { id: _id, ...snapshot } = item;
     void _id;
-    // The restore re-creates the item as it was, keeping who added it, and names the
-    // restorer in `restoredByUid` (the rules accept another member's `addedByUid`
-    // on a create only as a restore by the writer; see rules PR 121).
-    const data = restoreItemData(snapshot, currentUser?.uid);
-    toast({
-      title: `${item.name} removed`,
-      duration: 5000,
-      action: canEdit ? (
-        <ToastAction
-          altText={`Undo removing ${item.name}`}
-          onClick={() => {
-            // The restore always writes to the item's own list (refused once that
-            // list has been deleted).
-            awaitWriteUnlessOffline(setDoc(itemRef, data), (error) => {
-              toastError(error, `Could not restore ${item.name}`);
-            }).catch((error: unknown) => {
-              toastError(error, `Could not restore ${item.name}`);
-            });
-          }}
-        >
-          Undo
-        </ToastAction>
-      ) : undefined,
+    const restoreOpId = newOpId();
+    addUndo({
+      group: 'shopping-remove',
+      uid,
+      householdId,
+      listId: list.id,
+      itemId: item.id,
+      name: item.name,
+      opId: restoreOpId,
+      expiresAt: Date.now() + UNDO_WINDOW_MS,
+      data: toJournalData(restoreItemData(snapshot, uid, restoreOpId)),
     });
   };
+
+  // An edit from the sheet (SH-8a): only the changed fields, signed with
+  // editedByUid and the server's editedAt. Closes once sent (it queues offline).
+  const saveItemEdit = async (item: ShoppingListItem, changes: ItemEditChanges): Promise<boolean> => {
+    const list = selectedList;
+    if (!householdId || !list || !uid) return false;
+    const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
+    return sendWrite(updateDoc(itemRef, editUpdate(uid, changes)), (error) => toastError(error, `Could not save ${changes.name ?? item.name}`));
+  };
+
+  const openEditor = (item: ShoppingListItem) => {
+    focusAfterSheetRef.current = null;
+    setEditingItemId(item.id);
+  };
+
+  const attributionFor = (item: ShoppingListItem) => attributionLabel({
+    addedByUid: item.addedByUid,
+    createdAt: item.createdAt,
+    currentUid: uid,
+    names: memberNames,
+    now,
+  });
+
+  const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-tick'
+    ? {
+      key: entry.opId,
+      message: `${entry.name} is in the cart`,
+      note: entry.note,
+      undoLabel: `Undo ticking ${entry.name}`,
+      onUndo: () => void undoTick(entry),
+      onDismiss: () => dropUndo(entry.opId),
+    }
+    : {
+      key: entry.opId,
+      message: `${entry.name} removed`,
+      undoLabel: `Undo removing ${entry.name}`,
+      onUndo: () => void undoRemove(entry),
+      onDismiss: () => dropUndo(entry.opId),
+    });
 
   /**
    * Deletes exactly `itemIds` (the purchased items the member confirmed, captured
@@ -864,6 +1068,7 @@ export function ShoppingListClient({
             className="mt-4"
           />
         </div>
+        {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
       </div>
     );
   }
@@ -875,6 +1080,7 @@ export function ShoppingListClient({
     const neededItems = listItems.filter(i => i.status === 'needed');
     const purchasedItems = listItems.filter(i => i.status === 'purchased').sort((a, b) => a.name.localeCompare(b.name));
     const groups = groupItemsByAisle(neededItems, categories);
+    rowOrderRef.current = { needed: groups.flatMap((group) => group.items.map((item) => item.id)), purchased: purchasedItems.map((item) => item.id) };
     const tint = listTint(selectedList);
     const canHandoff = selectedList.type === 'Grocery' && canEdit && online;
 
@@ -927,6 +1133,23 @@ export function ShoppingListClient({
               items={purchasedItems}
               onSendToPantry={canHandoff ? () => { setIsReceiptOpen(false); setHandoffMode('pantry'); } : undefined}
               onClearPurchased={canDelete ? () => { setIsReceiptOpen(false); openClear(); } : undefined}
+            />
+            <ItemEditSheet
+              item={editingItem}
+              categories={categories}
+              canEdit={canEdit}
+              canDelete={canDelete}
+              onOpenChange={(open) => { if (!open) setEditingItemId(null); }}
+              onSave={saveItemEdit}
+              onDelete={(item) => void deleteItem(item)}
+              onCloseAutoFocus={(event) => {
+                // After a delete the row's Edit button is gone: focus the next row (SH-26a).
+                const target = focusAfterSheetRef.current;
+                if (target === null) return;
+                focusAfterSheetRef.current = null;
+                event.preventDefault();
+                focusRowWhenShown(target || null);
+              }}
             />
             {handoffMode !== null && (
             <PantryHandoffDialog
@@ -1017,13 +1240,13 @@ export function ShoppingListClient({
                                     <FormItem>
                                       <FormLabel>Quantity</FormLabel>
                                       <div className="flex items-center gap-2">
-                                            <Button type="button" variant="outline" size="icon" aria-label="Decrease item quantity" className="h-10 w-10" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 1}>
+                                            <Button type="button" variant="outline" size="icon" aria-label="Decrease item quantity" className="h-11 w-11 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 1}>
                                                 <Minus className="h-4 w-4" aria-hidden />
                                             </Button>
                                             <FormControl>
                                                 <Input type="number" min={1} max={999} className="text-center" {...field} />
                                             </FormControl>
-                                            <Button type="button" variant="outline" size="icon" aria-label="Increase item quantity" className="h-10 w-10" onClick={() => adjustQuantity(1)}>
+                                            <Button type="button" variant="outline" size="icon" aria-label="Increase item quantity" className="h-11 w-11 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12" onClick={() => adjustQuantity(1)}>
                                                 <Plus className="h-4 w-4" aria-hidden />
                                             </Button>
                                         </div>
@@ -1096,9 +1319,10 @@ export function ShoppingListClient({
                                           enterDelay={staggerRows ? rowDelay(groups, groupIndex, itemIndex, neededItems.length) : undefined}
                                           item={item}
                                           canToggle={canEdit}
-                                          canDelete={canDelete}
+                                          canOpenEditor={canEdit || canDelete}
                                           onToggle={toggleItemStatus}
-                                          onDelete={deleteItem}
+                                          onEdit={openEditor}
+                                          attribution={attributionFor(item)}
                                         />
                                       )),
                                     ])}
@@ -1129,9 +1353,10 @@ export function ShoppingListClient({
                                       key={item.id}
                                       item={item}
                                       canToggle={canEdit}
-                                      canDelete={canDelete}
+                                      canOpenEditor={canEdit || canDelete}
                                       onToggle={toggleItemStatus}
-                                      onDelete={deleteItem}
+                                      onEdit={openEditor}
+                                      attribution={attributionFor(item)}
                                     />
                                 ))}
                                 </AnimatePresence>
@@ -1141,7 +1366,14 @@ export function ShoppingListClient({
                             </AccordionItem>
                         </Accordion>
                         {/* Keyed per list: a pending save's leftovers never land in another list's field. */}
-                        {canEdit && <QuickAddBar key={selectedList.id} listName={selectedList.name} onAdd={onQuickAdd} />}
+                        {canEdit && (
+                          <QuickAddBar
+                            key={selectedList.id}
+                            listName={selectedList.name}
+                            onAdd={onQuickAdd}
+                            above={snackbarEntries.length > 0 ? <UndoSnackbar entries={snackbarEntries} /> : undefined}
+                          />
+                        )}
                       </>
                     )}
                 </div>
@@ -1153,6 +1385,8 @@ export function ShoppingListClient({
   // Main view for showing all lists
   return (
     <>
+      {/* An Undo from a list that was open a moment ago stays reachable here. */}
+      {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
       <ListDialog
         isOpen={isListDialogOpen}
         onOpenChange={setIsListDialogOpen}

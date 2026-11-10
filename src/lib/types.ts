@@ -112,6 +112,18 @@ export type ShoppingListItem = {
   size?: number;
   /** Unit of `size` ("g", "fl oz"). */
   sizeUnit?: string;
+  /** Who ticked it (the writer's uid) and when (server time); cleared by an un-tick or Undo (S3). */
+  purchasedByUid?: string | null;
+  purchasedAt?: unknown;
+  /** Fresh id of the latest tick; its Undo must name it (`undoOpId`), so a newer tick by anyone wins. */
+  purchaseOpId?: string;
+  /** The `purchaseOpId` an Undo reversed (rules: only while it is still the current purchase). */
+  undoOpId?: string;
+  /** Id of the Undo-after-delete that re-created this item (rules: create only). */
+  restoreOpId?: string;
+  /** Who last edited it in the item sheet (the writer's uid) and when (server time) (SH-8a/b). */
+  editedByUid?: string;
+  editedAt?: unknown;
 };
 
 export type ShoppingListCategory = string;

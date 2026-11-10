@@ -74,7 +74,9 @@ test.describe('shopping: live across sessions', () => {
       await expect.poll(async () => (await listRef.collection('items').doc('bread').get()).data()?.status).toBe('purchased');
 
       // A deletes the eggs: B sees them go.
-      await a.page.getByRole('button', { name: /^Delete E2E live eggs$/ }).click();
+      // Delete lives in the item's edit sheet (SH-13b).
+      await a.page.getByRole('button', { name: 'Edit E2E live eggs', exact: true }).click();
+      await a.page.getByRole('dialog', { name: 'Edit E2E live eggs' }).getByRole('button', { name: 'Delete', exact: true }).click();
       await expect(b.page.getByRole('checkbox', { name: /E2E live eggs/ })).toHaveCount(0);
 
       // B on the overview: the card's counts follow A's writes.
@@ -123,7 +125,7 @@ test.describe('shopping: live across sessions', () => {
 
       // The way back: the overview no longer shows the list.
       await openList.getByRole('button', { name: 'Back to all lists' }).click();
-      await expect(b.page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+      await expect(b.page.getByRole('button', { name: 'Open List: Weekly Groceries' })).toBeVisible();
       await expect(b.page.getByTestId(`list-card-${LIST_ID}`)).toHaveCount(0);
     } finally {
       await a.context.close();

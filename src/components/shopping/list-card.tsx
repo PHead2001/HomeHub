@@ -78,7 +78,7 @@ export function ListCard({
         {(onEdit || onDelete) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label={`Open actions for ${list.name}`} className="h-8 w-8 shrink-0">
+              <Button variant="ghost" size="icon" aria-label={`Open actions for ${list.name}`} className="h-11 w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12">
                 <MoreVertical aria-hidden />
               </Button>
             </DropdownMenuTrigger>
@@ -106,7 +106,7 @@ export function ListCard({
       </div>
 
       <PeekCard peek={peek}>
-        <Button className="w-full" aria-label={`Open ${list.name}`} onClick={onSelect}>Open List</Button>
+        <Button className="w-full" aria-label={`Open List: ${list.name}`} onClick={onSelect}>Open List</Button>
       </PeekCard>
     </div>
   );
