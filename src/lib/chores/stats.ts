@@ -5,6 +5,7 @@
  * Completion times come from the server-stamped `completedAtServer` when present
  * (the rules pin it to the request time), else the older `completedAt` string.
  */
+import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { addDaysToKey, choreDueKey, completionInstant, dayKey, weekStartKey, type ChoreRecord } from './dates';
 
 export const POINTS = {
@@ -16,10 +17,10 @@ export const POINTS = {
   onTime: 5,
 } as const;
 
-export type StatsMember = { email: string; uid: string; name: string; role?: string };
+/** `email` only matches chores written before `assignedToUid` existed; it is never shown. */
+export type StatsMember = { uid: string; name: string; role?: string; email?: string };
 
 export type MemberChoreStats = {
-  email: string;
   uid: string;
   name: string;
   /** Child accounts collect stickers instead of points. */
@@ -85,20 +86,20 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
   const weekEnd = addDaysToKey(weekStart, 6);
   const inWeek = (key: string) => key >= weekStart && key <= weekEnd;
 
-  const known = new Map(members.map(member => [member.email, member]));
-  const acc = new Map(members.map(member => [member.email, {
+  const acc = new Map(members.map(member => [member.uid, {
     weekPoints: 0, totalPoints: 0, weekCompleted: 0, weekAssigned: 0, days: new Set<string>(),
   }]));
 
   let weekTotal = 0;
   for (const chore of chores) {
     const due = choreDueKey(chore);
-    const entry = acc.get(chore.assignedToEmail);
+    const assignee = resolveAssigneeUid(chore, members);
+    const entry = assignee ? acc.get(assignee) : undefined;
     if (due && inWeek(due)) {
       weekTotal += 1;
       if (entry) entry.weekAssigned += 1;
     }
-    if (!entry || !known.has(chore.assignedToEmail)) continue;
+    if (!entry) continue;
     const completed = completionInstant(chore);
     if (!completed) continue;
     const completedDay = dayKey(completed);
@@ -113,10 +114,9 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
   }
 
   const result: MemberChoreStats[] = members.map(member => {
-    const entry = acc.get(member.email)!;
+    const entry = acc.get(member.uid)!;
     const { streak, activeToday } = streakFor(entry.days, today);
     return {
-      email: member.email,
       uid: member.uid,
       name: member.name,
       stickerMode: member.role === 'child',

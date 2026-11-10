@@ -37,6 +37,8 @@ import { findMergeTarget, type QuickAddEntry } from '@/lib/shopping/items';
 import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
 import { mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
+import { assigneeFields } from '@functions/shared/assignee';
+import { publicDisplayName } from '@/lib/member-directory';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { Chore, ShoppingListItem, User } from '@/lib/types';
@@ -137,8 +139,8 @@ export async function createOneTimeChore({
   const chore: Omit<Chore, 'id'> = {
     task,
     notes: '',
-    assignedToEmail: assignee.email,
-    assignedToDisplayName: assignee.name || assignee.email,
+    ...assigneeFields(assignee),
+    assignedToDisplayName: publicDisplayName(assignee.name),
     dueDate: new Date(`${dueDate}T12:00:00`).toISOString(),
     originalDueDate: dueDate,
     roomIds: room && room.id !== 'general' ? [room.id] : [],
@@ -148,8 +150,9 @@ export async function createOneTimeChore({
   };
   batch.set(choreRef, chore);
   // No "new chore" notification for a chore you give yourself.
-  if (assignee.uid !== viewer.uid && assignee.email !== viewer.email) {
-    const stateKey = `assigned|${dueDate}|${assignee.email}`;
+  if (assignee.uid !== viewer.uid) {
+    // Keyed by uid: notification state keys are readable by every member.
+    const stateKey = `assigned|${dueDate}|${assignee.uid}`;
     const notificationId = getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId: choreRef.id, stateKey });
     batch.set(doc(db, 'households', householdId, 'notifications', notificationId), buildNotificationDocument({
       householdId,
@@ -160,7 +163,7 @@ export async function createOneTimeChore({
       sourceType: 'chore-assignment',
       sourceId: choreRef.id,
       stateKey,
-      targetUser: { uid: assignee.uid, email: assignee.email, displayName: assignee.name } as User,
+      targetUser: { uid: assignee.uid },
     }));
   }
   // Like the other quick-add writes: offline, the batch stays queued (it syncs on
@@ -206,11 +209,11 @@ export async function createRepeatingChore({
     task,
     roomId: room?.id ?? null,
     recurrence: recurrenceFromRepeat(repeat, firstDay),
-    assigneeEmail: assignee.email,
+    assignee,
   });
   const status = await awaitWriteUnlessOffline(setDoc(doc(templates, templateId), template), onLateError);
 
-  if (assignee.uid !== viewer.uid && assignee.email !== viewer.email) {
+  if (assignee.uid !== viewer.uid) {
     // As in Chores: the notification is best effort and never undoes the chore.
     void awaitWriteUnlessOffline(setDoc(doc(collection(db, 'households', householdId, 'notifications')), buildNotificationDocument({
       householdId,
@@ -220,7 +223,7 @@ export async function createRepeatingChore({
       deepLink: '/chores',
       sourceType: 'chore-assignment',
       sourceId: templateId,
-      targetUser: { uid: assignee.uid, email: assignee.email, displayName: assignee.name } as User,
+      targetUser: { uid: assignee.uid },
     })), onLateError).catch((error) => console.warn('Chore saved, but the notification failed:', error instanceof Error ? error.message : String(error)));
   }
 

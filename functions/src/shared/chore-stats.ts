@@ -15,6 +15,8 @@ export type ChoreStatsDoc = {
 };
 
 export type PurgedChore = {
+  /** Not used for the key yet (see choreStatsAssigneeKey); kept for later. */
+  assignedToUid?: unknown;
   assignedToEmail?: unknown;
   assignedToDisplayName?: unknown;
   completedAt: string;
@@ -88,11 +90,11 @@ export const addPurgedChores = (
         !chore.assignedToEmail.trim()) continue;
     const key = choreStatsAssigneeKey(chore.assignedToEmail);
     byAssignee[key] = (byAssignee[key] ?? 0) + 1;
+    // Labels only, readable by everyone who sees chores: never the email.
     if (typeof chore.assignedToDisplayName === "string" &&
-        chore.assignedToDisplayName.trim()) {
+        chore.assignedToDisplayName.trim() &&
+        !chore.assignedToDisplayName.includes("@")) {
       names[key] = chore.assignedToDisplayName.trim();
-    } else if (!names[key]) {
-      names[key] = chore.assignedToEmail.trim().toLowerCase();
     }
   }
   return {

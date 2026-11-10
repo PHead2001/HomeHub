@@ -106,16 +106,22 @@ describe('quick add writes: same shapes as the module screens', () => {
   });
 
   it('builds the chore template with its room and assignee', () => {
-    const template = repeatingChoreTemplate({ task: 'Trash', roomId: 'kitchen', recurrence: recurrenceFromRepeat({ frequency: 'weekly', dayOfWeek: 2 }, '2026-08-04'), assigneeEmail: 'sam.member@example.test' });
+    const template = repeatingChoreTemplate({ task: 'Trash', roomId: 'kitchen', recurrence: recurrenceFromRepeat({ frequency: 'weekly', dayOfWeek: 2 }, '2026-08-04'), assignee: { uid: 'uid-sam', email: 'sam.member@example.test' } });
     assert.deepEqual(template, {
       task: 'Trash',
       notes: '',
       roomIds: ['kitchen'],
       subTasks: [],
       recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, assignedToEmail: 'sam.member@example.test' },
+      // Dual-write: the uid always, the email while it is known.
+      assignedToUid: 'uid-sam',
       assignedToEmail: 'sam.member@example.test',
     });
-    assert.deepEqual(repeatingChoreTemplate({ task: 'X', roomId: 'general', recurrence: { frequency: 'daily', interval: 1 }, assigneeEmail: 'a@b.c' }).roomIds, []);
+    assert.deepEqual(
+      { ...repeatingChoreTemplate({ task: 'X', roomId: null, recurrence: { frequency: 'daily', interval: 1 }, assignee: { uid: 'u2' } }), task: undefined },
+      { task: undefined, notes: '', roomIds: [], subTasks: [], recurrence: { frequency: 'daily', interval: 1, assignedToEmail: '' }, assignedToUid: 'u2', assignedToEmail: '' },
+    );
+    assert.deepEqual(repeatingChoreTemplate({ task: 'X', roomId: 'general', recurrence: { frequency: 'daily', interval: 1 }, assignee: { uid: 'u1', email: 'a@b.c' } }).roomIds, []);
   });
 
   it('logs maintenance like the Add log form: mileage only on a vehicle log', () => {

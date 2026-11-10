@@ -591,7 +591,7 @@ function QuickAddPreview({
   // A name that fits several members ("for Sam" with two Sams) is left for the member to pick.
   const ambiguous = intent.kind === 'chore' && Boolean(intent.assigneeQuery) && !intent.assignee && members.length > 1;
   const resolved = intent.kind === 'chore' && !ambiguous ? resolveChoreAssignee(intent.assignee, members, self) : { assignee: null, restricted: false };
-  const [assigneeEmail, setAssigneeEmail] = useState(resolved.assignee?.email ?? '');
+  const [assigneeUid, setAssigneeUid] = useState(resolved.assignee?.uid ?? '');
   const [roomId, setRoomId] = useState(intent.kind === 'chore' ? intent.room?.id ?? 'general' : 'general');
   // Until the member picks one, the target follows the loaded records (the named
   // vehicle or asset, else the only vehicle for a reading), never a snapshot taken
@@ -599,7 +599,7 @@ function QuickAddPreview({
   const [pickedTarget, setTargetKey] = useState<string | null>(null);
   const fallbackTarget = defaultMaintenanceTarget(intent, vehicles);
   const targetKey = pickedTarget ?? (fallbackTarget ? `${fallbackTarget.kind}:${fallbackTarget.kind === 'vehicle' ? fallbackTarget.vehicle.id : fallbackTarget.asset.id}` : '');
-  const assignee = members.find((member) => member.email === assigneeEmail) ?? (self?.email === assigneeEmail ? self : null);
+  const assignee = members.find((member) => member.uid === assigneeUid) ?? (self?.uid === assigneeUid ? self : null);
   const room = rooms.find((candidate) => candidate.id === roomId) ?? null;
   const target: MaintenanceTarget | null = (() => {
     const [kind, id] = targetKey.split(':');
@@ -658,10 +658,10 @@ function QuickAddPreview({
       {intent.kind === 'chore' && members.length > 1 && (
         <label className="mt-3 block text-sm">
           <span className="mb-1 block text-muted-foreground">Assign to</span>
-          <select value={assigneeEmail} onChange={(event) => setAssigneeEmail(event.target.value)} className={fieldClass} aria-invalid={(ambiguous && !assignee) || undefined}>
-            {assigneeEmail === '' && <option value="" disabled>Choose who</option>}
+          <select value={assigneeUid} onChange={(event) => setAssigneeUid(event.target.value)} className={fieldClass} aria-invalid={(ambiguous && !assignee) || undefined}>
+            {assigneeUid === '' && <option value="" disabled>Choose who</option>}
             {members.map((member) => (
-              <option key={member.email} value={member.email}>{member.name}</option>
+              <option key={member.uid} value={member.uid}>{member.name}</option>
             ))}
           </select>
         </label>

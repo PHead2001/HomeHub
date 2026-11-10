@@ -28,11 +28,16 @@ export const notificationCategoryLabels: Record<NotificationCategory, string> = 
 
 export const getNotificationExpiry = (createdAt: Date) => addDays(createdAt, NOTIFICATION_TTL_DAYS);
 
-export const createNotificationAction = (user: HomeHubUser): NotificationUserAction => ({
+/**
+ * The entry written under `readBy.<uid>`, `dismissedBy.<uid>` or `resolvedBy`.
+ * Every member who can read the notification sees it, so it holds the uid and
+ * display name only, never the email (older entries may still have one; readers
+ * ignore it).
+ */
+export const createNotificationAction = (user: Pick<HomeHubUser, 'uid' | 'displayName'>): NotificationUserAction => ({
   at: new Date(),
   uid: user.uid,
-  email: user.email,
-  displayName: user.displayName,
+  ...(user.displayName ? { displayName: user.displayName } : {}),
 });
 
 const toDate = (value: unknown, fallback = new Date()): Date => {
@@ -200,7 +205,8 @@ export const buildNotificationDocument = ({
   sourceType?: string;
   sourceId?: string;
   stateKey?: string;
-  targetUser?: HomeHubUser;
+  /** The one member it is for. Targeted by uid only: the document is readable by every member. */
+  targetUser?: { uid: string };
 }) => {
   const createdAt = new Date();
 
@@ -216,7 +222,6 @@ export const buildNotificationDocument = ({
     sourceId,
     stateKey,
     targetUserUid: targetUser?.uid,
-    targetUserEmail: targetUser?.email,
     readBy: {},
     dismissedBy: {},
   };

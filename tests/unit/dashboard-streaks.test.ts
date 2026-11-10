@@ -22,10 +22,10 @@ const memberRecords = [
 ];
 
 describe('household streaks tile', () => {
-  it('uses approved members only, named like the Chores page', () => {
+  it('uses approved members only, named like the Chores page (never by email)', () => {
     assert.deepEqual(streakMembersFrom(memberRecords), [
       { email: 'alex@example.test', uid: 'a', name: 'Alex', role: 'owner' },
-      { email: 'morgan@example.test', uid: 'm', name: 'morgan@example.test', role: 'admin' },
+      { email: 'morgan@example.test', uid: 'm', name: 'Member', role: 'admin' },
       { email: 'sam@example.test', uid: 's', name: 'Sam', role: 'member' },
     ]);
   });
@@ -42,7 +42,7 @@ describe('household streaks tile', () => {
     assert.deepEqual(model.top.map((entry) => [entry.name, entry.streak, entry.activeToday]), [
       ['Alex', 3, true],
       ['Sam', 1, true],
-      ['morgan@example.test', 1, false],
+      ['Member', 1, false], // no display name: never the email
     ]);
     assert.equal(model.longest, 3);
     assert.equal(model.running, 3);
@@ -50,7 +50,7 @@ describe('household streaks tile', () => {
     assert.equal(model.weekCompleted, 5);
     assert.equal(streakSummary(model), 'Best streak: 3 days, Alex and 2 more on a streak. 5 chores done this week.');
     for (const entry of model.top) {
-      assert.equal(entry.streak, stats.members.find((member) => member.email === entry.email)!.streak);
+      assert.equal(entry.streak, stats.members.find((member) => member.uid === entry.uid)!.streak);
     }
   });
 
@@ -58,7 +58,7 @@ describe('household streaks tile', () => {
     const model = streakTileModel(computeChoreStats([], streakMembersFrom(memberRecords), now));
     assert.deepEqual(model, { top: [], running: 0, longest: 0, weekCompleted: 0 });
     assert.equal(streakSummary(model), 'No streaks yet. 0 chores done this week.');
-    assert.equal(streakSummary({ top: [{ email: 'm', name: 'Morgan', streak: 1, activeToday: false }], running: 1, longest: 1, weekCompleted: 1 }), 'Best streak: 1 day, Morgan. 1 chore done this week.');
+    assert.equal(streakSummary({ top: [{ uid: 'm', name: 'Morgan', streak: 1, activeToday: false }], running: 1, longest: 1, weekCompleted: 1 }), 'Best streak: 1 day, Morgan. 1 chore done this week.');
     assert.equal(streakDaysLabel(1), '1 day');
     assert.equal(streakDaysLabel(4), '4 days');
   });

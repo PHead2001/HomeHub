@@ -26,8 +26,9 @@ import { normalizeMember, sameProfile } from '@/lib/auth/cached-session';
 import { SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
 import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
 import { normalizeInviteCode } from '@/lib/invite-codes';
+import { memberProfileDiffers, pendingHouseholdView } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
-import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
+import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
 import type {
   Household,
   HouseholdMember,
@@ -150,6 +151,18 @@ const browserTimeZone = () => {
   }
 };
 
+
+/** Copies your profile's name and photo onto your membership record (server action, best effort). */
+async function syncMemberProfile(householdId: string): Promise<void> {
+  try {
+    const user = auth.currentUser;
+    if (!user) return;
+    const result = await syncMyMemberProfileAction({ idToken: await user.getIdToken(), householdId });
+    if (!result.ok) console.warn('Your name and photo could not be shared with the household yet.', result.code);
+  } catch (error) {
+    console.warn('Your name and photo could not be shared with the household yet.', error instanceof Error ? error.message : String(error));
+  }
+}
 
 // --- Provider Component ---
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -300,11 +313,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const normalizedMember = normalizeMember(memberSnap.data() as HouseholdMember, currentUser.uid);
 
-      const householdSnap = await getDoc(doc(db, 'households', householdId));
-      if (!active) return undefined;
-      if (!householdSnap.exists()) return null;
-
-      const householdData = { id: householdSnap.id, ...householdSnap.data() } as Household;
+      // A pending person knows the household's name from their own record (written
+      // when the invite was redeemed) and never reads the household document, which
+      // lists every member's email. Older pending records without it still read it.
+      let householdData: Household;
+      const pendingView = pendingHouseholdView(householdId, normalizedMember);
+      if (pendingView) {
+        householdData = pendingView;
+      } else {
+        const householdSnap = await getDoc(doc(db, 'households', householdId));
+        if (!active) return undefined;
+        if (!householdSnap.exists()) return null;
+        householdData = { id: householdSnap.id, ...householdSnap.data() } as Household;
+      }
       setHousehold(householdData);
       setCurrentMember(normalizedMember);
       const currentOverrides = JSON.stringify(currentUser.permissions || {});
@@ -322,6 +343,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } : prev);
       }
       await cleanupLegacyInviteCode(householdData, normalizedMember.role);
+      // Heal drift between the profile and the public member data (name, photo).
+      if (memberProfileDiffers(normalizedMember, { displayName: currentUser.displayName, avatarUrl: currentUser.avatarUrl })) void syncMemberProfile(householdId);
       return normalizedMember;
     };
 
@@ -348,9 +371,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         readCached(['households', householdId, 'members', uid]),
         readCached(['households', householdId]),
       ]);
-      if (!active || !cachedMember || !cachedHousehold) return;
-      setHousehold({ id: cachedHousehold.id, ...cachedHousehold.data() } as Household);
-      setCurrentMember(normalizeMember(cachedMember.data() as HouseholdMember, uid));
+      if (!active || !cachedMember) return;
+      const member = normalizeMember(cachedMember.data() as HouseholdMember, uid);
+      const pendingView = pendingHouseholdView(householdId, member);
+      if (!pendingView && !cachedHousehold) return;
+      setHousehold(pendingView ?? ({ id: cachedHousehold!.id, ...cachedHousehold!.data() } as Household));
+      setCurrentMember(member);
       cachedHouseholdShown.current = householdId;
       setHouseholdLoading(false);
     };
@@ -530,6 +556,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const userDocRef = doc(db, 'users', currentUser.email);
       await setDoc(userDocRef, data, { merge: true });
       setCurrentUser(prev => prev ? { ...prev, ...data } : null);
+      // Housemates see the name and photo through the membership record, which only
+      // the server may write for you (best effort: the next load heals a failure).
+      if (currentUser.householdId && ('displayName' in data || 'avatarUrl' in data)) void syncMemberProfile(currentUser.householdId);
       if (!silent) toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
     
     } catch (error) {
@@ -655,9 +684,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
 
+      // The result holds only the household's id and name and the caller's own status.
       setCurrentUser(prev => prev ? { ...prev, householdId: result.data.household.id, role: 'newuser', permissions: {} } : null);
-      setHousehold(result.data.household);
-      setCurrentMember(result.data.member);
+      setHousehold({ id: result.data.household.id, name: result.data.household.name });
+      setCurrentMember({
+        ...result.data.member,
+        email: currentUser.email,
+        ...(currentUser.displayName ? { displayName: currentUser.displayName } : {}),
+        avatarUrl: currentUser.avatarUrl ?? null,
+      });
       toast({ title: 'Request sent', description: `An owner or admin of ${result.data.household.name} will approve you shortly.` });
       return true;
     } catch (error) {

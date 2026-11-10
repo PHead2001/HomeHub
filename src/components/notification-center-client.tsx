@@ -23,6 +23,7 @@ import { PeekCard, PeekFacts } from "@/components/ui/peek-link";
 import { canSeeCategory } from "@functions/shared/push-audience";
 import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
 import { friendlyError } from "@/lib/friendly-error";
+import { publicDisplayName } from "@/lib/member-directory";
 import { caughtUpLine, groupNotifications, notificationDestination, notificationSourceLabel } from "@/lib/dashboard/notification-display";
 import {
   createNotificationAction,
@@ -54,7 +55,9 @@ const filterOptions: { value: NotificationFilter; label: string }[] = [
 ];
 
 const getActionName = (action?: NotificationUserAction) => {
-  return action?.displayName || action?.email || (action?.uid ? "Household member" : null);
+  // Never the email, which older entries may still hold.
+  if (action?.displayName) return publicDisplayName(action.displayName, "Household member");
+  return action?.uid || action?.email ? "Household member" : null;
 };
 
 function NotificationCenterItem({

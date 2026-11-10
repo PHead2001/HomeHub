@@ -5,6 +5,7 @@ import type { AuthorizedHouseholdUser } from '@/ai/action-auth';
 import { adminDb } from '@/lib/server/firebase-admin';
 import type { HomeOverviewFacts } from '@/ai/overview-types';
 import { redactEmails } from '@/ai/redact';
+import { isAssignedTo, type AssigneeRecord } from '@functions/shared/assignee';
 
 const DAY_MS = 86_400_000;
 // Free-text labels (notification titles, item names) can contain an email
@@ -46,7 +47,7 @@ export const aggregateHomeOverviewFacts = async (user: AuthorizedHouseholdUser):
 
   if (user.permissions['chores.view']) {
     const chores = docsData(await household.collection('chores').get());
-    const assigned = chores.filter(chore => chore.assignedToEmail === user.email && chore.isCompleted !== true);
+    const assigned = chores.filter(chore => isAssignedTo(chore as AssigneeRecord, { uid: user.uid, email: user.email }) && chore.isCompleted !== true);
     const dated = assigned.map(chore => ({ chore, due: toDate(chore.dueDate) })).filter(item => item.due);
     facts.chores = {
       assignedIncomplete: assigned.length,

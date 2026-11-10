@@ -40,6 +40,7 @@ export function MemberCard({
   member,
   color,
   isSelf,
+  showEmail = false,
   stats,
   actions,
   onRoleChange,
@@ -50,6 +51,8 @@ export function MemberCard({
   member: HouseholdMember;
   color: MemberColor;
   isSelf: boolean;
+  /** Emails are for the person themself and for member managers only. */
+  showEmail?: boolean;
   stats?: MemberChoreStats;
   actions: MemberActions;
   onRoleChange: (member: HouseholdMember, role: HouseholdRole) => void;
@@ -84,7 +87,7 @@ export function MemberCard({
               </span>
             )}
           </div>
-          {member.displayName && <p className="truncate text-sm text-muted-foreground">{member.email}</p>}
+          {showEmail && member.email && <p className="truncate text-sm text-muted-foreground">{member.email}</p>}
           <p className="text-xs text-muted-foreground">
             {joined && <>Joined {joined}</>}
             {stats && (

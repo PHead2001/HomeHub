@@ -35,6 +35,7 @@ export type MembershipErrorCode =
   | 'conflict'
   | 'failed';
 import { notificationAudience } from '@functions/shared/notification-audience';
+import { unassignedChoreFields } from '@functions/shared/assignee';
 
 export class MembershipError extends Error {
   constructor(public readonly userMessage: string, public readonly code: MembershipErrorCode = 'failed') {
@@ -74,7 +75,15 @@ const toDate = (value: unknown): Date | null => {
   return null;
 };
 
-export type JoinResult = { household: Household; member: HouseholdMember };
+/**
+ * What a person who just redeemed an invite gets back: the household's id and
+ * name (for the waiting screen) and their own pending status. Never the
+ * household document, which lists every member's email.
+ */
+export type JoinResult = {
+  household: Pick<Household, 'id' | 'name'>;
+  member: Pick<HouseholdMember, 'uid' | 'role' | 'status' | 'joinedAt' | 'householdName'>;
+};
 
 // Redeems an invite atomically: validates expiry, revocation and remaining uses,
 // creates a pending membership, and alerts the people who can approve it.
@@ -125,15 +134,19 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     }
 
     const joinedAt = now.toISOString();
+    const householdName = typeof householdSnap.get('name') === 'string' ? householdSnap.get('name') as string : '';
     const member: HouseholdMember = {
       uid: caller.uid,
       email: caller.email,
-      ...(caller.displayName ? { displayName: caller.displayName } : {}),
+      // Public member data: never an email as the name (see syncMemberProfile).
+      ...(publicMemberName(caller.displayName) ? { displayName: publicMemberName(caller.displayName) } : {}),
       ...(caller.avatarUrl ? { avatarUrl: caller.avatarUrl } : {}),
       role: 'newuser',
       status: 'pending',
       inviteCode: code,
       joinedAt,
+      // The waiting screen reads this from the person's own record instead of the household document.
+      ...(householdName ? { householdName } : {}),
     } as HouseholdMember;
 
     transaction.set(memberRef, member);
@@ -190,8 +203,10 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
       });
     }
 
-    const household = { id: householdSnap.id, ...householdSnap.data() } as Household;
-    return { household, member };
+    return {
+      household: { id: householdSnap.id, name: householdName },
+      member: { uid: caller.uid, role: 'newuser', status: 'pending', joinedAt, ...(householdName ? { householdName } : {}) },
+    };
   });
 };
 
@@ -231,6 +246,37 @@ const approverNotices = (
     },
   ]);
 
+type QuerySnap = FirebaseFirestore.QuerySnapshot;
+type QueryDoc = FirebaseFirestore.QueryDocumentSnapshot;
+
+/**
+ * Chores or templates assigned to one person, found by email (older records)
+ * and by uid, once each. A record found by uid whose email now names someone
+ * else was reassigned by an older build (which rewrites only the email), so it
+ * is no longer theirs and is skipped (functions/src/shared/assignee.ts).
+ */
+const assignedDocs = (byEmail: QuerySnap | null, byUid: QuerySnap, email: string): QueryDoc[] => {
+  const found = new Map<string, QueryDoc>();
+  byEmail?.docs.forEach(d => found.set(d.ref.path, d));
+  const own = email.trim().toLowerCase();
+  byUid.docs.forEach(d => {
+    const stored = d.get('assignedToEmail');
+    const other = typeof stored === 'string' && stored.trim() !== '' && stored.trim().toLowerCase() !== own;
+    if (!other) found.set(d.ref.path, d);
+  });
+  return [...found.values()];
+};
+
+/** Unassigns a recurring template (it stops generating chores). */
+const unassignTemplateFields = (d: QueryDoc): FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> => {
+  const recurrence = d.get('recurrence');
+  return {
+    assignedToEmail: FieldValue.delete(),
+    assignedToUid: FieldValue.delete(),
+    ...(recurrence && typeof recurrence === 'object' ? { 'recurrence.assignedToEmail': FieldValue.delete() } : {}),
+  };
+};
+
 // Leaving: any non-owner. Chores and recurring templates assigned to the leaver
 // become unassigned so nothing keeps being scheduled for someone who left.
 // The membership is read inside the transaction, so a concurrent ownership
@@ -239,13 +285,17 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
   const householdRef = adminDb.collection('households').doc(householdId);
   const memberRef = householdRef.collection('members').doc(caller.uid);
   await adminDb.runTransaction(async transaction => {
-    const [householdSnap, memberSnap, chores, templates, approvers] = await Promise.all([
+    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
       transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email)),
+      transaction.get(householdRef.collection('chores').where('assignedToUid', '==', caller.uid)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email)),
+      transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', caller.uid)),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
     ]);
+    const chores = assignedDocs(choresByEmail, choresByUid, caller.email);
+    const templates = assignedDocs(templatesByEmail, templatesByUid, caller.email);
     if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.');
     const member = memberSnap.exists ? memberSnap.data() || null : null;
     if (!member) throw new MembershipError('You are not part of this household.');
@@ -255,18 +305,15 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     transaction.delete(memberRef);
     transaction.update(householdRef, { memberEmails: FieldValue.arrayRemove(caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
-    chores.docs.filter(d => !d.data().isCompleted).forEach(d =>
-      transaction.update(d.ref, { assignedToEmail: '', assignedToDisplayName: 'Unassigned' }));
-    templates.docs.forEach(d => transaction.update(d.ref, {
-      assignedToEmail: FieldValue.delete(),
-      'recurrence.assignedToEmail': FieldValue.delete(),
-    }));
+    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignedChoreFields()));
+    templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     transaction.set(householdRef.collection('auditLogs').doc(), {
       actorUid: caller.uid, actorEmail: caller.email, actorName: caller.displayName || null,
       action: 'member.left', targetUid: caller.uid, targetEmail: caller.email, createdAt: iso,
     });
     approverNotices(householdRef, approvers.docs.filter(d => d.id !== caller.uid), now, {
       title: 'Member left',
+      // Sent to owners and admins only (member managers), who may see the email.
       message: `${caller.displayName || caller.email} left the household.`,
       sourceType: 'household-member-left',
       sourceId: caller.uid,
@@ -648,14 +695,20 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
     enforce(canManageMember(context.actor, target));
     const profileRef = target.email ? adminDb.collection('users').doc(target.email) : null;
-    const assigned = (name: string) => target.email
+    // Assigned by email (older records) or by uid.
+    const byEmail = (name: string) => target.email
       ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
       : Promise.resolve(null);
-    const [profileSnap, chores, templates] = await Promise.all([
+    const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
+    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
-      assigned('chores'),
-      assigned('chore-templates'),
+      byEmail('chores'),
+      byUid('chores'),
+      byEmail('chore-templates'),
+      byUid('chore-templates'),
     ]);
+    const chores = assignedDocs(choresByEmail, choresByUid, target.email);
+    const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
 
     const iso = now.toISOString();
     const denied = target.role === 'newuser';
@@ -668,15 +721,8 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     if (profileRef && profileSnap?.exists && profileSnap.data()?.householdId === context.householdRef.id) {
       setProfileCache(transaction, target.email, { householdId: null, role: 'member', permissions: {} });
     }
-    chores?.docs.filter(d => !d.data().isCompleted).forEach(d =>
-      transaction.update(d.ref, { assignedToEmail: '', assignedToDisplayName: 'Unassigned' }));
-    templates?.docs.forEach(d => {
-      const recurrence = d.data().recurrence;
-      transaction.update(d.ref, {
-        assignedToEmail: FieldValue.delete(),
-        ...(recurrence && typeof recurrence === 'object' ? { 'recurrence.assignedToEmail': FieldValue.delete() } : {}),
-      });
-    });
+    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignedChoreFields()));
+    templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     writeAudit(transaction, context, caller, now, {
       action: 'member.removed',
       target,
@@ -709,7 +755,8 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
       householdId: context.householdRef.id,
       category: 'system',
       title: 'Household ownership transferred',
-      message: `${target.displayName || target.email} is now the owner of ${householdName}.`,
+      // Household-wide: the name only, never the email.
+      message: `${target.displayName || 'A member'} is now the owner of ${householdName}.`,
       createdAt: Timestamp.fromDate(now),
       expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
       deepLink: '/household',
@@ -721,5 +768,69 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
       dismissedBy: {},
     });
     return { ownerUid: target.uid };
+  });
+};
+
+// ---------------------------------------------------------------------------
+// Public member data
+//
+// Housemates see each other through the membership records (name, photo, role,
+// status, join time), never through each other's profiles. Members cannot write
+// their own record under the rules, so a change of name or photo reaches it here.
+// ---------------------------------------------------------------------------
+
+// Same bound and email check as publicDisplayName (src/lib/member-directory.ts).
+const MEMBER_NAME_MAX = 80;
+const AVATAR_URL_MAX = 2048;
+
+/** A profile name fit for housemates: trimmed, bounded, and never an email address. */
+const publicMemberName = (value: unknown): string | null => {
+  const name = typeof value === 'string' ? value.trim() : '';
+  if (!name || /\S+@\S+/.test(name)) return null;
+  return name.slice(0, MEMBER_NAME_MAX);
+};
+
+const publicAvatarUrl = (value: unknown): string | null =>
+  typeof value === 'string' && value.startsWith('https://') && value.length <= AVATAR_URL_MAX ? value : null;
+
+export type MemberProfileSync = { displayName: string | null; avatarUrl: string | null; changed: boolean };
+
+/**
+ * Copies the caller's own display name and photo from their profile
+ * (`users/{email}`, read on the server, never taken from the request) onto their
+ * membership record, so everyone in the household sees the current values. Only
+ * those two fields change; a pending person may sync too (approvers see the name).
+ */
+export const syncMemberProfile = async (caller: VerifiedCaller, householdId: string): Promise<MemberProfileSync> => {
+  const id = requireId(householdId, 'That household no longer exists.');
+  const householdRef = adminDb.collection('households').doc(id);
+  const memberRef = householdRef.collection('members').doc(caller.uid);
+  const profileRef = adminDb.collection('users').doc(caller.email);
+  return adminDb.runTransaction(async transaction => {
+    const [householdSnap, memberSnap, profileSnap] = await Promise.all([
+      transaction.get(householdRef),
+      transaction.get(memberRef),
+      transaction.get(profileRef),
+    ]);
+    if (!householdSnap.exists) throw new MembershipError('That household no longer exists.', 'not_found');
+    if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.', 'household_deleting');
+    const status = memberSnap.exists ? (memberSnap.get('status') || 'active') : null;
+    if (status !== 'active' && status !== 'pending') throw new MembershipError('You are not part of this household.', 'not_member');
+
+    const profile = profileSnap.exists ? profileSnap.data() || {} : {};
+    const displayName = publicMemberName(profile.displayName);
+    const avatarUrl = publicAvatarUrl(profile.avatarUrl);
+    const updates: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> = {};
+    const storedName = memberSnap.get('displayName');
+    const storedAvatar = memberSnap.get('avatarUrl');
+    if ((typeof storedName === 'string' ? storedName : null) !== displayName) {
+      updates.displayName = displayName ?? FieldValue.delete();
+    }
+    if ((typeof storedAvatar === 'string' && storedAvatar ? storedAvatar : null) !== avatarUrl) {
+      updates.avatarUrl = avatarUrl;
+    }
+    const changed = Object.keys(updates).length > 0;
+    if (changed) transaction.update(memberRef, updates);
+    return { displayName, avatarUrl, changed };
   });
 };

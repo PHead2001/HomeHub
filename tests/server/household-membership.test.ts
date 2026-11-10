@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import { adminDb } from '../../src/lib/server/firebase-admin';
-import { MembershipError, deleteHousehold, leaveHousehold, redeemInvite, type VerifiedCaller } from '../../src/lib/server/household-membership';
+import { MembershipError, deleteHousehold, leaveHousehold, redeemInvite, syncMemberProfile, type VerifiedCaller } from '../../src/lib/server/household-membership';
 import { deduplicateNotifications } from '../../src/lib/notifications';
 import type { Notification } from '../../src/lib/types';
 
@@ -85,6 +85,29 @@ describe('invite redemption', () => {
     for (const note of notes.docs) assert.equal(note.data().deepLink, '/household?tab=members');
   });
 
+  test('the joiner gets back only the household id and name and their own status', async () => {
+    await invite('TRIM-MEDX-XX');
+    const result = await redeemInvite(newcomer, 'TRIM-MEDX-XX', NOW);
+    assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+      household: { id: HOUSE, name: 'Join House' },
+      member: { uid: newcomer.uid, role: 'newuser', status: 'pending', joinedAt: NOW.toISOString(), householdName: 'Join House' },
+    });
+    // Nobody's email, not even the household's member list or owner.
+    const serialized = JSON.stringify(result);
+    for (const email of [owner.email, admin.email, guest.email, newcomer.email]) assert.ok(!serialized.includes(email), email);
+    // The waiting screen reads the name from the person's own record, not the household document.
+    const member = (await adminDb.collection('households').doc(HOUSE).collection('members').doc(newcomer.uid).get()).data();
+    assert.equal(member?.householdName, 'Join House');
+    assert.equal(member?.displayName, 'Jordan');
+  });
+
+  test('a joiner whose token name is an email gets no public name', async () => {
+    await invite('MAIL-NAME-XX');
+    await redeemInvite({ ...second, displayName: second.email }, 'MAIL-NAME-XX', NOW);
+    const member = (await adminDb.collection('households').doc(HOUSE).collection('members').doc(second.uid).get()).data();
+    assert.equal(member?.displayName, undefined);
+  });
+
   test('expired, cancelled, used-up and unknown codes are refused with clear messages', async () => {
     await invite('EXPI-REDX-XX', { expiresAt: '2026-08-01T11:59:59.000Z' });
     await invite('REVO-KEDX-XX', { revokedAt: '2026-08-01T11:55:00.000Z' });
@@ -143,9 +166,31 @@ describe('leaving and deleting', () => {
     assert.equal(template?.assignedToEmail, undefined);
     assert.equal(template?.recurrence?.assignedToEmail, undefined);
     assert.ok(!((await house.get()).data()?.memberEmails || []).includes(guest.email));
+    const unassigned = (await house.collection('chores').doc('c1').get()).data();
+    assert.equal(unassigned?.assignedToUid, '');
+    assert.equal(unassigned?.assignedToDisplayName, 'Unassigned');
     const notes = await house.collection('notifications').where('sourceType', '==', 'household-member-left').get();
     assert.deepEqual(notes.docs.map(d => d.data().targetUserUid).sort(), [admin.uid, owner.uid].sort());
     for (const note of notes.docs) assert.deepEqual(note.data().audience, [note.data().targetUserUid]);
+  });
+
+  test('leaving unassigns chores and templates found by uid; a chore an older build moved to someone else is left alone', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await house.collection('chores').doc('u1').set({ task: 'New', assignedToUid: guest.uid, assignedToEmail: guest.email, isCompleted: false });
+    await house.collection('chores').doc('u2').set({ task: 'Uid only', assignedToUid: guest.uid, assignedToEmail: '', isCompleted: false });
+    await house.collection('chores').doc('moved').set({ task: 'Moved', assignedToUid: guest.uid, assignedToEmail: admin.email, isCompleted: false });
+    await house.collection('chore-templates').doc('t2').set({ task: 'Mop', assignedToUid: guest.uid, assignedToEmail: '', recurrence: { frequency: 'daily', assignedToEmail: '' } });
+    await leaveHousehold(guest, HOUSE, NOW);
+    for (const id of ['u1', 'u2']) {
+      const chore = (await house.collection('chores').doc(id).get()).data();
+      assert.equal(chore?.assignedToUid, '', id);
+      assert.equal(chore?.assignedToEmail, '', id);
+    }
+    const moved = (await house.collection('chores').doc('moved').get()).data();
+    assert.equal(moved?.assignedToEmail, admin.email);
+    const template = (await house.collection('chore-templates').doc('t2').get()).data();
+    assert.equal(template?.assignedToUid, undefined);
+    assert.equal(template?.recurrence?.assignedToEmail, undefined);
   });
 
   test('the owner cannot leave and outsiders are refused', async () => {
@@ -191,6 +236,48 @@ describe('leaving and deleting', () => {
     assert.equal((await house.collection('chores').get()).size, 0);
     assert.equal((await house.collection('members').get()).size, 0);
     assert.equal((await adminDb.collection('inviteCodes').doc('FROZ-ENHO-US').get()).exists, false);
+  });
+});
+
+describe('public member data', () => {
+  const photo = 'https://firebasestorage.googleapis.com/v0/b/demo/o/users%2Fa.png?alt=media&token=t';
+
+  test('your profile name and photo reach your membership record, and nothing else changes', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await adminDb.collection('users').doc(guest.email).set({ email: guest.email, displayName: 'Gus Guest', avatarUrl: photo, householdId: HOUSE, role: 'admin' });
+    assert.deepEqual(await syncMemberProfile(guest, HOUSE), { displayName: 'Gus Guest', avatarUrl: photo, changed: true });
+    const member = (await house.collection('members').doc(guest.uid).get()).data();
+    assert.equal(member?.displayName, 'Gus Guest');
+    assert.equal(member?.avatarUrl, photo);
+    assert.equal(member?.role, 'guest', 'the profile role is never copied');
+    assert.equal(member?.email, guest.email);
+    // Running it again changes nothing.
+    assert.equal((await syncMemberProfile(guest, HOUSE)).changed, false);
+  });
+
+  test('a removed photo and a cleared name are removed; emails and odd URLs are never copied', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await house.collection('members').doc(guest.uid).update({ displayName: 'Old Name', avatarUrl: photo });
+    await adminDb.collection('users').doc(guest.email).set({ email: guest.email, displayName: guest.email, avatarUrl: 'javascript:alert(1)' });
+    assert.deepEqual(await syncMemberProfile(guest, HOUSE), { displayName: null, avatarUrl: null, changed: true });
+    const member = (await house.collection('members').doc(guest.uid).get()).data();
+    assert.equal(member?.displayName, undefined);
+    assert.equal(member?.avatarUrl, null);
+  });
+
+  test('a pending person may sync; outsiders and unknown households are refused', async () => {
+    await invite('SYNC-PEND-XX');
+    await redeemInvite(newcomer, 'SYNC-PEND-XX', NOW);
+    await adminDb.collection('users').doc(newcomer.email).set({ displayName: 'Jordan Lee' }, { merge: true });
+    assert.equal((await syncMemberProfile(newcomer, HOUSE)).displayName, 'Jordan Lee');
+    await rejects(syncMemberProfile(elsewhere, HOUSE), /not part of this household/);
+    await rejects(syncMemberProfile(guest, 'no-such-house'), /no longer exists/);
+    await rejects(syncMemberProfile(guest, 'bad/id'), /no longer exists/);
+  });
+
+  test('a household being deleted refuses it', async () => {
+    await adminDb.collection('households').doc(HOUSE).update({ deletingAt: new Date() });
+    await rejects(syncMemberProfile(guest, HOUSE), /being deleted/);
   });
 });
 

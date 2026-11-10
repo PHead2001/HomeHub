@@ -6,8 +6,10 @@ import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
 import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
+import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
 import { format } from 'date-fns';
-import type { ChoreTemplate, HouseholdMember, Recurrence, Room, User as HomeHubUser } from '@/lib/types';
+import type { ChoreTemplate, Recurrence, Room } from '@/lib/types';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -51,8 +53,6 @@ import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { ALL_ROOMS, choresRoomHref, effectiveChoresRoom, parseChoresRoom, roomSharedId } from '@/lib/chores/url-state';
 import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/chores/house-clean';
 
-type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
-
 const UNDO_MS = 5000;
 
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
@@ -83,7 +83,7 @@ export function ChoreChartClient() {
 
   const [assignedChores, setAssignedChores] = useState<ChoreRecord[]>([]);
   const [choreTemplates, setChoreTemplates] = useState<ChoreTemplate[]>([]);
-  const [householdUsers, setHouseholdUsers] = useState<ChoreUser[]>([]);
+  const [householdUsers, setHouseholdUsers] = useState<HouseholdPerson[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
@@ -123,8 +123,8 @@ export function ChoreChartClient() {
   useEffect(() => { setIsMounted(true); }, []);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
-  const usersByEmail = useMemo(() => new Map(householdUsers.map(user => [user.email, user as HomeHubUser])), [householdUsers]);
-  const memberColors = useMemo(() => memberColorMap(householdUsers.map(user => user.uid || user.email)), [householdUsers]);
+  const usersByUid = useMemo(() => new Map(householdUsers.map(user => [user.uid, user])), [householdUsers]);
+  const memberColors = useMemo(() => memberColorMap(householdUsers.map(user => user.uid)), [householdUsers]);
 
   const getCollectionRef = useCallback((collectionName: string) => {
     if (!currentUser?.householdId) return null;
@@ -139,25 +139,12 @@ export function ChoreChartClient() {
     try {
       const householdDocSnap = await getDoc(doc(db, 'households', currentUser.householdId));
       if (!householdDocSnap.exists()) throw new Error('not-found');
-      // Assignees come from approved membership records (the authority), enriched
-      // with profile details where readable. One unreadable profile must not break the page.
+      // Assignees are the approved membership records: their public fields (name,
+      // photo, role) are all this page shows. Housemates' profiles are never read.
       const membersSnap = await getDocs(collection(db, 'households', currentUser.householdId, 'members'));
-      const approvedMembers = membersSnap.docs
-        .map(snap => snap.data() as HouseholdMember)
-        .filter(member => member.email && member.role !== 'newuser' && (member.status || 'active') === 'active');
-      const profileResults = await Promise.allSettled(approvedMembers.map(member => getDoc(doc(db, 'users', member.email))));
-      const usersData: ChoreUser[] = approvedMembers.map((member, index) => {
-        const result = profileResults[index];
-        const profile = result.status === 'fulfilled' && result.value.exists() ? result.value.data() as HomeHubUser : null;
-        return {
-          ...(profile || {}),
-          uid: member.uid,
-          email: member.email,
-          displayName: profile?.displayName || member.displayName || member.email,
-          avatarUrl: profile?.avatarUrl || member.avatarUrl || null,
-          memberRole: member.role,
-        } as ChoreUser;
-      });
+      const usersData = approvedPeople(membersSnap.docs.map(snap => ({ id: snap.id, data: snap.data() })))
+        // The viewer always knows their own email, which matches their older chores.
+        .map(person => person.uid === currentUser.uid ? { ...person, email: person.email || currentUser.email } : person);
       setHouseholdUsers(usersData);
 
       const choresCollection = getCollectionRef('chores');
@@ -179,12 +166,18 @@ export function ChoreChartClient() {
         getDocs(query(roomsCollection)),
       ]);
 
-      setChoreTemplates(templatesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as ChoreTemplate)).sort((a, b) => a.task.localeCompare(b.task)));
+      // Assignees are resolved once here (uid, or the email of older records) and kept
+      // in memory as `assignedToUid`; see functions/src/shared/assignee.ts.
+      setChoreTemplates(templatesSnapshot.docs.map(d => {
+        const template = { id: d.id, ...d.data() } as ChoreTemplate;
+        return { ...template, assignedToUid: resolveAssigneeUid(template, usersData) };
+      }).sort((a, b) => a.task.localeCompare(b.task)));
       setRooms(roomsSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Room)).sort((a, b) => a.name.localeCompare(b.name)));
       setAssignedChores(choresSnapshot.docs.map(d => {
         const chore = { id: d.id, ...d.data() } as ChoreRecord;
-        const user = usersData.find(u => u.email === chore.assignedToEmail);
-        return { ...chore, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || chore.assignedToEmail };
+        const assignedToUid = resolveAssigneeUid(chore, usersData) || '';
+        const user = usersData.find(u => u.uid === assignedToUid);
+        return { ...chore, assignedToUid, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || 'Unassigned' };
       }));
     } catch (error) {
       console.error('Error fetching chores:', error instanceof Error ? error.message : String(error));
@@ -215,7 +208,7 @@ export function ChoreChartClient() {
   }, []);
 
   /** Assignment notifications go to other people only, never to yourself. */
-  const shouldNotify = useCallback((email: string) => email !== currentUser?.email, [currentUser?.email]);
+  const shouldNotify = useCallback((uid: string) => uid !== currentUser?.uid, [currentUser?.uid]);
 
   /* ---------------------------------------------------------------------- */
   /* Creating                                                                */
@@ -227,7 +220,7 @@ export function ChoreChartClient() {
     const templatesCollection = getCollectionRef('chore-templates');
     const notificationsCollection = getCollectionRef('notifications');
     if (!choresCollection || !templatesCollection || !notificationsCollection) return false;
-    const assignee = householdUsers.find(user => user.email === input.assignedToEmail);
+    const assignee = householdUsers.find(user => user.uid === input.assigneeUid);
     if (!assignee) {
       toastError({ code: 'not-found' }, "Couldn't add the chore");
       return false;
@@ -239,12 +232,13 @@ export function ChoreChartClient() {
       if (!input.repeat) {
         // One-time: a direct chore plus (for someone else) its assignment notification, atomically.
         const choreRef = doc(choresCollection);
-        const stateKey = `assigned|${input.dueDate}|${input.assignedToEmail}`;
+        // Keyed by uid: notification state keys are readable by every member.
+        const stateKey = `assigned|${input.dueDate}|${assignee.uid}`;
         const batch = writeBatch(db);
         batch.set(choreRef, {
           task: input.task,
           notes: input.notes,
-          assignedToEmail: input.assignedToEmail,
+          ...assigneeFields(assignee),
           assignedToDisplayName: assigneeName,
           dueDate: new Date(`${input.dueDate}T12:00:00`).toISOString(),
           originalDueDate: input.dueDate,
@@ -253,7 +247,7 @@ export function ChoreChartClient() {
           completedSubTasks: [],
           sourceType: 'temporary',
         });
-        if (shouldNotify(input.assignedToEmail)) {
+        if (shouldNotify(assignee.uid)) {
           const notificationId = getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId: choreRef.id, stateKey });
           batch.set(doc(notificationsCollection, notificationId), buildNotificationDocument({
             householdId: currentUser.householdId,
@@ -271,16 +265,17 @@ export function ChoreChartClient() {
       } else {
         // Readable slug + auto-id: never collides with a template this page has not seen.
         const templateId = newChoreDocId(input.task, doc(templatesCollection).id);
-        const recurrence: Recurrence = { ...input.recurrence, assignedToEmail: input.assignedToEmail };
+        const fields = assigneeFields(assignee);
+        const recurrence: Recurrence = { ...input.recurrence, assignedToEmail: fields.assignedToEmail };
         await setDoc(doc(templatesCollection, templateId), {
           task: input.task,
           notes: input.notes,
           roomIds,
           subTasks: [],
           recurrence,
-          assignedToEmail: input.assignedToEmail,
+          ...fields,
         });
-        if (shouldNotify(input.assignedToEmail)) {
+        if (shouldNotify(assignee.uid)) {
           await setDoc(doc(notificationsCollection), buildNotificationDocument({
             householdId: currentUser.householdId,
             category: 'chores',
@@ -294,7 +289,7 @@ export function ChoreChartClient() {
         }
       }
       playFeedback('add');
-      toast({ title: 'Chore added', description: `${input.task} is on ${assignee.email === currentUser.email ? 'your' : `${assigneeName}'s`} list.` });
+      toast({ title: 'Chore added', description: `${input.task} is on ${assignee.uid === currentUser.uid ? 'your' : `${assigneeName}'s`} list.` });
       await fetchAllData();
       return true;
     } catch (error) {
@@ -363,22 +358,23 @@ export function ChoreChartClient() {
     setIsLibraryOpen(false);
   };
 
-  const handleAssignChores = useCallback(async (assignment: { assignedToEmail: string; roomIds: string[] }, schedule: AssignSchedule) => {
+  const handleAssignChores = useCallback(async (assignment: { assigneeUid: string; roomIds: string[] }, schedule: AssignSchedule) => {
     if (!currentUser?.householdId || templatesToAssign.length === 0) return false;
     const templatesCollection = getCollectionRef('chore-templates');
     const choresCollection = getCollectionRef('chores');
     if (!choresCollection || !templatesCollection) return false;
-    const user = householdUsers.find(u => u.email === assignment.assignedToEmail);
+    const user = householdUsers.find(u => u.uid === assignment.assigneeUid);
     if (!user) {
       toastError({ code: 'not-found' }, "Couldn't assign");
       return false;
     }
     const assignedToDisplayName = memberName(user);
+    const fields = assigneeFields(user);
     const batch = writeBatch(db);
     if (schedule.type === 'recurring') {
       for (const template of templatesToAssign) {
-        const recurrence: Recurrence = { ...schedule.recurrence, assignedToEmail: assignment.assignedToEmail };
-        batch.set(doc(templatesCollection, template.id), { recurrence, assignedToEmail: assignment.assignedToEmail }, { merge: true });
+        const recurrence: Recurrence = { ...schedule.recurrence, assignedToEmail: fields.assignedToEmail };
+        batch.set(doc(templatesCollection, template.id), { recurrence, ...fields }, { merge: true });
       }
     } else {
       const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
@@ -390,7 +386,7 @@ export function ChoreChartClient() {
           // would overwrite that chore, including a moved or completed one.
           batch.set(doc(choresCollection), {
             task: template.task,
-            assignedToEmail: assignment.assignedToEmail,
+            ...fields,
             assignedToDisplayName,
             dueDate: schedule.dueDate.toISOString(),
             isCompleted: false,
@@ -408,7 +404,7 @@ export function ChoreChartClient() {
     }
     try {
       await batch.commit();
-      if (shouldNotify(assignment.assignedToEmail)) {
+      if (shouldNotify(user.uid)) {
         try {
           await setDoc(doc(collection(db, 'households', currentUser.householdId, 'notifications')), buildNotificationDocument({
             householdId: currentUser.householdId,
@@ -492,11 +488,18 @@ export function ChoreChartClient() {
     }
   };
 
-  const handleUpdateRecurringTask = (choreId: string, assignedToEmail: string, recurrence: Recurrence) =>
-    replaceRecurrence(choreId, { assignedToEmail, recurrence }, 'Repeating chore updated', "Couldn't update the schedule");
+  const handleUpdateRecurringTask = async (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>) => {
+    const user = householdUsers.find(u => u.uid === assigneeUid);
+    if (!user) {
+      toastError({ code: 'not-found' }, "Couldn't update the schedule");
+      return false;
+    }
+    const fields = assigneeFields(user);
+    return replaceRecurrence(choreId, { ...fields, recurrence: { ...recurrence, assignedToEmail: fields.assignedToEmail } }, 'Repeating chore updated', "Couldn't update the schedule");
+  };
 
   const handleDeleteRecurringTask = async (choreId: string) => {
-    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: null }, 'Stopped repeating', "Couldn't stop the schedule");
+    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: null, assignedToUid: null }, 'Stopped repeating', "Couldn't stop the schedule");
   };
 
   /* ---------------------------------------------------------------------- */
@@ -654,12 +657,12 @@ export function ChoreChartClient() {
     }
   };
 
-  const handleReassign = useCallback(async (chore: ChoreRecord, email: string) => {
+  const handleReassign = useCallback(async (chore: ChoreRecord, uid: string) => {
     const choresCollection = getCollectionRef('chores');
-    const user = householdUsers.find(u => u.email === email);
-    if (!choresCollection || !user || email === chore.assignedToEmail) return;
-    const updates = { assignedToEmail: email, assignedToDisplayName: memberName(user) };
-    const previous = { assignedToEmail: chore.assignedToEmail, assignedToDisplayName: chore.assignedToDisplayName };
+    const user = householdUsers.find(u => u.uid === uid);
+    if (!choresCollection || !user || uid === chore.assignedToUid) return;
+    const updates = { ...assigneeFields(user), assignedToDisplayName: memberName(user) };
+    const previous = { assignedToUid: chore.assignedToUid ?? '', assignedToEmail: chore.assignedToEmail, assignedToDisplayName: chore.assignedToDisplayName };
     patchChores([chore.id], c => ({ ...c, ...updates }));
     try {
       await updateDoc(doc(choresCollection, chore.id), updates);
@@ -691,11 +694,11 @@ export function ChoreChartClient() {
   /* ---------------------------------------------------------------------- */
 
   const statsMembers = useMemo(() => householdUsers.map(user => ({
-    email: user.email, uid: user.uid || user.email, name: memberName(user), role: user.memberRole,
+    uid: user.uid, name: memberName(user), role: user.role,
   })), [householdUsers]);
   // Follows `today`, so the week, streaks and podium roll over at midnight.
   const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today)), [assignedChores, statsMembers, today]);
-  const photos = useMemo(() => new Map(householdUsers.map(user => [user.email, user.avatarUrl])), [householdUsers]);
+  const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
   const filterRoomId = effectiveChoresRoom(requestedRoomId, loading ? null : new Set(rooms.map(room => room.id)));
@@ -768,8 +771,8 @@ export function ChoreChartClient() {
 
   const listProps = {
     today,
-    usersByEmail,
-    users: householdUsers as HomeHubUser[],
+    usersByUid,
+    users: householdUsers,
     colors: memberColors,
     capabilities,
     selectMode,
@@ -779,7 +782,7 @@ export function ChoreChartClient() {
     onToggleDone: handleToggleDone,
     onToggleSelect: toggleSelect,
     onSubTaskToggle: (chore: ChoreRecord, subTask: string) => void handleSubTaskToggle(chore, subTask),
-    onReassign: (chore: ChoreRecord, email: string) => void handleReassign(chore, email),
+    onReassign: (chore: ChoreRecord, uid: string) => void handleReassign(chore, uid),
     onDelete: (chore: ChoreRecord) => setChoreToDelete(chore),
     onClearMissed: (entry: ToDoEntry) => void deleteChores(entry.missed.map(c => c.id), `Cleared ${entry.missed.length} missed`),
   };
@@ -870,7 +873,7 @@ export function ChoreChartClient() {
         onOpenChange={setIsAddOpen}
         users={householdUsers}
         rooms={rooms}
-        currentUserEmail={currentUser.email}
+        currentUserUid={currentUser.uid}
         capabilities={capabilities}
         onCreateRoom={openCreateRoom}
         onCreate={handleCreateChore}
@@ -892,7 +895,7 @@ export function ChoreChartClient() {
         users={householdUsers}
         rooms={rooms}
         templatesToAssign={templatesToAssign}
-        currentUserEmail={currentUser.email}
+        currentUserUid={currentUser.uid}
         capabilities={capabilities}
         onAssign={handleAssignChores}
       />
@@ -910,7 +913,7 @@ export function ChoreChartClient() {
         onOpenChange={setIsRecurringOpen}
         recurringChores={recurringChores}
         users={householdUsers}
-        currentUserEmail={currentUser.email}
+        currentUserUid={currentUser.uid}
         capabilities={capabilities}
         onUpdate={handleUpdateRecurringTask}
         onDelete={handleDeleteRecurringTask}

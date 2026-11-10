@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { LayoutGroup, motion } from 'motion/react';
 import { format } from 'date-fns';
 import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, ListChecks, Pill, Wrench } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, updateDoc } from 'firebase/firestore';
-import type { ChoreTemplate, HomeAsset, HouseholdMember, MedicationLog, Pet, User as HomeHubUser, Vehicle } from '@/lib/types';
+import { collection, doc, getDocs, updateDoc } from 'firebase/firestore';
+import { approvedPeople } from '@/lib/member-directory';
+import type { ChoreTemplate, HomeAsset, MedicationLog, Pet, Vehicle } from '@/lib/types';
 import { safeTimeZone } from '@functions/shared/calendar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -54,22 +55,16 @@ type SourceErrors = Partial<Record<'chores' | 'maintenance' | 'pets', string>>;
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const UNDO_MS = 5000;
 
-async function loadMembers(householdId: string): Promise<Member[]> {
+// Public member data only (name, photo): housemates' profiles are never read.
+async function loadMembers(householdId: string, viewer: { uid: string; email: string }): Promise<Member[]> {
   const snap = await getDocs(collection(db, 'households', householdId, 'members'));
-  const approved = snap.docs
-    .map(d => d.data() as HouseholdMember)
-    .filter(m => m.email && m.role !== 'newuser' && (m.status || 'active') === 'active');
-  const profiles = await Promise.allSettled(approved.map(m => getDoc(doc(db, 'users', m.email))));
-  return approved.map((member, i) => {
-    const result = profiles[i];
-    const profile = result.status === 'fulfilled' && result.value.exists() ? result.value.data() as HomeHubUser : null;
-    return {
-      uid: member.uid,
-      email: member.email,
-      name: profile?.displayName || member.displayName || member.email,
-      avatarUrl: profile?.avatarUrl || member.avatarUrl || null,
-    };
-  });
+  return approvedPeople(snap.docs.map(d => ({ id: d.id, data: d.data() }))).map(person => ({
+    uid: person.uid,
+    // Matching key for older chores only; the viewer always knows their own.
+    email: person.uid === viewer.uid ? person.email || viewer.email : person.email,
+    name: person.displayName,
+    avatarUrl: person.avatarUrl,
+  }));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -231,6 +226,8 @@ function EventChip({
 export function HouseholdCalendar() {
   const { currentUser, household, permissions } = useAuth();
   const { toast, toastError } = useToast();
+  const viewerUid = currentUser?.uid ?? '';
+  const viewerEmail = currentUser?.email ?? '';
   const householdId = currentUser?.householdId;
   const canViewChores = Boolean(permissions['chores.view']);
   const canViewMaintenance = Boolean(permissions['maintenance.view']);
@@ -270,7 +267,7 @@ export function HouseholdCalendar() {
     let active = true;
     (async () => {
       const errors: SourceErrors = {};
-      const memberList = await loadMembers(householdId).catch(() => [] as Member[]);
+      const memberList = await loadMembers(householdId, { uid: viewerUid, email: viewerEmail }).catch(() => [] as Member[]);
       const tasks: Promise<void>[] = [];
       if (canViewChores) {
         tasks.push((async () => {
@@ -326,7 +323,7 @@ export function HouseholdCalendar() {
       setLoading(false);
     })();
     return () => { active = false; };
-  }, [householdId, canViewChores, canViewMaintenance, canViewPets, timeZone]);
+  }, [householdId, viewerUid, viewerEmail, canViewChores, canViewMaintenance, canViewPets, timeZone]);
 
   const colors = useMemo(() => memberColorMap(members.map(m => m.uid)), [members]);
   // The whole visible range, so repeating chores beyond the server's 30-occurrence
