@@ -23,6 +23,7 @@ import { ChevronDown } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
@@ -623,6 +624,7 @@ export function ChoreChartClient() {
     });
     const label = completed.length === 1 ? completed[0].task : `${completed.length} chores`;
     const handle = toast({
+      group: 'chore-complete',
       title: completed.length === 1 ? 'Done' : 'Chores done',
       description: `${label} marked complete.`,
       duration: CHORE_UNDO_MS,

@@ -12,10 +12,11 @@
  * - Every completion carries a random `completionId`; Undo reverts only while it
  *   still matches, so an Undo can never revert someone else's later completion.
  */
+import { UNDO_WINDOW_MS } from '../undo-window';
 import { isDayString, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 
 /** Undo is offered this long after completing. */
-export const CHORE_UNDO_MS = 10_000;
+export const CHORE_UNDO_MS = UNDO_WINDOW_MS;
 
 /** At most this many chores per completion request (one transaction). */
 export const MAX_COMPLETION_BATCH = 50;
