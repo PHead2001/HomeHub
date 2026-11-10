@@ -16,6 +16,7 @@ import { buildRecurrence, type RecurrenceState } from '@/components/chores/recur
 import { stableSlugify } from '@/lib/utils';
 import type { MaintenanceLog, Recurrence } from '@/lib/types';
 import { MONTHLY_MAX_DAY, type MaintenanceTarget, type QuickAddRepeat } from './quick-add';
+import { assigneeFields } from '../../../functions/src/shared/assignee';
 
 /**
  * Id for a document quick add creates: a readable slug plus a Firestore auto-id
@@ -58,6 +59,7 @@ export type RepeatingChoreTemplate = {
   roomIds: string[];
   subTasks: string[];
   recurrence: Recurrence;
+  assignedToUid: string;
   assignedToEmail: string;
 };
 
@@ -65,21 +67,23 @@ export function repeatingChoreTemplate({
   task,
   roomId,
   recurrence,
-  assigneeEmail,
+  assignee,
 }: {
   task: string;
   /** null or "general" is "Around the house" (no room), as in the dialog. */
   roomId: string | null;
   recurrence: Omit<Recurrence, 'assignedToEmail'>;
-  assigneeEmail: string;
+  /** Dual-write: uid always, email while the writer knows it (functions/src/shared/assignee.ts). */
+  assignee: { uid: string; email?: string | null };
 }): RepeatingChoreTemplate {
+  const fields = assigneeFields(assignee);
   return {
     task,
     notes: '',
     roomIds: roomId && roomId !== 'general' ? [roomId] : [],
     subTasks: [],
-    recurrence: { ...recurrence, assignedToEmail: assigneeEmail },
-    assignedToEmail: assigneeEmail,
+    recurrence: { ...recurrence, assignedToEmail: fields.assignedToEmail },
+    ...fields,
   };
 }
 

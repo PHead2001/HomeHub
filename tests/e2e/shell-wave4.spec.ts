@@ -66,7 +66,8 @@ test.describe('H13: natural-language quick add writes what it says', () => {
       const preview = palette.getByTestId('quick-add-preview');
       await expect(preview).toBeVisible();
       await expect(preview).toContainText('for Sam Member');
-      await expect(preview.getByRole('combobox', { name: 'Assign to' })).toHaveValue('sam.member@example.test');
+      // Members are picked by uid; the picker never carries their email.
+      await expect(preview.getByRole('combobox', { name: 'Assign to' })).toHaveValue('e2e-member-uid');
       // Nothing is written before Confirm.
       expect((await household.collection('chore-templates').where('task', '==', 'Trash').get()).size).toBe(0);
       await preview.getByRole('combobox', { name: 'Room' }).selectOption('garage');
@@ -77,6 +78,7 @@ test.describe('H13: natural-language quick add writes what it says', () => {
       expect(template).toMatchObject({
         task: 'Trash',
         roomIds: ['garage'],
+        assignedToUid: 'e2e-member-uid',
         assignedToEmail: 'sam.member@example.test',
         recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, assignedToEmail: 'sam.member@example.test' },
       });

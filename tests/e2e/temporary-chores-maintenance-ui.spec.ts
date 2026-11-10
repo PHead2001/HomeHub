@@ -176,6 +176,8 @@ test.describe('temporary chores and maintenance UI regressions', () => {
       sourceType: 'temporary',
       notes: 'Use the spare MERV 11 filter from the hall closet.',
       originalDueDate: '2026-08-04',
+      // Dual-write (member privacy release A): the uid with the email.
+      assignedToUid: 'e2e-member-uid',
       assignedToEmail: 'sam.member@example.test',
       roomIds: ['living-room'],
       isCompleted: false,
@@ -186,9 +188,12 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     expect(notifications.size).toBe(1);
     expect(notifications.docs[0].data()).toMatchObject({
       sourceType: 'chore-assignment',
-      targetUserEmail: 'sam.member@example.test',
+      targetUserUid: 'e2e-member-uid',
       deepLink: '/chores',
     });
+    // Notifications are readable by every member: targeted by uid only, never by email.
+    expect(notifications.docs[0].data().targetUserEmail).toBeUndefined();
+    expect(JSON.stringify(notifications.docs[0].data())).not.toContain('sam.member@example.test');
 
     await page.reload();
     await page.getByRole('button', { name: /^Future \(/ }).click();

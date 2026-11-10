@@ -5,7 +5,9 @@
  * Completion times come from the server-stamped `completedAtServer` when present
  * (the rules pin it to the request time), else the older `completedAt` string.
  */
+import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { addDaysToKey, choreDueKey, completionInstant, dayKey, weekStartKey, type ChoreRecord } from './dates';
+import { publicDisplayName, type HouseholdPerson } from '../member-directory';
 
 export const POINTS = {
   /** Every completed chore. */
@@ -16,10 +18,26 @@ export const POINTS = {
   onTime: 5,
 } as const;
 
-export type StatsMember = { email: string; uid: string; name: string; role?: string };
+/** `email` only matches chores written before `assignedToUid` existed; it is never shown. */
+export type StatsMember = { uid: string; name: string; role?: string; email?: string };
+
+/**
+ * The stats member for a household person, the same on the Chores page and the
+ * dashboard streaks tile. The email, while records still carry one, is kept only
+ * as a matching key so `creditedUid` and `resolveAssigneeUid` can credit older
+ * chores (`completedByEmail` / `assignedToEmail` without a uid); it never reaches
+ * `MemberChoreStats` or any label.
+ */
+export function statsMemberFrom(person: Pick<HouseholdPerson, 'uid' | 'displayName' | 'role' | 'email'>): StatsMember {
+  return {
+    uid: person.uid,
+    name: publicDisplayName(person.displayName),
+    role: person.role,
+    ...(person.email ? { email: person.email } : {}),
+  };
+}
 
 export type MemberChoreStats = {
-  email: string;
   uid: string;
   name: string;
   /** Child accounts collect stickers instead of points. */
@@ -78,23 +96,31 @@ const byStanding = (a: MemberChoreStats, b: MemberChoreStats) =>
 /**
  * Who a completed chore's points go to (D-7, CH-12): the member who completed it
  * (`completedByUid`, else `completedByEmail`, written by the server), else its
- * assignee for completions recorded before attribution existed. Returns the
- * member's email, or the raw email when it matches no member.
+ * assignee (`resolveAssigneeUid`: uid or email) for completions recorded before
+ * attribution existed. Returns the member's uid, or null when the credited person
+ * is not among `members`.
  */
-export function creditedEmail(
-  chore: Pick<ChoreRecord, 'assignedToEmail' | 'completedByUid' | 'completedByEmail'>,
+export function creditedUid(
+  chore: Pick<ChoreRecord, 'assignedToUid' | 'assignedToEmail' | 'completedByUid' | 'completedByEmail'>,
   members: readonly Pick<StatsMember, 'email' | 'uid'>[],
-): string {
+): string | null {
   if (chore.completedByUid) {
     const member = members.find(candidate => candidate.uid === chore.completedByUid);
-    if (member) return member.email;
+    if (member) return member.uid;
   }
-  return chore.completedByEmail || chore.assignedToEmail;
+  const completer = chore.completedByEmail?.trim().toLowerCase();
+  if (completer) {
+    const member = members.find(candidate => candidate.email?.trim().toLowerCase() === completer);
+    return member ? member.uid : null;
+  }
+  // A recorded completer who is no longer a member gets nothing (not the assignee).
+  if (chore.completedByUid) return null;
+  return resolveAssigneeUid(chore, members);
 }
 
 /**
  * Stats for each member, best this week first. Points go to whoever completed the
- * chore (`creditedEmail`); fair share counts the chores assigned to each member.
+ * chore (`creditedUid`); fair share counts the chores assigned to each member.
  * Completions credited to someone who is no longer a member are ignored.
  */
 export function computeChoreStats(chores: readonly ChoreRecord[], members: readonly StatsMember[], now: Date): ChoreStats {
@@ -103,24 +129,24 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
   const weekEnd = addDaysToKey(weekStart, 6);
   const inWeek = (key: string) => key >= weekStart && key <= weekEnd;
 
-  const known = new Map(members.map(member => [member.email, member]));
-  const acc = new Map(members.map(member => [member.email, {
+  const acc = new Map(members.map(member => [member.uid, {
     weekPoints: 0, totalPoints: 0, weekCompleted: 0, weekAssigned: 0, days: new Set<string>(),
   }]));
 
   let weekTotal = 0;
   for (const chore of chores) {
     const due = choreDueKey(chore);
-    const entry = acc.get(chore.assignedToEmail);
+    const assignee = resolveAssigneeUid(chore, members);
+    const entry = assignee ? acc.get(assignee) : undefined;
     if (due && inWeek(due)) {
       weekTotal += 1;
       if (entry) entry.weekAssigned += 1;
     }
     const completed = completionInstant(chore);
     if (!completed) continue;
-    const creditedTo = creditedEmail(chore, members);
-    const credited = acc.get(creditedTo);
-    if (!credited || !known.has(creditedTo)) continue;
+    const creditedTo = creditedUid(chore, members);
+    const credited = creditedTo ? acc.get(creditedTo) : undefined;
+    if (!credited) continue;
     const completedDay = dayKey(completed);
     if (completedDay > today) continue; // clock skew: never count the future
     const points = chorePoints(chore);
@@ -133,10 +159,9 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
   }
 
   const result: MemberChoreStats[] = members.map(member => {
-    const entry = acc.get(member.email)!;
+    const entry = acc.get(member.uid)!;
     const { streak, activeToday } = streakFor(entry.days, today);
     return {
-      email: member.email,
       uid: member.uid,
       name: member.name,
       stickerMode: member.role === 'child',
