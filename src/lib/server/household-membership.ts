@@ -9,6 +9,7 @@ import {
   canEditPermissions,
   canManageInvites,
   canManageMember,
+  canRemindPendingMembers,
   canRenameHousehold,
   canTransferOwnership,
   isOwnerOnlyPermission,
@@ -20,6 +21,16 @@ import {
   type PolicyRefusal,
 } from '@/lib/household-policy';
 import { assignableRoles, householdPermissions } from '@/lib/permissions';
+import {
+  PENDING_REMINDER_SOURCE_TYPE,
+  householdIdFor,
+  membershipAvatarUrl,
+  normalizeTimeZone,
+  pendingReminderDue,
+  pendingReminderStateKey,
+  readHouseholdName,
+} from '@/lib/household-records';
+import { getDeterministicNotificationId } from '@/lib/notifications';
 import type { Household, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
 /**
@@ -125,11 +136,13 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     }
 
     const joinedAt = now.toISOString();
+    // A photo removed in Profile stays removed; see membershipAvatarUrl.
+    const avatarUrl = membershipAvatarUrl(profileSnap.exists ? profileSnap.data() : undefined, caller.avatarUrl);
     const member: HouseholdMember = {
       uid: caller.uid,
       email: caller.email,
       ...(caller.displayName ? { displayName: caller.displayName } : {}),
-      ...(caller.avatarUrl ? { avatarUrl: caller.avatarUrl } : {}),
+      ...(avatarUrl ? { avatarUrl } : {}),
       role: 'newuser',
       status: 'pending',
       inviteCode: code,
@@ -342,7 +355,6 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
 // time from the server clock; nothing the caller sends is trusted for either.
 // ---------------------------------------------------------------------------
 
-const HOUSEHOLD_NAME_MAX = 80;
 const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const INVITE_TTL_MS = 30 * 60 * 1000;
 const INVITE_CODE_ATTEMPTS = 6;
@@ -433,17 +445,139 @@ const writeAudit = (
 };
 
 /** The profile cache (`users/{email}`) is display data only; it never grants access. */
-const setProfileCache = (transaction: Tx, email: string, fields: { householdId?: null; role?: HouseholdRole; permissions?: PermissionOverrides }) => {
+const setProfileCache = (transaction: Tx, email: string, fields: { householdId?: string | null; role?: HouseholdRole; permissions?: PermissionOverrides }) => {
   if (!email) return;
   // mergeFields replaces `permissions` as a whole, so cleared overrides do not linger.
   transaction.set(adminDb.collection('users').doc(email), fields, { mergeFields: Object.keys(fields) });
 };
 
+const requireHouseholdName = (raw: unknown): string => {
+  const checked = readHouseholdName(raw);
+  if (!checked.ok) throw new MembershipError(checked.message, 'invalid_input');
+  return checked.name;
+};
+
+const HOUSEHOLD_ID_ATTEMPTS = 8;
+
+/**
+ * Create a household with the caller as its owner. One transaction writes the
+ * household, the owner's membership, the profile pointer and the
+ * `household.created` activity entry. Refused while the caller still belongs to
+ * another household (their profile points at a household where they have a
+ * membership record). A candidate ID that already exists is never reused, and
+ * `create` makes the write fail rather than overwrite an existing household.
+ */
+export const createHousehold = async (
+  caller: VerifiedCaller,
+  input: { name: unknown; timeZone?: unknown },
+  now = new Date(),
+): Promise<JoinResult> => {
+  const name = requireHouseholdName(input?.name);
+  const timeZone = normalizeTimeZone(input?.timeZone);
+  const profileRef = adminDb.collection('users').doc(caller.email);
+
+  return adminDb.runTransaction(async transaction => {
+    const profileSnap = await transaction.get(profileRef);
+    const profile = profileSnap.exists ? profileSnap.data() || {} : {};
+    const currentHouseholdId = profile.householdId;
+    if (typeof currentHouseholdId === 'string' && currentHouseholdId && !currentHouseholdId.includes('/')) {
+      const existing = await transaction.get(
+        adminDb.collection('households').doc(currentHouseholdId).collection('members').doc(caller.uid)
+      );
+      if (existing.exists) throw new MembershipError('Leave your current household before creating a new one.', 'conflict');
+    }
+
+    let householdRef: DocRef | null = null;
+    for (let attempt = 0; attempt < HOUSEHOLD_ID_ATTEMPTS && !householdRef; attempt++) {
+      const candidate = adminDb.collection('households').doc(householdIdFor(name, randomInt));
+      if (!(await transaction.get(candidate)).exists) householdRef = candidate;
+    }
+    if (!householdRef) throw new MembershipError('Could not reserve a household ID. Please try again.', 'conflict');
+
+    const iso = now.toISOString();
+    // The name and photo the person chose in HomeHub; the token's are the fallback.
+    const displayName = typeof profile.displayName === 'string' && profile.displayName ? profile.displayName : caller.displayName;
+    const avatarUrl = membershipAvatarUrl(profile, caller.avatarUrl);
+    const householdData: Omit<Household, 'id'> = {
+      name,
+      ownerEmail: caller.email,
+      ownerUid: caller.uid,
+      memberEmails: [caller.email],
+      createdAt: iso,
+      updatedAt: iso,
+      // Reminders and recurring chores run on the server in this time zone.
+      ...(timeZone ? { timeZone } : {}),
+    };
+    const member = {
+      uid: caller.uid,
+      email: caller.email,
+      ...(displayName ? { displayName } : {}),
+      ...(avatarUrl ? { avatarUrl } : {}),
+      role: 'owner',
+      status: 'active',
+      joinedAt: iso,
+      approvedAt: iso,
+      approvedByUid: caller.uid,
+    } as HouseholdMember;
+
+    transaction.create(householdRef, householdData);
+    transaction.create(householdRef.collection('members').doc(caller.uid), member);
+    setProfileCache(transaction, caller.email, { householdId: householdRef.id, role: 'owner', permissions: {} });
+    writeAudit(transaction, {
+      householdRef,
+      household: householdData,
+      actor: { uid: caller.uid, role: 'owner', status: 'active', permissions: {}, email: caller.email, displayName },
+    }, caller, now, { action: 'household.created', details: { householdName: name } });
+    return { household: { id: householdRef.id, ...householdData } as Household, member };
+  });
+};
+
+/**
+ * The daily "still needs a household role" reminder (`household.manageMembers`).
+ * Household Manager calls it when someone who can approve opens the page. For
+ * each pending person not reminded in the last 24 hours, one transaction stamps
+ * `lastNewUserReminderAt` and writes a household-wide system notification whose
+ * ID is fixed per person and day, so overlapping visits never duplicate it.
+ */
+export const remindPendingMembers = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<{ count: number }> => {
+  return adminDb.runTransaction(async transaction => {
+    const context = await loadActor(transaction, caller, householdId);
+    enforce(canRemindPendingMembers(context.actor));
+    const pending = await transaction.get(context.householdRef.collection('members').where('role', '==', 'newuser'));
+    const due = pending.docs.filter(d => pendingReminderDue(d.get('lastNewUserReminderAt'), now));
+    const iso = now.toISOString();
+    const stateKey = pendingReminderStateKey(now);
+    for (const person of due) {
+      const data = person.data();
+      const name = (typeof data.displayName === 'string' && data.displayName)
+        || (typeof data.email === 'string' && data.email)
+        || 'Someone';
+      transaction.update(person.ref, { lastNewUserReminderAt: iso });
+      const notificationId = getDeterministicNotificationId({ sourceType: PENDING_REMINDER_SOURCE_TYPE, sourceId: person.id, stateKey });
+      transaction.set(context.householdRef.collection('notifications').doc(notificationId), {
+        householdId: context.householdRef.id,
+        category: 'system',
+        title: 'Pending member approval',
+        message: `${name} still needs a household role.`,
+        createdAt: Timestamp.fromDate(now),
+        expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
+        deepLink: '/household?tab=members',
+        sourceType: PENDING_REMINDER_SOURCE_TYPE,
+        sourceId: person.id,
+        stateKey,
+        // Household-wide, as before: every member with `notifications.view` sees it.
+        audience: notificationAudience({}),
+        readBy: {},
+        dismissedBy: {},
+      });
+    }
+    return { count: due.length };
+  });
+};
+
 /** Rename the household (`household.manageMembers`). */
 export const renameHousehold = async (caller: VerifiedCaller, householdId: string, rawName: string, now = new Date()): Promise<{ name: string }> => {
-  const name = typeof rawName === 'string' ? rawName.trim() : '';
-  if (!name) throw new MembershipError('Give your household a name.', 'invalid_input');
-  if (name.length > HOUSEHOLD_NAME_MAX) throw new MembershipError(`Keep it under ${HOUSEHOLD_NAME_MAX} characters.`, 'invalid_input');
+  const name = requireHouseholdName(rawName);
   return adminDb.runTransaction(async transaction => {
     const context = await loadActor(transaction, caller, householdId);
     enforce(canRenameHousehold(context.actor));
