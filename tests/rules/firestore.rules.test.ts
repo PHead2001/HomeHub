@@ -1317,6 +1317,46 @@ describe('content shapes: shopping', () => {
     await assertFails(updateDoc(item(users.member, 'legacy'), { status: 1 }));
   });
 
+  // S2 save paths: add-items.ts writes nameKey, addedByUid, categorySource and (scans) size/sizeUnit.
+  test('new item fields: attribution, category source and package size', async () => {
+    const s2 = (overrides: Record<string, unknown> = {}) => built({
+      nameKey: 'milk', addedByUid: users.member.uid, categorySource: 'local', ...overrides,
+    });
+    await assertSucceeds(setDoc(item(users.member, 's2-local'), s2()));
+    await assertSucceeds(setDoc(item(users.member, 's2-scan'), s2({ name: 'Yogurt', nameKey: 'yogurt', size: 450, sizeUnit: 'g', quantity: 1 })));
+    for (const source of ['manual', 'remembered', 'ai', 'fallback', 'pending']) {
+      await assertSucceeds(setDoc(item(users.member, `s2-${source}`), s2({ categorySource: source })));
+    }
+    // The late AI answer and a tick touch only their own fields.
+    await assertSucceeds(updateDoc(item(users.member, 's2-local'), { category: 'Dairy', categorySource: 'ai' }));
+    await assertSucceeds(updateDoc(item(users.owner, 's2-local'), { status: 'purchased' }));
+    // Older items without the new fields stay valid and editable.
+    await assertSucceeds(updateDoc(item(users.member, 'legacy'), { quantity: increment(1) }));
+  });
+
+  test('addedByUid cannot be spoofed or changed', async () => {
+    await assertFails(setDoc(item(users.member, 's2-spoof'), built({ addedByUid: users.owner.uid })));
+    await assertFails(setDoc(item(users.member, 's2-empty'), built({ addedByUid: '' })));
+    await assertSucceeds(setDoc(item(users.member, 's2-own'), built({ addedByUid: users.member.uid })));
+    await assertFails(updateDoc(item(users.owner, 's2-own'), { addedByUid: users.owner.uid }));
+    await assertFails(updateDoc(item(users.member, 's2-own'), { addedByUid: deleteField() }));
+    await assertFails(setDoc(item(users.member, 's2-own'), built()));
+    await assertFails(updateDoc(item(users.member, 'legacy'), { addedByUid: users.member.uid }));
+  });
+
+  test('categorySource and package size are bounded', async () => {
+    await assertFails(setDoc(item(users.member, 's2-src'), built({ categorySource: 'guess' })));
+    await assertFails(setDoc(item(users.member, 's2-src2'), built({ categorySource: 1 })));
+    await assertFails(setDoc(item(users.member, 's2-size0'), built({ size: 0, sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-sizeneg'), built({ size: -5, sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-sizebig'), built({ size: 100001, sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-sizestr'), built({ size: '450', sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-unit'), built({ size: 450, sizeUnit: 'x'.repeat(17) })));
+    await assertFails(setDoc(item(users.member, 's2-unit2'), built({ size: 450, sizeUnit: '' })));
+    await assertFails(setDoc(item(users.member, 's2-key'), built({ nameKey: '' })));
+    await assertSucceeds(setDoc(item(users.member, 's2-max'), built({ size: 100000, sizeUnit: 'x'.repeat(16) })));
+  });
+
   test('an item with a legacy field stays updatable on its other fields', async () => {
     await assertSucceeds(updateDoc(item(users.member, 'legacy'), { status: 'purchased' }));
     await assertSucceeds(updateDoc(item(users.member, 'legacy'), { quantity: increment(1) }));
