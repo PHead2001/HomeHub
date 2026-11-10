@@ -297,6 +297,22 @@ service cloud.firestore {
             get(/databases/$(database)/documents/users/$(data.targetUserEmail)).data.get('householdId', null) == householdId));
     }
 
+    // `audience` names who the notification is for: [targetUserUid] for one
+    // member, ['*'] for the household, [] for a legacy email-only target whose
+    // uid the writer does not know. Optional for now (clients cached from
+    // before the field existed do not send it); when present it must match the
+    // targeting fields exactly. Reads do not check it yet.
+    function validNotificationAudience(data) {
+      return !('audience' in data) ||
+        (data.audience is list &&
+          ('targetUserUid' in data
+            ? (data.audience.size() == 1 && data.audience[0] is string &&
+                data.audience[0] == data.targetUserUid)
+            : ('targetUserEmail' in data
+                ? data.audience.size() == 0
+                : (data.audience.size() == 1 && data.audience[0] == '*'))));
+    }
+
     function canSendCategory(householdId, category) {
       return (category == 'chores' && (hasHouseholdPermission(householdId, 'chores.assign') ||
           hasHouseholdPermission(householdId, 'chores.create') || hasHouseholdPermission(householdId, 'chores.edit'))) ||
@@ -326,7 +342,8 @@ service cloud.firestore {
         data.keys().hasOnly([
           'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
           'deepLink', 'sourceType', 'sourceId', 'stateKey',
-          'targetUserUid', 'targetUserEmail', 'readBy', 'dismissedBy', 'createdByUid'
+          'targetUserUid', 'targetUserEmail', 'readBy', 'dismissedBy', 'createdByUid',
+          'audience'
         ]) &&
         data.category in ['chores', 'shopping', 'pets', 'maintenance', 'automation', 'system', 'general'] &&
         data.message is string && data.message.size() > 0 && data.message.size() <= 1000 &&
@@ -336,7 +353,8 @@ service cloud.firestore {
         data.readBy == {} &&
         data.dismissedBy == {} &&
         validDeepLink(data) &&
-        validNotificationTarget(householdId, data);
+        validNotificationTarget(householdId, data) &&
+        validNotificationAudience(data);
     }
 
     function updatesOnlyOwnNotificationState() {

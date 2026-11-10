@@ -1,6 +1,7 @@
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { audienceForNotification } from "../ops/notification-audience.mjs";
 
 const PROJECT_ID = "demo-homehub-e2e";
 const OWNER = {
@@ -654,7 +655,8 @@ const notifications = [
   }],
 ];
 for (const [id, data] of notifications) {
-  batch.set(household.collection("notifications").doc(id), data);
+  // As every producer writes it: [uid] for one member, ["*"] for the household.
+  batch.set(household.collection("notifications").doc(id), { ...data, audience: audienceForNotification(data) });
 }
 
 await batch.commit();

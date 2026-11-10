@@ -38,13 +38,15 @@ This module owns household notification records, bell/history presentation, per-
 - `src/lib/dashboard/notification-display.ts` (date groups, source labels, the caught-up line)
 - `functions/src/index.ts`
 - `scripts/ops/migrate-push-tokens.mjs` (one-off move of legacy profile tokens; pure helpers in `scripts/ops/profile-privacy.mjs`)
+- `functions/src/shared/notification-audience.ts` (`notificationAudience`, the one derivation of the stored `audience` field)
+- `scripts/ops/backfill-notification-audience.mjs` (one-off backfill of `audience`; pure helpers in `scripts/ops/notification-audience.mjs`)
 - Notification types in `src/lib/types.ts`
 
 ## Architecture and Data Flow
 
 Feature code creates household notification documents with `buildNotificationDocument`. Bell and center queries parse legacy/current shapes, merge duplicate semantic identities for presentation, filter per-user target/read/dismiss state, and write only the current UID's map entries. Swipe handling lives in `src/app/notifications/swipe-dismiss.ts` (`useSwipeDismiss` plus pure helpers, shared by the bell and the center). Its pointer handlers sit on the card wrapper, which never moves; only the `data-swipe-visual` layer inside the link is translated. Cards keep vertical pan (`touch-pan-y`), capture the pointer only after 6 px of horizontal travel (so a tap still opens the link), swallow the click that ends a swipe (so a swipe that starts on the dismiss button, which sits where a left swipe naturally starts, does not also press it; a tap still does), and dismiss when released at least 70 px left (200 ms slide-out). Dismissals go through `useDismissNotifications` (`src/app/notifications/use-dismiss-notifications.tsx`): one batch sets `dismissedBy.<own uid>`, wrapped in `awaitWriteUnlessOffline`, then a 5-second toast offers Undo, which deletes the same key with `deleteField()`. Both writes change only the caller's own key, which the existing rules allow.
 
-Category queries: for a member who cannot see every module, the bell, center and dashboard tile put the category filter in the Firestore query (`where('category', 'in', viewable)` with `system` and `general` always included; `src/app/notifications/notification-query.ts`), so the bell's 30-item cap counts only notifications they can see and a busy hidden category cannot push theirs out. Full-access members keep the unfiltered query. The filtered query uses the composite index (`category` ASC, `createdAt` DESC) in `firestore.indexes.json`; stored categories are always one of the seven known values.
+Category queries: for a member who cannot see every module, the bell, center and dashboard tile put the category filter in the Firestore query (`where('category', 'in', viewable)` with `system` and `general` always included; `src/app/notifications/notification-query.ts`), so the bell's 30-item cap counts only notifications they can see and a busy hidden category cannot push theirs out. Full-access members keep the unfiltered query. The filtered query uses the composite index (`category` ASC, `createdAt` DESC) in `firestore.indexes.json`; stored categories are always one of the seven known values. Two more composite indexes are deployed ahead of the queries that will use them: (`audience` array-contains, `createdAt` DESC) and (`audience` array-contains, `category` ASC, `createdAt` DESC). No current query filters on `audience`.
 
 Category visibility (`functions/src/shared/push-audience.ts`, shared by the push sender, bell, center and dashboard tile): notifications in a module category need that module's view permission (`chores` → `chores.view`, `pets` → `pets.view`, `shopping` → `shopping.view`, `maintenance` → `maintenance.view`, `automation` → `automation.view`); `system` and `general` need none. In the app this uses the member's effective permissions; on the server `memberCanView` mirrors the rules (owner always, explicit override wins, then the role default; a unit test checks it against `getEffectivePermissions` for every role). A member who lacks the permission sees none of that category in the bell, center or unread tile and gets no push for it, not even text.
 
@@ -63,6 +65,17 @@ A Firestore create trigger resolves recipients, sends FCM, and removes invalid r
 
 `Notification`, `NotificationCategory`, `NotificationUserAction`, and `NotificationUserActionMap` define categories, source/deep-link fields, optional `stateKey`, targeting, UID-keyed `readBy`/`dismissedBy`, and optional resolution metadata. `expiresAt` defaults to seven days after `createdAt`; parsing supplies that fallback for older records.
 
+`audience` (list of strings) names who a notification is for: `[targetUserUid]` when it targets one member, `['*']` when it is household-wide. It is written at creation by every producer, each through `notificationAudience` in `functions/src/shared/notification-audience.ts` (shared by the Functions code and the app, like `push-audience.ts`):
+
+- the web app's `buildNotificationDocument` (chore assignment in the Chores page and quick add; pending-member reminder and ownership transfer in household management);
+- the upkeep function (`functions/src/reminders.ts`): maintenance and pet medication reminders are `['*']`, chore reminders `[uid]`. A refresh leaves the stored value alone and a reopen writes it again; both add it to a reminder written before the field existed;
+- the household server actions (`src/lib/server/household-membership.ts`): the new-member and member-left notices, one per approver, `[approver uid]`;
+- the e2e seed (`scripts/e2e/seed.mjs`).
+
+Every current producer knows the target's uid. For a legacy email-only target the derivation gives the member's uid when the caller can look it up and `[]` (nobody) when it cannot; it never falls back to `['*']`.
+
+Nothing reads `audience` yet. The bell, center, dashboard tile, AI overview and push sender still decide from `targetUserUid`/`targetUserEmail`, and the read rule still lets any member with `notifications.view` read every document; a later release moves the queries to `audience` and then enforces it in the read rule. Documents written before the field existed (they expire within seven days) get it from `scripts/ops/backfill-notification-audience.mjs --project <id>` (dry run, counts only) and `--apply`: `[targetUserUid]`, else the uid of the household member with the legacy target email, else `['*']` for an untargeted document, else `[]`. It updates only that field in batches of at most 400, skips documents that already have it or were deleted meanwhile, and is safe to re-run. It must run after this release is live and before reads depend on the field.
+
 ## Authentication, Roles, and Security
 
 Approved household members can read household notification documents. Rule updates permit only the caller UID key in `readBy` and `dismissedBy`; deletion is denied. Maintenance records may also update `resolvedAt`/`resolvedBy`.
@@ -70,6 +83,8 @@ Approved household members can read household notification documents. Rule updat
 `notifications.view` controls navigation, but `notifications.dismiss` is not checked by the notification UI/rules. Action-map keys are UID-restricted, but rules do not validate email/display-name values inside the action object.
 
 Creation rules require an approved sender, the household's own `householdId`, Timestamp `createdAt`/`expiresAt`, a known category, bounded title/message, an allow-listed set of fields, a `/`-relative `deepLink` (no scheme, no `//`), and targets that belong to the household (a `targetUserUid` membership record; a `targetUserEmail` profile pointing at the household). The push function independently re-validates targets and links.
+
+`audience` is optional on create, because clients cached from before the field existed do not send it. When present it must be exactly `[targetUserUid]` on a document with a `targetUserUid`, `['*']` on an untargeted one, and `[]` on one with only a `targetUserEmail`; anything else (another uid, extra entries, a non-list) is denied. Clients cannot add, change or remove it afterwards: the two permitted updates touch only `readBy`/`dismissedBy` or `resolvedAt`/`resolvedBy`. The departure-notice create rule (a legacy client path; departures are written by the server action) does not accept the field. Read rules do not check `audience` yet.
 
 ## Integrations and Background Processing
 
@@ -120,6 +135,8 @@ The homepage overview counts only active notifications visible to the verified u
 - Run `npm.cmd run test:e2e:local` for deterministic read, unread, dismissed, system, shopping, and maintenance notification fixtures in desktop/mobile views.
 - Manually test own-UID read/dismiss updates, dismiss-all scope, seven-day filtering, deep links, foreground/background delivery, denied permission, invalid-token cleanup, and target/broadcast recipients.
 - Verify expired records with and without TTL and test cross-household access/targeting.
+
+`tests/unit/notifications-audience-field.test.ts` covers the `audience` derivation, the builder, the backfill decisions and that the scripts' plain-JavaScript copy agrees with the shared function; `tests/rules/firestore.rules.test.ts` covers the create validation and immutability, and holds a labelled experiment that runs a copy of the rules with `audience` required on read (in its own emulator project) to record which list queries that rule accepts: `array-contains-any [uid, '*']` with the `createdAt` window and limit, the same with the `category in` filter, and one `array-contains` query per value are all accepted; a list that does not name the caller's audience is denied. The emulator does not enforce composite indexes, so the index those queries need is confirmed only against live Firestore. `tests/server/household-upkeep.test.ts` and `tests/server/household-membership.test.ts` cover the server producers, including adding the field on refresh and reopen.
 
 Unit coverage for grouping and source labels lives in `tests/unit/dashboard-ambience.test.ts`; `tests/e2e/dashboard-shell.spec.ts` checks the center shows no internal names or expiry stamps. `tests/unit/notifications-swipe.test.ts` covers the swipe rules and runs the real service worker script with a stand-in Messaging SDK (icon, badge, image, tag, link allowlist); `tests/e2e/notifications-swipe.spec.ts` covers swipe, hit-target stability, Undo, reduced motion and the desktop/keyboard dismiss button.
 
