@@ -71,7 +71,8 @@ describe('completing chores on the server', () => {
       { email: owner.email, uid: owner.uid, name: 'Olive Owner' },
       { email: sam.email, uid: sam.uid, name: 'Sam' },
     ];
-    const stats = computeChoreStats([{ id: 'dishes', ...stored } as ChoreRecord], members, AFTER_MIDNIGHT);
+    // Stats read the server stamp (real time, not the pinned `now`), so score them as of now.
+    const stats = computeChoreStats([{ id: 'dishes', ...stored } as ChoreRecord], members, new Date());
     assert.equal(stats.members.find(m => m.email === sam.email)!.totalPoints > 0, true);
     assert.equal(stats.members.find(m => m.email === owner.email)!.totalPoints, 0);
   });
