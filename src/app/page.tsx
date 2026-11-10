@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { DashboardSkeleton } from '@/components/dashboard/dashboard-skeleton';
+import { DashboardLoading } from '@/components/dashboard/dashboard-loading';
 import { Landing } from '@/components/dashboard/landing';
 import { useEffect } from 'react';
 import { SESSION_GATE_SCRIPT, SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
@@ -14,7 +15,8 @@ const loadDashboard = () => import('@/components/dashboard/dashboard');
 // chunk, so the signed-out landing page stays light (H03: Lighthouse >= 90 on mobile).
 const Dashboard = dynamic(() => loadDashboard().then((mod) => mod.Dashboard), {
   ssr: false,
-  loading: () => <DashboardSkeleton />,
+  // The member is known by now: the skeleton draws their own tiles (HP-26b).
+  loading: () => <DashboardLoading />,
 });
 
 export default function Home() {
