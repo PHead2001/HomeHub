@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  dailyLabel,
   fetchWeather,
   forecastUrl,
+  GEOCODE_CACHE_KEY,
+  GEOCODE_TTL_MS,
+  readCachedGeocode,
+  writeCachedGeocode,
   geocodingUrl,
   normalizeCity,
   parseWeatherPreference,
@@ -81,8 +86,9 @@ describe('weather requests send only the city', () => {
   it('the forecast carries the geocoded coordinates and fixed options only', () => {
     const url = new URL(forecastUrl(30.26715, -97.74306, 'fahrenheit'));
     assert.equal(url.origin + url.pathname, 'https://api.open-meteo.com/v1/forecast');
-    assert.deepEqual([...url.searchParams.keys()].sort(), ['current', 'latitude', 'longitude', 'temperature_unit', 'timezone']);
+    assert.deepEqual([...url.searchParams.keys()].sort(), ['current', 'daily', 'forecast_days', 'latitude', 'longitude', 'temperature_unit', 'timezone']);
     assert.equal(url.searchParams.get('latitude'), '30.267');
+    assert.equal(url.searchParams.get('daily'), 'temperature_2m_max,temperature_2m_min,precipitation_probability_max');
   });
 
   it('fetches geocoding then current conditions, without credentials or referrer', async () => {
@@ -97,10 +103,63 @@ describe('weather requests send only the city', () => {
     const result = await fetchWeather('Austin', { fetchImpl, unit: 'fahrenheit', now: () => 42 });
     assert.deepEqual(result, {
       city: 'Austin', place: 'Austin', temperature: 64.2, unit: 'fahrenheit', code: 61, isDay: true,
-      kind: 'rain', label: 'Rain', effect: 'rain', fetchedAt: 42,
+      kind: 'rain', label: 'Rain', effect: 'rain', high: null, low: null, rainChance: null, fetchedAt: 42,
     });
     assert.equal(calls.length, 2);
     assert.ok(calls.every((call) => call.init?.credentials === 'omit' && call.init?.referrerPolicy === 'no-referrer'));
+  });
+
+  it("reads today's high, low and rain chance from the same forecast call (HP-35a)", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      const body = url.includes('geocoding')
+        ? { results: [{ name: 'Austin', latitude: 30.27, longitude: -97.74 }] }
+        : { current: { temperature_2m: 64.2, weather_code: 61, is_day: 1 }, daily: { temperature_2m_max: [70.4], temperature_2m_min: [55.1], precipitation_probability_max: [30] } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    const result = await fetchWeather('Austin', { fetchImpl, unit: 'fahrenheit', now: () => 42 });
+    assert.equal(calls.filter((url) => url.includes('forecast')).length, 1);
+    assert.deepEqual([result?.high, result?.low, result?.rainChance], [70.4, 55.1, 30]);
+    assert.equal(dailyLabel(result!), 'H 70° · L 55° · 30% rain');
+    assert.equal(weatherSummary(result!), 'Weather in Austin: Rain, 64°F. High 70°, low 55°, 30% chance of rain.');
+    assert.equal(dailyLabel(report()), '', 'an older cached report without daily values shows no range');
+    assert.equal(weatherSummary(report()), 'Weather in Austin: Rain, 72°F');
+  });
+
+  it('geocodes a city once and reuses its coordinates for 30 days (HP-35b)', async () => {
+    const storage = memoryStorage();
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      const body = url.includes('geocoding')
+        ? { results: [{ name: 'Austin', latitude: 30.27, longitude: -97.74 }] }
+        : { current: { temperature_2m: 64.2, weather_code: 0, is_day: 1 } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    let clock = 1_000;
+    await fetchWeather('Austin', { fetchImpl, unit: 'fahrenheit', now: () => clock, storage });
+    clock += 60 * 60_000;
+    const second = await fetchWeather(' austin ', { fetchImpl, unit: 'fahrenheit', now: () => clock, storage });
+    assert.equal(calls.filter((url) => url.includes('geocoding')).length, 1, 'the second refresh is a single request');
+    assert.equal(second?.place, 'Austin');
+    assert.ok(new URL(calls[calls.length - 1]).searchParams.get('latitude') === '30.270');
+    assert.deepEqual(readCachedGeocode(storage, 'AUSTIN', clock), { latitude: 30.27, longitude: -97.74, place: 'Austin', at: 1_000 });
+    assert.equal(readCachedGeocode(storage, 'Austin', 1_000 + GEOCODE_TTL_MS), null, 'expires after 30 days');
+    assert.equal(readCachedGeocode(storage, 'Dallas', clock), null);
+  });
+
+  it('keeps a few cities, newest first, and survives broken storage', () => {
+    const storage = memoryStorage();
+    for (let i = 0; i < 7; i += 1) writeCachedGeocode(storage, `City ${i}`, { latitude: i, longitude: i, place: `City ${i}`, at: i + 1 });
+    const kept = Object.keys(JSON.parse(storage.map.get(GEOCODE_CACHE_KEY)!));
+    assert.equal(kept.length, 5);
+    assert.equal(kept.includes('city 0'), false);
+    storage.map.set(GEOCODE_CACHE_KEY, '{broken');
+    assert.equal(readCachedGeocode(storage, 'City 6', 10), null);
+    assert.doesNotThrow(() => writeCachedGeocode(storage, 'City 6', { latitude: 1, longitude: 1, place: 'City 6', at: 10 }));
+    assert.equal(readCachedGeocode(storage, 'City 6', 11)?.place, 'City 6');
+    assert.doesNotThrow(() => writeCachedGeocode({ getItem: () => null, setItem: () => { throw new Error('full'); } }, 'x', { latitude: 1, longitude: 1, place: 'x', at: 1 }));
   });
 
   it('fails quietly: unknown city, HTTP errors, bad JSON, network errors and a blank city give null', async () => {

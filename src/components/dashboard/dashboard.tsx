@@ -6,13 +6,10 @@
  * chunk from `src/app/page.tsx`, so signed-out visitors (the landing page) never
  * download it.
  */
-import { useEffect, useState } from 'react';
-import { collection, getCountFromServer, query, where } from 'firebase/firestore';
 import { Keyboard } from 'lucide-react';
 import { openShortcutHelp } from '@/components/command/events';
 import { ShortcutHint, ShortcutKeys } from '@/components/ui/shortcut-hint';
 import { useAuth } from '@/hooks/use-auth';
-import { db } from '@/lib/firebase';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
 import { isGoldenRoof } from '@/lib/dashboard/ambience';
 import { BentoGrid } from './bento-grid';
@@ -20,27 +17,12 @@ import { HomeWrapped } from './home-wrapped';
 import { LivingHouse } from './living-house';
 import { MorningBrief } from './morning-brief';
 
-function useGoldenRoof(householdId: string | null, canView: boolean) {
-  const [result, setResult] = useState<{ householdId: string; golden: boolean } | null>(null);
-  useEffect(() => {
-    if (!householdId || !canView) return;
-    let cancelled = false;
-    getCountFromServer(query(collection(db, 'households', householdId, 'chores'), where('isCompleted', '==', true)))
-      .then((snapshot) => {
-        if (!cancelled) setResult({ householdId, golden: isGoldenRoof(snapshot.data().count) });
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [householdId, canView]);
-  return Boolean(canView && result && result.householdId === householdId && result.golden);
-}
-
 export function Dashboard() {
-  const { currentUser, household, permissions } = useAuth();
-  const { facts, loading, failed, sections, retry, now, today, timeZone, context } = useDashboardData();
-  const golden = useGoldenRoof(currentUser?.householdId ?? null, Boolean(permissions['chores.view']));
+  const { currentUser, household } = useAuth();
+  const { facts, loading, failed, sections, retry, now, today, timeZone, context, houseOutline } = useDashboardData();
+  // HP-11b: counted from the completions listener that is already running (streaks), so a
+  // page that never reloads turns gold at the 100th chore. Unknown is never gold.
+  const golden = facts.completedChores !== undefined && isGoldenRoof(facts.completedChores);
   // The household's date (D-6), the same day every tile counts from.
   const dateLine = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', timeZone });
 
@@ -55,10 +37,10 @@ export function Dashboard() {
         </p>
       </div>
 
-      <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} rooms={sections.chores} timeZone={timeZone} onRetry={retry} />
+      <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} />
       {/* Keyed by the context: a household or member change resets the brief and its AI
           rewrite; the household day rolling over does not (HP-4b). */}
-      <MorningBrief key={context} facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} today={today} ready={!loading} />
+      <MorningBrief key={context} facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} today={today} timeZone={timeZone} ready={!loading} />
       <BentoGrid facts={facts} loading={loading} failed={failed} sections={sections} timeZone={timeZone} onRetry={retry} />
 
       <div className="flex flex-wrap items-center gap-3">
