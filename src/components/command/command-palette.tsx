@@ -46,7 +46,7 @@ import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
-import { assignableMembers, describeRepeat, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, unconfirmedShoppingMessage, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, parseQuickAdd, createSettlementGuard, planUnconfirmedSettlement, quickAddRetryMessage, resolveChoreAssignee, unconfirmedShoppingMessage, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote } from '@/lib/dashboard/quick-add-writes';
 import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker, type IndexSection } from '@/lib/dashboard/quick-add-preview';
@@ -132,7 +132,13 @@ export function CommandPalette({
   // Shopping entries saved but not confirmed yet ("Still sending…"): the preview
   // keeps them (retry state) and Confirm waits until they settle.
   const [unconfirmedMessage, setUnconfirmedMessage] = useState<string | null>(null);
-  const unconfirmedTokenRef = useRef(0);
+  // Each wait for them belongs to this instance's current preview: Back, closing
+  // and unmounting invalidate it (the command center remounts on every open).
+  const [shoppingSettles] = useState(createSettlementGuard);
+  useEffect(() => {
+    if (!open) shoppingSettles.invalidate();
+  }, [open, shoppingSettles]);
+  useEffect(() => () => shoppingSettles.invalidate(), [shoppingSettles]);
   // "Sam fed Rex 12 min ago. Feed again?" for the feeding being previewed (tied to
   // that preview, so a new or edited one never inherits the answer).
   const [feedAgain, setFeedAgain] = useState<{ intent: QuickAddIntent; prompt: string } | null>(null);
@@ -348,26 +354,27 @@ export function CommandPalette({
           // Not confirmed: keep them (and any failures) in the preview, say so, and
           // decide when they settle. Closing the palette meanwhile drops nothing:
           // a late failure is still reported through lateError.
-          unconfirmedTokenRef.current += 1;
-          const token = unconfirmedTokenRef.current;
+          const token = shoppingSettles.begin();
           setPending({ ...pending, items: [...outcome.unconfirmed, ...outcome.failed] });
           setUnconfirmedMessage(unconfirmedShoppingMessage(outcome));
           setRetryMessage(outcome.failed.length > 0 ? `${quickAddRetryMessage(outcome.failed)} ${friendlyError(outcome.firstError)}` : null);
           void outcome.settled.then(({ failed: lateFailed }) => {
-            if (unconfirmedTokenRef.current !== token) return;
-            setUnconfirmedMessage(null);
-            const confirmed = outcome.unconfirmed.filter((entry) => !lateFailed.includes(entry));
-            if (confirmed.length > 0) {
+            // The toast is always delivered; the preview is updated (or the palette
+            // closed) only while this is still the active preview of this instance,
+            // so a palette dismissed and reopened meanwhile is never closed by it.
+            const plan = planUnconfirmedSettlement(outcome.unconfirmed, outcome.failed, lateFailed, shoppingSettles.isActive(token));
+            if (plan.confirmed.length > 0) {
               notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
-              toast({ title: 'Added to the list', description: `${confirmed.map((item) => item.name).join(', ')} on ${list.name}.` });
+              toast({ title: 'Added to the list', description: `${plan.confirmed.map((item) => item.name).join(', ')} on ${list.name}.` });
             }
-            const remaining = [...lateFailed, ...outcome.failed];
-            if (remaining.length === 0) {
+            if (plan.next === 'ignore') return;
+            setUnconfirmedMessage(null);
+            if (plan.next === 'close') {
               close();
               return;
             }
-            setPending((current) => current && current.kind === 'shopping' ? { ...current, items: remaining } : current);
-            setRetryMessage(quickAddRetryMessage(remaining));
+            setPending((current) => current && current.kind === 'shopping' ? { ...current, items: plan.remaining } : current);
+            setRetryMessage(quickAddRetryMessage(plan.remaining));
           });
           return;
         }
@@ -543,7 +550,7 @@ export function CommandPalette({
             notice={feedAgainPromptText}
             confirmLabel={feedAgainPromptText ? 'Feed again' : undefined}
             onBack={() => {
-              unconfirmedTokenRef.current += 1;
+              shoppingSettles.invalidate();
               setUnconfirmedMessage(null);
               invalidateAi();
               setPending(null);

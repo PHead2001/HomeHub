@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, unconfirmedShoppingMessage, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, unconfirmedShoppingMessage, createSettlementGuard, planUnconfirmedSettlement, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { isComposingKey, matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
@@ -186,6 +186,42 @@ describe('shopping quick-add outcomes', () => {
     assert.equal(checking.unconfirmedLabel, 'Checking…', 'an unanswered merge transaction is not queued');
     assert.equal(checking.queued, false);
     assert.equal(unconfirmedShoppingMessage(shoppingAddOutcome(entries.slice(0, 1), [{ state: 'saved' }])), null);
+  });
+});
+
+describe('late settlement of unconfirmed shopping entries (review finding on #122)', () => {
+  const milk = { name: 'Milk', quantity: 1 };
+  const eggs = { name: 'Eggs', quantity: 2 };
+  const bread = { name: 'Bread', quantity: 1 };
+
+  it('an instance closed or unmounted before the write settles never acts on the palette', () => {
+    const guard = createSettlementGuard();
+    const token = guard.begin();
+    assert.equal(guard.isActive(token), true);
+    guard.invalidate(); // dismissed (open -> false) or unmounted (reopen bumps the key)
+    assert.equal(guard.isActive(token), false);
+    const plan = planUnconfirmedSettlement([milk, eggs], [], [], guard.isActive(token));
+    assert.equal(plan.next, 'ignore', 'a stale settlement must not call close() on the shared open state');
+    assert.deepEqual(plan.confirmed, [milk, eggs], 'the late "Added to the list" toast is still delivered');
+  });
+
+  it('Back or a newer Confirm makes an earlier wait stale; only the latest one is active', () => {
+    const guard = createSettlementGuard();
+    const first = guard.begin();
+    const second = guard.begin();
+    assert.equal(guard.isActive(first), false);
+    assert.equal(guard.isActive(second), true);
+    guard.invalidate();
+    assert.equal(guard.isActive(second), false);
+    // A new instance (remount) has its own guard, unaffected by the old one.
+    const fresh = createSettlementGuard();
+    assert.equal(fresh.isActive(fresh.begin()), true);
+  });
+
+  it('the active preview closes when everything landed, else keeps what failed for a retry', () => {
+    assert.deepEqual(planUnconfirmedSettlement([milk, eggs], [], [], true), { confirmed: [milk, eggs], remaining: [], next: 'close' });
+    assert.deepEqual(planUnconfirmedSettlement([milk, eggs], [bread], [eggs], true), { confirmed: [milk], remaining: [eggs, bread], next: 'retry' });
+    assert.deepEqual(planUnconfirmedSettlement([milk, eggs], [bread], [eggs], false), { confirmed: [milk], remaining: [eggs, bread], next: 'ignore' });
   });
 });
 

@@ -588,6 +588,39 @@ export function unconfirmedShoppingMessage(outcome: Pick<ShoppingAddOutcome, 'un
   return `${outcome.unconfirmedLabel} ${outcome.unconfirmed.map((entry) => entry.name).join(', ')} not confirmed yet. Keep this open; it updates when they are.`;
 }
 
+/**
+ * Ties each wait for unconfirmed shopping entries to the palette preview that
+ * started it. `begin` hands out a token; `invalidate` (Back, the palette closing
+ * or unmounting) makes every earlier token stale, so a late settlement can no
+ * longer touch a preview the member left, or close a palette opened since.
+ */
+export function createSettlementGuard() {
+  let current = 0;
+  return {
+    begin: () => ++current,
+    invalidate: () => {
+      current += 1;
+    },
+    isActive: (token: number) => token === current,
+  };
+}
+
+export type UnconfirmedSettlement<T> = {
+  /** Entries that reached the server late: always announced (toast, data-changed), even after the palette closed. */
+  confirmed: T[];
+  /** Entries still to retry: the late failures, then the ones that failed at once. */
+  remaining: T[];
+  /** What the preview does: nothing when it is no longer the active one, else close or offer a retry. */
+  next: 'ignore' | 'close' | 'retry';
+};
+
+/** Plans what a late settlement of unconfirmed shopping entries does (see `createSettlementGuard`). */
+export function planUnconfirmedSettlement<T>(unconfirmed: readonly T[], failed: readonly T[], lateFailed: readonly T[], active: boolean): UnconfirmedSettlement<T> {
+  const confirmed = unconfirmed.filter((entry) => !lateFailed.includes(entry));
+  const remaining = [...lateFailed, ...failed];
+  return { confirmed, remaining, next: !active ? 'ignore' : remaining.length === 0 ? 'close' : 'retry' };
+}
+
 /** Inline message for entries that could not be added; they stay in the preview. */
 export function quickAddRetryMessage(failed: readonly QuickAddEntry[]): string | null {
   if (failed.length === 0) return null;
