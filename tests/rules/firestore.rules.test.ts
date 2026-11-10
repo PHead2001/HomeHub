@@ -1268,6 +1268,28 @@ describe('content shapes: chores and templates', () => {
     }));
     await assertSucceeds(setDoc(template(users.member, 'assigned'), repeating(users.child.email)));
   });
+
+  // Member privacy release A dual-writes the uid assignee next to the email.
+  test('the uid assignee is accepted and guarded like the email', async () => {
+    // chore-chart-client.tsx handleCreateChore (release A): email and uid together.
+    await assertSucceeds(addDoc(chores(users.member), oneTime(users.owner.email, { assignedToUid: users.owner.uid })));
+    await assertSucceeds(addDoc(chores(noAssign), oneTime(noAssign.email, { assignedToUid: noAssign.uid })));
+    await assertSucceeds(addDoc(chores(noAssign), oneTime('', { assignedToUid: '' })));
+    // Someone else's uid needs chores.assign, even with your own email beside it.
+    await assertFails(addDoc(chores(noAssign), oneTime(noAssign.email, { assignedToUid: users.member.uid })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { assignedToUid: 7 })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { assignedToUid: 'x'.repeat(129) })));
+    // The backfill or a newer client filling in the uid of the existing assignee is not a reassignment.
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
+    // Once a uid is set, changing it to someone else needs chores.assign.
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { assignedToEmail: users.child.email, assignedToUid: users.child.uid, assignedToDisplayName: 'Child A' }));
+    // Templates: dual-write, stop-repeating clears both, and someone else's uid needs chores.assign.
+    await assertSucceeds(setDoc(template(users.member, 'uid-weekly'), { ...repeating(users.owner.email), assignedToUid: users.owner.uid }));
+    await assertSucceeds(setDoc(template(noAssign, 'uid-mine'), { ...repeating(noAssign.email), assignedToUid: noAssign.uid }));
+    await assertFails(setDoc(template(noAssign, 'uid-other'), { ...repeating(noAssign.email), assignedToUid: users.member.uid }));
+    await assertSucceeds(updateDoc(template(users.member, 'uid-weekly'), { recurrence: null, assignedToEmail: null, assignedToUid: null }));
+  });
 });
 
 describe('content shapes: shopping', () => {
