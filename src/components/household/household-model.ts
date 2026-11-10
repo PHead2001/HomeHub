@@ -12,10 +12,11 @@ import { OWNER_ONLY_PERMISSIONS, canGrantPermission, effectivePermissions, norma
 import { completionInstant, type ChoreRecord } from '@/lib/chores/dates';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { publicDisplayName } from '@/lib/member-directory';
+import { HOUSEHOLD_NAME_MAX } from '@/lib/household-records';
 import type { AuditLog, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
 /** Household names are limited to 80 characters by the Firestore rules. */
-export const HOUSEHOLD_NAME_MAX = 80;
+export { HOUSEHOLD_NAME_MAX };
 
 /** Roles shown as matrix columns. `newuser` (pending) has no permissions and is described instead. */
 export const MATRIX_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest'];

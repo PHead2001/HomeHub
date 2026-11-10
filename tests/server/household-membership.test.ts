@@ -108,6 +108,30 @@ describe('invite redemption', () => {
     assert.equal(member?.displayName, undefined);
   });
 
+  test('the joining photo follows the profile: removed stays removed, a missing field uses the token', async () => {
+    const pictured: VerifiedCaller = { ...newcomer, avatarUrl: 'https://example.test/google.png' };
+    const users = adminDb.collection('users').doc(newcomer.email);
+    const memberDoc = adminDb.collection('households').doc(HOUSE).collection('members').doc(newcomer.uid);
+
+    await users.set({ email: newcomer.email, avatarUrl: null, householdId: null });
+    await invite('PHOT-OREM-OV');
+    const cleared = await redeemInvite(pictured, 'PHOT-OREM-OV', NOW);
+    assert.equal('avatarUrl' in cleared.member, false);
+    assert.equal('avatarUrl' in ((await memberDoc.get()).data() || {}), false);
+
+    await memberDoc.delete();
+    await users.set({ email: newcomer.email, householdId: null });
+    await invite('PHOT-OTOK-EN');
+    await redeemInvite(pictured, 'PHOT-OTOK-EN', NOW);
+    assert.equal((await memberDoc.get()).data()?.avatarUrl, pictured.avatarUrl);
+
+    await memberDoc.delete();
+    await users.set({ email: newcomer.email, avatarUrl: 'https://example.test/chosen.png', householdId: null });
+    await invite('PHOT-OCHO-SE');
+    await redeemInvite(pictured, 'PHOT-OCHO-SE', NOW);
+    assert.equal((await memberDoc.get()).data()?.avatarUrl, 'https://example.test/chosen.png');
+  });
+
   test('expired, cancelled, used-up and unknown codes are refused with clear messages', async () => {
     await invite('EXPI-REDX-XX', { expiresAt: '2026-08-01T11:59:59.000Z' });
     await invite('REVO-KEDX-XX', { revokedAt: '2026-08-01T11:55:00.000Z' });

@@ -85,7 +85,7 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 - While the Profile form has an edited name, a chosen or removed photo, or a save in progress, it holds the shell busy (`useUnsavedInput`, see [Application Shell](../application-shell/README.md)), so no automatic recovery reloads the page over it.
 - Signed-in-only routes (Profile included) show their skeleton, not the sign-in prompt, until Auth has first answered (`useSessionKnown`); `src/contexts/auth-context.tsx` is unchanged.
 - Sign-in failures surface a specific toast and reset the spinner; tokens and credentials are not logged.
-- Profile save, profile update and household creation failures show `friendlyError` text (via `toastError` or the auth context); raw Firebase messages are never shown. Saving chore reminders shows one "Reminder saved" toast (the profile write is silent on success).
+- Profile save and profile update failures show `friendlyError` text (via `toastError` or the auth context); household creation (a Household Governance server action called from the auth context) shows the server's plain-language refusal, or `friendlyError` text when the server cannot be reached; raw Firebase messages are never shown. Saving chore reminders shows one "Reminder saved" toast (the profile write is silent on success).
 - The emulator E2E endpoint returns 404 unless every safety condition is active and never uses a production service-account key.
 - Avatar replacement does not establish a general cleanup contract for older avatar objects.
 - Household resolution is asynchronous and has a separate loading state from Auth.

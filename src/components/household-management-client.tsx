@@ -4,17 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { AnimatePresence } from 'motion/react';
-import { doc, writeBatch } from 'firebase/firestore';
 import { AlertTriangle, Copy, Home, Loader2, LogOut, Shield, UserPlus, Users } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
-import { auth, db } from '@/lib/firebase';
-import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
+import { auth } from '@/lib/firebase';
+import { pendingReminderDue } from '@/lib/household-records';
 import {
   canAssignRole,
   canEditPermissions,
   canManageInvites as mayManageInvites,
   canManageMember,
+  canRemindPendingMembers,
   canRenameHousehold,
   canTransferOwnership,
 } from '@/lib/household-policy';
@@ -45,6 +45,7 @@ import { copyText } from '@/lib/utils';
 import {
   changeMemberRoleAction,
   createInviteAction,
+  remindPendingMembersAction,
   removeMemberAction,
   renameHouseholdAction,
   revokeAllInvitesAction,
@@ -74,7 +75,6 @@ import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
 
 const INVITE_TTL_MINUTES = 30;
-const NEW_USER_REMINDER_HOURS = 24;
 
 const householdTabs = ['overview', 'invites', 'members', 'roles', 'activity', 'danger'];
 
@@ -89,6 +89,7 @@ export function HouseholdManagementClient() {
   const canManageMembers = permissions['household.manageMembers'];
   const canManageInvites = mayManageInvites(currentMember).ok;
   const canRename = canRenameHousehold(currentMember).ok;
+  const canRemind = canRemindPendingMembers(currentMember).ok;
   const isOwner = currentMember?.role === 'owner';
   // Audit entries and the invite list are readable by owners and admins only (firestore.rules).
   const isOwnerOrAdmin = currentMember?.role === 'owner' || currentMember?.role === 'admin';
@@ -152,61 +153,28 @@ export function HouseholdManagementClient() {
   const approvedMembers = useMemo(() => members.filter(member => member.role !== 'newuser'), [members]);
   const colors = useMemo(() => memberColorMap(members.map((m) => m.uid)), [members]);
 
-  // Daily "still pending" reminder, written by whichever manager opens this page.
+  // Daily "still pending" reminder: when someone who can approve opens this page
+  // and a pending person has not been reminded about for 24 hours, the server
+  // stamps the reminder and writes the notification (see remindPendingMembers).
   const remindingRef = useRef(false);
   useEffect(() => {
-    const remindPendingMembers = async () => {
-      // The rules let only owners and admins write this reminder.
-      if (!household?.id || !canManageMembers || !isOwnerOrAdmin || pendingMembers.length === 0 || remindingRef.current) return;
-      const now = new Date();
-      const batch = writeBatch(db);
-      let reminderCount = 0;
-
-      pendingMembers.forEach((member) => {
-        const lastReminder = member.lastNewUserReminderAt ? new Date(member.lastNewUserReminderAt) : null;
-        const reminderAgeHours = lastReminder
-          ? (now.getTime() - lastReminder.getTime()) / (1000 * 60 * 60)
-          : Number.POSITIVE_INFINITY;
-        if (reminderAgeHours < NEW_USER_REMINDER_HOURS) return;
-
-        const nowIso = now.toISOString();
-        const reminderStateKey = `pending|${nowIso.slice(0, 10)}`;
-        const reminderNotificationId = getDeterministicNotificationId({
-          sourceType: 'household-newuser-reminder',
-          sourceId: member.uid,
-          stateKey: reminderStateKey,
-        });
-        batch.update(doc(db, 'households', household.id, 'members', member.uid), {
-          lastNewUserReminderAt: nowIso,
-        });
-        batch.set(doc(db, 'households', household.id, 'notifications', reminderNotificationId), buildNotificationDocument({
-          householdId: household.id,
-          category: 'system',
-          title: 'Pending member approval',
-          // Untargeted, so every approved member reads it: the name only, never the email.
-          message: `${memberName(member)} still needs a household role.`,
-          deepLink: '/household?tab=members',
-          sourceType: 'household-newuser-reminder',
-          sourceId: member.uid,
-          stateKey: reminderStateKey,
-        }));
-        reminderCount++;
-      });
-
-      if (reminderCount > 0) {
-        remindingRef.current = true;
-        try {
-          await batch.commit();
-        } finally {
-          remindingRef.current = false;
-        }
+    const firebaseUser = auth.currentUser;
+    if (!household?.id || !canRemind || !firebaseUser || remindingRef.current) return;
+    const now = new Date();
+    if (!pendingMembers.some((member) => pendingReminderDue(member.lastNewUserReminderAt, now))) return;
+    remindingRef.current = true;
+    const householdId = household.id;
+    void (async () => {
+      try {
+        const result = await remindPendingMembersAction({ idToken: await firebaseUser.getIdToken(), householdId });
+        if (!result.ok) console.warn('Pending member reminder was not sent', result.code);
+      } catch (error) {
+        console.error('Failed to create pending member reminders', error);
+      } finally {
+        remindingRef.current = false;
       }
-    };
-
-    remindPendingMembers().catch((error) => {
-      console.error('Failed to create pending member reminders', error);
-    });
-  }, [canManageMembers, household?.id, isOwnerOrAdmin, pendingMembers]);
+    })();
+  }, [canRemind, household?.id, pendingMembers]);
 
   /**
    * Calls a household server action with a fresh ID token. The server decides
