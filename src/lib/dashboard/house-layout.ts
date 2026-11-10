@@ -163,6 +163,12 @@ export function roomNeighbor(layout: Pick<HouseLayout, 'rooms'>, id: string, key
 
 export type PetMode = 'wander' | 'bowl' | 'idle';
 
+/** A pet figure's radius, the spacing between hungry pets and between their rows (HP-11d). */
+const PET_RADIUS = 9;
+const PET_GAP = 16;
+const BOWL_ROWS = 2;
+const BOWL_ROW_GAP = 20;
+
 export type PetPlacement = {
   id: string;
   mode: PetMode;
@@ -184,6 +190,10 @@ export type PetPlacement = {
  * - unknown (`null`, feeding history unavailable): rests in a room, no bowl, no
  *   wandering, so nothing is claimed either way.
  * Without rooms, pets stand in the yard.
+ *
+ * HP-11d: hungry pets line up left of the bowl inside the bowl's room, 16 units apart, in
+ * up to two rows; more than fit are spaced closer, so none ever leaves the room. Without
+ * a bowl room they keep their own yard spot, clamped to the scene.
  */
 export function placePets(
   pets: ReadonlyArray<{ id: string; fed: boolean | null }>,
@@ -197,12 +207,24 @@ export function placePets(
     ?? rooms.find((room) => room.floor === bottomFloor)
     ?? null;
   const bowl: Point = bowlRoom ? floorPoint(bowlRoom, 0.86) : yard(0);
+  const hungryCount = pets.filter((pet) => pet.fed === false).length;
+  // The strip from the bowl to the room's left wall (inner inset plus the pet's radius).
+  const from = bowl.x - 14;
+  const to = bowlRoom ? bowlRoom.x + HOUSE_GEOMETRY.inset + PET_RADIUS : from;
+  const span = Math.max(0, from - to);
+  const perRow = Math.max(Math.floor(span / PET_GAP) + 1, Math.ceil(hungryCount / BOWL_ROWS));
+  const gap = perRow > 1 ? Math.min(PET_GAP, span / (perRow - 1)) : 0;
+  const bowlSpot = (k: number): Point => ({
+    x: Math.round(from - (k % perRow) * gap),
+    y: bowl.y - Math.floor(k / perRow) * BOWL_ROW_GAP,
+  });
   let hungry = 0;
 
   return pets.map((pet, i) => {
     const home = rooms.length > 0 ? rooms[(i * 2) % rooms.length] : null;
     if (pet.fed === false) {
-      const at = { x: bowl.x - 14 - hungry * 16, y: bowl.y };
+      const yardAt = yard(i + 1);
+      const at = bowlRoom ? bowlSpot(hungry) : { x: Math.min(yardAt.x, layout.width - PET_RADIUS), y: yardAt.y };
       hungry += 1;
       return { id: pet.id, mode: 'bowl', at, path: [at], bowl, roomId: bowlRoom?.id ?? null };
     }

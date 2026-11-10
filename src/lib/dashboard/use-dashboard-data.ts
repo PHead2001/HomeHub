@@ -42,7 +42,7 @@ import { notificationWindowQuery, viewableNotificationCategories } from '@/app/n
 import type { DashboardFacts, RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
 import { leaderboardEnabledFrom } from './streaks';
-import { deviceStorage, readHouseSnapshot, writeHouseSnapshot } from './house-snapshot';
+import { deviceStorage, readHouseOutline, readHouseSnapshot, writeHouseSnapshot, type HouseOutlineRoom } from './house-snapshot';
 import type { ChoreFacts } from './facts';
 import { HEALTH_RULES } from '../maintenance/health';
 import { addDays } from '../../../functions/src/shared/calendar';
@@ -155,6 +155,11 @@ export type DashboardData = {
   timeZone: string;
   /** Household + member + permissions; components keyed by it reset on a context change. */
   context: string;
+  /**
+   * HP-7b: while the chores are loading with no snapshot for today, the room layout of an
+   * earlier day's snapshot (ids and names only), so the house keeps its shape. Null otherwise.
+   */
+  houseOutline: HouseOutlineRoom[] | null;
 };
 
 export function useDashboardData(enabled = true): DashboardData {
@@ -404,9 +409,9 @@ export function useDashboardData(enabled = true): DashboardData {
 
   // A pet whose feeding history is stale says so wherever its count or fed state shows.
   const facts = useMemo(() => withFeedingHints(assembled, sections, zone), [assembled, sections, zone]);
-  const shown = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
+  const { facts: shown, outline } = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
 
-  return { facts: shown, loading, failed, sections, retry, now, today, timeZone: zone, context };
+  return { facts: shown, loading, failed, sections, retry, now, today, timeZone: zone, context, houseOutline: outline };
 }
 
 /**
@@ -415,14 +420,17 @@ export function useDashboardData(enabled = true): DashboardData {
  * house-snapshot.ts). Live data always replaces it, a failed chores section never falls back
  * to it, and every change to the live rooms is saved for the next visit.
  */
-function useHouseSnapshot(facts: DashboardFacts, householdId: string | null, uid: string, today: string): DashboardFacts {
+function useHouseSnapshot(facts: DashboardFacts, householdId: string | null, uid: string, today: string): { facts: DashboardFacts; outline: HouseOutlineRoom[] | null } {
   const live: ChoreFacts | undefined = facts.chores;
   const choresFailed = Boolean(facts.unavailable?.includes('chores'));
   // Read only while the live chores are missing (the first moments of a visit).
-  const snapshot = !live && householdId && !choresFailed ? readHouseSnapshot(deviceStorage(), uid, householdId, today) : null;
+  const waiting = !live && Boolean(householdId) && !choresFailed;
+  const snapshot = waiting ? readHouseSnapshot(deviceStorage(), uid, householdId!, today) : null;
+  // HP-7b: no snapshot for today: an earlier day's room layout, without its counts.
+  const outline = waiting && !snapshot ? readHouseOutline(deviceStorage(), uid, householdId!) : null;
   const liveRooms = live ? JSON.stringify(live) : null;
   useEffect(() => {
     if (liveRooms && householdId && uid) writeHouseSnapshot(deviceStorage(), uid, householdId, today, liveRooms);
   }, [liveRooms, householdId, uid, today]);
-  return snapshot ? { ...facts, chores: snapshot } : facts;
+  return { facts: snapshot ? { ...facts, chores: snapshot } : facts, outline };
 }

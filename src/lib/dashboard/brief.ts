@@ -8,7 +8,8 @@ import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from './links
 
 /** What a linked phrase points at, so the UI can show its peek card (H26). */
 export type BriefPeek =
-  | { kind: 'chores' }
+  /** `mine`: the reader's own chores; `household`: everyone's (the HP-3a fallback). */
+  | { kind: 'chores'; scope: 'mine' | 'household' }
   | { kind: 'pet'; id: string }
   | { kind: 'pets' }
   | { kind: 'pantry' }
@@ -47,12 +48,24 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   const chores = facts.chores;
   if (chores) {
     const today = chores.mineDueToday;
+    const mine: BriefPeek = { kind: 'chores', scope: 'mine' };
+    const household: BriefPeek = { kind: 'chores', scope: 'household' };
+    // HP-3a: with nothing of your own, the household's open work is named instead, so the
+    // brief never says "Nothing needs you" while the house has overdue chores.
+    const houseToday = Math.max(0, chores.todayTotal - chores.todayDone);
+    const houseOverdue = chores.overdueTotal;
     if (chores.mineOverdue > 0 && today > 0) {
-      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: { kind: 'chores' } }, { text: ` (${chores.mineOverdue} overdue)` }]);
+      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: mine }, { text: ` (${chores.mineOverdue} overdue)` }]);
     } else if (chores.mineOverdue > 0) {
-      phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: '/chores', peek: { kind: 'chores' } }]);
+      phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: '/chores', peek: mine }]);
     } else if (today > 0) {
-      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: { kind: 'chores' } }]);
+      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: mine }]);
+    } else if (houseOverdue > 0 && houseToday > 0) {
+      phrases.push([{ text: `${plural(houseToday, 'household chore')} today`, href: '/chores', peek: household }, { text: ` (${houseOverdue} overdue)` }]);
+    } else if (houseOverdue > 0) {
+      phrases.push([{ text: plural(houseOverdue, 'overdue household chore'), href: '/chores', peek: household }]);
+    } else if (houseToday > 0) {
+      phrases.push([{ text: `${plural(houseToday, 'household chore')} today`, href: '/chores', peek: household }]);
     }
   }
 
@@ -70,7 +83,9 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   const pantry = facts.pantry;
   if (pantry && pantry.nearest.length > 0 && pantry.nearest[0].days <= 2) {
     const item = pantry.nearest[0];
-    phrases.push([{ text: `the ${item.name.toLowerCase()}`, href: PANTRY_HREF, peek: { kind: 'pantry' } }, { text: ` ${item.label}` }]);
+    // HP-22a: the item keeps its own case (brand names), and "expiring tomorrow" needs no
+    // verb agreement ("the eggs expiring tomorrow").
+    phrases.push([{ text: `the ${item.name}`, href: PANTRY_HREF, peek: { kind: 'pantry' } }, { text: ` ${item.label}` }]);
   } else if (pantry && pantry.expired > 0) {
     phrases.push([{ text: `${plural(pantry.expired, 'pantry item')} expired`, href: PANTRY_HREF, peek: { kind: 'pantry' } }]);
   }
