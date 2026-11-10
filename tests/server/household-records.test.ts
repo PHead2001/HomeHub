@@ -230,13 +230,14 @@ describe('pending-member reminder', () => {
     assert.equal((await notifications()).length, 2);
   });
 
-  test('only people who are due are reminded; the email stands in for a missing name', async () => {
+  test('only people who are due are reminded; a missing name is never replaced by the email', async () => {
     await memberRef(pending).update({ lastNewUserReminderAt: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString() });
     await seedMember(pending2, 'newuser');
     assert.deepEqual(await remindPendingMembers(owner, HOUSE, NOW), { count: 1 });
     const [doc] = await notifications();
     assert.equal(doc.data().sourceId, pending2.uid);
-    assert.equal(doc.data().message, `${pending2.email} still needs a household role.`);
+    assert.equal(doc.data().message, 'A member still needs a household role.');
+    assert.ok(!doc.data().message.includes(pending2.email));
   });
 
   test('no pending people: nothing is written', async () => {

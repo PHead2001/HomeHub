@@ -72,7 +72,7 @@ export function countInYear(dates: readonly unknown[], year: number, timeZone?: 
  * email), so two members who share a first name never pool their chores and a
  * renamed member keeps one score; only the winner's label is shortened to a first
  * name (member record, then the credited person's name on the chore, then the
- * stats' name).
+ * stats' name; never the email).
  *
  * Without a stats document (older households, or a failed read) only retained
  * chores can be counted: `choresWindow` is then `'last90days'` and the card says so.
@@ -90,7 +90,6 @@ export function summarizeChores(
 
   const counts = new Map<string, number>(Object.entries(stats?.byAssignee ?? {}));
   const labels = new Map<string, unknown>(Object.entries(stats?.names ?? {}));
-  const emails = new Map<string, string>();
   let retained = 0;
   for (const chore of chores) {
     if (yearOf(completionInstant(chore as unknown as ChoreRecord)) !== year) continue;
@@ -102,12 +101,13 @@ export function summarizeChores(
     if (!person) continue;
     const key = choreStatsAssigneeKey(person.email);
     counts.set(key, (counts.get(key) ?? 0) + 1);
-    if (!labels.has(key) && typeof person.name === 'string' && person.name.trim()) labels.set(key, person.name);
-    if (!emails.has(key)) emails.set(key, person.email);
+    // Labels only: a name that looks like an email is never used.
+    if (!labels.has(key) && typeof person.name === 'string' && person.name.trim() && !person.name.includes('@')) labels.set(key, person.name);
   }
   const winner = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
   const label = winner
-    ? (firstNameOnly(names.get(winner[0])) ?? firstNameOnly(labels.get(winner[0])) ?? firstNameOnly(emails.get(winner[0])))
+    // Never the email: a winner without any name gets no label (and no champion card).
+    ? (firstNameOnly(names.get(winner[0])) ?? firstNameOnly(labels.get(winner[0])))
     : null;
   return {
     choresDone: (stats?.completed ?? 0) + retained,

@@ -1,5 +1,6 @@
 // Chore reminder rules shared by the scheduled Cloud Function. Pure: callers
 // pass the current instant and each person's timezone and settings.
+import {isAssignedTo} from "./assignee";
 import {
   isDayString, localDay, localMinutes, parseTimeOfDay, toDay,
 } from "./calendar";
@@ -11,6 +12,7 @@ export const UPKEEP_INTERVAL_MS = 60 * 60 * 1000;
 export type ChoreInput = {
   id: string;
   task?: string;
+  assignedToUid?: string;
   assignedToEmail?: string;
   dueDate?: string;
   /** Occurrence day ("YYYY-MM-DD") in the household's timezone. */
@@ -31,7 +33,6 @@ export type ReminderPerson = {
 export type ChoreNotification = {
   id: string;
   targetUserUid: string;
-  targetUserEmail: string;
   title: string;
   message: string;
   sourceId: string;
@@ -58,7 +59,7 @@ export const choreNotificationsFor = (
   const today = localDay(now, person.timeZone);
   const minutes = localMinutes(now, person.timeZone);
   const mine = chores.filter((c) =>
-    !c.isCompleted && c.assignedToEmail === person.email);
+    !c.isCompleted && isAssignedTo(c, person));
   // The occurrence's calendar day is fixed when the chore is created (in
   // the household's timezone). Re-reading its midnight instant in a member's
   // own zone would shift it a day for anyone west of the household; the
@@ -77,7 +78,6 @@ export const choreNotificationsFor = (
     notes.push({
       id: `${person.uid}-${sourceId}`,
       targetUserUid: person.uid,
-      targetUserEmail: person.email,
       title: "Overdue chores",
       message: overdue.length === 1 ?
         `"${overdue[0].task || "A chore"}" is overdue.` :
@@ -99,7 +99,6 @@ export const choreNotificationsFor = (
     return {
       id: `${person.uid}-${sourceId}`,
       targetUserUid: person.uid,
-      targetUserEmail: person.email,
       title: "Daily chore reminder",
       message: onDay.length > 0 && late.length > 0 ?
         `${plural(onDay.length, "chore")} due ${when} and ` +

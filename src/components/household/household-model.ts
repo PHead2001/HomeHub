@@ -10,6 +10,8 @@
 import { getEffectivePermissions, getRolePresetPermissions, householdPermissions } from '@/lib/permissions';
 import { OWNER_ONLY_PERMISSIONS, canGrantPermission, effectivePermissions, normalizeOverrides, type PolicyMember } from '@/lib/household-policy';
 import { completionInstant, type ChoreRecord } from '@/lib/chores/dates';
+import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
+import { publicDisplayName } from '@/lib/member-directory';
 import { HOUSEHOLD_NAME_MAX } from '@/lib/household-records';
 import type { AuditLog, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
@@ -56,18 +58,17 @@ export function sortMembers(members: readonly HouseholdMember[]): HouseholdMembe
   return [...members].sort((a, b) =>
     ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role)
     || memberName(a).localeCompare(memberName(b))
-    || a.email.localeCompare(b.email));
+    || a.uid.localeCompare(b.uid));
 }
 
-export function memberName(member: Pick<HouseholdMember, 'displayName' | 'email'>): string {
-  return member.displayName?.trim() || member.email;
+/** The name housemates see: the display name, never the email (src/lib/member-directory.ts). */
+export function memberName(member: Pick<HouseholdMember, 'displayName'>): string {
+  return publicDisplayName(member.displayName);
 }
 
 /** First word of the display name, for short prompts ("Approve Jamie?"). */
-export function memberFirstName(member: Pick<HouseholdMember, 'displayName' | 'email'>): string {
-  const name = member.displayName?.trim();
-  if (name) return name.split(/\s+/)[0];
-  return member.email.split('@')[0];
+export function memberFirstName(member: Pick<HouseholdMember, 'displayName'>): string {
+  return memberName(member).split(/\s+/)[0];
 }
 
 export function isPendingMember(member: Pick<HouseholdMember, 'role'>): boolean {
@@ -170,6 +171,7 @@ export type MemberChoreStats = { doneThisWeek: number; open: number };
 
 export type ChoreLike = {
   id?: string;
+  assignedToUid?: string | null;
   assignedToEmail?: string | null;
   isCompleted?: boolean;
   completedAt?: string | null;
@@ -195,30 +197,36 @@ export function mergeChoresById<T extends { id?: string }>(...lists: readonly (r
 }
 
 /**
- * Counts per member email: chores completed since `weekStart` and chores still open.
+ * Counts per member uid: chores completed since `weekStart` and chores still open.
  * Chores carry the assignee, not who ticked them, so "done" means "assigned to and done".
- * The completion time is the Chores module's `completionInstant` (the server stamp
- * `completedAtServer` when present, else `completedAt`).
+ * The assignee is the uid, or for older chores the member with that email
+ * (`resolveAssigneeUid`, functions/src/shared/assignee.ts). The completion time is
+ * the Chores module's `completionInstant` (the server stamp `completedAtServer`
+ * when present, else `completedAt`).
  */
-export function choreStatsByEmail(chores: readonly ChoreLike[], weekStart: Date): Map<string, MemberChoreStats> {
+export function choreStatsByMember(
+  chores: readonly ChoreLike[],
+  members: readonly { uid: string; email?: string | null }[],
+  weekStart: Date,
+): Map<string, MemberChoreStats> {
   const stats = new Map<string, MemberChoreStats>();
-  const bump = (email: string, key: keyof MemberChoreStats) => {
-    const entry = stats.get(email) ?? { doneThisWeek: 0, open: 0 };
+  const bump = (uid: string, key: keyof MemberChoreStats) => {
+    const entry = stats.get(uid) ?? { doneThisWeek: 0, open: 0 };
     entry[key] += 1;
-    stats.set(email, entry);
+    stats.set(uid, entry);
   };
   for (const chore of chores) {
-    const email = chore.assignedToEmail?.trim().toLowerCase();
-    if (!email) continue;
+    const uid = resolveAssigneeUid(chore, members);
+    if (!uid) continue;
     if (chore.isCompleted) {
       const at = completionInstant({
         isCompleted: true,
         completedAt: chore.completedAt ?? undefined,
         completedAtServer: chore.completedAtServer as ChoreRecord['completedAtServer'],
       });
-      if (at && at >= weekStart) bump(email, 'doneThisWeek');
+      if (at && at >= weekStart) bump(uid, 'doneThisWeek');
     } else {
-      bump(email, 'open');
+      bump(uid, 'open');
     }
   }
   return stats;
