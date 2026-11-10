@@ -3,7 +3,6 @@ import type { DocumentData, QueryDocumentSnapshot, Timestamp } from 'firebase/fi
 import type { Notification, NotificationCategory, NotificationUserAction } from '@/lib/types';
 import type { User as HomeHubUser } from '@/lib/types';
 import { stableSlugify } from '@/lib/utils';
-import { notificationAudience } from '@functions/shared/notification-audience';
 
 const NOTIFICATION_TTL_DAYS = 7;
 
@@ -218,9 +217,6 @@ export const buildNotificationDocument = ({
     stateKey,
     targetUserUid: targetUser?.uid,
     targetUserEmail: targetUser?.email,
-    // Who may see it: [uid] for one member, ['*'] for the household. Written now,
-    // enforced on read in a later release.
-    audience: notificationAudience({ targetUserUid: targetUser?.uid, targetUserEmail: targetUser?.email }),
     readBy: {},
     dismissedBy: {},
   };
