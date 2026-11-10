@@ -149,6 +149,38 @@ export async function trackWrite<T>(write: Promise<T>, deps: TrackWriteDeps): Pr
 }
 
 /**
+ * Final answer for a merge that timed out (the entry was shown pending). A merge
+ * the server refused reports the failure; a "not merged" answer (bought or
+ * deleted meanwhile) creates the item instead, and if that create fails at once
+ * (for example permission revoked) the failure is reported too, so the caller
+ * never silently drops the pending status. A create that is still pending
+ * reports its own later failure.
+ */
+export async function settleTimedOutMerge(
+  result: { state: 'saved'; value: boolean } | { state: 'failed'; error: unknown },
+  createInstead: () => Promise<{ state: SaveState; error?: unknown; settled: Promise<SettledState> }>,
+  reportLateError: (error: unknown) => void,
+): Promise<SettledState> {
+  if (result.state === 'failed') {
+    reportLateError(result.error);
+    return 'failed';
+  }
+  if (result.value) return 'saved';
+  let created: Awaited<ReturnType<typeof createInstead>>;
+  try {
+    created = await createInstead();
+  } catch (error) {
+    reportLateError(error);
+    return 'failed';
+  }
+  if (created.state === 'failed') {
+    reportLateError(created.error);
+    return 'failed';
+  }
+  return created.settled;
+}
+
+/**
  * Per-submission guard (SH-4c): a submission id is accepted once; a second submit
  * with the same id, or any submit while `busy` holds one, is ignored.
  */

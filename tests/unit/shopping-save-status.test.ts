@@ -16,6 +16,7 @@ import {
   settledTickFollowUp,
   tickFollowUp,
   saveStateLabel,
+  settleTimedOutMerge,
   summarizeStates,
   trackWrite,
   type LocalPersistence,
@@ -301,5 +302,50 @@ describe('Add Item dialog wiring', () => {
     assert.match(submit, /const submittedDraft = currentDialogDraft\(\);/);
     assert.equal(submit.match(/finishDialogSave\(submittedDraft\)/g)?.length, 2);
     assert.doesNotMatch(submit, /form\.reset\(|setIsAddItemDialogOpen\(false\)/);
+  });
+});
+
+describe('a timed-out merge reports every late failure (SH-4)', () => {
+  const never = () => { throw new Error('should not create'); };
+  const run = async (
+    result: Parameters<typeof settleTimedOutMerge>[0],
+    createInstead: Parameters<typeof settleTimedOutMerge>[1] = never,
+  ) => {
+    const reported: unknown[] = [];
+    const final = await settleTimedOutMerge(result, createInstead, (error) => reported.push(error));
+    return { final, reported };
+  };
+
+  test('a merge confirmed late is saved and reports nothing', async () => {
+    assert.deepEqual(await run({ state: 'saved', value: true }), { final: 'saved', reported: [] });
+  });
+
+  test('a merge refused late is reported', async () => {
+    const error = new Error('permission-denied');
+    assert.deepEqual(await run({ state: 'failed', error }), { final: 'failed', reported: [error] });
+  });
+
+  test('a fallback create that fails at once is reported, not dropped', async () => {
+    const error = new Error('permission-denied');
+    const outcome = await run({ state: 'saved', value: false }, async () => ({ state: 'failed', error, settled: Promise.resolve('failed') }));
+    assert.deepEqual(outcome, { final: 'failed', reported: [error] });
+  });
+
+  test('a fallback create that throws is reported', async () => {
+    const error = new Error('boom');
+    const outcome = await run({ state: 'saved', value: false }, async () => { throw error; });
+    assert.deepEqual(outcome, { final: 'failed', reported: [error] });
+  });
+
+  test('a fallback create still pending resolves with its own final answer', async () => {
+    const saved = await run({ state: 'saved', value: false }, async () => ({ state: 'sending', settled: Promise.resolve('saved') }));
+    assert.deepEqual(saved, { final: 'saved', reported: [] });
+    const saving = await run({ state: 'saved', value: false }, async () => ({ state: 'saved', settled: Promise.resolve('saved') }));
+    assert.deepEqual(saving, { final: 'saved', reported: [] });
+  });
+
+  test('add-items routes the timed-out merge through settleTimedOutMerge with onLateError', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'add-items.ts'), 'utf8');
+    assert.match(source, /tracked\.settled\.then\(\(result\) => settleTimedOutMerge\(\s*result,\s*\(\) => create\(entry, false\),\s*\(error\) => onLateError\?\.\(entry\.name, error\),/);
   });
 });

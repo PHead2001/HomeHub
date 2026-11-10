@@ -564,7 +564,7 @@ export function LivingHouse({
   };
 
   return (
-    <section aria-labelledby="living-house-title" className="mb-6" data-testid="living-house">
+    <section aria-labelledby="living-house-title" className={cn(styles.houseSection, 'mb-6')} data-testid="living-house">
       <div
         className={cn(styles.house, 'overflow-hidden rounded-2xl border bg-card/80 shadow-raised', disco && styles.disco)}
         style={light?.style}
@@ -574,7 +574,8 @@ export function LivingHouse({
         {!reduced && weather?.effect && <WeatherLayer effect={weather.effect} scope="house" />}
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 pt-3">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 id="living-house-title" className="min-w-0 truncate font-headline text-lg font-semibold">{title}</h2>
+            {/* HP-20a: the household name is shown once, on the subtitle line; here it names the section. */}
+            <h2 id="living-house-title" className="sr-only">{title}</h2>
             {facts.health && <HealthBadge health={facts.health} />}
             {roomsHint && <span className="shrink-0 text-xs text-muted-foreground" data-testid="house-rooms-stale">{roomsHint}</span>}
           </div>
@@ -597,8 +598,10 @@ export function LivingHouse({
 
         <div className="px-3 pt-1 sm:px-6">
           <div
-            className={cn(styles.stage, 'relative mx-auto w-full max-w-2xl', zoom && styles.zooming)}
-            style={{ aspectRatio: `${layout.width} / ${layout.height}`, ...(zoom ? { transformOrigin: `${zoom.x}% ${zoom.y}%` } : null) }}
+            className={cn(styles.stage, styles.stageFrame, 'relative', zoom && styles.zooming)}
+            // HP-12a: on wide landscape screens the stage height is capped to the screen and
+            // its width follows from this ratio (dashboard.module.css `.stageFrame`).
+            style={{ aspectRatio: `${layout.width} / ${layout.height}`, '--house-aspect': layout.width / layout.height, ...(zoom ? { transformOrigin: `${zoom.x}% ${zoom.y}%` } : null) } as CSSProperties}
             data-zoom={zoom?.id}
           >
             <svg aria-hidden viewBox={`0 0 ${layout.width} ${layout.height}`} className="absolute inset-0 h-full w-full overflow-visible">
