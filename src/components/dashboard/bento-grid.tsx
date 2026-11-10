@@ -277,7 +277,10 @@ export function BentoGrid({
   onRetry?: () => void;
 }) {
   const { permissions } = useAuth();
-  const done = useChoreDone();
+  const liveChoreIds = facts.chores && sections.chores && sections.chores.status !== 'loading'
+    ? (facts.chores.todayWork ?? []).map((chore) => chore.id)
+    : undefined;
+  const done = useChoreDone(liveChoreIds);
   const { report: weather, stale: weatherStale, failed: weatherFailed } = useLiveWeatherState();
   const { preference: weatherPreference } = useWeatherPreference();
   const weatherEnabled = weatherPreference.enabled && Boolean(weatherPreference.city);

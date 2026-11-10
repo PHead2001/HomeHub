@@ -16,7 +16,7 @@
  * Every control is a real button beside the tile's link (never inside it), at least 44 px
  * and 48 px on coarse pointers (`styles.target`), with a saving and a failed state.
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { Check, Loader2, RotateCcw } from 'lucide-react';
@@ -38,6 +38,7 @@ import {
 import { formatPortion } from '@/lib/pets/care';
 import { memberName, type ChoreEntry, type PetState } from '@/lib/dashboard/facts';
 import { householdSummary, summaryPhrase } from '@/lib/dashboard/household-summary';
+import { reconcileDoneStates } from '@/lib/dashboard/done-states';
 import { cn } from '@/lib/utils';
 import styles from './dashboard.module.css';
 
@@ -46,14 +47,27 @@ type ActionState = 'saving' | 'done' | 'failed';
 /**
  * Done for dashboard chores. The dashboard reads chores with live listeners, so it
  * never patches them locally: a completed chore leaves the list when its snapshot
- * arrives, and until then its row says "Done".
+ * arrives, and until then its row says "Done". `liveIds` is the live list's chore ids:
+ * a chore that left it after being completed here and later reappears was reopened
+ * elsewhere, so its local Done state is dropped and its button works again.
  */
-export function useChoreDone() {
+export function useChoreDone(liveIds?: readonly string[]) {
   const { currentUser } = useAuth();
   const { toast } = useToast();
   const { burst, layer } = useConfetti();
   const [states, setStates] = useState<Record<string, ActionState>>({});
   const busy = useRef(new Set<string>());
+  const gone = useRef<ReadonlySet<string>>(new Set());
+  const liveKey = liveIds?.join('|');
+  useEffect(() => {
+    if (!liveIds) return;
+    setStates((current) => {
+      const next = reconcileDoneStates({ states: current, gone: gone.current }, liveIds, 'done' as ActionState);
+      gone.current = next.gone;
+      return next.states === current ? current : { ...next.states };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKey]);
   const householdId = currentUser?.householdId ?? null;
   const set = useCallback((id: string, state: ActionState | null) => {
     setStates((current) => {
