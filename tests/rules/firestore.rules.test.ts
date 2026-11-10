@@ -1404,11 +1404,17 @@ describe('content shapes: pet logs', () => {
 });
 
 describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
+  // One Firestore instance per user, so a batch never mixes references from two instances.
+  let instances = new Map<string, ReturnType<typeof dbFor>>();
+  const dbOf = (user: Identity) => {
+    if (!instances.has(user.uid)) instances.set(user.uid, dbFor(user));
+    return instances.get(user.uid)!;
+  };
   const petPath = ['households', householdA, 'pets', 'rex'] as const;
-  const logs = (user: Identity, household = householdA) => collection(dbFor(user), 'households', household, 'pets', 'rex', 'feeding-logs');
+  const logs = (user: Identity, household = householdA) => collection(dbOf(user), 'households', household, 'pets', 'rex', 'feeding-logs');
   const log = (user: Identity, id: string, household = householdA) => doc(logs(user, household), id);
   const state = (user: Identity, household = householdA, id = 'current') =>
-    doc(dbFor(user), 'households', household, 'pets', 'rex', 'feeding-state', id);
+    doc(dbOf(user), 'households', household, 'pets', 'rex', 'feeding-state', id);
   const minutesAgo = (minutes: number) => Timestamp.fromMillis(Date.now() - minutes * 60_000);
   // src/lib/pets/feed-operation.ts feedPet (online): server times, repeat, signed.
   const liveFeeding = (user: Identity, overrides: Record<string, unknown> = {}) => ({
@@ -1425,6 +1431,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   };
 
   beforeEach(async () => {
+    instances = new Map();
     await environment.withSecurityRulesDisabled(async context => {
       const db = context.firestore();
       await setDoc(doc(db, ...petPath), { name: 'Rex', type: 'Dog', feedingsPerDay: 2 });
@@ -1451,7 +1458,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   test('a feed writes the log and the state together; members and children may', async () => {
     let latest = 'recent';
     for (const user of [users.member, users.child]) {
-      const db = dbFor(user);
+      const db = dbOf(user);
       const ref = doc(logs(user));
       const batch = writeBatch(db);
       batch.set(ref, liveFeeding(user));
@@ -1479,7 +1486,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   test('state writes are validated and paired with an existing log', async () => {
     const member = users.member;
     const write = async (data: Record<string, unknown>, logData: Record<string, unknown> | null = liveFeeding(member), id = 'current') => {
-      const db = dbFor(member);
+      const db = dbOf(member);
       const ref = doc(logs(member));
       const batch = writeBatch(db);
       if (logData) batch.set(ref, logData);
@@ -1495,7 +1502,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     await assertFails(write({ prev: { ...previous, extra: true } }));
     await assertFails(write({}, liveFeeding(member), 'other'));
     // A guest (pets.view only) and another household cannot write.
-    const guestBatch = writeBatch(dbFor(users.guest));
+    const guestBatch = writeBatch(dbOf(users.guest));
     guestBatch.set(state(users.guest), stateFor(users.guest, 'recent'));
     await assertFails(guestBatch.commit());
     await assertFails(setDoc(state(users.ownerB, householdB), stateFor(users.ownerB, 'recent')));
@@ -1503,7 +1510,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   });
 
   test('a forged lastFedByUid is refused', async () => {
-    const db = dbFor(users.member);
+    const db = dbOf(users.member);
     const ref = doc(logs(users.member));
     const batch = writeBatch(db);
     batch.set(ref, liveFeeding(users.member));
@@ -1514,7 +1521,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   });
 
   test('undo restores exactly the stored prev, or only changes the count', async () => {
-    const db = dbFor(users.member);
+    const db = dbOf(users.member);
     // Restoring something other than `prev` (an old whole snapshot) is refused.
     const forged = writeBatch(db);
     forged.delete(log(users.member, 'recent'));
