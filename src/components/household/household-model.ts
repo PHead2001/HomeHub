@@ -2,11 +2,13 @@
  * Pure helpers for the Household Manager (members, roles, invites, activity).
  * React-free so they are unit-tested (tests/unit/household-model.test.ts).
  *
- * Authorization stays in `src/lib/permissions.ts` and the Firestore rules; these
- * helpers only decide what to show and how to word it.
+ * Authorization stays in `src/lib/household-policy.ts` (enforced by the server
+ * actions), `src/lib/permissions.ts` and the Firestore rules; these helpers only
+ * decide what to show and how to word it.
  */
 
 import { getEffectivePermissions, getRolePresetPermissions, householdPermissions } from '@/lib/permissions';
+import { OWNER_ONLY_PERMISSIONS, canGrantPermission, effectivePermissions, normalizeOverrides, type PolicyMember } from '@/lib/household-policy';
 import { completionInstant, type ChoreRecord } from '@/lib/chores/dates';
 import type { AuditLog, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
@@ -19,11 +21,8 @@ export const MATRIX_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member
 /** Order members are listed in (owner first, pending last). */
 export const ROLE_ORDER: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest', 'newuser'];
 
-/**
- * Only the owner holds these; the rules reject overrides that grant them to
- * anyone else (`noOwnerOnlyOverrides`), so the editor locks them off.
- */
-export const OWNER_ONLY_PERMISSIONS: readonly HouseholdPermission[] = ['household.delete', 'household.transferOwnership'];
+/** Only the owner holds these; the editor locks them (see `src/lib/household-policy.ts`). */
+export { OWNER_ONLY_PERMISSIONS, normalizeOverrides };
 
 const ROLE_LABELS: Record<HouseholdRole, string> = {
   owner: 'Owner',
@@ -260,17 +259,26 @@ export function permissionDraftKey(
   return `${member.uid}|${member.role}|${JSON.stringify(normalizeOverrides(member.role, member.permissions))}`;
 }
 
-/** Removes overrides equal to the role default and any owner-only grants. */
-export function normalizeOverrides(role: HouseholdRole, overrides: PermissionOverrides | undefined): PermissionOverrides {
-  const defaults = getRolePresetPermissions(role);
-  const result: PermissionOverrides = {};
+/**
+ * Matrix cells the editor locks, with the reason: the two owner-only
+ * permissions, and any permission the viewer does not hold that the member does
+ * not already have (ticking it would be a grant). A permission the member
+ * already has stays editable, so it can be taken away.
+ */
+export function lockedPermissionCells(
+  actor: PolicyMember | null | undefined,
+  role: HouseholdRole,
+  saved: PermissionOverrides | undefined,
+): Partial<Record<HouseholdPermission, string>> {
+  const current = effectivePermissions({ uid: '', role, status: 'active', permissions: saved });
+  const locked: Partial<Record<HouseholdPermission, string>> = {};
   for (const permission of householdPermissions) {
-    const value = overrides?.[permission];
-    if (typeof value !== 'boolean' || value === defaults[permission]) continue;
-    if (OWNER_ONLY_PERMISSIONS.includes(permission) && value) continue;
-    result[permission] = value;
+    if (OWNER_ONLY_PERMISSIONS.includes(permission)) locked[permission] = 'Only the owner can do this';
+    else if (!current[permission] && !canGrantPermission(actor, permission).ok) {
+      locked[permission] = "You can't give a permission you don't have yourself";
+    }
   }
-  return result;
+  return locked;
 }
 
 /** Permissions whose effective value differs between two override maps. */
@@ -300,6 +308,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'invite.revoked': 'Revoked an invite code',
   'invite.revoked_all': 'Revoked all active invite codes',
   'member.joined_pending': 'Asked to join',
+  'member.approved': 'Approved a member',
   'member.role_changed': 'Changed a role',
   'member.permissions_changed': 'Customized permissions',
   'member.removed': 'Removed a member',
@@ -314,6 +323,10 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
   if (log.action === 'member.role_changed' && typeof details.role === 'string') {
     return `Changed a role to ${roleLabel(details.role as HouseholdRole)}`;
   }
+  if (log.action === 'member.approved' && typeof details.role === 'string') {
+    return `Approved a member as ${roleLabel(details.role as HouseholdRole)}`;
+  }
+  if (log.action === 'member.removed' && details.pending === true) return 'Denied a request to join';
   if (base) return base;
   const words = log.action.replace(/[._]+/g, ' ').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Household activity';

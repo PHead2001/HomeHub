@@ -8,12 +8,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { MemberColor } from '@/lib/member-colors';
+import { canEditPermissions, permissionChanges, refusalMessage, type PolicyRefusal } from '@/lib/household-policy';
 import { getEffectivePermissions, getRolePresetPermissions } from '@/lib/permissions';
 import type { HouseholdMember, HouseholdPermission, HouseholdRole, PermissionOverrides } from '@/lib/types';
 import {
   MATRIX_ROLES,
-  OWNER_ONLY_PERMISSIONS,
   changedPermissions,
+  lockedPermissionCells,
   memberName,
   normalizeOverrides,
   permissionDraftKey,
@@ -26,11 +27,22 @@ import { PermissionMatrix, type MatrixColumn } from './permission-matrix';
 /** Select value for the role-preset comparison (no member chosen). */
 export const ALL_ROLES = '__roles__';
 
+/** Why the viewer cannot edit the chosen member, in plain language. */
+const READ_ONLY_REASONS: Partial<Record<PolicyRefusal, string>> = {
+  self: "You can't change your own permissions.",
+  rank: 'You can only change people with a lower role than yours.',
+  missing_permission: 'You need the Manage roles permission to change it.',
+};
+
 /**
  * Roles tab (D12/H25): a living permission matrix. By default it compares the
  * built-in role presets side by side. Choosing a member shows their role's
- * defaults next to their own permissions; when the viewer may manage that member
- * the member column is editable and saves through the existing override path.
+ * defaults next to their own permissions. The member column is editable only
+ * when the shared policy (`src/lib/household-policy.ts`) lets the viewer edit
+ * that person: `household.manageRoles`, never yourself, never someone at or
+ * above your own role. Owner-only permissions and permissions the viewer does
+ * not hold are locked. Saving goes through the server action, which applies the
+ * same policy again.
  */
 export function RolesPanel({
   members,
@@ -38,7 +50,7 @@ export function RolesPanel({
   viewerRole,
   selected,
   onSelect,
-  canEdit,
+  actor,
   onSave,
 }: {
   members: readonly HouseholdMember[];
@@ -47,13 +59,15 @@ export function RolesPanel({
   /** Member uid shown next to their role default, or `ALL_ROLES`. Customize permissions in Members sets it. */
   selected: string;
   onSelect: (value: string) => void;
-  canEdit: (member: HouseholdMember) => boolean;
+  /** The viewer's own membership record; decides what can be edited. */
+  actor: HouseholdMember | null | undefined;
   onSave: (member: HouseholdMember, overrides: PermissionOverrides) => Promise<boolean>;
 }) {
   const approved = useMemo(() => members.filter((m) => m.role !== 'newuser'), [members]);
   const member = approved.find((m) => m.uid === selected) ?? null;
-  const editable = Boolean(member && member.role !== 'owner' && canEdit(member));
-  const saved = useMemo(() => (member ? normalizeOverrides(member.role, member.permissions) : {}), [member]);
+  const access = member ? canEditPermissions(actor, member) : null;
+  const editable = Boolean(access?.ok);
+  const saved = member ? normalizeOverrides(member.role, member.permissions) : {};
   const [saving, setSaving] = useState(false);
 
   // The draft belongs to one member, role and saved state: choosing someone else,
@@ -67,6 +81,16 @@ export function RolesPanel({
 
   const changes = member ? changedPermissions(member.role, saved, draft) : [];
   const customizedFromDefault = member ? new Set(Object.keys(draft) as HouseholdPermission[]) : new Set<HouseholdPermission>();
+  // The server refuses a save that grants something the viewer does not hold; say so before they try.
+  const saveDecision = member && editable
+    ? canEditPermissions(actor, member, permissionChanges(member.role, saved, draft))
+    : null;
+  const saveBlocked = saveDecision && !saveDecision.ok ? refusalMessage(saveDecision.reason) : null;
+
+  // Locked cells: the two owner-only permissions, and any permission the viewer
+  // does not hold that this member does not already have (ticking it would be a
+  // grant). A permission the member already has can still be taken away.
+  const locked = member && editable ? lockedPermissionCells(actor, member.role, saved) : {};
 
   const columns: MatrixColumn[] = member
     ? [
@@ -86,7 +110,7 @@ export function RolesPanel({
           editable: editable
             ? {
                 onToggle: (permission) => setDraft((prev) => togglePermissionOverride(member.role, prev, permission)),
-                locked: Object.fromEntries(OWNER_ONLY_PERMISSIONS.map((p) => [p, 'Only the owner can do this'])),
+                locked,
                 changed: customizedFromDefault,
                 disabled: saving,
               }
@@ -120,7 +144,9 @@ export function RolesPanel({
             {member
               ? editable
                 ? `Tick or clear a box to give ${memberName(member)} more or less than a ${roleLabel(member.role).toLowerCase()} gets by default.`
-                : `What ${memberName(member)} can do. ${member.role === 'owner' ? 'The owner can do everything.' : 'Only an owner or admin can change it.'}`
+                : `What ${memberName(member)} can do. ${member.role === 'owner'
+                  ? 'The owner can do everything.'
+                  : access && !access.ok ? READ_ONLY_REASONS[access.reason] ?? refusalMessage(access.reason) : ''}`
               : 'What each role can do. Pending people see nothing until someone approves them.'}
           </CardDescription>
         </div>
@@ -155,9 +181,14 @@ export function RolesPanel({
           caption={member ? `Permissions for ${memberName(member)} compared with the ${roleLabel(member.role)} default` : 'Permissions for each role'}
         />
         {member && editable && (
+          <p className="text-xs text-muted-foreground" data-testid="matrix-lock-note">
+            Locked boxes can&apos;t be changed: deleting the household and transferring ownership belong to the owner alone, and you can&apos;t give a permission you don&apos;t have yourself.
+          </p>
+        )}
+        {member && editable && (
           <div className="flex flex-col gap-3 rounded-lg border bg-muted/40 p-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-muted-foreground" aria-live="polite">
-              {changes.length === 0
+              {saveBlocked ? saveBlocked : changes.length === 0
                 ? customizedFromDefault.size === 0
                   ? `Using the ${roleLabel(member.role).toLowerCase()} defaults.`
                   : `${customizedFromDefault.size} ${customizedFromDefault.size === 1 ? 'permission differs' : 'permissions differ'} from the default.`
@@ -172,7 +203,7 @@ export function RolesPanel({
               {changes.length > 0 && (
                 <Button variant="outline" onClick={() => setDraft(saved)} disabled={saving}>Discard</Button>
               )}
-              <Button onClick={save} disabled={saving || changes.length === 0}>
+              <Button onClick={save} disabled={saving || changes.length === 0 || Boolean(saveBlocked)}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Save permissions
               </Button>

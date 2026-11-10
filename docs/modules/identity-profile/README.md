@@ -55,7 +55,7 @@ For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for a
 - New profiles default to `role: member` and `householdId: null`.
 - `timeZone` (IANA name, at most 64 characters) is taken from the browser: whenever the profile loads and the browser's zone differs from the stored one, `AuthProvider` overwrites it (best effort; a failed write is ignored). Server-side upkeep uses it to decide when this person's overdue alert (after 07:00) and daily chore reminder fire; if it is missing or invalid, the household timezone is used.
 
-Household compatibility fields are maintained by Household Governance, not ordinary profile editing.
+Household compatibility fields are maintained by Household Governance (its server actions write `role`, `permissions` and `householdId` when a role, permission set or membership changes), not ordinary profile editing.
 
 ## Authentication, Roles, and Security
 
