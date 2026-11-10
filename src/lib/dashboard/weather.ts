@@ -9,6 +9,10 @@
 export const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search';
 export const FORECAST_ENDPOINT = 'https://api.open-meteo.com/v1/forecast';
 export const WEATHER_TTL_MS = 30 * 60_000;
+/** After a failed refresh, try again this much later (the last good report stays, marked stale). */
+export const WEATHER_RETRY_MS = 5 * 60_000;
+/** A last good report older than this is no longer shown, even as stale. */
+export const WEATHER_STALE_MAX_MS = 3 * 60 * 60_000;
 export const WEATHER_CACHE_KEY = 'homehub.dashboard.weather';
 export const MAX_CITY_LENGTH = 80;
 
@@ -97,14 +101,14 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
 
 const cacheKey = (city: string, unit: TemperatureUnit) => `${normalizeCity(city).toLowerCase()}|${unit}`;
 
-/** A cached report for this city and unit that is younger than 30 minutes, else null. */
-export function readCachedWeather(storage: StorageLike | null, city: string, unit: TemperatureUnit, now: number): WeatherReport | null {
+/** A cached report for this city and unit younger than `maxAgeMs` (30 minutes), else null. */
+export function readCachedWeather(storage: StorageLike | null, city: string, unit: TemperatureUnit, now: number, maxAgeMs = WEATHER_TTL_MS): WeatherReport | null {
   if (!storage) return null;
   try {
     const all = JSON.parse(storage.getItem(WEATHER_CACHE_KEY) ?? '{}') as Record<string, WeatherReport>;
     const entry = all[cacheKey(city, unit)];
     if (!entry || typeof entry.fetchedAt !== 'number' || typeof entry.temperature !== 'number') return null;
-    if (now - entry.fetchedAt >= WEATHER_TTL_MS || entry.fetchedAt > now) return null;
+    if (now - entry.fetchedAt >= maxAgeMs || entry.fetchedAt > now) return null;
     return entry;
   } catch {
     return null;
@@ -160,4 +164,32 @@ export async function fetchWeather(
   } catch {
     return null;
   }
+}
+
+/** The live report state per city: the last good report, and when the latest refresh failed. */
+export type WeatherEntry = { report: WeatherReport | null; failedAt: number | null };
+
+/**
+ * HP-6a: the state after a refresh. A good report replaces the entry; a failed one keeps
+ * the last good report (if it is not too old) and records the failure, so one failed
+ * fetch never wipes a good report.
+ */
+export function weatherAfterFetch(previous: WeatherEntry | undefined, report: WeatherReport | null, now: number): WeatherEntry {
+  if (report) return { report, failedAt: null };
+  const last = previous?.report ?? null;
+  return { report: last && now - last.fetchedAt < WEATHER_STALE_MAX_MS ? last : null, failedAt: now };
+}
+
+/** A report still shown after a failed refresh is stale. */
+export const isWeatherStale = (entry: WeatherEntry | undefined): boolean =>
+  Boolean(entry?.report && entry.failedAt !== null);
+
+/**
+ * HP-6b: milliseconds until the next refresh is due: `fetchedAt + TTL` for a good report,
+ * `failedAt + retry` after a failure; 0 when it is due now (or nothing is loaded yet).
+ */
+export function weatherRefreshDelay(entry: WeatherEntry | undefined, now: number): number {
+  if (!entry) return 0;
+  const due = entry.failedAt !== null ? entry.failedAt + WEATHER_RETRY_MS : (entry.report?.fetchedAt ?? now) + WEATHER_TTL_MS;
+  return Math.max(0, due - now);
 }

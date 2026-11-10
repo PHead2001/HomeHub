@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 import { assembleDashboardFacts, feedingFailureKey, type DashboardAccess, type DashboardRaw } from '../../src/lib/dashboard/assemble';
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import { FEEDING_UNAVAILABLE } from '../../src/lib/dashboard/facts';
+import type { Notification } from '../../src/lib/types';
 
 const now = new Date(2026, 7, 1, 12);
 const context = { viewer: { uid: 'u1', email: 'u1@example.test' }, now, timeZone: null, recentFeedings: 12 };
@@ -98,5 +99,32 @@ describe('assembleDashboardFacts: loading, failed and empty stay distinct', () =
     );
     const failedChores = buildMorningBrief({ unavailable: ['chores'], pantry: { total: 1, fridgeItems: 1, expired: 1, expiringSoon: 0, nearest: [] } }, { greeting: 'Hi' });
     assert.equal(failedChores.text, 'Hi. 1 pantry item expired. Some sections could not be loaded.');
+  });
+});
+
+describe('notifications: the unread count follows the clock, not the last snapshot', () => {
+  afterEach(() => mock.timers.reset());
+
+  it('drops an expired notice from the count after its expiry with no new snapshot', () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date('2026-11-09T22:00:00Z') });
+    const notice = (id: string, expiresAt: Date): Notification => ({
+      id, householdId: 'h', category: 'general', title: id, message: 'm', createdAt: new Date('2026-11-09T08:00:00Z'),
+      expiresAt, sourceType: 'test', sourceId: id, readBy: {}, dismissedBy: {},
+    });
+    // One snapshot only: the store keeps these documents.
+    const raw: DashboardRaw = {
+      notifications: [notice('soon', new Date('2026-11-10T00:30:00Z')), notice('later', new Date('2026-11-14T00:00:00Z'))],
+    };
+    const access: DashboardAccess = { ...none, notifications: true };
+    const unreadAt = () => assembleDashboardFacts(raw, new Set(), access, { ...context, now: new Date() }).facts.notifications?.unread;
+
+    assert.equal(unreadAt(), 2);
+    mock.timers.tick(2 * 60 * 60_000 + 29 * 60_000); // 00:29 UTC: not yet expired
+    assert.equal(unreadAt(), 2);
+    mock.timers.tick(2 * 60_000); // 00:31 UTC: past its expiry
+    assert.equal(unreadAt(), 1, 'the expired notice no longer counts');
+    // And a notice older than the 7-day window drops out too, still without a snapshot.
+    mock.timers.tick(7 * 86_400_000);
+    assert.equal(unreadAt(), 0);
   });
 });
