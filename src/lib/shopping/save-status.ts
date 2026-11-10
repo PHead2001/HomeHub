@@ -20,6 +20,8 @@
  * to `sending`/`uncertain`, or to `stored-locally` when the cache check passes.
  */
 
+import { pluralize } from './items';
+
 export type LocalPersistence = 'durable' | 'memory' | 'unknown';
 export type SaveState = 'saved' | 'stored-locally' | 'sending' | 'uncertain' | 'failed';
 /** `write`: set/update/delete, queued by Firestore. `transaction`: needs the server, never queued. */
@@ -207,5 +209,59 @@ export function once<T>(run: () => Promise<T>): () => Promise<T> {
   return () => {
     first ??= run();
     return first;
+  };
+}
+
+/**
+ * A write's final state if it is already known, else `pending`, without waiting:
+ * an already-settled promise wins the race against the immediate sentinel.
+ */
+export function peekSettled(settled: Promise<SettledState>): Promise<SettledState | 'pending'> {
+  return Promise.race([settled, Promise.resolve('pending' as const)]);
+}
+
+/**
+ * The toast after the batched AI call failed. Only entries whose write the server
+ * confirmed (`savedNames`) are "saved to Other"; entries still unconfirmed when the
+ * call failed (a write slower than the 4 s status wait, which may yet fail) are
+ * only said not to have been sorted. Null when there is nothing to say.
+ */
+export function categorizationNotice(
+  { savedNames, unconfirmedNames }: { savedNames: readonly string[]; unconfirmedNames: readonly string[] },
+  reasonText: string,
+): { title: string; description: string } | null {
+  const saved = savedNames.length;
+  const unconfirmed = unconfirmedNames.length;
+  if (saved === 0 && unconfirmed === 0) return null;
+  if (unconfirmed === 0) {
+    return saved === 1
+      ? { title: 'Item saved to Other', description: `${reasonText} ${savedNames[0]} stays under Other.` }
+      : { title: 'Items saved to Other', description: `${reasonText} ${pluralize(saved, 'item')} stay under Other.` };
+  }
+  const notSorted = unconfirmed === 1 ? `${unconfirmedNames[0]} was not sorted` : `${pluralize(unconfirmed, 'item')} were not sorted`;
+  const stays = saved === 0 ? '' : saved === 1 ? ` ${savedNames[0]} stays under Other.` : ` ${pluralize(saved, 'item')} stay under Other.`;
+  return { title: 'Automatic sorting failed', description: `${reasonText} ${notSorted}.${stays}` };
+}
+
+/** Which Add Item dialog, on which list, and which edit of its draft a submission came from. */
+export type DialogDraft = { session: number; listId: string | null; revision: number };
+
+/**
+ * What a late-confirmed Add Item save may do to the dialog (SH-4). The form is
+ * shared by every opening of the dialog, so a write that settles after the member
+ * closed it, opened it on another list or typed a new draft must not wipe or close
+ * that. `reset` clears the draft only while it is still the submitted one (nothing
+ * typed since, so only already-saved text is cleared); `close` closes only the same
+ * opening of the dialog on the same list. The save's success is reported either way.
+ */
+export function dialogAfterSave(
+  submitted: DialogDraft,
+  current: DialogDraft & { open: boolean },
+): { reset: boolean; close: boolean } {
+  const unchanged = submitted.revision === current.revision;
+  const sameDialog = submitted.session === current.session && submitted.listId === current.listId;
+  return {
+    reset: unchanged,
+    close: unchanged && sameDialog && current.open,
   };
 }

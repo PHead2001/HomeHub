@@ -37,7 +37,7 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
-import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite } from '@/lib/shopping/save-status';
+import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
@@ -426,6 +426,35 @@ export function ShoppingListClient({
   const { watch, setValue, getValues } = form;
   const currentQuantity = watch('quantity');
 
+  // Which opening of Add Item this is and how often its draft changed, so a save
+  // confirmed late never wipes or closes a newer draft (`dialogAfterSave`).
+  const addDialogSessionRef = useRef(0);
+  const addDraftRevisionRef = useRef(0);
+  const addDialogOpenRef = useRef(false);
+  addDialogOpenRef.current = isAddItemDialogOpen;
+  useEffect(() => {
+    addDialogSessionRef.current += 1;
+  }, [isAddItemDialogOpen]);
+  useEffect(() => {
+    return form.subscribe({
+      formState: { values: true },
+      callback: () => {
+        addDraftRevisionRef.current += 1;
+      },
+    });
+  }, [form]);
+  const currentDialogDraft = () => ({
+    session: addDialogSessionRef.current,
+    listId: selectedListIdRef.current,
+    revision: addDraftRevisionRef.current,
+  });
+  // After a confirmed save: clear and close only what still belongs to it.
+  const finishDialogSave = (submitted: DialogDraft) => {
+    const { reset, close } = dialogAfterSave(submitted, { ...currentDialogDraft(), open: addDialogOpenRef.current });
+    if (reset) form.reset({ name: '', quantity: 1, category: '' });
+    if (close) setIsAddItemDialogOpen(false);
+  };
+
   // One dialog submission at a time (SH-4c): a second Enter while it is sending is ignored.
   const dialogGuardRef = useRef(createSubmissionGuard());
   const [dialogStatus, setDialogStatus] = useState<string | null>(null);
@@ -466,12 +495,13 @@ export function ShoppingListClient({
     return outcomes;
   };
 
+  // "Saved to Other" only for entries the server confirmed; the rest were only not sorted.
   const reportCategorization = (report: CategorizationReport) => {
-    if (report.unavailable.length === 0) return;
-    const [first] = report.unavailable;
-    toast(report.unavailable.length === 1
-      ? { title: 'Item saved to Other', description: `${fallbackReasonText(report.reason)} ${first} stays under Other.` }
-      : { title: 'Items saved to Other', description: `${fallbackReasonText(report.reason)} ${pluralize(report.unavailable.length, 'item')} stay under Other.` });
+    const notice = categorizationNotice(
+      { savedNames: report.unavailable, unconfirmedNames: report.unconfirmed },
+      fallbackReasonText(report.reason),
+    );
+    if (notice) toast(notice);
   };
 
   // Only what is known: "Saved, will sync" needs the durable cache to show the write.
@@ -505,6 +535,7 @@ export function ShoppingListClient({
     const guard = dialogGuardRef.current;
     if (!guard.begin(submissionId)) return;
     const name = normalizeItemName(values.name);
+    const submittedDraft = currentDialogDraft();
     let keepGuard = false;
     try {
       const outcomes = await addEntries(
@@ -528,9 +559,9 @@ export function ShoppingListClient({
           guard.end(submissionId);
           setDialogStatus(null);
           if (final === 'saved') {
+            // Reported even when the member has moved on to another draft or list.
             reportAddResults([{ ...outcome, state: 'saved' }]);
-            form.reset({ name: '', quantity: 1, category: '' });
-            setIsAddItemDialogOpen(false);
+            finishDialogSave(submittedDraft);
           }
           // A late failure was reported by onLateError; the values are still in the dialog.
         });
@@ -538,8 +569,7 @@ export function ShoppingListClient({
       }
       setDialogStatus(null);
       reportAddResults(outcomes);
-      form.reset({ name: '', quantity: 1, category: '' });
-      setIsAddItemDialogOpen(false);
+      finishDialogSave(submittedDraft);
     } catch (error) {
       toastError(error, 'Could not add the item');
     } finally {

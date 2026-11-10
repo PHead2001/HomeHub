@@ -30,7 +30,7 @@ import type { ShoppingListItem } from '@/lib/types';
 import { mergeIntoNeededItem } from './item-transactions';
 import { findMergeTarget, itemNameKey, type QuickAddEntry } from './items';
 import { initialCategory, rememberedCategories, shouldApplyLateCategory, type CategorySource } from './local-categories';
-import { trackWrite, type SaveState, type SettledState, type TrackWriteDeps } from './save-status';
+import { peekSettled, trackWrite, type SaveState, type SettledState, type TrackWriteDeps } from './save-status';
 
 export type AddEntry = QuickAddEntry & { size?: number; sizeUnit?: string };
 
@@ -52,8 +52,13 @@ export type CategorizationReport = {
   requested: number;
   /** Names whose category the answer changed. */
   applied: string[];
-  /** Names left under Other because the call failed. */
+  /**
+   * The call failed: names whose write the server had confirmed by then (they
+   * stay under Other), and names still unconfirmed (only "not sorted": their
+   * write may yet fail). Entries that had already failed are in neither.
+   */
   unavailable: string[];
+  unconfirmed: string[];
   reason?: string;
 };
 
@@ -184,7 +189,7 @@ export async function addItemsToList({
 
   const batch = toCategorize.slice(0, MAX_CATEGORIZE_BATCH);
   const categorization = batch.length === 0
-    ? Promise.resolve<CategorizationReport>({ requested: 0, applied: [], unavailable: [] })
+    ? Promise.resolve<CategorizationReport>({ requested: 0, applied: [], unavailable: [], unconfirmed: [] })
     : categorizeLater({ householdId, listId, categories, batch, active });
   return { outcomes, categorization };
 }
@@ -225,7 +230,14 @@ async function categorizeLater({
   try {
     answer = await run;
   } catch (error) {
-    return { requested: names.length, applied: [], unavailable: names, reason: aiReason(error) };
+    const states = await Promise.all(batch.map(({ settled }) => peekSettled(settled)));
+    return {
+      requested: names.length,
+      applied: [],
+      unavailable: names.filter((_, index) => states[index] === 'saved'),
+      unconfirmed: names.filter((_, index) => states[index] === 'pending'),
+      reason: aiReason(error),
+    };
   }
 
   const listRef = doc(db, 'households', householdId, 'shopping-lists', listId);
@@ -255,5 +267,5 @@ async function categorizeLater({
     if (aiCategory.toLowerCase() !== 'other') remember(householdId, name, aiCategory);
     if (changed) applied.push(name);
   }));
-  return { requested: names.length, applied, unavailable: [] };
+  return { requested: names.length, applied, unavailable: [], unconfirmed: [] };
 }
