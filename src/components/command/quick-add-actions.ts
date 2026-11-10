@@ -104,7 +104,9 @@ export async function logFeeding({
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
   // type of the pet's latest feeding, and no comment.
   const latest = await latestFeedings(householdId, petId);
-  const known = { ...knownFromLogs(latest.flat(), new Date(), timeZone), countToday: null };
+  // The newest 20 per date shape, as the pet cards read them: today's count
+  // (household day) feeds the complete-day check when the state lags behind.
+  const known = knownFromLogs(latest.flat(), new Date(), timeZone);
   return feedPet({
     householdId,
     petId,
@@ -122,7 +124,7 @@ export async function logFeeding({
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
 
 /**
- * The newest feeding in each date shape (Timestamps and older ISO strings, which
+ * The newest 20 feedings in each date shape (Timestamps and older ISO strings, which
  * Firestore orders separately) with offline-aware reads: the food type to reuse
  * (`foodTypeFromLatest`: `knownFoodType` of the latest, Dry without readable
  * history, as Pets picks it) and the last-fed fallback for a pet without a
@@ -130,7 +132,7 @@ const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
  */
 async function latestFeedings(householdId: string, petId: string): Promise<(RawDoc & { date: unknown })[][]> {
   const logs = petLogsCollection(householdId, petId, 'feeding-logs');
-  const latest = (floor: unknown) => getDocsOfflineAware(query(logs, where('date', '>=', floor), orderBy('date', 'desc'), limit(1)))
+  const latest = (floor: unknown) => getDocsOfflineAware(query(logs, where('date', '>=', floor), orderBy('date', 'desc'), limit(20)))
     .then((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as RawDoc & { date: unknown }))
     .catch(() => []);
   return Promise.all([latest(MIN_TIMESTAMP), latest('')]);

@@ -43,6 +43,8 @@ export type FeedingStateView = {
   countOnDay: number;
   /** The state before the latest feed (for Undo); null when unknown. */
   hasPrev: boolean;
+  /** The log `prev` points at (the feed an Undo would bring back); null when none. */
+  prevLogId: string | null;
 };
 
 const text = (value: unknown): string | null => (typeof value === 'string' && value.length > 0 ? value : null);
@@ -60,6 +62,7 @@ export function readFeedingState(data: Record<string, unknown> | null | undefine
     day: typeof data.day === 'string' && DAY.test(data.day) ? data.day : null,
     countOnDay: count,
     hasPrev: Boolean(data.prev && typeof data.prev === 'object'),
+    prevLogId: data.prev && typeof data.prev === 'object' ? text((data.prev as Record<string, unknown>).lastLogId) : null,
   };
 }
 
@@ -158,6 +161,22 @@ export function lastFedLine(lastFedAt: Date | null, lastFedByName: string | null
   return `Last fed ${formatAgo(lastFedAt, now)}${lastFedByName ? ` by ${lastFedByName}` : ''}`;
 }
 
+/**
+ * The day count to add a feeding to: the state's count, reconciled with the
+ * feedings this client has loaded for today's household day (`known.countToday`).
+ * A feed queued offline never reaches the state, so once it syncs the logs can
+ * hold more feedings today than the state counts; the larger number wins.
+ */
+export function reconcileDayCount(state: FeedingStateView | null, known: KnownFeedings | null | undefined, today: string): { day: string; countOnDay: number } {
+  const loaded = known?.countToday ?? null;
+  if (!state) return { day: today, countOnDay: loaded ?? 0 };
+  const day = state.day ?? today;
+  if (day === today) return { day, countOnDay: Math.max(state.countOnDay, loaded ?? 0) };
+  // The state still counts an earlier day: today's loaded feedings start today's count.
+  if (day < today && loaded !== null && loaded > 0) return { day: today, countOnDay: loaded };
+  return { day, countOnDay: state.countOnDay };
+}
+
 /** The day count after logging a feeding on `logDay`. */
 export function countAfterFeed(base: { day: string; countOnDay: number }, logDay: string): { day: string; countOnDay: number } {
   if (logDay === base.day) return { day: base.day, countOnDay: base.countOnDay + 1 };
@@ -178,24 +197,33 @@ export function becomesLatest(fedAt: Date, backdated: boolean, state: FeedingSta
 
 export type UndoPlan =
   | { kind: 'none' }
-  /** The undone log was the latest feed: restore `prev` (who and when) and set the count. */
-  | { kind: 'restore'; day: string | null; countOnDay: number }
-  /** An older log on the counted day: only the count drops. */
-  | { kind: 'count'; day: string | null; countOnDay: number };
+  /**
+   * The undone log was the latest feed: restore `prev` (who and when) when its
+   * log still exists (`restorePrev`), otherwise clear the latest feed; set the count.
+   */
+  | { kind: 'restore'; day: string | null; countOnDay: number; restorePrev: boolean }
+  /** An older log: the count drops (when it was on the counted day), and `prev` is cleared when it pointed at this log. */
+  | { kind: 'count'; day: string | null; countOnDay: number; dropPrev: boolean };
 
 /**
  * How deleting a feeding changes the state (Undo and history deletes). Only the
  * fields that log affected change: the previous feed is restored only when the
  * state still points at this log, so an Undo never writes an old snapshot over a
- * newer feed by someone else. Undoing the record does not undo the meal: the
- * next feed still runs the last-fed check (audit 17.2, WT-20).
+ * newer feed by someone else, and never brings back a feed whose log is gone:
+ * deleting the feed `prev` points at clears `prev`, and restoring needs `prev`'s
+ * log to still exist (`prevSurvives`, read in the same transaction). Undoing the
+ * record does not undo the meal: the next feed still runs the last-fed check
+ * (audit 17.2, WT-20).
  */
-export function planUndo(state: FeedingStateView | null, log: { id: string; day: string | null }): UndoPlan {
+export function planUndo(state: FeedingStateView | null, log: { id: string; day: string | null }, prevSurvives = true): UndoPlan {
   if (!state) return { kind: 'none' };
   const sameDay = log.day !== null && log.day === state.day;
   const countOnDay = sameDay ? Math.max(0, state.countOnDay - 1) : state.countOnDay;
-  if (state.lastLogId === log.id) return { kind: 'restore', day: state.day, countOnDay };
-  if (sameDay && state.countOnDay > 0) return { kind: 'count', day: state.day, countOnDay };
+  if (state.lastLogId === log.id) {
+    return { kind: 'restore', day: state.day, countOnDay, restorePrev: state.prevLogId !== null && prevSurvives };
+  }
+  const dropPrev = state.prevLogId === log.id;
+  if (dropPrev || (sameDay && state.countOnDay > 0)) return { kind: 'count', day: state.day, countOnDay, dropPrev };
   return { kind: 'none' };
 }
 

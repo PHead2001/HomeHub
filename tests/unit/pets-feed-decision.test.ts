@@ -15,6 +15,7 @@ import {
   knownFromLogs,
   planUndo,
   readFeedingState,
+  reconcileDayCount,
   type FeedingStateView,
 } from '../../src/lib/pets/feed-decision';
 
@@ -31,6 +32,7 @@ function state(overrides: Partial<FeedingStateView> = {}): FeedingStateView {
     day: '2026-11-10',
     countOnDay: 1,
     hasPrev: true,
+    prevLogId: 'log-0',
     ...overrides,
   };
 }
@@ -120,6 +122,27 @@ describe('feed operation: the state document', () => {
     assert.equal(read?.day, null);
     assert.equal(read?.countOnDay, 0);
     assert.equal(read?.hasPrev, false);
+    assert.equal(read?.prevLogId, null);
+    assert.equal(readFeedingState({ prev: { lastLogId: 'a' } })?.prevLogId, 'a');
+  });
+
+  it('reconciles the day count with synced feedings the state never counted (online, offline, online)', () => {
+    const today = '2026-11-10';
+    // Online feed 1 (state 1), offline feed 2 synced as a log only, online feed 3: 3, not 2.
+    const afterOffline = state({ day: today, countOnDay: 1 });
+    const base = reconcileDayCount(afterOffline, { lastFedAt: null, lastFedByName: null, countToday: 2 }, today);
+    assert.deepEqual(base, { day: today, countOnDay: 2 });
+    assert.deepEqual(countAfterFeed(base, today), { day: today, countOnDay: 3 });
+    // The state never drops below its own count; unknown loaded count keeps it.
+    assert.deepEqual(reconcileDayCount(state({ day: today, countOnDay: 3 }), { lastFedAt: null, lastFedByName: null, countToday: 1 }, today), { day: today, countOnDay: 3 });
+    assert.deepEqual(reconcileDayCount(state({ day: today, countOnDay: 1 }), { lastFedAt: null, lastFedByName: null, countToday: null }, today), { day: today, countOnDay: 1 });
+    // The state still counts yesterday, but today already has synced feedings.
+    assert.deepEqual(reconcileDayCount(state({ day: '2026-11-09', countOnDay: 2 }), { lastFedAt: null, lastFedByName: null, countToday: 1 }, today), { day: today, countOnDay: 1 });
+    assert.deepEqual(reconcileDayCount(state({ day: '2026-11-09', countOnDay: 2 }), null, today), { day: '2026-11-09', countOnDay: 2 });
+    assert.deepEqual(reconcileDayCount(null, { lastFedAt: null, lastFedByName: null, countToday: 2 }, today), { day: today, countOnDay: 2 });
+    // The check also sees the reconciled count: two synced feedings complete a two-a-day plan.
+    const check = feedConfirmDecision({ state: state({ day: today, countOnDay: 1, lastFedAt: at('2026-11-10T12:00:00Z') }), known: { lastFedAt: null, lastFedByName: null, countToday: 2 }, now: at('2026-11-10T22:00:00Z'), timeZone: CHI, perDay: 2 });
+    assert.equal(check.reason, 'complete');
   });
 
   it('counts per household day; backdated entries count only on their own day', () => {
@@ -140,15 +163,30 @@ describe('feed operation: the state document', () => {
 
 describe('feed operation: undo planning (PE-2, WT-20)', () => {
   it('undoing the latest feed restores prev and drops the count', () => {
-    assert.deepEqual(planUndo(state({ countOnDay: 2 }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 1 });
+    assert.deepEqual(planUndo(state({ countOnDay: 2 }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 1, restorePrev: true });
     // The latest feed logged on another day (just past midnight): restore, count unchanged.
-    assert.deepEqual(planUndo(state({ countOnDay: 2 }), { id: 'log-1', day: '2026-11-09' }), { kind: 'restore', day: '2026-11-10', countOnDay: 2 });
-    assert.deepEqual(planUndo(state({ countOnDay: 0 }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0 });
+    assert.deepEqual(planUndo(state({ countOnDay: 2 }), { id: 'log-1', day: '2026-11-09' }), { kind: 'restore', day: '2026-11-10', countOnDay: 2, restorePrev: true });
+    assert.deepEqual(planUndo(state({ countOnDay: 0 }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0, restorePrev: true });
+    // No prev: the latest feed is cleared.
+    assert.deepEqual(planUndo(state({ prevLogId: null }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0, restorePrev: false });
+  });
+
+  it('a deleted predecessor is never restored (feed A, feed B, delete A, delete B)', () => {
+    // After A then B: latest B, prev A. Deleting A clears prev (and lowers the count).
+    const afterB = state({ lastLogId: 'B', prevLogId: 'A', countOnDay: 2 });
+    assert.deepEqual(planUndo(afterB, { id: 'A', day: '2026-11-10' }), { kind: 'count', day: '2026-11-10', countOnDay: 1, dropPrev: true });
+    // Even when A was on another day, prev is still cleared.
+    assert.deepEqual(planUndo(afterB, { id: 'A', day: '2026-11-09' }), { kind: 'count', day: '2026-11-10', countOnDay: 2, dropPrev: true });
+    // Then deleting B clears the latest feed instead of restoring A.
+    const afterDeleteA = state({ lastLogId: 'B', prevLogId: null, hasPrev: false, countOnDay: 1 });
+    assert.deepEqual(planUndo(afterDeleteA, { id: 'B', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0, restorePrev: false });
+    // A prev whose log was deleted some other way (an old client) is not restored either.
+    assert.deepEqual(planUndo(afterB, { id: 'B', day: '2026-11-10' }, false), { kind: 'restore', day: '2026-11-10', countOnDay: 1, restorePrev: false });
   });
 
   it('after a newer feed by someone else, only the count changes (never an old snapshot over newer data)', () => {
     const newer = state({ lastLogId: 'log-2', lastFedByName: 'Alex', countOnDay: 2 });
-    assert.deepEqual(planUndo(newer, { id: 'log-1', day: '2026-11-10' }), { kind: 'count', day: '2026-11-10', countOnDay: 1 });
+    assert.deepEqual(planUndo(newer, { id: 'log-1', day: '2026-11-10' }), { kind: 'count', day: '2026-11-10', countOnDay: 1, dropPrev: false });
     assert.deepEqual(planUndo(newer, { id: 'log-1', day: '2026-11-09' }), { kind: 'none' });
     assert.deepEqual(planUndo(newer, { id: 'log-1', day: null }), { kind: 'none' });
     assert.deepEqual(planUndo(null, { id: 'log-1', day: '2026-11-10' }), { kind: 'none' });

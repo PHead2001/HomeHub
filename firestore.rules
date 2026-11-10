@@ -738,8 +738,20 @@ service cloud.firestore {
       return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/feeding-logs/$(logId);
     }
 
+    // `snapshot` (a `prev` map) holds exactly the six stored fields of `state`.
+    function feedingStateCopies(snapshot, state) {
+      return snapshot is map &&
+        snapshot.get('lastLogId', null) == state.get('lastLogId', null) &&
+        snapshot.get('lastFedAt', null) == state.get('lastFedAt', null) &&
+        snapshot.get('lastFedByUid', null) == state.get('lastFedByUid', null) &&
+        snapshot.get('lastFedByName', null) == state.get('lastFedByName', null) &&
+        snapshot.get('day', null) == state.get('day', null) &&
+        snapshot.get('countOnDay', 0) == state.get('countOnDay', 0);
+    }
+
     // A new latest feed: by the writer, pointing at a log the writer owns that
-    // exists once this write commits, with `prev` = the state it replaces.
+    // exists once this write commits. `prev` is exactly the replaced state (null
+    // only when there was none), so an Undo can only bring back what was there.
     function feedingStateFed(householdId, petId) {
       let after = request.resource.data;
       return after.lastLogId is string &&
@@ -747,8 +759,8 @@ service cloud.firestore {
         (resource == null || after.lastLogId != resource.data.get('lastLogId', null)) &&
         existsAfter(feedingLogPath(householdId, petId, after.lastLogId)) &&
         getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('loggedByUid', null) == request.auth.uid &&
-        (resource == null || after.get('prev', null) == null ||
-          after.prev.get('lastLogId', null) == resource.data.get('lastLogId', null));
+        ((resource == null && after.get('prev', null) == null) ||
+          (resource != null && feedingStateCopies(after.get('prev', null), resource.data)));
     }
 
     // Only the day count changes (an older backdated entry, or deleting an older log).
@@ -757,8 +769,25 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay']);
     }
 
+    // The log a stored `prev` points at is gone once this write commits (or it points at none).
+    function feedingPrevGone(householdId, petId, prev) {
+      return prev == null || !(prev.get('lastLogId', null) is string) ||
+        !existsAfter(feedingLogPath(householdId, petId, prev.lastLogId));
+    }
+
+    // Deleting the feed `prev` points at (an older log): `prev` is cleared with
+    // the count, so a later Undo never brings back a deleted feed.
+    function feedingStatePrevDropped(householdId, petId) {
+      return resource != null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay', 'prev']) &&
+        request.resource.data.get('prev', null) == null &&
+        resource.data.get('prev', null) != null &&
+        feedingPrevGone(householdId, petId, resource.data.prev);
+    }
+
     // Undo of the latest feed: that log is gone after this write, and the latest
-    // feed becomes exactly the stored `prev` (or nothing), never another snapshot.
+    // feed becomes exactly the stored `prev` while its log still exists, or
+    // nothing when there is no surviving `prev`; never another snapshot.
     function feedingStateRestored(householdId, petId) {
       let before = resource.data;
       let after = request.resource.data;
@@ -766,9 +795,10 @@ service cloud.firestore {
       return before.get('lastLogId', null) is string &&
         !existsAfter(feedingLogPath(householdId, petId, before.lastLogId)) &&
         after.get('prev', null) == null &&
-        ((prev == null && after.lastLogId == null && after.lastFedAt == null &&
+        ((feedingPrevGone(householdId, petId, prev) &&
+            after.lastLogId == null && after.lastFedAt == null &&
             after.lastFedByUid == null && after.lastFedByName == null) ||
-          (prev != null &&
+          (!feedingPrevGone(householdId, petId, prev) &&
             after.lastLogId == prev.get('lastLogId', null) &&
             after.lastFedAt == prev.get('lastFedAt', null) &&
             after.lastFedByUid == prev.get('lastFedByUid', null) &&
@@ -1126,7 +1156,8 @@ service cloud.firestore {
             validFeedingState(request.resource.data) &&
             ((hasHouseholdPermission(householdId, 'pets.addLogs') && feedingStateFed(householdId, petId)) ||
               ((hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
-                (feedingStateCounted() || feedingStateRestored(householdId, petId))));
+                (feedingStateCounted() || feedingStatePrevDropped(householdId, petId) ||
+                  feedingStateRestored(householdId, petId))));
           allow delete: if false;
         }
 

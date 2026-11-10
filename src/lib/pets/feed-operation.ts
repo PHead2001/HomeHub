@@ -36,6 +36,7 @@ import {
   feedConfirmDecision,
   householdDay,
   planUndo,
+  reconcileDayCount,
   readFeedingState,
   type FeedCheck,
   type KnownFeedings,
@@ -134,8 +135,8 @@ export async function feedPet(input: FeedPetInput): Promise<FeedPetResult> {
     const logRef = doc(logsRef(householdId, petId));
     tx.set(logRef, logData(input, fedAt, repeat, !backdated));
 
-    const base = state ? { day: state.day ?? today, countOnDay: state.countOnDay } : { day: today, countOnDay: known?.countToday ?? 0 };
-    const count = countAfterFeed(base, householdDay(fedAt, timeZone));
+    // Feedings that synced from offline are in the logs but not in the state's count.
+    const count = countAfterFeed(reconcileDayCount(state, known, today), householdDay(fedAt, timeZone));
     if (becomesLatest(fedAt, backdated, state, known)) {
       tx.set(stateRef(householdId, petId), {
         lastLogId: logRef.id,
@@ -203,11 +204,15 @@ export async function undoFeed(input: {
     const logSnapshot = await tx.get(logRef);
     if (!logSnapshot.exists()) return;
     const raw = stateSnapshot.exists() ? stateSnapshot.data() : null;
+    const state = readFeedingState(raw);
+    // Restoring `prev` only brings back a feed whose log still exists.
+    const prevLogId = state?.lastLogId === logId ? state.prevLogId : null;
+    const prevSurvives = prevLogId ? (await tx.get(doc(logsRef(householdId, petId), prevLogId))).exists() : false;
     const date = toDate(logSnapshot.get('date'));
-    const plan = planUndo(readFeedingState(raw), { id: logId, day: date ? householdDay(date, timeZone) : null });
+    const plan = planUndo(state, { id: logId, day: date ? householdDay(date, timeZone) : null }, prevSurvives);
     tx.delete(logRef);
     if (plan.kind === 'restore') {
-      const prev = previousOf(raw?.prev ?? null);
+      const prev = plan.restorePrev ? previousOf(raw?.prev ?? null) : null;
       tx.set(stateRef(householdId, petId), {
         lastLogId: prev?.lastLogId ?? null,
         lastFedAt: prev?.lastFedAt ?? null,
@@ -218,7 +223,12 @@ export async function undoFeed(input: {
         prev: null,
       });
     } else if (plan.kind === 'count') {
-      tx.update(stateRef(householdId, petId), { day: plan.day, countOnDay: plan.countOnDay });
+      // Deleting the feed `prev` points at clears `prev`, so no later Undo restores it.
+      tx.update(stateRef(householdId, petId), {
+        day: plan.day,
+        countOnDay: plan.countOnDay,
+        ...(plan.dropPrev ? { prev: null } : {}),
+      });
     }
   });
   return 'saved';
