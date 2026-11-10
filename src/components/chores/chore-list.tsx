@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { MemberAvatar } from '@/components/member-avatar';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chores/list';
-import { completerLabel } from '@/lib/chores/completion';
+import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
 import { cn, stableSlugify } from '@/lib/utils';
@@ -31,6 +31,10 @@ export type ChoreListHandlers = {
 type ChoreListProps = ChoreListHandlers & {
   entries: ToDoEntry[];
   today: string;
+  /** Today in the household's timezone: completion opens on the chore's due day there (as on the server). */
+  householdToday: string;
+  /** The household's timezone, for reading due dates the way the server does. */
+  timeZone: string | undefined;
   usersByEmail: Map<string, HomeHubUser>;
   users: HomeHubUser[];
   colors: Map<string, MemberColor>;
@@ -61,8 +65,9 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   const due = choreDueKey(chore);
   const isCompleted = chore.isCompleted;
   const isOverdue = !isCompleted && due !== '' && due < today;
-  // Chores can be completed from their due day on (the server refuses earlier ones, CH-2).
-  const isFuture = !isCompleted && due !== '' && due > today;
+  // Chores can be completed from their due day on, judged in the household's
+  // timezone exactly as the server judges it (it refuses earlier ones, CH-2).
+  const isFuture = !isCompleted && isDueAfterHouseholdDay(chore, props.householdToday, props.timeZone);
   const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
   const isOpen = props.openIds.has(chore.id);
   const user = props.usersByEmail.get(chore.assignedToEmail);

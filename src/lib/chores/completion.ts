@@ -13,7 +13,7 @@
  *   still matches, so an Undo can never revert someone else's later completion.
  */
 import { UNDO_WINDOW_MS } from '../undo-window';
-import { isDayString, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
+import { addDays, isDayString, localDay, safeTimeZone, toDay, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 
 /** Undo is offered this long after completing. */
 export const CHORE_UNDO_MS = UNDO_WINDOW_MS;
@@ -62,6 +62,22 @@ export const COMPLETION_FIELDS = [
   'completedAt', 'completedAtServer', 'completedByUid', 'completedByEmail', 'completedByName', 'completionId',
 ] as const;
 
+/** Firestore's limit on a document ID, in UTF-8 bytes. */
+export const MAX_DOC_ID_BYTES = 1500;
+
+/**
+ * A chore document ID as Firestore allows it: one non-empty path segment (no
+ * '/'), at most 1500 UTF-8 bytes, not '.' or '..', not reserved (`__…__`).
+ * Upkeep's recurring IDs (`recurringChoreId`: template ID, room ID, day and
+ * assignee email) can be well over 200 characters, so the generic 200-character
+ * `isDocId` would refuse legitimate chores.
+ */
+export function isChoreDocId(id: unknown): id is string {
+  if (typeof id !== 'string' || id === '' || id.includes('/')) return false;
+  if (id === '.' || id === '..' || /^__.*__$/.test(id)) return false;
+  return new TextEncoder().encode(id).length <= MAX_DOC_ID_BYTES;
+}
+
 const str = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
 
 /** A list of strings (at most 100, each at most 500 characters), or null. */
@@ -83,10 +99,31 @@ export function householdDueDay(chore: Pick<StoredChore, 'originalDueDate' | 'du
   return toDay(chore.dueDate, zone) ?? toDay(chore.originalDueDate, zone);
 }
 
+/** Today (`YYYY-MM-DD`) in the household's timezone: the day completion eligibility is judged on. */
+export function householdToday(now: Date, timeZone: unknown): string {
+  return localDay(now, safeTimeZone(timeZone));
+}
+
+/** Milliseconds until the next midnight in the household's timezone (at least one second). */
+export function msUntilHouseholdMidnight(now: Date, timeZone: unknown): number {
+  const zone = safeTimeZone(timeZone);
+  const next = Date.parse(zonedMidnightIso(addDays(localDay(now, zone), 1), zone));
+  return Math.max(1000, next - now.getTime());
+}
+
+/**
+ * True when the chore is due after `today`, a household-local day
+ * (`householdToday`). The client disables completion with this and the server
+ * refuses with it (`completionEligibility`), so both judge the same day.
+ */
+export function isDueAfterHouseholdDay(chore: Pick<StoredChore, 'originalDueDate' | 'dueDate'>, today: string, timeZone: unknown): boolean {
+  const due = householdDueDay(chore, safeTimeZone(timeZone));
+  return due !== null && due > today;
+}
+
 /** 'early' when the chore is due after today in the household's timezone (CH-2). */
 export function completionEligibility(chore: Pick<StoredChore, 'originalDueDate' | 'dueDate'>, now: Date, timeZone: string): 'ok' | 'early' {
-  const due = householdDueDay(chore, timeZone);
-  return due !== null && due > localDay(now, safeTimeZone(timeZone)) ? 'early' : 'ok';
+  return isDueAfterHouseholdDay(chore, householdToday(now, timeZone), timeZone) ? 'early' : 'ok';
 }
 
 /** What the stored chore says about its current completion. */

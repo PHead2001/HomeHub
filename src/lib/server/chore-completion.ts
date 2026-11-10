@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { FieldValue, type DocumentReference, type Firestore, type Transaction } from 'firebase-admin/firestore';
 import {
   COMPLETION_FIELDS,
+  isChoreDocId,
   MAX_COMPLETION_BATCH,
   planCompletion,
   planReopen,
@@ -39,8 +40,10 @@ const householdRef = (db: Firestore, householdId: string) => {
   return db.collection('households').doc(householdId);
 };
 
+// Chore IDs use Firestore's own limits (`isChoreDocId`): upkeep's recurring IDs
+// can exceed the 200 characters `isDocId` allows.
 const choreIdOf = (value: unknown): string => {
-  if (!isDocId(value)) throw new ChoreCompletionError('invalid');
+  if (!isChoreDocId(value)) throw new ChoreCompletionError('invalid');
   return value;
 };
 

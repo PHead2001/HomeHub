@@ -99,6 +99,22 @@ describe('completing chores on the server', () => {
     assert.deepEqual(missing, { choreId: 'nope', status: 'refused', refused: 'missing' });
     await assert.rejects(completeChoresAs(adminDb, sam, HOUSE, { choreIds: [] }, AFTER_MIDNIGHT));
     await assert.rejects(completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['a/b'] }, AFTER_MIDNIGHT));
+    await assert.rejects(completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['__reserved__'] }, AFTER_MIDNIGHT));
+    await assert.rejects(completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['a'.repeat(1501)] }, AFTER_MIDNIGHT));
+  });
+
+  test('a recurring chore with an ID over 200 characters can be completed, undone and reopened', async () => {
+    const template = `${'t'.repeat(60)}-${'A'.repeat(20)}`;
+    const room = `${'r'.repeat(60)}-${'B'.repeat(20)}`;
+    const id = recurringChoreId(template, room, '2026-11-05', `${'someone.long'.repeat(8)}@example.test`);
+    assert.ok(id.length > 200);
+    await seedChore(id);
+    const [done] = await completeChoresAs(adminDb, sam, HOUSE, { choreIds: [id] }, AFTER_MIDNIGHT);
+    assert.ok(done.status === 'completed');
+    const undone = await undoChoreCompletionAs(adminDb, HOUSE, { choreId: id, completionId: done.completion.completionId! });
+    assert.equal(undone.status, 'undone');
+    assert.equal((await completeChoresAs(adminDb, sam, HOUSE, { choreIds: [id] }, AFTER_MIDNIGHT))[0].status, 'completed');
+    assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: id })).status, 'reopened');
   });
 });
 

@@ -42,8 +42,8 @@ import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
-import { useToday } from '@/components/chores/use-today';
-import { completionFields, restoreChoreFields } from '@/lib/chores/patch';
+import { useHouseholdToday, useToday } from '@/components/chores/use-today';
+import { applyRefreshedChores, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { morphStyle } from '@/lib/motion';
@@ -74,7 +74,7 @@ function writeFlag(key: string) {
 }
 
 export function ChoreChartClient() {
-  const { currentUser, currentMember, permissions } = useAuth();
+  const { currentUser, currentMember, household, permissions } = useAuth();
   const { toast, toastError } = useToast();
   const capabilities = useMemo(() => choreCapabilities(permissions), [permissions]);
   const isManager = currentMember?.role === 'owner' || currentMember?.role === 'admin';
@@ -504,6 +504,8 @@ export function ChoreChartClient() {
   /* ---------------------------------------------------------------------- */
 
   const today = useToday();
+  // Completion eligibility follows the household's day, as on the server (CH-2).
+  const householdDay = useHouseholdToday(household?.timeZone);
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
@@ -531,25 +533,34 @@ export function ChoreChartClient() {
     const saved = new Map(choresRef.current.filter(c => ids.includes(c.id)).map(c => [c.id, completionFields(c)]));
     patchChores(ids, chore => ({ ...chore, ...reopenedChoreFields() }));
     const results = await Promise.all(tickets.map(ticket => undoCompletionOnServer(householdId, ticket)));
-    // Put back only the chores whose Undo did not happen; keep anything else that changed meanwhile.
-    const notUndone = new Map<string, Partial<ChoreRecord>>();
-    const restoredSteps = new Map<string, string[]>();
-    tickets.forEach((ticket, index) => {
-      const result = results[index];
-      if (!result.ok || result.data.status !== 'undone') {
-        const fields = saved.get(ticket.choreId);
-        if (fields) notUndone.set(ticket.choreId, fields);
-      } else if (result.data.completedSubTasks) {
-        restoredSteps.set(ticket.choreId, result.data.completedSubTasks);
-      }
-    });
+    // Undone, or already reopened by someone else ('open'): the chore stays open.
+    // Only a request that never ran puts back the saved completion; a chore that
+    // changed since ('stale': completed again, 'missing': deleted) is re-read, as
+    // the saved snapshot is outdated.
+    const settled = settleUndo(ids, results);
+    const notUndone = new Map(settled.restore.flatMap(id => (saved.has(id) ? [[id, saved.get(id)!] as const] : [])));
     setAssignedChores(current => restoreChoreFields(current, notUndone).map(chore => (
-      restoredSteps.has(chore.id) ? { ...chore, completedSubTasks: restoredSteps.get(chore.id) } : chore
+      settled.steps.has(chore.id) ? { ...chore, completedSubTasks: settled.steps.get(chore.id) } : chore
     )));
     const failure = results.find(result => !result.ok);
     if (failure && !failure.ok) toast({ variant: 'destructive', title: completionFailureMessage(failure, 'undo') });
-    else if (notUndone.size > 0) toast({ title: 'Already changed', description: 'Someone changed this chore since, so it was left as it is.' });
-  }, [currentUser?.householdId, patchChores, toast]);
+    if (settled.refresh.length === 0) return;
+    const choresCollection = getCollectionRef('chores');
+    const fresh = new Map<string, Record<string, unknown> | null>();
+    if (choresCollection) {
+      await Promise.all(settled.refresh.map(async id => {
+        try {
+          const snap = await getDoc(doc(choresCollection, id));
+          fresh.set(id, snap.exists() ? snap.data() : null);
+        } catch {
+          // Unreadable now: fall back to the saved snapshot below.
+        }
+      }));
+    }
+    const unread = new Map(settled.refresh.flatMap(id => (!fresh.has(id) && saved.has(id) ? [[id, saved.get(id)!] as const] : [])));
+    setAssignedChores(current => restoreChoreFields(applyRefreshedChores(current, fresh), unread));
+    if (!failure) toast({ title: 'Already changed', description: 'Someone changed this chore since, so it was left as it is.' });
+  }, [currentUser?.householdId, getCollectionRef, patchChores, toast]);
 
   const completeChores = useCallback(async (chores: readonly ChoreRecord[], origin: DOMRect | null) => {
     const householdId = currentUser?.householdId;
@@ -817,6 +828,8 @@ export function ChoreChartClient() {
 
   const listProps = {
     today,
+    householdToday: householdDay,
+    timeZone: household?.timeZone,
     usersByEmail,
     users: householdUsers as HomeHubUser[],
     colors: memberColors,
