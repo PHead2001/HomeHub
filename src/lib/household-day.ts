@@ -2,8 +2,8 @@
  * The household's "today" (D-6). Every day-based calculation on a shared screen uses
  * the household's own time zone (`household.timeZone`), so a phone travelling in
  * another zone and the wall tablet at home agree on which chores are due today, what
- * was done today and when the day rolls over. The device zone is used only when the
- * household has no (valid) zone. Date-only values (`yyyy-MM-dd`, such as a chore's
+ * was done today and when the day rolls over. A household with no (valid) zone uses
+ * the server default (America/Chicago), as reminders do. Date-only values (`yyyy-MM-dd`, such as a chore's
  * `originalDueDate`) stay date-only and are compared as strings with this key.
  *
  * Reusable by any module: `householdToday(tz, now)` is pure, `useHouseholdToday(tz)`
@@ -14,7 +14,7 @@
 // A namespace import keeps this file importable from server code (server actions need the
 // same day; the react-server build has no useState), while the hook runs only on the client.
 import * as React from 'react';
-import { addDays, localDay, zonedMidnightIso } from '../../functions/src/shared/calendar';
+import { DEFAULT_TIME_ZONE, addDays, localDay, zonedMidnightIso } from '../../functions/src/shared/calendar';
 
 /** Re-check at least this often, so a clock change or a throttled timer cannot strand the day. */
 const MAX_TIMER_MS = 60 * 60 * 1000;
@@ -41,9 +41,13 @@ export function deviceTimeZone(): string {
   }
 }
 
-/** The zone "today" is computed in: the household's, else the device's. */
+/**
+ * The zone "today" is computed in: the household's, else the same default the server
+ * uses for reminders and recurring chores (`DEFAULT_TIME_ZONE`), so the dashboard and
+ * the server never disagree about the day.
+ */
 export function householdDayZone(timeZone?: string | null): string {
-  return validZone(timeZone) ? timeZone : deviceTimeZone();
+  return validZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
 }
 
 /** `yyyy-MM-dd` of the household's current calendar day. */

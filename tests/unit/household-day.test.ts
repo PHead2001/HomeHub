@@ -23,12 +23,14 @@ describe('householdToday', () => {
     assert.equal(householdToday(CHICAGO, new Date('2026-11-09T11:00:00Z')), '2026-11-09');
   });
 
-  it('falls back to the device zone only when the household has none (or an invalid one)', () => {
+  it('falls back to the server default zone only when the household has none (or an invalid one)', () => {
     const instant = new Date('2026-11-09T11:00:00Z');
-    const device = householdToday(deviceTimeZone(), instant);
-    assert.equal(householdToday(null, instant), device);
-    assert.equal(householdToday(undefined, instant), device);
-    assert.equal(householdToday('Not/AZone', instant), device);
+    const fallback = householdToday('America/Chicago', instant);
+    assert.equal(householdToday(null, instant), fallback);
+    assert.equal(householdToday(undefined, instant), fallback);
+    assert.equal(householdToday('Not/AZone', instant), fallback);
+    assert.equal(householdDayZone(null), 'America/Chicago');
+    assert.ok(deviceTimeZone().length > 0);
     assert.equal(householdDayZone(AUCKLAND), AUCKLAND);
   });
 
