@@ -16,50 +16,30 @@ import {
   type Query,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
-import { format } from 'date-fns';
 import { db } from '@/lib/firebase';
 import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
-import type { FoodType, LoggedBy, PetCareLog, PetFeedingLog, PetMedicationLog, PortionUnit } from '@/lib/pets/types';
+import type { PetCareLog, PetFeedingLog, PetMedicationLog } from '@/lib/pets/types';
 
 export type PetLogKind = 'feeding-logs' | 'medication-logs' | 'care-logs';
+/** Log kinds written directly; feedings go through `feedPet` / `undoFeed`. */
+export type OtherLogKind = Exclude<PetLogKind, 'feeding-logs'>;
 
 export function petLogsCollection(householdId: string, petId: string, kind: PetLogKind): CollectionReference {
   return collection(db, 'households', householdId, 'pets', petId, kind);
 }
 
 /**
- * New log entries get Firestore auto IDs. (Older entries used "count + 1", which
+ * Medication and care entries. Feedings never use this: they go through the
+ * shared feed operation (`src/lib/pets/feed-operation.ts`), which also keeps
+ * `feeding-state/current` in step. New log entries get Firestore auto IDs. (Older entries used "count + 1", which
  * could overwrite an existing entry after a deletion.)
  */
-export async function addPetLog(householdId: string, petId: string, kind: PetLogKind, data: Record<string, unknown>) {
+export async function addPetLog(householdId: string, petId: string, kind: OtherLogKind, data: Record<string, unknown>) {
   return addDoc(petLogsCollection(householdId, petId, kind), data);
 }
 
-export async function deletePetLog(householdId: string, petId: string, kind: PetLogKind, logId: string) {
+export async function deletePetLog(householdId: string, petId: string, kind: OtherLogKind, logId: string) {
   await deleteDoc(doc(petLogsCollection(householdId, petId, kind), logId));
-}
-
-export type NewFeeding = {
-  amount: number;
-  unit: PortionUnit;
-  foodType: FoodType;
-  comments?: string;
-  date?: Date;
-} & Required<LoggedBy>;
-
-/** Writes a feeding in the existing document shape plus who logged it. */
-export function addFeedingLog(householdId: string, petId: string, feeding: NewFeeding) {
-  const date = feeding.date ?? new Date();
-  return addPetLog(householdId, petId, 'feeding-logs', {
-    date,
-    cups: feeding.amount,
-    foodAmountType: feeding.unit,
-    foodType: feeding.foodType,
-    comments: feeding.comments ?? '',
-    ampm: format(date, 'a').toUpperCase(),
-    loggedByUid: feeding.loggedByUid,
-    loggedByName: feeding.loggedByName,
-  });
 }
 
 type LiveLogs<T> = { logs: T[]; loading: boolean; error: unknown };
@@ -88,7 +68,8 @@ function dateShapeQueries(ref: CollectionReference, since: Date | null, max?: nu
 
 /** Feeding dates become `Date`; other kinds keep ISO strings (timestamps are converted). */
 function normalizeEntry(kind: PetLogKind, entry: QueryDocumentSnapshot): { id: string; date: unknown } & Record<string, unknown> {
-  const data = entry.data();
+  // A feeding's server time is pending until the write is acknowledged: use the local estimate meanwhile.
+  const data = entry.data({ serverTimestamps: 'estimate' });
   const date = toDate(data.date);
   if (kind === 'feeding-logs') return { id: entry.id, ...data, date: date ?? new Date(0) };
   return { id: entry.id, ...data, date: typeof data.date === 'string' ? data.date : (date?.toISOString() ?? '') };

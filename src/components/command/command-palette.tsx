@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { ToastAction } from '@/components/ui/toast';
 import { Stagger } from '@/components/motion/stagger';
 import { parseCommand } from '@/ai/flows/parse-command-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
@@ -52,6 +53,8 @@ import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPor
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
+import { FEED_UNDO_MS, feedAgainPrompt } from '@/lib/pets/feed-decision';
+import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, logFeeding, logMaintenance } from './quick-add-actions';
@@ -115,7 +118,7 @@ export function CommandPalette({
   startVoice: boolean;
 }) {
   const router = useRouter();
-  const { currentUser, permissions } = useAuth();
+  const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
   const index = useCommandIndex(open);
   const voice = useVoiceInput();
@@ -126,6 +129,10 @@ export function CommandPalette({
   const [pending, setPending] = useState<QuickAddIntent | null>(null);
   const [saving, setSaving] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
+  // "Sam fed Rex 12 min ago. Feed again?" for the feeding being previewed (tied to
+  // that preview, so a new or edited one never inherits the answer).
+  const [feedAgain, setFeedAgain] = useState<{ intent: QuickAddIntent; prompt: string } | null>(null);
+  const feedAgainPromptText = feedAgain && feedAgain.intent === pending ? feedAgain.prompt : null;
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const optionId = (i: number) => `${listId}-option-${i}`;
@@ -339,9 +346,45 @@ export function CommandPalette({
         return;
       } else if (pending.kind === 'feeding') {
         const portion = feedingPortion(pending);
-        const status = await logFeeding(householdId, pending.pet.id, portion.amount, portion.unit, currentUser, lateError);
-        notifyDataChanged({ module: 'pets', householdId, petId: pending.pet.id });
-        toast({ title: status === 'queued' ? 'Saved offline' : 'Feeding logged', description: status === 'queued' ? `${pending.pet.name}'s feeding will sync when you're back online.` : `${pending.pet.name} has been fed.` });
+        const pet = pending.pet;
+        const timeZone = household?.timeZone ?? null;
+        const result = await logFeeding({
+          householdId,
+          petId: pet.id,
+          amount: portion.amount,
+          unit: portion.unit,
+          viewer: currentUser,
+          timeZone,
+          confirm: feedAgainPromptText !== null,
+          onLateError: lateError,
+        });
+        if (result.status === 'needsConfirm') {
+          // Ask in the preview; Confirm then reads "Feed again".
+          setFeedAgain({ intent: pending, prompt: feedAgainPrompt(result, pet.name, new Date(), currentUser.uid) });
+          return;
+        }
+        notifyDataChanged({ module: 'pets', householdId, petId: pet.id });
+        const { dismiss } = toast({
+          duration: FEED_UNDO_MS,
+          title: result.status === 'queued' ? 'Saved on this device' : 'Feeding logged',
+          description: result.status === 'queued' ? `Couldn't check whether someone else fed ${pet.name}.` : `${pet.name} has been fed.`,
+          action: (
+            <ToastAction
+              altText={`Undo feeding for ${pet.name}`}
+              onClick={async () => {
+                dismiss();
+                try {
+                  await undoFeed({ householdId, petId: pet.id, logId: result.logId, timeZone, onLateError: lateError });
+                  notifyDataChanged({ module: 'pets', householdId, petId: pet.id });
+                } catch (error) {
+                  toastError(error, "Couldn't undo the feeding");
+                }
+              }}
+            >
+              Undo
+            </ToastAction>
+          ),
+        });
       } else if (pending.kind === 'chore') {
         // Without chores.assign the chore can only be yours (as in the Add Chore dialog).
         const { assignee } = resolveChoreAssignee(choices.assignee ?? pending.assignee, assignable, self);
@@ -461,6 +504,8 @@ export function CommandPalette({
             fromAi={pendingFromAi}
             saving={saving}
             message={retryMessage}
+            notice={feedAgainPromptText}
+            confirmLabel={feedAgainPromptText ? 'Feed again' : undefined}
             onBack={() => {
               invalidateAi();
               setPending(null);
@@ -565,6 +610,8 @@ function QuickAddPreview({
   fromAi,
   saving,
   message,
+  notice,
+  confirmLabel = 'Confirm',
   onBack,
   onConfirm,
 }: {
@@ -585,6 +632,9 @@ function QuickAddPreview({
   saving: boolean;
   /** Inline note after a partial save: which entries are left to retry. */
   message?: string | null;
+  /** A question to answer with Confirm (the feed operation's "Feed again?"). */
+  notice?: string | null;
+  confirmLabel?: string;
   onBack: () => void;
   onConfirm: (choices: PreviewChoices) => void;
 }) {
@@ -704,6 +754,7 @@ function QuickAddPreview({
       )}
       {note && <p className="mt-3 text-sm text-warning" data-testid="quick-add-mileage-note">{note}</p>}
       {message && <p role="alert" className="mt-3 text-sm text-destructive" data-testid="quick-add-retry">{message}</p>}
+      {notice && <p role="alert" className="mt-3 text-sm text-foreground" data-testid="quick-add-feed-again">{notice}</p>}
       <div className="mt-4 flex justify-between gap-2">
         <Button type="button" variant="ghost" onClick={onBack} disabled={saving}>
           <ArrowLeft aria-hidden className="mr-2 h-4 w-4" />
@@ -717,7 +768,7 @@ function QuickAddPreview({
           data-testid="quick-add-confirm"
         >
           {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-          Confirm
+          {confirmLabel}
         </Button>
       </div>
     </div>

@@ -263,7 +263,9 @@ export function Header() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </>
-            ) : sessionKnown ? (
+            ) : pathname === '/' ? null : sessionKnown ? (
+                // The signed-out landing has one call to action of its own ("Sign in with
+                // Google", HP-29), so the header adds no second one there.
                 <LoginDialog>
                     <Button>Login</Button>
                 </LoginDialog>

@@ -19,11 +19,13 @@ import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { openCommandPalette } from '@/components/command/events';
 import { shortcutById, type ShortcutId } from '@/lib/dashboard/shortcuts';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
+import { sectionHint, type SectionState } from '@/lib/dashboard/dashboard-store';
+import { feedingFailureKey } from '@/lib/dashboard/assemble';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
 import { temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
-import { useLiveWeather } from '@/lib/dashboard/use-weather';
+import { useLiveWeatherState } from '@/lib/dashboard/use-weather';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
@@ -42,6 +44,7 @@ function Tile({
   className,
   peek,
   quickAdd,
+  hint,
   children,
 }: {
   href: string;
@@ -52,6 +55,8 @@ function Tile({
   peek?: ReactNode;
   /** A quick-add button in the corner (outside the link), with its shortcut hint. */
   quickAdd?: { shortcut: ShortcutId; label: string };
+  /** Stale data: "Reconnecting…" or "Updated 9:41" next to the title. */
+  hint?: string | null;
   children: ReactNode;
 }) {
   const reduced = useReducedMotion();
@@ -80,6 +85,7 @@ function Tile({
           <span className={cn('flex items-center gap-2 text-sm font-medium text-muted-foreground', quickAdd && 'pr-8')}>
             <Icon aria-hidden className="h-4 w-4 text-primary" />
             <span className="truncate">{title}</span>
+            {hint && <span className="ml-auto shrink-0 text-xs font-normal" data-testid={`${testId}-stale`}>{hint}</span>}
           </span>
           {children}
         </span>
@@ -112,21 +118,40 @@ function TileQuickAdd({ shortcut, label }: { shortcut: ShortcutId; label: string
   );
 }
 
-/** A section whose read failed: says so, and never shows an empty or zero state instead. */
-function UnavailableTile({ href, title, icon: Icon, testId, className }: { href: string; title: string; icon: LucideIcon; testId: string; className?: string }) {
+/**
+ * A section whose read failed: says so, and never shows an empty or zero state instead.
+ * A failed read keeps retrying in the background and offers Retry (a sibling of the
+ * link, never inside it); a read the server refused says it is not shared with you.
+ */
+function UnavailableTile({
+  href, title, icon: Icon, testId, className, unauthorized = false, onRetry,
+}: { href: string; title: string; icon: LucideIcon; testId: string; className?: string; unauthorized?: boolean; onRetry?: () => void }) {
   return (
-    <Link
-      href={href}
-      data-testid={testId}
-      data-unavailable="true"
-      className={cn('flex min-h-[8.5rem] min-w-0 flex-col gap-2 rounded-xl border border-dashed bg-card p-4 text-sm transition-ui', className)}
-    >
-      <span className="flex items-center gap-2 font-medium text-muted-foreground">
-        <Icon aria-hidden className="h-4 w-4" />
-        <span className="truncate">{title}</span>
-      </span>
-      <span className="text-muted-foreground">Unavailable right now. Open to check.</span>
-    </Link>
+    <div className={cn('relative min-w-0', className)}>
+      <Link
+        href={href}
+        data-testid={testId}
+        data-unavailable="true"
+        data-section-state={unauthorized ? 'unauthorized' : 'failed'}
+        className="flex h-full min-h-[8.5rem] min-w-0 flex-col gap-2 rounded-xl border border-dashed bg-card p-4 text-sm transition-ui"
+      >
+        <span className="flex items-center gap-2 font-medium text-muted-foreground">
+          <Icon aria-hidden className="h-4 w-4" />
+          <span className="truncate">{title}</span>
+        </span>
+        <span className="text-muted-foreground">{unauthorized ? 'Not shared with you.' : 'Unavailable right now.'}</span>
+      </Link>
+      {!unauthorized && onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          data-testid={`${testId}-retry`}
+          className="absolute bottom-3 left-4 rounded-md border px-2 py-1 text-xs font-medium text-foreground transition-ui hover:bg-muted"
+        >
+          Retry
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -164,10 +189,22 @@ const Big = ({ value, suffix }: { value: number; suffix?: string }) => (
   </span>
 );
 
-export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; loading: boolean; failed: Set<string> }) {
+export function BentoGrid({
+  facts, loading, failed, sections = {}, timeZone, onRetry,
+}: {
+  facts: DashboardFacts;
+  loading: boolean;
+  failed: Set<string>;
+  /** Section states (GOAL-states): stale tiles show a hint, unauthorized ones say so. */
+  sections?: Readonly<Record<string, SectionState>>;
+  timeZone?: string;
+  onRetry?: () => void;
+}) {
   const { permissions } = useAuth();
-  const weather = useLiveWeather();
+  const { report: weather, stale: weatherStale } = useLiveWeatherState();
   const tiles: ReactNode[] = [];
+  const hint = (...groups: string[]) => sectionHint(sections, groups, timeZone);
+  const unauthorized = (...groups: string[]) => groups.some((group) => sections[group]?.status === 'unauthorized');
 
   if (permissions['chores.view']) {
     const chores = facts.chores;
@@ -179,6 +216,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         icon={CheckSquare}
         testId="dashboard-tile-chores"
         className="sm:col-span-2 lg:row-span-2"
+        hint={hint('chores')}
         quickAdd={permissions['chores.create'] ? { shortcut: 'new-chore', label: 'Add a chore' } : undefined}
         peek={chores.nextUp.length > 0 ? (
           <ul className="space-y-1">
@@ -209,7 +247,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           </span>
         )}
       </Tile>
-    ) : failed.has('chores') ? <UnavailableTile key="chores" href="/chores" title="Today's chores" icon={CheckSquare} testId="dashboard-tile-chores" className="sm:col-span-2 lg:row-span-2" /> : loading ? <TileSkeleton key="chores" className="sm:col-span-2 lg:row-span-2" /> : null);
+    ) : failed.has('chores') ? <UnavailableTile key="chores" href="/chores" title="Today's chores" icon={CheckSquare} testId="dashboard-tile-chores" className="sm:col-span-2 lg:row-span-2" unauthorized={unauthorized('chores')} onRetry={onRetry} /> : loading ? <TileSkeleton key="chores" className="sm:col-span-2 lg:row-span-2" /> : null);
   }
 
   if (permissions['shopping.view']) {
@@ -222,6 +260,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         icon={ShoppingCart}
         testId="dashboard-tile-shopping"
         className="sm:col-span-2"
+        hint={hint('shopping')}
         quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
         peek={shopping.lists.length > 0 ? (
           <ul className="space-y-1">
@@ -242,7 +281,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>
         )}
       </Tile>
-    ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" className="sm:col-span-2" /> : loading ? <TileSkeleton key="shopping" className="sm:col-span-2" /> : null);
+    ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" className="sm:col-span-2" unauthorized={unauthorized('shopping')} onRetry={onRetry} /> : loading ? <TileSkeleton key="shopping" className="sm:col-span-2" /> : null);
   }
 
   if (permissions['pets.view']) {
@@ -254,6 +293,8 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         title="Pets"
         icon={PawPrint}
         testId="dashboard-tile-pets"
+        // The pets collection and each pet's feeding history: a stale count is never shown as current.
+        hint={hint('pets', ...pets.pets.map((pet) => feedingFailureKey(pet.id)))}
         quickAdd={permissions['pets.addLogs'] && pets.pets.length > 0 ? { shortcut: 'log-feeding', label: 'Log a feeding' } : undefined}
       >
         {pets.pets.length === 0 ? (
@@ -264,7 +305,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
                 <span className={cn('shrink-0 text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
-                  {pet.countLabel}
+                  {pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
                 </span>
               </li>
             ))}
@@ -272,7 +313,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           </ul>
         )}
       </Tile>
-    ) : failed.has('pets') ? <UnavailableTile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets" /> : loading ? <TileSkeleton key="pets" /> : null);
+    ) : failed.has('pets') ? <UnavailableTile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets" unauthorized={unauthorized('pets')} onRetry={onRetry} /> : loading ? <TileSkeleton key="pets" /> : null);
   }
 
   if (permissions['maintenance.view']) {
@@ -285,6 +326,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         title="Next maintenance"
         icon={Wrench}
         testId="dashboard-tile-maintenance"
+        hint={hint('maintenance')}
         peek={maintenance.items.length > 0 ? (
           <ul className="space-y-1">
             {maintenance.items.map((item, index) => (
@@ -312,13 +354,13 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           <span className="text-sm text-muted-foreground">Nothing scheduled.</span>
         )}
       </Tile>
-    ) : failed.has('maintenance') ? <UnavailableTile key="maintenance" href={MAINTENANCE_REMINDERS_HREF} title="Next maintenance" icon={Wrench} testId="dashboard-tile-maintenance" /> : loading ? <TileSkeleton key="maintenance" /> : null);
+    ) : failed.has('maintenance') ? <UnavailableTile key="maintenance" href={MAINTENANCE_REMINDERS_HREF} title="Next maintenance" icon={Wrench} testId="dashboard-tile-maintenance" unauthorized={unauthorized('maintenance')} onRetry={onRetry} /> : loading ? <TileSkeleton key="maintenance" /> : null);
   }
 
   if (permissions['shopping.view']) {
     const pantry = facts.pantry;
     tiles.push(pantry ? (
-      <Tile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry">
+      <Tile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" hint={hint('pantry')}>
         <Big value={pantry.expiringSoon} suffix={pantry.expired > 0 ? `· ${pantry.expired} expired` : 'this week'} />
         {pantry.nearest[0] ? (
           <span className="truncate text-sm text-muted-foreground">{pantry.nearest[0].name} {pantry.nearest[0].label}</span>
@@ -326,14 +368,14 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
           <span className="text-sm text-muted-foreground">Nothing close to expiring.</span>
         )}
       </Tile>
-    ) : failed.has('pantry') ? <UnavailableTile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" /> : loading ? <TileSkeleton key="pantry" /> : null);
+    ) : failed.has('pantry') ? <UnavailableTile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" unauthorized={unauthorized('pantry')} onRetry={onRetry} /> : loading ? <TileSkeleton key="pantry" /> : null);
   }
 
   if (permissions['notifications.view'] && failed.has('notifications')) {
-    tiles.push(<UnavailableTile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" />);
+    tiles.push(<UnavailableTile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" unauthorized={unauthorized('notifications')} onRetry={onRetry} />);
   } else if (permissions['notifications.view'] && facts.notifications) {
     tiles.push(
-      <Tile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications">
+      <Tile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" hint={hint('notifications')}>
         <Big value={facts.notifications.unread} suffix="unread" />
         <span className="text-sm text-muted-foreground">{facts.notifications.unread === 0 ? 'All caught up.' : 'See what needs you.'}</span>
       </Tile>,
@@ -351,6 +393,7 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         title="Household streaks"
         icon={Flame}
         testId="dashboard-tile-streaks"
+        hint={hint('streaks', 'chores')}
         peek={streaks.top.length > 0 ? (
           <ul className="space-y-1">
             {streaks.top.map((entry) => (
@@ -376,12 +419,20 @@ export function BentoGrid({ facts, loading, failed }: { facts: DashboardFacts; l
         )}
         <span aria-hidden className="text-xs text-muted-foreground" data-testid="streaks-week">{streaks.weekCompleted} done this week</span>
       </Tile>
-    ) : failed.has('streaks') || failed.has('chores') ? <UnavailableTile key="streaks" href="/chores" title="Household streaks" icon={Flame} testId="dashboard-tile-streaks" /> : <TileSkeleton key="streaks" />);
+    ) : failed.has('streaks') || failed.has('chores') ? <UnavailableTile key="streaks" href="/chores" title="Household streaks" icon={Flame} testId="dashboard-tile-streaks" unauthorized={unauthorized('streaks', 'chores')} onRetry={onRetry} /> : <TileSkeleton key="streaks" />);
   }
 
   if (weather) {
     tiles.push(
-      <Tile key="weather" href="#weather-settings" title="Weather" icon={CloudSun} testId="dashboard-tile-weather">
+      <Tile
+        key="weather"
+        href="#weather-settings"
+        title="Weather"
+        icon={CloudSun}
+        testId="dashboard-tile-weather"
+        // HP-6a: a failed refresh keeps the last good report, marked with its time.
+        hint={weatherStale ? `Updated ${new Date(weather.fetchedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : null}
+      >
         <span className="sr-only">{weatherSummary(weather)}</span>
         <span aria-hidden className="font-headline text-3xl font-semibold tabular-nums">{temperatureLabel(weather)}</span>
         <span aria-hidden className="truncate text-sm text-muted-foreground">{weather.label} in {weather.place}</span>
