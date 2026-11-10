@@ -183,7 +183,7 @@ export function Header() {
     // data-site-header: kept out of the page crossfade during route view transitions.
     <header data-site-header className="surface-glass sticky top-0 z-50 w-full border-b border-border-subtle">
       <div className="container mx-auto flex h-14 items-center px-4">
-        <Link href="/" aria-label="HomeHub home" className="mr-4 flex shrink-0 items-center gap-2 lg:mr-6">
+        <Link href="/" aria-label="HomeHub home" className="mr-4 flex min-h-[var(--target-min)] shrink-0 items-center gap-2 rounded-md lg:mr-6">
           <Logo size={24} animated />
           {/* Phones with 115%/130% text show the mark only, so the buttons and avatar fit
               (the link keeps its "HomeHub home" name). */}
