@@ -55,6 +55,17 @@ export class MembershipError extends Error {
 }
 
 const NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A member's protected contact document, `households/{id}/members/{uid}/private/contact`
+ * (`{ email, updatedAt }`). Only the server writes it; the rules let the person
+ * and holders of `household.manageMembers` read it. Written whenever a membership
+ * is created or approved, deleted with the membership.
+ */
+const memberContactRef = (householdRef: FirebaseFirestore.DocumentReference, uid: string) =>
+  householdRef.collection('members').doc(uid).collection('private').doc('contact');
+
+const memberContact = (email: string, now: Date) => ({ email, updatedAt: now.toISOString() });
 const INVITE_MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 
 export type VerifiedCaller = { uid: string; email: string; displayName?: string; avatarUrl?: string };
@@ -166,6 +177,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     } as HouseholdMember;
 
     transaction.set(memberRef, member);
+    transaction.set(memberContactRef(householdRef, caller.uid), memberContact(caller.email, now));
     transaction.update(householdRef, { memberEmails: FieldValue.arrayUnion(caller.email), updatedAt: joinedAt });
     transaction.set(profileRef, {
       email: caller.email,
@@ -319,6 +331,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
 
     const iso = now.toISOString();
     transaction.delete(memberRef);
+    transaction.delete(memberContactRef(householdRef, caller.uid));
     transaction.update(householdRef, { memberEmails: FieldValue.arrayRemove(caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignedChoreFields()));
@@ -390,7 +403,10 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
     }
   });
   invites.docs.forEach(d => batch.delete(d.ref));
-  members.docs.forEach(d => batch.delete(d.ref));
+  members.docs.forEach(d => {
+    batch.delete(memberContactRef(householdRef, d.id));
+    batch.delete(d.ref);
+  });
   batch.delete(householdRef);
   await batch.commit();
 };
@@ -511,7 +527,7 @@ const HOUSEHOLD_ID_ATTEMPTS = 8;
 
 /**
  * Create a household with the caller as its owner. One transaction writes the
- * household, the owner's membership, the profile pointer and the
+ * household, the owner's membership and its contact document, the profile pointer and the
  * `household.created` activity entry. Refused while the caller still belongs to
  * another household (their profile points at a household where they have a
  * membership record). A candidate ID that already exists is never reused, and
@@ -573,6 +589,7 @@ export const createHousehold = async (
 
     transaction.create(householdRef, householdData);
     transaction.create(householdRef.collection('members').doc(caller.uid), member);
+    transaction.set(memberContactRef(householdRef, caller.uid), memberContact(caller.email, now));
     setProfileCache(transaction, caller.email, { householdId: householdRef.id, role: 'owner', permissions: {} });
     writeAudit(transaction, {
       householdRef,
@@ -752,6 +769,9 @@ export const changeMemberRole = async (
       approvedAt: iso,
       approvedByUid: caller.uid,
     });
+    // Approval (re)writes the contact document, so a person who joined before it
+    // existed has one from then on (the backfill covers everyone else).
+    if (approving && target.email) transaction.set(memberContactRef(context.householdRef, target.uid), memberContact(target.email, now));
     setProfileCache(transaction, target.email, { role: nextRole, permissions: {} });
     writeAudit(transaction, context, caller, now, {
       action: approving ? 'member.approved' : 'member.role_changed',
@@ -850,6 +870,7 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const iso = now.toISOString();
     const denied = target.role === 'newuser';
     transaction.delete(ref);
+    transaction.delete(memberContactRef(context.householdRef, target.uid));
     transaction.update(context.householdRef, {
       ...(target.email ? { memberEmails: FieldValue.arrayRemove(target.email) } : {}),
       updatedAt: iso,

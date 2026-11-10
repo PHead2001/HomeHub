@@ -53,11 +53,13 @@ export function Dashboard() {
 
         <div className="flex flex-wrap items-center gap-3">
           <HomeWrapped />
+          {/* HP-19a: only on a keyboard-and-mouse screen (fine, hovering pointer, md and up). */}
           <ShortcutHint shortcut="help">
             <button
               type="button"
               onClick={openShortcutHelp}
-              className="hidden items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground md:inline-flex"
+              data-testid="dashboard-shortcuts-hint"
+              className={cn(styles.fineHoverOnly, styles.target, 'items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:text-foreground')}
             >
               <Keyboard aria-hidden className="h-4 w-4" />
               Keyboard shortcuts <ShortcutKeys shortcut="help" />

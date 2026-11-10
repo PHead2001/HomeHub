@@ -22,6 +22,7 @@ import { DURATION, EASE } from '@/lib/motion';
 import { leaderboardEnabledFrom } from '@/lib/dashboard/streaks';
 import { countInYear, maintenanceSpend, readConsistentChoreTotals, summarizeChores, topPurchasedItem, yearBounds, yearIn, type WrappedSummary } from '@/lib/dashboard/wrapped';
 import type { RawDoc } from '@/lib/dashboard/facts';
+import styles from './dashboard.module.css';
 
 type Card = { eyebrow: string; headline: string; detail: string };
 
@@ -244,7 +245,7 @@ export function HomeWrapped() {
 
   return (
     <>
-      <Button variant="outline" onClick={openWrapped} data-testid="home-wrapped-open">
+      <Button variant="outline" onClick={openWrapped} data-testid="home-wrapped-open" className={styles.target}>
         <Gift aria-hidden className="mr-2 h-4 w-4" />
         Home Wrapped
       </Button>
@@ -295,17 +296,17 @@ export function HomeWrapped() {
                 </AnimatePresence>
               </div>
               <div className="mt-4 flex items-center justify-between gap-2">
-                <Button variant="ghost" size="icon" onClick={() => go(-1)} disabled={index === 0} aria-label="Previous card">
+                <Button variant="ghost" size="icon" onClick={() => go(-1)} disabled={index === 0} aria-label="Previous card" className={styles.target}>
                   <ChevronLeft aria-hidden />
                 </Button>
                 <span className="text-xs text-muted-foreground" aria-hidden>{index + 1} / {cards.length}</span>
                 {index === cards.length - 1 ? (
-                  <Button onClick={share} disabled={sharing}>
+                  <Button onClick={share} disabled={sharing} className={styles.target}>
                     {sharing ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Share2 aria-hidden className="mr-2 h-4 w-4" />}
                     Share
                   </Button>
                 ) : (
-                  <Button variant="ghost" size="icon" onClick={() => go(1)} aria-label="Next card">
+                  <Button variant="ghost" size="icon" onClick={() => go(1)} aria-label="Next card" className={styles.target}>
                     <ChevronRight aria-hidden />
                   </Button>
                 )}

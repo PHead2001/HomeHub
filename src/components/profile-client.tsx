@@ -105,11 +105,12 @@ export function ProfileClient() {
   }, [photoPreview]);
 
   const uploadAvatar = async (file: File): Promise<string> => {
-    if (!currentUser?.email) throw new Error('User not authenticated');
+    if (!currentUser?.uid) throw new Error('User not authenticated');
     const storage = getStorage();
     const fileExtension = file.name.split('.').pop();
     const fileName = `${crypto.randomUUID()}.${fileExtension}`;
-    const storageRef = ref(storage, `users/${currentUser.email}/avatars/${fileName}`);
+    // Keyed by the account ID, so the photo's download URL carries no email.
+    const storageRef = ref(storage, `users/${currentUser.uid}/avatars/${fileName}`);
     await uploadBytes(storageRef, file);
     return getDownloadURL(storageRef);
   };
