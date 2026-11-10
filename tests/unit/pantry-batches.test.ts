@@ -325,6 +325,18 @@ describe('recipes never turn unknown-size packages into grams (PR #129 review)',
     const products = groupPantryBatches([batch('milk', { name: 'Milk', nameKey: 'milk', unit: 'L', packages: 1, packageSize: null })]);
     assert.deepEqual(usableRecipeItems(products, today), [{ name: 'Milk', quantity: 1, unit: 'pack of unknown size (L)' }]);
   });
+
+  test('the recipe flow input schema accepts every stock line, including the longest unknown-size unit and the largest amounts', async () => {
+    const { GenerateRecipeInputSchema } = await import('../../src/ai/tasks/generate-recipe');
+    const products = groupPantryBatches([
+      batch('juice', { name: 'Juice', nameKey: 'juice', unit: 'fl oz', packages: 10000, packageSize: null }),
+      batch('rice', { name: 'Rice', nameKey: 'rice', unit: 'kg', packages: 10000, packageSize: 100000 }),
+      batch('cans', { name: 'Beans', nameKey: 'beans', unit: 'cans', packages: 10000, packageSize: null }),
+    ]);
+    const items = usableRecipeItems(products, today);
+    assert.deepEqual(items.map((item) => item.unit).sort(), ['cans', 'kg', 'packs of unknown size (fl oz)']);
+    assert.equal(GenerateRecipeInputSchema.safeParse({ items }).success, true);
+  });
 });
 
 describe('adding stock re-checks the merge target (PR #129 review)', () => {

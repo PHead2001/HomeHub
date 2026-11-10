@@ -109,6 +109,9 @@ test.describe('OpenAI migration workflows', () => {
       })));
       await page.reload();
       await page.getByRole('tab', { name: 'Inventory' }).click();
+      // The recipe is requested once, from the pantry as it is when the dialog
+      // opens: wait for the renamed stock before opening it.
+      await expect(page.getByText(`AI-TEST:${scenario} Jasmine rice`).first()).toBeVisible();
       await page.getByRole('button', { name: 'Generate Recipe' }).click();
       dialog = page.getByRole('dialog', { name: 'AI Recipe Idea' });
       await expect(dialog.getByRole('alert')).toContainText(expectedMessage);
@@ -123,9 +126,11 @@ test.describe('OpenAI migration workflows', () => {
     ]);
     await page.reload();
     await page.getByRole('tab', { name: 'Inventory' }).click();
-    await page.getByRole('button', { name: 'Generate Recipe' }).click();
-    await expect(page.getByRole('dialog', { name: 'AI Recipe Idea' }).getByRole('alert'))
-      .toContainText('information provided for this AI request is invalid');
+    // One usable item: the server rejects fewer than two, so the button is disabled
+    // (Pantry v2) instead of sending a request that can only fail.
+    await expect(page.getByText('Jasmine rice', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(/Greek yogurt|Frozen berries/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Generate Recipe' })).toBeDisabled();
   });
 
   test('maintenance summaries are transient and provider failures remain retryable', async ({ page }) => {
