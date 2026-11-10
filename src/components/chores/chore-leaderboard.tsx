@@ -62,7 +62,7 @@ function Podium({ podium, colors, photos }: { podium: MemberChoreStats[]; colors
       <p className="mb-3 text-center text-sm font-semibold text-foreground">This week&apos;s podium</p>
       <ol className="grid grid-cols-3 items-end gap-3" aria-label="Weekly podium">
         {slots.map((member, i) => (
-          <li key={member?.email ?? `empty-${i}`} className="flex flex-col items-center gap-1" style={{ order: i }}>
+          <li key={member?.uid ?? `empty-${i}`} className="flex flex-col items-center gap-1" style={{ order: i }}>
             {member ? (
               <>
                 <span className="relative">
@@ -77,7 +77,7 @@ function Podium({ podium, colors, photos }: { podium: MemberChoreStats[]; colors
                       <Crown className="h-5 w-5 fill-warning" />
                     </motion.span>
                   )}
-                  <MemberAvatar uid={member.uid} name={member.name} photoUrl={photos.get(member.email)} color={colors.get(member.uid)} size="md" ring decorative />
+                  <MemberAvatar uid={member.uid} name={member.name} photoUrl={photos.get(member.uid)} color={colors.get(member.uid)} size="md" ring decorative />
                 </span>
                 <span className="max-w-full truncate text-xs font-medium text-foreground">{member.name}</span>
                 <span className="sr-only">{`Place ${places[i]}${places[i] === 1 ? ', MVP' : ''}: ${member.weekPoints} points`}</span>
@@ -117,8 +117,8 @@ export function ChoreLeaderboard({ stats, colors, photos, showPodium }: Leaderbo
       {showPodium && podium.length > 0 && <Podium podium={podium} colors={colors} photos={photos} />}
       <ul className="space-y-2">
         {stats.members.map(member => (
-          <li key={member.email} className="flex items-center gap-3">
-            <MemberAvatar uid={member.uid} name={member.name} photoUrl={photos.get(member.email)} color={colors.get(member.uid)} size="sm" decorative />
+          <li key={member.uid} className="flex items-center gap-3">
+            <MemberAvatar uid={member.uid} name={member.name} photoUrl={photos.get(member.uid)} color={colors.get(member.uid)} size="sm" decorative />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-medium text-foreground">{member.name}</span>
               <span className="flex items-center gap-1 text-xs text-muted-foreground">

@@ -445,7 +445,7 @@ export function BentoGrid({
         peek={streaks.top.length > 0 ? (
           <ul className="space-y-1">
             {streaks.top.map((entry) => (
-              <li key={entry.email} className="flex justify-between gap-2">
+              <li key={entry.uid} className="flex justify-between gap-2">
                 <span className="truncate">{entry.name}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">{streakDaysLabel(entry.streak)}{entry.activeToday ? '' : ', not yet today'}</span>
               </li>

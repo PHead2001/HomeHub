@@ -17,7 +17,8 @@ const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\
 const wholeToken = (value: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value.toLowerCase())}(?![\\p{L}\\p{N}])`, 'u');
 const PORTION_UNIT_WORD = /\b(?:cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/i;
 
-export type QuickAddMember = { uid: string; email: string; name: string };
+/** `email` is a local matching key only ("for sam" by email name) while member records still carry it; never shown. */
+export type QuickAddMember = { uid: string; email?: string; name: string };
 /** A pet, with its usual portion (Pets' `feedingPlan`) used when the sentence gives no amount. */
 export type QuickAddPet = { id: string; name: string; portion?: { amount: number; unit: PortionUnit } };
 export type QuickAddList = { id: string; name: string; type?: string };
@@ -265,13 +266,13 @@ export function findAssignee(text: string, context: QuickAddContext): { member: 
     const word = mention[1].toLowerCase().replace(/[.'-]+$/, '');
     const consumed = new RegExp(mention[0].trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     if (word === 'me' || word === 'myself') {
-      const self = context.members.find((member) => member.uid === context.viewer.uid || member.email === context.viewer.email);
+      const self = context.members.find((member) => member.uid === context.viewer.uid);
       if (self) return { member: self, consumed };
       continue;
     }
     const matches = context.members.filter((candidate) => {
       const first = candidate.name.trim().split(/\s+/)[0]?.toLowerCase();
-      const local = candidate.email.split('@')[0]?.toLowerCase();
+      const local = candidate.email?.split('@')[0]?.toLowerCase();
       return first === word || candidate.name.toLowerCase() === word || local === word || local?.split(/[._-]/)[0] === word;
     });
     if (matches.length === 1) return { member: matches[0], consumed };
@@ -520,7 +521,7 @@ export function describeRepeat(repeat: QuickAddRepeat): string {
  * everyone with `chores.assign`, otherwise only the viewer.
  */
 export function assignableMembers(members: QuickAddMember[], viewer: { uid: string; email: string }, canAssign: boolean): QuickAddMember[] {
-  return canAssign ? members : members.filter((member) => member.uid === viewer.uid || member.email === viewer.email);
+  return canAssign ? members : members.filter((member) => member.uid === viewer.uid);
 }
 
 /**
@@ -533,9 +534,9 @@ export function resolveChoreAssignee(
   assignable: QuickAddMember[],
   self: QuickAddMember | null,
 ): { assignee: QuickAddMember | null; restricted: boolean } {
-  if (requested && assignable.some((member) => member.email === requested.email)) return { assignee: requested, restricted: false };
-  const fallback = self && assignable.some((member) => member.email === self.email) ? self : assignable[0] ?? self;
-  return { assignee: fallback, restricted: Boolean(requested && fallback && requested.email !== fallback.email) };
+  if (requested && assignable.some((member) => member.uid === requested.uid)) return { assignee: requested, restricted: false };
+  const fallback = self && assignable.some((member) => member.uid === self.uid) ? self : assignable[0] ?? self;
+  return { assignee: fallback, restricted: Boolean(requested && fallback && requested.uid !== fallback.uid) };
 }
 
 export type ShoppingAddOutcome = {

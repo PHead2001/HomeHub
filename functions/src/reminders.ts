@@ -17,6 +17,9 @@ import {
   type PurgedChore,
 } from "./shared/chore-stats";
 import {
+  assigneeFields, occurrenceAssigneeKey, resolveAssigneeUid,
+} from "./shared/assignee";
+import {
   choreOccurrenceKey, deterministicNotificationId, recurringChoreId,
   storedOccurrenceKey,
 } from "./shared/ids";
@@ -189,6 +192,7 @@ export const runHouseholdReminders = async (
           // runs never count a chore twice.
           const list = purgedByYear.get(op.year) ?? [];
           list.push({
+            assignedToUid: snap.get("assignedToUid"),
             assignedToEmail: snap.get("assignedToEmail"),
             assignedToDisplayName: snap.get("assignedToDisplayName"),
             completedByEmail: snap.get("completedByEmail"),
@@ -227,11 +231,10 @@ export const runHouseholdReminders = async (
   const members = membersSnap.docs.map((d) => ({uid: d.id, ...d.data()}))
     .filter((m: Record<string, unknown>) =>
       APPROVED.has(String(m.role)) &&
-      (m.status === undefined || m.status === "active") &&
-      typeof m.email === "string") as Array<{
-        uid: string; email: string; displayName?: string;
+      (m.status === undefined || m.status === "active")) as Array<{
+        uid: string; email?: string; displayName?: string;
       }>;
-  const memberByEmail = new Map(members.map((m) => [m.email, m]));
+  const memberByUid = new Map(members.map((m) => [m.uid, m]));
 
   // Recurring chores: create the next occurrences that do not exist yet. An
   // occurrence exists when its deterministic id does, or when any chore holds
@@ -247,11 +250,13 @@ export const runHouseholdReminders = async (
   for (const templateDoc of templatesSnap.docs) {
     const template = templateDoc.data();
     const recurrence = normalizeRecurrence(template.recurrence, today);
-    const assignee = template.assignedToEmail ||
-      template.recurrence?.assignedToEmail;
-    if (!recurrence || typeof assignee !== "string") continue;
+    // Assigned by uid or (older templates) by email; the id keeps the key
+    // each template was generated with (occurrenceAssigneeKey).
+    const assignee = occurrenceAssigneeKey(template);
+    if (!recurrence || !assignee) continue;
     // Never generate work for someone who is no longer an approved member.
-    const person = memberByEmail.get(assignee);
+    const assigneeUid = resolveAssigneeUid(template, members);
+    const person = assigneeUid ? memberByUid.get(assigneeUid) : undefined;
     if (!person) continue;
     const rooms: string[] = Array.isArray(template.roomIds) &&
       template.roomIds.length > 0 ? template.roomIds : ["general"];
@@ -266,8 +271,8 @@ export const runHouseholdReminders = async (
         const choreRef = house.collection("chores").doc(id);
         const chore = {
           task: template.task,
-          assignedToEmail: assignee,
-          assignedToDisplayName: person.displayName || assignee,
+          ...assigneeFields(person),
+          assignedToDisplayName: person.displayName || "Member",
           dueDate: zonedMidnightIso(day, timeZone),
           isCompleted: false,
           notes: template.notes || "",
@@ -475,9 +480,14 @@ export const runHouseholdReminders = async (
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
-  const profiles = await Promise.all(members.map((m) =>
+  // Reminder settings live on the email-keyed profile, so members whose
+  // record no longer carries an email are skipped until the contact lookup
+  // moves (see docs/modules/chores, "Assignee identity").
+  const reachable = members.filter((m): m is typeof m & {email: string} =>
+    typeof m.email === "string" && m.email.length > 0);
+  const profiles = await Promise.all(reachable.map((m) =>
     db.collection("users").doc(m.email).get()));
-  for (const [index, member] of members.entries()) {
+  for (const [index, member] of reachable.entries()) {
     const profile = profiles[index].data() || {};
     const settings = profile.choreSettings || {};
     const notes = choreNotificationsFor({
@@ -497,7 +507,6 @@ export const runHouseholdReminders = async (
         sourceType: "chore-reminder",
         sourceId: note.sourceId,
         targetUserUid: note.targetUserUid,
-        targetUserEmail: note.targetUserEmail,
       });
       if (!kept) return result;
     }

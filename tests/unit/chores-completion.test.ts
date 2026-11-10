@@ -5,7 +5,9 @@ import { describe, it } from 'node:test';
 import {
   CHORE_UNDO_MS, completerLabel, completionEligibility, householdDueDay, planCompletion, planReopen, planUndo,
 } from '../../src/lib/chores/completion';
-import { computeChoreStats, creditedEmail } from '../../src/lib/chores/stats';
+import { computeChoreStats, creditedUid, statsMemberFrom } from '../../src/lib/chores/stats';
+import { approvedPeople } from '../../src/lib/member-directory';
+import { streakMembersFrom } from '../../src/lib/dashboard/streaks';
 import { occurrences, plannedRecurringEvents } from '../../src/lib/chores/calendar';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { choreOccurrenceKey, choreStatsAssigneeKey, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
@@ -112,22 +114,51 @@ describe('the completer gets the points (CH-12, D-7)', () => {
   });
 
   it('credits the completer, else the assignee', () => {
-    assert.equal(creditedEmail(chore({ completedByEmail: 'sam@example.test' }), members), 'sam@example.test');
-    assert.equal(creditedEmail(chore({ completedByUid: 'u-sam', completedByEmail: 'old@example.test' }), members), 'sam@example.test');
-    assert.equal(creditedEmail(chore({}), members), 'alex@example.test');
+    assert.equal(creditedUid(chore({ completedByEmail: 'sam@example.test' }), members), 'u-sam');
+    assert.equal(creditedUid(chore({ completedByUid: 'u-sam', completedByEmail: 'old@example.test' }), members), 'u-sam');
+    assert.equal(creditedUid(chore({}), members), 'u-alex');
+    // The assignee is resolved by uid when the chore carries no email (HO-9).
+    assert.equal(creditedUid(chore({ assignedToEmail: '', assignedToUid: 'u-sam' }), members), 'u-sam');
+    // A completer who is no longer a member is not credited, nor is the assignee.
+    assert.equal(creditedUid(chore({ completedByUid: 'u-gone', completedByEmail: 'gone@example.test' }), members), null);
     const stats = computeChoreStats([chore({ completedByEmail: 'sam@example.test', completedByUid: 'u-sam' })], members, now);
-    const sam = stats.members.find(m => m.email === 'sam@example.test')!;
-    const alex = stats.members.find(m => m.email === 'alex@example.test')!;
+    const sam = stats.members.find(m => m.uid === 'u-sam')!;
+    const alex = stats.members.find(m => m.uid === 'u-alex')!;
     assert.equal(sam.weekPoints, 15);
     assert.equal(sam.streak, 1);
     assert.equal(alex.weekPoints, 0);
     assert.equal(alex.weekAssigned, 1, 'fair share still counts the assignment');
   });
 
+  it('credits an older completedByEmail-only completion the same on the Chores page and the dashboard', () => {
+    const records = [
+      { uid: 'u-alex', email: 'alex@example.test', displayName: 'Alex', role: 'owner', status: 'active' },
+      { uid: 'u-sam', email: 'sam@example.test', displayName: 'Sam', role: 'member', status: 'active' },
+    ];
+    // Chores page: approved people from the member records, then statsMemberFrom.
+    const choresPage = approvedPeople(records.map(data => ({ id: data.uid, data }))).map(statsMemberFrom);
+    const dashboard = streakMembersFrom(records);
+    assert.deepEqual(choresPage, dashboard);
+    // No completedByUid: the completer's email is the only link to Sam.
+    const older = chore({ completedByEmail: 'SAM@example.test' });
+    assert.equal(creditedUid(older, choresPage), 'u-sam');
+    const pageStats = computeChoreStats([older], choresPage, now);
+    const dashStats = computeChoreStats([older], dashboard, now);
+    assert.deepEqual(pageStats, dashStats);
+    const sam = pageStats.members.find(m => m.uid === 'u-sam')!;
+    assert.equal(sam.weekPoints, 15);
+    assert.equal(sam.stickers, 1);
+    assert.equal(sam.streak, 1);
+    // The email is a matching key only: it never reaches the stats output or a name.
+    assert.ok(!JSON.stringify(pageStats).includes('@'));
+  });
+
   it('labels who did it', () => {
-    assert.equal(completerLabel({ completedByName: 'Sam', completedByEmail: 'sam@example.test' }), 'Sam');
-    assert.equal(completerLabel({ completedByEmail: 'sam@example.test' }, () => 'Sammy'), 'Sammy');
+    assert.equal(completerLabel({ completedByName: 'Sam', completedByUid: 'u-sam' }), 'Sam');
+    assert.equal(completerLabel({ completedByName: 'Sam', completedByUid: 'u-sam' }, uid => (uid === 'u-sam' ? 'Sammy' : undefined)), 'Sammy');
     assert.equal(completerLabel({}), null);
+    // Never an email (HO-9): a stored email-like name is not shown.
+    assert.equal(completerLabel({ completedByName: 'sam@example.test' }), null);
   });
 
   it('yearly stats credit the completer too', () => {

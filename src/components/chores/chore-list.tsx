@@ -4,7 +4,7 @@ import { useId, useRef } from 'react';
 import { AnimatePresence, useIsPresent } from 'motion/react';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
-import type { User as HomeHubUser } from '@/lib/types';
+import { publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { Checkbox } from '@/components/ui/checkbox';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Label } from '@/components/ui/label';
@@ -23,7 +23,7 @@ export type ChoreListHandlers = {
   onToggleDone: (chore: ChoreRecord, origin: HTMLElement | null) => void;
   onToggleSelect: (chore: ChoreRecord) => void;
   onSubTaskToggle: (chore: ChoreRecord, subTask: string) => void;
-  onReassign: (chore: ChoreRecord, email: string) => void;
+  onReassign: (chore: ChoreRecord, uid: string) => void;
   onDelete: (chore: ChoreRecord) => void;
   onClearMissed: (entry: ToDoEntry) => void;
 };
@@ -35,8 +35,8 @@ type ChoreListProps = ChoreListHandlers & {
   householdToday: string;
   /** The household's timezone, for reading due dates the way the server does. */
   timeZone: string | undefined;
-  usersByEmail: Map<string, HomeHubUser>;
-  users: HomeHubUser[];
+  usersByUid: Map<string, HouseholdPerson>;
+  users: HouseholdPerson[];
   colors: Map<string, MemberColor>;
   capabilities: ChoreCapabilities;
   selectMode: boolean;
@@ -70,14 +70,15 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   const isFuture = !isCompleted && isDueAfterHouseholdDay(chore, props.householdToday, props.timeZone);
   const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
   const isOpen = props.openIds.has(chore.id);
-  const user = props.usersByEmail.get(chore.assignedToEmail);
-  const name = user ? memberName(user) : (chore.assignedToDisplayName || chore.assignedToEmail || 'Unassigned');
-  const uid = user?.uid || chore.assignedToEmail || chore.id;
+  // `assignedToUid` was resolved when the page loaded (functions/src/shared/assignee.ts).
+  const user = chore.assignedToUid ? props.usersByUid.get(chore.assignedToUid) : undefined;
+  const name = user ? memberName(user) : publicDisplayName(chore.assignedToDisplayName, 'Unassigned');
+  const uid = user?.uid || chore.id;
   const remaining = openSubTasks(chore).length;
   const total = chore.subTasks?.length || 0;
   const completedAt = completionInstant(chore);
-  const completedBy = isCompleted ? completerLabel(chore, email => {
-    const completer = props.usersByEmail.get(email);
+  const completedBy = isCompleted ? completerLabel(chore, uid => {
+    const completer = props.usersByUid.get(uid);
     return completer ? memberName(completer) : undefined;
   }) : null;
 
@@ -183,11 +184,11 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel>Assign to</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={chore.assignedToEmail} onValueChange={(email) => props.onReassign(chore, email)}>
+              <DropdownMenuRadioGroup value={chore.assignedToUid || ''} onValueChange={(uid) => props.onReassign(chore, uid)}>
                 {props.users.map(member => (
-                  <DropdownMenuRadioItem key={member.email} value={member.email}>
+                  <DropdownMenuRadioItem key={member.uid} value={member.uid}>
                     <span className="flex items-center gap-2">
-                      <MemberAvatar uid={member.uid || member.email} name={memberName(member)} photoUrl={member.avatarUrl} color={props.colors.get(member.uid || member.email)} size="sm" decorative />
+                      <MemberAvatar uid={member.uid} name={memberName(member)} photoUrl={member.avatarUrl} color={props.colors.get(member.uid)} size="sm" decorative />
                       {memberName(member)}
                     </span>
                   </DropdownMenuRadioItem>

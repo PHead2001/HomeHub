@@ -475,6 +475,21 @@ describe('remove member', () => {
     assert.equal(entry.details, undefined);
   });
 
+  test('removal unassigns chores and templates assigned by uid too', async () => {
+    await house().collection('chores').doc('by-uid').set({ task: 'Trash', assignedToUid: guest.uid, assignedToEmail: '', isCompleted: false });
+    await house().collection('chores').doc('moved').set({ task: 'Moved', assignedToUid: guest.uid, assignedToEmail: member.email, isCompleted: false });
+    await house().collection('chore-templates').doc('by-uid').set({ task: 'Sweep', assignedToUid: guest.uid, assignedToEmail: guest.email, recurrence: { frequency: 'daily', assignedToEmail: guest.email } });
+    await removeMember(admin, HOUSE, guest.uid, NOW);
+    const chore = (await house().collection('chores').doc('by-uid').get()).data();
+    assert.equal(chore?.assignedToUid, '');
+    assert.equal(chore?.assignedToDisplayName, 'Unassigned');
+    assert.equal((await house().collection('chores').doc('moved').get()).data()?.assignedToEmail, member.email, 'an older build moved it to someone else');
+    const template = (await house().collection('chore-templates').doc('by-uid').get()).data();
+    assert.equal(template?.assignedToUid, undefined);
+    assert.equal(template?.assignedToEmail, undefined);
+    assert.deepEqual(template?.recurrence, { frequency: 'daily' });
+  });
+
   test('denying a pending request removes it and says so in the log', async () => {
     assert.deepEqual(await removeMember(admin, HOUSE, pending.uid, NOW), { denied: true });
     assert.equal((await memberRef(pending).get()).exists, false);

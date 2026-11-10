@@ -13,10 +13,13 @@ import {
   renameHousehold,
   revokeAllInvites,
   revokeInvite,
+  syncMemberProfile,
   transferOwnership,
   updateMemberPermissions,
   verifyCaller,
+  type CreateHouseholdResult,
   type JoinResult,
+  type MemberProfileSync,
   type MembershipErrorCode,
   type VerifiedCaller,
 } from '@/lib/server/household-membership';
@@ -41,7 +44,8 @@ export async function joinHouseholdWithInvite(input: { idToken: string; code: st
   try {
     const caller = await verifyCaller(input.idToken);
     const result = await redeemInvite(caller, input.code);
-    // Plain JSON for the client boundary.
+    // Only the household's id and name and the caller's own pending status (no
+    // household document, no other member's data). Plain JSON for the client boundary.
     return { ok: true, data: JSON.parse(JSON.stringify(result)) as JoinResult };
   } catch (error) {
     return failure(error);
@@ -83,11 +87,11 @@ const manage = async <T>(idToken: string, run: (caller: VerifiedCaller) => Promi
  * Creates a household owned by the caller (household, owner membership, profile
  * pointer and `household.created` activity entry in one transaction).
  */
-export async function createHouseholdAction(input: { idToken: string; name: string; timeZone?: string }): Promise<HouseholdActionResult<JoinResult>> {
+export async function createHouseholdAction(input: { idToken: string; name: string; timeZone?: string }): Promise<HouseholdActionResult<CreateHouseholdResult>> {
   return manage(input?.idToken, async caller => {
     const result = await createHousehold(caller, { name: input?.name, timeZone: input?.timeZone });
     // Plain JSON for the client boundary.
-    return JSON.parse(JSON.stringify(result)) as JoinResult;
+    return JSON.parse(JSON.stringify(result)) as CreateHouseholdResult;
   });
 }
 
@@ -134,4 +138,12 @@ export async function removeMemberAction(input: { idToken: string; householdId: 
 
 export async function transferOwnershipAction(input: { idToken: string; householdId: string; memberUid: string }): Promise<HouseholdActionResult<{ ownerUid: string }>> {
   return manage(input?.idToken, caller => transferOwnership(caller, input.householdId, input.memberUid));
+}
+
+/**
+ * Copies the caller's own profile name and photo onto their membership record,
+ * the public member data housemates read (members cannot write their own record).
+ */
+export async function syncMyMemberProfileAction(input: { idToken: string; householdId: string }): Promise<HouseholdActionResult<MemberProfileSync>> {
+  return manage(input?.idToken, caller => syncMemberProfile(caller, input.householdId));
 }
