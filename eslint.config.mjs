@@ -41,6 +41,13 @@ const eslintConfig = defineConfig([
       "src/lib/dashboard/house-layout.ts",
       "src/lib/auth/cached-session.ts",
       "src/lib/dashboard/house-snapshot.ts",
+      "src/app/error.tsx",
+      "src/app/global-error.tsx",
+      "src/components/shell/**",
+      "src/lib/shell/**",
+      "src/hooks/use-session-known.ts",
+      "src/hooks/use-shell-busy.ts",
+      "src/lib/undo-window.ts",
     ],
     rules: {
       "no-restricted-imports": ["error", {
