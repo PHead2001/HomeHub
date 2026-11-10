@@ -498,28 +498,15 @@ service cloud.firestore {
       return email == null || email == '' || email == request.auth.token.email;
     }
 
-    // The uid assignee written alongside the email (member privacy release A). Without
-    // chores.assign a uid is accepted only when it is verifiably the assignee the email
-    // names: none, the caller's own uid beside the caller's own email, or a member of this
-    // household whose member document carries that email.
-    function choreAssigneeUidMatchesEmail(householdId, uid, email) {
-      return uid == null || uid == '' ||
-        (uid == request.auth.uid && email == request.auth.token.email) ||
-        (email is string && email != '' &&
-          exists(/databases/$(database)/documents/households/$(householdId)/members/$(uid)) &&
-          get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data.get('email', null) == email);
-    }
-
     function validChoreFields(data, keys) {
       return keys.hasOnly([
-          'task', 'notes', 'assignedToEmail', 'assignedToUid', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
+          'task', 'notes', 'assignedToEmail', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
           'roomIds', 'isCompleted', 'completedAt', 'completedAtServer', 'completedSubTasks', 'subTasks',
           'templateId', 'sourceType'
         ]) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
         (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320)) &&
-        (!('assignedToUid' in keys) || optionalString(data.assignedToUid, 128)) &&
         (!('assignedToDisplayName' in keys) || optionalString(data.assignedToDisplayName, 200)) &&
         (!('dueDate' in keys) || boundedString(data.dueDate, 40)) &&
         (!('originalDueDate' in keys) || boundedString(data.originalDueDate, 40)) &&
@@ -536,22 +523,13 @@ service cloud.firestore {
     // Creating a chore for someone else needs chores.assign; chores.create alone
     // covers a chore for yourself or an unassigned one.
     function choreCreateAssignmentAllowed(householdId) {
-      return (choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) &&
-          choreAssigneeUidMatchesEmail(householdId, request.resource.data.get('assignedToUid', null),
-            request.resource.data.get('assignedToEmail', null))) ||
+      return choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
     // Any change of a chore's assignee needs chores.assign.
-    // Filling in (or correcting) the uid of the assignee already named by email is not a
-    // reassignment, as long as the uid verifiably belongs to that email; any other change
-    // of the assignee needs chores.assign.
     function choreReassignmentAllowed(householdId) {
-      let after = request.resource.data;
-      let before = resource.data;
-      return (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) &&
-          (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
-            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))) ||
+      return request.resource.data.get('assignedToEmail', null) == resource.data.get('assignedToEmail', null) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
@@ -586,14 +564,13 @@ service cloud.firestore {
     }
 
     function validChoreTemplateFields(data, keys) {
-      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid']) &&
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail']) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
         (!('roomIds' in keys) || boundedList(data.roomIds, 50)) &&
         (!('subTasks' in keys) || boundedList(data.subTasks, 100)) &&
         (!('recurrence' in keys) || validRecurrence(data.recurrence)) &&
-        (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320)) &&
-        (!('assignedToUid' in keys) || optionalString(data.assignedToUid, 128));
+        (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320));
     }
 
     function recurrenceAssignee(data) {
@@ -609,9 +586,7 @@ service cloud.firestore {
           (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) ||
             choreAssigneeIsCallerOrNone(after.get('assignedToEmail', null))) &&
           (recurrenceAssignee(after) == recurrenceAssignee(before) ||
-            choreAssigneeIsCallerOrNone(recurrenceAssignee(after))) &&
-          (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
-            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))
+            choreAssigneeIsCallerOrNone(recurrenceAssignee(after)))
         ) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
@@ -660,14 +635,119 @@ service cloud.firestore {
         request.resource.data.get('loggedByName', null) == resource.data.get('loggedByName', null);
     }
 
+    // `loggedAt`, `repeat`, `clockSource` and `backdated` come from the shared feed
+    // operation (src/lib/pets/feed-operation.ts, rules stage R1). They stay
+    // optional: older clients write none of them.
     function validFeedingLogFields(data, keys) {
-      return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName']) &&
+      return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName',
+          'loggedAt', 'repeat', 'clockSource', 'backdated']) &&
         (!('date' in keys) || dateValue(data.date)) &&
+        (!('loggedAt' in keys) || data.loggedAt is timestamp) &&
+        (!('repeat' in keys) || data.repeat in ['none', 'confirmed', 'offline']) &&
+        (!('clockSource' in keys) || data.clockSource in ['device', 'server']) &&
+        (!('backdated' in keys) || data.backdated is bool) &&
         (!('cups' in keys) || boundedNumber(data.cups, 0, 1000)) &&
         (!('foodType' in keys) || boundedString(data.foodType, 40)) &&
         (!('foodAmountType' in keys) || boundedString(data.foodAmountType, 40)) &&
         (!('comments' in keys) || optionalString(data.comments, 2000)) &&
         (!('ampm' in keys) || data.ampm in ['AM', 'PM']);
+    }
+
+    // writtenKeys() without its `resource == null ? ... : diff(resource.data)`
+    // branch, which the emulator reports as an evaluation error on every denied
+    // write. Feeding logs and the feeding state use these instead.
+    function createdKeys() {
+      return request.resource.data.keys().toSet();
+    }
+
+    function updatedKeys() {
+      return request.resource.data.diff(resource.data).addedKeys()
+        .union(request.resource.data.diff(resource.data).changedKeys());
+    }
+
+    // loggedAt is the server time of the write (it opens the author's 10-minute
+    // delete window), so it can't be chosen on create or changed afterwards.
+    function feedingLoggedAtOnCreate() {
+      return !('loggedAt' in request.resource.data) || request.resource.data.loggedAt == request.time;
+    }
+
+    function feedingLoggedAtUnchanged() {
+      return request.resource.data.get('loggedAt', null) == resource.data.get('loggedAt', null);
+    }
+
+    // PE-2: whoever logged a feeding may delete it for 10 minutes (Undo for
+    // everyone who can log), besides members with pets.deleteLogs.
+    function feedingAuthorWithinUndoWindow(householdId) {
+      return hasHouseholdPermission(householdId, 'pets.addLogs') &&
+        resource.data.get('loggedByUid', null) == request.auth.uid &&
+        resource.data.get('loggedAt', null) is timestamp &&
+        request.time < resource.data.loggedAt + duration.value(10, 'm');
+    }
+
+    // --- Feeding state (households/{h}/pets/{p}/feeding-state/current) ----
+    // The shared feed operation keeps the latest feed and the household day's
+    // count here, written in the same transaction as the log it describes.
+
+    function feedingStateDay(value) {
+      return value == null || (value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+    }
+
+    function feedingStateLatest(data) {
+      return (data.get('lastLogId', null) == null || nonEmptyString(data.lastLogId, 200)) &&
+        (data.get('lastFedAt', null) == null || data.lastFedAt is timestamp) &&
+        optionalString(data.get('lastFedByUid', null), 128) &&
+        optionalString(data.get('lastFedByName', null), 200) &&
+        feedingStateDay(data.get('day', null)) &&
+        data.get('countOnDay', 0) is int && data.get('countOnDay', 0) >= 0 && data.get('countOnDay', 0) <= 1000;
+    }
+
+    function validFeedingState(data) {
+      let fields = ['lastLogId', 'lastFedAt', 'lastFedByUid', 'lastFedByName', 'day', 'countOnDay'];
+      return data.keys().hasOnly(fields.concat(['prev'])) && data.keys().hasAll(fields) &&
+        feedingStateLatest(data) &&
+        (data.get('prev', null) == null ||
+          (data.prev is map && data.prev.keys().hasOnly(fields) && feedingStateLatest(data.prev)));
+    }
+
+    function feedingLogPath(householdId, petId, logId) {
+      return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/feeding-logs/$(logId);
+    }
+
+    // A new latest feed: by the writer, pointing at a log the writer owns that
+    // exists once this write commits, with `prev` = the state it replaces.
+    function feedingStateFed(householdId, petId) {
+      let after = request.resource.data;
+      return after.lastLogId is string &&
+        after.lastFedByUid == request.auth.uid &&
+        (resource == null || after.lastLogId != resource.data.get('lastLogId', null)) &&
+        existsAfter(feedingLogPath(householdId, petId, after.lastLogId)) &&
+        getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('loggedByUid', null) == request.auth.uid &&
+        (resource == null || after.get('prev', null) == null ||
+          after.prev.get('lastLogId', null) == resource.data.get('lastLogId', null));
+    }
+
+    // Only the day count changes (an older backdated entry, or deleting an older log).
+    function feedingStateCounted() {
+      return resource != null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay']);
+    }
+
+    // Undo of the latest feed: that log is gone after this write, and the latest
+    // feed becomes exactly the stored `prev` (or nothing), never another snapshot.
+    function feedingStateRestored(householdId, petId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let prev = before.get('prev', null);
+      return before.get('lastLogId', null) is string &&
+        !existsAfter(feedingLogPath(householdId, petId, before.lastLogId)) &&
+        after.get('prev', null) == null &&
+        ((prev == null && after.lastLogId == null && after.lastFedAt == null &&
+            after.lastFedByUid == null && after.lastFedByName == null) ||
+          (prev != null &&
+            after.lastLogId == prev.get('lastLogId', null) &&
+            after.lastFedAt == prev.get('lastFedAt', null) &&
+            after.lastFedByUid == prev.get('lastFedByUid', null) &&
+            after.lastFedByName == prev.get('lastFedByName', null)));
     }
 
     function validMedicationLogFields(data, keys) {
@@ -999,10 +1079,30 @@ service cloud.firestore {
         match /feeding-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validFeedingLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+            validFeedingLogFields(request.resource.data, createdKeys()) && petLoggerOnCreate() &&
+            feedingLoggedAtOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validFeedingLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
-          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+            validFeedingLogFields(request.resource.data, updatedKeys()) && petLoggerUnchanged() &&
+            feedingLoggedAtUnchanged();
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+            feedingAuthorWithinUndoWindow(householdId);
+        }
+
+        // Rules stage R1 (compatible): validated shape and pairing with the log.
+        // Stage R2 (next release, see docs/modules/pets/README.md) adds the
+        // server-time and confirm enforcement.
+        match /feeding-state/{stateId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow create: if stateId == 'current' &&
+            hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validFeedingState(request.resource.data) &&
+            feedingStateFed(householdId, petId);
+          allow update: if stateId == 'current' &&
+            validFeedingState(request.resource.data) &&
+            ((hasHouseholdPermission(householdId, 'pets.addLogs') && feedingStateFed(householdId, petId)) ||
+              ((hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
+                (feedingStateCounted() || feedingStateRestored(householdId, petId))));
+          allow delete: if false;
         }
 
         match /medication-logs/{logId} {
