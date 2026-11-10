@@ -7,6 +7,7 @@ import { ShoppingListClient } from './shopping-list-client';
 import { PantryInventoryClient } from '@/components/pantry-inventory-client';
 import { ClipboardList, Archive } from 'lucide-react';
 import { parseShoppingUrlState, shoppingHref, type ShoppingTab } from '@/lib/shopping/url-state';
+import { TabActivity } from '@/components/shopping/tab-activity';
 
 /**
  * The Shopping Center: Shopping Lists and Pantry Inventory tabs. The open tab and
@@ -72,18 +73,24 @@ export function ShoppingCenterClient() {
       </TabsList>
       {/* Both tabs stay mounted (SH-25b): switching keeps their live listeners and
           state instead of re-reading everything; the inactive one is hidden.
+          Each tab knows whether it is shown (TabActivity) and closes its portaled
+          dialogs, menus and peek cards when it is not, also after browser Back.
           min-h keeps the page height steady while a tab's content loads. */}
       <TabsContent value="lists" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
-        <ShoppingListClient
-          selectedListId={state.listId}
-          onSelectList={handleSelectList}
-          onOpenPantry={openPantry}
-          quickAddRequested={state.quickAdd}
-          onQuickAddHandled={handleQuickAddHandled}
-        />
+        <TabActivity active={state.tab === 'lists'}>
+          <ShoppingListClient
+            selectedListId={state.listId}
+            onSelectList={handleSelectList}
+            onOpenPantry={openPantry}
+            quickAddRequested={state.quickAdd}
+            onQuickAddHandled={handleQuickAddHandled}
+          />
+        </TabActivity>
       </TabsContent>
       <TabsContent value="inventory" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
-        <PantryInventoryClient />
+        <TabActivity active={state.tab === 'inventory'}>
+          <PantryInventoryClient />
+        </TabActivity>
       </TabsContent>
     </Tabs>
   );

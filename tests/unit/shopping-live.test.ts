@@ -9,10 +9,13 @@ import {
   errorToState,
   isListLinkMissing,
   isOpenListDeleted,
+  deactivated,
   keepListening,
+  listsConfirmed,
   liveKey,
   loadingState,
   planCountSources,
+  quickAddDecision,
   snapshotToState,
   stateFor,
 } from '../../src/lib/shopping/live-state';
@@ -269,6 +272,57 @@ describe('view transitions (SH-10i)', () => {
       const settled = source.match(/settleViewTransition\(doc\.startViewTransition\(/g) ?? [];
       assert.ok(calls.length > 0, `${file} starts a transition`);
       assert.equal(settled.length, calls.length, `${file} settles every transition`);
+    }
+  });
+});
+
+describe('live state: one-shot URL requests wait for confirmed lists', () => {
+  const grocery = { id: 'weekly', type: 'Grocery' };
+  const hardware = { id: 'hardware', type: 'Hardware' };
+
+  test('confirmed means a server snapshot, or the cache only when offline', () => {
+    assert.equal(listsConfirmed({ listsReady: true, fromCache: false, offline: false }), true);
+    assert.equal(listsConfirmed({ listsReady: true, fromCache: true, offline: false }), false);
+    assert.equal(listsConfirmed({ listsReady: true, fromCache: true, offline: true }), true);
+    assert.equal(listsConfirmed({ listsReady: false, fromCache: false, offline: false }), false);
+  });
+
+  test('?quickAdd=1 waits on a cached snapshot instead of opening a list it may not have', () => {
+    // The cache still lists a Grocery list deleted elsewhere: nothing is chosen or consumed yet.
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: false, canEdit: true, lists: [grocery, hardware] }), { kind: 'wait' });
+    // The server snapshot no longer has it: the request is handled from that.
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware] }), { kind: 'open', listId: 'hardware' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware, { id: 'auto', type: 'Auto' }] }), { kind: 'choose' });
+  });
+
+  test('?quickAdd=1 opens the only list or the first Grocery list, and nothing without edit rights or lists', () => {
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware, grocery] }), { kind: 'open', listId: 'weekly' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: false, lists: [grocery] }), { kind: 'none' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [] }), { kind: 'none' });
+    assert.equal(quickAddDecision({ requested: false, confirmed: true, canEdit: true, lists: [grocery] }), null);
+  });
+});
+
+describe('tab overlays close when their tab is hidden', () => {
+  test('only the active-to-inactive change counts as a deactivation', () => {
+    assert.equal(deactivated(true, false), true);
+    assert.equal(deactivated(false, true), false);
+    assert.equal(deactivated(true, true), false);
+    assert.equal(deactivated(false, false), false);
+  });
+
+  test('both force-mounted tabs are wrapped, and their menus are tab-aware', async () => {
+    const { readFileSync } = await import('node:fs');
+    const center = readFileSync('src/components/shopping-center-client.tsx', 'utf8');
+    assert.match(center, /<TabActivity active=\{state\.tab === 'lists'\}>\s*<ShoppingListClient/);
+    assert.match(center, /<TabActivity active=\{state\.tab === 'inventory'\}>\s*<PantryInventoryClient/);
+    for (const file of ['src/components/shopping/list-card.tsx', 'src/components/shopping/pantry-shelves.tsx']) {
+      const source = readFileSync(file, 'utf8');
+      assert.doesNotMatch(source, /<DropdownMenu[\s>]/, `${file} uses a plain DropdownMenu`);
+      assert.match(source, /<TabDropdownMenu>/);
+    }
+    for (const file of ['src/components/shopping-list-client.tsx', 'src/components/pantry-inventory-client.tsx']) {
+      assert.match(readFileSync(file, 'utf8'), /useOnTabDeactivate\(\(\) => \{/, `${file} closes its overlays`);
     }
   });
 });

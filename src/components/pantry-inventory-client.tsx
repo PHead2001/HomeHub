@@ -16,6 +16,7 @@ import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCate
 import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
+import { useOnTabDeactivate } from './shopping/tab-activity';
 import { DURATION, EASE } from '@/lib/motion';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
@@ -753,6 +754,18 @@ export function PantryInventoryClient() {
   const [shoppingLists, setShoppingLists] = useState<ShoppingList[]>([]);
   const [isAddToListDialogOpen, setIsAddToListDialogOpen] = useState(false);
   const [itemNameToAddToList, setItemNameToAddToList] = useState<string | null>(null);
+
+  // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
+  // browser Back to the lists), so none stays on screen or traps focus there. The
+  // pantry listener keeps running.
+  useOnTabDeactivate(() => {
+    setIsItemDialogOpen(false);
+    setItemToEdit(null);
+    setItemToDelete(null);
+    setIsRecipeGenOpen(false);
+    setIsBulkDeleteAlertOpen(false);
+    setIsAddToListDialogOpen(false);
+  });
 
   const changeView = (next: PantryView) => {
     setView(next);

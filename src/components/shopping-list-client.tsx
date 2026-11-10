@@ -40,7 +40,8 @@ import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offli
 import { buildShoppingListItem } from '@/lib/shopping-items';
 import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, splitSettled, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
-import { isListLinkMissing, isOpenListDeleted } from '@/lib/shopping/live-state';
+import { isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
+import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
@@ -93,6 +94,8 @@ function ManageCategoriesDialog({ categories, householdId, listId }: { categorie
   const [newCategory, setNewCategory] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  // Closed when the Shopping Lists tab is hidden (its portal is outside the panel).
+  useOnTabDeactivate(() => setIsCategoryDialogOpen(false));
 
   const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
 
@@ -262,6 +265,19 @@ export function ShoppingListClient({
   // deleted elsewhere). Scoped by household, so another household's list never shows.
   const [seen, setSeen] = useState<{ householdId: string; list: ShoppingList } | null>(null);
 
+  // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
+  // browser Back to `?tab=pantry`), so none stays on screen or traps focus there.
+  useOnTabDeactivate(() => {
+    setIsAddItemDialogOpen(false);
+    setIsScannerOpen(false);
+    setIsListDialogOpen(false);
+    setListToDelete(null);
+    setIsClearAlertOpen(false);
+    setIsArchiveAlertOpen(false);
+    setIsReceiptOpen(false);
+    setHandoffMode(null);
+  });
+
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
@@ -312,6 +328,7 @@ export function ShoppingListClient({
   // A `?list=` link to a list that no longer exists falls back to the overview.
   // Decided from a snapshot the server confirmed (or, offline, from the cache), and
   // never for a list this screen saw (that one shows "This list was deleted").
+  const confirmed = listsConfirmed({ listsReady: !loading, fromCache: listsState.fromCache, offline: isBrowserOffline() });
   const linkMissing = isListLinkMissing({
     listId: selectedListId,
     listIds,
@@ -329,17 +346,21 @@ export function ShoppingListClient({
   // the add-item dialog on the only list, or else on the first Grocery list.
   // The request comes from the URL on every render (useSearchParams), so it works
   // for a fresh load and for in-app navigation alike; handling it removes it.
+  // Cached lists are drawn at once, but the one-shot choice waits for lists the
+  // server confirmed (or the cache offline), so a cached Grocery list deleted
+  // elsewhere is never opened and the request is not lost.
+  const quickAdd = quickAddDecision({ requested: quickAddRequested, confirmed, canEdit, lists });
+  const quickAddKind = quickAdd?.kind ?? null;
+  const quickAddListId = quickAdd?.kind === 'open' ? quickAdd.listId : null;
   useEffect(() => {
-    if (loading || !quickAddRequested) return;
-    const target = canEdit ? (lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery')) : undefined;
-    onQuickAddHandled?.(target ? target.id : selectedListId);
-    if (!canEdit) return;
-    if (target) {
+    if (!quickAddKind || quickAddKind === 'wait') return;
+    onQuickAddHandled?.(quickAddListId ?? selectedListId);
+    if (quickAddKind === 'open') {
       setIsAddItemDialogOpen(true);
-    } else if (lists.length > 0) {
+    } else if (quickAddKind === 'choose') {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
     }
-  }, [loading, quickAddRequested, lists, onQuickAddHandled, selectedListId, toast, canEdit]);
+  }, [quickAddKind, quickAddListId, onQuickAddHandled, selectedListId, toast]);
 
   // --- List CRUD ---
 
