@@ -29,7 +29,7 @@ This module owns rooms, chore templates (the chore library), one-time and recurr
 - `src/components/chores/`: `chore-dialogs.tsx` (Add Chore, library, assign, rooms, repeating chores), `chore-list.tsx` (rows), `completion-check.tsx`, `confetti.tsx`, `house-clean-moment.tsx`, `room-morph-frame.tsx` (skeleton morph target), `chore-leaderboard.tsx`, `recurrence-fields.tsx`, `assignee-select.tsx`, `room-icons.tsx`, `use-chore-settings.ts`, `calendar/household-calendar.tsx`
 - `src/lib/chores/` (pure logic): `dates.ts` (day keys, due day, completion instant), `stats.ts` (points, streaks, stickers, fair share, podium), `list.ts` (capabilities, missed-instance folding, "house is clean"), `calendar.ts` (events including upcoming medication doses, grids, rail, reschedule fields), `completion.ts` (complete/undo field updates), `url-state.ts` (`?room=` parsing, hrefs, `room-<roomId>` shared id), `house-clean.ts` (rooms, sparkle timing and once-a-day key for "House is clean")
 - Chore/recurrence types in `src/lib/types.ts`; notification helpers in `src/lib/notifications.ts`
-- Member departure cleanup in `src/lib/server/household-membership.ts` (leaving) and `src/components/household-management-client.tsx` (removal)
+- Member departure cleanup in `src/lib/server/household-membership.ts` (leaving and removal: open chores and recurring templates become unassigned; completed chores keep their assignee)
 
 ## Architecture and Data Flow
 
