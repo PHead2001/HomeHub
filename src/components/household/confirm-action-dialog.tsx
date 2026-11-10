@@ -21,13 +21,15 @@ export type ConfirmRequest = {
   destructive?: boolean;
   /** Runs on confirm; the dialog stays open (busy) until it settles. */
   onConfirm: () => Promise<unknown>;
+  /** Runs when the dialog is dismissed without confirming. */
+  onCancel?: () => void;
 };
 
-/** Replaces `window.confirm` for remove, deny, transfer and leave. */
+/** Replaces `window.confirm` for remove, deny, transfer, leave, role changes and permission saves. */
 export function ConfirmActionDialog({ request, onClose }: { request: ConfirmRequest | null; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   return (
-    <AlertDialog open={Boolean(request)} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+    <AlertDialog open={Boolean(request)} onOpenChange={(open) => { if (!open && !busy) { request?.onCancel?.(); onClose(); } }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{request?.title}</AlertDialogTitle>

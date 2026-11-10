@@ -4,31 +4,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { AnimatePresence } from 'motion/react';
-import {
-  arrayRemove,
-  collection,
-  doc,
-  getDocs,
-  query,
-  runTransaction,
-  Timestamp,
-  updateDoc,
-  where,
-  writeBatch,
-} from 'firebase/firestore';
+import { doc, writeBatch } from 'firebase/firestore';
 import { AlertTriangle, Copy, Home, Loader2, LogOut, Shield, UserPlus, Users } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import {
-  assignableRoles,
-  canChangeRole,
+  canAssignRole,
+  canEditPermissions,
+  canManageInvites as mayManageInvites,
   canManageMember,
-  canRemoveMember,
+  canRenameHousehold,
   canTransferOwnership,
-  hasPermission,
-} from '@/lib/permissions';
+} from '@/lib/household-policy';
+import { assignableRoles, hasPermission } from '@/lib/permissions';
 import { memberColorMap } from '@/lib/member-colors';
 import type { HouseholdMember, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 import { EmptyState } from '@/components/empty-state';
@@ -52,10 +42,21 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { copyText } from '@/lib/utils';
-import { inviteDateToIso } from '@/lib/invite-codes';
+import {
+  changeMemberRoleAction,
+  createInviteAction,
+  removeMemberAction,
+  renameHouseholdAction,
+  revokeAllInvitesAction,
+  revokeInviteAction,
+  transferOwnershipAction,
+  updateMemberPermissionsAction,
+  type HouseholdActionResult,
+} from '@/app/household/actions';
 import { ConfirmActionDialog, type ConfirmRequest } from '@/components/household/confirm-action-dialog';
 import {
   HOUSEHOLD_NAME_MAX,
+  changedPermissions,
   INVITE_STATE_LABELS,
   describeAuditAction,
   householdNameError,
@@ -71,21 +72,8 @@ import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
-const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const INVITE_TTL_MINUTES = 30;
 const NEW_USER_REMINDER_HOURS = 24;
-
-const generateSegment = (length: number) => {
-  const bytes = new Uint32Array(length);
-  if (typeof window !== 'undefined' && window.crypto) {
-    window.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * INVITE_CHARS.length);
-  }
-  return Array.from(bytes, value => INVITE_CHARS[value % INVITE_CHARS.length]).join('');
-};
-
-const generateInviteCode = () => `${generateSegment(4)}-${generateSegment(4)}-${generateSegment(2)}`;
 
 const householdTabs = ['overview', 'invites', 'members', 'roles', 'activity', 'danger'];
 
@@ -95,12 +83,16 @@ export function HouseholdManagementClient() {
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab');
 
+  // What the viewer may do comes from the shared policy (`src/lib/household-policy.ts`),
+  // the same functions the server actions enforce, never from the role alone.
   const canManageMembers = permissions['household.manageMembers'];
-  const canManageInvites = permissions['household.manageInvites'];
-  const canManageRoles = permissions['household.manageRoles'];
+  const canManageInvites = mayManageInvites(currentMember).ok;
+  const canRename = canRenameHousehold(currentMember).ok;
   const isOwner = currentMember?.role === 'owner';
-  // Audit entries are readable by owners and admins only (firestore.rules).
-  const canReadAudit = currentMember?.role === 'owner' || currentMember?.role === 'admin';
+  // Audit entries and the invite list are readable by owners and admins only (firestore.rules).
+  const isOwnerOrAdmin = currentMember?.role === 'owner' || currentMember?.role === 'admin';
+  const canReadAudit = isOwnerOrAdmin;
+  const canListInvites = canManageInvites && isOwnerOrAdmin;
 
   const visibleTabs = useMemo(
     () => householdTabs.filter((tab) => (tab === 'invites' ? canManageInvites : tab === 'activity' ? canReadAudit : true)),
@@ -127,11 +119,18 @@ export function HouseholdManagementClient() {
   const live = useHouseholdLiveData({
     householdId: household?.id,
     currentMember,
-    canListInvites: Boolean(canManageInvites),
+    canListInvites,
     canReadAudit,
     canViewChores: Boolean(permissions['chores.view']),
   });
-  const { members, invites, auditLogs, choreStats, choreStatsReady } = live;
+  const { members, auditLogs, choreStats, choreStatsReady } = live;
+  // Someone who may manage invites but cannot list them under the current rules
+  // (a member granted `household.manageInvites`) sees the codes they created in this visit.
+  const [sessionInvites, setSessionInvites] = useState<InviteCode[]>([]);
+  const invites = useMemo(
+    () => (canListInvites ? live.invites : sessionInvites.filter((invite) => invite.householdId === household?.id)),
+    [canListInvites, household?.id, live.invites, sessionInvites],
+  );
   const householdDisplayName = live.name ?? household?.name ?? '';
 
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -156,7 +155,8 @@ export function HouseholdManagementClient() {
   const remindingRef = useRef(false);
   useEffect(() => {
     const remindPendingMembers = async () => {
-      if (!household?.id || !canManageMembers || pendingMembers.length === 0 || remindingRef.current) return;
+      // The rules let only owners and admins write this reminder.
+      if (!household?.id || !canManageMembers || !isOwnerOrAdmin || pendingMembers.length === 0 || remindingRef.current) return;
       const now = new Date();
       const batch = writeBatch(db);
       let reminderCount = 0;
@@ -204,26 +204,49 @@ export function HouseholdManagementClient() {
     remindPendingMembers().catch((error) => {
       console.error('Failed to create pending member reminders', error);
     });
-  }, [canManageMembers, household?.id, pendingMembers]);
+  }, [canManageMembers, household?.id, isOwnerOrAdmin, pendingMembers]);
+
+  /**
+   * Calls a household server action with a fresh ID token. The server decides
+   * (policy + transaction + activity log); a refusal or failure becomes a toast
+   * and `null`.
+   */
+  const runAction = async <T,>(
+    failTitle: string,
+    call: (idToken: string) => Promise<HouseholdActionResult<T>>,
+  ): Promise<T | null> => {
+    try {
+      const firebaseUser = auth.currentUser;
+      if (!firebaseUser) {
+        toast({ variant: 'destructive', title: failTitle, description: 'Your session has ended. Please sign in again.' });
+        return null;
+      }
+      const result = await call(await firebaseUser.getIdToken());
+      if (result.ok) return result.data;
+      toast({ variant: 'destructive', title: failTitle, description: result.message });
+      return null;
+    } catch (error) {
+      console.error(failTitle, error);
+      toastError(error, failTitle);
+      return null;
+    }
+  };
 
   const nameError = householdNameError(householdName);
   const showNameError = nameSubmitted && nameError;
 
   const saveHouseholdName = async () => {
     setNameSubmitted(true);
-    if (!household?.id || nameError || !canManageMembers) return;
+    if (!household?.id || nameError || !canRename) return;
     setIsSavingName(true);
     try {
-      await updateDoc(doc(db, 'households', household.id), {
-        name: householdName.trim(),
-        updatedAt: new Date().toISOString(),
-      });
+      const householdId = household.id;
+      const renamed = await runAction('Could not rename the household', (idToken) =>
+        renameHouseholdAction({ idToken, householdId, name: householdName.trim() }));
+      if (!renamed) return;
       setNameDraft(null);
       setNameSubmitted(false);
-      toast({ title: 'Household renamed', description: `It's now called ${householdName.trim()}.` });
-    } catch (error) {
-      console.error('Failed to update household name', error);
-      toastError(error, 'Could not rename the household');
+      toast({ title: 'Household renamed', description: `It's now called ${renamed.name}.` });
     } finally {
       setIsSavingName(false);
     }
@@ -234,303 +257,123 @@ export function HouseholdManagementClient() {
   const inviteReady = Boolean(household?.id && currentUser?.email && canManageInvites);
 
   const generateInvite = async () => {
-    if (!inviteReady || !household?.id || !currentUser?.email) return;
+    if (!inviteReady || !household?.id) return;
     setIsGeneratingInvite(true);
     try {
-      let createdInviteCode: string | null = null;
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const code = generateInviteCode();
-        const inviteRef = doc(db, 'inviteCodes', code);
-        try {
-          await runTransaction(db, async (transaction) => {
-            const existing = await transaction.get(inviteRef);
-            if (existing.exists() && isActiveInvite({ id: existing.id, ...existing.data(), expiresAt: inviteDateToIso(existing.data().expiresAt) } as InviteCode)) {
-              throw new Error('Invite code collision.');
-            }
-            const now = new Date();
-            const expiresAt = new Date(now.getTime() + INVITE_TTL_MINUTES * 60 * 1000);
-            const createdInvite: InviteCode = {
-              id: code,
-              code,
-              householdId: household.id,
-              householdName: householdDisplayName || household.name,
-              createdByUid: currentUser.uid,
-              createdByEmail: currentUser.email,
-              createdAt: now.toISOString(),
-              expiresAt: expiresAt.toISOString(),
-              maxUses: 1,
-              useCount: 0,
-            };
-            // Rules require a real Timestamp expiry no more than two hours ahead.
-            transaction.set(inviteRef, { ...createdInvite, expiresAt: Timestamp.fromDate(expiresAt) });
-            transaction.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-              actorUid: currentUser.uid,
-              actorEmail: currentUser.email,
-              actorName: currentUser.displayName,
-              action: 'invite.generated',
-              createdAt: now.toISOString(),
-              details: { code },
-            });
-          });
-          createdInviteCode = code;
-          break;
-        } catch (error) {
-          if (attempt === 5) throw error;
-        }
-      }
-
-      if (!createdInviteCode) throw new Error('Could not generate a unique invite code.');
+      const householdId = household.id;
+      const invite = await runAction('Could not create an invite code', (idToken) =>
+        createInviteAction({ idToken, householdId }));
+      if (!invite) return;
+      setSessionInvites((prev) => [invite, ...prev]);
       // The code exists now; copying is a convenience that must not turn a successful
       // invite into a reported failure (iOS often blocks clipboard writes after an await).
-      const copied = await copyText(createdInviteCode);
+      const copied = await copyText(invite.code);
       toast({
         title: 'Invite code ready',
         description: copied
-          ? `${createdInviteCode} is copied. Share it within ${INVITE_TTL_MINUTES} minutes.`
-          : `Share ${createdInviteCode} within ${INVITE_TTL_MINUTES} minutes. It is also listed below.`,
+          ? `${invite.code} is copied. Share it within ${INVITE_TTL_MINUTES} minutes.`
+          : `Share ${invite.code} within ${INVITE_TTL_MINUTES} minutes. It is also listed below.`,
       });
-    } catch (error) {
-      console.error('Failed to generate invite', error);
-      toastError(error, 'Could not create an invite code');
     } finally {
       setIsGeneratingInvite(false);
     }
   };
 
   const revokeInvite = async (invite: InviteCode) => {
-    if (!household?.id || !currentUser?.email || !canManageInvites) return;
-    try {
-      const now = new Date().toISOString();
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'inviteCodes', invite.id), { revokedAt: now });
-      batch.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'invite.revoked',
-        createdAt: now,
-        details: { code: invite.code },
-      });
-      await batch.commit();
-      toast({ title: 'Invite revoked', description: `${invite.code} can no longer be used.` });
-    } catch (error) {
-      console.error('Failed to revoke invite', error);
-      toastError(error, 'Could not revoke the invite');
-    }
+    if (!household?.id || !canManageInvites) return;
+    const householdId = household.id;
+    const revoked = await runAction('Could not revoke the invite', (idToken) =>
+      revokeInviteAction({ idToken, householdId, code: invite.code }));
+    if (!revoked) return;
+    const now = new Date().toISOString();
+    setSessionInvites((prev) => prev.map((item) => (item.id === invite.id ? { ...item, revokedAt: now } : item)));
+    toast({ title: 'Invite revoked', description: `${invite.code} can no longer be used.` });
   };
 
   const revokeAllInvites = async () => {
-    if (!household?.id || !currentUser?.email || !canManageInvites || activeInvites.length === 0) return;
-    try {
-      const now = new Date().toISOString();
-      const batch = writeBatch(db);
-      activeInvites.forEach(invite => batch.update(doc(db, 'inviteCodes', invite.id), { revokedAt: now }));
-      batch.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'invite.revoked_all',
-        createdAt: now,
-        details: { count: activeInvites.length },
-      });
-      await batch.commit();
-      toast({ title: 'Invites revoked', description: 'Every active invite code was revoked.' });
-    } catch (error) {
-      console.error('Failed to revoke active invites', error);
-      toastError(error, 'Could not revoke the invites');
-    }
+    if (!household?.id || !canManageInvites || activeInvites.length === 0) return;
+    const householdId = household.id;
+    const revoked = await runAction('Could not revoke the invites', (idToken) =>
+      revokeAllInvitesAction({ idToken, householdId }));
+    if (!revoked) return;
+    const now = new Date().toISOString();
+    setSessionInvites((prev) => prev.map((item) => (item.revokedAt ? item : { ...item, revokedAt: now })));
+    toast({ title: 'Invites revoked', description: 'Every active invite code was revoked.' });
   };
 
+  /** Approves a pending person or changes a member's role. */
   const changeMemberRole = async (member: HouseholdMember, nextRole: HouseholdRole) => {
-    if (!household?.id || !currentUser?.email || !currentMember || !canChangeRole(currentMember, member, nextRole)) return;
+    if (!household?.id || !canAssignRole(currentMember, member, nextRole).ok) return;
     const approving = member.role === 'newuser';
-    try {
-      const now = new Date().toISOString();
-      const nextStatus = nextRole === 'newuser' ? 'pending' : 'active';
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'households', household.id, 'members', member.uid), {
-        role: nextRole,
-        status: nextStatus,
-        permissions: {},
-        approvedAt: nextRole === 'newuser' ? null : now,
-        approvedByUid: nextRole === 'newuser' ? null : currentUser.uid,
-      });
-      batch.set(doc(db, 'users', member.email), {
-        role: nextRole,
-        permissions: {},
-      }, { merge: true });
-      batch.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'member.role_changed',
-        targetUid: member.uid,
-        targetEmail: member.email,
-        targetName: member.displayName,
-        createdAt: now,
-        details: { role: nextRole },
-      });
-      await batch.commit();
-      toast(approving
-        ? { title: `${memberName(member)} is in`, description: `They joined as ${roleLabel(nextRole)}.` }
-        : { title: 'Role updated', description: `${memberName(member)} is now ${roleLabel(nextRole)}.` });
-    } catch (error) {
-      console.error('Failed to change member role', error);
-      toastError(error, approving ? 'Could not approve' : 'Could not change the role');
-    }
+    const householdId = household.id;
+    const changed = await runAction(approving ? 'Could not approve' : 'Could not change the role', (idToken) =>
+      changeMemberRoleAction({ idToken, householdId, memberUid: member.uid, role: nextRole }));
+    if (!changed) return;
+    toast(approving
+      ? { title: `${memberName(member)} is in`, description: `They joined as ${roleLabel(nextRole)}.` }
+      : { title: 'Role updated', description: `${memberName(member)} is now ${roleLabel(nextRole)}.` });
   };
 
   const saveMemberPermissions = async (member: HouseholdMember, overrides: PermissionOverrides) => {
-    if (!household?.id || !currentUser?.email || !currentMember) return false;
-    if (!canManageMember(currentMember, member) || member.role === 'owner') return false;
-    try {
-      const now = new Date().toISOString();
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'households', household.id, 'members', member.uid), {
-        permissions: overrides,
-      });
-      batch.set(doc(db, 'users', member.email), {
-        permissions: overrides,
-      }, { merge: true });
-      batch.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'member.permissions_changed',
-        targetUid: member.uid,
-        targetEmail: member.email,
-        targetName: member.displayName,
-        createdAt: now,
-      });
-      await batch.commit();
-      toast({ title: 'Permissions saved', description: `${memberName(member)}'s permissions were updated.` });
-      return true;
-    } catch (error) {
-      console.error('Failed to save permissions', error);
-      toastError(error, 'Could not save permissions');
-      return false;
-    }
+    if (!household?.id || !canEditPermissions(currentMember, member).ok) return false;
+    const householdId = household.id;
+    const saved = await runAction('Could not save permissions', (idToken) =>
+      updateMemberPermissionsAction({ idToken, householdId, memberUid: member.uid, overrides, expectedRole: member.role }));
+    if (!saved) return false;
+    toast({ title: 'Permissions saved', description: `${memberName(member)}'s permissions were updated.` });
+    return true;
   };
 
   const removeMember = async (member: HouseholdMember, denied = false) => {
-    if (!household?.id || !currentUser?.email || !currentMember || !canRemoveMember(currentMember, member)) return;
-    try {
-      const now = new Date().toISOString();
-      const batch = writeBatch(db);
-      batch.delete(doc(db, 'households', household.id, 'members', member.uid));
-      batch.update(doc(db, 'households', household.id), {
-        memberEmails: arrayRemove(member.email),
-        updatedAt: now,
-      });
-      batch.set(doc(db, 'users', member.email), {
-        householdId: null,
-        role: 'member',
-        permissions: {},
-      }, { merge: true });
-      batch.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'member.removed',
-        targetUid: member.uid,
-        targetEmail: member.email,
-        targetName: member.displayName,
-        createdAt: now,
-      });
-
-      const choresSnap = await getDocs(query(
-        collection(db, 'households', household.id, 'chores'),
-        where('assignedToEmail', '==', member.email)
-      ));
-      choresSnap.forEach(choreDoc => batch.update(choreDoc.ref, {
-        assignedToEmail: '',
-        assignedToDisplayName: 'Unassigned',
-      }));
-
-      const templatesSnap = await getDocs(query(
-        collection(db, 'households', household.id, 'chore-templates'),
-        where('assignedToEmail', '==', member.email)
-      ));
-      templatesSnap.forEach(templateDoc => batch.update(templateDoc.ref, {
-        assignedToEmail: null,
-      }));
-
-      await batch.commit();
-      toast(denied
-        ? { title: 'Request denied', description: `${memberName(member)} was not added to the household.` }
-        : { title: 'Member removed', description: `${memberName(member)} was removed from the household.` });
-    } catch (error) {
-      console.error('Failed to remove member', error);
-      toastError(error, denied ? 'Could not deny the request' : 'Could not remove the member');
-    }
+    if (!household?.id || !canManageMember(currentMember, member).ok) return;
+    const householdId = household.id;
+    const removed = await runAction(denied ? 'Could not deny the request' : 'Could not remove the member', (idToken) =>
+      removeMemberAction({ idToken, householdId, memberUid: member.uid }));
+    if (!removed) return;
+    toast(denied
+      ? { title: 'Request denied', description: `${memberName(member)} was not added to the household.` }
+      : { title: 'Member removed', description: `${memberName(member)} was removed from the household.` });
   };
 
   const transferOwnership = async (member: HouseholdMember) => {
-    if (!household?.id || !currentUser?.email || !currentMember || !canTransferOwnership(currentMember, member)) return;
-    try {
-      const now = new Date().toISOString();
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'households', household.id), {
-        ownerEmail: member.email,
-        ownerUid: member.uid,
-        updatedAt: now,
-      });
-      batch.update(doc(db, 'households', household.id, 'members', member.uid), {
-        role: 'owner',
-        status: 'active',
-        permissions: {},
-      });
-      batch.update(doc(db, 'households', household.id, 'members', currentMember.uid), {
-        role: 'admin',
-        status: 'active',
-        permissions: {},
-      });
-      batch.set(doc(db, 'users', member.email), { role: 'owner', permissions: {} }, { merge: true });
-      batch.set(doc(db, 'users', currentUser.email), { role: 'admin', permissions: {} }, { merge: true });
-      batch.set(doc(collection(db, 'households', household.id, 'auditLogs')), {
-        actorUid: currentUser.uid,
-        actorEmail: currentUser.email,
-        actorName: currentUser.displayName,
-        action: 'ownership.transferred',
-        targetUid: member.uid,
-        targetEmail: member.email,
-        targetName: member.displayName,
-        createdAt: now,
-      });
-      batch.set(doc(collection(db, 'households', household.id, 'notifications')), buildNotificationDocument({
-        householdId: household.id,
-        category: 'system',
-        title: 'Household ownership transferred',
-        message: `${member.displayName || member.email} is now the owner of ${householdDisplayName || household.name}.`,
-        deepLink: '/household',
-        sourceType: 'household-ownership-transfer',
-        sourceId: member.uid,
-      }));
-      await batch.commit();
-      toast({ title: 'Ownership transferred', description: `${memberName(member)} is now the household owner.` });
-    } catch (error) {
-      console.error('Failed to transfer ownership', error);
-      toastError(error, 'Could not transfer ownership');
-    }
+    if (!household?.id || !canTransferOwnership(currentMember, member).ok) return;
+    const householdId = household.id;
+    const transferred = await runAction('Could not transfer ownership', (idToken) =>
+      transferOwnershipAction({ idToken, householdId, memberUid: member.uid }));
+    if (!transferred) return;
+    toast({ title: 'Ownership transferred', description: `${memberName(member)} is now the household owner.` });
   };
 
-  /** What the viewer may do to a member; the card shows nothing else. */
-  const actionsFor = (member: HouseholdMember): MemberActions => {
-    const actor = currentMember;
-    const manageable = Boolean(actor && canManageMember(actor, member));
-    return {
-      roles: actor && canManageRoles && manageable && member.role !== 'owner'
-        ? assignableRoles.filter((role) => canChangeRole(actor, member, role))
-        : [],
-      canCustomize: manageable && member.role !== 'owner' && member.role !== 'newuser',
-      canTransfer: Boolean(actor && canTransferOwnership(actor, member)),
-      canRemove: Boolean(actor && canRemoveMember(actor, member)),
-    };
-  };
+  /** What the viewer may do to a member (shared policy); the card shows nothing else. */
+  const actionsFor = (member: HouseholdMember): MemberActions => ({
+    roles: assignableRoles.filter((role) => canAssignRole(currentMember, member, role).ok),
+    canCustomize: canEditPermissions(currentMember, member).ok,
+    canTransfer: canTransferOwnership(currentMember, member).ok,
+    canRemove: canManageMember(currentMember, member).ok,
+  });
+
+  const askRoleChange = (member: HouseholdMember, nextRole: HouseholdRole) => setConfirm({
+    title: `Change ${memberName(member)} to ${roleLabel(nextRole)}?`,
+    description: `They get what a ${roleLabel(nextRole).toLowerCase()} can do right away. Any custom permissions they have are reset to the ${roleLabel(nextRole).toLowerCase()} defaults.`,
+    confirmLabel: 'Change role',
+    onConfirm: () => changeMemberRole(member, nextRole),
+  });
+
+  /** Confirms a permission save; resolves false when cancelled or refused. */
+  const askSavePermissions = (member: HouseholdMember, overrides: PermissionOverrides) => new Promise<boolean>((resolve) => {
+    const count = changedPermissions(member.role, member.permissions, overrides).length;
+    setConfirm({
+      title: `Save permissions for ${memberName(member)}?`,
+      description: `${count} ${count === 1 ? 'permission changes' : 'permissions change'} for them right away.`,
+      confirmLabel: 'Save permissions',
+      onConfirm: async () => resolve(await saveMemberPermissions(member, overrides)),
+      onCancel: () => resolve(false),
+    });
+  });
 
   const askRemove = (member: HouseholdMember) => setConfirm({
     title: `Remove ${memberName(member)}?`,
-    description: `They lose access to ${householdDisplayName} right away. Chores assigned to them become unassigned.`,
+    description: `They lose access to ${householdDisplayName} right away. Open chores assigned to them become unassigned.`,
     confirmLabel: 'Remove',
     destructive: true,
     onConfirm: () => removeMember(member),
@@ -662,7 +505,7 @@ export function HouseholdManagementClient() {
                 <CardDescription>Everyone in the household sees this name. Changing it never changes your invite codes or data.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {canManageMembers ? (
+                {canRename ? (
                   <form
                     noValidate
                     className="grid gap-2"
@@ -804,7 +647,7 @@ export function HouseholdManagementClient() {
                     isSelf={member.uid === currentMember?.uid}
                     stats={choreStats.get(member.email.toLowerCase()) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
-                    onRoleChange={changeMemberRole}
+                    onRoleChange={askRoleChange}
                     onCustomize={openCustomize}
                     onTransfer={askTransfer}
                     onRemove={askRemove}
@@ -830,7 +673,7 @@ export function HouseholdManagementClient() {
                     isSelf={member.uid === currentMember?.uid}
                     stats={member.role === 'newuser' ? undefined : choreStats.get(member.email.toLowerCase()) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
-                    onRoleChange={changeMemberRole}
+                    onRoleChange={askRoleChange}
                     onCustomize={openCustomize}
                     onTransfer={askTransfer}
                     onRemove={askRemove}
@@ -847,8 +690,8 @@ export function HouseholdManagementClient() {
               viewerRole={currentMember?.role}
               selected={matrixSelection}
               onSelect={setMatrixSelection}
-              canEdit={(member) => Boolean(currentMember && canManageMember(currentMember, member))}
-              onSave={saveMemberPermissions}
+              actor={currentMember}
+              onSave={askSavePermissions}
             />
           </TabsContent>
 
