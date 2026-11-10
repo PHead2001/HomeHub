@@ -204,6 +204,15 @@
     }
   }
 
+  /* Phones (< 640 px) at 115%/130% text: the header shows the logo mark without
+     the wordmark, so the search, bell and account buttons fit (px media queries do
+     not follow the root font size). */
+  @media (max-width: 639.98px) {
+    :root[data-text-scale] .header-wordmark {
+      display: none;
+    }
+  }
+
   /* Thin top progress bar for navigations slower than 150 ms (NavigationProgress). */
   .nav-progress {
     position: fixed;

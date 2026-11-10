@@ -37,6 +37,10 @@ const TEXT_SIZES: Record<TextScale, { label: string; glyph: string }> = {
   130: { label: 'Larger', glyph: 'text-xl' },
 };
 
+// Option tiles wrap to fewer columns when a tile would be narrower than 5.5rem
+// (narrow column or large text), so labels never overlap.
+const OPTION_GRID = 'grid-cols-[repeat(auto-fit,minmax(5.5rem,1fr))]';
+
 const optionClass =
   'flex cursor-pointer items-center gap-3 rounded-lg border bg-background/60 p-3 transition-colors hover:bg-accent has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/10';
 
@@ -77,7 +81,7 @@ function PresetGroup({
           <Label key={id} htmlFor={`${groupId}-${id}`} className={optionClass}>
             <RadioGroupItem id={`${groupId}-${id}`} value={id} />
             <Swatch id={id} />
-            <span className="min-w-0">
+            <span className="min-w-0 break-words">
               <span className="block font-medium">{PRESETS[id].label}</span>
               <span className="block text-xs font-normal text-muted-foreground">{PRESETS[id].description}</span>
             </span>
@@ -130,7 +134,7 @@ export function AppearanceSettings() {
             onValueChange={(mode) => {
               if (isThemeMode(mode)) setPreferences({ mode }, takeOrigin(document.getElementById(`appearance-mode-${mode}`)));
             }}
-            className="grid-cols-3"
+            className={OPTION_GRID}
           >
             {MODES.map(({ value, label, icon: Icon }) => (
               <Label
@@ -183,7 +187,7 @@ export function AppearanceSettings() {
             aria-describedby="appearance-text-size-preview"
             value={String(preferences.textScale)}
             onValueChange={(value) => setPreferences({ textScale: parseTextScale(value) })}
-            className="grid-cols-3"
+            className={OPTION_GRID}
           >
             {TEXT_SCALES.map((scale) => (
               <Label

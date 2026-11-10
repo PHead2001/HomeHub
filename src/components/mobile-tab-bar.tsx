@@ -239,7 +239,8 @@ export function MobileTabBar() {
               <SheetTitle>More</SheetTitle>
               <SheetDescription>Everything else in HomeHub.</SheetDescription>
             </SheetHeader>
-            <ul className="mt-4 grid grid-cols-3 gap-2">
+            {/* At least 6rem per tile: three across on phones at 100%, two at 130%. */}
+            <ul className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] gap-2">
               {more.map((item) => {
                 const active = isActive(pathname, item.href);
                 const Icon = item.icon;
@@ -250,7 +251,7 @@ export function MobileTabBar() {
                       onClick={() => setMoreOpen(false)}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
-                        'flex h-20 flex-col items-center justify-center gap-1.5 rounded-xl border text-center text-xs font-medium transition-colors',
+                        'flex min-h-20 flex-col items-center justify-center gap-1.5 rounded-xl border py-2 text-center text-xs font-medium transition-colors',
                         active ? 'border-primary bg-primary/10 text-primary' : 'bg-card shadow-raised hover:bg-accent',
                       )}
                     >

@@ -185,7 +185,9 @@ export function Header() {
       <div className="container mx-auto flex h-14 items-center px-4">
         <Link href="/" aria-label="HomeHub home" className="mr-4 flex shrink-0 items-center gap-2 lg:mr-6">
           <Logo size={24} animated />
-          <span className="font-headline text-xl font-bold">HomeHub</span>
+          {/* Phones with 115%/130% text show the mark only, so the buttons and avatar fit
+              (the link keeps its "HomeHub home" name). */}
+          <span className="header-wordmark font-headline text-xl font-bold">HomeHub</span>
         </Link>
         <HeaderNav links={NAV_LINKS.filter((link) => permissions[link.permission])} pathname={pathname} />
         <div className="ml-auto flex shrink-0 items-center justify-end gap-2 pl-2">
