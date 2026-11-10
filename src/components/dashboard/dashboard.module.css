@@ -436,6 +436,35 @@
   margin-inline: auto;
 }
 
+/*
+ * The subtitle line (HP-20c) is sized by its pane, not the viewport: beside the house
+ * it has at most half the page. Short date and temperature only below 24rem / 30rem of
+ * subtitle width (rem, so the thresholds grow with the text scale); past that the long
+ * date, then the weather condition. Whatever still does not fit wraps (see the component).
+ * Inline-size containment also keeps the subtitle from widening the house column.
+ */
+.subtitle {
+  container-type: inline-size;
+  min-width: 0;
+}
+.subtitleLongDate,
+.subtitleCondition {
+  display: none;
+}
+@container (min-width: 24rem) {
+  .subtitleShortDate {
+    display: none;
+  }
+  .subtitleLongDate {
+    display: inline;
+  }
+}
+@container (min-width: 30rem) {
+  .subtitleCondition {
+    display: inline;
+  }
+}
+
 /* The tile grid: 1, 2 or 4 columns; each cell's span comes from the tile descriptors. */
 .tileGrid {
   display: grid;

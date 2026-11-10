@@ -106,6 +106,10 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         const house = (await page.getByTestId('living-house').boundingBox())!;
         const grid = (await page.getByTestId('dashboard-grid').boundingBox())!;
         expect(overlaps(house, grid)).toBe(false);
+        // HP-20c: the subtitle stays in the left pane; its fields wrap rather than overflow.
+        const brief = (await page.getByTestId('morning-brief-block').boundingBox())!;
+        const fields = await page.getByTestId('dashboard-household-line').locator(':scope > span').evaluateAll((spans) => spans.map((span) => span.getBoundingClientRect().right));
+        for (const right of fields) expect(right, 'subtitle field ends before the brief').toBeLessThanOrEqual(Math.min(brief.x, grid.x) + 1);
         const tiles = await tileBoxes(page);
         for (let i = 0; i < tiles.length; i += 1) {
           for (let j = i + 1; j < tiles.length; j += 1) expect(overlaps(tiles[i], tiles[j]), `tiles ${i} and ${j}`).toBe(false);
