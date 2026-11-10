@@ -632,7 +632,7 @@ The experience is noisy and person-centric in a house of shared screens:
 - the same overdue chore is pushed every day and never clears;
 - pushes fire at midnight;
 - a tablet signed in as Mom acts as Mom;
-- signing out doesn't stop a device's pushes.
+- one item withheld.
 
 ### 7.1 Broken (fix these first)
 
@@ -796,7 +796,7 @@ The gaps:
 - **Layout and links:** `?tab=` deep links work; long names wrap; reduced motion is respected; the tablet layout is sound.
 - **No console errors** on any tab (verified live).
 
-**Test gaps:** no e2e tests for remove, deny, transfer, leave or delete; no rules tests for admin-vs-admin actions or for the unenforced `household.*` overrides.
+**Test gaps:** no e2e tests for remove, deny, transfer, leave or delete; no rules tests for admin-vs-admin actions.
 
 ### 8.7 Suggested order
 
@@ -1569,7 +1569,7 @@ These are findings from reading the code; none was exploited in testing.
 | # | Decision | Detail |
 |---|---|---|
 | WT-17 | **A PIN reset can never raise anyone's authority.** | As first written, an admin could reset the owner's PIN, tap the owner's face and act as owner. Now: <br>• nobody can set another adult's PIN to a value they know; an admin can only **clear** the PIN of someone with a lower role, and that person sets a new one from their own signed-in phone; <br>• the owner's PIN can only be changed by the owner, signed in as themselves; <br>• an admin sets PINs only for kid profiles with no sign-in (D-3); <br>• changing or clearing a PIN ends every unlocked tablet session for that person at once. |
-| WT-18 | **Three things are recorded separately: the device, the selected member, and how they were verified.** | A face tap is **attribution, not proof of identity**. Every tablet action goes through the server, which checks the device is registered, the selected member belongs to the household, the action is allowed at that level, and (for PIN actions) that an unlocked session exists. The activity log shows "as Alex (face)" or "as Alex (PIN)" and which tablet. <br>This also corrects QA-8: "the author must be the signed-in user" applies to personal accounts; on a tablet the signed-in identity is the device, and a selected kid may have no account. <br>A PIN never unlocks what WT-10 keeps off tablets (personal notifications, profile, push). |
+| WT-18 | **Three things are recorded separately: the device, the selected member, and how they were verified.** | A face tap is **attribution, not proof of identity**. Every tablet action goes through the server, which checks the device is registered, the selected member belongs to the household, the action is allowed at that level, and (for PIN actions) that an unlocked session exists. The activity log shows "as Alex (face)" or "as Alex (PIN)" and which tablet. <br>(A note about QA-8 is withheld.) <br>A PIN never unlocks what WT-10 keeps off tablets (personal notifications, profile, push). |
 | WT-19 | **Removal, offline and re-pairing** (settles the open item in 15.4). | **Removed tablet:** the server refuses its requests from that moment (checked on the server, not just a sign-out message); the screen shows "This tablet was removed" and the setup screen; any unlocked PIN session ends; cached household data on it is cleared; changes it had queued are discarded. <br>**Offline tablet:** shows the last synced view with an "Offline" marker; face-level actions queue and sync later; anything needing a PIN waits for a connection, because PINs are checked on the server. Queued actions are re-checked when they sync and dropped if the member or tablet has lost access. <br>**Browser reset or replaced hardware:** settings live on the device record, but the tablet's credentials do not survive a reset. The Devices list gets **"Re-pair this tablet"**, which issues a code that reconnects the same record, so no duplicate is created and its settings are kept. |
 | WT-20 | **"A face is enough" only where Undo really works.** | An action is face-level only once its Undo exists and has been tested for: another device editing the same thing, a page reload, and a dropped connection. Until then it needs a PIN. This applies first to "put away and clear" (SH-2, SH-17), whose combined reversal (pantry credit and list clear) isn't yet defined. Undo is done on the server and must not overwrite later changes by someone else. <br>Undoing a record does not undo the physical act: feeding and medication still need the "last fed / last dose" check (PE-23), whatever Undo allows. |
 | WT-21 | **Guests appear in "Who's here?" only while a guest pass is active** (owner, 2026-11-09). | Hidden by default: the Guest role can only look, so a guest face would do nothing. An admin creates a **guest pass** (HO-24), for example "Babysitter, until 11 pm, can feed pets and tick chores". That adds a temporary face with no account behind it; it disappears when the pass ends, and everything done under it is logged under that name. Until guest passes are built, guests do not appear. |
