@@ -209,8 +209,9 @@ describe('clearing purchased items', () => {
     assert.doesNotMatch(clear, /status === '(?:needed|purchased)'/);
     // The ids cleared are the ones captured when Clear was pressed.
     const openClear = source.slice(source.indexOf('const openClear'), source.indexOf('const adjustQuantity'));
-    assert.match(openClear, /setClearIds\(/);
-    assert.match(source, /clearPurchasedItems\(clearIds\)/);
+    assert.match(openClear, /setClearTarget\(/);
+    assert.match(source, /clearPurchasedItems\(clearTarget\)/);
+    assert.match(clear, /clearIdsFor\(target, householdId, selectedList\.id\)/);
   });
 });
 

@@ -37,7 +37,8 @@ import {
  * Firestore applies this device's own writes to the listener at once (also
  * offline, from its queue), and rolls them back in the listener when the server
  * rejects them, so the screens never re-read after a write. A listener that
- * fails retries with bounded backoff; it resubscribes at once when the browser
+ * fails retries with bounded backoff (reset only by a snapshot the server
+ * confirmed, and the same error code is reported once); it resubscribes at once when the browser
  * comes back online or the page is shown again, and a listener left hidden for
  * a while is renewed when shown (a wall tablet that slept). Each hook's state is
  * keyed by household (and list): a switch shows loading, never the previous
@@ -60,8 +61,8 @@ function useLive<T>(key: string | null, empty: T, listen: Listen<T>): LiveState<
     if (!key) return;
     return keepListening(({ healthy, failed }) => listenRef.current(
       (value, metadata) => {
-        healthy();
-        setState(snapshotToState(key, value, metadata));
+        healthy(metadata.fromCache);
+        setState((previous) => snapshotToState(key, value, metadata, previous));
       },
       (error) => {
         setState((previous) => errorToState(previous, key, error, emptyRef.current));
@@ -177,7 +178,7 @@ export function useLiveListCounts(
     const stops = liveSignature.split('\n').map((listId) => keepListening(({ healthy, failed }) => onSnapshot(
       itemsCollection(householdId, listId),
       (snapshot) => {
-        healthy();
+        healthy(snapshot.metadata.fromCache);
         const next = countItems(snapshot.docs.map((entry) => entry.data()));
         setCounts((previous) => ({ ...previous, [`${householdId}/${listId}`]: next }));
       },
