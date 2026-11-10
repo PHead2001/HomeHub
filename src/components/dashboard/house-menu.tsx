@@ -6,6 +6,7 @@
  * `menuitemcheckbox` with a static label ("Live weather", "Seasonal touches"); its
  * state is `aria-checked` and the check mark, so it is announced once (HP-28a).
  */
+import { useEffect, useRef } from 'react';
 import { CloudSun, MapPin, MoreHorizontal, Sparkles } from 'lucide-react';
 import {
   DropdownMenu,
@@ -26,6 +27,13 @@ export function HouseMenu({
   /** Present only while a season is active (otherwise there is nothing to switch). */
   seasonal?: { on: boolean; toggle: () => void };
 }) {
+  // Set once the city form asks for focus during this menu session, and read when the
+  // menu closes: the form clears `cityFocus` as soon as it has focused its field, which
+  // can happen before Radix's close (after its animation) asks where focus goes.
+  const cityFormOpened = useRef(false);
+  useEffect(() => {
+    if (weather.cityFocus) cityFormOpened.current = true;
+  }, [weather.cityFocus]);
   if (!weather.ready && !seasonal) return null;
   const { preference } = weather;
   return (
@@ -48,7 +56,8 @@ export function HouseMenu({
         className="min-w-[min(13rem,var(--radix-dropdown-menu-content-available-width,100vw))] max-w-[min(20rem,var(--radix-dropdown-menu-content-available-width,100vw))]"
         onCloseAutoFocus={(event) => {
           // The city form just opened and focuses its own field, not the trigger.
-          if (weather.cityFocus) event.preventDefault();
+          if (weather.cityFocus || cityFormOpened.current) event.preventDefault();
+          cityFormOpened.current = false;
         }}
       >
         {weather.ready && (
