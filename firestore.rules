@@ -662,7 +662,10 @@ service cloud.firestore {
     //   anyone writes a new purchaseOpId (and removes undoOpId), so a late Undo is
     //   refused instead of overwriting it;
     // - restoreOpId (the Undo of a delete) only on a create, so a restore never
-    //   overwrites an item that exists again (see shoppingRestoreCreate).
+    //   overwrites an item that exists again (see shoppingRestoreCreate); once set,
+    //   restoreOpId and restoredAt are frozen (neither changed nor removed), so a
+    //   second tab replaying the same restore (same restoreOpId) is refused whether
+    //   its restoredAt resolves to a new time or is left out.
     function validShoppingItemStamps(data, keys) {
       return (!('purchasedByUid' in keys) || data.purchasedByUid == null || data.purchasedByUid == request.auth.uid) &&
         (!('purchasedAt' in keys) || data.purchasedAt == null ||
@@ -673,7 +676,16 @@ service cloud.firestore {
         (!('undoOpId' in keys) || shoppingUndoMatchesPurchase(data, keys)) &&
         (!('restoreOpId' in keys) || (resource == null && nonEmptyString(data.restoreOpId, 64))) &&
         (!('restoredAt' in keys) || (resource == null && 'restoreOpId' in data)) &&
-        (resource != null || !('restoreOpId' in data) || shoppingRestoreCreate(data));
+        (resource != null || !('restoreOpId' in data) || shoppingRestoreCreate(data)) &&
+        (resource == null || shoppingRestoreStampsKept(data));
+    }
+
+    // On an update, the stored restore stamps stay exactly as they are: a write that
+    // removes restoredAt (a stale restore payload without it) or changes either one
+    // is refused. Items never restored have neither, and an update may not add them.
+    function shoppingRestoreStampsKept(data) {
+      return data.get('restoreOpId', null) == resource.data.get('restoreOpId', null) &&
+        data.get('restoredAt', null) == resource.data.get('restoredAt', null);
     }
 
     // A restore (create with restoreOpId) carries restoredByUid = the writer and

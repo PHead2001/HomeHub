@@ -1557,6 +1557,14 @@ describe('content shapes: shopping', () => {
     // ... and the same restore (same restoreOpId and restorer) is sent again: refused,
     // because its restoredAt resolves to a new request.time (a changed key on an update).
     await assertFails(setDoc(item(users.owner, 's3-replay'), payload));
+    // Two tabs holding the same journal entry share the restoreOpId: the second tab's
+    // write is refused whether it carries a fresh restoredAt (above), none at all, or
+    // tries to clear the stored restore stamps.
+    const withoutTime = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'restoredAt'));
+    await assertFails(setDoc(item(users.owner, 's3-replay'), withoutTime));
+    await assertFails(setDoc(item(users.owner, 's3-replay'), { ...withoutTime, restoreOpId: 'restore-2' }));
+    await assertFails(updateDoc(item(users.owner, 's3-replay'), { restoredAt: deleteField() }));
+    await assertFails(updateDoc(item(users.owner, 's3-replay'), { restoreOpId: deleteField() }));
     assert.equal((await getDoc(item(users.owner, 's3-replay'))).get('quantity'), 2);
     // Ordinary updates of a restored item stay allowed.
     await assertSucceeds(updateDoc(item(users.owner, 's3-replay'), { status: 'purchased', purchasedByUid: users.owner.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-9' }));
