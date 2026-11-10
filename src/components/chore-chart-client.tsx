@@ -23,6 +23,7 @@ import { ChevronDown } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
@@ -53,7 +54,6 @@ import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/cho
 
 type ChoreUser = HomeHubUser & { memberRole?: HouseholdMember['role'] };
 
-const UNDO_MS = 5000;
 
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
 const statsNow = (today: string) => { const d = dayFromKey(today); d.setHours(23, 59, 59, 999); return d; };
@@ -579,9 +579,10 @@ export function ChoreChartClient() {
 
     const label = chores.length === 1 ? chores[0].task : `${chores.length} chores`;
     const handle = toast({
+      group: 'chore-complete',
       title: chores.length === 1 ? 'Done' : 'Chores done',
       description: `${label} marked complete.`,
-      duration: UNDO_MS,
+      duration: UNDO_WINDOW_MS,
       action: (
         <ToastAction altText={`Undo completing ${label}`} onClick={() => { handle.dismiss(); void undoCompletion(snapshots); }}>
           Undo

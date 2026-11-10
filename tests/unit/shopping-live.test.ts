@@ -10,6 +10,8 @@ import {
   isListLinkMissing,
   isOpenListDeleted,
   deactivated,
+  deletionSettled,
+  justOpened,
   keepListening,
   listsConfirmed,
   liveKey,
@@ -324,5 +326,52 @@ describe('tab overlays close when their tab is hidden', () => {
     for (const file of ['src/components/shopping-list-client.tsx', 'src/components/pantry-inventory-client.tsx']) {
       assert.match(readFileSync(file, 'utf8'), /useOnTabDeactivate\(\(\) => \{/, `${file} closes its overlays`);
     }
+  });
+
+  test('nested scanners close with their tab and their parent dialog, and the camera is released', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pantry = readFileSync('src/components/pantry-inventory-client.tsx', 'utf8');
+    const itemDialog = pantry.slice(pantry.indexOf('function PantryItemDialog'), pantry.indexOf('<Dialog open={isScannerOpen}'));
+    assert.match(itemDialog, /useOnTabDeactivate\(\(\) => setIsScannerOpen\(false\)\)/);
+    assert.match(itemDialog, /if \(!isOpen && isScannerOpen\) setIsScannerOpen\(false\)/);
+    const list = readFileSync('src/components/shopping-list-client.tsx', 'utf8');
+    assert.match(list, /if \(!isAddItemDialogOpen && isScannerOpen\) setIsScannerOpen\(false\)/);
+    assert.match(list, /useOnTabDeactivate\(\(\) => \{[^}]*setIsScannerOpen\(false\)/);
+    const scanner = readFileSync('src/components/barcode-scanner.tsx', 'utf8');
+    assert.match(scanner, /getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\)/);
+  });
+});
+
+describe('one-time triggers on live data', () => {
+  test('the recipe is generated only when the dialog goes from closed to open', () => {
+    assert.equal(justOpened(false, true), true);
+    // Still open (a new pantry snapshot re-rendered it): no new request.
+    assert.equal(justOpened(true, true), false);
+    assert.equal(justOpened(true, false), false);
+    assert.equal(justOpened(false, false), false);
+  });
+
+  test('the recipe request reads the pantry at request time and auto-runs only on open', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pantry = readFileSync('src/components/pantry-inventory-client.tsx', 'utf8');
+    const dialog = pantry.slice(pantry.indexOf('function RecipeGeneratorDialog'), pantry.indexOf('<Dialog open={isOpen} onOpenChange={onOpenChange}>', pantry.indexOf('function RecipeGeneratorDialog')));
+    assert.match(dialog, /pantryItemsRef\.current\.map\(/);
+    assert.match(dialog, /\}, \[householdId, toast, onRecipe, reduced\]\);/);
+    assert.match(dialog, /const opened = justOpened\(wasOpenRef\.current, isOpen\);/);
+    // A pending "Put on a shopping list" is dropped when the tab is hidden, and the picker is gated.
+    assert.match(pantry, /if \(request !== addToListRequestRef\.current\) return;/);
+    assert.match(pantry, /isOpen=\{isAddToListDialogOpen && tabActive\}/);
+  });
+
+  test("the local deletion marker clears once this device has left the list and it is gone", () => {
+    const base = { deletingListId: 'weekly', selectedListId: null, listIds: ['hardware'] };
+    assert.equal(deletionSettled(base), true);
+    // Still open here, or still in the snapshot: the deletion is in flight.
+    assert.equal(deletionSettled({ ...base, selectedListId: 'weekly' }), false);
+    assert.equal(deletionSettled({ ...base, listIds: ['weekly'] }), false);
+    assert.equal(deletionSettled({ ...base, deletingListId: null }), false);
+    // Re-created later under the same id: the marker is already gone, so a deletion
+    // elsewhere is reported again.
+    assert.equal(isOpenListDeleted({ listId: 'weekly', seenListId: 'weekly', listIds: [], listsReady: true, deletingListId: null }), true);
   });
 });

@@ -2,6 +2,8 @@
 
 import { Suspense } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useSessionKnown } from '@/hooks/use-session-known';
+import Loading from './loading';
 import { ShoppingCenterClient } from "@/components/shopping-center-client";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
@@ -12,13 +14,17 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ShoppingCenterSkeleton } from '@/components/shopping/shopping-skeletons';
 
 export default function ShoppingPage() {
-    const { currentUser, currentMember, permissions, loading, householdLoading } = useAuth();
+    const { currentUser, currentMember, permissions, householdLoading } = useAuth();
     const canView = Boolean(permissions['shopping.view']);
     // Permissions are known once the member record has loaded.
     const denied = Boolean(currentUser && !householdLoading && currentMember && !canView);
-    // Until then the page keeps drawing the route skeleton's shape (SH-25a), so the
-    // header button, tabs and cards never shift between skeleton, blank and content.
-    const pending = currentUser ? !canView && !denied && householdLoading : loading;
+    const sessionKnown = useSessionKnown();
+    // SL-11: the route skeleton, not the sign-in prompt, until Auth has answered.
+    if (!currentUser && !sessionKnown) return <Loading />;
+    // Signed in but the member record is still loading: the page keeps drawing the
+    // route skeleton's shape (SH-25a), so the header button, tabs and cards never
+    // shift between skeleton, blank and content.
+    const pending = Boolean(currentUser) && !canView && !denied && householdLoading;
     return (
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -38,7 +44,7 @@ export default function ShoppingPage() {
 
             {pending && <ShoppingCenterSkeleton />}
 
-            {!currentUser && !loading && <SignInPrompt what="manage your shopping lists and inventory" />}
+            {!currentUser && <SignInPrompt what="manage your shopping lists and inventory" />}
 
             {denied && (
                 <EmptyState

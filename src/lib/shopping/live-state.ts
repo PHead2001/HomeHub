@@ -189,6 +189,25 @@ export const quickAddDecision = ({
  */
 export const deactivated = (previous: boolean, active: boolean): boolean => previous && !active;
 
+/** The render or effect where a flag turned on (a dialog that just opened). */
+export const justOpened = (previous: boolean, open: boolean): boolean => !previous && open;
+
+/**
+ * Whether this device's own list deletion has settled: the screen no longer has
+ * the list open and the lists snapshot no longer holds it. Then the "deleting"
+ * marker is cleared, so a list re-created under the same id and later deleted
+ * elsewhere gets the deletion notice and the missing-link fallback again.
+ */
+export const deletionSettled = ({
+  deletingListId,
+  selectedListId,
+  listIds,
+}: {
+  deletingListId: string | null;
+  selectedListId: string | null;
+  listIds: readonly string[];
+}): boolean => Boolean(deletingListId && selectedListId !== deletingListId && !listIds.includes(deletingListId));
+
 export const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
 /**

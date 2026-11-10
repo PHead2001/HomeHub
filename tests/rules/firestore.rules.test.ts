@@ -926,6 +926,32 @@ describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)
     await assertFails(getDocs(query(as(users.member), where('audience', 'array-contains-any', [users.member.uid, users.child.uid, '*']))));
   });
 
+  test('(d) the Maintenance Center resolver shapes (sourceType ==/in, sourceId in) are allowed', async () => {
+    await experiment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      const put = (id: string, overrides: Record<string, unknown>) =>
+        setDoc(doc(db, 'households', householdA, 'notifications', id), notification({ category: 'maintenance', ...overrides }));
+      await put('asset-schedule', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter', audience: ['*'] });
+      await put('asset-legacy', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1-0:overdue', audience: ['*'] });
+      await put('asset-warranty', { sourceType: 'maintenance_asset_warranty', sourceId: 'asset-1', audience: ['*'] });
+      await put('asset-other', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-2:filter', audience: ['*'] });
+      await put('asset-no-audience', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter' });
+    });
+    // resolveMaintenanceNotifications: one sourceType, the schedule id plus legacy ids.
+    const resolver = await assertSucceeds(getDocs(query(
+      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
+      where('sourceType', '==', 'maintenance_asset_schedule'),
+      where('sourceId', 'in', ['asset-1:filter', 'asset-1-0:due_soon', 'asset-1-0:due_today', 'asset-1-0:overdue']))));
+    assert.deepEqual(ids(resolver), ['asset-legacy', 'asset-schedule']);
+    // deleteRegistryRecord: the record's source types; the id prefix is matched by the client.
+    const registry = await assertSucceeds(getDocs(query(
+      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
+      where('sourceType', 'in', ['maintenance_asset_schedule', 'maintenance_asset_warranty']))));
+    assert.deepEqual(ids(registry), ['asset-legacy', 'asset-other', 'asset-schedule', 'asset-warranty']);
+    // Without the audience filter the same lookup is denied.
+    await assertFails(getDocs(query(as(users.member), where('sourceType', '==', 'maintenance_asset_schedule'))));
+  });
+
   test('single documents follow the same rule', async () => {
     const at = (user: Identity, id: string) => doc(as(user), id);
     await assertSucceeds(getDoc(at(users.member, 'for-member')));
@@ -1300,6 +1326,17 @@ describe('content shapes: chores and templates', () => {
   });
 });
 
+// The restore document the S3 client writes (src/lib/shopping/items.ts restoreItemData +
+// item-writes.ts restoreDocument on the S3 branch): the item as read, without the
+// writer-only stamps, plus restoredByUid, restoreOpId and restoredAt.
+const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt'];
+const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) => ({
+  ...Object.fromEntries(Object.entries(snapshot).filter(([key]) => !RESTORE_DROPS.includes(key))),
+  restoredByUid: restorerUid,
+  ...(restoreOpId ? { restoreOpId } : {}),
+  restoredAt: serverTimestamp(),
+});
+
 describe('content shapes: shopping', () => {
   const items = (user: Identity, list = 'groceries') => collection(dbFor(user), 'households', householdA, 'shopping-lists', list, 'items');
   const item = (user: Identity, id: string) => doc(items(user), id);
@@ -1345,6 +1382,192 @@ describe('content shapes: shopping', () => {
     await assertFails(setDoc(item(users.member, 'x8'), built({ name: '' })));
     await assertFails(setDoc(item(users.member, 'x9'), { quantity: 1, status: 'needed' }));
     await assertFails(updateDoc(item(users.member, 'legacy'), { status: 1 }));
+  });
+
+  // S2 save paths: add-items.ts writes nameKey, addedByUid, categorySource and (scans) size/sizeUnit.
+  test('new item fields: attribution, category source and package size', async () => {
+    const s2 = (overrides: Record<string, unknown> = {}) => built({
+      nameKey: 'milk', addedByUid: users.member.uid, categorySource: 'local', ...overrides,
+    });
+    await assertSucceeds(setDoc(item(users.member, 's2-local'), s2()));
+    await assertSucceeds(setDoc(item(users.member, 's2-scan'), s2({ name: 'Yogurt', nameKey: 'yogurt', size: 450, sizeUnit: 'g', quantity: 1 })));
+    for (const source of ['manual', 'remembered', 'ai', 'fallback', 'pending']) {
+      await assertSucceeds(setDoc(item(users.member, `s2-${source}`), s2({ categorySource: source })));
+    }
+    // The late AI answer and a tick touch only their own fields.
+    await assertSucceeds(updateDoc(item(users.member, 's2-local'), { category: 'Dairy', categorySource: 'ai' }));
+    await assertSucceeds(updateDoc(item(users.owner, 's2-local'), { status: 'purchased' }));
+    // Older items without the new fields stay valid and editable.
+    await assertSucceeds(updateDoc(item(users.member, 'legacy'), { quantity: increment(1) }));
+  });
+
+  test('addedByUid cannot be spoofed or changed', async () => {
+    await assertFails(setDoc(item(users.member, 's2-spoof'), built({ addedByUid: users.owner.uid })));
+    await assertFails(setDoc(item(users.member, 's2-empty'), built({ addedByUid: '' })));
+    await assertSucceeds(setDoc(item(users.member, 's2-own'), built({ addedByUid: users.member.uid })));
+    await assertFails(updateDoc(item(users.owner, 's2-own'), { addedByUid: users.owner.uid }));
+    await assertFails(updateDoc(item(users.member, 's2-own'), { addedByUid: deleteField() }));
+    await assertFails(setDoc(item(users.member, 's2-own'), built()));
+    await assertFails(updateDoc(item(users.member, 'legacy'), { addedByUid: users.member.uid }));
+    // Review finding on #121: Undo of a delete re-creates another member's item with its
+    // original attribution, recording the restorer; a restore cannot invent a member or
+    // be credited to someone else.
+    await assertSucceeds(setDoc(item(users.owner, 's2-restore'), built({ addedByUid: users.member.uid, restoredByUid: users.owner.uid })));
+    await assertFails(setDoc(item(users.owner, 's2-restore-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
+    await assertFails(setDoc(item(users.owner, 's2-restore-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid })));
+    await assertFails(setDoc(item(users.owner, 's2-restore-unmarked'), built({ addedByUid: users.member.uid })));
+    await assertFails(updateDoc(item(users.owner, 's2-restore'), { restoredByUid: users.member.uid }));
+  });
+
+  test('categorySource and package size are bounded', async () => {
+    await assertFails(setDoc(item(users.member, 's2-src'), built({ categorySource: 'guess' })));
+    await assertFails(setDoc(item(users.member, 's2-src2'), built({ categorySource: 1 })));
+    await assertFails(setDoc(item(users.member, 's2-size0'), built({ size: 0, sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-sizeneg'), built({ size: -5, sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-sizebig'), built({ size: 100001, sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-sizestr'), built({ size: '450', sizeUnit: 'g' })));
+    await assertFails(setDoc(item(users.member, 's2-unit'), built({ size: 450, sizeUnit: 'x'.repeat(17) })));
+    await assertFails(setDoc(item(users.member, 's2-unit2'), built({ size: 450, sizeUnit: '' })));
+    await assertFails(setDoc(item(users.member, 's2-key'), built({ nameKey: '' })));
+    await assertSucceeds(setDoc(item(users.member, 's2-max'), built({ size: 100000, sizeUnit: 'x'.repeat(16) })));
+  });
+
+  // S3: shopping-list-client.tsx tick / un-tick / Undo, item-edit-sheet.tsx edits, and
+  // the Undo of a delete (item-writes.ts tickUpdate, untickUpdate, undoTickUpdate, editUpdate; items.ts restoreItemData).
+  test('S3 tick, un-tick and edit stamps are the writer and the server time', async () => {
+    await assertSucceeds(setDoc(item(users.member, 's3'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(updateDoc(item(users.member, 's3'), {
+      status: 'purchased', purchasedByUid: users.member.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-1', undoOpId: deleteField(),
+    }));
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), { status: 'needed', purchasedByUid: null, purchasedAt: null }));
+    // Offline tick without a signed-in uid (both stamps null).
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), { status: 'purchased', purchasedByUid: null, purchasedAt: null, purchaseOpId: 'op-0' }));
+    // purchasedAt must equal request.time; purchasedByUid must be the writer.
+    await assertFails(updateDoc(item(users.member, 's3'), {
+      status: 'purchased', purchasedByUid: users.member.uid, purchasedAt: Timestamp.fromDate(new Date('2026-01-01')), purchaseOpId: 'op-2',
+    }));
+    await assertFails(updateDoc(item(users.member, 's3'), { status: 'purchased', purchasedByUid: users.owner.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-3' }));
+    await assertFails(updateDoc(item(users.member, 's3'), { purchasedAt: serverTimestamp(), purchasedByUid: null }));
+    await assertFails(updateDoc(item(users.member, 's3'), { purchaseOpId: '' }));
+    await assertFails(updateDoc(item(users.member, 's3'), { purchaseOpId: 'x'.repeat(65) }));
+    // Edits: the writer and the server time, together.
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), {
+      name: 'Oat milk', nameKey: 'oat milk', quantity: 3, category: 'Drinks', categorySource: 'manual', editedByUid: users.owner.uid, editedAt: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), { quantity: 4, editedByUid: users.owner.uid, editedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedByUid: users.owner.uid, editedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedByUid: users.member.uid }));
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedByUid: users.member.uid, editedAt: Timestamp.fromDate(new Date('2026-01-01')) }));
+    // editedAt alone would sign someone else's name to this edit.
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedAt: serverTimestamp() }));
+    await assertFails(setDoc(item(users.member, 's3-edit-spoof'), built({ editedByUid: users.owner.uid, editedAt: serverTimestamp() })));
+  });
+
+  test('S3 a tick Undo only lands while its purchase is the current one', async () => {
+    const tick = (user: Identity, op: string) => updateDoc(item(user, 's3-undo'), {
+      status: 'purchased', purchasedByUid: user.uid, purchasedAt: serverTimestamp(), purchaseOpId: op, undoOpId: deleteField(),
+    });
+    const undo = (user: Identity, op: string) => updateDoc(item(user, 's3-undo'), { status: 'needed', undoOpId: op, purchasedByUid: null, purchasedAt: null });
+    await assertSucceeds(setDoc(item(users.member, 's3-undo'), built()));
+    await assertSucceeds(tick(users.member, 'op-a'));
+    await assertSucceeds(undo(users.member, 'op-a'));
+    // Ticked again by the owner: the member's late Undo of the first tick is refused.
+    await assertSucceeds(tick(users.member, 'op-b'));
+    await assertSucceeds(tick(users.owner, 'op-c'));
+    await assertFails(undo(users.member, 'op-b'));
+    // ... also the Undo of the very first tick, replayed (its undoOpId was removed by the re-tick).
+    await assertFails(undo(users.member, 'op-a'));
+    assert.equal((await getDoc(item(users.owner, 's3-undo'))).get('status'), 'purchased');
+    // An Undo may not rewrite the purchase it names, and only goes back to needed.
+    await assertFails(updateDoc(item(users.owner, 's3-undo'), { status: 'needed', undoOpId: 'op-z', purchaseOpId: 'op-z' }));
+    await assertFails(updateDoc(item(users.owner, 's3-undo'), { status: 'purchased', undoOpId: 'op-c' }));
+    await assertSucceeds(undo(users.owner, 'op-c'));
+    // undoOpId never comes with a create.
+    await assertFails(setDoc(item(users.member, 's3-undo-new'), built({ undoOpId: 'op-a' })));
+  });
+
+  test('S3 a delete Undo re-creates the item only if it is absent, keeping who added it', async () => {
+    await assertSucceeds(setDoc(item(users.member, 's3-restore'), built({ addedByUid: users.member.uid, nameKey: 'milk' })));
+    const snapshot = (await getDoc(item(users.member, 's3-restore'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-restore')));
+    // The owner restores the member's item: original adder kept, restorer recorded.
+    await assertSucceeds(setDoc(item(users.owner, 's3-restore'), restoreShape(snapshot, users.owner.uid, 'restore-1')));
+    // A second restore (another device, or a replay) does not overwrite the item that is back.
+    await assertFails(setDoc(item(users.member, 's3-restore'), restoreShape(snapshot, users.member.uid, 'restore-2')));
+    await assertFails(updateDoc(item(users.owner, 's3-restore'), { restoreOpId: 'restore-3' }));
+    await assertFails(updateDoc(item(users.owner, 's3-restore'), { restoredAt: serverTimestamp() }));
+    // A restore must name the writer as restorer and carry restoredAt == request.time.
+    await assertFails(setDoc(item(users.owner, 's3-no-time'), built({ restoredByUid: users.owner.uid, restoreOpId: 'r' })));
+    await assertFails(setDoc(item(users.owner, 's3-old-time'), built({ restoredByUid: users.owner.uid, restoreOpId: 'r', restoredAt: Timestamp.fromDate(new Date('2026-01-01')) })));
+    await assertFails(setDoc(item(users.owner, 's3-no-restorer'), built({ restoreOpId: 'r', restoredAt: serverTimestamp() })));
+    await assertFails(setDoc(item(users.owner, 's3-time-only'), built({ restoredAt: serverTimestamp() })));
+    // The restorer must be the writer, the adder a member; a legacy item without an adder may be restored.
+    await assertFails(setDoc(item(users.owner, 's3-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid, restoreOpId: 'r', restoredAt: serverTimestamp() })));
+    await assertFails(setDoc(item(users.owner, 's3-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid, restoreOpId: 'r', restoredAt: serverTimestamp() })));
+    await assertSucceeds(setDoc(item(users.owner, 's3-legacy'), restoreShape(built(), users.owner.uid, 'r')));
+    await assertFails(setDoc(item(users.owner, 's3-empty-op'), restoreShape(built(), users.owner.uid, '')));
+  });
+
+  test('S3 restoring a purchased, edited or tick-undone item drops only the writer-only stamps', async () => {
+    const tickBy = (user: Identity, id: string, op: string) => updateDoc(item(user, id), {
+      status: 'purchased', purchasedByUid: user.uid, purchasedAt: serverTimestamp(), purchaseOpId: op, undoOpId: deleteField(),
+    });
+    // Purchased by the member, deleted, restored by the owner: still purchased, no purchase stamps.
+    await assertSucceeds(setDoc(item(users.member, 's3-r-bought'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(tickBy(users.member, 's3-r-bought', 'op-1'));
+    const bought = (await getDoc(item(users.member, 's3-r-bought'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-r-bought')));
+    // The raw snapshot (another member's purchasedByUid, a past purchasedAt) is refused ...
+    await assertFails(setDoc(item(users.owner, 's3-r-bought'), { ...bought, restoredByUid: users.owner.uid, restoreOpId: 'r1', restoredAt: serverTimestamp() }));
+    // ... the restore shape is accepted.
+    await assertSucceeds(setDoc(item(users.owner, 's3-r-bought'), restoreShape(bought, users.owner.uid, 'r1')));
+    const restored = (await getDoc(item(users.owner, 's3-r-bought'))).data()!;
+    assert.equal(restored.status, 'purchased');
+    assert.equal(restored.purchaseOpId, 'op-1');
+    assert.equal(restored.addedByUid, users.member.uid);
+    assert.equal('purchasedByUid' in restored || 'purchasedAt' in restored, false);
+
+    // Edited by the owner, deleted, restored by the member.
+    await assertSucceeds(setDoc(item(users.member, 's3-r-edited'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(updateDoc(item(users.owner, 's3-r-edited'), { quantity: 4, editedByUid: users.owner.uid, editedAt: serverTimestamp() }));
+    const edited = (await getDoc(item(users.member, 's3-r-edited'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-r-edited')));
+    await assertFails(setDoc(item(users.member, 's3-r-edited'), { ...edited, restoredByUid: users.member.uid, restoreOpId: 'r2', restoredAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(item(users.member, 's3-r-edited'), restoreShape(edited, users.member.uid, 'r2')));
+    assert.equal((await getDoc(item(users.member, 's3-r-edited'))).get('quantity'), 4);
+
+    // Ticked and Undone (undoOpId stored), deleted, restored.
+    await assertSucceeds(setDoc(item(users.member, 's3-r-undone'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(tickBy(users.member, 's3-r-undone', 'op-u'));
+    await assertSucceeds(updateDoc(item(users.member, 's3-r-undone'), { status: 'needed', undoOpId: 'op-u', purchasedByUid: null, purchasedAt: null }));
+    const undone = (await getDoc(item(users.member, 's3-r-undone'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-r-undone')));
+    await assertFails(setDoc(item(users.member, 's3-r-undone'), { ...undone, restoredByUid: users.member.uid, restoreOpId: 'r3', restoredAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(item(users.member, 's3-r-undone'), restoreShape(undone, users.member.uid, 'r3')));
+  });
+
+  test('S3 a replayed restore cannot reset a newer change', async () => {
+    await assertSucceeds(setDoc(item(users.member, 's3-replay'), built({ addedByUid: users.member.uid, quantity: 1 })));
+    const snapshot = (await getDoc(item(users.member, 's3-replay'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-replay')));
+    const payload = restoreShape(snapshot, users.owner.uid, 'restore-1');
+    await assertSucceeds(setDoc(item(users.owner, 's3-replay'), payload));
+    // Someone changes it after the restore ...
+    await assertSucceeds(updateDoc(item(users.member, 's3-replay'), { quantity: 2 }));
+    // ... and the same restore (same restoreOpId and restorer) is sent again: refused,
+    // because its restoredAt resolves to a new request.time (a changed key on an update).
+    await assertFails(setDoc(item(users.owner, 's3-replay'), payload));
+    // Two tabs holding the same journal entry share the restoreOpId: the second tab's
+    // write is refused whether it carries a fresh restoredAt (above), none at all, or
+    // tries to clear the stored restore stamps.
+    const withoutTime = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'restoredAt'));
+    await assertFails(setDoc(item(users.owner, 's3-replay'), withoutTime));
+    await assertFails(setDoc(item(users.owner, 's3-replay'), { ...withoutTime, restoreOpId: 'restore-2' }));
+    await assertFails(updateDoc(item(users.owner, 's3-replay'), { restoredAt: deleteField() }));
+    await assertFails(updateDoc(item(users.owner, 's3-replay'), { restoreOpId: deleteField() }));
+    assert.equal((await getDoc(item(users.owner, 's3-replay'))).get('quantity'), 2);
+    // Ordinary updates of a restored item stay allowed.
+    await assertSucceeds(updateDoc(item(users.owner, 's3-replay'), { status: 'purchased', purchasedByUid: users.owner.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-9' }));
   });
 
   test('an item with a legacy field stays updatable on its other fields', async () => {
@@ -1533,7 +1756,7 @@ describe('content shapes: pet logs', () => {
   const logs = (user: Identity, kind: string) => collection(dbFor(user), 'households', householdA, 'pets', 'maple', kind);
   const log = (user: Identity, kind: string, id: string) => doc(logs(user, kind), id);
   const by = (user: Identity) => ({ loggedByUid: user.uid, loggedByName: 'Someone' });
-  // pet-log-api.ts addFeedingLog; medication-log.tsx and care-log.tsx onSubmit
+  // Pre-operation feeding shape (older clients); medication-log.tsx and care-log.tsx onSubmit
   const feeding = (user: Identity) => ({ date: new Date(), cups: 1.5, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM', ...by(user) });
   const medication = (user: Identity) => ({ date: new Date().toISOString(), medication: 'Flea drops', dosage: '1 dose', notes: '', nextDueDate: '2026-09-01', ...by(user) });
   const care = (user: Identity) => ({ date: new Date().toISOString(), activity: 'Walk', notes: '', ...by(user) });
@@ -1590,6 +1813,231 @@ describe('content shapes: pet logs', () => {
     await assertFails(addDoc(logs(users.member, 'medication-logs'), { ...medication(users.member), refill: true }));
     await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), activity: 5 }));
     await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), notes: 'x'.repeat(2001) }));
+  });
+});
+
+describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
+  // One Firestore instance per user, so a batch never mixes references from two instances.
+  let instances = new Map<string, ReturnType<typeof dbFor>>();
+  const dbOf = (user: Identity) => {
+    if (!instances.has(user.uid)) instances.set(user.uid, dbFor(user));
+    return instances.get(user.uid)!;
+  };
+  const petPath = ['households', householdA, 'pets', 'rex'] as const;
+  const logs = (user: Identity, household = householdA) => collection(dbOf(user), 'households', household, 'pets', 'rex', 'feeding-logs');
+  const log = (user: Identity, id: string, household = householdA) => doc(logs(user, household), id);
+  const state = (user: Identity, household = householdA, id = 'current') =>
+    doc(dbOf(user), 'households', household, 'pets', 'rex', 'feeding-state', id);
+  const minutesAgo = (minutes: number) => Timestamp.fromMillis(Date.now() - minutes * 60_000);
+  // src/lib/pets/feed-operation.ts feedPet (online): server times, repeat, signed.
+  const liveFeeding = (user: Identity, overrides: Record<string, unknown> = {}) => ({
+    date: serverTimestamp(), loggedAt: serverTimestamp(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry',
+    comments: '', ampm: 'AM', loggedByUid: user.uid, loggedByName: 'Someone', repeat: 'none', ...overrides,
+  });
+  const stateFor = (user: Identity, logId: string, overrides: Record<string, unknown> = {}) => ({
+    lastLogId: logId, lastFedAt: serverTimestamp(), lastFedByUid: user.uid, lastFedByName: 'Someone',
+    day: '2026-11-10', countOnDay: 1, prev: null, ...overrides,
+  });
+  const previous = {
+    lastLogId: 'older', lastFedAt: Timestamp.fromDate(new Date('2026-11-10T08:00:00.000Z')),
+    lastFedByUid: users.child.uid, lastFedByName: 'Child', day: '2026-11-10', countOnDay: 1,
+  };
+  // The seeded state's six fields (its exact copy is the only valid `prev` for the next feed).
+  let current: Record<string, unknown> = {};
+  const STATE_FIELDS = ['lastLogId', 'lastFedAt', 'lastFedByUid', 'lastFedByName', 'day', 'countOnDay'];
+  // What feed-operation.ts previousOf() writes: the stored state's six fields, read back.
+  const replacedState = async (user: Identity) => {
+    const data = (await getDoc(state(user))).data() ?? {};
+    return Object.fromEntries(STATE_FIELDS.map(field => [field, data[field] ?? null]));
+  };
+  const feedBatch = (user: Identity, stateData: (logId: string) => Record<string, unknown>) => {
+    const batch = writeBatch(dbOf(user));
+    const ref = doc(logs(user));
+    batch.set(ref, liveFeeding(user));
+    batch.set(state(user), stateData(ref.id));
+    return batch;
+  };
+
+  beforeEach(async () => {
+    instances = new Map();
+    current = {
+      lastLogId: 'recent', lastFedAt: minutesAgo(2), lastFedByUid: users.member.uid, lastFedByName: 'Member',
+      day: '2026-11-10', countOnDay: 2,
+    };
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await setDoc(doc(db, ...petPath), { name: 'Rex', type: 'Dog', feedingsPerDay: 2 });
+      await setDoc(doc(db, ...petPath, 'feeding-logs', 'older'), {
+        date: previous.lastFedAt, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+        loggedByUid: users.child.uid, loggedByName: 'Child',
+      });
+      // The member's feed from 2 minutes ago (inside the 10-minute window) and one from 11 minutes ago.
+      await setDoc(doc(db, ...petPath, 'feeding-logs', 'recent'), {
+        date: minutesAgo(2), loggedAt: minutesAgo(2), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '',
+        ampm: 'AM', loggedByUid: users.member.uid, loggedByName: 'Member', repeat: 'none',
+      });
+      await setDoc(doc(db, ...petPath, 'feeding-logs', 'stale'), {
+        date: minutesAgo(11), loggedAt: minutesAgo(11), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '',
+        ampm: 'AM', loggedByUid: users.member.uid, loggedByName: 'Member', repeat: 'none',
+      });
+      await setDoc(doc(db, ...petPath, 'feeding-state', 'current'), { ...current, prev: previous });
+    });
+  });
+
+  test('a feed writes the log and the state together; members and children may', async () => {
+    for (const user of [users.member, users.child]) {
+      const prev = await replacedState(user);
+      await assertSucceeds(feedBatch(user, logId => stateFor(user, logId, { countOnDay: 3, prev })).commit());
+    }
+    // The first feed of a pet without state has no prev.
+    await environment.withSecurityRulesDisabled(async context => {
+      await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-state', 'current'));
+    });
+    await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId)).commit());
+    // Readable with pets.view (guest), not by another household.
+    await assertSucceeds(getDoc(state(users.guest)));
+    await assertFails(getDoc(state(users.ownerB)));
+  });
+
+  test('the new feeding-log fields are validated', async () => {
+    await assertSucceeds(addDoc(logs(users.member), liveFeeding(users.member, { repeat: 'confirmed' })));
+    await assertSucceeds(addDoc(logs(users.member), liveFeeding(users.member, { repeat: 'offline', clockSource: 'device', date: new Date() })));
+    await assertSucceeds(addDoc(logs(users.member), liveFeeding(users.member, { backdated: true, date: Timestamp.fromDate(new Date('2026-11-09T12:00:00Z')) })));
+    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { repeat: 'twice' })));
+    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { clockSource: 'sundial' })));
+    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { backdated: 'yes' })));
+    // loggedAt is the server time of the write: a chosen one (which would stretch the delete window) is refused.
+    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { loggedAt: inMinutes(5) })));
+    await assertFails(updateDoc(log(users.member, 'recent'), { loggedAt: serverTimestamp() }));
+  });
+
+  test('state writes are validated and paired with an existing log', async () => {
+    const member = users.member;
+    const write = async (data: Record<string, unknown>, logData: Record<string, unknown> | null = liveFeeding(member), id = 'current') => {
+      const db = dbOf(member);
+      const ref = doc(logs(member));
+      const batch = writeBatch(db);
+      if (logData) batch.set(ref, logData);
+      batch.set(state(member, householdA, id), { ...stateFor(member, ref.id, { prev: current }), ...data });
+      return batch.commit();
+    };
+    await assertFails(write({}, null)); // no log behind it
+    await assertFails(write({ lastLogId: 'older' }, null)); // someone else's log
+    await assertFails(write({ countOnDay: -1 }));
+    await assertFails(write({ countOnDay: 1.5 }));
+    await assertFails(write({ day: 'today' }));
+    await assertFails(write({ mood: 'happy' }));
+    await assertFails(write({ prev: { ...previous, extra: true } }));
+    await assertFails(write({}, liveFeeding(member), 'other'));
+    // A guest (pets.view only) and another household cannot write.
+    const guestBatch = writeBatch(dbOf(users.guest));
+    guestBatch.set(state(users.guest), stateFor(users.guest, 'recent'));
+    await assertFails(guestBatch.commit());
+    await assertFails(setDoc(state(users.ownerB, householdB), stateFor(users.ownerB, 'recent')));
+    await assertFails(deleteDoc(state(users.owner)));
+  });
+
+  test('a forged lastFedByUid is refused', async () => {
+    const db = dbOf(users.member);
+    const ref = doc(logs(users.member));
+    const batch = writeBatch(db);
+    batch.set(ref, liveFeeding(users.member));
+    batch.set(state(users.member), stateFor(users.child, ref.id, { prev: current }));
+    await assertFails(batch.commit());
+    // A log signed by someone else cannot be created either.
+    await assertFails(addDoc(logs(users.member), liveFeeding(users.child)));
+  });
+
+  test('a new feed must carry the replaced state exactly as prev (no fabricated snapshot to restore later)', async () => {
+    const member = users.member;
+    // prev.lastLogId matches, but who and when are fabricated: refused.
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, {
+      prev: { ...current, lastFedByUid: users.child.uid, lastFedByName: 'Child', lastFedAt: minutesAgo(1) },
+    })).commit());
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, countOnDay: 9 } })).commit());
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, day: '2026-11-09' } })).commit());
+    // null may not discard an existing latest feed.
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: null })).commit());
+    // The exact replaced state is accepted, and Undo can then bring back only that.
+    const batch = writeBatch(dbOf(member));
+    const ref = doc(logs(member));
+    batch.set(ref, liveFeeding(member));
+    batch.set(state(member), stateFor(member, ref.id, { countOnDay: 3, prev: current }));
+    await assertSucceeds(batch.commit());
+    const undo = writeBatch(dbOf(member));
+    undo.delete(log(member, ref.id));
+    undo.set(state(member), { ...current, prev: null });
+    await assertSucceeds(undo.commit());
+  });
+
+  test('deleting the feed prev points at clears prev; a deleted prev is never restored', async () => {
+    // Dropping prev while its log still exists is refused.
+    await assertFails(updateDoc(state(users.member), { prev: null }));
+    // Delete the older feed prev points at (pets.deleteLogs) and clear prev in one commit.
+    const drop = writeBatch(dbOf(users.owner));
+    drop.delete(log(users.owner, 'older'));
+    drop.update(state(users.owner), { countOnDay: 1, prev: null });
+    await assertSucceeds(drop.commit());
+    // Then deleting the latest feed clears it (nothing survives to restore).
+    const clear = writeBatch(dbOf(users.member));
+    clear.delete(log(users.member, 'recent'));
+    clear.set(state(users.member), { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: '2026-11-10', countOnDay: 0, prev: null });
+    await assertSucceeds(clear.commit());
+  });
+
+  test('a prev whose log is gone cannot be restored, and clearing needs a gone prev', async () => {
+    const cleared = { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: '2026-11-10', countOnDay: 1, prev: null };
+    // prev's log still exists: clearing the latest feed instead of restoring it is refused.
+    const discard = writeBatch(dbOf(users.member));
+    discard.delete(log(users.member, 'recent'));
+    discard.set(state(users.member), cleared);
+    await assertFails(discard.commit());
+    // prev's log was deleted outside the operation (an old client): restoring it is refused, clearing is allowed.
+    await environment.withSecurityRulesDisabled(async context => {
+      await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'older'));
+    });
+    const restore = writeBatch(dbOf(users.member));
+    restore.delete(log(users.member, 'recent'));
+    restore.set(state(users.member), { ...previous, countOnDay: 1, prev: null });
+    await assertFails(restore.commit());
+    const clear = writeBatch(dbOf(users.member));
+    clear.delete(log(users.member, 'recent'));
+    clear.set(state(users.member), cleared);
+    await assertSucceeds(clear.commit());
+  });
+
+  test('undo restores exactly the stored prev, or only changes the count', async () => {
+    const db = dbOf(users.member);
+    // Restoring something other than `prev` (an old whole snapshot) is refused.
+    const forged = writeBatch(db);
+    forged.delete(log(users.member, 'recent'));
+    forged.set(state(users.member), { ...previous, lastLogId: 'stale', countOnDay: 1, prev: null });
+    await assertFails(forged.commit());
+    // Restoring `prev` while the log still exists is refused.
+    await assertFails(setDoc(state(users.member), { ...previous, countOnDay: 1, prev: null }));
+    // Count-only changes are allowed.
+    await assertSucceeds(updateDoc(state(users.member), { countOnDay: 1 }));
+    // Delete the latest log and restore `prev` in one commit.
+    const undo = writeBatch(db);
+    undo.delete(log(users.member, 'recent'));
+    undo.set(state(users.member), { ...previous, countOnDay: 0, prev: null });
+    await assertSucceeds(undo.commit());
+  });
+
+  test('the author may delete their own feeding for 10 minutes; others need pets.deleteLogs', async () => {
+    // Just logged through the operation, then deleted by its author (a member without pets.deleteLogs).
+    const ref = await addDoc(logs(users.member), liveFeeding(users.member));
+    await assertSucceeds(deleteDoc(log(users.member, ref.id)));
+    await assertSucceeds(deleteDoc(log(users.member, 'recent')));
+    // After 10 minutes, refused.
+    await assertFails(deleteDoc(log(users.member, 'stale')));
+    // Someone else's feeding, or one without loggedAt (legacy), is refused to a member.
+    await assertFails(deleteDoc(log(users.child, 'stale')));
+    await assertFails(deleteDoc(log(users.member, 'older')));
+    // A guest cannot; another household cannot; pets.deleteLogs (owner) can delete any.
+    await assertFails(deleteDoc(log(users.guest, 'stale')));
+    await assertFails(deleteDoc(log(users.ownerB, 'stale')));
+    await assertSucceeds(deleteDoc(log(users.owner, 'stale')));
   });
 });
 

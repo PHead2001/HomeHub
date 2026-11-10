@@ -508,6 +508,8 @@ export type Notification = {
   stateKey?: string;
   targetUserUid?: string;
   targetUserEmail?: string;
+  /** Who it is for: `[uid]` or `['*']`; absent on documents written before the field existed. */
+  audience?: string[];
   readBy: NotificationUserActionMap;
   dismissedBy: NotificationUserActionMap;
   resolvedAt?: Date;

@@ -32,6 +32,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { slugify, cn } from '@/lib/utils';
@@ -40,7 +41,7 @@ import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offli
 import { buildShoppingListItem } from '@/lib/shopping-items';
 import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, splitSettled, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
-import { isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
+import { deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
@@ -278,6 +279,10 @@ export function ShoppingListClient({
     setHandoffMode(null);
   });
 
+  // The Add Item scanner is nested in the Add Item dialog: it never outlives it
+  // (otherwise reopening Add Item would bring the camera back).
+  if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
+
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
@@ -287,6 +292,9 @@ export function ShoppingListClient({
   if (selectedList && householdId && (seen?.list !== selectedList || seen.householdId !== householdId)) setSeen({ householdId, list: selectedList });
   const seenList = seen && seen.householdId === householdId ? seen.list : null;
   const listIds = useMemo(() => lists.map((list) => list.id), [lists]);
+  // The marker covers only the deletion in flight: once this device has left the
+  // list and the snapshot no longer holds it, it is cleared.
+  if (deletionSettled({ deletingListId, selectedListId, listIds })) setDeletingListId(null);
   // Deleted while open (here: by another member or device): the list's document is
   // gone from the snapshot. Its screen says so and offers no write controls (SH-1e).
   const deletedList = isOpenListDeleted({
@@ -625,11 +633,12 @@ export function ShoppingListClient({
       }
   };
 
-  // "Milk is in the cart · Undo" for five seconds after a tick.
+  // "Milk is in the cart · Undo" for the shared Undo window after a tick.
   const showTickUndo = (item: ShoppingListItem) => {
     toast({
+      group: 'shopping-tick',
       title: `${item.name} is in the cart`,
-      duration: 5000,
+      duration: UNDO_WINDOW_MS,
       action: (
         <ToastAction
           altText={`Undo ticking ${item.name}`}
@@ -644,7 +653,7 @@ export function ShoppingListClient({
     });
   };
 
-  // Deletes at once, with five seconds to undo (the item is written back as it was).
+  // Deletes at once, with the shared Undo window to undo (the item is written back as it was).
   // The listener removes and restores the row; a rejected write is rolled back there.
   const deleteItem = async (item: ShoppingListItem) => {
     const list = selectedList;
@@ -661,8 +670,9 @@ export function ShoppingListClient({
     const { id: _id, ...data } = item;
     void _id;
     toast({
+      group: 'shopping-remove',
       title: `${item.name} removed`,
-      duration: 5000,
+      duration: UNDO_WINDOW_MS,
       action: canEdit ? (
         <ToastAction
           altText={`Undo removing ${item.name}`}
