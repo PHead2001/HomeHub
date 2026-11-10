@@ -4,7 +4,8 @@
  * Shell pieces that wait until the page has loaded and the browser is idle, so
  * first paint never waits for them:
  * - `PushNotificationManager` (the service worker registration, for every visitor;
- *   no Firebase);
+ *   no Firebase) and `UpdateWatcher` (periodic worker update checks and the
+ *   "HomeHub updated" toast, SL-2; no Firebase);
  * - `PushForegroundListener` (Firebase Messaging and foreground push toasts) only
  *   once a member is signed in: it imports `@/lib/firebase`, which would otherwise
  *   download Firestore and start App Check for signed-out visitors;
@@ -16,6 +17,7 @@ import dynamic from 'next/dynamic';
 import { useAuth } from '@/hooks/use-auth';
 
 const PushNotificationManager = dynamic(() => import('./PushNotificationManager').then((mod) => mod.PushNotificationManager), { ssr: false });
+const UpdateWatcher = dynamic(() => import('./shell/update-watcher').then((mod) => mod.UpdateWatcher), { ssr: false });
 const PushForegroundListener = dynamic(() => import('./push-foreground-listener').then((mod) => mod.PushForegroundListener), { ssr: false });
 const Toaster = dynamic(() => import('./ui/toaster').then((mod) => mod.Toaster), { ssr: false });
 
@@ -50,6 +52,7 @@ export function DeferredPushNotificationManager() {
   return (
     <>
       <PushNotificationManager />
+      <UpdateWatcher />
       {currentUser ? <PushForegroundListener /> : null}
     </>
   );
