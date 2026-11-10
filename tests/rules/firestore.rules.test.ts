@@ -1418,6 +1418,11 @@ describe('content shapes: pantry (Pantry v2, stage S4a)', () => {
         name: 'Beans', nameKey: 'beans', quantity: 1, packages: 1, packageSize: null, unit: 'cans', location: 'Pantry',
         expiryDate: null, schemaVersion: 2, addedByUid: users.owner.uid,
       });
+      // A v2 batch last written by the owner, some time ago.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'pantry-inventory', 'foreign'), {
+        name: 'Oats', nameKey: 'oats', quantity: 3, packages: 3, packageSize: null, unit: 'items', location: 'Pantry',
+        expiryDate: null, schemaVersion: 2, addedByUid: users.owner.uid, updatedByUid: users.owner.uid, updatedAt: now(),
+      });
     });
   });
 
@@ -1463,8 +1468,8 @@ describe('content shapes: pantry (Pantry v2, stage S4a)', () => {
     await assertFails(setDoc(batch(member, 'x15'), { quantity: 1, unit: 'items', location: 'Pantry' }));
     // A used-up batch cannot go below zero.
     await assertSucceeds(setDoc(batch(member, 'last'), v2(member, { packages: 1 })));
-    await assertSucceeds(updateDoc(batch(member, 'last'), { packages: increment(-1) }));
-    await assertFails(updateDoc(batch(member, 'last'), { packages: increment(-1) }));
+    await assertSucceeds(updateDoc(batch(member, 'last'), { packages: increment(-1), updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(batch(member, 'last'), { packages: increment(-1), updatedAt: serverTimestamp() }));
     // A legacy ISO expiry is still accepted in stage S4a.
     await assertSucceeds(setDoc(batch(member, 'iso'), v2(member, { expiryDate: '2026-11-20T06:00:00.000Z' })));
   });
@@ -1477,6 +1482,43 @@ describe('content shapes: pantry (Pantry v2, stage S4a)', () => {
     await assertFails(updateDoc(batch(users.member, 'owned'), { packages: increment(1), updatedByUid: users.owner.uid }));
     await assertFails(updateDoc(batch(users.member, 'legacy-milk'), { addedByUid: users.member.uid }));
     await assertSucceeds(updateDoc(batch(users.member, 'owned'), { packages: increment(1), updatedByUid: users.member.uid, updatedAt: serverTimestamp() }));
+  });
+
+  test('a v2 update must leave the batch attributed to the writer at request time', async () => {
+    const stamp = { updatedByUid: users.member.uid, updatedAt: serverTimestamp() };
+    // A changed count under another member's updatedByUid and the old updatedAt is refused.
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1) }));
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1), updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1), updatedByUid: users.member.uid }));
+    // Removing the attribution is refused, alone or with a count change.
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { updatedByUid: deleteField() }));
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { updatedAt: deleteField(), packages: increment(-1), updatedByUid: users.member.uid }));
+    await assertFails(updateDoc(batch(users.owner, 'foreign'), { packages: increment(-1), updatedByUid: deleteField(), updatedAt: serverTimestamp() }));
+    // A v2 field on a batch without attribution yet needs it too.
+    await assertFails(updateDoc(batch(users.member, 'owned'), { packages: increment(1) }));
+    // With the writer and server time it is allowed.
+    await assertSucceeds(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1), ...stamp }));
+    await assertSucceeds(updateDoc(batch(users.owner, 'foreign'), { location: 'Fridge', updatedByUid: users.owner.uid, updatedAt: serverTimestamp() }));
+  });
+
+  test('older pages keep working: legacy-only updates, on legacy and v2 batches', async () => {
+    // Legacy document, legacy update (quantity increment and merge-save), no attribution.
+    await assertSucceeds(updateDoc(batch(users.member, 'legacy-milk'), { quantity: increment(1) }));
+    await assertSucceeds(setDoc(batch(users.member, 'legacy-milk'), {
+      name: 'Whole milk', quantity: 2, unit: 'items', location: 'Fridge', expiryDate: null,
+    }, { merge: true }));
+    // An older page editing a v2 batch changes only legacy fields; packages and attribution stay.
+    await assertSucceeds(updateDoc(batch(users.member, 'foreign'), { quantity: increment(1) }));
+    await assertSucceeds(setDoc(batch(users.member, 'foreign'), {
+      name: 'Rolled oats', quantity: 4, unit: 'items', location: 'Pantry', expiryDate: '2026-12-01T06:00:00.000Z',
+    }, { merge: true }));
+    // A legacy-looking update that also removes a field is not legacy-only.
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { quantity: 5, nameKey: deleteField() }));
+    // Upgrading a legacy document to v2 needs the attribution.
+    await assertFails(updateDoc(batch(users.member, 'legacy-milk'), { packages: 2, schemaVersion: 2 }));
+    await assertSucceeds(updateDoc(batch(users.member, 'legacy-milk'), {
+      packages: 2, schemaVersion: 2, updatedByUid: users.member.uid, updatedAt: serverTimestamp(),
+    }));
   });
 
   test('pantry permissions: view to read, edit to write, delete to delete', async () => {

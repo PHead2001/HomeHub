@@ -690,6 +690,27 @@ service cloud.firestore {
       return request.resource.data.get('addedByUid', null) == resource.data.get('addedByUid', null);
     }
 
+    // An older page's update: it changes only legacy fields and removes nothing.
+    // Allowed in stage S4a on any batch, v2 included (a legacy quantity or name
+    // edit leaves packages and the v2 attribution as they were; v2 pages read
+    // packages, not quantity). Stage S4b drops this exception.
+    function pantryLegacyOnlyUpdate() {
+      let diff = request.resource.data.diff(resource.data);
+      return diff.removedKeys().size() == 0 &&
+        diff.addedKeys().union(diff.changedKeys()).hasOnly(['name', 'quantity', 'unit', 'location', 'expiryDate']);
+    }
+
+    // Every other update (it changes a v2 field such as packages, or removes a
+    // field) must leave the RESULTING batch attributed to this writer at this
+    // time, so nobody can change a count under another member's updatedByUid or
+    // an old updatedAt, or strip the attribution. Checked on the resulting
+    // document because writtenKeys() only sees keys that changed.
+    function pantryUpdateAttributed() {
+      return pantryLegacyOnlyUpdate() ||
+        (request.resource.data.get('updatedByUid', null) == request.auth.uid &&
+          request.resource.data.get('updatedAt', null) == request.time);
+    }
+
     // --- Pet logs ---------------------------------------------------------
 
     // Entries written before "who logged it" existed carry neither field, so both
@@ -1036,6 +1057,7 @@ service cloud.firestore {
           validPantryFields(request.resource.data, writtenKeys());
         allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           pantryAdderUnchanged() &&
+          pantryUpdateAttributed() &&
           validPantryFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
       }

@@ -58,13 +58,15 @@ export async function addPurchasesToPantry(
   const readIds = [...new Set([...choices.map((choice) => choice.itemId), ...clearItemIds])];
   if (readIds.length === 0) return { written: 0, cleared: [], skipped: [] };
 
+  // Every v2 write carries the writer and server time (the rules check the resulting batch).
   const uid = auth.currentUser?.uid;
-  const stamp = () => (uid ? { updatedByUid: uid, updatedAt: serverTimestamp() } : { updatedAt: serverTimestamp() });
+  if (!uid) throw new Error('Sign in to add to the pantry.');
+  const stamp = () => ({ updatedByUid: uid, updatedAt: serverTimestamp() });
   const create = (name: string, quantity: number, location: PantryItem['location']) => ({
     ref: doc(pantry, slugify(name)),
     data: {
       ...pantryBatchFields({ name, location, unit: 'items', packages: quantity, packageSize: null, expiryDate: null }),
-      ...(uid ? { addedByUid: uid } : {}),
+      addedByUid: uid,
       ...stamp(),
     },
   });

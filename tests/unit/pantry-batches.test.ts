@@ -278,3 +278,18 @@ describe('where "Put on a shopping list" goes (SH-6)', () => {
     assert.equal(noGroceries.kind === 'pick' && noGroceries.preselectId, 'aldi', 'first by name');
   });
 });
+
+describe('every v2 update carries the attribution the rules check', () => {
+  test('package, edit, move and hand-off updates stamp updatedByUid and updatedAt', () => {
+    const read = (file: string) => readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', file), 'utf8');
+    const writes = read('pantry-batch-writes.ts');
+    assert.match(writes, /const touched = \(uid: string\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
+    for (const line of writes.split('\n').filter((entry) => /updateDoc\(|batch\.update\(|packages: increment/.test(entry))) {
+      assert.match(line, /touched\(uid\)|packageChange\(/, line.trim());
+    }
+    const handoff = read('pantry-writes.ts');
+    assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
+    assert.match(handoff, /upgradeLegacyBatch\(batch, plan\.add\), \.\.\.stamp\(\)/);
+    assert.match(handoff, /quantity: increment\(plan\.add\), \.\.\.stamp\(\)/);
+  });
+});
