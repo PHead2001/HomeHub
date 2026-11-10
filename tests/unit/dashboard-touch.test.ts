@@ -95,6 +95,13 @@ describe('touch geometry in the stylesheet (HP-13a)', () => {
     assert.ok(css.includes('@media (min-width: 640px) {\n  :global(html) .roomDetails {\n    display: none;'));
   });
 
+  it('beside the house, shows only the tile detail rows the screen height leaves room for (HP-12d)', () => {
+    const wide = '@media (min-width: 1024px) and (orientation: landscape)';
+    assert.ok(css.includes(`${wide} {\n  .tileGrid .tileDetails > :nth-child(n + 3) {\n    display: none;`));
+    assert.ok(css.includes(`${wide} and (max-height: 53.99rem) {\n  .tileGrid .tileDetails > :nth-child(n + 2) {\n    display: none;`));
+    assert.ok(css.includes(`${wide} and (max-height: 49.99rem) {\n  .tileGrid .tileDetails {\n    display: none;`));
+  });
+
   it('caps the house menu at the width Radix says is available', () => {
     assert.match(menu, /max-w-\[min\(20rem,var\(--radix-dropdown-menu-content-available-width,100vw\)\)\]/);
     assert.match(menu, /min-w-\[min\(13rem,var\(--radix-dropdown-menu-content-available-width,100vw\)\)\]/);

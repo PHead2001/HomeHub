@@ -705,9 +705,25 @@
     display: none;
   }
 }
-/* HP-13b: inline tile details; two rows in the compact tiles beside the house. */
+/*
+ * HP-13b: inline tile details; at most two rows in the compact tiles beside the house,
+ * and only as many as the screen height leaves room for (HP-12d: the wide layout is one
+ * screen at 100% text). Each row adds about 1.5rem to two tile rows, so one row needs a
+ * screen at least 50rem (800 px) tall and two rows 54rem (864 px); below 50rem
+ * (1024x768) the details stay on the module pages.
+ */
 @media (min-width: 1024px) and (orientation: landscape) {
   .tileGrid .tileDetails > :nth-child(n + 3) {
+    display: none;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) and (max-height: 53.99rem) {
+  .tileGrid .tileDetails > :nth-child(n + 2) {
+    display: none;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) and (max-height: 49.99rem) {
+  .tileGrid .tileDetails {
     display: none;
   }
 }
