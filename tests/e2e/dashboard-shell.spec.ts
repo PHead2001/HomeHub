@@ -96,9 +96,10 @@ test.describe('dashboard, shell and notifications', () => {
     // H04: the brief is built from the same facts and links its nouns.
     const brief = page.getByTestId('morning-brief');
     expect(choreFacts.mineDueToday, 'the owner has at least one chore due today').toBeGreaterThanOrEqual(1);
-    const choresPhrase = buildMorningBrief({ chores: choreFacts }, { greeting: 'Hi' }).segments.find((segment) => segment.href === '/chores')!;
+    // HP-25: your chores open Chores filtered to you.
+    const choresPhrase = buildMorningBrief({ chores: choreFacts }, { greeting: 'Hi' }).segments.find((segment) => segment.href === '/chores?who=me')!;
     expect(choresPhrase.text).toBe(`${choreFacts.mineDueToday} ${choreFacts.mineDueToday === 1 ? 'chore' : 'chores'} today`);
-    await expect(brief.getByRole('link', { name: choresPhrase.text, exact: true })).toHaveAttribute('href', '/chores');
+    await expect(brief.getByRole('link', { name: choresPhrase.text, exact: true })).toHaveAttribute('href', '/chores?who=me');
   });
 
   test('the old carousel is gone and nothing overflows on small phones', async ({ page }, testInfo) => {
@@ -266,6 +267,152 @@ test.describe('dashboard, shell and notifications', () => {
       Array.from(element.querySelectorAll('*')).filter((node) => getComputedStyle(node).animationName !== 'none').length);
     expect(animated).toBe(0);
     await context.close();
+  });
+});
+
+/*
+ * H7 (HP-33, HP-32a, HP-25): one-tap Done and Fed on the dashboard, the household summary
+ * with names, and the brief's overdue link opening a filtered Chores page.
+ */
+test.describe('H7: dashboard one-tap actions', () => {
+  const seedChore = (id: string, data: Record<string, unknown>) => household.collection('chores').doc(id).set({
+    assignedToEmail: 'sam.member@example.test',
+    assignedToDisplayName: 'Sam Member',
+    isCompleted: false,
+    roomIds: ['kitchen'],
+    ...data,
+  });
+
+  test('HP-33b: Done completes on the server, credits the completer, says so offline, and Undo reopens it', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const id = 'dashboard-one-tap-done';
+    const ref = household.collection('chores').doc(id);
+    // The most overdue chore, so it is the tile's first row (the one shown beside the house).
+    await seedChore(id, { task: 'Dashboard one tap', dueDate: '2026-06-01', originalDueDate: '2026-06-01' });
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-chores');
+      const row = tile.getByTestId(`household-chore-${id}`);
+      // HP-32a: names only, with the room and the overdue state.
+      await expect(row).toContainText('Sam Member');
+      await expect(row).toContainText('Kitchen');
+      const summary = tile.getByTestId('household-summary');
+      await expect(summary).toContainText('Sam Member: Dashboard one tap (overdue)');
+      await expect(summary).not.toContainText('@');
+
+      // Offline nothing is queued.
+      const done = tile.getByTestId(`chore-done-${id}`);
+      await page.context().setOffline(true);
+      await done.click();
+      await expect(page.getByText("You're offline. Not completed.").first()).toBeVisible();
+      await expect(done).toHaveAttribute('data-state', 'failed');
+      expect((await ref.get()).data()?.isCompleted).toBe(false);
+      await page.context().setOffline(false);
+
+      await done.click();
+      await expect.poll(async () => (await ref.get()).data()?.isCompleted).toBe(true);
+      const completed = (await ref.get()).data()!;
+      expect(completed.completedByUid, 'the completer, not the assignee, is credited').toBe('e2e-owner-uid');
+      expect(completed.completedAtServer).toBeTruthy();
+      expect(completed.completionId).toBeTruthy();
+      await expect(row).toHaveCount(0);
+
+      await page.getByRole('button', { name: 'Undo' }).click();
+      await expect.poll(async () => (await ref.get()).data()?.isCompleted).toBe(false);
+      const reopened = (await ref.get()).data()!;
+      expect(reopened.completionId).toBeUndefined();
+      expect(reopened.completedByUid).toBeUndefined();
+      await expect(row).toBeVisible();
+    } finally {
+      await page.context().setOffline(false);
+      await ref.delete();
+    }
+  });
+
+  test("HP-25: the brief's overdue count opens Chores filtered to your overdue work", async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const id = 'dashboard-brief-overdue';
+    const ref = household.collection('chores').doc(id);
+    await seedChore(id, { task: 'Dashboard brief overdue', assignedToEmail: ownerEmail, assignedToDisplayName: 'Alex E2E', dueDate: '2026-07-01', originalDueDate: '2026-07-01' });
+    try {
+      await openDashboard(page);
+      const link = page.getByTestId('morning-brief').getByRole('link', { name: /^\d+ overdue/ }).first();
+      await expect(link).toHaveAttribute('href', '/chores?due=overdue&who=me');
+      await link.click();
+      await expect(page).toHaveURL(/\/chores\?due=overdue&who=me$/);
+      const main = page.getByRole('main');
+      await expect(main.getByText('Dashboard brief overdue').first()).toBeVisible();
+      // The owner's chore due today is not overdue; Sam's is not theirs.
+      await expect(main.getByText('Reset the kitchen')).toHaveCount(0);
+      await expect(main.getByText('Fold clean laundry')).toHaveCount(0);
+      await expect(page.getByTestId('chores-filter-overdue')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('chores-filter-mine')).toHaveAttribute('aria-pressed', 'true');
+    } finally {
+      await ref.delete();
+    }
+  });
+
+  test('HP-33d: Done and Fed are 48 px touch targets on phones', async ({ page }, testInfo) => {
+    mobileOnly(testInfo);
+    const id = 'dashboard-one-tap-touch';
+    const ref = household.collection('chores').doc(id);
+    await seedChore(id, { task: 'Dashboard touch target', dueDate: '2026-06-01', originalDueDate: '2026-06-01' });
+    try {
+      await openDashboard(page);
+      const done = page.getByTestId('dashboard-tile-chores').getByTestId(`chore-done-${id}`);
+      await expect(done).toBeVisible();
+      const doneBox = (await done.boundingBox())!;
+      expect(doneBox.height).toBeGreaterThanOrEqual(48);
+      expect(doneBox.width).toBeGreaterThanOrEqual(48);
+      // Pixel has no feeding in the seed, so it is hungry and its tile row offers Fed.
+      const fed = page.getByTestId('dashboard-tile-pets').getByTestId('pet-fed-pixel');
+      await expect(fed).toBeVisible();
+      const fedBox = (await fed.boundingBox())!;
+      expect(fedBox.height).toBeGreaterThanOrEqual(48);
+    } finally {
+      await ref.delete();
+    }
+  });
+
+  test('HP-33a: Fed on a hungry pet logs through the shared feed operation, asks before a repeat, and Undo removes it', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Feedings carry the emulator's server time, so this test runs the browser at the real time.
+    const petId = 'dashboard-fed-pet';
+    const pet = household.collection('pets').doc(petId);
+    await pet.set({ name: 'Biscuit', type: 'Dog', foodSchedule: '1 cup twice daily' });
+    const logs = () => pet.collection('feeding-logs').get();
+    try {
+      await page.goto('/');
+      await expect(page.getByTestId('header-search')).toBeVisible();
+      const house = page.getByTestId('living-house');
+      await expect(house.getByTestId(`house-pet-${petId}`)).toHaveAttribute('data-fed', 'false');
+      const fed = house.getByTestId(`pet-fed-${petId}`);
+      await fed.click();
+      await expect.poll(async () => (await logs()).size).toBe(1);
+      const log = (await logs()).docs[0].data();
+      expect(log.loggedByUid).toBe('e2e-owner-uid');
+      expect(log.cups).toBe(1);
+      expect(log.foodType).toBe('Dry');
+
+      await page.getByRole('button', { name: 'Undo' }).click();
+      await expect.poll(async () => (await logs()).size).toBe(0);
+
+      await fed.click();
+      await expect.poll(async () => (await logs()).size).toBe(1);
+      // Fed a moment ago (1 of 2 today, still hungry): the shared duplicate check asks first.
+      await expect(house.getByTestId(`house-pet-${petId}`)).toHaveAttribute('data-fed', 'false');
+      await fed.click();
+      const dialog = page.getByTestId('feed-again-dialog');
+      await expect(dialog).toContainText('Feed Biscuit again?');
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      expect((await logs()).size).toBe(1);
+    } finally {
+      const all = await logs();
+      await Promise.all(all.docs.map((entry) => entry.ref.delete()));
+      const state = await pet.collection('feeding-state').get();
+      await Promise.all(state.docs.map((entry) => entry.ref.delete()));
+      await pet.delete();
+    }
   });
 });
 
