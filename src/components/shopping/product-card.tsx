@@ -64,14 +64,14 @@ export function ProductCard({
         <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
         {added && <p className="text-xs text-muted-foreground">Added {added}</p>}
         {(onEdit || onDelete) && (
-          <div className="mt-auto flex justify-end gap-1 pt-2">
+          <div className="mt-auto flex justify-end gap-2 pt-2">
             {onEdit && (
-              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit ${item.name}`} onClick={onEdit}>
+              <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} onClick={onEdit}>
                 <Edit className="h-4 w-4" aria-hidden />
               </Button>
             )}
             {onDelete && (
-              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Delete ${item.name}`} onClick={onDelete}>
+              <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={onDelete}>
                 <Trash2 className="h-4 w-4" aria-hidden />
               </Button>
             )}
