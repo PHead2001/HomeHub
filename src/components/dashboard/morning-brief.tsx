@@ -17,7 +17,6 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import { buildMorningBrief, type BriefPeek } from '@/lib/dashboard/brief';
 import { greeting } from '@/lib/dashboard/ambience';
-import { dayKey } from '@/lib/dashboard/dates';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useAuth } from '@/hooks/use-auth';
@@ -30,9 +29,10 @@ const SEEN_KEY = 'homehub.dashboard.briefTyped';
 const MAX_TYPE_MS = 1200;
 const LINE_CLASS = 'min-h-[3.5rem] font-headline text-lg leading-snug sm:min-h-[2rem] sm:text-xl';
 
-const typedToday = () => {
+/** "Seen today" uses the household's day (D-6), the same day the facts are counted for. */
+const typedToday = (today: string) => {
   try {
-    return window.localStorage.getItem(SEEN_KEY) === dayKey(new Date());
+    return window.localStorage.getItem(SEEN_KEY) === today;
   } catch {
     return true;
   }
@@ -69,20 +69,21 @@ function briefPeek(peek: BriefPeek | undefined, facts: DashboardFacts): ReactNod
   }
 }
 
-function PlainBrief({ facts, name, now }: { facts: DashboardFacts; name?: string | null; now: Date }) {
+function PlainBrief({ facts, name, now, today }: { facts: DashboardFacts; name?: string | null; now: Date; today: string }) {
   const reduced = useReducedMotion();
   const brief = useMemo(() => buildMorningBrief(facts, { greeting: greeting(now), name }), [facts, name, now]);
-  // Mounted on the client once facts are ready, so storage can be read at init.
-  const [typed, setTyped] = useState<number | null>(() => (reduced || typedToday() ? null : 0));
+  // Mounted on the client once facts are ready, so storage can be read at init. Decided
+  // once per mount: the day rolling over while the page is open never retypes it.
+  const [typed, setTyped] = useState<number | null>(() => (reduced || typedToday(today) ? null : 0));
   const typing = typed !== null;
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(SEEN_KEY, dayKey(new Date()));
+      window.localStorage.setItem(SEEN_KEY, today);
     } catch {
       // Without storage the brief simply types again next visit.
     }
-  }, []);
+  }, [today]);
 
   useEffect(() => {
     if (!typing) return;
@@ -136,7 +137,7 @@ function PlainBrief({ facts, name, now }: { facts: DashboardFacts; name?: string
   );
 }
 
-function BriefLine({ facts, name, now }: { facts: DashboardFacts; name?: string | null; now: Date }) {
+function BriefLine({ facts, name, now, today }: { facts: DashboardFacts; name?: string | null; now: Date; today: string }) {
   const { currentUser } = useAuth();
   const ai = useBriefRewrite();
   const narrative = ai.result?.narrative ?? null;
@@ -150,7 +151,7 @@ function BriefLine({ facts, name, now }: { facts: DashboardFacts; name?: string 
             {narrative.summary}
           </p>
         ) : (
-          <PlainBrief facts={facts} name={name} now={now} />
+          <PlainBrief facts={facts} name={name} now={now} today={today} />
         )}
         <button
           type="button"
@@ -199,7 +200,15 @@ function BriefLine({ facts, name, now }: { facts: DashboardFacts; name?: string 
   );
 }
 
-export function MorningBrief({ facts, name, now, ready }: { facts: DashboardFacts; name?: string | null; now: Date; ready: boolean }) {
-  if (!ready) return <div aria-hidden className={cn(LINE_CLASS, 'mb-6 w-3/4 max-w-xl animate-pulse rounded bg-muted')} />;
-  return <BriefLine facts={facts} name={name} now={now} />;
+/**
+ * Shows a placeholder until the facts are first ready, then stays mounted: a later
+ * moment of loading (a new pet's feedings, the day-scoped queries after midnight) keeps
+ * the current sentence and the AI rewrite instead of dropping back to the placeholder.
+ * The dashboard keys it by the data context, so a household or member change resets it.
+ */
+export function MorningBrief({ facts, name, now, today, ready }: { facts: DashboardFacts; name?: string | null; now: Date; today: string; ready: boolean }) {
+  const [shown, setShown] = useState(ready);
+  if (ready && !shown) setShown(true);
+  if (!shown && !ready) return <div aria-hidden className={cn(LINE_CLASS, 'mb-6 w-3/4 max-w-xl animate-pulse rounded bg-muted')} />;
+  return <BriefLine facts={facts} name={name} now={now} today={today} />;
 }

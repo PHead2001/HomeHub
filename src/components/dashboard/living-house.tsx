@@ -36,6 +36,7 @@ import { layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout
 import { healthSummaryText, type HealthResult } from '@/lib/maintenance/health';
 import { playPetSound } from '@/lib/dashboard/pet-sound';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
+import { staleHint, type SectionState } from '@/lib/dashboard/dashboard-store';
 import { useDayLight, WeatherLayer } from './time-of-day';
 import { WeatherControls } from './weather-controls';
 import { PeekCard } from './peek-card';
@@ -362,11 +363,18 @@ export function LivingHouse({
   title,
   golden = false,
   now,
+  rooms: roomsSection,
+  timeZone,
+  onRetry,
 }: {
   facts: DashboardFacts;
   title: string;
   golden?: boolean;
   now: Date;
+  /** The chores section's state (GOAL-states): stale shows a hint, unauthorized and failed say so. */
+  rooms?: SectionState;
+  timeZone?: string;
+  onRetry?: () => void;
 }) {
   const reduced = useReducedMotion();
   const light = useDayLight();
@@ -479,7 +487,8 @@ export function LivingHouse({
 
   const roomsState = facts.chores
     ? (shownRooms.length > 0 ? 'rooms' : 'empty')
-    : facts.unavailable?.includes('chores') ? 'unavailable' : 'none';
+    : facts.unavailable?.includes('chores') ? (roomsSection?.status === 'unauthorized' ? 'unauthorized' : 'unavailable') : 'none';
+  const roomsHint = facts.chores ? staleHint(roomsSection, timeZone) : null;
   const bodyBox = {
     left: `${(layout.body.x / layout.width) * 100}%`,
     top: `${(layout.body.y / layout.height) * 100}%`,
@@ -500,6 +509,7 @@ export function LivingHouse({
           <div className="flex min-w-0 items-center gap-2">
             <h2 id="living-house-title" className="min-w-0 truncate font-headline text-lg font-semibold">{title}</h2>
             {facts.health && <HealthBadge health={facts.health} />}
+            {roomsHint && <span className="shrink-0 text-xs text-muted-foreground" data-testid="house-rooms-stale">{roomsHint}</span>}
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             <WeatherControls />
@@ -571,7 +581,14 @@ export function LivingHouse({
                 ) : roomsState === 'unavailable' ? (
                   <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
                     Rooms are unavailable right now.{' '}
+                    {onRetry && (
+                      <button type="button" onClick={onRetry} data-testid="house-rooms-retry" className="font-medium text-primary underline-offset-4 hover:underline">Retry</button>
+                    )}{onRetry ? ' · ' : null}
                     <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+                  </p>
+                ) : roomsState === 'unauthorized' ? (
+                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unauthorized">
+                    Rooms are not shared with you.
                   </p>
                 ) : (
                   <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">Welcome home.</p>

@@ -6,7 +6,7 @@
  * Overview agree, but nothing here calls a model or uses the AI quota.
  */
 import { relativeDays, toDateValue } from './dates';
-import { choreDueKey, completionInstant, dayKey as choreDayKey, diffDayKeys, type ChoreRecord } from '../chores/dates';
+import { choreDueKey, completionInstant, diffDayKeys, type ChoreRecord } from '../chores/dates';
 import { collapseMissedRecurring } from '../chores/list';
 import { daysUntilExpiry } from '../shopping/pantry';
 import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
@@ -24,6 +24,7 @@ import {
 } from '../../../functions/src/shared/maintenance-reminders';
 import { reminderDueDetail, reminderStatusLabel } from '../maintenance/reminder-copy';
 import { diffDays, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
+import { householdDayZone, householdToday } from '../household-day';
 import { normalizeRecurrence, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 
 export type RawDoc = Record<string, unknown> & { id: string };
@@ -177,8 +178,8 @@ export function recurringTemplateIdsFrom(templates: RawDoc[], today: string): Se
 }
 
 /**
- * Chore facts with the Chores module's own day logic (`choreDueKey`, local day
- * keys, `completionInstant`) and its folding of missed recurring instances: an
+ * Chore facts with the Chores module's own day logic (`choreDueKey`, day keys,
+ * `completionInstant`), in the household's day (`householdToday`, D-6), and its folding of missed recurring instances: an
  * older missed instance of a series that has a newer one due counts once, as on
  * the Chores page.
  */
@@ -191,8 +192,12 @@ export function computeChoreFacts(
   viewer: DashboardViewer,
   now: Date,
   recurringTemplateIds: ReadonlySet<string> = new Set(),
+  timeZone?: string | null,
 ): ChoreFacts {
-  const today = choreDayKey(now);
+  // D-6: "today" and "completed today" are the household's day (device zone only when the
+  // household has none); due dates are date-only keys and are compared as stored.
+  const zone = householdDayZone(timeZone);
+  const today = householdToday(zone, now);
   const records = chores as unknown as ChoreRecord[];
   // Same folding as the Chores page: only the latest instance of each recurring series counts.
   const dueByToday = records.filter((chore) => chore.isCompleted !== true && choreDueKey(chore) !== '' && choreDueKey(chore) <= today);
@@ -225,7 +230,7 @@ export function computeChoreFacts(
     const days = key ? diffDayKeys(today, key) : null;
     const completed = chore.isCompleted === true;
     const finishedAt = completionInstant(chore);
-    const completedToday = completed && finishedAt !== null && choreDayKey(finishedAt) === today;
+    const completedToday = completed && finishedAt !== null && localDay(finishedAt, zone) === today;
     const isToday = key === today;
     const mine = chore.assignedToEmail === viewer.email;
     const listed = Array.isArray(chore.roomIds) ? chore.roomIds.filter((id): id is string => typeof id === 'string' && id !== '') : [];

@@ -4,10 +4,21 @@
  * Live dashboard data. Subscribes (read-only) to the household collections the
  * member is allowed to view and turns them into exact facts with the pure
  * functions in `facts.ts` (via `assembleDashboardFacts`). Sections the member cannot
- * view are never queried and are left out; sections whose read failed are listed
- * in `facts.unavailable` and shown as unavailable, never as empty.
+ * view are never queried and are left out.
+ *
+ * - Context and day are separate (HP-4). The store belongs to household + member +
+ *   view permissions; a change there starts from nothing (GOAL-lastgood). The
+ *   household's day (`useHouseholdToday`, D-6) is not part of it: at household
+ *   midnight only the day-scoped queries (today's chores, today's completions, the
+ *   home-health log window) subscribe again, and their old values stay until the
+ *   new snapshots answer, so nothing blanks.
+ * - Every listener is resilient (HP-5, `resilient-listener.ts`): an error retries with
+ *   backoff and on `online` / visible, and `retry()` retries now.
+ * - Each section is loading | ready | stale | unauthorized | failed (GOAL-states,
+ *   `dashboard-store.ts`). Failed and unauthorized sections are listed in
+ *   `facts.unavailable`; stale ones keep their last data.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   collection,
   doc,
@@ -17,22 +28,37 @@ import {
   query,
   where,
   type DocumentData,
+  type DocumentSnapshot,
   type Query,
   type QuerySnapshot,
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/use-auth';
+import { householdDayStart, householdDayZone, useHouseholdToday } from '@/lib/household-day';
 import { deduplicateNotifications, isNotificationReadBy, parseNotificationDoc } from '@/lib/notifications';
 import { activeBellNotifications } from './notification-display';
 import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
-import { dayKey, startOfLocalDay } from './dates';
 import type { DashboardFacts, RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
 import { leaderboardEnabledFrom } from './streaks';
 import { deviceStorage, readHouseSnapshot, writeHouseSnapshot } from './house-snapshot';
 import type { ChoreFacts } from './facts';
 import { HEALTH_RULES } from '../maintenance/health';
+import { addDays } from '../../../functions/src/shared/calendar';
+import { resilientListener, type ResilientHandle } from './resilient-listener';
+import {
+  applyAnswer,
+  applyError,
+  createListenerSet,
+  emptyStore,
+  forgetListeners,
+  sectionStates,
+  unavailableGroups,
+  type DashboardStore,
+  type ListenerSpec,
+  type SectionState,
+} from './dashboard-store';
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
@@ -41,39 +67,104 @@ const RECENT_FEEDINGS = 12;
 
 const docs = (snapshot: QuerySnapshot<DocumentData>): RawDoc[] => snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-/** The current time, refreshed every `intervalMs` so "today" and "fed 2h ago" stay true. */
-export function useNow(intervalMs = 60_000): Date {
-  const [now, setNow] = useState(() => new Date());
+/**
+ * The current time, refreshed every `intervalMs` so "today" and "fed 2h ago" stay true,
+ * and re-read at once when the page becomes visible again or is restored (wake from
+ * sleep, HP-17d) and whenever `resync` changes (the household day rolled over).
+ */
+export function useNow(intervalMs = 60_000, resync?: string): Date {
+  const [state, setState] = useState(() => ({ resync, now: new Date() }));
+  // Adjusting state during render: a new day re-reads the clock in the same render pass.
+  if (state.resync !== resync) setState({ resync, now: new Date() });
   useEffect(() => {
-    const id = window.setInterval(() => setNow(new Date()), intervalMs);
-    return () => window.clearInterval(id);
+    const tick = () => setState((previous) => ({ resync: previous.resync, now: new Date() }));
+    const id = window.setInterval(tick, intervalMs);
+    const onVisible = () => {
+      if (document.visibilityState !== 'hidden') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pageshow', tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', tick);
+    };
   }, [intervalMs]);
-  return now;
+  return state.now;
 }
 
-type Raw = DashboardRaw;
+const subscribeOnline = (listener: () => void) => {
+  window.addEventListener('online', listener);
+  window.addEventListener('offline', listener);
+  return () => {
+    window.removeEventListener('online', listener);
+    window.removeEventListener('offline', listener);
+  };
+};
 
-type Store = { key: string; raw: Raw; failed: Set<string> };
-const EMPTY_STORE: Store = { key: '', raw: {}, failed: new Set() };
+/** True while the browser reports no network. */
+function useOffline(): boolean {
+  return useSyncExternalStore(subscribeOnline, () => !navigator.onLine, () => false);
+}
+
+type Access = { chores: boolean; shopping: boolean; maintenance: boolean; pets: boolean; notifications: boolean };
+
+/**
+ * Every top-level listener, its failure group and whether its query depends on the day.
+ * Nested listeners (each list's items, each pet's feedings) are started by their parent.
+ */
+const PLAN = [
+  { id: 'chores.rooms', group: 'chores', access: 'chores', scope: 'context' },
+  { id: 'chores.templates', group: 'chores', access: 'chores', scope: 'context' },
+  { id: 'chores.open', group: 'chores', access: 'chores', scope: 'context' },
+  { id: 'chores.today', group: 'chores', access: 'chores', scope: 'day' },
+  { id: 'chores.doneServer', group: 'chores', access: 'chores', scope: 'day' },
+  { id: 'chores.doneLegacy', group: 'chores', access: 'chores', scope: 'day' },
+  { id: 'streaks.completed', group: STREAKS_FAILURE, access: 'chores', scope: 'context' },
+  { id: 'streaks.members', group: STREAKS_FAILURE, access: 'chores', scope: 'context' },
+  { id: 'leaderboard', group: LEADERBOARD_FAILURE, access: 'chores', scope: 'context' },
+  { id: 'shopping.lists', group: 'shopping', access: 'shopping', scope: 'context' },
+  { id: 'pantry', group: 'pantry', access: 'shopping', scope: 'context' },
+  { id: 'maintenance.assets', group: 'maintenance', access: 'maintenance', scope: 'context' },
+  { id: 'maintenance.vehicles', group: 'maintenance', access: 'maintenance', scope: 'context' },
+  { id: 'health.logs', group: HEALTH_FAILURE, access: 'maintenance', scope: 'day' },
+  { id: 'pets', group: 'pets', access: 'pets', scope: 'context' },
+  { id: 'notifications', group: 'notifications', access: 'notifications', scope: 'context' },
+] as const satisfies ReadonlyArray<{ id: string; group: string; access: keyof Access; scope: 'context' | 'day' }>;
+
+type PlanId = (typeof PLAN)[number]['id'];
+
+const plannedFor = (access: Access) => PLAN.filter((entry) => access[entry.access]);
 
 export type DashboardData = {
   facts: DashboardFacts;
   /** True until every permitted, readable section has delivered its first snapshot. */
   loading: boolean;
-  /** Failure keys (sections, and `feed:<petId>`); failed sections also appear in `facts.unavailable`. */
+  /** Failure keys of failed or unauthorized groups (sections, and `feed:<petId>`); sections also appear in `facts.unavailable`. */
   failed: Set<string>;
+  /** loading | ready | stale | unauthorized | failed per group (sections, `streaks`, `health`, `feed:<petId>` …). */
+  sections: Record<string, SectionState>;
+  /** Retries every listener with a pending retry now (the "Retry" buttons). */
+  retry: () => void;
   now: Date;
+  /** The household's day key (D-6). */
+  today: string;
+  /** The zone `today` is computed in. */
+  timeZone: string;
+  /** Household + member + permissions; components keyed by it reset on a context change. */
+  context: string;
 };
 
 export function useDashboardData(enabled = true): DashboardData {
   const { currentUser, household, permissions } = useAuth();
-  const timeZone = household?.timeZone ?? null;
+  const zone = householdDayZone(household?.timeZone ?? null);
   const householdId = enabled ? currentUser?.householdId ?? null : null;
   const uid = currentUser?.uid ?? '';
   const email = currentUser?.email ?? '';
-  const now = useNow();
-  const today = dayKey(now);
-  const [store, setStore] = useState<Store>(EMPTY_STORE);
+  const today = useHouseholdToday(zone);
+  const now = useNow(60_000, today);
+  const offline = useOffline();
+  const [store, setStore] = useState<DashboardStore>(() => emptyStore(''));
 
   const canChores = Boolean(permissions['chores.view']);
   const canShopping = Boolean(permissions['shopping.view']);
@@ -82,164 +173,233 @@ export function useDashboardData(enabled = true): DashboardData {
   const canNotifications = Boolean(permissions['notifications.view']);
   const canAutomation = Boolean(permissions['automation.view']);
 
-  // State is keyed by what it was loaded for, so a household, member, day or
-  // permission change never shows the previous data while new snapshots arrive.
-  const key = [householdId, uid, today, canChores, canShopping, canMaintenance, canPets, canNotifications, canAutomation].join('|');
+  // The context: what the data was loaded for. Today is deliberately not part of it.
+  const context = [householdId, uid, email, canChores, canShopping, canMaintenance, canPets, canNotifications, canAutomation].join('|');
+  const access: Access = useMemo(() => ({
+    chores: canChores, shopping: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid),
+  }), [canChores, canShopping, canMaintenance, canPets, canNotifications, uid]);
 
+  const running = useRef<{ context: string; set: ReturnType<typeof createListenerSet>; handles: Set<ResilientHandle> } | null>(null);
+
+  // One listener set per context; a context change stops everything and the store starts empty.
   useEffect(() => {
     if (!householdId) return;
-    const current = (state: Store): Store => (state.key === key ? state : { key, raw: {}, failed: new Set() });
-    const setRaw = (update: (raw: Raw) => Raw) => setStore((state) => {
-      const base = current(state);
-      return { ...base, raw: update(base.raw) };
-    });
+    const entry = { context, set: createListenerSet(), handles: new Set<ResilientHandle>() };
+    running.current = entry;
+    return () => {
+      entry.set.stopAll();
+      entry.handles.forEach((handle) => handle.stop());
+      entry.handles.clear();
+      if (running.current === entry) running.current = null;
+    };
+  }, [context, householdId]);
+
+  // Sync the listeners: context-scoped specs keep running; day-scoped specs restart when the day changes.
+  useEffect(() => {
+    const entry = running.current;
+    if (!householdId || !entry || entry.context !== context) return;
+    const { handles } = entry;
     const base = (...path: string[]) => collection(db, 'households', householdId, ...path);
-    const unsubscribers: Array<() => void> = [];
-    const fail = (section: string) => () => setStore((state) => {
-      const next = current(state);
-      return { ...next, failed: new Set(next.failed).add(section) };
-    });
-    const listen = (section: string, q: Query<DocumentData>, apply: (snapshot: QuerySnapshot<DocumentData>) => void) => {
-      unsubscribers.push(onSnapshot(q, apply, fail(section)));
+
+    const watch = <T,>(
+      id: string,
+      group: string,
+      subscribe: (next: (value: T) => void, error: (error: unknown) => void) => () => void,
+      fromCache: (value: T) => boolean,
+      apply: (value: T, raw: DashboardRaw) => DashboardRaw,
+      after?: (value: T) => void,
+    ) => {
+      const handle = resilientListener<T>(subscribe, {
+        next: (value) => {
+          setStore((state) => applyAnswer(state, context, id, group, (raw) => apply(value, raw), { fromCache: fromCache(value), at: Date.now() }));
+          after?.(value);
+        },
+        status: (status) => {
+          if (status.kind !== 'live') setStore((state) => applyError(state, context, id, group, status.kind));
+        },
+      });
+      handles.add(handle);
+      return () => {
+        handle.stop();
+        handles.delete(handle);
+      };
+    };
+    const watchQuery = (
+      id: string,
+      group: string,
+      q: Query<DocumentData>,
+      apply: (snapshot: QuerySnapshot<DocumentData>, raw: DashboardRaw) => DashboardRaw,
+      after?: (snapshot: QuerySnapshot<DocumentData>) => void,
+    ) => watch<QuerySnapshot<DocumentData>>(
+      id,
+      group,
+      // Metadata changes too, so a snapshot that turns from cached to live (or back) is seen.
+      (next, error) => onSnapshot(q, { includeMetadataChanges: true }, next, error),
+      (snapshot) => snapshot.metadata.fromCache,
+      apply,
+      after,
+    );
+
+    const dayStart = householdDayStart(zone, today);
+    const dayStartIso = dayStart.toISOString();
+
+    const starters: Record<PlanId, () => () => void> = {
+      'chores.rooms': () => watchQuery('chores.rooms', 'chores', query(base('rooms')), (s, r) => ({ ...r, rooms: docs(s) })),
+      // Templates tell which series repeat, so missed instances fold as on the Chores page.
+      'chores.templates': () => watchQuery('chores.templates', 'chores', query(base('chore-templates')), (s, r) => ({ ...r, templates: docs(s) })),
+      'chores.open': () => watchQuery('chores.open', 'chores', query(base('chores'), where('isCompleted', '==', false)), (s, r) => ({ ...r, openChores: docs(s) })),
+      'chores.today': () => watchQuery('chores.today', 'chores', query(base('chores'), where('originalDueDate', '==', today)), (s, r) => ({ ...r, todayChores: docs(s) })),
+      // Today's completions, by the same pair of timestamps as `completionInstant`: the
+      // server stamp (authoritative, a Timestamp) and the legacy client string, both from
+      // the household's midnight. Single-field range queries (automatic indexes); a
+      // document missing one field is found by the other query.
+      'chores.doneServer': () => watchQuery('chores.doneServer', 'chores', query(base('chores'), where('completedAtServer', '>=', Timestamp.fromDate(dayStart))), (s, r) => ({ ...r, doneTodayServer: docs(s) })),
+      'chores.doneLegacy': () => watchQuery('chores.doneLegacy', 'chores', query(base('chores'), where('completedAt', '>=', dayStartIso)), (s, r) => ({ ...r, doneToday: docs(s) })),
+      // Streaks (H22/H06): every retained completion and the approved members, as the Chores page reads them.
+      'streaks.completed': () => watchQuery('streaks.completed', STREAKS_FAILURE, query(base('chores'), where('isCompleted', '==', true)), (s, r) => ({ ...r, completedChores: docs(s) })),
+      'streaks.members': () => watchQuery('streaks.members', STREAKS_FAILURE, query(base('members')), (s, r) => ({ ...r, members: docs(s) })),
+      // The Chores "Show leaderboard" setting gates the comparative streaks tile.
+      leaderboard: () => watch<DocumentSnapshot<DocumentData>>(
+        'leaderboard',
+        LEADERBOARD_FAILURE,
+        (next, error) => onSnapshot(doc(db, 'households', householdId, 'chore-settings', 'preferences'), { includeMetadataChanges: true }, next, error),
+        (snapshot) => snapshot.metadata.fromCache,
+        (snapshot, r) => ({ ...r, leaderboard: leaderboardEnabledFrom(snapshot.exists() ? snapshot.data() : undefined) ? 'on' : 'off' }),
+      ),
+      'shopping.lists': () => {
+        const items = new Map<string, () => void>();
+        const itemId = (listId: string) => `shopping.items:${listId}`;
+        const stopLists = watchQuery('shopping.lists', 'shopping', query(base('shopping-lists')), (s, r) => {
+          const lists = docs(s);
+          // Keep only answered lists' items; a new list has no entry until its listener answers.
+          return { ...r, lists, items: Object.fromEntries(lists.flatMap((list) => (r.items?.[list.id] ? [[list.id, r.items[list.id]]] : []))) };
+        }, (s) => {
+          const ids = new Set(s.docs.map((d) => d.id));
+          const removed: string[] = [];
+          for (const [id, stop] of items) {
+            if (ids.has(id)) continue;
+            stop();
+            items.delete(id);
+            removed.push(itemId(id));
+          }
+          if (removed.length > 0) setStore((state) => forgetListeners(state, context, removed));
+          for (const id of ids) {
+            if (items.has(id)) continue;
+            items.set(id, watchQuery(itemId(id), 'shopping', query(base('shopping-lists', id, 'items')), (snapshot, r) => ({ ...r, items: { ...(r.items ?? {}), [id]: docs(snapshot) } })));
+          }
+        });
+        return () => {
+          stopLists();
+          items.forEach((stop) => stop());
+        };
+      },
+      pantry: () => watchQuery('pantry', 'pantry', query(base('pantry-inventory')), (s, r) => ({ ...r, pantry: docs(s) })),
+      'maintenance.assets': () => watchQuery('maintenance.assets', 'maintenance', query(base('home-assets')), (s, r) => ({ ...r, assets: docs(s) })),
+      'maintenance.vehicles': () => watchQuery('maintenance.vehicles', 'maintenance', query(base('vehicles')), (s, r) => ({ ...r, vehicles: docs(s) })),
+      // Home health (H10 in the house): only logs recent enough to count toward the bonus (two
+      // days of margin for time zones); `computeHomeHealth` applies the exact window. The
+      // window moves with the household day, so this is a day-scoped query.
+      'health.logs': () => watchQuery('health.logs', HEALTH_FAILURE, query(base('maintenance'), where('date', '>=', addDays(today, -(HEALTH_RULES.recentDays + 2)))), (s, r) => ({ ...r, logs: docs(s) })),
+      pets: () => {
+        // Feeding dates come in two shapes (Timestamps, and ISO strings on older entries).
+        // Firestore orders types separately, so each shape is read on its own and merged
+        // chronologically, as the Pets module does (`newestFirst`).
+        const feeds = new Map<string, Array<() => void>>();
+        const shapes = ['timestamp', 'string'] as const;
+        const feedId = (petId: string, shape: string) => `feed:${petId}:${shape}`;
+        const recent = (shape: 'timestamp' | 'string', petId: string) => query(
+          base('pets', petId, 'feeding-logs'),
+          where('date', '>=', shape === 'timestamp' ? MIN_TIMESTAMP : ''),
+          orderBy('date', 'desc'),
+          limit(RECENT_FEEDINGS),
+        );
+        const stopPets = watchQuery('pets', 'pets', query(base('pets')), (s, r) => {
+          const pets = docs(s);
+          const ids = new Set(pets.map((pet) => pet.id));
+          return { ...r, pets, feedings: Object.fromEntries(Object.entries(r.feedings ?? {}).filter(([id]) => ids.has(id))) };
+        }, (s) => {
+          const ids = new Set(s.docs.map((d) => d.id));
+          const removed: string[] = [];
+          for (const [id, stops] of feeds) {
+            if (ids.has(id)) continue;
+            stops.forEach((stop) => stop());
+            feeds.delete(id);
+            removed.push(...shapes.map((shape) => feedId(id, shape)));
+          }
+          if (removed.length > 0) setStore((state) => forgetListeners(state, context, removed));
+          for (const petId of ids) {
+            if (feeds.has(petId)) continue;
+            feeds.set(petId, shapes.map((shape) => watchQuery(feedId(petId, shape), feedingFailureKey(petId), recent(shape, petId), (logs, r) => {
+              const previous = r.feedings?.[petId] ?? {};
+              return { ...r, feedings: { ...(r.feedings ?? {}), [petId]: { ...previous, [shape]: docs(logs) } } };
+            })));
+          }
+        });
+        return () => {
+          stopPets();
+          feeds.forEach((stops) => stops.forEach((stop) => stop()));
+        };
+      },
+      notifications: () => {
+        const since = new Date(Date.now() - 7 * 86_400_000);
+        // Same category filter as the bell (module view permissions; all in the context),
+        // applied in the query so the 30-item cap counts only visible notifications.
+        const views: Record<string, boolean> = {
+          'chores.view': canChores, 'shopping.view': canShopping, 'maintenance.view': canMaintenance,
+          'pets.view': canPets, 'automation.view': canAutomation,
+        };
+        const categories = viewableNotificationCategories((permission) => Boolean(views[permission]));
+        return watchQuery('notifications', 'notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s, r) => {
+          // The bell's own pipeline: deduplicate, then the same filters and cap.
+          const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), {
+            uid, email, canView: (permission) => Boolean(views[permission]),
+          });
+          return { ...r, unread: active.filter((n) => !isNotificationReadBy(n, uid)).length };
+        });
+      },
     };
 
-    if (canChores) {
-      const todayStartDate = startOfLocalDay(new Date());
-      const todayStart = todayStartDate.toISOString();
-      listen('chores', query(base('rooms')), (s) => setRaw((r) => ({ ...r, rooms: docs(s) })));
-      // Templates tell which series repeat, so missed instances fold as on the Chores page.
-      listen('chores', query(base('chore-templates')), (s) => setRaw((r) => ({ ...r, templates: docs(s) })));
-      listen('chores', query(base('chores'), where('isCompleted', '==', false)), (s) => setRaw((r) => ({ ...r, openChores: docs(s) })));
-      listen('chores', query(base('chores'), where('originalDueDate', '==', today)), (s) => setRaw((r) => ({ ...r, todayChores: docs(s) })));
-      // Today's completions, by the same pair of timestamps as `completionInstant`:
-      // the server stamp (authoritative, a Timestamp) and the legacy client string.
-      // Both are single-field range queries (automatic indexes); documents missing
-      // the field are simply not returned by that query, and the other one covers them.
-      listen('chores', query(base('chores'), where('completedAtServer', '>=', Timestamp.fromDate(todayStartDate))), (s) => setRaw((r) => ({ ...r, doneTodayServer: docs(s) })));
-      listen('chores', query(base('chores'), where('completedAt', '>=', todayStart)), (s) => setRaw((r) => ({ ...r, doneToday: docs(s) })));
-      // Streaks (H22/H06): every retained completion and the approved members, as the Chores page reads them.
-      listen(STREAKS_FAILURE, query(base('chores'), where('isCompleted', '==', true)), (s) => setRaw((r) => ({ ...r, completedChores: docs(s) })));
-      listen(STREAKS_FAILURE, query(collection(db, 'households', householdId, 'members')), (s) => setRaw((r) => ({ ...r, members: docs(s) })));
-      // The Chores "Show leaderboard" setting gates the comparative streaks tile.
-      unsubscribers.push(onSnapshot(
-        doc(db, 'households', householdId, 'chore-settings', 'preferences'),
-        (snapshot) => setRaw((r) => ({ ...r, leaderboard: leaderboardEnabledFrom(snapshot.exists() ? snapshot.data() : undefined) ? 'on' : 'off' })),
-        fail(LEADERBOARD_FAILURE),
-      ));
-    }
-
-    if (canShopping) {
-      const itemListeners = new Map<string, () => void>();
-      listen('shopping', query(base('shopping-lists')), (s) => {
-        const lists = docs(s);
-        // Keep only answered lists' items; a new list has no entry until its listener answers.
-        setRaw((r) => ({ ...r, lists, items: Object.fromEntries(lists.flatMap((list) => (r.items?.[list.id] ? [[list.id, r.items[list.id]]] : []))) }));
-        const ids = new Set(lists.map((list) => list.id));
-        for (const [id, stop] of itemListeners) {
-          if (!ids.has(id)) {
-            stop();
-            itemListeners.delete(id);
-          }
-        }
-        for (const list of lists) {
-          if (itemListeners.has(list.id)) continue;
-          itemListeners.set(list.id, onSnapshot(
-            query(base('shopping-lists', list.id, 'items')),
-            (items) => setRaw((r) => ({ ...r, items: { ...(r.items ?? {}), [list.id]: docs(items) } })),
-            fail('shopping'),
-          ));
-        }
-      });
-      unsubscribers.push(() => itemListeners.forEach((stop) => stop()));
-      listen('pantry', query(base('pantry-inventory')), (s) => setRaw((r) => ({ ...r, pantry: docs(s) })));
-    }
-
-    if (canMaintenance) {
-      listen('maintenance', query(base('home-assets')), (s) => setRaw((r) => ({ ...r, assets: docs(s) })));
-      listen('maintenance', query(base('vehicles')), (s) => setRaw((r) => ({ ...r, vehicles: docs(s) })));
-      // Home health (H10 in the house): only logs recent enough to count toward the bonus
-      // (with two days of margin for time zones); `computeHomeHealth` applies the exact window.
-      const since = new Date(Date.now() - (HEALTH_RULES.recentDays + 2) * 86_400_000).toISOString().slice(0, 10);
-      listen(HEALTH_FAILURE, query(base('maintenance'), where('date', '>=', since)), (s) => setRaw((r) => ({ ...r, logs: docs(s) })));
-    }
-
-    if (canPets) {
-      // Feeding dates come in two shapes (Timestamps, and ISO strings on older
-      // entries). Firestore orders types separately, so each shape is read on its
-      // own and merged chronologically, as the Pets module does (`newestFirst`).
-      const feedListeners = new Map<string, Array<() => void>>();
-      const recent = (shape: 'timestamp' | 'string', petId: string) => query(
-        base('pets', petId, 'feeding-logs'),
-        where('date', '>=', shape === 'timestamp' ? MIN_TIMESTAMP : ''),
-        orderBy('date', 'desc'),
-        limit(RECENT_FEEDINGS),
-      );
-      listen('pets', query(base('pets')), (s) => {
-        const pets = docs(s);
-        setRaw((r) => ({ ...r, pets, feedings: r.feedings ?? {} }));
-        const ids = new Set(pets.map((pet) => pet.id));
-        for (const [id, stops] of feedListeners) {
-          if (!ids.has(id)) {
-            stops.forEach((stop) => stop());
-            feedListeners.delete(id);
-          }
-        }
-        for (const pet of pets) {
-          if (feedListeners.has(pet.id)) continue;
-          feedListeners.set(pet.id, (['timestamp', 'string'] as const).map((shape) => onSnapshot(
-            recent(shape, pet.id),
-            (logs) => setRaw((r) => {
-              const previous = r.feedings?.[pet.id] ?? {};
-              return { ...r, feedings: { ...(r.feedings ?? {}), [pet.id]: { ...previous, [shape]: docs(logs) } } };
-            }),
-            fail(feedingFailureKey(pet.id)),
-          )));
-        }
-      });
-      unsubscribers.push(() => feedListeners.forEach((stops) => stops.forEach((stop) => stop())));
-    }
-
-    if (canNotifications && uid) {
-      const since = new Date(Date.now() - 7 * 86_400_000);
-      // Same category filter as the bell (module view permissions; all in `key`),
-      // applied in the query so the 30-item cap counts only visible notifications.
-      const views: Record<string, boolean> = {
-        'chores.view': canChores, 'shopping.view': canShopping, 'maintenance.view': canMaintenance,
-        'pets.view': canPets, 'automation.view': canAutomation,
-      };
-      const categories = viewableNotificationCategories((permission) => Boolean(views[permission]));
-      listen('notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s) => {
-        // The bell's own pipeline: deduplicate, then the same filters and cap.
-        const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), {
-          uid, email, canView: (permission) => Boolean(views[permission]),
-        });
-        setRaw((r) => ({ ...r, unread: active.filter((n) => !isNotificationReadBy(n, uid)).length }));
-      });
-    }
-
-    return () => unsubscribers.forEach((stop) => stop());
-    // `key` covers every input below.
+    const specs: ListenerSpec[] = plannedFor(access).map((planned) => ({
+      id: planned.id,
+      key: planned.scope === 'day' ? `${planned.id}|${zone}|${today}` : planned.id,
+      start: starters[planned.id],
+    }));
+    entry.set.sync(specs);
+    // `context` covers householdId, uid, email and every permission read above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, email]);
+  }, [context, today, zone]);
 
-  const raw = store.key === key ? store.raw : EMPTY_STORE.raw;
-  const failed = store.key === key ? store.failed : EMPTY_STORE.failed;
+  const retry = useCallback(() => {
+    running.current?.handles.forEach((handle) => handle.retryNow());
+  }, []);
+
+  // Last-good data only within this context: another context's store is never shown.
+  const current = useMemo(() => (store.context === context ? store : emptyStore(context)), [store, context]);
+  const expected = useMemo(() => {
+    const groups: Record<string, string[]> = {};
+    plannedFor(access).forEach((planned) => {
+      (groups[planned.group] ??= []).push(planned.id);
+    });
+    return groups;
+  }, [access]);
+  const sections = useMemo(() => sectionStates(current, expected, offline), [current, expected, offline]);
+  const failed = useMemo(() => unavailableGroups(sections), [sections]);
 
   const { facts, loading } = useMemo(() => assembleDashboardFacts(
-    raw,
+    current.raw,
     failed,
     { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid) },
-    { viewer: { uid, email }, now, timeZone, recentFeedings: RECENT_FEEDINGS },
-  ), [raw, failed, now, uid, email, timeZone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
+    { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS },
+  ), [current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
 
   const shown = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
 
-  return { facts: shown, loading, failed, now };
+  return { facts: shown, loading, failed, sections, retry, now, today, timeZone: zone, context };
 }
 
 /**
  * H01: until the live chores listeners deliver, the house draws its rooms from the last
- * snapshot saved on this device for exactly this user, household and day (see
+ * snapshot saved on this device for exactly this user, household and household day (see
  * house-snapshot.ts). Live data always replaces it, a failed chores section never falls back
  * to it, and every change to the live rooms is saved for the next visit.
  */
