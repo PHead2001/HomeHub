@@ -72,6 +72,7 @@ import { PendingMemberBanner } from '@/components/household/pending-member-banne
 import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
+import { canSeeMemberEmails } from '@/lib/member-directory';
 
 const INVITE_TTL_MINUTES = 30;
 
@@ -614,7 +615,8 @@ export function HouseholdManagementClient() {
                     member={member}
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
-                    stats={choreStats.get(member.email.toLowerCase()) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
+                    showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
+                    stats={choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
                     onCustomize={openCustomize}
@@ -640,7 +642,8 @@ export function HouseholdManagementClient() {
                     member={member}
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
-                    stats={member.role === 'newuser' ? undefined : choreStats.get(member.email.toLowerCase()) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
+                    showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
+                    stats={member.role === 'newuser' ? undefined : choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
                     onCustomize={openCustomize}

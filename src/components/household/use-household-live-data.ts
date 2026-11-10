@@ -5,7 +5,7 @@ import { Timestamp, collection, doc, onSnapshot, query, where, type Query, type 
 import { db } from '@/lib/firebase';
 import { inviteDateToIso } from '@/lib/invite-codes';
 import type { AuditLog, HouseholdMember, InviteCode } from '@/lib/types';
-import { choreStatsByEmail, mergeChoresById, sortMembers, startOfNextWeek, startOfWeek, type ChoreLike, type MemberChoreStats } from './household-model';
+import { choreStatsByMember, mergeChoresById, sortMembers, startOfNextWeek, startOfWeek, type ChoreLike, type MemberChoreStats } from './household-model';
 
 type ChoreParts = { key: string; open?: ChoreLike[]; server?: ChoreLike[]; legacy?: ChoreLike[]; failed?: boolean };
 
@@ -129,6 +129,7 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
     const choresRef = collection(db, 'households', householdId, 'chores');
     const pick = (id: string, data: Record<string, unknown>): ChoreLike => ({
       id,
+      assignedToUid: typeof data.assignedToUid === 'string' ? data.assignedToUid : '',
       assignedToEmail: typeof data.assignedToEmail === 'string' ? data.assignedToEmail : '',
       isCompleted: data.isCompleted === true,
       completedAt: typeof data.completedAt === 'string' ? data.completedAt : null,
@@ -167,9 +168,9 @@ export function useHouseholdLiveData({ householdId, currentMember, canListInvite
   const choreStatsReady = canViewChores && !parts.failed && Boolean(parts.open && parts.server && parts.legacy);
   const choreStats = useMemo(
     () => (choreStatsReady
-      ? choreStatsByEmail(mergeChoresById(parts.open!, parts.server!, parts.legacy!), weekStart)
+      ? choreStatsByMember(mergeChoresById(parts.open!, parts.server!, parts.legacy!), members, weekStart)
       : new Map<string, MemberChoreStats>()),
-    [choreStatsReady, parts.open, parts.server, parts.legacy, weekStart],
+    [choreStatsReady, parts.open, parts.server, parts.legacy, members, weekStart],
   );
 
   return {

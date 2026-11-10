@@ -17,6 +17,7 @@ import {
 } from '@/lib/chores/completion';
 import { safeTimeZone } from '@functions/shared/calendar';
 import { isDocId } from '@functions/shared/push-media';
+import { publicDisplayName } from '@/lib/member-directory';
 
 /**
  * Chore completion through the Admin SDK (H3). The caller is whoever the ID token
@@ -88,7 +89,8 @@ export async function completeChoresAs(
     const completer = {
       uid: caller.uid,
       email: caller.email,
-      name: (typeof memberName === 'string' && memberName.trim()) || caller.displayName?.trim() || caller.email,
+      // Shown to every member ("Done by Sam"): a name, never an email (HO-9).
+      name: publicDisplayName(memberName, '') || publicDisplayName(caller.displayName),
     };
     return chores.map((snap, index): ChoreCompletionOutcome => {
       const choreId = choreIds[index];
