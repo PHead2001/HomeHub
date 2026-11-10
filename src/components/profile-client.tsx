@@ -165,8 +165,10 @@ export function ProfileClient() {
   const photoChanged = Boolean(photoFile) || removePhoto;
 
   return (
-    <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 md:grid-cols-3">
-      <div className="space-y-8 md:col-span-2">
+    // Two columns only when both fit at their rem-based minimum widths (32rem and
+    // 20rem): px breakpoints ignore the text size, so 130% text at 768-1023 px stacks.
+    <div className="mx-auto flex max-w-6xl flex-wrap gap-8">
+      <div className="min-w-0 flex-[2_1_32rem] space-y-8">
         <Card>
           <CardHeader>
             <CardTitle className="font-headline">Personal Information</CardTitle>
@@ -268,7 +270,7 @@ export function ProfileClient() {
           </CardContent>
         </Card>
       </div>
-      <div className="space-y-8 md:col-span-1">
+      <div className="min-w-0 flex-[1_1_20rem] space-y-8">
         <AppearanceSettings />
         <ChoreReminderSettings />
         <PushNotificationSettings />
