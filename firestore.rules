@@ -627,9 +627,21 @@ service cloud.firestore {
         (!('color' in keys) || optionalString(data.color, 64));
     }
 
-    // quantity is checked after any increment() is applied.
+    // quantity is checked after any increment() is applied. nameKey, addedByUid,
+    // restoredByUid, categorySource, size and sizeUnit (S2 save paths) and the S3
+    // stamps (validShoppingItemStamps) are optional, so items
+    // written by older clients stay valid; addedByUid is checked on create and
+    // frozen on update below. size is a package size (BL-1), never the count.
     function validShoppingItemFields(data, keys) {
-      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl']) &&
+      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl',
+          'nameKey', 'addedByUid', 'restoredByUid', 'categorySource', 'size', 'sizeUnit',
+          'purchasedByUid', 'purchasedAt', 'purchaseOpId', 'undoOpId', 'restoreOpId', 'restoredAt', 'editedByUid', 'editedAt']) &&
+        (!('nameKey' in keys) || nonEmptyString(data.nameKey, 500)) &&
+        (!('addedByUid' in keys) || nonEmptyString(data.addedByUid, 128)) &&
+        (!('restoredByUid' in keys) || nonEmptyString(data.restoredByUid, 128)) &&
+        (!('categorySource' in keys) || data.categorySource in ['manual', 'remembered', 'local', 'ai', 'fallback', 'pending']) &&
+        (!('size' in keys) || (data.size is number && data.size > 0 && data.size <= 100000)) &&
+        (!('sizeUnit' in keys) || nonEmptyString(data.sizeUnit, 16)) &&
         (!('name' in keys) || nonEmptyString(data.name, 500)) &&
         (!('quantity' in keys) || (data.quantity is number && data.quantity > 0 && data.quantity <= 100000)) &&
         (!('category' in keys) || boundedString(data.category, 100)) &&
@@ -638,6 +650,84 @@ service cloud.firestore {
         (!('imageUrl' in keys) || boundedString(data.imageUrl, 2048)) &&
         (!('barcode' in keys) || boundedString(data.barcode, 128)) &&
         (!('sourceUrl' in keys) || boundedString(data.sourceUrl, 2048));
+    }
+
+    // S3 tick, edit and Undo stamps (checked on written keys only, so items of
+    // older clients stay valid and editable):
+    // - purchasedByUid is the writer or null, purchasedAt the server's time or null
+    //   (and a set purchasedAt is the writer's own purchase);
+    // - editedByUid is the writer and comes with editedAt == request.time;
+    // - undoOpId (the Undo of a tick) only while the stored purchaseOpId is that
+    //   id, unchanged by the same write, and only back to needed: a newer tick by
+    //   anyone writes a new purchaseOpId (and removes undoOpId), so a late Undo is
+    //   refused instead of overwriting it;
+    // - restoreOpId (the Undo of a delete) only on a create, so a restore never
+    //   overwrites an item that exists again (see shoppingRestoreCreate); once set,
+    //   restoreOpId and restoredAt are frozen (neither changed nor removed), so a
+    //   second tab replaying the same restore (same restoreOpId) is refused whether
+    //   its restoredAt resolves to a new time or is left out.
+    function validShoppingItemStamps(data, keys) {
+      return (!('purchasedByUid' in keys) || data.purchasedByUid == null || data.purchasedByUid == request.auth.uid) &&
+        (!('purchasedAt' in keys) || data.purchasedAt == null ||
+          (data.purchasedAt == request.time && data.get('purchasedByUid', null) == request.auth.uid)) &&
+        (!('purchaseOpId' in keys) || nonEmptyString(data.purchaseOpId, 64)) &&
+        (!('editedByUid' in keys) || (data.editedByUid == request.auth.uid && 'editedAt' in keys)) &&
+        (!('editedAt' in keys) || (data.editedAt == request.time && data.get('editedByUid', null) == request.auth.uid)) &&
+        (!('undoOpId' in keys) || shoppingUndoMatchesPurchase(data, keys)) &&
+        (!('restoreOpId' in keys) || (resource == null && nonEmptyString(data.restoreOpId, 64))) &&
+        (!('restoredAt' in keys) || (resource == null && 'restoreOpId' in data)) &&
+        (resource != null || !('restoreOpId' in data) || shoppingRestoreCreate(data)) &&
+        (resource == null || shoppingRestoreStampsKept(data));
+    }
+
+    // On an update, the stored restore stamps stay exactly as they are: a write that
+    // removes restoredAt (a stale restore payload without it) or changes either one
+    // is refused. Items never restored have neither, and an update may not add them.
+    function shoppingRestoreStampsKept(data) {
+      return data.get('restoreOpId', null) == resource.data.get('restoreOpId', null) &&
+        data.get('restoredAt', null) == resource.data.get('restoredAt', null);
+    }
+
+    // A restore (create with restoreOpId) carries restoredByUid = the writer and
+    // restoredAt == request.time, and none of the purchase, edit or Undo stamps:
+    // those belong to their own writer and time, so a restored item keeps its status
+    // (and purchaseOpId) but not purchasedByUid/At, editedByUid/At or undoOpId.
+    // restoredAt is what makes a restore create-only even when it is replayed: a
+    // setDoc of the same payload onto an item that exists again resolves restoredAt
+    // to a new request.time, so it is a changed key on an update and refused above,
+    // while ordinary updates leave restoredAt untouched.
+    function shoppingRestoreCreate(data) {
+      return data.get('restoredByUid', null) == request.auth.uid &&
+        data.get('restoredAt', null) == request.time &&
+        !data.keys().hasAny(['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId']);
+    }
+
+    function shoppingUndoMatchesPurchase(data, keys) {
+      return resource != null &&
+        nonEmptyString(data.undoOpId, 64) &&
+        data.get('status', null) == 'needed' &&
+        !('purchaseOpId' in keys) &&
+        resource.data.get('purchaseOpId', null) == data.undoOpId;
+    }
+
+    // Who added an item: the writer's own uid on create (or none, for older clients).
+    // Undo of a delete re-creates someone else's item: then addedByUid may name another
+    // member of this household as long as restoredByUid is the writer, so the restore
+    // keeps the original attribution and records who restored it (an item without
+    // addedByUid, from an older client, may be restored too). Never changed later.
+    function shoppingAdderOnCreate(householdId) {
+      let data = request.resource.data;
+      let adder = data.get('addedByUid', null);
+      let restorer = data.get('restoredByUid', null);
+      return (restorer == null && (adder == null || adder == request.auth.uid)) ||
+        (restorer == request.auth.uid &&
+          (adder == null || adder == request.auth.uid ||
+            exists(/databases/$(database)/documents/households/$(householdId)/members/$(adder))));
+    }
+
+    function shoppingAdderUnchanged() {
+      return request.resource.data.get('addedByUid', null) == resource.data.get('addedByUid', null) &&
+        request.resource.data.get('restoredByUid', null) == resource.data.get('restoredByUid', null);
     }
 
     function validShoppingConfig(data, keys) {
@@ -660,14 +750,149 @@ service cloud.firestore {
         request.resource.data.get('loggedByName', null) == resource.data.get('loggedByName', null);
     }
 
+    // `loggedAt`, `repeat`, `clockSource` and `backdated` come from the shared feed
+    // operation (src/lib/pets/feed-operation.ts, rules stage R1). They stay
+    // optional: older clients write none of them.
     function validFeedingLogFields(data, keys) {
-      return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName']) &&
+      return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName',
+          'loggedAt', 'repeat', 'clockSource', 'backdated']) &&
         (!('date' in keys) || dateValue(data.date)) &&
+        (!('loggedAt' in keys) || data.loggedAt is timestamp) &&
+        (!('repeat' in keys) || data.repeat in ['none', 'confirmed', 'offline']) &&
+        (!('clockSource' in keys) || data.clockSource in ['device', 'server']) &&
+        (!('backdated' in keys) || data.backdated is bool) &&
         (!('cups' in keys) || boundedNumber(data.cups, 0, 1000)) &&
         (!('foodType' in keys) || boundedString(data.foodType, 40)) &&
         (!('foodAmountType' in keys) || boundedString(data.foodAmountType, 40)) &&
         (!('comments' in keys) || optionalString(data.comments, 2000)) &&
         (!('ampm' in keys) || data.ampm in ['AM', 'PM']);
+    }
+
+    // writtenKeys() without its `resource == null ? ... : diff(resource.data)`
+    // branch, which the emulator reports as an evaluation error on every denied
+    // write. Feeding logs and the feeding state use these instead.
+    function createdKeys() {
+      return request.resource.data.keys().toSet();
+    }
+
+    function updatedKeys() {
+      return request.resource.data.diff(resource.data).addedKeys()
+        .union(request.resource.data.diff(resource.data).changedKeys());
+    }
+
+    // loggedAt is the server time of the write (it opens the author's 10-minute
+    // delete window), so it can't be chosen on create or changed afterwards.
+    function feedingLoggedAtOnCreate() {
+      return !('loggedAt' in request.resource.data) || request.resource.data.loggedAt == request.time;
+    }
+
+    function feedingLoggedAtUnchanged() {
+      return request.resource.data.get('loggedAt', null) == resource.data.get('loggedAt', null);
+    }
+
+    // PE-2: whoever logged a feeding may delete it for 10 minutes (Undo for
+    // everyone who can log), besides members with pets.deleteLogs.
+    function feedingAuthorWithinUndoWindow(householdId) {
+      return hasHouseholdPermission(householdId, 'pets.addLogs') &&
+        resource.data.get('loggedByUid', null) == request.auth.uid &&
+        resource.data.get('loggedAt', null) is timestamp &&
+        request.time < resource.data.loggedAt + duration.value(10, 'm');
+    }
+
+    // --- Feeding state (households/{h}/pets/{p}/feeding-state/current) ----
+    // The shared feed operation keeps the latest feed and the household day's
+    // count here, written in the same transaction as the log it describes.
+
+    function feedingStateDay(value) {
+      return value == null || (value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+    }
+
+    function feedingStateLatest(data) {
+      return (data.get('lastLogId', null) == null || nonEmptyString(data.lastLogId, 200)) &&
+        (data.get('lastFedAt', null) == null || data.lastFedAt is timestamp) &&
+        optionalString(data.get('lastFedByUid', null), 128) &&
+        optionalString(data.get('lastFedByName', null), 200) &&
+        feedingStateDay(data.get('day', null)) &&
+        data.get('countOnDay', 0) is int && data.get('countOnDay', 0) >= 0 && data.get('countOnDay', 0) <= 1000;
+    }
+
+    function validFeedingState(data) {
+      let fields = ['lastLogId', 'lastFedAt', 'lastFedByUid', 'lastFedByName', 'day', 'countOnDay'];
+      return data.keys().hasOnly(fields.concat(['prev'])) && data.keys().hasAll(fields) &&
+        feedingStateLatest(data) &&
+        (data.get('prev', null) == null ||
+          (data.prev is map && data.prev.keys().hasOnly(fields) && feedingStateLatest(data.prev)));
+    }
+
+    function feedingLogPath(householdId, petId, logId) {
+      return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/feeding-logs/$(logId);
+    }
+
+    // `snapshot` (a `prev` map) holds exactly the six stored fields of `state`.
+    function feedingStateCopies(snapshot, state) {
+      return snapshot is map &&
+        snapshot.get('lastLogId', null) == state.get('lastLogId', null) &&
+        snapshot.get('lastFedAt', null) == state.get('lastFedAt', null) &&
+        snapshot.get('lastFedByUid', null) == state.get('lastFedByUid', null) &&
+        snapshot.get('lastFedByName', null) == state.get('lastFedByName', null) &&
+        snapshot.get('day', null) == state.get('day', null) &&
+        snapshot.get('countOnDay', 0) == state.get('countOnDay', 0);
+    }
+
+    // A new latest feed: by the writer, pointing at a log the writer owns that
+    // exists once this write commits. `prev` is exactly the replaced state (null
+    // only when there was none), so an Undo can only bring back what was there.
+    function feedingStateFed(householdId, petId) {
+      let after = request.resource.data;
+      return after.lastLogId is string &&
+        after.lastFedByUid == request.auth.uid &&
+        (resource == null || after.lastLogId != resource.data.get('lastLogId', null)) &&
+        existsAfter(feedingLogPath(householdId, petId, after.lastLogId)) &&
+        getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('loggedByUid', null) == request.auth.uid &&
+        ((resource == null && after.get('prev', null) == null) ||
+          (resource != null && feedingStateCopies(after.get('prev', null), resource.data)));
+    }
+
+    // Only the day count changes (an older backdated entry, or deleting an older log).
+    function feedingStateCounted() {
+      return resource != null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay']);
+    }
+
+    // The log a stored `prev` points at is gone once this write commits (or it points at none).
+    function feedingPrevGone(householdId, petId, prev) {
+      return prev == null || !(prev.get('lastLogId', null) is string) ||
+        !existsAfter(feedingLogPath(householdId, petId, prev.lastLogId));
+    }
+
+    // Deleting the feed `prev` points at (an older log): `prev` is cleared with
+    // the count, so a later Undo never brings back a deleted feed.
+    function feedingStatePrevDropped(householdId, petId) {
+      return resource != null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay', 'prev']) &&
+        request.resource.data.get('prev', null) == null &&
+        resource.data.get('prev', null) != null &&
+        feedingPrevGone(householdId, petId, resource.data.prev);
+    }
+
+    // Undo of the latest feed: that log is gone after this write, and the latest
+    // feed becomes exactly the stored `prev` while its log still exists, or
+    // nothing when there is no surviving `prev`; never another snapshot.
+    function feedingStateRestored(householdId, petId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let prev = before.get('prev', null);
+      return before.get('lastLogId', null) is string &&
+        !existsAfter(feedingLogPath(householdId, petId, before.lastLogId)) &&
+        after.get('prev', null) == null &&
+        ((feedingPrevGone(householdId, petId, prev) &&
+            after.lastLogId == null && after.lastFedAt == null &&
+            after.lastFedByUid == null && after.lastFedByName == null) ||
+          (!feedingPrevGone(householdId, petId, prev) &&
+            after.lastLogId == prev.get('lastLogId', null) &&
+            after.lastFedAt == prev.get('lastFedAt', null) &&
+            after.lastFedByUid == prev.get('lastFedByUid', null) &&
+            after.lastFedByName == prev.get('lastFedByName', null)));
     }
 
     function validMedicationLogFields(data, keys) {
@@ -962,9 +1187,13 @@ service cloud.firestore {
           allow read: if hasHouseholdPermission(householdId, 'shopping.view');
           allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
             request.resource.data.keys().hasAll(['name']) &&
-            validShoppingItemFields(request.resource.data, writtenKeys());
+            validShoppingItemFields(request.resource.data, writtenKeys()) &&
+            validShoppingItemStamps(request.resource.data, writtenKeys()) &&
+            shoppingAdderOnCreate(householdId);
           allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
-            validShoppingItemFields(request.resource.data, writtenKeys());
+            validShoppingItemFields(request.resource.data, writtenKeys()) &&
+            validShoppingItemStamps(request.resource.data, writtenKeys()) &&
+            shoppingAdderUnchanged();
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
 
@@ -999,10 +1228,31 @@ service cloud.firestore {
         match /feeding-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validFeedingLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+            validFeedingLogFields(request.resource.data, createdKeys()) && petLoggerOnCreate() &&
+            feedingLoggedAtOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validFeedingLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
-          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+            validFeedingLogFields(request.resource.data, updatedKeys()) && petLoggerUnchanged() &&
+            feedingLoggedAtUnchanged();
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+            feedingAuthorWithinUndoWindow(householdId);
+        }
+
+        // Rules stage R1 (compatible): validated shape and pairing with the log.
+        // Stage R2 (next release, see docs/modules/pets/README.md) adds the
+        // server-time and confirm enforcement.
+        match /feeding-state/{stateId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow create: if stateId == 'current' &&
+            hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validFeedingState(request.resource.data) &&
+            feedingStateFed(householdId, petId);
+          allow update: if stateId == 'current' &&
+            validFeedingState(request.resource.data) &&
+            ((hasHouseholdPermission(householdId, 'pets.addLogs') && feedingStateFed(householdId, petId)) ||
+              ((hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
+                (feedingStateCounted() || feedingStatePrevDropped(householdId, petId) ||
+                  feedingStateRestored(householdId, petId))));
+          allow delete: if false;
         }
 
         match /medication-logs/{logId} {

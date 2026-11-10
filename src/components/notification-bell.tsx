@@ -144,6 +144,7 @@ export function NotificationBell() {
     const categories = viewKey === '*' ? null : (viewKey.split(',') as Notification['category'][]);
     const notificationsQuery = notificationWindowQuery(
       collection(db, 'households', currentUser.householdId, 'notifications'),
+      currentUser.uid,
       sevenDaysAgo,
       categories,
       30,

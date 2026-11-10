@@ -189,7 +189,7 @@ export function NotificationCenterClient() {
   const viewKey = categoriesKey(viewableNotificationCategories((permission) => Boolean(permissions[permission])));
 
   useEffect(() => {
-    if (!currentUser?.householdId) {
+    if (!currentUser?.householdId || !currentUser.uid) {
       setNotifications([]);
       setIsLoading(false);
       return;
@@ -201,6 +201,7 @@ export function NotificationCenterClient() {
     const categories = viewKey === "*" ? null : (viewKey.split(",") as NotificationCategory[]);
     const notificationsQuery = notificationWindowQuery(
       collection(db, "households", currentUser.householdId, "notifications"),
+      currentUser.uid,
       sevenDaysAgo,
       categories,
     );
@@ -218,7 +219,7 @@ export function NotificationCenterClient() {
     );
 
     return () => unsubscribe();
-  }, [currentUser?.householdId, viewKey]);
+  }, [currentUser?.householdId, currentUser?.uid, viewKey]);
 
   const validNotifications = useMemo(() => {
     return notifications.filter((notification) => !isNotificationExpired(notification));

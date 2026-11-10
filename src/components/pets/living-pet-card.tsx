@@ -67,7 +67,7 @@ function PetPeek({ pet, care }: { pet: PetProfile; care: PetCare }) {
  * countdown, one-tap feeding and hold to feed (press and hold the photo). The
  * name is the card's link; the menu and the feed button sit above the link layer
  * so they stay separate targets. One feed controller serves the button and the
- * hold, so both write through the same `addFeedingLog` call.
+ * hold, so both go through the shared feed operation (`feedPet`).
  */
 export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0 }: LivingPetCardProps) {
   const href = petHref(pet.id);
@@ -90,7 +90,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
     flushSync(() => setMorphing(true));
     navigate(href);
   };
-  const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food });
+  const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food, known: care.known });
   const photoRef = React.useRef<HTMLDivElement>(null);
   const { hold, enabled: holdEnabled, handlers } = useHoldToFeed(feed, photoRef);
   const hintId = `feed-hint-${pet.id}`;

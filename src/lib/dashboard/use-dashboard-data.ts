@@ -368,7 +368,7 @@ export function useDashboardData(enabled = true): DashboardData {
         const categories = viewableNotificationCategories((permission) => Boolean(views[permission]));
         // The documents are kept (deduplicated as the bell does); the unread count is
         // computed from them at `now` in assembleDashboardFacts, so expiry is applied live.
-        return watchQuery('notifications', 'notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s, r) => ({
+        return watchQuery('notifications', 'notifications', notificationWindowQuery(base('notifications'), uid, since, categories, 30), (s, r) => ({
           ...r, notifications: deduplicateNotifications(s.docs.map(parseNotificationDoc)),
         }));
       },
