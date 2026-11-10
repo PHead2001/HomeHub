@@ -70,6 +70,7 @@ async function restoreMutableSeedData() {
       sourceType: 'maintenance_asset_schedule',
       sourceId: 'hvac-main:asset-filter-e2e',
       stateKey: 'due_today|2026-08-01',
+      audience: ['*'],
       readBy: {},
       dismissedBy: {},
     }),

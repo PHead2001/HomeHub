@@ -9,6 +9,7 @@
  * functions/src/shared/calendar.ts. (No `src/lib/household-day.ts` helper exists
  * on main yet; switch to it once the dashboard data PR adds one.)
  */
+import { UNDO_WINDOW_MS } from '../undo-window';
 import { DEFAULT_TIME_ZONE, localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { formatAgo, seenFeedingDate, toDate, type FeedingEntry } from './care';
 
@@ -19,7 +20,7 @@ export const FEED_REPEAT_WINDOW_MS = 90 * 60_000;
  * How long the Undo toast stays (audit 16.3: the 10-second Undo for everyone who
  * can log). Local constant: main has no shared Undo duration yet.
  */
-export const FEED_UNDO_MS = 10_000;
+export const FEED_UNDO_MS = UNDO_WINDOW_MS;
 
 /** The author may delete their own feeding for this long after `loggedAt` (PE-2; firestore.rules mirrors it). */
 export const AUTHOR_DELETE_WINDOW_MS = 10 * 60_000;

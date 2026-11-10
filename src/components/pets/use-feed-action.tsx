@@ -95,6 +95,7 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
       callbacksRef.current.onFed?.(result);
       const described = callbacksRef.current.describe?.(result) ?? { title: `${petName} fed` };
       const { dismiss } = toast({
+        group: 'pet-feed',
         duration: FEED_UNDO_MS,
         ...(result.status === 'queued'
           ? { title: 'Saved on this device', description: `Couldn't check whether someone else fed ${petName}.` }

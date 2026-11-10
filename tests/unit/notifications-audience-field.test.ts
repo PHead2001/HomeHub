@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { buildNotificationDocument } from '../../src/lib/notifications';
+import type { User } from '../../src/lib/types';
 import {
   AUDIENCE_EVERYONE,
   hasAudience,
@@ -50,6 +52,18 @@ describe('notification audience (shared derivation)', () => {
   test('hasAudience accepts only lists of strings', () => {
     for (const value of [['*'], ['uid-ana'], []]) assert.equal(hasAudience(value), true);
     for (const value of [undefined, null, '*', { 0: '*' }, [1], ['*', null]]) assert.equal(hasAudience(value), false);
+  });
+});
+
+describe('notification audience (web app builder)', () => {
+  test('the web app builder writes it for targeted and household-wide notifications', () => {
+    const base = { householdId: 'h1', category: 'chores' as const, message: 'Hello' };
+    const targeted = buildNotificationDocument({ ...base, targetUser: { uid: 'uid-ana', email: 'ana@example.test' } as User });
+    assert.deepEqual(targeted.audience, ['uid-ana']);
+    assert.equal(targeted.targetUserUid, 'uid-ana');
+    const everyone = buildNotificationDocument(base);
+    assert.deepEqual(everyone.audience, ['*']);
+    assert.equal('targetUserUid' in everyone, false);
   });
 });
 
