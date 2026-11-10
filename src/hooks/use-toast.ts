@@ -8,15 +8,26 @@ import type {
   ToastProps,
 } from "@/components/ui/toast"
 import { FRIENDLY_ERROR_TITLES, friendlyError, friendlyErrorKind } from "@/lib/friendly-error"
+import { markBusy } from "@/lib/shell/busy"
+import { capToasts, toastsHoldShell } from "@/lib/shell/toast-queue"
 
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+export { TOAST_LIMIT } from "@/lib/shell/toast-queue"
+export { UNDO_WINDOW_MS } from "@/lib/undo-window"
+
+// A dismissed toast leaves the store once its exit animation has finished.
+const TOAST_REMOVE_DELAY = 1000
 
 type ToasterToast = ToastProps & {
   id: string
   title?: React.ReactNode
   description?: React.ReactNode
   action?: ToastActionElement
+  /**
+   * Whether this toast's action must not be lost to a reload or displaced by a
+   * newer toast (an Undo). Defaults to true when the toast has an action; pass
+   * false for an action that is not a pending decision (e.g. "Reload").
+   */
+  holdsAction?: boolean
 }
 
 let count = 0
@@ -78,7 +89,7 @@ export const reducer = (state: State, action: Action): State => {
     case "ADD_TOAST":
       return {
         ...state,
-        toasts: [action.toast, ...state.toasts].slice(0, TOAST_LIMIT),
+        toasts: capToasts([action.toast, ...state.toasts]),
       }
 
     case "UPDATE_TOAST":
@@ -132,8 +143,22 @@ const listeners: Array<(state: State) => void> = []
 
 let memoryState: State = { toasts: [] }
 
+// An open toast with an Undo-style action keeps the shell busy (src/lib/shell/busy.ts),
+// so nothing reloads on its own while the member could still tap it.
+let releaseUndoBusy: (() => void) | null = null
+
+function syncShellBusy() {
+  const holding = toastsHoldShell(memoryState.toasts)
+  if (holding && !releaseUndoBusy) releaseUndoBusy = markBusy("undo")
+  if (!holding && releaseUndoBusy) {
+    releaseUndoBusy()
+    releaseUndoBusy = null
+  }
+}
+
 function dispatch(action: Action) {
   memoryState = reducer(memoryState, action)
+  syncShellBusy()
   listeners.forEach((listener) => {
     listener(memoryState)
   })
@@ -141,7 +166,7 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, "id">
 
-function toast({ ...props }: Toast) {
+function toast({ holdsAction, ...props }: Toast) {
   const id = genId()
 
   const update = (props: ToasterToast) =>
@@ -156,6 +181,7 @@ function toast({ ...props }: Toast) {
     toast: {
       ...props,
       id,
+      holdsAction: holdsAction ?? Boolean(props.action),
       open: true,
       onOpenChange: (open) => {
         if (!open) dismiss()

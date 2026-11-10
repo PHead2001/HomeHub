@@ -33,6 +33,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { slugify, cn } from '@/lib/utils';
@@ -704,11 +705,11 @@ export function ShoppingListClient({
       }
   };
 
-  // "Milk is in the cart · Undo" for five seconds after a tick.
+  // "Milk is in the cart · Undo" for the shared Undo window after a tick.
   const showTickUndo = (item: ShoppingListItem) => {
     toast({
       title: `${item.name} is in the cart`,
-      duration: 5000,
+      duration: UNDO_WINDOW_MS,
       action: (
         <ToastAction
           altText={`Undo ticking ${item.name}`}
@@ -723,7 +724,7 @@ export function ShoppingListClient({
     });
   };
 
-  // Deletes at once, with five seconds to undo (the item is written back as it was).
+  // Deletes at once, with the shared Undo window to undo (the item is written back as it was).
   const deleteItem = async (item: ShoppingListItem) => {
     const householdId = currentUser?.householdId;
     const list = selectedList;
@@ -744,7 +745,7 @@ export function ShoppingListClient({
     void _id;
     toast({
       title: `${item.name} removed`,
-      duration: 5000,
+      duration: UNDO_WINDOW_MS,
       action: canEdit ? (
         <ToastAction
           altText={`Undo removing ${item.name}`}
