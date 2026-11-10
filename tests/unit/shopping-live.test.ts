@@ -355,12 +355,12 @@ describe('one-time triggers on live data', () => {
     const { readFileSync } = await import('node:fs');
     const pantry = readFileSync('src/components/pantry-inventory-client.tsx', 'utf8');
     const dialog = pantry.slice(pantry.indexOf('function RecipeGeneratorDialog'), pantry.indexOf('<Dialog open={isOpen} onOpenChange={onOpenChange}>', pantry.indexOf('function RecipeGeneratorDialog')));
-    assert.match(dialog, /pantryItemsRef\.current\.map\(/);
+    assert.match(dialog, /\{ items: recipeItemsRef\.current \}/);
     assert.match(dialog, /\}, \[householdId, toast, onRecipe, reduced\]\);/);
     assert.match(dialog, /const opened = justOpened\(wasOpenRef\.current, isOpen\);/);
     // A pending "Put on a shopping list" is dropped when the tab is hidden, and the picker is gated.
     assert.match(pantry, /if \(request !== addToListRequestRef\.current\) return;/);
-    assert.match(pantry, /isOpen=\{isAddToListDialogOpen && tabActive\}/);
+    assert.match(pantry, /request=\{tabActive \? listPick : null\}/);
   });
 
   test("the local deletion marker clears once this device has left the list and it is gone", () => {
