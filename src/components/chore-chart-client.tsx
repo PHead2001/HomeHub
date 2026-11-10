@@ -43,7 +43,7 @@ import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useHouseholdToday, useToday } from '@/components/chores/use-today';
-import { applyRefreshedChores, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
+import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { morphStyle } from '@/lib/motion';
@@ -538,10 +538,7 @@ export function ChoreChartClient() {
     // changed since ('stale': completed again, 'missing': deleted) is re-read, as
     // the saved snapshot is outdated.
     const settled = settleUndo(ids, results);
-    const notUndone = new Map(settled.restore.flatMap(id => (saved.has(id) ? [[id, saved.get(id)!] as const] : [])));
-    setAssignedChores(current => restoreChoreFields(current, notUndone).map(chore => (
-      settled.steps.has(chore.id) ? { ...chore, completedSubTasks: settled.steps.get(chore.id) } : chore
-    )));
+    setAssignedChores(current => applyUndoSettlement(current, settled, saved));
     const failure = results.find(result => !result.ok);
     if (failure && !failure.ok) toast({ variant: 'destructive', title: completionFailureMessage(failure, 'undo') });
     if (settled.refresh.length === 0) return;

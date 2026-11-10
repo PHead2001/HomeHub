@@ -33,7 +33,7 @@ export type UndoSettlement = {
   restore: string[];
   /** The chore changed since (completed again: `stale`; deleted: `missing`): re-read it. */
   refresh: string[];
-  /** Undone, with these steps put back. */
+  /** Undone: the steps as stored afterwards (restored, or kept because someone changed them since). */
   steps: Map<string, string[]>;
 };
 
@@ -56,6 +56,23 @@ export function settleUndo(choreIds: readonly string[], results: readonly UndoRe
     else if (result.data.status === 'undone' && result.data.completedSubTasks) settlement.steps.set(choreId, result.data.completedSubTasks);
   });
   return settlement;
+}
+
+/**
+ * Applies a settlement to the page's chores: puts back the saved completion of
+ * requests that never ran, and gives undone chores the steps the server stored
+ * (authoritative, so a later step toggle starts from them, not from the
+ * optimistic all-ticked list). Other chores are unchanged.
+ */
+export function applyUndoSettlement<T extends ChoreRecord>(
+  chores: readonly T[],
+  settlement: UndoSettlement,
+  saved: ReadonlyMap<string, Partial<ChoreRecord>>,
+): T[] {
+  const notUndone = new Map(settlement.restore.flatMap(id => (saved.has(id) ? [[id, saved.get(id)!] as const] : [])));
+  return restoreChoreFields(chores, notUndone).map(chore => (
+    settlement.steps.has(chore.id) ? { ...chore, completedSubTasks: [...settlement.steps.get(chore.id)!] } : chore
+  ));
 }
 
 /**

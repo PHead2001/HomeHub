@@ -132,6 +132,8 @@ describe('undo and reopen', () => {
       assert.equal(stored[field], undefined, `${field} cleared`);
     }
     assert.deepEqual(stored.completedSubTasks, ['Rinse']);
+    assert.ok(undone.status === 'undone');
+    assert.deepEqual(undone.completedSubTasks, ['Rinse'], 'the result carries the restored steps');
     assert.equal(stored.task, 'Dishes', 'other fields untouched');
   });
 
@@ -160,13 +162,16 @@ describe('undo and reopen', () => {
     const [outcome] = await completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['steps'], completeSubTasks: true }, AFTER_MIDNIGHT);
     assert.ok(outcome.status === 'completed');
     await chores().doc('steps').update({ completedSubTasks: ['Dry'] });
-    await undoChoreCompletionAs(adminDb, HOUSE, {
+    const undone = await undoChoreCompletionAs(adminDb, HOUSE, {
       choreId: 'steps', completionId: outcome.completion.completionId!,
       restoreSubTasks: { from: outcome.completion.completedSubTasks, to: outcome.previousCompletedSubTasks! },
     });
     const stored = await read('steps');
     assert.equal(stored.isCompleted, false);
     assert.deepEqual(stored.completedSubTasks, ['Dry']);
+    // The result carries the preserved steps, so the page shows them instead of the optimistic list.
+    assert.ok(undone.status === 'undone');
+    assert.deepEqual(undone.completedSubTasks, ['Dry']);
   });
 
   test('reopen clears the completion and its attribution', async () => {

@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   completionEligibility, householdToday, isChoreDocId, isDueAfterHouseholdDay, MAX_DOC_ID_BYTES, msUntilHouseholdMidnight,
 } from '../../src/lib/chores/completion';
-import { applyRefreshedChores, settleUndo } from '../../src/lib/chores/patch';
+import { applyRefreshedChores, applyUndoSettlement, settleUndo } from '../../src/lib/chores/patch';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { newChoreDocId } from '../../src/lib/chores/list';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
@@ -97,6 +97,27 @@ describe('Undo reconciliation (reopened or changed before Undo)', () => {
     assert.equal(next[0].completionId, 'theirs');
     assert.equal(next[0].assignedToDisplayName, 'Sam');
     assert.equal(next[1], local[2]);
+  });
+
+  it('an undone chore shows the steps the server kept, not the optimistic all-ticked list', () => {
+    // Completed with every step ticked; meanwhile someone else unticked "Rinse".
+    // The server keeps that edit and returns the stored steps.
+    const local = [
+      { id: 'a', task: 'Dishes', isCompleted: false, subTasks: ['Rinse', 'Dry'], completedSubTasks: ['Rinse', 'Dry'] },
+      { id: 'e', task: 'Bins', isCompleted: false, completedSubTasks: [] },
+      { id: 'x', task: 'Other', isCompleted: true, completedSubTasks: ['Keep'] },
+    ] as unknown as ChoreRecord[];
+    const settled = settleUndo(['a', 'e'], [ok('a', 'undone', ['Dry']), { ok: false }]);
+    const saved = new Map([['e', { isCompleted: true, completionId: 'mine', completedSubTasks: [] }]]);
+    const next = applyUndoSettlement(local, settled, saved);
+    assert.equal(next[0].isCompleted, false);
+    assert.deepEqual(next[0].completedSubTasks, ['Dry']);
+    assert.equal(next[1].isCompleted, true, 'a request that never ran puts its completion back');
+    assert.equal(next[1].completionId, 'mine');
+    assert.equal(next[2], local[2]);
+    // An empty stored list is applied too (every step unticked since).
+    const [cleared] = applyUndoSettlement(local.slice(0, 1), settleUndo(['a'], [ok('a', 'undone', [])]), new Map());
+    assert.deepEqual(cleared.completedSubTasks, []);
   });
 
   it('drops local completion fields the stored chore no longer has', () => {

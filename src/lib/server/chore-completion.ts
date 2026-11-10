@@ -114,6 +114,7 @@ const restoreOf = (value: unknown): SubTaskRestore | null => {
  * Undoes one completion, only while `completionId` is still the chore's current
  * completion. Clears only completion fields; puts steps back only when they are
  * unchanged since the completion ticked them. Never restores a whole document.
+ * An `undone` result carries the chore's stored `completedSubTasks` afterwards.
  */
 export async function undoChoreCompletionAs(
   db: Firestore,
@@ -139,7 +140,10 @@ export async function undoChoreCompletionAs(
       ...clearCompletion(),
       ...(plan.completedSubTasks ? { completedSubTasks: plan.completedSubTasks } : {}),
     });
-    return { choreId, status: 'undone', ...(plan.completedSubTasks ? { completedSubTasks: plan.completedSubTasks } : {}) };
+    // Always the steps as stored after this Undo (restored, or kept because someone
+    // changed them since), so the page shows them and a later step toggle starts from them.
+    const completedSubTasks = plan.completedSubTasks ?? stringList(snap.get('completedSubTasks')) ?? [];
+    return { choreId, status: 'undone', completedSubTasks };
   });
 }
 

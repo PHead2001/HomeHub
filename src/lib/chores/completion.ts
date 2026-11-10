@@ -194,7 +194,10 @@ export type ChoreCompletionOutcome =
   | { choreId: string; status: 'refused'; refused: 'early'; dueDay: string }
   | { choreId: string; status: 'refused'; refused: 'missing' };
 
-export type UndoOutcome = { choreId: string; status: 'undone' | 'stale' | 'open' | 'missing'; completedSubTasks?: string[] };
+/** `undone` carries the stored steps after the Undo (restored or preserved), which the page applies. */
+export type UndoOutcome =
+  | { choreId: string; status: 'undone'; completedSubTasks: string[] }
+  | { choreId: string; status: 'stale' | 'open' | 'missing' };
 export type ReopenOutcome = { choreId: string; status: 'reopened' | 'open' | 'missing' };
 
 /** Steps Undo may put back: only if they are still exactly what the completion ticked. */
