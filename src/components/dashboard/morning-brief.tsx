@@ -167,7 +167,8 @@ function BriefLine({ facts, name, now, today, timeZone }: BriefProps) {
           aria-label={label}
           title={label}
           data-testid="brief-ai-rewrite"
-          className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-muted hover:text-primary disabled:opacity-60"
+          // D-2: 44 px (48 px on touch), pulled up so the line keeps its rhythm.
+          className={cn(styles.target, '-mt-1.5 inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-muted hover:text-primary disabled:opacity-60')}
         >
           {ai.loading ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
         </button>
@@ -184,7 +185,7 @@ function BriefLine({ facts, name, now, today, timeZone }: BriefProps) {
           <button
             type="button"
             onClick={ai.reset}
-            className="inline-flex items-center gap-1 rounded underline-offset-4 hover:text-foreground hover:underline"
+            className={cn(styles.hitSlop, 'inline-flex items-center gap-1 rounded underline-offset-4 hover:text-foreground hover:underline')}
           >
             <RotateCcw aria-hidden className="h-3 w-3" />
             Show plain brief
@@ -197,7 +198,7 @@ function BriefLine({ facts, name, now, today, timeZone }: BriefProps) {
         {ai.error && (
           <p className="mt-1 text-sm text-destructive">
             {ai.error}{' '}
-            <button type="button" onClick={() => void ai.rewrite()} className="underline underline-offset-4">Try again</button>
+            <button type="button" onClick={() => void ai.rewrite()} className={cn(styles.hitSlop, 'underline underline-offset-4')}>Try again</button>
           </p>
         )}
       </div>

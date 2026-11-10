@@ -83,6 +83,12 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         }));
         expect(size.scrollHeight, 'the dashboard fits the screen height').toBeLessThanOrEqual(size.innerHeight);
         expect(size.scrollWidth).toBeLessThanOrEqual(size.innerWidth);
+        // HP-13b beside the house: touch shows as many inline detail rows as the height leaves room for.
+        const detailRows = await page.getByTestId('dashboard-grid').locator('[data-testid$="-details"] > li')
+          .evaluateAll((rows) => rows.filter((row) => row.getBoundingClientRect().height > 0).length);
+        const tilesWithDetails = await page.getByTestId('dashboard-grid').locator('[data-testid$="-details"]').count();
+        expect(tilesWithDetails, 'the seed gives some tiles inline details').toBeGreaterThanOrEqual(2);
+        expect(detailRows).toBe(viewport.height >= 800 ? tilesWithDetails : 0);
         // HP-26a: the last tile reaches the grid's right edge (no empty slot), and tiles never overlap.
         const tiles = await tileBoxes(page);
         expect(tiles.length).toBeGreaterThanOrEqual(6);
