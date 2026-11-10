@@ -7,16 +7,8 @@ import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { BellRing, Loader2 } from 'lucide-react';
-import { db, getFirebaseMessaging } from '@/lib/firebase';
-import { getToken } from 'firebase/messaging';
-import { deleteField, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
-import { awaitWriteUnlessOffline } from '@/lib/firestore-offline';
-import { nextPushTokens } from '@/lib/push-tokens';
-import { registerHomeHubServiceWorker } from '@/lib/service-worker';
+import { PushSetupError, registerPushOnThisDevice } from '@/lib/push-registration';
 import { friendlyError } from '@/lib/friendly-error';
-
-/** Failures this component words for people itself; anything else goes through friendlyError. */
-class SubscribeError extends Error {}
 
 export function PushNotificationSettings() {
     const { currentUser } = useAuth();
@@ -48,51 +40,13 @@ export function PushNotificationSettings() {
 
             toast({ title: 'Permissions granted!', description: 'Subscribing to notifications...' });
 
-            const messaging = await getFirebaseMessaging();
-            if (!messaging) {
-                throw new SubscribeError('Push notifications are not supported in this browser.');
-            }
-            
-            const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
-            if (!vapidKey) {
-                console.error('NEXT_PUBLIC_FIREBASE_VAPID_KEY is not configured.');
-                throw new SubscribeError('Push notifications are not set up for HomeHub yet.');
-            }
-
-            // Register (or reuse) the combined push + offline service worker at /api/sw
-            const registration = await registerHomeHubServiceWorker();
-
-            // Get the token, explicitly passing our service worker registration
-            const currentToken = await getToken(messaging, { 
-                vapidKey,
-                serviceWorkerRegistration: registration,
-            });
-            
-            if (currentToken) {
-                // Tokens live in an owner-only document so housemates, who can read
-                // the profile, never see them. Any legacy profile tokens move along,
-                // and past the rules' cap of 20 the oldest tokens make room.
-                const pushRef = doc(db, 'users', currentUser.email, 'private', 'push');
-                const stored = await getDoc(pushRef);
-                const batch = writeBatch(db);
-                batch.set(pushRef, {
-                    fcmTokens: nextPushTokens(stored.get('fcmTokens'), currentUser.fcmTokens, currentToken),
-                    updatedAt: serverTimestamp(),
-                });
-                if (currentUser.fcmTokens) {
-                    batch.update(doc(db, 'users', currentUser.email), { fcmTokens: deleteField() });
-                }
-                await awaitWriteUnlessOffline(batch.commit(), error => {
-                    console.error('Push subscription could not be saved.', error instanceof Error ? error : String(error));
-                });
-                toast({ title: 'Subscription Successful!', description: 'Push notifications are now active on this device.' });
-            } else {
-                 throw new SubscribeError('This device did not return a push token. Please try again.');
-            }
+            // Gets this device's token and stores it in the owner-only push document.
+            await registerPushOnThisDevice(currentUser);
+            toast({ title: 'Subscription Successful!', description: 'Push notifications are now active on this device.' });
 
         } catch (err) {
             console.error('An error occurred while subscribing to notifications. ', err instanceof Error ? err : String(err));
-            toast({ variant: 'destructive', title: 'Subscription Failed', description: err instanceof SubscribeError ? err.message : friendlyError(err) });
+            toast({ variant: 'destructive', title: 'Subscription Failed', description: err instanceof PushSetupError ? err.message : friendlyError(err) });
         } finally {
             setIsSubscribing(false);
         }
