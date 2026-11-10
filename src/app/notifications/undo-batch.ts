@@ -1,16 +1,19 @@
+import { UNDO_WINDOW_MS } from '../../lib/undo-window';
+
 /**
  * Pending dismissals that one Undo restores.
  *
- * The app shows one toast at a time (`TOAST_LIMIT = 1`), so each dismissal's
- * toast replaces the previous one. To keep every recent dismissal undoable,
- * dismissals made within the Undo window of each other accumulate: the newest
- * toast counts all of them and its Undo restores all of them. The window runs
+ * Each dismissal's toast replaces the previous dismissal toast (toast group
+ * `notification-dismiss` removes the older one at once; other toasts may still show beside it, up to `TOAST_LIMIT`). To
+ * keep every recent dismissal undoable, dismissals made within the Undo window
+ * of each other accumulate: the newest toast counts all of them and its Undo
+ * restores all of them. The window runs
  * from the latest dismissal; once it passes (or Undo runs) the batch starts
  * over. Batches are per household and member.
  */
 
 /** How long the Undo action stays available after the latest dismissal. */
-export const DISMISS_UNDO_MS = 5000;
+export const DISMISS_UNDO_MS = UNDO_WINDOW_MS;
 
 /** Toast copy for a dismissal of `count` notifications. */
 export function dismissedToastText(count: number): string {

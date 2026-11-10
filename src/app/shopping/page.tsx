@@ -2,6 +2,8 @@
 
 import { Suspense } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useSessionKnown } from '@/hooks/use-session-known';
+import Loading from './loading';
 import { ShoppingCenterClient } from "@/components/shopping-center-client";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
@@ -14,6 +16,9 @@ export default function ShoppingPage() {
     const canView = Boolean(permissions['shopping.view']);
     // Permissions are known once the member record has loaded; until then show nothing extra.
     const denied = Boolean(currentUser && !householdLoading && currentMember && !canView);
+    const sessionKnown = useSessionKnown();
+    // SL-11: the route skeleton, not the sign-in prompt, until Auth has answered.
+    if (!currentUser && !sessionKnown) return <Loading />;
     return (
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

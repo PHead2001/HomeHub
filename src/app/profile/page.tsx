@@ -1,12 +1,17 @@
 'use client';
 
 import { useAuth } from "@/hooks/use-auth";
+import { useSessionKnown } from '@/hooks/use-session-known';
+import Loading from './loading';
 import { ProfileClient } from "@/components/profile-client";
 import { SignInPrompt } from "@/components/profile/sign-in-prompt";
 import { CardSkeleton } from "@/components/route-skeletons";
 
 export default function ProfilePage() {
     const { currentUser, profileConfirmed } = useAuth();
+    const sessionKnown = useSessionKnown();
+    // SL-11: the route skeleton, not the sign-in prompt, until Auth has answered.
+    if (!currentUser && !sessionKnown) return <Loading />;
     return (
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8">
