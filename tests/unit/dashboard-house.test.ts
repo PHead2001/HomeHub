@@ -109,6 +109,22 @@ describe('pets in the house', () => {
     assert.ok(hungryYard.at.y > empty.groundY);
   });
 
+  it('many hungry pets stay inside the kitchen and apart (HP-11d)', () => {
+    const kitchen = layout.rooms.find((room) => room.id === 'kitchen')!;
+    const inside = (p: { x: number; y: number }) => p.x - 9 >= kitchen.x && p.x + 9 <= kitchen.x + kitchen.w && p.y - 18 >= kitchen.y && p.y <= kitchen.y + kitchen.h;
+    const eight = placePets(ids(8).map((id) => ({ id, fed: false })), layout, names);
+    assert.ok(eight.every((pet) => pet.roomId === 'kitchen' && inside(pet.at)), 'eight hungry pets stay in the kitchen');
+    for (let a = 0; a < eight.length; a += 1) {
+      for (let b = a + 1; b < eight.length; b += 1) {
+        const distance = Math.hypot(eight[a].at.x - eight[b].at.x, eight[a].at.y - eight[b].at.y);
+        assert.ok(distance >= 16, `pets ${a} and ${b} do not overlap (${distance})`);
+      }
+    }
+    const twenty = placePets(ids(20).map((id) => ({ id, fed: false })), layout, names);
+    assert.ok(twenty.every((pet) => inside(pet.at)), 'twenty hungry pets are squeezed, never pushed out of the room');
+    assert.equal(new Set(twenty.map((pet) => `${pet.at.x},${pet.at.y}`)).size, 20, 'no two share a spot');
+  });
+
   it('a single room still wanders within that room', () => {
     const single = layoutHouse(['only']);
     const [pet] = placePets([{ id: 'p', fed: true }], single, {});
