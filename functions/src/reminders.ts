@@ -37,6 +37,7 @@ import {
   pendingCycles, type PetInput,
 } from "./shared/medication-reminders";
 import {normalizeRecurrence, upcomingOccurrences} from "./shared/recurrence";
+import {withContactEmails} from "./shared/member-contact";
 
 type Db = Firestore;
 type Timestamp = FirestoreTimestamp;
@@ -89,6 +90,29 @@ const notificationBody = (
   ...fields,
   audience: notificationAudience(fields),
 });
+
+/**
+ * The protected contact documents (`members/{uid}/private/contact`) of these
+ * members, by uid. A failed read yields no contacts, so callers fall back to
+ * the email on the membership record.
+ * @param {DocumentReference} house Household document.
+ * @param {string[]} uids Members to read.
+ * @return {Promise<Map<string, unknown>>} Contact data by uid.
+ */
+export const readMemberContacts = async (
+  house: DocumentReference,
+  uids: string[],
+): Promise<Map<string, unknown>> => {
+  if (uids.length === 0) return new Map();
+  const refs = uids.map((uid) =>
+    house.collection("members").doc(uid).collection("private").doc("contact"));
+  try {
+    const snaps = await house.firestore.getAll(...refs);
+    return new Map(snaps.map((snap, index) => [uids[index], snap.data()]));
+  } catch {
+    return new Map();
+  }
+};
 
 /**
  * Runs reminders and recurring-chore upkeep for one household.
@@ -228,12 +252,16 @@ export const runHouseholdReminders = async (
       house.collection("vehicles").get(),
     ]);
 
-  const members = membersSnap.docs.map((d) => ({uid: d.id, ...d.data()}))
+  const approvedRecords = membersSnap.docs
+    .map((d) => ({uid: d.id, ...d.data()}))
     .filter((m: Record<string, unknown>) =>
       APPROVED.has(String(m.role)) &&
       (m.status === undefined || m.status === "active")) as Array<{
         uid: string; email?: string; displayName?: string;
       }>;
+  // Emails come from each member's contact document first, then the record.
+  const members = withContactEmails(approvedRecords, await readMemberContacts(
+    house, approvedRecords.map((m) => m.uid)));
   const memberByUid = new Map(members.map((m) => [m.uid, m]));
 
   // Recurring chores: create the next occurrences that do not exist yet. An
@@ -480,9 +508,8 @@ export const runHouseholdReminders = async (
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
-  // Reminder settings live on the email-keyed profile, so members whose
-  // record no longer carries an email are skipped until the contact lookup
-  // moves (see docs/modules/chores, "Assignee identity").
+  // Reminder settings live on the email-keyed profile, so members with no
+  // email in either their contact document or their record are skipped.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
     typeof m.email === "string" && m.email.length > 0);
   const profiles = await Promise.all(reachable.map((m) =>

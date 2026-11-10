@@ -3,9 +3,11 @@
  * anyone else (name, photo, role, status, join time), read from the
  * membership records (`households/{id}/members/{uid}`). Pure (no Firebase).
  *
- * Emails are not part of it. A record may still carry `email` (until a later
- * release moves it to a document only the person and member managers can
- * read), so `email` is kept here only as a matching key for chores written
+ * Emails are not part of it. Each member's email lives in their protected
+ * contact document (`members/{uid}/private/contact`, written by the server,
+ * readable by the person and member managers; see
+ * functions/src/shared/member-contact.ts). Records still carry `email` during
+ * the move, so `email` is kept here only as a matching key for chores written
  * before `assignedToUid` existed. It must never be shown to someone who may
  * not manage members; use `canSeeMemberEmails` before displaying it.
  */

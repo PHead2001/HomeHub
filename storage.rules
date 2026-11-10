@@ -81,10 +81,17 @@ service firebase.storage {
       allow delete: if hasPermission(householdId, 'pets.editProfiles');
     }
 
-    match /users/{userEmail}/avatars/{allPaths=**} {
+    // Profile photos. New uploads use the account ID (`users/{uid}/avatars/...`);
+    // older photos sit under the email (`users/{email}/avatars/...`). Google sign-in
+    // uids never contain '@' and an email always does, so the keys cannot collide.
+    function ownsAvatarFolder(owner) {
+      return signedIn() && (request.auth.uid == owner || request.auth.token.email == owner);
+    }
+
+    match /users/{owner}/avatars/{allPaths=**} {
       allow read: if signedIn();
-      allow create, update: if signedIn() && request.auth.token.email == userEmail && isImage(5 * 1024 * 1024);
-      allow delete: if signedIn() && request.auth.token.email == userEmail;
+      allow create, update: if ownsAvatarFolder(owner) && isImage(5 * 1024 * 1024);
+      allow delete: if ownsAvatarFolder(owner);
     }
 
     match /{allPaths=**} {
