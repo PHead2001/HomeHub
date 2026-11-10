@@ -64,7 +64,9 @@ function PetIcon({ type, ...props }: { type: string } & LucideProps) {
 }
 
 /** "1 of 2 today. Fed 2 h ago by Sam", or the Pets module's unavailable line. */
-const petStatus = (pet: PetState) => (pet.fed === null ? pet.headline : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}`);
+const petStatus = (pet: PetState) => (pet.fed === null
+  ? pet.headline
+  : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}${pet.feedingHint ? ` (${pet.feedingHint})` : ''}`);
 
 /* ------------------------------------------------------------------------- */
 /* SVG layers (decorative)                                                    */
@@ -266,6 +268,8 @@ function PetChip({ pet, describedBy, onSound }: { pet: PetState; describedBy: st
       aria-keyshortcuts="Space"
       data-testid={`house-pet-${pet.id}`}
       data-fed={pet.fed === null ? 'unknown' : String(pet.fed)}
+      data-feeding-stale={pet.feedingHint ? 'true' : undefined}
+      title={pet.feedingHint ? `${pet.name}: ${pet.feedingHint}` : undefined}
       className="relative flex shrink-0 select-none flex-col items-center gap-0.5 rounded-lg px-1 py-0.5 text-[11px] [-webkit-touch-callout:none]"
       onPointerDown={() => {
         longPressed.current = false;
@@ -294,7 +298,7 @@ function PetChip({ pet, describedBy, onSound }: { pet: PetState; describedBy: st
       }}
     >
       <span className="flex items-end gap-0.5">
-        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.fed === false && 'border-warning')}>
+        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.fed === false && 'border-warning', pet.feedingHint && 'border-dashed opacity-70')}>
           <PetIcon type={pet.type} aria-hidden className="h-4 w-4" />
         </span>
         {pet.fed === false && (

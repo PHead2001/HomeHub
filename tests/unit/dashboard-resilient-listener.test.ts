@@ -149,6 +149,43 @@ describe('resilientListener', () => {
     assert.equal(source.calls.length, 3, 'no further attempts until the listener is recreated');
   });
 
+  it('reaches unauthorized when each attempt answers from cache before the denial', () => {
+    // Firestore with a persistent cache: every subscription first delivers a cached
+    // snapshot, then the server refuses. Cached answers must not reset the count.
+    const source = fakeSource();
+    const statuses: string[] = [];
+    const values: number[] = [];
+    resilientListener(source.subscribe, {
+      next: (value) => values.push(value),
+      status: (status) => statuses.push(status.kind === 'retrying' ? `retrying:${status.delayMs}` : status.kind),
+      confirmed: (value) => value >= 100, // values >= 100 stand for server-confirmed snapshots
+    }, environment());
+    source.last().next(1); // cached
+    source.last().error(denied);
+    mock.timers.tick(1000);
+    source.last().next(1); // cached again
+    source.last().error(denied);
+    mock.timers.tick(2000);
+    source.last().next(1);
+    source.last().error(denied);
+    assert.deepEqual(statuses.filter((status) => status !== 'live'), ['retrying:1000', 'retrying:2000', 'unauthorized']);
+    mock.timers.tick(10 * 60_000);
+    assert.equal(source.calls.length, 3, 'no retry loop at the minimum delay');
+  });
+
+  it('a server-confirmed answer still resets the schedule', () => {
+    const source = fakeSource();
+    const statuses: ListenerStatus[] = [];
+    resilientListener(source.subscribe, { next: () => undefined, status: (status) => statuses.push(status), confirmed: (value) => value >= 100 }, environment());
+    source.last().error(unavailable);
+    mock.timers.tick(1000);
+    source.last().error(unavailable);
+    mock.timers.tick(2000);
+    source.last().next(100);
+    source.last().error(unavailable);
+    assert.equal((statuses.at(-1) as { delayMs: number }).delayMs, 1000);
+  });
+
   it('stops on unmount: unsubscribes, cancels the timer and ignores late events', () => {
     const source = fakeSource();
     const env = environment();

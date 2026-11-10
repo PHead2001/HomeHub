@@ -12,7 +12,8 @@
  *   on-device cache, and whether it is retrying or unauthorized. A section (a group of
  *   listeners) is then exactly one of loading | ready | stale | unauthorized | failed.
  */
-import type { DashboardRaw } from './assemble';
+import { feedingFailureKey, type DashboardRaw } from './assemble';
+import type { DashboardFacts } from './facts';
 
 export type SectionStatus = 'loading' | 'ready' | 'stale' | 'unauthorized' | 'failed';
 
@@ -141,6 +142,43 @@ export function staleHint(state: SectionState | undefined, timeZone?: string): s
   if (state.updatedAt === null) return 'Offline, showing saved data';
   const time = new Date(state.updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', ...(timeZone ? { timeZone } : null) });
   return `Updated ${time}`;
+}
+
+/** The first stale hint among `groups` (a tile that depends on several listener groups). */
+export function sectionHint(states: Readonly<Record<string, SectionState>>, groups: readonly string[], timeZone?: string): string | null {
+  for (const group of groups) {
+    const hint = staleHint(states[group], timeZone);
+    if (hint) return hint;
+  }
+  return null;
+}
+
+/**
+ * Marks each pet whose feeding history (`feed:<petId>`) is stale while the pets collection
+ * itself is fine, so the tile and the house never show an old "0 of 2 today" or fed state as
+ * current (a stale count can cause a duplicate or a missed feeding). Returns the same object
+ * when nothing is stale.
+ */
+export function withFeedingHints(facts: DashboardFacts, states: Readonly<Record<string, SectionState>>, timeZone?: string): DashboardFacts {
+  const pets = facts.pets;
+  if (!pets) return facts;
+  let changed = false;
+  const marked = pets.pets.map((pet) => {
+    const hint = pet.fed === null ? null : staleHint(states[feedingFailureKey(pet.id)], timeZone);
+    if (!hint) return pet;
+    changed = true;
+    return { ...pet, feedingHint: hint };
+  });
+  return changed ? { ...facts, pets: { ...pets, pets: marked } } : facts;
+}
+
+/**
+ * The facts the brief may speak from (HP-4b, GOAL-states). Once the brief has shown, a
+ * section dropping back to loading (a new list whose items have not answered) must not make
+ * its absence read as "nothing needs you": while not ready, the last complete facts are kept.
+ */
+export function briefFacts(held: DashboardFacts | null, facts: DashboardFacts, ready: boolean): DashboardFacts | null {
+  return ready ? facts : held;
 }
 
 export type ListenerSpec = {

@@ -55,6 +55,7 @@ import {
   forgetListeners,
   sectionStates,
   unavailableGroups,
+  withFeedingHints,
   type DashboardStore,
   type ListenerSpec,
   type SectionState,
@@ -217,6 +218,8 @@ export function useDashboardData(enabled = true): DashboardData {
         status: (status) => {
           if (status.kind !== 'live') setStore((state) => applyError(state, context, id, group, status.kind));
         },
+        // Only a server answer resets the backoff and the permission-denied count.
+        confirmed: (value) => !fromCache(value),
       });
       handles.add(handle);
       return () => {
@@ -385,13 +388,15 @@ export function useDashboardData(enabled = true): DashboardData {
   const sections = useMemo(() => sectionStates(current, expected, offline), [current, expected, offline]);
   const failed = useMemo(() => unavailableGroups(sections), [sections]);
 
-  const { facts, loading } = useMemo(() => assembleDashboardFacts(
+  const { facts: assembled, loading } = useMemo(() => assembleDashboardFacts(
     current.raw,
     failed,
     { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid) },
     { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS },
   ), [current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canNotifications]);
 
+  // A pet whose feeding history is stale says so wherever its count or fed state shows.
+  const facts = useMemo(() => withFeedingHints(assembled, sections, zone), [assembled, sections, zone]);
   const shown = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
 
   return { facts: shown, loading, failed, sections, retry, now, today, timeZone: zone, context };

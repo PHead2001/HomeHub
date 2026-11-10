@@ -121,6 +121,8 @@ export type PetState = {
   countLabel: string;
   /** "Fed 2 h ago by Sam", "No feedings logged yet" (Pets' `feedingHeadline`), or the unavailable line. */
   headline: string;
+  /** Set when the feeding history is stale (kept while reconnecting, or cached offline): "Reconnecting…", "Updated 9:41". */
+  feedingHint?: string;
 };
 
 /** Pets with an unreadable feeding history (`fed === null`) count in neither number. */

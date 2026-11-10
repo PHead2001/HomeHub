@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   applyAnswer,
   applyError,
+  briefFacts,
   createListenerSet,
   emptyStore,
   forgetListeners,
@@ -10,9 +11,13 @@ import {
   staleHint,
   storeFor,
   unavailableGroups,
+  withFeedingHints,
+  sectionHint,
   type DashboardStore,
   type ListenerSpec,
 } from '../../src/lib/dashboard/dashboard-store';
+import { buildMorningBrief } from '../../src/lib/dashboard/brief';
+import type { DashboardFacts, PetState } from '../../src/lib/dashboard/facts';
 
 const CONTEXT = 'h1|u1|sam@example.test|true';
 const live = { fromCache: false, at: Date.UTC(2026, 10, 9, 15, 41) };
@@ -140,5 +145,53 @@ describe('sectionStates (GOAL-states)', () => {
     assert.equal(sectionStates(store, shopping, false).shopping.status, 'failed');
     store = forgetListeners(store, CONTEXT, ['shopping.items:l1']);
     assert.equal(sectionStates(store, shopping, false).shopping.status, 'ready');
+  });
+});
+
+describe('stale feeding histories: a pet count is never shown as current while stale', () => {
+  const pet = (id: string, fed: boolean | null): PetState => ({
+    id, name: id, type: 'Dog', lastFedAt: null, lastFedBy: null, fed, countLabel: fed ? '2 of 2 today' : '0 of 2 today', headline: 'h',
+  });
+  const facts: DashboardFacts = { pets: { pets: [pet('maple', false), pet('pixel', true)], hungry: 1, unknown: 0 } };
+
+  it('marks the pet whose feed:<petId> group is stale while the pets collection is ready', () => {
+    let store = applyAnswer(emptyStore(CONTEXT), CONTEXT, 'pets', 'pets', (raw) => raw, live);
+    store = applyAnswer(store, CONTEXT, 'feed:maple:timestamp', 'feed:maple', (raw) => raw, live);
+    store = applyAnswer(store, CONTEXT, 'feed:pixel:timestamp', 'feed:pixel', (raw) => raw, live);
+    store = applyError(store, CONTEXT, 'feed:maple:timestamp', 'feed:maple', 'retrying');
+    const states = sectionStates(store, { pets: ['pets'] }, false);
+    assert.equal(states.pets.status, 'ready');
+
+    const marked = withFeedingHints(facts, states);
+    assert.deepEqual(marked.pets!.pets.map((p) => p.feedingHint), ['Reconnecting…', undefined]);
+    // The tile's hint covers the displayed pets' feeding groups, not just the collection.
+    assert.equal(sectionHint(states, ['pets']), null);
+    assert.equal(sectionHint(states, ['pets', 'feed:maple', 'feed:pixel']), 'Reconnecting…');
+  });
+
+  it('leaves facts untouched when no feeding history is stale', () => {
+    const states = sectionStates(applyAnswer(emptyStore(CONTEXT), CONTEXT, 'pets', 'pets', (raw) => raw, live), { pets: ['pets'] }, false);
+    assert.equal(withFeedingHints(facts, states), facts);
+  });
+});
+
+describe('briefFacts: a section loading again is never read as all clear', () => {
+  const greeting = { greeting: 'Good morning' };
+  const complete: DashboardFacts = {
+    shopping: { activeLists: 1, neededItems: 3, lists: [{ id: 'g', name: 'Grocery', needed: 3 }], firstItems: [] },
+  };
+  // A new list was added: shopping waits for its items, so the section is absent.
+  const incomplete: DashboardFacts = {};
+
+  it('keeps speaking from the last complete facts while not ready', () => {
+    assert.match(buildMorningBrief(incomplete, greeting).text, /Nothing needs you/, 'the trap: absent reads as all clear');
+    const spoken = briefFacts(complete, incomplete, false)!;
+    assert.doesNotMatch(buildMorningBrief(spoken, greeting).text, /Nothing needs you/);
+    assert.equal(spoken, complete);
+  });
+
+  it('uses the new facts once ready, and has nothing to say before the first ready', () => {
+    assert.equal(briefFacts(complete, incomplete, true), incomplete);
+    assert.equal(briefFacts(null, incomplete, false), null);
   });
 });

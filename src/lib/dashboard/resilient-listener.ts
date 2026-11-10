@@ -57,7 +57,17 @@ export const isPermissionDenied = (error: unknown): boolean =>
 
 export function resilientListener<T>(
   subscribe: (next: (value: T) => void, error: (error: unknown) => void) => () => void,
-  handlers: { next: (value: T) => void; status?: (status: ListenerStatus) => void },
+  handlers: {
+    next: (value: T) => void;
+    status?: (status: ListenerStatus) => void;
+    /**
+     * Whether an answer is confirmed by the server (Firestore: `!snapshot.metadata.fromCache`).
+     * Only a confirmed answer resets the retry schedule and the permission-denied count, so a
+     * cached snapshot delivered before each denial cannot keep a refused query retrying at
+     * the minimum delay forever. Default: every answer is confirmed.
+     */
+    confirmed?: (value: T) => boolean;
+  },
   environment: ResilientEnvironment = browserEnvironment(),
 ): ResilientHandle {
   const random = environment.random ?? Math.random;
@@ -84,8 +94,10 @@ export function resilientListener<T>(
     const mine = ++generation;
     const onNext = (value: T) => {
       if (stopped || mine !== generation) return;
-      failures = 0;
-      denials = 0;
+      if (handlers.confirmed?.(value) ?? true) {
+        failures = 0;
+        denials = 0;
+      }
       if (!live) {
         live = true;
         handlers.status?.({ kind: 'live' });

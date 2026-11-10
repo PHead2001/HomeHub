@@ -19,7 +19,8 @@ import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { openCommandPalette } from '@/components/command/events';
 import { shortcutById, type ShortcutId } from '@/lib/dashboard/shortcuts';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
-import { staleHint, type SectionState } from '@/lib/dashboard/dashboard-store';
+import { sectionHint, type SectionState } from '@/lib/dashboard/dashboard-store';
+import { feedingFailureKey } from '@/lib/dashboard/assemble';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
@@ -202,7 +203,7 @@ export function BentoGrid({
   const { permissions } = useAuth();
   const { report: weather, stale: weatherStale } = useLiveWeatherState();
   const tiles: ReactNode[] = [];
-  const hint = (...groups: string[]) => groups.map((group) => staleHint(sections[group], timeZone)).find(Boolean) ?? null;
+  const hint = (...groups: string[]) => sectionHint(sections, groups, timeZone);
   const unauthorized = (...groups: string[]) => groups.some((group) => sections[group]?.status === 'unauthorized');
 
   if (permissions['chores.view']) {
@@ -292,7 +293,8 @@ export function BentoGrid({
         title="Pets"
         icon={PawPrint}
         testId="dashboard-tile-pets"
-        hint={hint('pets')}
+        // The pets collection and each pet's feeding history: a stale count is never shown as current.
+        hint={hint('pets', ...pets.pets.map((pet) => feedingFailureKey(pet.id)))}
         quickAdd={permissions['pets.addLogs'] && pets.pets.length > 0 ? { shortcut: 'log-feeding', label: 'Log a feeding' } : undefined}
       >
         {pets.pets.length === 0 ? (
@@ -303,7 +305,7 @@ export function BentoGrid({
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
                 <span className={cn('shrink-0 text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
-                  {pet.countLabel}
+                  {pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
                 </span>
               </li>
             ))}

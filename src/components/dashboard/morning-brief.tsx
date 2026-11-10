@@ -18,6 +18,7 @@ import { Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import { buildMorningBrief, type BriefPeek } from '@/lib/dashboard/brief';
 import { greeting } from '@/lib/dashboard/ambience';
 import type { DashboardFacts } from '@/lib/dashboard/facts';
+import { briefFacts } from '@/lib/dashboard/dashboard-store';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useAuth } from '@/hooks/use-auth';
 import { cn } from '@/lib/utils';
@@ -207,8 +208,11 @@ function BriefLine({ facts, name, now, today }: { facts: DashboardFacts; name?: 
  * The dashboard keys it by the data context, so a household or member change resets it.
  */
 export function MorningBrief({ facts, name, now, today, ready }: { facts: DashboardFacts; name?: string | null; now: Date; today: string; ready: boolean }) {
-  const [shown, setShown] = useState(ready);
-  if (ready && !shown) setShown(true);
-  if (!shown && !ready) return <div aria-hidden className={cn(LINE_CLASS, 'mb-6 w-3/4 max-w-xl animate-pulse rounded bg-muted')} />;
-  return <BriefLine facts={facts} name={name} now={now} today={today} />;
+  // The last complete facts: while a section is loading again, its absence must never read
+  // as "Nothing needs you", so the brief keeps speaking from what was last complete.
+  const [held, setHeld] = useState<DashboardFacts | null>(ready ? facts : null);
+  if (ready && held !== facts) setHeld(facts);
+  const spoken = briefFacts(held, facts, ready);
+  if (!spoken) return <div aria-hidden className={cn(LINE_CLASS, 'mb-6 w-3/4 max-w-xl animate-pulse rounded bg-muted')} />;
+  return <BriefLine facts={spoken} name={name} now={now} today={today} />;
 }
