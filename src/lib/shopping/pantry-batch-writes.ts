@@ -22,7 +22,7 @@ import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { PantryItemLocation, ShoppingList, ShoppingListItem } from '@/lib/types';
 import { slugify } from '@/lib/utils';
-import { findMergeTarget, itemNameKey } from './items';
+import { findMergeTarget } from './items';
 import { mergeIntoNeededItem } from './item-transactions';
 import {
   isCountUnit, pantryBatchFields, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
@@ -97,10 +97,20 @@ export function deleteEmptyBatchIfIdle(householdId: string, id: string, timeZone
   });
 }
 
-/** The household's default Grocery list: one named "Groceries", else the first Grocery list by name. */
-export function defaultGroceryList<T extends Pick<ShoppingList, 'id' | 'name' | 'type'>>(lists: readonly T[]): T | undefined {
-  const grocery = lists.filter((list) => list.type === 'Grocery').sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
-  return grocery.find((list) => itemNameKey(list.name) === 'groceries') ?? grocery[0];
+/** The household's shopping lists (offline: from the cache). */
+export async function readShoppingLists(householdId: string): Promise<ShoppingList[]> {
+  const listsRef = collection(db, 'households', householdId, 'shopping-lists');
+  return (await getDocsOfflineAware(query(listsRef))).docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingList, 'id'>), id: entry.id }));
+}
+
+/** Creates the "Groceries" list used when a household has no Grocery list. */
+export async function createGroceriesList(householdId: string, onLateError: (error: unknown) => void): Promise<Pick<ShoppingList, 'id' | 'name'>> {
+  const id = slugify('Groceries');
+  await awaitWriteUnlessOffline(
+    setDoc(doc(db, 'households', householdId, 'shopping-lists', id), { name: 'Groceries', icon: 'ShoppingCart', type: 'Grocery', description: '' }),
+    onLateError,
+  );
+  return { id, name: 'Groceries' };
 }
 
 export type AddToListResult = {
@@ -111,31 +121,30 @@ export type AddToListResult = {
 };
 
 /**
- * Puts a pantry product on the default Grocery list (SH-6, SH-29b), creating a
- * "Groceries" list when there is none. Online, a still-needed item with the same
- * name is raised by one through the Shopping list's own merge path
- * (`findMergeTarget` + `mergeIntoNeededItem`, which re-checks it is still needed),
- * so "we're out of milk" never adds a second Milk. Otherwise (or offline, where
- * nothing merges) a new needed item is created with the shared category resolution.
+ * Puts a pantry product on a Grocery list (SH-6, SH-29b). Online, a still-needed
+ * item with the same name is raised by `quantity` through the Shopping list's own
+ * merge path (`findMergeTarget` + `mergeIntoNeededItem`, which re-checks it is
+ * still needed), so "we're out of milk" never adds a second Milk. Otherwise (or
+ * offline, where nothing merges) a new needed item is created with the shared
+ * category resolution.
  */
-export async function addToDefaultGroceryList(householdId: string, name: string, onLateError: (error: unknown) => void): Promise<AddToListResult> {
-  const listsRef = collection(db, 'households', householdId, 'shopping-lists');
-  const lists = (await getDocsOfflineAware(query(listsRef))).docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingList, 'id'>), id: entry.id }));
-  let list: Pick<ShoppingList, 'id' | 'name'> | undefined = defaultGroceryList(lists);
-  if (!list) {
-    const id = slugify('Groceries');
-    await awaitWriteUnlessOffline(setDoc(doc(listsRef, id), { name: 'Groceries', icon: 'ShoppingCart', type: 'Grocery', description: '' }), onLateError);
-    list = { id, name: 'Groceries' };
-  }
-  const itemsRef = collection(listsRef, list.id, 'items');
+export async function addToGroceryList(
+  householdId: string,
+  list: Pick<ShoppingList, 'id' | 'name'>,
+  name: string,
+  quantity: number,
+  onLateError: (error: unknown) => void,
+): Promise<AddToListResult> {
+  const listRef = doc(db, 'households', householdId, 'shopping-lists', list.id);
+  const itemsRef = collection(listRef, 'items');
   const offline = isBrowserOffline();
   if (!offline) {
     const needed = (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
       ?.docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingListItem, 'id'>), id: entry.id })) ?? [];
     const target = findMergeTarget(needed, name);
-    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), 1)) return { listName: list.name, outcome: 'merged', usedFallback: false };
+    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), quantity)) return { listName: list.name, outcome: 'merged', usedFallback: false };
   }
-  const categoriesSnapshot = await getDocOfflineAware(doc(listsRef, list.id, 'config', 'categories')).catch(() => null);
+  const categoriesSnapshot = await getDocOfflineAware(doc(listRef, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
   const { category, usedFallback } = await resolveShoppingCategory({
     itemName: name,
@@ -143,7 +152,7 @@ export async function addToDefaultGroceryList(householdId: string, name: string,
     selectedCategory: offline ? 'Other' : undefined,
     categorize: async (input) => unwrapAiActionResult(await categorizeGroceryItem(input, await getAiActionContext(householdId))),
   });
-  const { itemId, data } = buildShoppingListItem({ name, quantity: 1, category });
+  const { itemId, data } = buildShoppingListItem({ name, quantity, category });
   const outcome = await awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
   return { listName: list.name, outcome, usedFallback: usedFallback && !offline };
 }

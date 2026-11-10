@@ -10,6 +10,7 @@ import {
   daysUntilDay,
   expiryFromChip,
   findPantryMergeTarget,
+  groceryListChoice,
   groupPantryBatches,
   householdToday,
   legacyQuantity,
@@ -183,7 +184,7 @@ describe('tiles group a product and "used one" takes from the soonest batch (SH-
     assert.match(client, /if \(reachedZero\) setAskAdd\(/);
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
     assert.match(writes, /findMergeTarget\(needed, name\)/);
-    assert.match(writes, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), 1\)/);
+    assert.match(writes, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), quantity\)/);
     assert.match(writes, /packages: increment\(delta\)/);
   });
 
@@ -252,5 +253,28 @@ describe('shelf guess (SH-23c)', () => {
     }
     assert.equal(pantryLocationForCategory('Produce', 'Spinach'), 'Fridge');
     assert.equal(pantryLocationForCategory('Produce'), 'Fridge');
+  });
+});
+
+describe('where "Put on a shopping list" goes (SH-6)', () => {
+  const list = (id: string, name: string, type = 'Grocery') => ({ id, name, type });
+
+  test('no Grocery list creates one; exactly one is a single tap', () => {
+    assert.deepEqual(groceryListChoice([list('hw', 'Hardware', 'Hardware')]), { kind: 'create' });
+    assert.deepEqual(groceryListChoice([list('hw', 'Hardware', 'Hardware'), list('weekly', 'Weekly')]), { kind: 'direct', list: list('weekly', 'Weekly') });
+  });
+
+  test('several open the picker on the recently used list, else the default', () => {
+    const lists = [list('costco', 'Costco'), list('groceries', 'Groceries'), list('aldi', 'Aldi'), list('hw', 'Hardware', 'Hardware')];
+    const picked = groceryListChoice(lists);
+    assert.equal(picked.kind, 'pick');
+    assert.equal(picked.kind === 'pick' && picked.preselectId, 'groceries', 'a list named Groceries is the default');
+    assert.deepEqual(picked.kind === 'pick' && picked.lists.map((entry) => entry.id), ['aldi', 'costco', 'groceries'], 'Grocery lists only');
+    const recent = groceryListChoice(lists, 'costco');
+    assert.equal(recent.kind === 'pick' && recent.preselectId, 'costco');
+    const stale = groceryListChoice(lists, 'deleted-list');
+    assert.equal(stale.kind === 'pick' && stale.preselectId, 'groceries');
+    const noGroceries = groceryListChoice([list('costco', 'Costco'), list('aldi', 'Aldi')]);
+    assert.equal(noGroceries.kind === 'pick' && noGroceries.preselectId, 'aldi', 'first by name');
   });
 });

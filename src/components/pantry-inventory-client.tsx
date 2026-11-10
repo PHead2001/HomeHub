@@ -6,14 +6,14 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
-import type { BarcodeLibraryItem, PantryItemUnit, PantryItemLocation } from '@/lib/types';
+import type { BarcodeLibraryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, type PantryBatch, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
-import { addToDefaultGroceryList, changePackages, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { addToGroceryList, changePackages, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
@@ -663,6 +663,121 @@ function RecipeGeneratorDialog({
     );
 }
 
+const addToListSchema = z.object({
+  name: z.string().trim().min(1, 'Item name is required.'),
+  quantity: z.coerce.number<number>().int('Use a whole number.').min(1, 'Quantity must be at least 1.').max(999, 'At most 999.'),
+});
+
+/**
+ * The list picker for a household with several Grocery lists (SH-6). It opens on
+ * the list this device used last for the pantry, else the household's default
+ * Grocery list; the save goes through the Shopping merge path.
+ */
+function AddToListDialog({
+  request,
+  onOpenChange,
+  onItemAdd,
+}: {
+  request: { name: string; lists: ShoppingList[]; preselectId: string } | null;
+  onOpenChange: (open: boolean) => void;
+  onItemAdd: (list: ShoppingList, itemName: string, quantity: number) => void;
+}) {
+  // Mounted per request (the caller keys it), so it starts from that request.
+  const [selectedListId, setSelectedListId] = useState<string>(request?.preselectId ?? '');
+  const form = useForm<z.infer<typeof addToListSchema>>({
+    resolver: zodResolver(addToListSchema),
+    defaultValues: { name: request?.name ?? '', quantity: 1 },
+  });
+
+  const handleSubmit = (values: z.infer<typeof addToListSchema>) => {
+    const list = request?.lists.find((entry) => entry.id === selectedListId);
+    if (!list) return;
+    onItemAdd(list, values.name, values.quantity);
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={Boolean(request)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add &quot;{request?.name}&quot; to a shopping list</DialogTitle>
+          <DialogDescription>Choose the Grocery list. If it is already needed there, it gets one more instead of a second entry.</DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
+            <FormItem>
+              <FormLabel>Select a List</FormLabel>
+              <Select onValueChange={setSelectedListId} value={selectedListId}>
+                <FormControl>
+                  <SelectTrigger aria-label="Shopping list">
+                    <SelectValue placeholder="Choose a shopping list..." />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  {(request?.lists ?? []).map((list) => (
+                    <SelectItem key={list.id} value={list.id}>{list.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormItem>
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Item Name</FormLabel>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="quantity"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Quantity</FormLabel>
+                  <FormControl>
+                    <Input type="number" inputMode="numeric" min={1} {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <DialogFooter>
+              <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!selectedListId || form.formState.isSubmitting}>
+                Add to List
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Per-device memory of the Grocery list the pantry last added to (a convenience; storage may be blocked). */
+const recentListKey = (householdId: string) => `homehub.pantry.recentList.${householdId}`;
+const readRecentList = (householdId: string): string | null => {
+  try {
+    return window.localStorage.getItem(recentListKey(householdId));
+  } catch {
+    return null;
+  }
+};
+const rememberRecentList = (householdId: string, listId: string) => {
+  try {
+    window.localStorage.setItem(recentListKey(householdId), listId);
+  } catch {
+    // Storage blocked: the default list is preselected next time.
+  }
+};
+
 const PANTRY_VIEW_KEY = 'homehub.pantry.view';
 type PantryView = 'shelves' | 'list';
 
@@ -719,6 +834,8 @@ export function PantryInventoryClient() {
   // ties the question to the tap that raised it, so that tap's Undo withdraws it.
   const [askAdd, setAskAdd] = useState<{ name: string; token: number } | null>(null);
   const askTokenRef = useRef(0);
+  // SH-6: several Grocery lists open the picker; one (or none, then "Groceries") is one tap.
+  const [listPick, setListPick] = useState<{ name: string; lists: ShoppingList[]; preselectId: string } | null>(null);
 
   // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
   // browser Back to the lists), so none stays on screen or traps focus there. The
@@ -730,6 +847,7 @@ export function PantryInventoryClient() {
     setIsRecipeGenOpen(false);
     setIsBulkDeleteAlertOpen(false);
     setAskAdd(null);
+    setListPick(null);
   });
 
   const changeView = (next: PantryView) => {
@@ -818,15 +936,16 @@ export function PantryInventoryClient() {
    * Shopping list's merge path, so an item already needed there gets one more
    * instead of a duplicate.
    */
-  const putOnList = useCallback(async (name: string) => {
+  const addToList = useCallback(async (list: Pick<ShoppingList, 'id' | 'name'>, name: string, quantity: number) => {
     if (!householdId) return;
     try {
-      const result = await addToDefaultGroceryList(householdId, name, (error) => toastError(error, `Could not sync ${name}`));
+      const result = await addToGroceryList(householdId, list, name, quantity, (error) => toastError(error, `Could not sync ${name}`));
+      rememberRecentList(householdId, list.id);
       const where = result.listName;
       toast({
         title: result.outcome === 'queued' ? 'Saved offline' : 'On the list',
         description: result.outcome === 'merged'
-          ? `${name} was already on ${where}; it now needs one more.`
+          ? `${name} was already on ${where}; it now needs ${quantity} more.`
           : result.usedFallback
             ? `${name} is on ${where}, under Other (automatic sorting was unavailable).`
             : `${name} is on ${where}.`,
@@ -835,6 +954,28 @@ export function PantryInventoryClient() {
       toastError(error, 'Could not add to the shopping list');
     }
   }, [householdId, toast, toastError]);
+
+  /**
+   * SH-6 / SH-29b: puts a product on a Grocery list through the Shopping list's
+   * merge path, so an item already needed there gets one more instead of a
+   * duplicate. One Grocery list: straight to it. Several: the picker, opened on
+   * the list last used here, else the default. None: a new "Groceries" list.
+   */
+  const putOnList = useCallback(async (name: string) => {
+    if (!householdId) return;
+    const onLateError = (error: unknown) => toastError(error, `Could not sync ${name}`);
+    try {
+      const choice = groceryListChoice(await readShoppingLists(householdId), readRecentList(householdId));
+      if (choice.kind === 'pick') {
+        setListPick({ name, lists: choice.lists, preselectId: choice.preselectId });
+        return;
+      }
+      const list = choice.kind === 'direct' ? choice.list : await createGroceriesList(householdId, onLateError);
+      await addToList(list, name, 1);
+    } catch (error) {
+      toastError(error, 'Could not add to the shopping list');
+    }
+  }, [householdId, toastError, addToList]);
 
   const handleSaveItem = async (data: PantryItemFormValues, id?: string): Promise<boolean> => {
     if (!householdId || !uid) return false;
@@ -1049,12 +1190,18 @@ export function PantryInventoryClient() {
         householdId={householdId || ''}
         onRecipe={handleRecipe}
       />
+      <AddToListDialog
+        key={listPick ? `pick:${listPick.name}:${listPick.preselectId}` : 'closed'}
+        request={listPick}
+        onOpenChange={(open) => !open && setListPick(null)}
+        onItemAdd={(list, itemName, quantity) => void addToList(list, itemName, quantity)}
+      />
       <AlertDialog open={!!askAdd} onOpenChange={(open) => !open && setAskAdd(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Add {askAdd?.name} to the list?</AlertDialogTitle>
             <AlertDialogDescription>
-              That was the last of it. Add it to your Grocery list?
+              That was the last of it. Put it on a Grocery list?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

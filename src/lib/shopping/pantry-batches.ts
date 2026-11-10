@@ -338,6 +338,37 @@ export function usableRecipeItems(products: readonly PantryProduct[], today: str
   return items;
 }
 
+// --- Where "Put on a shopping list" goes (SH-6) -------------------------
+
+/** The household's default Grocery list: one named "Groceries", else the first Grocery list by name. */
+export function defaultGroceryList<T extends { id: string; name: string; type?: string }>(lists: readonly T[]): T | undefined {
+  const grocery = lists.filter((list) => list.type === 'Grocery').sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return grocery.find((list) => itemNameKey(list.name) === 'groceries') ?? grocery[0];
+}
+
+export type GroceryListChoice<T> =
+  /** No Grocery list: create "Groceries" and add to it. */
+  | { kind: 'create' }
+  /** Exactly one Grocery list: add straight to it (one tap). */
+  | { kind: 'direct'; list: T }
+  /** Several: show the picker, preselecting the most recently used list, else the default. */
+  | { kind: 'pick'; lists: T[]; preselectId: string };
+
+/**
+ * Where "Put on a shopping list" (SH-6) and the zero prompt's Add go. A list
+ * remembered as most recently used wins over the default when it still exists.
+ */
+export function groceryListChoice<T extends { id: string; name: string; type?: string }>(
+  lists: readonly T[],
+  recentId?: string | null,
+): GroceryListChoice<T> {
+  const grocery = lists.filter((list) => list.type === 'Grocery').sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  if (grocery.length === 0) return { kind: 'create' };
+  if (grocery.length === 1) return { kind: 'direct', list: grocery[0] };
+  const recent = recentId ? grocery.find((list) => list.id === recentId) : undefined;
+  return { kind: 'pick', lists: grocery, preselectId: (recent ?? defaultGroceryList(grocery)!).id };
+}
+
 // --- Write shapes (no Firebase types; the writer adds increments and server time) ---
 
 export type PantryBatchInput = {
