@@ -1467,7 +1467,7 @@ The owner asked (2026-11-09) for conflicts to be cleared in line with the agreed
 |---|---|---|
 | HP-30, SL-21, SL-8, SL-9, SL-14, SL-15, SL-20, PR-22, CA-22 | "Wall mode" as a per-device or per-account switch, turned on automatically for wide touch screens, stored in the browser. | **Section 15 wins:** these behaviours belong to registered tablets, with settings on the device record (WT-12, WT-13, WT-14). The time-of-day theme option in SL-14 stays available to everyone. |
 | HP-18 | Move the weather and seasonal toggles to a "…" menu or Profile → Appearance. | On tablets they are device settings (WT-4). On personal accounts, HP-18's fix stands. |
-| HO-26, HO-11, PR-11 | One 4-digit household PIN; "recent sign-in or a household PIN"; "hold-to-confirm or a PIN". | **WT-9 wins:** per-person PINs, used on tablets only. On personal accounts, HO-11's other parts still stand (confirm role and permission changes; hide Leave for children). |
+| HO-26, HO-11, PR-11 | One 4-digit household PIN; "recent sign-in or a household PIN"; "hold-to-confirm or a PIN". | **WT-9 wins:** per-person PINs, used on tablets only. On personal accounts, HO-11's other parts still stand. |
 | NO-12 | Never write read state from a shared tablet; dismiss is a local hide. | **WT-6 wins:** dismissing a household notice is a real action as the person whose face was tapped. |
 | CH-27, PE-17, HO-13, NO-12 | Five names and two timings for the prompt ("Who did it?", "Who fed?", "Who's this?", "Who's at the screen?"). | **WT-8 wins:** one prompt, "Who's here?", asked at the action and remembered. |
 | 2.2 and 10.5 notes | One said adding an item needs a face; the other said quick add asks only for personal actions. | **Every save from a tablet asks "Who's here?"** (WT-5, WT-7); the 10.5 note is corrected. |
@@ -1532,7 +1532,7 @@ The same problem appears under several IDs. Build it once, under the ID in the f
 
 ### 16.5 Build order (replaces 14.6; the per-section orders only rank items inside a section)
 
-0. **Privacy and permissions (added after the external review, 17.1):** NO-15 with NO-6, HO-9, HO-10, QA-8, HO-2, NO-2, and a server-written activity log (HO-8).
+0. **Privacy and permissions (added after the external review, 17.1):** NO-15 with NO-6, HO-9, HO-10, QA-8, HO-2, NO-2, HO-8.
 1. **Never stuck, never stale:** SL-1, SL-2, SL-3; live data (SH-1, CH-1, MA-2, CA-1); household time zone and midnight (D-6, HP-4, MA-1).
 2. **Stop wrong data:** QA-1 to QA-3, BL-1, BL-3, SH-2, PE-5 **then** PE-23, PE-24, MA-3, MA-4, CH-2 to CH-4, NO-1, PR-1, HO-6 **then** HO-5. Also the broken items no section order had scheduled: HP-7, HP-11, SH-9, MA-11, PR-10.
 3. **Undo, confirm and toasts:** SL-17, the 10-second Undo (PE-2, MA-8, QA-9, CH-6, BL-4), confirmations (HO-11, SL-6). *This moved ahead of the tablets, because the face-or-PIN rule depends on Undo existing.*
