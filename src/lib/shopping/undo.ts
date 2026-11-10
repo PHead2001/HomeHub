@@ -15,11 +15,8 @@
  * Both are ordinary queued writes, so they also work offline and after a reload.
  */
 
-/**
- * The one Undo window (16.3 "one Undo window everywhere: 10 seconds"). No shared
- * app-wide constant exists yet on this branch; when one lands, use it here.
- */
-export const UNDO_WINDOW_MS = 10_000;
+/** The one Undo window (16.3 "one Undo window everywhere: 10 seconds"): the app-wide constant. */
+export { UNDO_WINDOW_MS } from '@/lib/undo-window';
 
 /** The journal key in localStorage (one per device; entries are scoped by user, household and list). */
 export const UNDO_JOURNAL_KEY = 'homehub.shopping.undo.v1';

@@ -89,6 +89,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
+import { notificationsBySourceQuery } from '@/app/notifications/notification-query';
 import { playFeedback } from '@/lib/feedback';
 import { pickAssetPhoto, pickVehiclePhoto, presentFields, shouldOfferAiSummary } from '@/lib/maintenance/display';
 import { computeHomeHealth, healthKey, type HealthDeduction, type HealthResult } from '@/lib/maintenance/health';
@@ -1154,20 +1155,19 @@ export function MaintenanceLogClient() {
   };
 
   const resolveMaintenanceNotifications = async (sourceType: string, sourceId: string, legacySourceId?: string) => {
-    if (!currentUser?.householdId) return;
+    if (!currentUser?.householdId || !currentUser.uid) return;
     const notificationsCollection = getCollectionRef('notifications');
     if (!notificationsCollection) return;
 
     const action = createNotificationAction(currentUser);
-    const notificationSnap = await getDocs(notificationsCollection);
-    const matchingNotifications = notificationSnap.docs.filter((notificationDoc) => {
-      const data = notificationDoc.data();
-      if (data.sourceType !== sourceType || data.resolvedAt) return false;
-      if (data.sourceId === sourceId) return true;
-      return legacySourceId
-        ? (['due_soon', 'due_today', 'overdue'] as const).some((status) => data.sourceId === `${legacySourceId}:${status}`)
-        : false;
-    });
+    // Maintenance reminders are household-wide (audience ['*']), so the
+    // audience-constrained query finds every one of them for any member.
+    const sourceIds = [
+      sourceId,
+      ...(legacySourceId ? (['due_soon', 'due_today', 'overdue'] as const).map((status) => `${legacySourceId}:${status}`) : []),
+    ];
+    const notificationSnap = await getDocs(notificationsBySourceQuery(notificationsCollection, currentUser.uid, [sourceType], sourceIds));
+    const matchingNotifications = notificationSnap.docs.filter((notificationDoc) => !notificationDoc.data().resolvedAt);
 
     await Promise.all(matchingNotifications.map(async (notificationDoc) => {
       await updateDoc(notificationDoc.ref, {
@@ -1851,14 +1851,16 @@ export function MaintenanceLogClient() {
     }
   };
 
+  const registrySourceTypes = (targetType: 'home_asset' | 'vehicle') => targetType === 'home_asset'
+    ? ['maintenance_asset_schedule', 'maintenance_asset_warranty']
+    : ['maintenance_vehicle_service', 'maintenance_vehicle_registration', 'maintenance_vehicle_inspection'];
+
   const notificationBelongsToRegistryRecord = (
     notification: Notification,
     targetType: 'home_asset' | 'vehicle',
     targetId: string
   ) => {
-    const sourceTypes = targetType === 'home_asset'
-      ? ['maintenance_asset_schedule', 'maintenance_asset_warranty']
-      : ['maintenance_vehicle_service', 'maintenance_vehicle_registration', 'maintenance_vehicle_inspection'];
+    const sourceTypes = registrySourceTypes(targetType);
     return Boolean(
       notification.sourceType
       && sourceTypes.includes(notification.sourceType)
@@ -1870,7 +1872,7 @@ export function MaintenanceLogClient() {
     targetType: 'home_asset' | 'vehicle',
     target: HomeAsset | Vehicle
   ) => {
-    if (!currentUser?.householdId || deletingRecord) return;
+    if (!currentUser?.householdId || !currentUser.uid || deletingRecord) return;
     const registryCollection = getCollectionRef(targetType === 'home_asset' ? 'home-assets' : 'vehicles');
     const logsCollection = getCollectionRef('maintenance');
     const notificationsCollection = getCollectionRef('notifications');
@@ -1890,7 +1892,9 @@ export function MaintenanceLogClient() {
     try {
       const [logsSnapshot, notificationsSnapshot] = await Promise.all([
         getDocs(logsCollection),
-        getDocs(notificationsCollection),
+        // Household-wide reminders (audience ['*']) of this record's source types;
+        // the source id prefix match stays below.
+        getDocs(notificationsBySourceQuery(notificationsCollection, currentUser.uid, registrySourceTypes(targetType))),
       ]);
       const targetName = targetType === 'home_asset' ? (target as HomeAsset).name : (target as Vehicle).nickname;
       const linkedLogs = logsSnapshot.docs

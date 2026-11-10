@@ -10,7 +10,7 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 - Cancel sign-in and return to an idle login state.
 - View and edit personal profile fields at `/profile`.
 - See your current avatar at the top of Personal Information: your photo, or the generated gradient avatar in your member color (`MemberAvatar`), with your name, role and household. Add, change or remove the photo (preview before saving, Undo / Keep photo). Unsupported types and files over 5 MB are explained inline (`FieldError`); the display name (2-60 characters) is validated inline.
-- Choose appearance in Profile > Appearance: theme mode (Dark, Light, System), a dark preset (Midnight, Hearth, Forest) and a light preset (Light, Sunrise), Reduce motion, Sound effects (with a sample button) and Haptics (shown only where `navigator.vibrate` exists). Changes apply immediately; there is no save button.
+- Choose appearance in Profile > Appearance: theme mode (Dark, Light, System), a dark preset (Midnight, Hearth, Forest) and a light preset (Light, Sunrise), Text size (Default 100%, Large 115%, Larger 130%; this device only, with a live preview sample, and the whole page changes at once), Reduce motion, Sound effects (with a sample button) and Haptics (shown only where `navigator.vibrate` exists). Changes apply immediately; there is no save button. The profile page shows two columns only when both fit at their rem-based minimum widths (32rem and 20rem, flex-wrap), so at 130% text a 768-1023 px tablet stacks them; the Theme and Text size option tiles wrap below 5.5rem each.
 - Configure chore reminder time/enabled state.
 - Manage browser push-notification subscription.
 - Log out.
@@ -39,7 +39,7 @@ Popup cancellation produces `Login canceled.` and clears loading in `finally`.
 
 `updateUser(data, newPassword?, { silent: true })` skips the global loading state and the success toast; it is used for background preference sync (a failed write still shows the error toast).
 
-Appearance: `AppearanceSettings` calls `useAppearance().setPreferences(...)`. The provider writes all preferences to `localStorage["homehub.appearance"]` (read by the pre-paint theme script) and, for a signed-in member, writes the synced part to the profile with a silent `updateUser({ theme })` when the mode, a preset or Reduce motion changes. On each sign-in the profile's synced values (when present) replace this device's copy once; Sound and Haptics never leave the device. Theme changes reveal in a circle from the chosen option (instant under reduced motion). The Reduce motion switch shows as on and disabled when the device already requests reduced motion.
+Appearance: `AppearanceSettings` calls `useAppearance().setPreferences(...)`. The provider writes all preferences to `localStorage["homehub.appearance"]` (read by the pre-paint theme script) and, for a signed-in member, writes the synced part to the profile with a silent `updateUser({ theme })` when the mode, a preset or Reduce motion changes. On each sign-in the profile's synced values (when present) replace this device's copy once; Sound, Haptics and Text size never leave the device (a wall tablet and a phone want different sizes). Text size (`textScale`: 100, 115 or 130, default 100) is applied to `<html>` as `data-text-scale` before first paint by the theme script and kept in sync by the provider afterwards; see [Application Shell](../application-shell/README.md), "Text size". Theme changes reveal in a circle from the chosen option (instant under reduced motion). The Reduce motion switch shows as on and disabled when the device already requests reduced motion.
 
 For local E2E only, `/api/e2e/auth-token` returns an emulator custom token for an allowlisted fake test identity and `/e2e-login` exchanges it with `signInWithCustomToken`. The default remains `e2e-owner-uid`; limited, legacy, and Household B identities support isolation tests. Both paths are guarded by explicit emulator mode, the exact demo project, loopback Auth/Firestore hosts, and non-production runtime; normal and production authentication remain Google-only.
 
@@ -82,6 +82,8 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 
 - Firestore user document IDs are email addresses; sign-in requires an Auth email.
 - Profile listing is intentionally denied.
+- While the Profile form has an edited name, a chosen or removed photo, or a save in progress, it holds the shell busy (`useUnsavedInput`, see [Application Shell](../application-shell/README.md)), so no automatic recovery reloads the page over it.
+- Signed-in-only routes (Profile included) show their skeleton, not the sign-in prompt, until Auth has first answered (`useSessionKnown`); `src/contexts/auth-context.tsx` is unchanged.
 - Sign-in failures surface a specific toast and reset the spinner; tokens and credentials are not logged.
 - Profile save, profile update and household creation failures show `friendlyError` text (via `toastError` or the auth context); raw Firebase messages are never shown. Saving chore reminders shows one "Reminder saved" toast (the profile write is silent on success).
 - The emulator E2E endpoint returns 404 unless every safety condition is active and never uses a production service-account key.
@@ -93,7 +95,7 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after identity/profile changes.
 - Run `npm.cmd run test:e2e:local` to verify emulator custom-token sign-in and persisted authenticated state.
-- Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, Profile > Appearance (mode, presets, Reduce motion, Sound, Haptics; reload without flash; sync to a second browser after sign-in), push subscription, and logout (in a production build, confirm the page reloads to `/` and DevTools > Application shows no `firestore/` IndexedDB database afterwards).
+- Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, Profile > Appearance (mode, presets, Text size at 115% and 130%, Reduce motion, Sound, Haptics; reload without a flash of the wrong theme or text size; sync to a second browser after sign-in), push subscription, and logout (in a production build, confirm the page reloads to `/` and DevTools > Application shows no `firestore/` IndexedDB database afterwards).
 - Verify self-profile updates reject membership-field spoofing and unrelated users cannot list profiles.
 
 ## When This Document Must Be Updated

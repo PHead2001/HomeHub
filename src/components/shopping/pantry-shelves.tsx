@@ -6,8 +6,9 @@ import { Archive, GripVertical, MoreVertical, Refrigerator, ShoppingCart, Snowfl
 import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { TabDropdownMenu } from './tab-activity';
 import type { PantryItem, PantryItemLocation } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { PANTRY_LOCATIONS, expiryLabel, expiryState, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
@@ -248,7 +249,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                         )}
                         {(canEdit || canDelete) && (
                           <div className="absolute right-1 top-1 flex flex-col">
-                            <DropdownMenu>
+                            <TabDropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`More actions for ${item.name}`}>
                                   <MoreVertical className="h-4 w-4" aria-hidden />
@@ -276,7 +277,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                                   </>
                                 )}
                               </DropdownMenuContent>
-                            </DropdownMenu>
+                            </TabDropdownMenu>
                             {canEdit && (
                               <Button
                                 variant={picked?.id === item.id ? 'secondary' : 'ghost'}
