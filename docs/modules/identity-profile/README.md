@@ -82,6 +82,8 @@ Avatar Storage access requires the authenticated token email to match `{userEmai
 
 - Firestore user document IDs are email addresses; sign-in requires an Auth email.
 - Profile listing is intentionally denied.
+- While the Profile form has an edited name, a chosen or removed photo, or a save in progress, it holds the shell busy (`useUnsavedInput`, see [Application Shell](../application-shell/README.md)), so no automatic recovery reloads the page over it.
+- Signed-in-only routes (Profile included) show their skeleton, not the sign-in prompt, until Auth has first answered (`useSessionKnown`); `src/contexts/auth-context.tsx` is unchanged.
 - Sign-in failures surface a specific toast and reset the spinner; tokens and credentials are not logged.
 - Profile save, profile update and household creation failures show `friendlyError` text (via `toastError` or the auth context); raw Firebase messages are never shown. Saving chore reminders shows one "Reminder saved" toast (the profile write is silent on success).
 - The emulator E2E endpoint returns 404 unless every safety condition is active and never uses a production service-account key.

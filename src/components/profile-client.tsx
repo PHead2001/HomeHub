@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
+import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { BellRing, Camera, Loader2, Trash2 } from 'lucide-react';
@@ -95,6 +96,8 @@ export function ProfileClient() {
       displayName: currentUser?.displayName || '',
     },
   });
+  // An edited name, a chosen photo or a save in progress keeps the shell from reloading on its own.
+  useUnsavedInput(form.formState.isDirty || Boolean(photoFile) || removePhoto || isSubmitting);
 
   // Object URLs for the local preview are released when replaced or unmounted.
   useEffect(() => () => {

@@ -208,7 +208,7 @@ export function useDashboardData(enabled = true): DashboardData {
         'pets.view': canPets, 'automation.view': canAutomation,
       };
       const categories = viewableNotificationCategories((permission) => Boolean(views[permission]));
-      listen('notifications', notificationWindowQuery(base('notifications'), since, categories, 30), (s) => {
+      listen('notifications', notificationWindowQuery(base('notifications'), uid, since, categories, 30), (s) => {
         // The bell's own pipeline: deduplicate, then the same filters and cap.
         const active = activeBellNotifications(deduplicateNotifications(s.docs.map(parseNotificationDoc)), {
           uid, email, canView: (permission) => Boolean(views[permission]),
