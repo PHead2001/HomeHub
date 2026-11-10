@@ -1268,6 +1268,36 @@ describe('content shapes: chores and templates', () => {
     }));
     await assertSucceeds(setDoc(template(users.member, 'assigned'), repeating(users.child.email)));
   });
+
+  // Member privacy release A dual-writes the uid assignee next to the email.
+  test('the uid assignee is accepted and guarded like the email', async () => {
+    // chore-chart-client.tsx handleCreateChore (release A): email and uid together.
+    await assertSucceeds(addDoc(chores(users.member), oneTime(users.owner.email, { assignedToUid: users.owner.uid })));
+    await assertSucceeds(addDoc(chores(noAssign), oneTime(noAssign.email, { assignedToUid: noAssign.uid })));
+    await assertSucceeds(addDoc(chores(noAssign), oneTime('', { assignedToUid: '' })));
+    // Someone else's uid needs chores.assign, even with your own email beside it.
+    await assertFails(addDoc(chores(noAssign), oneTime(noAssign.email, { assignedToUid: users.member.uid })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { assignedToUid: 7 })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { assignedToUid: 'x'.repeat(129) })));
+    // The backfill or a newer client filling in the uid of the existing assignee is not a reassignment.
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
+    // Once a uid is set, changing it to someone else needs chores.assign.
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
+    // Review finding on #115: a uid that does not belong to the email beside it is refused,
+    // whether filled into an empty slot, written after clearing, or created that way.
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: '' }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: noAssign.uid }));
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
+    await assertFails(addDoc(chores(noAssign), oneTime('', { assignedToUid: users.member.uid })));
+    await assertFails(setDoc(template(noAssign, 'uid-mismatch'), { ...repeating(noAssign.email), assignedToUid: users.child.uid }));
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { assignedToEmail: users.child.email, assignedToUid: users.child.uid, assignedToDisplayName: 'Child A' }));
+    // Templates: dual-write, stop-repeating clears both, and someone else's uid needs chores.assign.
+    await assertSucceeds(setDoc(template(users.member, 'uid-weekly'), { ...repeating(users.owner.email), assignedToUid: users.owner.uid }));
+    await assertSucceeds(setDoc(template(noAssign, 'uid-mine'), { ...repeating(noAssign.email), assignedToUid: noAssign.uid }));
+    await assertFails(setDoc(template(noAssign, 'uid-other'), { ...repeating(noAssign.email), assignedToUid: users.member.uid }));
+    await assertSucceeds(updateDoc(template(users.member, 'uid-weekly'), { recurrence: null, assignedToEmail: null, assignedToUid: null }));
+  });
 });
 
 describe('content shapes: shopping', () => {
@@ -1429,9 +1459,28 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     lastLogId: 'older', lastFedAt: Timestamp.fromDate(new Date('2026-11-10T08:00:00.000Z')),
     lastFedByUid: users.child.uid, lastFedByName: 'Child', day: '2026-11-10', countOnDay: 1,
   };
+  // The seeded state's six fields (its exact copy is the only valid `prev` for the next feed).
+  let current: Record<string, unknown> = {};
+  const STATE_FIELDS = ['lastLogId', 'lastFedAt', 'lastFedByUid', 'lastFedByName', 'day', 'countOnDay'];
+  // What feed-operation.ts previousOf() writes: the stored state's six fields, read back.
+  const replacedState = async (user: Identity) => {
+    const data = (await getDoc(state(user))).data() ?? {};
+    return Object.fromEntries(STATE_FIELDS.map(field => [field, data[field] ?? null]));
+  };
+  const feedBatch = (user: Identity, stateData: (logId: string) => Record<string, unknown>) => {
+    const batch = writeBatch(dbOf(user));
+    const ref = doc(logs(user));
+    batch.set(ref, liveFeeding(user));
+    batch.set(state(user), stateData(ref.id));
+    return batch;
+  };
 
   beforeEach(async () => {
     instances = new Map();
+    current = {
+      lastLogId: 'recent', lastFedAt: minutesAgo(2), lastFedByUid: users.member.uid, lastFedByName: 'Member',
+      day: '2026-11-10', countOnDay: 2,
+    };
     await environment.withSecurityRulesDisabled(async context => {
       const db = context.firestore();
       await setDoc(doc(db, ...petPath), { name: 'Rex', type: 'Dog', feedingsPerDay: 2 });
@@ -1448,24 +1497,20 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
         date: minutesAgo(11), loggedAt: minutesAgo(11), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '',
         ampm: 'AM', loggedByUid: users.member.uid, loggedByName: 'Member', repeat: 'none',
       });
-      await setDoc(doc(db, ...petPath, 'feeding-state', 'current'), {
-        lastLogId: 'recent', lastFedAt: minutesAgo(2), lastFedByUid: users.member.uid, lastFedByName: 'Member',
-        day: '2026-11-10', countOnDay: 2, prev: previous,
-      });
+      await setDoc(doc(db, ...petPath, 'feeding-state', 'current'), { ...current, prev: previous });
     });
   });
 
   test('a feed writes the log and the state together; members and children may', async () => {
-    let latest = 'recent';
     for (const user of [users.member, users.child]) {
-      const db = dbOf(user);
-      const ref = doc(logs(user));
-      const batch = writeBatch(db);
-      batch.set(ref, liveFeeding(user));
-      batch.set(state(user), stateFor(user, ref.id, { countOnDay: 3, prev: { ...previous, lastLogId: latest } }));
-      await assertSucceeds(batch.commit());
-      latest = ref.id;
+      const prev = await replacedState(user);
+      await assertSucceeds(feedBatch(user, logId => stateFor(user, logId, { countOnDay: 3, prev })).commit());
     }
+    // The first feed of a pet without state has no prev.
+    await environment.withSecurityRulesDisabled(async context => {
+      await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-state', 'current'));
+    });
+    await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId)).commit());
     // Readable with pets.view (guest), not by another household.
     await assertSucceeds(getDoc(state(users.guest)));
     await assertFails(getDoc(state(users.ownerB)));
@@ -1490,7 +1535,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
       const ref = doc(logs(member));
       const batch = writeBatch(db);
       if (logData) batch.set(ref, logData);
-      batch.set(state(member, householdA, id), { ...stateFor(member, ref.id, { prev: { ...previous, lastLogId: 'recent' } }), ...data });
+      batch.set(state(member, householdA, id), { ...stateFor(member, ref.id, { prev: current }), ...data });
       return batch.commit();
     };
     await assertFails(write({}, null)); // no log behind it
@@ -1514,10 +1559,68 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     const ref = doc(logs(users.member));
     const batch = writeBatch(db);
     batch.set(ref, liveFeeding(users.member));
-    batch.set(state(users.member), stateFor(users.child, ref.id, { prev: { ...previous, lastLogId: 'recent' } }));
+    batch.set(state(users.member), stateFor(users.child, ref.id, { prev: current }));
     await assertFails(batch.commit());
     // A log signed by someone else cannot be created either.
     await assertFails(addDoc(logs(users.member), liveFeeding(users.child)));
+  });
+
+  test('a new feed must carry the replaced state exactly as prev (no fabricated snapshot to restore later)', async () => {
+    const member = users.member;
+    // prev.lastLogId matches, but who and when are fabricated: refused.
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, {
+      prev: { ...current, lastFedByUid: users.child.uid, lastFedByName: 'Child', lastFedAt: minutesAgo(1) },
+    })).commit());
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, countOnDay: 9 } })).commit());
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, day: '2026-11-09' } })).commit());
+    // null may not discard an existing latest feed.
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: null })).commit());
+    // The exact replaced state is accepted, and Undo can then bring back only that.
+    const batch = writeBatch(dbOf(member));
+    const ref = doc(logs(member));
+    batch.set(ref, liveFeeding(member));
+    batch.set(state(member), stateFor(member, ref.id, { countOnDay: 3, prev: current }));
+    await assertSucceeds(batch.commit());
+    const undo = writeBatch(dbOf(member));
+    undo.delete(log(member, ref.id));
+    undo.set(state(member), { ...current, prev: null });
+    await assertSucceeds(undo.commit());
+  });
+
+  test('deleting the feed prev points at clears prev; a deleted prev is never restored', async () => {
+    // Dropping prev while its log still exists is refused.
+    await assertFails(updateDoc(state(users.member), { prev: null }));
+    // Delete the older feed prev points at (pets.deleteLogs) and clear prev in one commit.
+    const drop = writeBatch(dbOf(users.owner));
+    drop.delete(log(users.owner, 'older'));
+    drop.update(state(users.owner), { countOnDay: 1, prev: null });
+    await assertSucceeds(drop.commit());
+    // Then deleting the latest feed clears it (nothing survives to restore).
+    const clear = writeBatch(dbOf(users.member));
+    clear.delete(log(users.member, 'recent'));
+    clear.set(state(users.member), { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: '2026-11-10', countOnDay: 0, prev: null });
+    await assertSucceeds(clear.commit());
+  });
+
+  test('a prev whose log is gone cannot be restored, and clearing needs a gone prev', async () => {
+    const cleared = { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: '2026-11-10', countOnDay: 1, prev: null };
+    // prev's log still exists: clearing the latest feed instead of restoring it is refused.
+    const discard = writeBatch(dbOf(users.member));
+    discard.delete(log(users.member, 'recent'));
+    discard.set(state(users.member), cleared);
+    await assertFails(discard.commit());
+    // prev's log was deleted outside the operation (an old client): restoring it is refused, clearing is allowed.
+    await environment.withSecurityRulesDisabled(async context => {
+      await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'older'));
+    });
+    const restore = writeBatch(dbOf(users.member));
+    restore.delete(log(users.member, 'recent'));
+    restore.set(state(users.member), { ...previous, countOnDay: 1, prev: null });
+    await assertFails(restore.commit());
+    const clear = writeBatch(dbOf(users.member));
+    clear.delete(log(users.member, 'recent'));
+    clear.set(state(users.member), cleared);
+    await assertSucceeds(clear.commit());
   });
 
   test('undo restores exactly the stored prev, or only changes the count', async () => {
