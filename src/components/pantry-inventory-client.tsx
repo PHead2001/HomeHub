@@ -17,6 +17,8 @@ import { addItemsToList } from '@/lib/shopping/add-items';
 import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
+import { useOnTabDeactivate } from './shopping/tab-activity';
+import { justOpened } from '@/lib/shopping/live-state';
 import { DURATION, EASE } from '@/lib/motion';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
@@ -103,6 +105,11 @@ function PantryItemDialog({
   itemToEdit: PantryItem | null,
 }) {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // The scanner is a sibling portaled dialog, not inside the item dialog: it closes
+  // (unmounting BarcodeScanner, which releases the camera) when the Pantry tab is
+  // hidden and whenever the item dialog itself closes.
+  useOnTabDeactivate(() => setIsScannerOpen(false));
+  if (!isOpen && isScannerOpen) setIsScannerOpen(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
   const { toast, toastError } = useToast();
@@ -419,6 +426,12 @@ function RecipeGeneratorDialog({
     const [phase, setPhase] = useState<'shown' | 'lifting'>('shown');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const requestInFlight = useRef(false);
+    // The pantry is live: read the items when a recipe is requested, so a snapshot
+    // (even a metadata-only one) never re-creates the request and re-runs it.
+    const pantryItemsRef = useRef(pantryItems);
+    useEffect(() => {
+        pantryItemsRef.current = pantryItems;
+    }, [pantryItems]);
 
     const handleGenerateRecipe = useCallback(async () => {
         if (requestInFlight.current) return;
@@ -430,7 +443,7 @@ function RecipeGeneratorDialog({
         onRecipe?.(null);
         try {
             const result = unwrapAiActionResult(await generateRecipe(
-              { items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
+              { items: pantryItemsRef.current.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
               await getAiActionContext(householdId)
             ));
             const liftedOnScreen = onRecipe?.(result) ?? 0;
@@ -445,7 +458,7 @@ function RecipeGeneratorDialog({
             requestInFlight.current = false;
             setIsLoading(false);
         }
-    }, [householdId, pantryItems, toast, onRecipe, reduced]);
+    }, [householdId, toast, onRecipe, reduced]);
 
     // The lift holds briefly; any key or pointer press skips straight to the card.
     useEffect(() => {
@@ -462,11 +475,15 @@ function RecipeGeneratorDialog({
     }, [phase]);
     const lifting = phase === 'lifting';
 
-    // Automatically trigger generation when dialog opens
+    // Generate once when the dialog opens (closed -> open), never again while it
+    // stays open: a new pantry snapshot or a re-created callback changes nothing,
+    // so the shown recipe stays and no second AI request is made. "Try again" is
+    // the way to ask for another.
+    const wasOpenRef = useRef(false);
     useEffect(() => {
-        if (isOpen) {
-            handleGenerateRecipe();
-        }
+        const opened = justOpened(wasOpenRef.current, isOpen);
+        wasOpenRef.current = isOpen;
+        if (opened) void handleGenerateRecipe();
     }, [isOpen, handleGenerateRecipe]);
 
     return (
@@ -753,6 +770,22 @@ export function PantryInventoryClient() {
   const [isAddToListDialogOpen, setIsAddToListDialogOpen] = useState(false);
   const [itemNameToAddToList, setItemNameToAddToList] = useState<string | null>(null);
 
+  // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
+  // browser Back to the lists), so none stays on screen or traps focus there. The
+  // pantry listener keeps running.
+  // Bumped when the tab is hidden: a "Put on a shopping list" still reading the
+  // lists then never opens its picker over the other tab.
+  const addToListRequestRef = useRef(0);
+  const tabActive = useOnTabDeactivate(() => {
+    addToListRequestRef.current += 1;
+    setIsItemDialogOpen(false);
+    setItemToEdit(null);
+    setItemToDelete(null);
+    setIsRecipeGenOpen(false);
+    setIsBulkDeleteAlertOpen(false);
+    setIsAddToListDialogOpen(false);
+  });
+
   const changeView = (next: PantryView) => {
     setView(next);
     try {
@@ -941,8 +974,11 @@ export function PantryInventoryClient() {
   // Opens the list picker for a pantry item (Grocery lists; creates "Groceries" if there is none).
   const offerAddToList = async (itemName: string) => {
     if (!currentUser?.householdId) return;
+    const request = addToListRequestRef.current;
     const allLists = await fetchShoppingLists().catch(() => undefined) ?? [];
     const groceryLists = allLists.filter(list => list.type === 'Grocery');
+    // The tab was hidden while the lists loaded: drop the request.
+    if (request !== addToListRequestRef.current) return;
 
     if (groceryLists.length === 0) {
       try {
@@ -1039,7 +1075,7 @@ export function PantryInventoryClient() {
       )}
        {itemNameToAddToList && (
         <AddToListDialog
-          isOpen={isAddToListDialogOpen}
+          isOpen={isAddToListDialogOpen && tabActive}
           onOpenChange={setIsAddToListDialogOpen}
           onItemAdd={handleAddToSpecificList}
           itemName={itemNameToAddToList}

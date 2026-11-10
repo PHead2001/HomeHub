@@ -9,6 +9,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { canVibrate, playFeedback } from '@/lib/feedback';
+import { TEXT_SCALES, parseTextScale, type TextScale } from '@/lib/theme/appearance';
 import {
   DARK_PRESET_IDS,
   LIGHT_PRESET_IDS,
@@ -28,6 +29,17 @@ const MODES: Array<{ value: ThemeMode; label: string; icon: typeof Moon }> = [
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'system', label: 'System', icon: Monitor },
 ];
+
+// The tile glyph grows with the step; the whole page (and the preview) shows the real size.
+const TEXT_SIZES: Record<TextScale, { label: string; glyph: string }> = {
+  100: { label: 'Default', glyph: 'text-base' },
+  115: { label: 'Large', glyph: 'text-lg' },
+  130: { label: 'Larger', glyph: 'text-xl' },
+};
+
+// Option tiles wrap to fewer columns when a tile would be narrower than 5.5rem
+// (narrow column or large text), so labels never overlap.
+const OPTION_GRID = 'grid-cols-[repeat(auto-fit,minmax(5.5rem,1fr))]';
 
 const optionClass =
   'flex cursor-pointer items-center gap-3 rounded-lg border bg-background/60 p-3 transition-colors hover:bg-accent has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/10';
@@ -69,7 +81,7 @@ function PresetGroup({
           <Label key={id} htmlFor={`${groupId}-${id}`} className={optionClass}>
             <RadioGroupItem id={`${groupId}-${id}`} value={id} />
             <Swatch id={id} />
-            <span className="min-w-0">
+            <span className="min-w-0 break-words">
               <span className="block font-medium">{PRESETS[id].label}</span>
               <span className="block text-xs font-normal text-muted-foreground">{PRESETS[id].description}</span>
             </span>
@@ -80,7 +92,7 @@ function PresetGroup({
   );
 }
 
-/** Profile → Appearance: theme mode, presets, reduce motion, sound and haptics. */
+/** Profile → Appearance: theme mode, presets, text size, reduce motion, sound and haptics. */
 export function AppearanceSettings() {
   const { preferences, activePreset, systemReducedMotion, setPreferences } = useAppearance();
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
@@ -103,7 +115,9 @@ export function AppearanceSettings() {
         <CardTitle className="font-headline flex items-center gap-2">
           <Palette /> Appearance
         </CardTitle>
-        <CardDescription>Theme, motion and feedback. Theme and motion follow you to other devices.</CardDescription>
+        <CardDescription>
+          Theme, text size, motion and feedback. Theme and motion follow you to other devices; text size stays on this one.
+        </CardDescription>
       </CardHeader>
       <CardContent
         className="space-y-6"
@@ -120,7 +134,7 @@ export function AppearanceSettings() {
             onValueChange={(mode) => {
               if (isThemeMode(mode)) setPreferences({ mode }, takeOrigin(document.getElementById(`appearance-mode-${mode}`)));
             }}
-            className="grid-cols-3"
+            className={OPTION_GRID}
           >
             {MODES.map(({ value, label, icon: Icon }) => (
               <Label
@@ -162,6 +176,43 @@ export function AppearanceSettings() {
             if (isLightPresetId(id)) setPreferences({ lightPreset: id }, takeOrigin(el));
           }}
         />
+
+        <div className="space-y-2">
+          <p id="appearance-text-size" className="text-sm font-medium">
+            Text size
+            <span className="ml-2 text-xs font-normal text-muted-foreground">This device only</span>
+          </p>
+          <RadioGroup
+            aria-labelledby="appearance-text-size"
+            aria-describedby="appearance-text-size-preview"
+            value={String(preferences.textScale)}
+            onValueChange={(value) => setPreferences({ textScale: parseTextScale(value) })}
+            className={OPTION_GRID}
+          >
+            {TEXT_SCALES.map((scale) => (
+              <Label
+                key={scale}
+                htmlFor={`appearance-text-size-${scale}`}
+                className={cn(
+                  optionClass,
+                  'flex-col gap-1 px-2 py-3 text-center',
+                  'has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring',
+                )}
+              >
+                <RadioGroupItem id={`appearance-text-size-${scale}`} value={String(scale)} className="sr-only" />
+                <span aria-hidden className={cn('font-headline font-semibold leading-none', TEXT_SIZES[scale].glyph)}>Aa</span>
+                <span>{TEXT_SIZES[scale].label}</span>
+                <span className="text-xs font-normal text-muted-foreground">{scale}%</span>
+              </Label>
+            ))}
+          </RadioGroup>
+          {/* Live preview: the setting applies to the whole page at once, this sample included. */}
+          <div id="appearance-text-size-preview" className="rounded-lg border bg-background/60 p-3" aria-live="polite">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview at {preferences.textScale}%</p>
+            <p className="mt-1 font-medium">Take out the recycling</p>
+            <p className="text-sm text-muted-foreground">Due today · Kitchen</p>
+          </div>
+        </div>
 
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-4 rounded-lg border p-4">

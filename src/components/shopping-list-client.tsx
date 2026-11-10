@@ -30,6 +30,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
 import { db, getLocalPersistence } from '@/lib/firebase';
 import { slugify, cn } from '@/lib/utils';
@@ -40,7 +41,8 @@ import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmission
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
-import { isListLinkMissing, isOpenListDeleted } from '@/lib/shopping/live-state';
+import { deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
+import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
@@ -93,6 +95,8 @@ function ManageCategoriesDialog({ categories, householdId, listId }: { categorie
   const [newCategory, setNewCategory] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  // Closed when the Shopping Lists tab is hidden (its portal is outside the panel).
+  useOnTabDeactivate(() => setIsCategoryDialogOpen(false));
 
   const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
 
@@ -261,6 +265,23 @@ export function ShoppingListClient({
   // deleted elsewhere). Scoped by household, so another household's list never shows.
   const [seen, setSeen] = useState<{ householdId: string; list: ShoppingList } | null>(null);
 
+  // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
+  // browser Back to `?tab=pantry`), so none stays on screen or traps focus there.
+  useOnTabDeactivate(() => {
+    setIsAddItemDialogOpen(false);
+    setIsScannerOpen(false);
+    setIsListDialogOpen(false);
+    setListToDelete(null);
+    setIsClearAlertOpen(false);
+    setIsArchiveAlertOpen(false);
+    setIsReceiptOpen(false);
+    setHandoffMode(null);
+  });
+
+  // The Add Item scanner is nested in the Add Item dialog: it never outlives it
+  // (otherwise reopening Add Item would bring the camera back).
+  if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
+
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const householdIdRef = useRef<string | null>(null);
@@ -271,6 +292,9 @@ export function ShoppingListClient({
   if (selectedList && householdId && (seen?.list !== selectedList || seen.householdId !== householdId)) setSeen({ householdId, list: selectedList });
   const seenList = seen && seen.householdId === householdId ? seen.list : null;
   const listIds = useMemo(() => lists.map((list) => list.id), [lists]);
+  // The marker covers only the deletion in flight: once this device has left the
+  // list and the snapshot no longer holds it, it is cleared.
+  if (deletionSettled({ deletingListId, selectedListId, listIds })) setDeletingListId(null);
   // Deleted while open (here: by another member or device): the list's document is
   // gone from the snapshot. Its screen says so and offers no write controls (SH-1e).
   const deletedList = isOpenListDeleted({
@@ -313,6 +337,7 @@ export function ShoppingListClient({
   // A `?list=` link to a list that no longer exists falls back to the overview.
   // Decided from a snapshot the server confirmed (or, offline, from the cache), and
   // never for a list this screen saw (that one shows "This list was deleted").
+  const confirmed = listsConfirmed({ listsReady: !loading, fromCache: listsState.fromCache, offline: isBrowserOffline() });
   const linkMissing = isListLinkMissing({
     listId: selectedListId,
     listIds,
@@ -330,17 +355,21 @@ export function ShoppingListClient({
   // the add-item dialog on the only list, or else on the first Grocery list.
   // The request comes from the URL on every render (useSearchParams), so it works
   // for a fresh load and for in-app navigation alike; handling it removes it.
+  // Cached lists are drawn at once, but the one-shot choice waits for lists the
+  // server confirmed (or the cache offline), so a cached Grocery list deleted
+  // elsewhere is never opened and the request is not lost.
+  const quickAdd = quickAddDecision({ requested: quickAddRequested, confirmed, canEdit, lists });
+  const quickAddKind = quickAdd?.kind ?? null;
+  const quickAddListId = quickAdd?.kind === 'open' ? quickAdd.listId : null;
   useEffect(() => {
-    if (loading || !quickAddRequested) return;
-    const target = canEdit ? (lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery')) : undefined;
-    onQuickAddHandled?.(target ? target.id : selectedListId);
-    if (!canEdit) return;
-    if (target) {
+    if (!quickAddKind || quickAddKind === 'wait') return;
+    onQuickAddHandled?.(quickAddListId ?? selectedListId);
+    if (quickAddKind === 'open') {
       setIsAddItemDialogOpen(true);
-    } else if (lists.length > 0) {
+    } else if (quickAddKind === 'choose') {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
     }
-  }, [loading, quickAddRequested, lists, onQuickAddHandled, selectedListId, toast, canEdit]);
+  }, [quickAddKind, quickAddListId, onQuickAddHandled, selectedListId, toast]);
 
   // --- List CRUD ---
 
@@ -667,13 +696,14 @@ export function ShoppingListClient({
     }
   };
 
-  // "Milk is in the cart · Undo" for five seconds after a tick; the first offline
-  // tick adds the offline note to the same toast (and stays up a little longer).
+  // "Milk is in the cart · Undo" for the shared Undo window after a tick; the first
+  // offline tick adds the offline note to the same toast.
   const showTickUndo = (item: ShoppingListItem, note?: string) => {
     toast({
+      group: 'shopping-tick',
       title: `${item.name} is in the cart`,
       ...(note ? { description: note } : {}),
-      duration: note ? 8000 : 5000,
+      duration: UNDO_WINDOW_MS,
       action: (
         <ToastAction
           altText={`Undo ticking ${item.name}`}
@@ -688,7 +718,7 @@ export function ShoppingListClient({
     });
   };
 
-  // Deletes at once, with five seconds to undo (the item is written back as it was).
+  // Deletes at once, with the shared Undo window to undo (the item is written back as it was).
   // The listener removes and restores the row; a rejected write is rolled back there.
   const deleteItem = async (item: ShoppingListItem) => {
     const list = selectedList;
@@ -709,8 +739,9 @@ export function ShoppingListClient({
     // on a create only as a restore by the writer; see rules PR 121).
     const data = restoreItemData(snapshot, currentUser?.uid);
     toast({
+      group: 'shopping-remove',
       title: `${item.name} removed`,
-      duration: 5000,
+      duration: UNDO_WINDOW_MS,
       action: canEdit ? (
         <ToastAction
           altText={`Undo removing ${item.name}`}

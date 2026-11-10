@@ -11,6 +11,8 @@ import {
   type FeedingStatus,
 } from '@/lib/pets/care';
 import { NumberTicker } from '@/components/motion/number-ticker';
+import { useAuth } from '@/hooks/use-auth';
+import { knownFromLogs } from '@/lib/pets/feed-decision';
 import type { PetFeedingLog, PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { FeedingRing } from './feeding-ring';
@@ -22,6 +24,7 @@ import { useNow } from './use-now';
 /** A pet's live care data: feedings, the plan and today's status, and every current medication countdown. */
 export function usePetCare(pet: PetProfile, householdId: string) {
   const now = useNow();
+  const { household } = useAuth();
   const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
   const medications = useMedicationCountdownLogs(householdId, pet.id);
   const plan = feedingPlan(pet);
@@ -30,7 +33,9 @@ export function usePetCare(pet: PetProfile, householdId: string) {
   const dues = medications.loading || medications.error ? [] : currentMedications(medications.logs, now);
   // The quick-feed food type waits for the history (never Dry by default while loading).
   const food = quickFeedFood(feedingHistoryState(feedings), feedings.logs[0]?.foodType);
-  return { now, feedings, medications, plan, status, dues, food };
+  // The feed operation's fallback for a pet without a feeding-state document (household day).
+  const known = feedings.loading || feedings.error ? null : knownFromLogs(feedings.logs, now, household?.timeZone);
+  return { now, feedings, medications, plan, status, dues, food, known };
 }
 
 export type PetCare = ReturnType<typeof usePetCare>;
@@ -70,7 +75,7 @@ function OwnCareSummary(props: SummaryProps) {
 }
 
 function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedicationChips = 2 }: SummaryProps & { care: PetCare }) {
-  const { now, feedings, medications, plan, status, dues, food } = care;
+  const { now, feedings, medications, plan, status, dues, food, known } = care;
 
   return (
     <>
@@ -111,6 +116,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           plan={plan}
           status={status}
           food={food}
+          known={known}
           controller={feed}
           describedBy={feedHintId}
           variant={status?.complete ? 'secondary' : 'default'}

@@ -13,6 +13,39 @@ import {
   type ThemeMode,
 } from './tokens';
 
+/**
+ * Per-device text size (D-4 / PR-14): exactly three steps, applied to <html> as a
+ * percentage font size before first paint. Device-local like sound and haptics (a
+ * wall tablet and a phone differ), so it is never written to the profile.
+ */
+export const TEXT_SCALES = [100, 115, 130] as const;
+export type TextScale = (typeof TEXT_SCALES)[number];
+export const DEFAULT_TEXT_SCALE: TextScale = 100;
+
+/**
+ * Accepts anything (a stored number, a numeric string) and returns a valid step:
+ * out-of-range values clamp to 100-130 and in-between values snap to the nearest
+ * step (a tie goes to the smaller one). Anything non-numeric gives `fallback`.
+ * Mirrored by the pre-paint script; tests keep the two in step.
+ */
+export function parseTextScale(value: unknown, fallback: TextScale = DEFAULT_TEXT_SCALE): TextScale {
+  const numeric =
+    typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN;
+  if (!Number.isFinite(numeric)) return fallback;
+  const clamped = Math.min(TEXT_SCALES[TEXT_SCALES.length - 1], Math.max(TEXT_SCALES[0], numeric));
+  let best: TextScale = TEXT_SCALES[0];
+  for (const step of TEXT_SCALES) {
+    if (Math.abs(step - clamped) < Math.abs(best - clamped)) best = step;
+  }
+  return best;
+}
+
+/** Sets `data-text-scale` on <html> (absent at 100%); globals.css maps it to a font size. */
+export function applyTextScaleToDocument(scale: TextScale, root: HTMLElement = document.documentElement) {
+  if (scale === DEFAULT_TEXT_SCALE) root.removeAttribute('data-text-scale');
+  else root.setAttribute('data-text-scale', String(scale));
+}
+
 /** Appearance preferences (Profile → Appearance). */
 export type AppearancePreferences = {
   mode: ThemeMode;
@@ -24,11 +57,14 @@ export type AppearancePreferences = {
   sound: boolean;
   /** Opt-in haptics (device-local). */
   haptics: boolean;
+  /** Text size step in percent (device-local). */
+  textScale: TextScale;
 };
 
 /**
- * The shape stored in the existing `users/{email}.theme` profile field. Sound and
- * haptics stay device-local (a phone and a laptop differ), so they are not synced.
+ * The shape stored in the existing `users/{email}.theme` profile field. Sound,
+ * haptics and text size stay device-local (a phone and a laptop differ), so they
+ * are not synced.
  */
 export type ProfileAppearance = {
   version: 2;
@@ -45,6 +81,7 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
   reduceMotion: false,
   sound: false,
   haptics: false,
+  textScale: DEFAULT_TEXT_SCALE,
 };
 
 /** localStorage key read by the pre-paint script and the AppearanceProvider. */
@@ -63,6 +100,7 @@ export function parseAppearance(value: unknown, base: AppearancePreferences = DE
     reduceMotion: typeof value.reduceMotion === 'boolean' ? value.reduceMotion : base.reduceMotion,
     sound: typeof value.sound === 'boolean' ? value.sound : base.sound,
     haptics: typeof value.haptics === 'boolean' ? value.haptics : base.haptics,
+    textScale: parseTextScale(value.textScale, base.textScale),
   };
 }
 
@@ -131,8 +169,9 @@ export function scriptLiteral(value: unknown): string {
 
 /**
  * Inline script for <head>. Runs before first paint and before hydration: reads the
- * stored preferences and sets `data-theme`, the `dark`/`light` class and
- * `data-motion="reduce"` on <html> so there is never a flash of the wrong theme.
+ * stored preferences and sets `data-theme`, the `dark`/`light` class,
+ * `data-motion="reduce"` and `data-text-scale` on <html> so there is never a flash
+ * of the wrong theme or text size.
  * Keep it dependency-free; it must never throw.
  */
 
@@ -144,5 +183,11 @@ export function themeBootstrapScript(): string {
     DEFAULT_DARK_PRESET,
   )};var lt=k[p.lightPreset]==="light"?p.lightPreset:${scriptLiteral(
     DEFAULT_LIGHT_PRESET,
-  )};var m=p.mode==="light"||p.mode==="system"?p.mode:"dark";var mq=function(q){return window.matchMedia&&window.matchMedia(q).matches};var id=(m==="dark"||(m==="system"&&mq("(prefers-color-scheme: dark)")))?dk:lt;d.setAttribute("data-theme",id);d.classList.remove(k[id]==="dark"?"light":"dark");d.classList.add(k[id]);if(p.reduceMotion===true||mq("(prefers-reduced-motion: reduce)")){d.setAttribute("data-motion","reduce")}else{d.removeAttribute("data-motion")}var t=document.querySelector('meta[name="theme-color"]');if(t)t.setAttribute("content",c[id])}catch(e){}})();`;
+  )};var m=p.mode==="light"||p.mode==="system"?p.mode:"dark";var mq=function(q){return window.matchMedia&&window.matchMedia(q).matches};var id=(m==="dark"||(m==="system"&&mq("(prefers-color-scheme: dark)")))?dk:lt;d.setAttribute("data-theme",id);d.classList.remove(k[id]==="dark"?"light":"dark");d.classList.add(k[id]);if(p.reduceMotion===true||mq("(prefers-reduced-motion: reduce)")){d.setAttribute("data-motion","reduce")}else{d.removeAttribute("data-motion")}var t=document.querySelector('meta[name="theme-color"]');if(t)t.setAttribute("content",c[id]);var S=${scriptLiteral(
+    TEXT_SCALES,
+  )},v=p.textScale,n=typeof v==="number"?v:(typeof v==="string"&&v.trim()!==""?Number(v):NaN),ts=${scriptLiteral(
+    DEFAULT_TEXT_SCALE,
+  )};if(isFinite(n)){n=Math.min(S[S.length-1],Math.max(S[0],n));ts=S[0];for(var i=0;i<S.length;i++){if(Math.abs(S[i]-n)<Math.abs(ts-n))ts=S[i]}}if(ts===${scriptLiteral(
+    DEFAULT_TEXT_SCALE,
+  )}){d.removeAttribute("data-text-scale")}else{d.setAttribute("data-text-scale",String(ts))}}catch(e){}})();`;
 }

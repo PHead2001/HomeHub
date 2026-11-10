@@ -139,7 +139,74 @@ export const isListLinkMissing = ({
   listsReady: boolean;
   fromCache: boolean;
   offline: boolean;
-}): boolean => Boolean(listId && listsReady && (!fromCache || offline) && !listIds.includes(listId));
+}): boolean => Boolean(listId && !listIds.includes(listId) && listsConfirmed({ listsReady, fromCache, offline }));
+
+/**
+ * Whether the lists on screen may drive a one-shot decision (a missing `?list=`
+ * link, the `?quickAdd=1` shortcut): a snapshot the server confirmed, or the
+ * cache when offline. Cached lists are drawn at once either way; only decisions
+ * that consume a URL parameter wait, so a list deleted elsewhere but still in the
+ * cache is never chosen.
+ */
+export const listsConfirmed = ({ listsReady, fromCache, offline }: { listsReady: boolean; fromCache: boolean; offline: boolean }): boolean =>
+  listsReady && (!fromCache || offline);
+
+export type QuickAddDecision =
+  | { kind: 'wait' }
+  | { kind: 'open'; listId: string }
+  | { kind: 'choose' }
+  | { kind: 'none' };
+
+/**
+ * What the `?quickAdd=1` shortcut does with the lists: wait for confirmed lists;
+ * then open the add dialog on the only list, or else the first Grocery list; ask
+ * the member to choose when there are lists but no such target; nothing for a
+ * member who cannot edit or a household with no lists.
+ */
+export const quickAddDecision = ({
+  requested,
+  confirmed,
+  canEdit,
+  lists,
+}: {
+  requested: boolean;
+  confirmed: boolean;
+  canEdit: boolean;
+  lists: ReadonlyArray<{ id: string; type?: unknown }>;
+}): QuickAddDecision | null => {
+  if (!requested) return null;
+  if (!confirmed) return { kind: 'wait' };
+  if (!canEdit) return { kind: 'none' };
+  const target = lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery');
+  if (target) return { kind: 'open', listId: target.id };
+  return lists.length > 0 ? { kind: 'choose' } : { kind: 'none' };
+};
+
+/**
+ * Tracks a tab's active flag across renders and reports the render where it
+ * turned inactive, so the tab can close its portaled overlays in that same
+ * render (a dialog's portal lives outside the hidden panel).
+ */
+export const deactivated = (previous: boolean, active: boolean): boolean => previous && !active;
+
+/** The render or effect where a flag turned on (a dialog that just opened). */
+export const justOpened = (previous: boolean, open: boolean): boolean => !previous && open;
+
+/**
+ * Whether this device's own list deletion has settled: the screen no longer has
+ * the list open and the lists snapshot no longer holds it. Then the "deleting"
+ * marker is cleared, so a list re-created under the same id and later deleted
+ * elsewhere gets the deletion notice and the missing-link fallback again.
+ */
+export const deletionSettled = ({
+  deletingListId,
+  selectedListId,
+  listIds,
+}: {
+  deletingListId: string | null;
+  selectedListId: string | null;
+  listIds: readonly string[];
+}): boolean => Boolean(deletingListId && selectedListId !== deletingListId && !listIds.includes(deletingListId));
 
 export const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 

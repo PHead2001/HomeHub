@@ -149,9 +149,18 @@ test.describe('shopping trip', () => {
       await expect(page.getByRole('checkbox', { name: /E2E stale bread/ })).toBeVisible();
       await expect(field).toHaveValue('');
 
+      // The row shows as soon as the write is queued (the listener applies local
+      // writes at once), before the server has it: wait for the server document.
+      let createdId = '';
+      await expect.poll(async () => {
+        const [document] = (await groceryItems.where('name', '==', name).get()).docs;
+        createdId = document?.id ?? '';
+        return createdId;
+      }).not.toBe('');
+      const created = groceryItems.doc(createdId);
+
       // Another member buys it; the live list moves it out of Needed (SH-1).
-      const [created] = (await groceryItems.where('name', '==', name).get()).docs;
-      await created.ref.update({ status: 'purchased' });
+      await created.update({ status: 'purchased' });
       await expect(page.locator(`#item-needed-${created.id}`)).toHaveCount(0);
 
       await field.fill(name);

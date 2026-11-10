@@ -12,6 +12,7 @@ import type { ShoppingListItem } from '@/lib/types';
 import { normalizeSourceUrl } from '@/lib/shopping-items';
 import { cn } from '@/lib/utils';
 import { DURATION, EASE } from '@/lib/motion';
+import { useTabActive } from './tab-activity';
 
 /** Distance (px) a phone swipe must travel to tick an item. */
 const SWIPE_TICK_DISTANCE = 72;
@@ -19,6 +20,8 @@ const SWIPE_TICK_DISTANCE = 72;
 function ItemSourceLink({ item }: { item: ShoppingListItem }) {
   // Re-validate on render: stored data is not trusted to be http(s).
   const href = normalizeSourceUrl(item.sourceUrl);
+  // No peek card (a portal) while the tab is hidden.
+  const tabActive = useTabActive();
   if (!href) return null;
   // Peek (H26): what the link is before it opens a new tab.
   const peek = (
@@ -28,15 +31,14 @@ function ItemSourceLink({ item }: { item: ShoppingListItem }) {
       <p className="truncate text-xs text-muted-foreground">Opens {hostOf(href)}</p>
     </div>
   );
-  return (
-    <PeekCard peek={peek} className="shrink-0">
-      <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-        <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`Open saved link for ${item.name}`}>
-          <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden />
-        </a>
-      </Button>
-    </PeekCard>
+  const link = (
+    <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+      <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`Open saved link for ${item.name}`}>
+        <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden />
+      </a>
+    </Button>
   );
+  return tabActive ? <PeekCard peek={peek} className="shrink-0">{link}</PeekCard> : link;
 }
 
 const hostOf = (href: string) => {

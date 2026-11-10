@@ -9,10 +9,15 @@ import {
   errorToState,
   isListLinkMissing,
   isOpenListDeleted,
+  deactivated,
+  deletionSettled,
+  justOpened,
   keepListening,
+  listsConfirmed,
   liveKey,
   loadingState,
   planCountSources,
+  quickAddDecision,
   snapshotToState,
   stateFor,
 } from '../../src/lib/shopping/live-state';
@@ -270,5 +275,103 @@ describe('view transitions (SH-10i)', () => {
       assert.ok(calls.length > 0, `${file} starts a transition`);
       assert.equal(settled.length, calls.length, `${file} settles every transition`);
     }
+  });
+});
+
+describe('live state: one-shot URL requests wait for confirmed lists', () => {
+  const grocery = { id: 'weekly', type: 'Grocery' };
+  const hardware = { id: 'hardware', type: 'Hardware' };
+
+  test('confirmed means a server snapshot, or the cache only when offline', () => {
+    assert.equal(listsConfirmed({ listsReady: true, fromCache: false, offline: false }), true);
+    assert.equal(listsConfirmed({ listsReady: true, fromCache: true, offline: false }), false);
+    assert.equal(listsConfirmed({ listsReady: true, fromCache: true, offline: true }), true);
+    assert.equal(listsConfirmed({ listsReady: false, fromCache: false, offline: false }), false);
+  });
+
+  test('?quickAdd=1 waits on a cached snapshot instead of opening a list it may not have', () => {
+    // The cache still lists a Grocery list deleted elsewhere: nothing is chosen or consumed yet.
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: false, canEdit: true, lists: [grocery, hardware] }), { kind: 'wait' });
+    // The server snapshot no longer has it: the request is handled from that.
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware] }), { kind: 'open', listId: 'hardware' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware, { id: 'auto', type: 'Auto' }] }), { kind: 'choose' });
+  });
+
+  test('?quickAdd=1 opens the only list or the first Grocery list, and nothing without edit rights or lists', () => {
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware, grocery] }), { kind: 'open', listId: 'weekly' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: false, lists: [grocery] }), { kind: 'none' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [] }), { kind: 'none' });
+    assert.equal(quickAddDecision({ requested: false, confirmed: true, canEdit: true, lists: [grocery] }), null);
+  });
+});
+
+describe('tab overlays close when their tab is hidden', () => {
+  test('only the active-to-inactive change counts as a deactivation', () => {
+    assert.equal(deactivated(true, false), true);
+    assert.equal(deactivated(false, true), false);
+    assert.equal(deactivated(true, true), false);
+    assert.equal(deactivated(false, false), false);
+  });
+
+  test('both force-mounted tabs are wrapped, and their menus are tab-aware', async () => {
+    const { readFileSync } = await import('node:fs');
+    const center = readFileSync('src/components/shopping-center-client.tsx', 'utf8');
+    assert.match(center, /<TabActivity active=\{state\.tab === 'lists'\}>\s*<ShoppingListClient/);
+    assert.match(center, /<TabActivity active=\{state\.tab === 'inventory'\}>\s*<PantryInventoryClient/);
+    for (const file of ['src/components/shopping/list-card.tsx', 'src/components/shopping/pantry-shelves.tsx']) {
+      const source = readFileSync(file, 'utf8');
+      assert.doesNotMatch(source, /<DropdownMenu[\s>]/, `${file} uses a plain DropdownMenu`);
+      assert.match(source, /<TabDropdownMenu>/);
+    }
+    for (const file of ['src/components/shopping-list-client.tsx', 'src/components/pantry-inventory-client.tsx']) {
+      assert.match(readFileSync(file, 'utf8'), /useOnTabDeactivate\(\(\) => \{/, `${file} closes its overlays`);
+    }
+  });
+
+  test('nested scanners close with their tab and their parent dialog, and the camera is released', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pantry = readFileSync('src/components/pantry-inventory-client.tsx', 'utf8');
+    const itemDialog = pantry.slice(pantry.indexOf('function PantryItemDialog'), pantry.indexOf('<Dialog open={isScannerOpen}'));
+    assert.match(itemDialog, /useOnTabDeactivate\(\(\) => setIsScannerOpen\(false\)\)/);
+    assert.match(itemDialog, /if \(!isOpen && isScannerOpen\) setIsScannerOpen\(false\)/);
+    const list = readFileSync('src/components/shopping-list-client.tsx', 'utf8');
+    assert.match(list, /if \(!isAddItemDialogOpen && isScannerOpen\) setIsScannerOpen\(false\)/);
+    assert.match(list, /useOnTabDeactivate\(\(\) => \{[^}]*setIsScannerOpen\(false\)/);
+    const scanner = readFileSync('src/components/barcode-scanner.tsx', 'utf8');
+    assert.match(scanner, /getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\)/);
+  });
+});
+
+describe('one-time triggers on live data', () => {
+  test('the recipe is generated only when the dialog goes from closed to open', () => {
+    assert.equal(justOpened(false, true), true);
+    // Still open (a new pantry snapshot re-rendered it): no new request.
+    assert.equal(justOpened(true, true), false);
+    assert.equal(justOpened(true, false), false);
+    assert.equal(justOpened(false, false), false);
+  });
+
+  test('the recipe request reads the pantry at request time and auto-runs only on open', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pantry = readFileSync('src/components/pantry-inventory-client.tsx', 'utf8');
+    const dialog = pantry.slice(pantry.indexOf('function RecipeGeneratorDialog'), pantry.indexOf('<Dialog open={isOpen} onOpenChange={onOpenChange}>', pantry.indexOf('function RecipeGeneratorDialog')));
+    assert.match(dialog, /pantryItemsRef\.current\.map\(/);
+    assert.match(dialog, /\}, \[householdId, toast, onRecipe, reduced\]\);/);
+    assert.match(dialog, /const opened = justOpened\(wasOpenRef\.current, isOpen\);/);
+    // A pending "Put on a shopping list" is dropped when the tab is hidden, and the picker is gated.
+    assert.match(pantry, /if \(request !== addToListRequestRef\.current\) return;/);
+    assert.match(pantry, /isOpen=\{isAddToListDialogOpen && tabActive\}/);
+  });
+
+  test("the local deletion marker clears once this device has left the list and it is gone", () => {
+    const base = { deletingListId: 'weekly', selectedListId: null, listIds: ['hardware'] };
+    assert.equal(deletionSettled(base), true);
+    // Still open here, or still in the snapshot: the deletion is in flight.
+    assert.equal(deletionSettled({ ...base, selectedListId: 'weekly' }), false);
+    assert.equal(deletionSettled({ ...base, listIds: ['weekly'] }), false);
+    assert.equal(deletionSettled({ ...base, deletingListId: null }), false);
+    // Re-created later under the same id: the marker is already gone, so a deletion
+    // elsewhere is reported again.
+    assert.equal(isOpenListDeleted({ listId: 'weekly', seenListId: 'weekly', listIds: [], listsReady: true, deletingListId: null }), true);
   });
 });
