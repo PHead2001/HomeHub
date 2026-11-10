@@ -448,6 +448,324 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
+    // Household content shapes
+    //
+    // Client writes to chores, chore templates, shopping lists and items, pet
+    // logs, maintenance records and the barcode library must match the shapes
+    // the app writes. Each allowlist is a superset of every field any shipped
+    // client writes (including offline-queued writes from older releases).
+    // Only the keys a write sets are checked: every key on create, and on update
+    // only keys it adds or changes, so a document that still holds a legacy field
+    // stays updatable on its other fields, and removing a field is always allowed.
+    // Admin SDK writers (server upkeep, Cloud Functions) bypass these rules.
+    // ---------------------------------------------------------------------
+
+    function writtenKeys() {
+      return resource == null
+        ? request.resource.data.keys().toSet()
+        : request.resource.data.diff(resource.data).addedKeys()
+            .union(request.resource.data.diff(resource.data).changedKeys());
+    }
+
+    function boundedString(value, max) {
+      return value is string && value.size() <= max;
+    }
+
+    function nonEmptyString(value, max) {
+      return value is string && value.size() > 0 && value.size() <= max;
+    }
+
+    function optionalString(value, max) {
+      return value == null || boundedString(value, max);
+    }
+
+    function boundedList(value, max) {
+      return value is list && value.size() <= max;
+    }
+
+    function boundedNumber(value, min, max) {
+      return value is number && value >= min && value <= max;
+    }
+
+    function dateValue(value) {
+      return value is timestamp || boundedString(value, 40);
+    }
+
+    // --- Chores -----------------------------------------------------------
+
+    // Unassigned ('' or null) or the caller: no chores.assign needed.
+    function choreAssigneeIsCallerOrNone(email) {
+      return email == null || email == '' || email == request.auth.token.email;
+    }
+
+    function validChoreFields(data, keys) {
+      return keys.hasOnly([
+          'task', 'notes', 'assignedToEmail', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
+          'roomIds', 'isCompleted', 'completedAt', 'completedAtServer', 'completedSubTasks', 'subTasks',
+          'templateId', 'sourceType'
+        ]) &&
+        (!('task' in keys) || nonEmptyString(data.task, 500)) &&
+        (!('notes' in keys) || optionalString(data.notes, 5000)) &&
+        (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320)) &&
+        (!('assignedToDisplayName' in keys) || optionalString(data.assignedToDisplayName, 200)) &&
+        (!('dueDate' in keys) || boundedString(data.dueDate, 40)) &&
+        (!('originalDueDate' in keys) || boundedString(data.originalDueDate, 40)) &&
+        (!('roomIds' in keys) || boundedList(data.roomIds, 50)) &&
+        (!('isCompleted' in keys) || data.isCompleted is bool) &&
+        (!('completedAt' in keys) || optionalString(data.completedAt, 40)) &&
+        (!('completedAtServer' in keys) || data.completedAtServer == null || data.completedAtServer is timestamp) &&
+        (!('completedSubTasks' in keys) || boundedList(data.completedSubTasks, 100)) &&
+        (!('subTasks' in keys) || boundedList(data.subTasks, 100)) &&
+        (!('templateId' in keys) || boundedString(data.templateId, 300)) &&
+        (!('sourceType' in keys) || data.sourceType in ['temporary', 'template']);
+    }
+
+    // Creating a chore for someone else needs chores.assign; chores.create alone
+    // covers a chore for yourself or an unassigned one.
+    function choreCreateAssignmentAllowed(householdId) {
+      return choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) ||
+        hasHouseholdPermission(householdId, 'chores.assign');
+    }
+
+    // Any change of a chore's assignee needs chores.assign.
+    function choreReassignmentAllowed(householdId) {
+      return request.resource.data.get('assignedToEmail', null) == resource.data.get('assignedToEmail', null) ||
+        hasHouseholdPermission(householdId, 'chores.assign');
+    }
+
+    // --- Chore templates --------------------------------------------------
+
+    function validMonthlyOptions(value) {
+      return value is map &&
+        value.keys().hasOnly(['mode', 'dayOfMonth', 'nthWeekday']) &&
+        (!('mode' in value) || value.mode in ['dayOfMonth', 'nthWeekday']) &&
+        (!('dayOfMonth' in value) || boundedNumber(value.dayOfMonth, 1, 31)) &&
+        (!('nthWeekday' in value) ||
+          (value.nthWeekday is map && value.nthWeekday.keys().hasOnly(['week', 'dayOfWeek'])));
+    }
+
+    function validRecurrence(value) {
+      return value == null || (
+        value is map &&
+        value.keys().hasOnly([
+          'frequency', 'interval', 'assignedToEmail', 'startDate', 'dailyOptions', 'weeklyOptions', 'monthlyOptions'
+        ]) &&
+        value.get('frequency', null) in ['daily', 'weekly', 'biweekly', 'monthly'] &&
+        (!('interval' in value) || boundedNumber(value.interval, 1, 52)) &&
+        (!('assignedToEmail' in value) || optionalString(value.assignedToEmail, 320)) &&
+        (!('startDate' in value) || optionalString(value.startDate, 40)) &&
+        (!('dailyOptions' in value) ||
+          (value.dailyOptions is map && value.dailyOptions.keys().hasOnly(['excludeWeekends']))) &&
+        (!('weeklyOptions' in value) ||
+          (value.weeklyOptions is map && value.weeklyOptions.keys().hasOnly(['daysOfWeek']) &&
+            boundedList(value.weeklyOptions.get('daysOfWeek', []), 7))) &&
+        (!('monthlyOptions' in value) || validMonthlyOptions(value.monthlyOptions))
+      );
+    }
+
+    function validChoreTemplateFields(data, keys) {
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail']) &&
+        (!('task' in keys) || nonEmptyString(data.task, 500)) &&
+        (!('notes' in keys) || optionalString(data.notes, 5000)) &&
+        (!('roomIds' in keys) || boundedList(data.roomIds, 50)) &&
+        (!('subTasks' in keys) || boundedList(data.subTasks, 100)) &&
+        (!('recurrence' in keys) || validRecurrence(data.recurrence)) &&
+        (!('assignedToEmail' in keys) || optionalString(data.assignedToEmail, 320));
+    }
+
+    function recurrenceAssignee(data) {
+      return data.get('recurrence', null) is map ? data.recurrence.get('assignedToEmail', null) : null;
+    }
+
+    // A template is assigned through `assignedToEmail` and `recurrence.assignedToEmail`.
+    // Setting either to someone other than the caller needs chores.assign.
+    function templateAssignmentAllowed(householdId) {
+      let after = request.resource.data;
+      let before = resource == null ? {} : resource.data;
+      return (
+          (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) ||
+            choreAssigneeIsCallerOrNone(after.get('assignedToEmail', null))) &&
+          (recurrenceAssignee(after) == recurrenceAssignee(before) ||
+            choreAssigneeIsCallerOrNone(recurrenceAssignee(after)))
+        ) ||
+        hasHouseholdPermission(householdId, 'chores.assign');
+    }
+
+    // --- Shopping ---------------------------------------------------------
+
+    function validShoppingListFields(data, keys) {
+      return keys.hasOnly(['name', 'description', 'icon', 'type', 'color']) &&
+        (!('name' in keys) || nonEmptyString(data.name, 100)) &&
+        (!('description' in keys) || optionalString(data.description, 500)) &&
+        (!('icon' in keys) || boundedString(data.icon, 64)) &&
+        (!('type' in keys) || boundedString(data.type, 40)) &&
+        (!('color' in keys) || optionalString(data.color, 64));
+    }
+
+    // quantity is checked after any increment() is applied.
+    function validShoppingItemFields(data, keys) {
+      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl']) &&
+        (!('name' in keys) || nonEmptyString(data.name, 500)) &&
+        (!('quantity' in keys) || (data.quantity is number && data.quantity > 0 && data.quantity <= 100000)) &&
+        (!('category' in keys) || boundedString(data.category, 100)) &&
+        (!('createdAt' in keys) || dateValue(data.createdAt)) &&
+        (!('status' in keys) || data.status in ['needed', 'purchased']) &&
+        (!('imageUrl' in keys) || boundedString(data.imageUrl, 2048)) &&
+        (!('barcode' in keys) || boundedString(data.barcode, 128)) &&
+        (!('sourceUrl' in keys) || boundedString(data.sourceUrl, 2048));
+    }
+
+    function validShoppingConfig(data, keys) {
+      return keys.hasOnly(['list']) && (!('list' in keys) || boundedList(data.list, 200));
+    }
+
+    // --- Pet logs ---------------------------------------------------------
+
+    // Entries written before "who logged it" existed carry neither field, so both
+    // stay optional; when present, the uid is the writer's and a name never
+    // comes without it. Neither may change afterwards.
+    function petLoggerOnCreate() {
+      let data = request.resource.data;
+      return (!('loggedByUid' in data) || data.loggedByUid == request.auth.uid) &&
+        (!('loggedByName' in data) || ('loggedByUid' in data && optionalString(data.loggedByName, 200)));
+    }
+
+    function petLoggerUnchanged() {
+      return request.resource.data.get('loggedByUid', null) == resource.data.get('loggedByUid', null) &&
+        request.resource.data.get('loggedByName', null) == resource.data.get('loggedByName', null);
+    }
+
+    function validFeedingLogFields(data, keys) {
+      return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName']) &&
+        (!('date' in keys) || dateValue(data.date)) &&
+        (!('cups' in keys) || boundedNumber(data.cups, 0, 1000)) &&
+        (!('foodType' in keys) || boundedString(data.foodType, 40)) &&
+        (!('foodAmountType' in keys) || boundedString(data.foodAmountType, 40)) &&
+        (!('comments' in keys) || optionalString(data.comments, 2000)) &&
+        (!('ampm' in keys) || data.ampm in ['AM', 'PM']);
+    }
+
+    function validMedicationLogFields(data, keys) {
+      return keys.hasOnly(['date', 'medication', 'dosage', 'notes', 'nextDueDate', 'loggedByUid', 'loggedByName']) &&
+        (!('date' in keys) || dateValue(data.date)) &&
+        (!('medication' in keys) || boundedString(data.medication, 200)) &&
+        (!('dosage' in keys) || boundedString(data.dosage, 200)) &&
+        (!('notes' in keys) || optionalString(data.notes, 2000)) &&
+        (!('nextDueDate' in keys) || optionalString(data.nextDueDate, 40));
+    }
+
+    function validCareLogFields(data, keys) {
+      return keys.hasOnly(['date', 'activity', 'notes', 'loggedByUid', 'loggedByName']) &&
+        (!('date' in keys) || dateValue(data.date)) &&
+        (!('activity' in keys) || boundedString(data.activity, 200)) &&
+        (!('notes' in keys) || optionalString(data.notes, 2000));
+    }
+
+    // --- Maintenance ------------------------------------------------------
+
+    // A householdId field, when present, names the household in the path.
+    function householdIdMatchesPath(householdId) {
+      return request.resource.data.get('householdId', householdId) == householdId;
+    }
+
+    function validMaintenanceLogFields(data, keys) {
+      return keys.hasOnly([
+          'householdId', 'targetType', 'assetId', 'vehicleId', 'formerTargetType', 'formerTargetName',
+          'title', 'item', 'date', 'type', 'notes', 'cost', 'partsUsed', 'serviceProvider', 'mileage',
+          'createdAt', 'updatedAt', 'summary', 'receiptUrl'
+        ]) &&
+        (!('targetType' in keys) || data.targetType in ['home_asset', 'vehicle', 'general']) &&
+        (!('assetId' in keys) || boundedString(data.assetId, 1000)) &&
+        (!('vehicleId' in keys) || boundedString(data.vehicleId, 1000)) &&
+        (!('formerTargetType' in keys) || data.formerTargetType in ['home_asset', 'vehicle']) &&
+        (!('formerTargetName' in keys) || boundedString(data.formerTargetName, 1000)) &&
+        (!('title' in keys) || boundedString(data.title, 1000)) &&
+        (!('item' in keys) || boundedString(data.item, 1000)) &&
+        (!('date' in keys) || boundedString(data.date, 40)) &&
+        (!('type' in keys) || data.type in ['repair', 'routine', 'inspection', 'cleaning', 'replacement', 'issue', 'other']) &&
+        (!('notes' in keys) || boundedString(data.notes, 20000)) &&
+        (!('cost' in keys) || data.cost is number) &&
+        (!('partsUsed' in keys) || boundedString(data.partsUsed, 20000)) &&
+        (!('serviceProvider' in keys) || boundedString(data.serviceProvider, 1000)) &&
+        (!('mileage' in keys) || data.mileage is number) &&
+        (!('createdAt' in keys) || boundedString(data.createdAt, 40)) &&
+        (!('updatedAt' in keys) || boundedString(data.updatedAt, 40)) &&
+        (!('summary' in keys) || boundedString(data.summary, 20000)) &&
+        (!('receiptUrl' in keys) || boundedString(data.receiptUrl, 2048));
+    }
+
+    function validHomeAssetFields(data, keys) {
+      return keys.hasOnly([
+          'householdId', 'name', 'category', 'location', 'brand', 'model', 'serialNumber', 'purchaseDate',
+          'purchasePrice', 'warrantyExpiration', 'warrantyProvider', 'status', 'notes', 'schedules',
+          'createdAt', 'updatedAt'
+        ]) &&
+        (!('name' in keys) || nonEmptyString(data.name, 1000)) &&
+        (!('category' in keys) || boundedString(data.category, 1000)) &&
+        (!('location' in keys) || boundedString(data.location, 1000)) &&
+        (!('brand' in keys) || boundedString(data.brand, 1000)) &&
+        (!('model' in keys) || boundedString(data.model, 1000)) &&
+        (!('serialNumber' in keys) || boundedString(data.serialNumber, 1000)) &&
+        (!('purchaseDate' in keys) || boundedString(data.purchaseDate, 40)) &&
+        (!('purchasePrice' in keys) || data.purchasePrice is number) &&
+        (!('warrantyExpiration' in keys) || boundedString(data.warrantyExpiration, 40)) &&
+        (!('warrantyProvider' in keys) || boundedString(data.warrantyProvider, 1000)) &&
+        (!('status' in keys) || data.status in ['active', 'needs_attention', 'retired']) &&
+        (!('notes' in keys) || boundedString(data.notes, 20000)) &&
+        (!('schedules' in keys) || boundedList(data.schedules, 100)) &&
+        (!('createdAt' in keys) || boundedString(data.createdAt, 40)) &&
+        (!('updatedAt' in keys) || boundedString(data.updatedAt, 40));
+    }
+
+    function validVehicleFields(data, keys) {
+      return keys.hasOnly([
+          'householdId', 'nickname', 'year', 'make', 'model', 'trim', 'vin', 'licensePlate', 'currentMileage',
+          'purchaseDate', 'purchasePrice', 'insuranceProvider', 'registrationExpiration', 'inspectionExpiration',
+          'status', 'notes', 'serviceSchedules', 'createdAt', 'updatedAt'
+        ]) &&
+        (!('nickname' in keys) || nonEmptyString(data.nickname, 1000)) &&
+        (!('year' in keys) || data.year is number) &&
+        (!('make' in keys) || boundedString(data.make, 1000)) &&
+        (!('model' in keys) || boundedString(data.model, 1000)) &&
+        (!('trim' in keys) || boundedString(data.trim, 1000)) &&
+        (!('vin' in keys) || boundedString(data.vin, 1000)) &&
+        (!('licensePlate' in keys) || boundedString(data.licensePlate, 1000)) &&
+        (!('currentMileage' in keys) || data.currentMileage is number) &&
+        (!('purchaseDate' in keys) || boundedString(data.purchaseDate, 40)) &&
+        (!('purchasePrice' in keys) || data.purchasePrice is number) &&
+        (!('insuranceProvider' in keys) || boundedString(data.insuranceProvider, 1000)) &&
+        (!('registrationExpiration' in keys) || boundedString(data.registrationExpiration, 40)) &&
+        (!('inspectionExpiration' in keys) || boundedString(data.inspectionExpiration, 40)) &&
+        (!('status' in keys) || data.status in ['active', 'needs_attention', 'retired', 'sold']) &&
+        (!('notes' in keys) || boundedString(data.notes, 20000)) &&
+        (!('serviceSchedules' in keys) || boundedList(data.serviceSchedules, 100)) &&
+        (!('createdAt' in keys) || boundedString(data.createdAt, 40)) &&
+        (!('updatedAt' in keys) || boundedString(data.updatedAt, 40));
+    }
+
+    // --- Barcode library --------------------------------------------------
+
+    // A product photo is a download URL of this household's barcode-library
+    // folder in this project's Storage (or the Storage emulator for demo-
+    // projects), or an Open Food Facts image. Empty means "no photo".
+    function validBarcodeImageUrl(householdId, url) {
+      let folder = '/o/households%2F' + householdId + '%2Fbarcode-library%2F[^/?#]+([?].*)?$';
+      return url == '' ||
+        url.matches('^https://firebasestorage[.]googleapis[.]com/v0/b/homehub-j91jb[.](appspot[.]com|firebasestorage[.]app)' + folder) ||
+        url.matches('^http://(127[.]0[.]0[.]1|localhost):9199/v0/b/demo-[a-z0-9-]+[.]appspot[.]com' + folder) ||
+        url.matches('^https://(images|static)[.]openfoodfacts[.](org|net)/[^?#]*([?].*)?$');
+    }
+
+    function validBarcodeItemFields(householdId, data, keys) {
+      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt']) &&
+        (!('name' in keys) || nonEmptyString(data.name, 200)) &&
+        (!('imageUrl' in keys) || (boundedString(data.imageUrl, 2048) && validBarcodeImageUrl(householdId, data.imageUrl))) &&
+        (!('imagePath' in keys) ||
+          (boundedString(data.imagePath, 512) && data.imagePath.matches('^households/' + householdId + '/barcode-library/[^/]+$'))) &&
+        (!('createdAt' in keys) || boundedString(data.createdAt, 40));
+    }
+
+    // ---------------------------------------------------------------------
     // Households
     // ---------------------------------------------------------------------
 
@@ -535,13 +853,18 @@ service cloud.firestore {
       match /chores/{choreId} {
         allow read: if hasHouseholdPermission(householdId, 'chores.view');
         allow create: if hasHouseholdPermission(householdId, 'chores.create') &&
-          choreCreatedWithServerCompletion();
+          choreCreatedWithServerCompletion() &&
+          request.resource.data.keys().hasAll(['task']) &&
+          validChoreFields(request.resource.data, writtenKeys()) &&
+          choreCreateAssignmentAllowed(householdId);
         allow update: if choreCompletionStampValid() &&
+          validChoreFields(request.resource.data, writtenKeys()) &&
           (
             (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks', 'completedAtServer']) &&
               hasHouseholdPermission(householdId, 'chores.complete')) ||
             hasHouseholdPermission(householdId, 'chores.edit')
-          );
+          ) &&
+          choreReassignmentAllowed(householdId);
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
       }
 
@@ -578,8 +901,13 @@ service cloud.firestore {
 
       match /chore-templates/{templateId} {
         allow read: if hasHouseholdPermission(householdId, 'chores.view');
-        allow create: if hasHouseholdPermission(householdId, 'chores.create');
-        allow update: if hasHouseholdPermission(householdId, 'chores.edit');
+        allow create: if hasHouseholdPermission(householdId, 'chores.create') &&
+          request.resource.data.keys().hasAll(['task']) &&
+          validChoreTemplateFields(request.resource.data, writtenKeys()) &&
+          templateAssignmentAllowed(householdId);
+        allow update: if hasHouseholdPermission(householdId, 'chores.edit') &&
+          validChoreTemplateFields(request.resource.data, writtenKeys()) &&
+          templateAssignmentAllowed(householdId);
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
       }
 
@@ -598,18 +926,27 @@ service cloud.firestore {
 
       match /shopping-lists/{listId} {
         allow read: if hasHouseholdPermission(householdId, 'shopping.view');
-        allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+        allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          request.resource.data.keys().hasAll(['name']) &&
+          validShoppingListFields(request.resource.data, writtenKeys());
+        allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          validShoppingListFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
 
         match /items/{itemId} {
           allow read: if hasHouseholdPermission(householdId, 'shopping.view');
-          allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+          allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+            request.resource.data.keys().hasAll(['name']) &&
+            validShoppingItemFields(request.resource.data, writtenKeys());
+          allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+            validShoppingItemFields(request.resource.data, writtenKeys());
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
 
         match /config/{configId} {
           allow read: if hasHouseholdPermission(householdId, 'shopping.view');
-          allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+          allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+            validShoppingConfig(request.resource.data, writtenKeys());
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
       }
@@ -622,7 +959,11 @@ service cloud.firestore {
 
       match /barcode-library/{barcodeId} {
         allow read: if hasHouseholdPermission(householdId, 'shopping.view');
-        allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit');
+        allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          barcodeId.size() <= 128 &&
+          validBarcodeItemFields(householdId, request.resource.data, writtenKeys());
+        allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          validBarcodeItemFields(householdId, request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
       }
 
@@ -632,39 +973,56 @@ service cloud.firestore {
 
         match /feeding-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
-          allow create, update: if hasHouseholdPermission(householdId, 'pets.addLogs');
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validFeedingLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+          allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validFeedingLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
         }
 
         match /medication-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
-          allow create, update: if hasHouseholdPermission(householdId, 'pets.addLogs');
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+          allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
         }
 
         match /care-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
-          allow create, update: if hasHouseholdPermission(householdId, 'pets.addLogs');
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+          allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
         }
       }
 
       match /home-assets/{assetId} {
         allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
-        allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit');
+        allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit') &&
+          householdIdMatchesPath(householdId) &&
+          validHomeAssetFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 
       match /vehicles/{vehicleId} {
         allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
-        allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit');
+        allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit') &&
+          householdIdMatchesPath(householdId) &&
+          validVehicleFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 
       match /maintenance/{logId} {
         allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
-        allow create: if hasHouseholdPermission(householdId, 'maintenance.createLogs');
-        allow update: if hasHouseholdPermission(householdId, 'maintenance.edit');
+        allow create: if hasHouseholdPermission(householdId, 'maintenance.createLogs') &&
+          householdIdMatchesPath(householdId) &&
+          validMaintenanceLogFields(request.resource.data, writtenKeys());
+        allow update: if hasHouseholdPermission(householdId, 'maintenance.edit') &&
+          householdIdMatchesPath(householdId) &&
+          validMaintenanceLogFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 
