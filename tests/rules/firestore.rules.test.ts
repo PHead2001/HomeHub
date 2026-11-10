@@ -1395,6 +1395,76 @@ describe('content shapes: shopping', () => {
     await assertSucceeds(setDoc(item(users.member, 's2-max'), built({ size: 100000, sizeUnit: 'x'.repeat(16) })));
   });
 
+  // S3: shopping-list-client.tsx tick / un-tick / Undo, item-edit-sheet.tsx edits, and
+  // the Undo of a delete (item-writes.ts tickUpdate, untickUpdate, undoTickUpdate, editUpdate; items.ts restoreItemData).
+  test('S3 tick, un-tick and edit stamps are the writer and the server time', async () => {
+    await assertSucceeds(setDoc(item(users.member, 's3'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(updateDoc(item(users.member, 's3'), {
+      status: 'purchased', purchasedByUid: users.member.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-1', undoOpId: deleteField(),
+    }));
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), { status: 'needed', purchasedByUid: null, purchasedAt: null }));
+    // Offline tick without a signed-in uid (both stamps null).
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), { status: 'purchased', purchasedByUid: null, purchasedAt: null, purchaseOpId: 'op-0' }));
+    // purchasedAt must equal request.time; purchasedByUid must be the writer.
+    await assertFails(updateDoc(item(users.member, 's3'), {
+      status: 'purchased', purchasedByUid: users.member.uid, purchasedAt: Timestamp.fromDate(new Date('2026-01-01')), purchaseOpId: 'op-2',
+    }));
+    await assertFails(updateDoc(item(users.member, 's3'), { status: 'purchased', purchasedByUid: users.owner.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-3' }));
+    await assertFails(updateDoc(item(users.member, 's3'), { purchasedAt: serverTimestamp(), purchasedByUid: null }));
+    await assertFails(updateDoc(item(users.member, 's3'), { purchaseOpId: '' }));
+    await assertFails(updateDoc(item(users.member, 's3'), { purchaseOpId: 'x'.repeat(65) }));
+    // Edits: the writer and the server time, together.
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), {
+      name: 'Oat milk', nameKey: 'oat milk', quantity: 3, category: 'Drinks', categorySource: 'manual', editedByUid: users.owner.uid, editedAt: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(item(users.owner, 's3'), { quantity: 4, editedByUid: users.owner.uid, editedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedByUid: users.owner.uid, editedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedByUid: users.member.uid }));
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedByUid: users.member.uid, editedAt: Timestamp.fromDate(new Date('2026-01-01')) }));
+    // editedAt alone would sign someone else's name to this edit.
+    await assertFails(updateDoc(item(users.member, 's3'), { quantity: 5, editedAt: serverTimestamp() }));
+    await assertFails(setDoc(item(users.member, 's3-edit-spoof'), built({ editedByUid: users.owner.uid, editedAt: serverTimestamp() })));
+  });
+
+  test('S3 a tick Undo only lands while its purchase is the current one', async () => {
+    const tick = (user: Identity, op: string) => updateDoc(item(user, 's3-undo'), {
+      status: 'purchased', purchasedByUid: user.uid, purchasedAt: serverTimestamp(), purchaseOpId: op, undoOpId: deleteField(),
+    });
+    const undo = (user: Identity, op: string) => updateDoc(item(user, 's3-undo'), { status: 'needed', undoOpId: op, purchasedByUid: null, purchasedAt: null });
+    await assertSucceeds(setDoc(item(users.member, 's3-undo'), built()));
+    await assertSucceeds(tick(users.member, 'op-a'));
+    await assertSucceeds(undo(users.member, 'op-a'));
+    // Ticked again by the owner: the member's late Undo of the first tick is refused.
+    await assertSucceeds(tick(users.member, 'op-b'));
+    await assertSucceeds(tick(users.owner, 'op-c'));
+    await assertFails(undo(users.member, 'op-b'));
+    // ... also the Undo of the very first tick, replayed (its undoOpId was removed by the re-tick).
+    await assertFails(undo(users.member, 'op-a'));
+    assert.equal((await getDoc(item(users.owner, 's3-undo'))).get('status'), 'purchased');
+    // An Undo may not rewrite the purchase it names, and only goes back to needed.
+    await assertFails(updateDoc(item(users.owner, 's3-undo'), { status: 'needed', undoOpId: 'op-z', purchaseOpId: 'op-z' }));
+    await assertFails(updateDoc(item(users.owner, 's3-undo'), { status: 'purchased', undoOpId: 'op-c' }));
+    await assertSucceeds(undo(users.owner, 'op-c'));
+    // undoOpId never comes with a create.
+    await assertFails(setDoc(item(users.member, 's3-undo-new'), built({ undoOpId: 'op-a' })));
+  });
+
+  test('S3 a delete Undo re-creates the item only if it is absent, keeping who added it', async () => {
+    await assertSucceeds(setDoc(item(users.member, 's3-restore'), built({ addedByUid: users.member.uid, nameKey: 'milk' })));
+    const snapshot = (await getDoc(item(users.member, 's3-restore'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-restore')));
+    // The owner restores the member's item: original adder kept, restorer recorded.
+    await assertSucceeds(setDoc(item(users.owner, 's3-restore'), { ...snapshot, restoredByUid: users.owner.uid, restoreOpId: 'restore-1' }));
+    // A second restore (another device, or a replay) does not overwrite the item that is back.
+    await assertFails(setDoc(item(users.member, 's3-restore'), { ...snapshot, restoredByUid: users.member.uid, restoreOpId: 'restore-2' }));
+    await assertFails(updateDoc(item(users.owner, 's3-restore'), { restoreOpId: 'restore-3' }));
+    // The restorer must be the writer, the adder a member; a legacy item without an adder may be restored.
+    await assertFails(setDoc(item(users.owner, 's3-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid, restoreOpId: 'r' })));
+    await assertFails(setDoc(item(users.owner, 's3-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid, restoreOpId: 'r' })));
+    await assertSucceeds(setDoc(item(users.owner, 's3-legacy'), built({ restoredByUid: users.owner.uid, restoreOpId: 'r' })));
+    await assertFails(setDoc(item(users.owner, 's3-empty-op'), built({ restoredByUid: users.owner.uid, restoreOpId: '' })));
+  });
+
   test('an item with a legacy field stays updatable on its other fields', async () => {
     await assertSucceeds(updateDoc(item(users.member, 'legacy'), { status: 'purchased' }));
     await assertSucceeds(updateDoc(item(users.member, 'legacy'), { quantity: increment(1) }));
