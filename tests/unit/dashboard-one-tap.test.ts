@@ -8,7 +8,7 @@ import { houseCleanReady } from '../../src/lib/dashboard/celebration';
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import { choresFilteredHref } from '../../src/lib/dashboard/links';
 import { applyAnswer, emptyStore, sectionStates } from '../../src/lib/dashboard/dashboard-store';
-import { choresFiltersHref, parseChoresFilters } from '../../src/lib/chores/url-state';
+import { choresFiltersHref, choresFiltersKey, parseChoresFilters } from '../../src/lib/chores/url-state';
 import { houseCleanShown, houseCleanStorageKey, markHouseCleanShown } from '../../src/lib/chores/house-clean';
 
 // Local noon on 2026-08-01 (the E2E seed's day in any time zone).
@@ -207,6 +207,15 @@ describe('HP-25 + GOAL-filters: Chores filters in the URL', () => {
     assert.equal(choresFiltersHref('/chores', params('due=overdue&who=me'), { room: 'kitchen' }), '/chores?room=kitchen&due=overdue&who=me');
     assert.equal(choresFiltersHref('/chores', params('room=kitchen&due=overdue&x=1'), { due: 'all' }), '/chores?room=kitchen&x=1');
     assert.equal(choresFiltersHref('/chores', params('room=kitchen'), { room: 'all' }), '/chores');
+  });
+
+  it('the To Do room groups remount on every filter, so newly listed rooms open', () => {
+    const base = parseChoresFilters(params('due=overdue&who=me'));
+    const keys = [base, { ...base, who: 'all' as const }, { ...base, due: 'all' as const }, { ...base, room: 'kitchen' }].map(choresFiltersKey);
+    assert.equal(new Set(keys).size, keys.length);
+    assert.equal(choresFiltersKey(base), choresFiltersKey(parseChoresFilters(params('who=me&due=overdue'))));
+    const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
+    assert.match(page, /<Accordion key=\{`\$\{prefix\}-\$\{choresFiltersKey\(\{ \.\.\.filters, room: filterRoomId \}\)\}`\}/);
   });
 
   it('the dashboard links match what the page writes', () => {

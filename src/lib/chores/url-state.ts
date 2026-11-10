@@ -67,6 +67,15 @@ export function parseChoresFilters(params: ParamsLike | null | undefined): Chore
 }
 
 /**
+ * A key that changes whenever any filter changes. The To Do room groups open by default
+ * only when they mount, so the page remounts them on this key: a group that a filter
+ * change brings in (Mine off shows a housemate's room) opens like the others.
+ */
+export function choresFiltersKey(filters: ChoresFilters): string {
+  return `${filters.room}|${filters.due}|${filters.who}`;
+}
+
+/**
  * The href with some filters changed, keeping the others and unrelated params, in a
  * stable order (room, due, who) so a link and the page's own write produce the same URL.
  */

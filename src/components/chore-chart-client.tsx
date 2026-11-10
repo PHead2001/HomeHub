@@ -52,7 +52,7 @@ import { morphStyle } from '@/lib/motion';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
-import { ALL_ROOMS, choresFiltersHref, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
+import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
 import { isAssignedTo } from '@functions/shared/assignee';
 import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, type CleanRoom } from '@/lib/chores/house-clean';
 
@@ -842,10 +842,11 @@ export function ChoreChartClient() {
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
     const groups = groupByRoom(entries);
-    // Keyed on the room filter: defaultValue only applies on mount, so a new
-    // filter remounts the groups with the newly selected room open.
+    // Keyed on every filter: defaultValue only applies on mount, so a new room, due or
+    // who filter remounts the groups with each newly listed room open (clearing Mine
+    // brings in housemates' rooms, which would otherwise stay collapsed).
     return (
-      <Accordion key={`${prefix}-${filterRoomId}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
+      <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
         {groups.map(group => (
           <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
