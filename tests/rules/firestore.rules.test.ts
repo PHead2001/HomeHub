@@ -644,6 +644,62 @@ describe('profile demographics (no longer collected)', () => {
   });
 });
 
+describe('member contact documents', () => {
+  const contactDoc = (reader: Identity, subject: Identity, id = 'contact', household = householdA) =>
+    doc(dbFor(reader), 'households', household, 'members', subject.uid, 'private', id);
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      for (const user of [users.member, users.pending, users.guest]) {
+        await setDoc(doc(db, 'households', householdA, 'members', user.uid, 'private', 'contact'), {
+          email: user.email, updatedAt: '2026-08-01T12:00:00.000Z',
+        });
+      }
+      await setDoc(doc(db, 'households', householdA, 'members', users.member.uid, 'private', 'other'), { email: users.member.email });
+    });
+  });
+
+  test('the person reads their own, including while pending', async () => {
+    await assertSucceeds(getDoc(contactDoc(users.member, users.member)));
+    await assertSucceeds(getDoc(contactDoc(users.pending, users.pending)));
+  });
+
+  test('owners, admins and members granted household.manageMembers read anyone’s', async () => {
+    await assertSucceeds(getDoc(contactDoc(users.owner, users.member)));
+    await assertSucceeds(getDoc(contactDoc(users.admin, users.pending)));
+    await environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'households', householdA, 'members', users.child.uid), {
+        role: 'member', permissions: { 'household.manageMembers': true },
+      }));
+    await assertSucceeds(getDoc(contactDoc(users.child, users.guest)));
+  });
+
+  test('housemates without household.manageMembers, pending people and outsiders cannot', async () => {
+    for (const reader of [users.guest, users.child, users.denied, users.pending, users.legacy, users.ownerB, users.stranger]) {
+      await assertFails(getDoc(contactDoc(reader, users.member)));
+    }
+    await environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'households', householdA, 'members', users.admin.uid), {
+        permissions: { 'household.manageMembers': false },
+      }));
+    await assertFails(getDoc(contactDoc(users.admin, users.member)));
+    await assertFails(getDoc(contactDoc(users.owner, users.member, 'contact', householdB)));
+  });
+
+  test('nobody lists them, reads other private documents, or writes them from a client', async () => {
+    await assertFails(getDocs(collection(dbFor(users.owner), 'households', householdA, 'members', users.member.uid, 'private')));
+    await assertFails(getDoc(contactDoc(users.member, users.member, 'other')));
+    await assertFails(getDoc(contactDoc(users.owner, users.member, 'other')));
+    for (const writer of [users.member, users.owner, users.admin]) {
+      await assertFails(setDoc(contactDoc(writer, users.member), { email: 'spoof@example.test', updatedAt: 'now' }));
+      await assertFails(updateDoc(contactDoc(writer, users.member), { email: 'spoof@example.test' }));
+      await assertFails(deleteDoc(contactDoc(writer, users.member)));
+    }
+    await assertFails(setDoc(contactDoc(users.lonerA, users.lonerA), { email: users.lonerA.email, updatedAt: 'now' }));
+  });
+});
+
 describe('push tokens', () => {
   const pushDoc = (reader: Identity, owner: Identity = reader, id = 'push') =>
     doc(dbFor(reader), 'users', owner.email, 'private', id);

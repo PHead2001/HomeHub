@@ -10,7 +10,8 @@ import {
 } from "firebase-admin/firestore";
 import {getMessaging, type MulticastMessage} from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
-import {runHouseholdReminders} from "./reminders";
+import {readMemberContacts, runHouseholdReminders} from "./reminders";
+import {withContactEmails} from "./shared/member-contact";
 import {
   clampText,
   isApprovedMember,
@@ -59,10 +60,14 @@ export const sendPushOnNewNotification = onDocumentCreated(
     }
 
     // Membership records are the only authority for who receives a push.
-    const membersSnap = await db.collection("households").doc(householdId)
-      .collection("members").get();
-    const members: MemberRecord[] = membersSnap.docs
+    const house = db.collection("households").doc(householdId);
+    const membersSnap = await house.collection("members").get();
+    const records: MemberRecord[] = membersSnap.docs
       .map((doc) => ({uid: doc.id, ...doc.data()}));
+    // Emails come from each approved member's contact document first, then
+    // the membership record (the contact document is being backfilled).
+    const members = withContactEmails(records, await readMemberContacts(
+      house, records.filter(isApprovedMember).map((m) => m.uid)));
     // Members who cannot see this category in the app (for example no
     // pets.view for a pets reminder) get no push at all, matching the bell.
     const recipientEmails = filterRecipientsByCategory(

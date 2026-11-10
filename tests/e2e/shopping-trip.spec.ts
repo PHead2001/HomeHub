@@ -321,8 +321,10 @@ test.describe('shopping trip', () => {
         const snapshot = await groceryItems.where('name', '==', name).get();
         return snapshot.docs.map((document) => document.data().quantity);
       }).toEqual([4]);
-      // The add has finished once the field is cleared.
+      // The field clears at submit, before the save finishes; the save has finished
+      // once the Add button is enabled again (an empty Enter while it saves is ignored).
       await expect(field).toHaveValue('');
+      await expect(page.getByRole('button', { name: 'Add to Weekly Groceries' })).toBeEnabled();
 
       // Empty input is an inline field error, not a toast.
       await field.fill(' , ');
