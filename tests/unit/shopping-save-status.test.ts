@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  categorizationNotice,
+  dialogAfterSave,
+  peekSettled,
   classifySettled,
   classifyUnsettled,
   createSubmissionGuard,
@@ -240,5 +245,61 @@ describe('tick follow-up on a weak connection', () => {
     await late;
     await check();
     assert.equal(checks, 1);
+  });
+});
+
+describe('late Add Item saves never touch a newer draft (SH-4)', () => {
+  const submitted = { session: 3, listId: 'a', revision: 10 };
+  test('the same dialog, list and draft: cleared and closed', () => {
+    assert.deepEqual(dialogAfterSave(submitted, { ...submitted, open: true }), { reset: true, close: true });
+  });
+  test('closed, reopened on another list and a new draft typed: left alone', () => {
+    assert.deepEqual(dialogAfterSave(submitted, { session: 5, listId: 'b', revision: 14, open: true }), { reset: false, close: false });
+  });
+  test('a new draft typed in the same dialog: left alone', () => {
+    assert.deepEqual(dialogAfterSave(submitted, { ...submitted, revision: 11, open: true }), { reset: false, close: false });
+  });
+  test('reopened on another list with the submitted text untouched: cleared, not closed', () => {
+    assert.deepEqual(dialogAfterSave(submitted, { session: 5, listId: 'b', revision: 10, open: true }), { reset: true, close: false });
+  });
+  test('the same list in a new opening of the dialog is not closed', () => {
+    assert.equal(dialogAfterSave(submitted, { ...submitted, session: 5, open: true }).close, false);
+  });
+});
+
+describe('AI sorting failures only say "saved" for confirmed writes', () => {
+  test('peekSettled reads a known answer without waiting, else pending', async () => {
+    assert.equal(await peekSettled(Promise.resolve('saved')), 'saved');
+    assert.equal(await peekSettled(Promise.resolve('failed')), 'failed');
+    assert.equal(await peekSettled(new Promise(() => undefined)), 'pending');
+  });
+  const reason = 'Automatic sorting timed out.';
+  test('confirmed entries are saved to Other', () => {
+    assert.deepEqual(categorizationNotice({ savedNames: ['Milk'], unconfirmedNames: [] }, reason), {
+      title: 'Item saved to Other',
+      description: 'Automatic sorting timed out. Milk stays under Other.',
+    });
+  });
+  test('an unconfirmed entry is only "not sorted", never "saved"', () => {
+    const notice = categorizationNotice({ savedNames: [], unconfirmedNames: ['Milk'] }, reason);
+    assert.equal(notice?.title, 'Automatic sorting failed');
+    assert.doesNotMatch(`${notice?.title} ${notice?.description}`, /saved/i);
+    assert.match(notice!.description, /Milk was not sorted/);
+  });
+  test('a mix names both honestly; nothing to say is null', () => {
+    const notice = categorizationNotice({ savedNames: ['Milk', 'Eggs'], unconfirmedNames: ['Bread'] }, reason);
+    assert.equal(notice?.title, 'Automatic sorting failed');
+    assert.match(notice!.description, /Bread was not sorted\. 2 items stay under Other\./);
+    assert.equal(categorizationNotice({ savedNames: [], unconfirmedNames: [] }, reason), null);
+  });
+});
+
+describe('Add Item dialog wiring', () => {
+  test('a submission captures its draft and only clears or closes through dialogAfterSave', () => {
+    const source = readFileSync(join(process.cwd(), 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
+    const submit = source.slice(source.indexOf('const onAddItemSubmit'), source.indexOf('const onQuickAdd'));
+    assert.match(submit, /const submittedDraft = currentDialogDraft\(\);/);
+    assert.equal(submit.match(/finishDialogSave\(submittedDraft\)/g)?.length, 2);
+    assert.doesNotMatch(submit, /form\.reset\(|setIsAddItemDialogOpen\(false\)/);
   });
 });

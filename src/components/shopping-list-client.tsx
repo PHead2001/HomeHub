@@ -37,7 +37,7 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
-import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite } from '@/lib/shopping/save-status';
+import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { editUpdate, restoreDocument, restoreIfAbsent, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
@@ -63,7 +63,7 @@ import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
-import { deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
+import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
@@ -280,9 +280,11 @@ export function ShoppingListClient({
   const [openSections, setOpenSections] = useState<string[]>(['needed']);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [handoffMode, setHandoffMode] = useState<null | 'pantry' | 'then-clear'>(null);
-  // The purchased items shown when Clear was pressed: exactly those are cleared,
-  // even if the live list changes while the dialog is open.
-  const [clearIds, setClearIds] = useState<string[]>([]);
+  // The purchased items shown when Clear was pressed, with the household and list
+  // they came from: exactly those are cleared, even if the live list changes while
+  // the dialog is open, and never on another list (`clearIdsFor`).
+  const [clearTarget, setClearTarget] = useState<ClearTarget | null>(null);
+  const clearIds = clearIdsFor(clearTarget, householdId, selectedListId) ?? [];
   // The list this device is deleting, so its own deletion never reads as "deleted elsewhere".
   const [deletingListId, setDeletingListId] = useState<string | null>(null);
   // The open list as last seen in this household's lists snapshot (shown when it is
@@ -402,6 +404,9 @@ export function ShoppingListClient({
   useEffect(() => {
     setOpenSections(['needed']);
     setIsReceiptOpen(false);
+    // A Clear confirmation belongs to the list it was opened on.
+    setIsClearAlertOpen(false);
+    setClearTarget(null);
   }, [selectedListId]);
 
   // A `?list=` link to a list that no longer exists falls back to the overview.
@@ -491,6 +496,35 @@ export function ShoppingListClient({
   const { watch, setValue, getValues } = form;
   const currentQuantity = watch('quantity');
 
+  // Which opening of Add Item this is and how often its draft changed, so a save
+  // confirmed late never wipes or closes a newer draft (`dialogAfterSave`).
+  const addDialogSessionRef = useRef(0);
+  const addDraftRevisionRef = useRef(0);
+  const addDialogOpenRef = useRef(false);
+  addDialogOpenRef.current = isAddItemDialogOpen;
+  useEffect(() => {
+    addDialogSessionRef.current += 1;
+  }, [isAddItemDialogOpen]);
+  useEffect(() => {
+    return form.subscribe({
+      formState: { values: true },
+      callback: () => {
+        addDraftRevisionRef.current += 1;
+      },
+    });
+  }, [form]);
+  const currentDialogDraft = () => ({
+    session: addDialogSessionRef.current,
+    listId: selectedListIdRef.current,
+    revision: addDraftRevisionRef.current,
+  });
+  // After a confirmed save: clear and close only what still belongs to it.
+  const finishDialogSave = (submitted: DialogDraft) => {
+    const { reset, close } = dialogAfterSave(submitted, { ...currentDialogDraft(), open: addDialogOpenRef.current });
+    if (reset) form.reset({ name: '', quantity: 1, category: '' });
+    if (close) setIsAddItemDialogOpen(false);
+  };
+
   // One dialog submission at a time (SH-4c): a second Enter while it is sending is ignored.
   const dialogGuardRef = useRef(createSubmissionGuard());
   const [dialogStatus, setDialogStatus] = useState<string | null>(null);
@@ -531,12 +565,13 @@ export function ShoppingListClient({
     return outcomes;
   };
 
+  // "Saved to Other" only for entries the server confirmed; the rest were only not sorted.
   const reportCategorization = (report: CategorizationReport) => {
-    if (report.unavailable.length === 0) return;
-    const [first] = report.unavailable;
-    toast(report.unavailable.length === 1
-      ? { title: 'Item saved to Other', description: `${fallbackReasonText(report.reason)} ${first} stays under Other.` }
-      : { title: 'Items saved to Other', description: `${fallbackReasonText(report.reason)} ${pluralize(report.unavailable.length, 'item')} stay under Other.` });
+    const notice = categorizationNotice(
+      { savedNames: report.unavailable, unconfirmedNames: report.unconfirmed },
+      fallbackReasonText(report.reason),
+    );
+    if (notice) toast(notice);
   };
 
   // Only what is known: "Saved, will sync" needs the durable cache to show the write.
@@ -570,6 +605,7 @@ export function ShoppingListClient({
     const guard = dialogGuardRef.current;
     if (!guard.begin(submissionId)) return;
     const name = normalizeItemName(values.name);
+    const submittedDraft = currentDialogDraft();
     let keepGuard = false;
     try {
       const outcomes = await addEntries(
@@ -593,9 +629,9 @@ export function ShoppingListClient({
           guard.end(submissionId);
           setDialogStatus(null);
           if (final === 'saved') {
+            // Reported even when the member has moved on to another draft or list.
             reportAddResults([{ ...outcome, state: 'saved' }]);
-            form.reset({ name: '', quantity: 1, category: '' });
-            setIsAddItemDialogOpen(false);
+            finishDialogSave(submittedDraft);
           }
           // A late failure was reported by onLateError; the values are still in the dialog.
         });
@@ -603,8 +639,7 @@ export function ShoppingListClient({
       }
       setDialogStatus(null);
       reportAddResults(outcomes);
-      form.reset({ name: '', quantity: 1, category: '' });
-      setIsAddItemDialogOpen(false);
+      finishDialogSave(submittedDraft);
     } catch (error) {
       toastError(error, 'Could not add the item');
     } finally {
@@ -1002,13 +1037,17 @@ export function ShoppingListClient({
    * the screen, and "the list is empty, delete it?" is decided from a re-read of
    * the list (the confirmed state), not from a local status filter.
    */
-  const clearPurchasedItems = async (itemIds: readonly string[]) => {
+  const clearPurchasedItems = async (target: ClearTarget | null) => {
+    setIsClearAlertOpen(false);
+    setClearTarget(null);
     if (!householdId || !selectedList) return;
-    // Only clear the list that is on screen: the ids below came from it.
+    // Only clear the list that is on screen, and only with ids captured from it:
+    // a confirmation left over from another list (or household) does nothing.
     if (selectedListIdRef.current !== selectedList.id) return;
+    const itemIds = clearIdsFor(target, householdId, selectedList.id);
+    if (!itemIds) return;
     const list = selectedList;
     const ids = [...new Set(itemIds)];
-    setIsClearAlertOpen(false);
     if (ids.length === 0) {
       toast({ title: 'Nothing to clear' });
       return;
@@ -1084,7 +1123,12 @@ export function ShoppingListClient({
   };
 
   const openClear = () => {
-    setClearIds(listItemsRef.current.filter(item => item.status === 'purchased').map(item => item.id));
+    if (!householdId || !selectedListId) return;
+    setClearTarget({
+      householdId,
+      listId: selectedListId,
+      ids: listItemsRef.current.filter(item => item.status === 'purchased').map(item => item.id),
+    });
     setIsClearAlertOpen(true);
   };
 
@@ -1160,7 +1204,7 @@ export function ShoppingListClient({
                     </AlertDialogHeader>
                     <AlertDialogFooter className="gap-2">
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void clearPurchasedItems(clearIds)} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
+                    <AlertDialogAction onClick={() => void clearPurchasedItems(clearTarget)} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
                         {canHandoff ? 'Clear only' : 'Clear Purchased'}
                     </AlertDialogAction>
                     {canHandoff && (
