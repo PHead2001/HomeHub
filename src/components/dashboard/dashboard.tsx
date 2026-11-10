@@ -39,9 +39,10 @@ function useGoldenRoof(householdId: string | null, canView: boolean) {
 
 export function Dashboard() {
   const { currentUser, household, permissions } = useAuth();
-  const { facts, loading, failed, now } = useDashboardData();
+  const { facts, loading, failed, sections, retry, now, today, timeZone, context } = useDashboardData();
   const golden = useGoldenRoof(currentUser?.householdId ?? null, Boolean(permissions['chores.view']));
-  const dateLine = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  // The household's date (D-6), the same day every tile counts from.
+  const dateLine = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', timeZone });
 
   return (
     <div className="container mx-auto px-4 py-6 md:py-8">
@@ -54,9 +55,11 @@ export function Dashboard() {
         </p>
       </div>
 
-      <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} />
-      <MorningBrief facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} ready={!loading} />
-      <BentoGrid facts={facts} loading={loading} failed={failed} />
+      <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} rooms={sections.chores} timeZone={timeZone} onRetry={retry} />
+      {/* Keyed by the context: a household or member change resets the brief and its AI
+          rewrite; the household day rolling over does not (HP-4b). */}
+      <MorningBrief key={context} facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} today={today} ready={!loading} />
+      <BentoGrid facts={facts} loading={loading} failed={failed} sections={sections} timeZone={timeZone} onRetry={retry} />
 
       <div className="flex flex-wrap items-center gap-3">
         <HomeWrapped />
