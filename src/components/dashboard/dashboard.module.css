@@ -406,6 +406,177 @@
   }
 }
 
+/* ---------- Page layout (HP-12, HP-26) ---------- */
+/*
+ * Stacked by default (phones, portrait, narrow): subtitle, house, brief, tiles, footer.
+ * On every wide landscape screen (D-5: personal accounts too, no device setting) the
+ * page becomes two panes: the house on the left, the brief and tiles on the right.
+ * The house stage's height is capped to the screen (100dvh minus the header, the page
+ * padding and the house card's own rows), and its width follows from its aspect ratio
+ * (`--house-aspect`, set inline from the layout). Every budget is in rem, so at 115 or
+ * 130% text the house gets smaller and the page may scroll, but nothing is clipped:
+ * no pane has a fixed height.
+ */
+.page {
+  padding-block: 1.5rem;
+}
+@media (min-width: 768px) {
+  .page {
+    padding-block: 2rem;
+  }
+}
+
+.stageFrame {
+  width: 100%;
+  max-width: 42rem;
+  margin-inline: auto;
+}
+
+/*
+ * The subtitle line (HP-20c) is sized by its pane, not the viewport: beside the house
+ * it has at most half the page. Short date and temperature only below 24rem / 30rem of
+ * subtitle width (rem, so the thresholds grow with the text scale); past that the long
+ * date, then the weather condition. Whatever still does not fit wraps (see the component).
+ * Inline-size containment also keeps the subtitle from widening the house column.
+ */
+.subtitle {
+  container-type: inline-size;
+  min-width: 0;
+}
+.subtitleLongDate,
+.subtitleCondition {
+  display: none;
+}
+@container (min-width: 24rem) {
+  .subtitleShortDate {
+    display: none;
+  }
+  .subtitleLongDate {
+    display: inline;
+  }
+}
+@container (min-width: 30rem) {
+  .subtitleCondition {
+    display: inline;
+  }
+}
+
+/* The tile grid: 1, 2 or 4 columns; each cell's span comes from the tile descriptors. */
+.tileGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+.tileCell {
+  min-width: 0;
+  grid-column: span 1 / span 1;
+}
+.tileCell > * {
+  height: 100%;
+}
+.tileBody,
+.tileSkeleton {
+  min-height: 8.5rem;
+}
+@media (max-width: 639.98px) {
+  /* HP-26d: one or two lines of content take no fixed height on phones. */
+  .tileCompact .tileBody {
+    min-height: 0;
+  }
+  .tileCompact .tileSkeleton {
+    min-height: 5.5rem;
+  }
+}
+@media (min-width: 640px) {
+  .tileGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .tileCell {
+    grid-column: span var(--tile-span-sm, 1) / span var(--tile-span-sm, 1);
+  }
+}
+@media (min-width: 1024px) {
+  .tileGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .tileCell {
+    grid-column: span var(--tile-span-lg, 1) / span var(--tile-span-lg, 1);
+  }
+}
+
+@media (min-width: 1024px) and (orientation: landscape) {
+  .page {
+    /* Header (h-14 + border) + page padding + subtitle line + house card rows + slack. */
+    --house-stage-max-h: max(14rem, calc(100vh - 16.25rem - 1px));
+    display: grid;
+    grid-template-columns: fit-content(50%) minmax(0, 1fr);
+    column-gap: 1.5rem;
+    align-items: start;
+    padding-block: 0.75rem;
+  }
+  @supports (height: 100dvh) {
+    .page {
+      --house-stage-max-h: max(14rem, calc(100dvh - 16.25rem - 1px));
+    }
+  }
+  .stageFrame {
+    width: calc(var(--house-stage-max-h) * var(--house-aspect, 1));
+    max-width: 100%;
+  }
+  .page .lead {
+    margin-bottom: 0.75rem;
+  }
+  .page .houseSection {
+    margin-bottom: 0;
+  }
+  .page .tilesSection {
+    margin-bottom: 0.75rem;
+  }
+  .page .briefSlot > * {
+    margin-bottom: 0.75rem;
+  }
+  .page .briefSlot [data-testid='morning-brief'] {
+    font-size: 1.125rem;
+    line-height: 1.375;
+  }
+  .tileGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+  .tileCell {
+    grid-column: span var(--tile-span-wide, 1) / span var(--tile-span-wide, 1);
+  }
+  /* Compact tiles beside the house so four rows fit the screen (HP-12d). */
+  .tileGrid .tileBody {
+    min-height: 7rem;
+    padding: 0.75rem;
+    gap: 0.25rem;
+  }
+  .tileGrid .tileSkeleton {
+    min-height: 7.5rem;
+  }
+  .tileGrid .ring {
+    width: 4rem;
+    height: 4rem;
+  }
+  .tileGrid .wideHide,
+  .page .wideHidden {
+    display: none;
+  }
+  /* HP-12c: the heading stays for screen readers only. */
+  .page .wideSrOnly {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+
 /* ---------- App shell time-of-day tint (H02) ---------- */
 /* Very low contrast: scaled by the theme's single ambient intensity token. */
 .shellTint {
