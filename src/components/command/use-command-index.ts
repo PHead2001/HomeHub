@@ -16,6 +16,7 @@ import { INDEX_SECTIONS, sectionUnreadable, type IndexSection } from '@/lib/dash
 import { shoppingListHref } from '@/lib/dashboard/links';
 import { feedingPlan } from '@/lib/pets/care';
 import type { PetProfile } from '@/lib/pets/types';
+import { publicDisplayName } from '@/lib/member-directory';
 
 export type IndexEntry = { id: string; label: string; detail?: string; href: string; group: 'Chores' | 'Shopping' | 'Pets' | 'Maintenance' };
 
@@ -109,8 +110,14 @@ export function useCommandIndex(open: boolean): CommandIndex {
         entries,
         members: members
           ? rows(members)
-              .filter((member) => member.role !== 'newuser' && (member.status ?? 'active') === 'active' && typeof member.email === 'string')
-              .map((member) => ({ uid: str(member.uid, member.id), email: member.email as string, name: str(member.displayName, member.email as string) }))
+              // Public member data (src/lib/member-directory.ts): the name is never an email.
+              // The record's email, while it has one, only matches "for sam" locally.
+              .filter((member) => member.role !== 'newuser' && (member.status ?? 'active') === 'active')
+              .map((member) => ({
+                uid: str(member.uid, member.id),
+                ...(typeof member.email === 'string' && member.email ? { email: member.email } : {}),
+                name: publicDisplayName(member.displayName),
+              }))
           : [],
         pets: pets ? rows(pets).map((pet) => {
           const plan = feedingPlan(pet as unknown as PetProfile);

@@ -8,6 +8,7 @@
 import { relativeDays, toDateValue } from './dates';
 import { choreDueKey, completionInstant, diffDayKeys, type ChoreRecord } from '../chores/dates';
 import { collapseMissedRecurring } from '../chores/list';
+import { isAssignedTo } from '../../../functions/src/shared/assignee';
 import { daysUntilExpiry } from '../shopping/pantry';
 import { isUsedUpPantryDoc } from '../shopping/pantry-batches';
 import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
@@ -250,7 +251,7 @@ export function computeChoreFacts(
     const finishedAt = completionInstant(chore);
     const completedToday = completed && finishedAt !== null && localDay(finishedAt, zone) === today;
     const isToday = key === today;
-    const mine = chore.assignedToEmail === viewer.email;
+    const mine = isAssignedTo(chore, viewer);
     const listed = Array.isArray(chore.roomIds) ? chore.roomIds.filter((id): id is string => typeof id === 'string' && id !== '') : [];
     // A room that no longer exists (deleted, or not readable) keeps its chores in an
     // "Unknown Room" bucket, as the Chores page labels them, so their work is never

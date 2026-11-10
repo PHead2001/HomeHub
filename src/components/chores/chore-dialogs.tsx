@@ -3,7 +3,8 @@
 import { useMemo, useRef, useState } from 'react';
 import { format, getDay } from 'date-fns';
 import { Edit, Filter, Loader2, PlusCircle, Trash2, X } from 'lucide-react';
-import type { ChoreTemplate, Recurrence, Room, User as HomeHubUser } from '@/lib/types';
+import type { ChoreTemplate, Recurrence, Room } from '@/lib/types';
+import type { HouseholdPerson } from '@/lib/member-directory';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -368,21 +369,21 @@ export function AssignChoresDialog({
   users,
   rooms,
   templatesToAssign,
-  currentUserEmail,
+  currentUserUid,
   capabilities,
   onAssign,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  users: HomeHubUser[];
+  users: HouseholdPerson[];
   rooms: Room[];
   templatesToAssign: ChoreTemplate[];
-  currentUserEmail: string;
+  currentUserUid: string;
   capabilities: ChoreCapabilities;
-  onAssign: (assignment: { assignedToEmail: string; roomIds: string[] }, schedule: AssignSchedule) => Promise<boolean>;
+  onAssign: (assignment: { assigneeUid: string; roomIds: string[] }, schedule: AssignSchedule) => Promise<boolean>;
 }) {
   const [isRecurring, setIsRecurring] = useState(false);
-  const [assignedToEmail, setAssignedToEmail] = useState('');
+  const [assigneeUid, setAssigneeUid] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
   const [errors, setErrors] = useState<{ assignee?: string; rooms?: string; dueDate?: string } & RecurrenceErrors>({});
@@ -392,7 +393,7 @@ export function AssignChoresDialog({
   // One-time assignment needs chores.create; recurring updates the template (chores.edit).
   const canOneTime = capabilities.canCreate;
   const canRecurring = capabilities.canEdit;
-  const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.email === currentUserEmail);
+  const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.uid === currentUserUid);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
   const commonRooms = useMemo(() => {
@@ -407,7 +408,7 @@ export function AssignChoresDialog({
     setWasOpen(isOpen);
     if (isOpen) {
       setIsRecurring(!canOneTime && canRecurring);
-      setAssignedToEmail(assignableUsers.some(u => u.email === currentUserEmail) ? currentUserEmail : (assignableUsers.length === 1 ? assignableUsers[0].email : ''));
+      setAssigneeUid(assignableUsers.some(u => u.uid === currentUserUid) ? currentUserUid : (assignableUsers.length === 1 ? assignableUsers[0].uid : ''));
       setDueDate(format(new Date(), 'yyyy-MM-dd'));
       setRecurrence({ ...defaultRecurrenceState(), daysOfWeek: [String(getDay(new Date()))] });
       setSelectedRoomIds(commonRooms.map(r => r.id));
@@ -422,7 +423,7 @@ export function AssignChoresDialog({
     event.preventDefault();
     if (saving) return;
     const nextErrors: typeof errors = {};
-    if (!assignedToEmail) nextErrors.assignee = 'Choose who does it.';
+    if (!assigneeUid) nextErrors.assignee = 'Choose who does it.';
     if (commonRooms.length > 0 && selectedRoomIds.length === 0) nextErrors.rooms = 'Pick at least one room.';
     let schedule: AssignSchedule | null = null;
     if (isRecurring) {
@@ -437,7 +438,7 @@ export function AssignChoresDialog({
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0 || !schedule) return;
     setSaving(true);
-    const ok = await onAssign({ assignedToEmail, roomIds: selectedRoomIds }, schedule);
+    const ok = await onAssign({ assigneeUid, roomIds: selectedRoomIds }, schedule);
     setSaving(false);
     if (ok) onOpenChange(false);
   };
@@ -456,8 +457,8 @@ export function AssignChoresDialog({
               <AssigneeSelect
                 id="assign-assignee"
                 users={assignableUsers}
-                value={assignedToEmail}
-                onChange={(email) => { setAssignedToEmail(email); setErrors(p => ({ ...p, assignee: undefined })); }}
+                value={assigneeUid}
+                onChange={(uid) => { setAssigneeUid(uid); setErrors(p => ({ ...p, assignee: undefined })); }}
                 invalid={Boolean(errors.assignee)}
                 describedBy={errors.assignee ? 'assign-assignee-error' : undefined}
               />
@@ -700,29 +701,30 @@ function EditRecurringTaskDialog({
   onOpenChange,
   chore,
   users,
-  currentUserEmail,
+  currentUserUid,
   capabilities,
   onSave,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   chore: ChoreTemplate | null;
-  users: HomeHubUser[];
-  currentUserEmail: string;
+  users: HouseholdPerson[];
+  currentUserUid: string;
   capabilities: ChoreCapabilities;
-  onSave: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => Promise<boolean>;
+  onSave: (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>) => Promise<boolean>;
 }) {
-  const [assignedToEmail, setAssignedToEmail] = useState('');
+  const [assigneeUid, setAssigneeUid] = useState('');
   const [errors, setErrors] = useState<{ assignee?: string } & RecurrenceErrors>({});
   const [saving, setSaving] = useState(false);
   const { state, setState, update } = useRecurrenceState();
-  const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.email === currentUserEmail || u.email === chore?.assignedToEmail);
+  const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.uid === currentUserUid || u.uid === chore?.assignedToUid);
 
   const [loadedChore, setLoadedChore] = useState<ChoreTemplate | null>(null);
   if (chore !== loadedChore) {
     setLoadedChore(chore);
     if (chore) {
-      setAssignedToEmail(chore.assignedToEmail || chore.recurrence?.assignedToEmail || '');
+      // `assignedToUid` was resolved on load (uid, or the email of older templates).
+      setAssigneeUid(chore.assignedToUid || '');
       setState(recurrenceStateFrom(chore.recurrence));
       setErrors({});
       setSaving(false);
@@ -733,13 +735,13 @@ function EditRecurringTaskDialog({
     event.preventDefault();
     if (!chore || saving) return;
     const nextErrors: typeof errors = {};
-    if (!assignedToEmail) nextErrors.assignee = 'Choose who does it.';
+    if (!assigneeUid) nextErrors.assignee = 'Choose who does it.';
     const built = buildRecurrence(state);
     if ('errors' in built) Object.assign(nextErrors, built.errors);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0 || 'errors' in built) return;
     setSaving(true);
-    const ok = await onSave(chore.id, assignedToEmail, { ...built.recurrence, assignedToEmail });
+    const ok = await onSave(chore.id, assigneeUid, built.recurrence);
     setSaving(false);
     if (ok) onOpenChange(false);
   };
@@ -755,7 +757,7 @@ function EditRecurringTaskDialog({
           <div className="grid max-h-[65vh] gap-4 overflow-y-auto py-2 pr-2">
             <div className="space-y-2">
               <Label htmlFor="recurring-assignee">Assign to</Label>
-              <AssigneeSelect id="recurring-assignee" users={assignableUsers} value={assignedToEmail} onChange={(email) => { setAssignedToEmail(email); setErrors(p => ({ ...p, assignee: undefined })); }} invalid={Boolean(errors.assignee)} describedBy={errors.assignee ? 'recurring-assignee-error' : undefined} />
+              <AssigneeSelect id="recurring-assignee" users={assignableUsers} value={assigneeUid} onChange={(uid) => { setAssigneeUid(uid); setErrors(p => ({ ...p, assignee: undefined })); }} invalid={Boolean(errors.assignee)} describedBy={errors.assignee ? 'recurring-assignee-error' : undefined} />
               <FieldError id="recurring-assignee">{errors.assignee}</FieldError>
             </div>
             <div className="rounded-lg border p-4">
@@ -777,7 +779,7 @@ export function RecurringChoresDialog({
   onOpenChange,
   recurringChores,
   users,
-  currentUserEmail,
+  currentUserUid,
   capabilities,
   onUpdate,
   onDelete,
@@ -785,21 +787,21 @@ export function RecurringChoresDialog({
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   recurringChores: ChoreTemplate[];
-  users: HomeHubUser[];
-  currentUserEmail: string;
+  users: HouseholdPerson[];
+  currentUserUid: string;
   capabilities: ChoreCapabilities;
-  onUpdate: (choreId: string, assignedToEmail: string, recurrence: Recurrence) => Promise<boolean>;
+  onUpdate: (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>) => Promise<boolean>;
   onDelete: (choreId: string) => Promise<void>;
 }) {
   const [choreToEdit, setChoreToEdit] = useState<ChoreTemplate | null>(null);
   const [choreToDelete, setChoreToDelete] = useState<ChoreTemplate | null>(null);
-  const usersByEmail = useMemo(() => new Map(users.map(u => [u.email, u])), [users]);
+  const usersByUid = useMemo(() => new Map(users.map(u => [u.uid, u])), [users]);
   // Changing or stopping a schedule rewrites the template and removes its open chores.
   const canManage = capabilities.canEdit && capabilities.canDelete;
 
   return (
     <>
-      <EditRecurringTaskDialog isOpen={!!choreToEdit} onOpenChange={(open) => !open && setChoreToEdit(null)} chore={choreToEdit} users={users} currentUserEmail={currentUserEmail} capabilities={capabilities} onSave={onUpdate} />
+      <EditRecurringTaskDialog isOpen={!!choreToEdit} onOpenChange={(open) => !open && setChoreToEdit(null)} chore={choreToEdit} users={users} currentUserUid={currentUserUid} capabilities={capabilities} onSave={onUpdate} />
       <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -835,14 +837,14 @@ export function RecurringChoresDialog({
                 </TableHeader>
                 <TableBody>
                   {recurringChores.map(chore => {
-                    const user = usersByEmail.get(chore.assignedToEmail || '');
+                    const user = usersByUid.get(chore.assignedToUid || '');
                     return (
                       <TableRow key={chore.id}>
                         <TableCell className="font-medium">{chore.task}</TableCell>
                         <TableCell>
                           <span className="flex items-center gap-2">
-                            {user && <MemberAvatar uid={user.uid || user.email} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />}
-                            {user ? memberName(user) : (chore.assignedToEmail || 'Unassigned')}
+                            {user && <MemberAvatar uid={user.uid} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />}
+                            {user ? memberName(user) : 'Unassigned'}
                           </span>
                         </TableCell>
                         <TableCell>{scheduleText(chore.recurrence)}</TableCell>
@@ -876,7 +878,7 @@ export type AddChoreInput = {
   task: string;
   notes: string;
   roomId: string;
-  assignedToEmail: string;
+  assigneeUid: string;
 } & ({ repeat: false; dueDate: string } | { repeat: true; recurrence: Omit<Recurrence, 'assignedToEmail'> });
 
 /**
@@ -889,16 +891,16 @@ export function AddChoreDialog({
   onOpenChange,
   users,
   rooms,
-  currentUserEmail,
+  currentUserUid,
   capabilities,
   onCreateRoom,
   onCreate,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  users: HomeHubUser[];
+  users: HouseholdPerson[];
   rooms: Room[];
-  currentUserEmail: string;
+  currentUserUid: string;
   capabilities: ChoreCapabilities;
   onCreateRoom: () => void;
   onCreate: (input: AddChoreInput) => Promise<boolean>;
@@ -906,7 +908,7 @@ export function AddChoreDialog({
   const [task, setTask] = useState('');
   const [notes, setNotes] = useState('');
   const [roomId, setRoomId] = useState('general');
-  const [assignedToEmail, setAssignedToEmail] = useState('');
+  const [assigneeUid, setAssigneeUid] = useState('');
   const [repeat, setRepeat] = useState(false);
   const [dueDate, setDueDate] = useState('');
   const [errors, setErrors] = useState<{ task?: string; assignee?: string; dueDate?: string } & RecurrenceErrors>({});
@@ -914,7 +916,7 @@ export function AddChoreDialog({
   const submittingRef = useRef(false);
   const nameRef = useRef<HTMLInputElement>(null);
   const { state: recurrence, setState: setRecurrence, update: updateRecurrence } = useRecurrenceState();
-  const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.email === currentUserEmail);
+  const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.uid === currentUserUid);
 
   const [wasOpen, setWasOpen] = useState(false);
   if (isOpen !== wasOpen) {
@@ -923,7 +925,7 @@ export function AddChoreDialog({
       setTask('');
       setNotes('');
       setRoomId('general');
-      setAssignedToEmail(assignableUsers.some(u => u.email === currentUserEmail) ? currentUserEmail : '');
+      setAssigneeUid(assignableUsers.some(u => u.uid === currentUserUid) ? currentUserUid : '');
       setRepeat(false);
       setDueDate(format(new Date(), 'yyyy-MM-dd'));
       setRecurrence({ ...defaultRecurrenceState(), daysOfWeek: [String(getDay(new Date()))], dayOfMonth: Math.min(new Date().getDate(), 28) });
@@ -941,9 +943,9 @@ export function AddChoreDialog({
     if (submittingRef.current) return;
     const nextErrors: typeof errors = {};
     if (!task.trim()) nextErrors.task = 'Give the chore a name.';
-    if (!assignedToEmail) nextErrors.assignee = 'Choose who does it.';
+    if (!assigneeUid) nextErrors.assignee = 'Choose who does it.';
     let input: AddChoreInput | null = null;
-    const base = { task: task.trim(), notes: notes.trim(), roomId: effectiveRoomId, assignedToEmail };
+    const base = { task: task.trim(), notes: notes.trim(), roomId: effectiveRoomId, assigneeUid };
     if (repeat) {
       const built = buildRecurrence(recurrence);
       if ('errors' in built) Object.assign(nextErrors, built.errors);
@@ -993,8 +995,8 @@ export function AddChoreDialog({
                 <AssigneeSelect
                   id="add-chore-assignee"
                   users={assignableUsers}
-                  value={assignedToEmail}
-                  onChange={(email) => { setAssignedToEmail(email); clear('assignee'); }}
+                  value={assigneeUid}
+                  onChange={(uid) => { setAssigneeUid(uid); clear('assignee'); }}
                   invalid={Boolean(errors.assignee)}
                   describedBy={errors.assignee ? 'add-chore-assignee-error' : undefined}
                 />

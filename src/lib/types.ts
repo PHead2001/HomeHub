@@ -304,12 +304,17 @@ export type ChoreTemplate = {
     notes?: string;
     subTasks?: string[];
     recurrence?: Recurrence | null;
+    /** Assignee's Auth uid (dual-written with the email; see functions/src/shared/assignee.ts). */
+    assignedToUid?: string | null;
     assignedToEmail?: string | null;
 }
 
 export type Chore = {
   id: string;
   task: string;
+  /** Assignee's Auth uid; older chores have only the email. Read through functions/src/shared/assignee.ts. */
+  assignedToUid?: string;
+  /** Legacy assignee key, still dual-written; "" when unassigned or not known to the writer. */
   assignedToEmail: string;
   assignedToDisplayName?: string;
   dueDate: string;
@@ -381,6 +386,8 @@ export type HouseholdMember = {
   inviteCode?: string;
   permissions?: PermissionOverrides;
   joinedAt: string;
+  /** Household name at the time of joining, so a pending person never needs the household document. */
+  householdName?: string;
   lastActiveAt?: string;
   lastNewUserReminderAt?: string;
   approvedAt?: string;
@@ -441,10 +448,13 @@ export type User = {
 export type Household = {
     id: string;
     name: string;
-    ownerEmail: string;
+    /** Legacy display data (never grants access); being phased out, absent while pending. */
+    ownerEmail?: string;
     ownerUid?: string;
-    memberEmails: string[];
-    createdAt: string; // ISO string
+    /** Legacy display data (never grants access); being phased out, absent while pending. */
+    memberEmails?: string[];
+    /** ISO string; absent while pending (the person only knows the name). */
+    createdAt?: string;
     inviteCode?: string;
     updatedAt?: string;
     /** Set when the owner starts deleting the household; data is frozen until removal finishes. */
