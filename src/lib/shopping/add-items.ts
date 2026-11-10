@@ -30,7 +30,7 @@ import type { ShoppingListItem } from '@/lib/types';
 import { mergeIntoNeededItem } from './item-transactions';
 import { findMergeTarget, itemNameKey, type QuickAddEntry } from './items';
 import { initialCategory, rememberedCategories, shouldApplyLateCategory, type CategorySource } from './local-categories';
-import { peekSettled, trackWrite, type SaveState, type SettledState, type TrackWriteDeps } from './save-status';
+import { peekSettled, settleTimedOutMerge, trackWrite, type SaveState, type SettledState, type TrackWriteDeps } from './save-status';
 
 export type AddEntry = QuickAddEntry & { size?: number; sizeUnit?: string };
 
@@ -168,16 +168,13 @@ export async function addItemsToList({
       return { entry, name: entry.name, merged: false, state: 'failed', category: target.category, error: tracked.error, settled: Promise.resolve('failed') };
     }
     // No answer in time: show it pending; when it settles, a "not merged" answer
-    // still creates the item (without asking the model again).
-    const settled = tracked.settled.then(async (result): Promise<SettledState> => {
-      if (result.state === 'failed') {
-        onLateError?.(entry.name, result.error);
-        return 'failed';
-      }
-      if (result.value) return 'saved';
-      const late = await create(entry, false);
-      return late.state === 'failed' ? 'failed' : late.settled;
-    });
+    // still creates the item (without asking the model again). Every late
+    // failure, including a fallback create refused at once, reaches onLateError.
+    const settled = tracked.settled.then((result) => settleTimedOutMerge(
+      result,
+      () => create(entry, false),
+      (error) => onLateError?.(entry.name, error),
+    ));
     return { entry, name: target.name, merged: true, state: tracked.state, category: target.category, settled };
   };
 
