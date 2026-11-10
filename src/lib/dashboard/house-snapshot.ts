@@ -9,6 +9,10 @@
  * shows to anyone else on a shared device. It holds what Firestore's own on-device cache
  * already holds for this user (room names, counts, up to three chore titles per room).
  * No Firebase imports: safe on first-paint paths and unit-testable.
+ *
+ * HP-7b: a snapshot from an earlier day still gives the house its shape (`readHouseOutline`:
+ * room ids and names only, never counts or titles), so a fresh day draws the right number
+ * of rooms, labelled "Loading…", instead of resizing twice.
  */
 import type { ChoreFacts } from './facts';
 
@@ -19,7 +23,7 @@ type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 const isChoreFacts = (value: unknown): value is ChoreFacts => {
   const facts = value as ChoreFacts | null;
-  return Boolean(facts && Array.isArray(facts.rooms) && Array.isArray(facts.nextUp)
+  return Boolean(facts && Array.isArray(facts.rooms) && Array.isArray(facts.nextUp) && Array.isArray(facts.mineNext)
     && facts.rooms.every((room) => room && typeof room.id === 'string' && typeof room.name === 'string' && typeof room.status === 'string' && Array.isArray(room.chores)));
 };
 
@@ -30,6 +34,25 @@ export function readHouseSnapshot(storage: Storage | null, uid: string, househol
     const parsed = JSON.parse(storage.getItem(HOUSE_SNAPSHOT_KEY) ?? 'null') as Snapshot | null;
     if (!parsed || parsed.v !== 1 || parsed.uid !== uid || parsed.householdId !== householdId || parsed.day !== day) return null;
     return isChoreFacts(parsed.chores) ? parsed.chores : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A room in the house's shape: id and name only. */
+export type HouseOutlineRoom = { id: string; name: string };
+
+/**
+ * HP-7b: the room layout of the saved snapshot for this user and household, from any day,
+ * without its counts or chore titles. Null when there is none.
+ */
+export function readHouseOutline(storage: Storage | null, uid: string, householdId: string): HouseOutlineRoom[] | null {
+  if (!storage || !uid || !householdId) return null;
+  try {
+    const parsed = JSON.parse(storage.getItem(HOUSE_SNAPSHOT_KEY) ?? 'null') as Snapshot | null;
+    if (!parsed || parsed.v !== 1 || parsed.uid !== uid || parsed.householdId !== householdId || !isChoreFacts(parsed.chores)) return null;
+    const rooms = parsed.chores.rooms.map((room) => ({ id: room.id, name: room.name }));
+    return rooms.length > 0 ? rooms : null;
   } catch {
     return null;
   }

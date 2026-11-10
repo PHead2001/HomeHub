@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { DAY_PHASES, dominantPhase, GOLDEN_ROOF_CHORES, greeting, isGoldenRoof, phaseWeights, seasonFor, windowsLit } from '../../src/lib/dashboard/ambience';
+import { briefLabel, DAY_PHASES, dominantPhase, GOLDEN_ROOF_CHORES, greeting, hourIn, isGoldenRoof, phaseWeights, seasonFor, windowsLit } from '../../src/lib/dashboard/ambience';
 import { activeBellNotifications, caughtUpLine, groupNotifications, notificationGroupFor, notificationSourceLabel } from '../../src/lib/dashboard/notification-display';
 import { deduplicateNotifications, isNotificationReadBy } from '../../src/lib/notifications';
 import type { Notification } from '../../src/lib/types';
@@ -39,6 +39,30 @@ describe('time-of-day lighting', () => {
     assert.equal(greeting(at(7)), 'Good morning');
     assert.equal(greeting(at(14)), 'Good afternoon');
     assert.equal(greeting(at(21)), 'Good evening');
+  });
+
+  it('says "Hello" from midnight to 4:00, never "Good evening" (HP-22c)', () => {
+    assert.equal(greeting(at(0)), 'Hello');
+    assert.equal(greeting(at(3, 59)), 'Hello');
+    assert.equal(greeting(at(4)), 'Good morning');
+    assert.equal(greeting(at(23, 59)), 'Good evening');
+  });
+
+  it("reads the hour in the household's zone, not the device's (D-6)", () => {
+    // 2026-08-01 07:30 UTC is 02:30 in Chicago (CDT) and 17:30 in Sydney (AEST).
+    const instant = new Date(Date.UTC(2026, 7, 1, 7, 30));
+    assert.equal(hourIn(instant, 'America/Chicago'), 2);
+    assert.equal(greeting(instant, 'America/Chicago'), 'Hello');
+    assert.equal(greeting(instant, 'Australia/Sydney'), 'Good evening');
+    assert.equal(greeting(instant, 'UTC'), 'Good morning');
+    assert.equal(hourIn(instant, 'Not/AZone'), instant.getHours(), 'an invalid zone falls back to the device');
+  });
+
+  it('names the brief for the time of day (HP-22b)', () => {
+    assert.equal(briefLabel(at(2)), "Today's brief");
+    assert.equal(briefLabel(at(8)), 'Morning brief');
+    assert.equal(briefLabel(at(14)), 'Afternoon brief');
+    assert.equal(briefLabel(at(21)), 'Evening brief');
   });
 
   it('chooses seasonal accents by month', () => {
@@ -114,9 +138,11 @@ describe('golden roof (H29)', () => {
     assert.equal(isGoldenRoof(-1), false);
   });
 
-  it('is the condition the dashboard uses for its completed-chore count', () => {
+  it('is the condition the dashboard uses for the live completed-chore count (HP-11b)', () => {
     const dashboard = readFileSync(resolve(process.cwd(), 'src/components/dashboard/dashboard.tsx'), 'utf8');
-    assert.match(dashboard, /golden: isGoldenRoof\(snapshot\.data\(\)\.count\)/);
-    assert.match(dashboard, /where\('isCompleted', '==', true\)/);
+    assert.match(dashboard, /facts\.completedChores !== undefined && isGoldenRoof\(facts\.completedChores\)/);
+    assert.doesNotMatch(dashboard, /getCountFromServer/, 'no one-time count per page load');
+    const hook = readFileSync(resolve(process.cwd(), 'src/lib/dashboard/use-dashboard-data.ts'), 'utf8');
+    assert.match(hook, /'streaks\.completed', STREAKS_FAILURE, query\(base\('chores'\), where\('isCompleted', '==', true\)\)/);
   });
 });

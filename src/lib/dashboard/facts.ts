@@ -42,7 +42,11 @@ export type RoomState = {
   upcoming: number;
   doneToday: number;
   status: RoomStatus;
-  /** Up to three open chores, soonest first, for peeks and the room's label. */
+  /**
+   * Up to three open chores for peeks and the room's label (HP-10): overdue first (most
+   * overdue first), then today's, then the soonest within the upcoming window; undated
+   * chores last; anything beyond `UPCOMING_DAYS` is left out.
+   */
   chores: Array<{ id: string; task: string; dueLabel: string; overdue: boolean }>;
 };
 
@@ -55,7 +59,10 @@ export type ChoreFacts = {
   todayDone: number;
   overdueTotal: number;
   rooms: RoomState[];
+  /** Household next-up list (everyone's open chores, soonest first, yours first on a tie). */
   nextUp: Array<{ id: string; task: string; dueLabel: string; overdue: boolean; mine: boolean }>;
+  /** HP-11a: the reader's own open chores (overdue, today, then within the upcoming window), soonest first. */
+  mineNext: Array<{ id: string; task: string; dueLabel: string; overdue: boolean; mine: boolean }>;
 };
 
 export type ShoppingFacts = {
@@ -94,6 +101,8 @@ export type MaintenanceItem = {
 };
 
 export type MaintenanceFacts = {
+  /** HP-8: active HVAC/heating/cooling assets; the house draws its outdoor unit only when there is one. */
+  climateAssets: number;
   overdue: number;
   dueSoon: number;
   needsAttention: number;
@@ -148,6 +157,11 @@ export type DashboardFacts = {
    * nothing to score. Absent while loading or when the logs could not be read.
    */
   health?: HealthResult | null;
+  /**
+   * HP-11b: completed chores in the household, counted from the running completions
+   * listener (the golden roof). Absent while loading or unreadable, never 0 for unknown.
+   */
+  completedChores?: number;
   /** Household streaks (H06) from Chores' `computeChoreStats`; absent while loading or unreadable. */
   streaks?: StreakTileModel;
   /**
@@ -225,6 +239,7 @@ export function computeChoreFacts(
   let todayDone = 0;
   let overdueTotal = 0;
   const openWithDays: Array<{ entry: ChoreFacts['nextUp'][number]; days: number }> = [];
+  const roomOrder = new Map<string, Array<{ chore: RoomState['chores'][number]; days: number }>>();
 
   for (const chore of records) {
     if (folded.has(chore.id)) continue;
@@ -265,7 +280,11 @@ export function computeChoreFacts(
       // "Coming up" means the next week: the server generates 30 occurrences of each
       // repeating chore ahead of time, which are not work anyone needs to see yet.
       else if (days !== null && days <= UPCOMING_DAYS) room.upcoming += 1;
-      room.chores.push({ id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0 });
+      // HP-10b: generated occurrences beyond the upcoming window are not listed.
+      if (days !== null && days > UPCOMING_DAYS) continue;
+      const entries = roomOrder.get(room.id) ?? [];
+      entries.push({ chore: { id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0 }, days: days ?? Number.MAX_SAFE_INTEGER });
+      roomOrder.set(room.id, entries);
     }
 
     if (completed) continue;
@@ -284,8 +303,12 @@ export function computeChoreFacts(
 
   for (const room of roomMap.values()) {
     room.status = room.overdue > 0 ? 'overdue' : room.dueToday > 0 ? 'due' : 'clear';
-    room.chores.sort((a, b) => Number(b.overdue) - Number(a.overdue));
-    room.chores = room.chores.slice(0, 3);
+    // HP-10a: overdue (most overdue first), then today, then soonest; undated last. Stable
+    // on ties, so chores keep their document order.
+    room.chores = (roomOrder.get(room.id) ?? [])
+      .sort((a, b) => a.days - b.days)
+      .slice(0, 3)
+      .map((entry) => entry.chore);
   }
 
   // Drop the catch-all bucket when nothing lives in it.
@@ -294,6 +317,7 @@ export function computeChoreFacts(
     roomMap.delete(GENERAL_ROOM_ID);
   }
 
+  const sorted = openWithDays.sort((a, b) => a.days - b.days || Number(b.entry.mine) - Number(a.entry.mine));
   return {
     mineOpen,
     mineOverdue,
@@ -302,8 +326,9 @@ export function computeChoreFacts(
     todayDone,
     overdueTotal,
     rooms: [...roomMap.values()],
-    nextUp: openWithDays
-      .sort((a, b) => a.days - b.days || Number(b.entry.mine) - Number(a.entry.mine))
+    nextUp: sorted.slice(0, 5).map((item) => item.entry),
+    mineNext: sorted
+      .filter((item) => item.entry.mine && item.days <= UPCOMING_DAYS)
       .slice(0, 5)
       .map((item) => item.entry),
   };
@@ -344,7 +369,8 @@ export function computePantryFacts(items: RawDoc[], now: Date): PantryFacts {
       .map((entry) => ({
         name: text(entry.item.name, 'Pantry item'),
         days: entry.days,
-        label: entry.days === 0 ? 'expires today' : `expires ${relativeDays(entry.days)}`,
+        // HP-22a: "expiring tomorrow" reads right after any item name ("eggs", "milk").
+        label: `expiring ${relativeDays(entry.days)}`,
       })),
   };
 }
@@ -411,6 +437,7 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
   const active = items.filter((item) => item.overdue || item.dueSoon);
 
   return {
+    climateAssets: activeAssets.filter((asset) => CLIMATE.test(`${asset.category ?? ''} ${asset.name ?? ''}`)).length,
     overdue: items.filter((item) => item.overdue).length,
     dueSoon: items.filter((item) => item.dueSoon).length,
     needsAttention: activeAssets.filter((asset) => asset.status === 'needs_attention').length
