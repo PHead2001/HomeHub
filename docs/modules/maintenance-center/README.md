@@ -155,3 +155,5 @@ Shape validation (QA-8): logs, home assets and vehicles may only set the fields 
 ## When This Document Must Be Updated
 
 Update this README when asset/vehicle/log/schedule/attachment fields or paths, reminder thresholds or generation, reminder actions, the health score formula, completion advancement, delete cleanup, AI summaries, notification integration, permission enforcement, or maintenance security rules change.
+
+Session restore (release 2.1, SL-11): while the signed-in session is still being restored the page shows its own loading skeleton, never the sign-in prompt; a genuinely signed-out visitor still gets the prompt. The shared gate is described in [Application Shell](../application-shell/README.md).

@@ -69,3 +69,5 @@ The homepage overview intentionally omits automation facts in the current implem
 ## When This Document Must Be Updated
 
 Update this README when credential storage, server authentication, Home Assistant endpoints, entity/control capabilities, permission enforcement, connection errors, or automation integrations change.
+
+Session restore (release 2.1, SL-11): while the signed-in session is still being restored the page shows its own loading skeleton, never the sign-in prompt; a genuinely signed-out visitor still gets the prompt. The shared gate is described in [Application Shell](../application-shell/README.md).

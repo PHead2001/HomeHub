@@ -96,3 +96,5 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 ## When This Document Must Be Updated
 
 Update this README when lookup order, APIs, scanner behavior, mapping fields or paths, image handling, Storage restrictions, authentication strategy, or shopping/pantry integration changes.
+
+Session restore (release 2.1, SL-11): while the signed-in session is still being restored the page shows its own loading skeleton, never the sign-in prompt; a genuinely signed-out visitor still gets the prompt. The shared gate is described in [Application Shell](../application-shell/README.md).
