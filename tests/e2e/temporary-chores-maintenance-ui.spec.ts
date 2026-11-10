@@ -77,39 +77,53 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     }
   });
 
-  test('chore history controls stay bounded with zero, one, two, and many filtered records', async ({ page }, testInfo) => {
-    desktopOnly(testInfo);
-    const roomId = 'carousel-bounds-room';
-    const testIds = Array.from({ length: 10 }, (_, index) => `carousel-bounds-${index}`);
-    await household.collection('rooms').doc(roomId).set({ name: 'Carousel Bounds Room', icon: 'Home' });
+  // One test per record count. Each count is a full page load (with server upkeep), a room
+  // filter and twelve switch toggles; running all four counts in one test took 35-45 s of
+  // the 45 s budget on CI, so the cleanup at the end regularly ran out of time.
+  // Each count seeds, and cleans up, with one batch commit instead of 10-15 separate writes.
+  const historyRoomId = 'carousel-bounds-room';
+  const historyChoreIds = Array.from({ length: 5 }, (_, index) => `carousel-bounds-${index}`);
+  const historyChore = (index: number) => ({
+    task: `Carousel item ${index + 1}`,
+    assignedToEmail: 'alex.e2e@example.test',
+    assignedToDisplayName: 'Alex E2E',
+    dueDate: index % 2 === 0 ? '2026-08-10' : '2026-07-31',
+    isCompleted: index % 2 === 1,
+    completedAt: index % 2 === 1 ? '2026-08-01T10:00:00.000Z' : null,
+    originalDueDate: index % 2 === 0 ? '2026-08-10' : '2026-07-31',
+    roomIds: [historyRoomId],
+    sourceType: 'temporary',
+  });
 
-    try {
-      for (const count of [0, 1, 2, 5]) {
-        await Promise.all(testIds.map((id) => household.collection('chores').doc(id).delete()));
-        await Promise.all(Array.from({ length: count }, (_, index) => household.collection('chores').doc(testIds[index]).set({
-          task: `Carousel item ${index + 1}`,
-          assignedToEmail: 'alex.e2e@example.test',
-          assignedToDisplayName: 'Alex E2E',
-          dueDate: index % 2 === 0 ? '2026-08-10' : '2026-07-31',
-          isCompleted: index % 2 === 1,
-          completedAt: index % 2 === 1 ? '2026-08-01T10:00:00.000Z' : null,
-          originalDueDate: index % 2 === 0 ? '2026-08-10' : '2026-07-31',
-          roomIds: [roomId],
-          sourceType: 'temporary',
-        })));
+  for (const [label, count] of [['zero', 0], ['one', 1], ['two', 2], ['many', 5]] as const) {
+    test(`chore history controls stay bounded with ${label} filtered record${count === 1 ? '' : 's'}`, async ({ page }, testInfo) => {
+      desktopOnly(testInfo);
+      const seed = adminDb.batch();
+      seed.set(household.collection('rooms').doc(historyRoomId), { name: 'Carousel Bounds Room', icon: 'Home' });
+      historyChoreIds.forEach((id, index) => {
+        const ref = household.collection('chores').doc(id);
+        if (index < count) seed.set(ref, historyChore(index));
+        else seed.delete(ref);
+      });
+      await seed.commit();
 
+      try {
         await openAuthenticated(page, '/chores', 'Chore Chart');
         await page.getByRole('button', { name: 'All Rooms' }).click();
         await page.getByRole('menuitemradio', { name: 'Carousel Bounds Room' }).click();
+        // The seeded records are on screen: every second record was completed today.
+        await expect(page.getByRole('button', { name: new RegExp(`^Completed \\(\\s*${Math.floor(count / 2)}\\s*\\)$`) })).toBeVisible();
         await assertSwitchBounds(page, 'Show All');
         await assertSwitchBounds(page, 'History');
         await assertNoDocumentOverflow(page);
+      } finally {
+        const cleanup = adminDb.batch();
+        historyChoreIds.forEach((id) => cleanup.delete(household.collection('chores').doc(id)));
+        cleanup.delete(household.collection('rooms').doc(historyRoomId));
+        await cleanup.commit();
       }
-    } finally {
-      await Promise.all(testIds.map((id) => household.collection('chores').doc(id).delete()));
-      await household.collection('rooms').doc(roomId).delete();
-    }
-  });
+    });
+  }
 
   test('Add Chore (one time) creates one direct chore and one notification without a template', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
