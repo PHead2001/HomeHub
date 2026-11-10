@@ -514,7 +514,9 @@ service cloud.firestore {
       return keys.hasOnly([
           'task', 'notes', 'assignedToEmail', 'assignedToUid', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
           'roomIds', 'isCompleted', 'completedAt', 'completedAtServer', 'completedSubTasks', 'subTasks',
-          'templateId', 'sourceType'
+          'templateId', 'sourceType',
+          // Server-written (H3): completion attribution and the generated occurrence's identity.
+          'completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey'
         ]) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
@@ -530,7 +532,35 @@ service cloud.firestore {
         (!('completedSubTasks' in keys) || boundedList(data.completedSubTasks, 100)) &&
         (!('subTasks' in keys) || boundedList(data.subTasks, 100)) &&
         (!('templateId' in keys) || boundedString(data.templateId, 300)) &&
-        (!('sourceType' in keys) || data.sourceType in ['temporary', 'template']);
+        (!('sourceType' in keys) || data.sourceType in ['temporary', 'template']) &&
+        (!('completedByUid' in keys) || optionalString(data.completedByUid, 128)) &&
+        (!('completedByEmail' in keys) || optionalString(data.completedByEmail, 320)) &&
+        (!('completedByName' in keys) || optionalString(data.completedByName, 200)) &&
+        (!('completionId' in keys) || optionalString(data.completionId, 100)) &&
+        (!('occurrenceKey' in keys) || boundedString(data.occurrenceKey, 700));
+    }
+
+    // Completion attribution (H3, rules stage R1). Who completed a chore and the
+    // completion's id are written only by the completion server action (Admin SDK),
+    // and a generated chore's occurrenceKey only by server upkeep: clients may not
+    // set, change or remove them. Clients may still toggle isCompleted (older
+    // releases complete with client writes) until stage R2 removes that.
+    function choreServerFieldsAbsent() {
+      return !request.resource.data.keys().hasAny(
+        ['completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey']);
+    }
+
+    function choreServerFieldsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+        ['completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey']);
+    }
+
+    // A client completion (older releases) must not leave another person's
+    // attribution on the chore, or the points would go to them.
+    function choreClientCompletionUnattributed() {
+      return request.resource.data.get('isCompleted', false) != true ||
+        resource.data.get('isCompleted', false) == true ||
+        !request.resource.data.keys().hasAny(['completedByUid', 'completedByEmail', 'completedByName', 'completionId']);
     }
 
     // Creating a chore for someone else needs chores.assign; chores.create alone
@@ -881,9 +911,12 @@ service cloud.firestore {
           choreCreatedWithServerCompletion() &&
           request.resource.data.keys().hasAll(['task']) &&
           validChoreFields(request.resource.data, writtenKeys()) &&
+          choreServerFieldsAbsent() &&
           choreCreateAssignmentAllowed(householdId);
         allow update: if choreCompletionStampValid() &&
           validChoreFields(request.resource.data, writtenKeys()) &&
+          choreServerFieldsUnchanged() &&
+          choreClientCompletionUnattributed() &&
           (
             (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks', 'completedAtServer']) &&
               hasHouseholdPermission(householdId, 'chores.complete')) ||
