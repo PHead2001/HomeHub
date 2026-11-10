@@ -20,7 +20,7 @@ import {
   UPDATE_CHECK_INTERVAL_MS,
   VISIBLE_RECHECK_MIN_MS,
 } from '../../src/lib/shell/update-check';
-import { capToasts, TOAST_LIMIT, toastsHoldShell } from '../../src/lib/shell/toast-queue';
+import { addToast, capToasts, TOAST_LIMIT, toastsHoldShell } from '../../src/lib/shell/toast-queue';
 import { UNDO_WINDOW_MS } from '../../src/lib/undo-window';
 import { DISMISS_UNDO_MS } from '../../src/app/notifications/undo-batch';
 
@@ -158,7 +158,7 @@ describe('update detection', () => {
 });
 
 describe('toast queue and the Undo window', () => {
-  const t = (id: string, extra: { open?: boolean; holdsAction?: boolean } = {}) => ({ id, open: true, ...extra });
+  const t = (id: string, extra: { open?: boolean; holdsAction?: boolean; group?: string } = {}) => ({ id, open: true, ...extra });
 
   test('shows up to three toasts, newest first', () => {
     assert.equal(TOAST_LIMIT, 3);
@@ -175,6 +175,16 @@ describe('toast queue and the Undo window', () => {
     assert.deepEqual(capToasts(mixed).map((toast) => toast.id), ['new', 'u1', 'u0']);
     const undos = ['u4', 'u3', 'u2', 'u1'].map((id) => t(id, { holdsAction: true }));
     assert.deepEqual(capToasts(undos).map((toast) => toast.id), ['u4', 'u3', 'u2']);
+  });
+
+  test('a toast of the same group replaces the older one at once, even while it is closing', () => {
+    const first = t('dismiss-1', { holdsAction: true, group: 'notification-dismiss' });
+    const tick = t('tick', { holdsAction: true, group: 'shopping-tick' });
+    const closing = { ...first, open: false };
+    const second = t('dismiss-2', { holdsAction: true, group: 'notification-dismiss' });
+    assert.deepEqual(addToast([tick, first], second).map((toast) => toast.id), ['dismiss-2', 'tick']);
+    assert.deepEqual(addToast([closing], second).map((toast) => toast.id), ['dismiss-2'], 'no second Undo during the exit animation');
+    assert.deepEqual(addToast([t('plain'), tick], t('other')).map((toast) => toast.id), ['other', 'plain', 'tick'], 'ungrouped toasts never replace');
   });
 
   test('an open Undo toast keeps the shell busy; a closed one does not', () => {

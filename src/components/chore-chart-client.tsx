@@ -579,6 +579,7 @@ export function ChoreChartClient() {
 
     const label = chores.length === 1 ? chores[0].task : `${chores.length} chores`;
     const handle = toast({
+      group: 'chore-complete',
       title: chores.length === 1 ? 'Done' : 'Chores done',
       description: `${label} marked complete.`,
       duration: UNDO_WINDOW_MS,

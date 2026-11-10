@@ -115,6 +115,7 @@ export function useQuickFeed({ petId, petName, plan, status, food }: QuickFeedOp
       playFeedback(reachedGoal ? 'celebrate' : 'complete');
       if (!reducedMotion) setBurst({ key: Date.now(), source });
       const { dismiss } = toast({
+        group: 'pet-feed',
         title: reachedGoal ? `${petName} is all fed for today` : `${petName} fed`,
         description: foodFallback ? `${portion} of dry food logged (last feeding unavailable).` : `${portion} logged.`,
         duration: canUndo ? UNDO_WINDOW_MS : undefined,

@@ -12,10 +12,6 @@ import { DISMISS_UNDO_MS, dismissedToastText, notificationUndoBatch } from './un
 
 export { DISMISS_UNDO_MS, dismissedToastText } from './undo-batch';
 
-// The open dismissal toast, if any: a newer dismissal replaces it, because the
-// newest toast's Undo restores the whole batch (see undo-batch.ts).
-let openDismissToast: { dismiss: () => void } | null = null;
-
 /**
  * Dismisses notifications for the signed-in member and offers Undo for the
  * shared Undo window (`UNDO_WINDOW_MS`, 10 seconds). Both writes touch only `dismissedBy.<own uid>` (set, then removed),
@@ -49,12 +45,12 @@ export function useDismissNotifications() {
   return useCallback(async (ids: string[]) => {
     if (ids.length === 0 || !(await write(ids, false))) return;
     // One dismissal toast at a time: the newest toast's Undo restores every
-    // dismissal made within the window, not just this one, so the older toast
-    // (whose Undo would restore the same batch) closes.
+    // dismissal made within the window, not just this one, so it replaces the
+    // older dismissal toast at once (`group`; no second Undo, even mid-exit).
     const scope = `${currentUser?.householdId}|${currentUser?.uid}`;
     const pending = notificationUndoBatch.add(scope, ids);
-    openDismissToast?.dismiss();
     const handle = toast({
+      group: 'notification-dismiss',
       title: dismissedToastText(pending.length),
       duration: DISMISS_UNDO_MS,
       action: (
@@ -70,6 +66,5 @@ export function useDismissNotifications() {
         </ToastAction>
       ),
     });
-    openDismissToast = handle;
   }, [currentUser?.householdId, currentUser?.uid, toast, write]);
 }

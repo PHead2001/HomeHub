@@ -9,7 +9,7 @@ import type {
 } from "@/components/ui/toast"
 import { FRIENDLY_ERROR_TITLES, friendlyError, friendlyErrorKind } from "@/lib/friendly-error"
 import { markBusy } from "@/lib/shell/busy"
-import { capToasts, toastsHoldShell } from "@/lib/shell/toast-queue"
+import { addToast, toastsHoldShell } from "@/lib/shell/toast-queue"
 
 export { TOAST_LIMIT } from "@/lib/shell/toast-queue"
 export { UNDO_WINDOW_MS } from "@/lib/undo-window"
@@ -28,6 +28,11 @@ type ToasterToast = ToastProps & {
    * false for an action that is not a pending decision (e.g. "Reload").
    */
   holdsAction?: boolean
+  /**
+   * One kind of Undo (e.g. "shopping-tick"): a new toast of the same group
+   * replaces the previous one at once, so only one such Undo is ever on screen.
+   */
+  group?: string
 }
 
 let count = 0
@@ -89,7 +94,7 @@ export const reducer = (state: State, action: Action): State => {
     case "ADD_TOAST":
       return {
         ...state,
-        toasts: capToasts([action.toast, ...state.toasts]),
+        toasts: addToast(state.toasts, action.toast),
       }
 
     case "UPDATE_TOAST":

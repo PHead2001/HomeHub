@@ -3,8 +3,8 @@ import { UNDO_WINDOW_MS } from '../../lib/undo-window';
 /**
  * Pending dismissals that one Undo restores.
  *
- * Each dismissal's toast replaces the previous dismissal toast (the hook closes
- * the older one; other toasts may still show beside it, up to `TOAST_LIMIT`). To
+ * Each dismissal's toast replaces the previous dismissal toast (toast group
+ * `notification-dismiss` removes the older one at once; other toasts may still show beside it, up to `TOAST_LIMIT`). To
  * keep every recent dismissal undoable, dismissals made within the Undo window
  * of each other accumulate: the newest toast counts all of them and its Undo
  * restores all of them. The window runs

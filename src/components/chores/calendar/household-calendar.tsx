@@ -363,6 +363,7 @@ export function HouseholdCalendar() {
     }
     playFeedback('add');
     const handle = toast({
+      group: 'chore-move',
       title: 'Chore moved',
       description: `${chore.task} is now on ${format(dayFromKey(day), 'EEE, MMM d')}.`,
       duration: UNDO_WINDOW_MS,

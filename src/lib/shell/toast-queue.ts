@@ -9,7 +9,18 @@
 
 export const TOAST_LIMIT = 3;
 
-export type QueuedToast = { id: string; open?: boolean; holdsAction?: boolean };
+export type QueuedToast = { id: string; open?: boolean; holdsAction?: boolean; group?: string };
+
+/**
+ * Adds `toast` newest first. A toast with a `group` (one per kind of Undo, e.g.
+ * `notification-dismiss`) replaces every earlier toast of that group at once:
+ * the older one leaves the store immediately (no exit animation), so exactly
+ * one Undo of that kind is ever on screen. Then the limit applies.
+ */
+export function addToast<T extends QueuedToast>(newestFirst: readonly T[], toast: T, limit = TOAST_LIMIT): T[] {
+  const rest = toast.group ? newestFirst.filter((existing) => existing.group !== toast.group) : newestFirst;
+  return capToasts([toast, ...rest], limit);
+}
 
 export function capToasts<T extends QueuedToast>(newestFirst: readonly T[], limit = TOAST_LIMIT): T[] {
   const kept = [...newestFirst];

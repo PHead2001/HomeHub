@@ -708,6 +708,7 @@ export function ShoppingListClient({
   // "Milk is in the cart · Undo" for the shared Undo window after a tick.
   const showTickUndo = (item: ShoppingListItem) => {
     toast({
+      group: 'shopping-tick',
       title: `${item.name} is in the cart`,
       duration: UNDO_WINDOW_MS,
       action: (
@@ -744,6 +745,7 @@ export function ShoppingListClient({
     const { id: _id, ...data } = item;
     void _id;
     toast({
+      group: 'shopping-remove',
       title: `${item.name} removed`,
       duration: UNDO_WINDOW_MS,
       action: canEdit ? (

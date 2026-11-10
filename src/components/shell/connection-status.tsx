@@ -7,50 +7,64 @@ import { cn } from '@/lib/utils';
 /** How long "Back online" stays after the connection returns. */
 export const BACK_ONLINE_MS = 3000;
 
+type Connection = 'online' | 'offline' | 'back';
+
+// One store for both facts, so going online switches "offline" to "Back online" in
+// a single update (the live region never unmounts in between).
+let backUntil = 0;
 const subscribe = (onChange: () => void) => {
-  window.addEventListener('online', onChange);
-  window.addEventListener('offline', onChange);
+  let timer: number | undefined;
+  const onOnline = () => {
+    backUntil = Date.now() + BACK_ONLINE_MS;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(onChange, BACK_ONLINE_MS + 50);
+    onChange();
+  };
+  const onOffline = () => {
+    backUntil = 0;
+    window.clearTimeout(timer);
+    onChange();
+  };
+  window.addEventListener('online', onOnline);
+  window.addEventListener('offline', onOffline);
   return () => {
-    window.removeEventListener('online', onChange);
-    window.removeEventListener('offline', onChange);
+    window.clearTimeout(timer);
+    window.removeEventListener('online', onOnline);
+    window.removeEventListener('offline', onOffline);
   };
 };
-const isOnline = () => navigator.onLine !== false;
+const connection = (): Connection => {
+  if (navigator.onLine === false) return 'offline';
+  return Date.now() < backUntil ? 'back' : 'online';
+};
 
 /**
  * SL-10: a slim pill under the header while the browser is offline ("You're
  * offline. Changes you can make offline will sync.") and a brief "Back online"
  * when it returns. It floats below the header (no layout shift), ignores the
- * pointer and is not interactive; the always-present polite status region
- * announces each change once. Based on navigator.onLine and the online/offline
+ * pointer and is not interactive; a polite status region, mounted only while
+ * offline or "Back online" shows, announces each change once. Based on navigator.onLine and the online/offline
  * events only: it makes no promise about any particular write.
  */
 export function ConnectionStatus() {
-  const online = useSyncExternalStore(subscribe, isOnline, () => true);
-  const [backOnline, setBackOnline] = useState(false);
+  const state = useSyncExternalStore(subscribe, connection, () => 'online' as Connection);
+  const online = state !== 'offline';
 
-  // "Back online" comes only from a real offline -> online event, never on load.
+  // The live region exists only while there is something to say, so an online page has
+  // no extra status landmark. It mounts empty first and gets its text a frame later,
+  // which screen readers announce more reliably than a region inserted with content.
+  const needed = state !== 'online';
+  const [armed, setArmed] = useState(false);
   useEffect(() => {
-    let timer: number | undefined;
-    const onOnline = () => {
-      window.clearTimeout(timer);
-      setBackOnline(true);
-      timer = window.setTimeout(() => setBackOnline(false), BACK_ONLINE_MS);
-    };
-    const onOffline = () => {
-      window.clearTimeout(timer);
-      setBackOnline(false);
-    };
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
+    if (!needed) return;
+    const frame = window.requestAnimationFrame(() => setArmed(true));
     return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
+      window.cancelAnimationFrame(frame);
+      setArmed(false);
     };
-  }, []);
+  }, [needed]);
 
-  const visible = !online || backOnline;
+  if (!needed) return null;
 
   return (
     <div
@@ -59,7 +73,7 @@ export function ConnectionStatus() {
       data-testid="connection-status"
       className="pointer-events-none absolute inset-x-0 top-full flex justify-center px-4 pt-1.5"
     >
-      {visible && (
+      {armed && (
         <span
           className={cn(
             'inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium shadow-raised animate-in fade-in-0',
