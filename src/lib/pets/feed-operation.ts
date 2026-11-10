@@ -19,9 +19,14 @@ import {
   collection,
   doc,
   getDocFromCache,
+  getDocs,
+  limit,
+  orderBy,
+  query,
   runTransaction,
   serverTimestamp,
   Timestamp,
+  where,
   writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
@@ -32,12 +37,16 @@ import { feedingPlan, toDate } from './care';
 import {
   becomesLatest,
   countAfterFeed,
+  countOnHouseholdDay,
   FEEDING_STATE_ID,
   feedConfirmDecision,
   householdDay,
+  householdDayStart,
+  knownFromLogs,
+  newerKnown,
   planUndo,
-  reconcileDayCount,
   readFeedingState,
+  withSurvivingLatest,
   type FeedCheck,
   type KnownFeedings,
 } from './feed-decision';
@@ -106,6 +115,27 @@ function previousOf(raw: DocumentData | null) {
   };
 }
 
+/** More feedings than this on one day are not counted beyond it (the state's count is bounded too). */
+const DAY_READ_LIMIT = 100;
+
+/**
+ * A household day's feedings read from the server (both date shapes: Timestamps
+ * and older ISO strings, which Firestore orders separately). It runs inside the
+ * transaction callback, so a conflicting feed or Undo (each writes the state
+ * document) makes the transaction retry with a fresh read.
+ */
+async function dayFeedings(householdId: string, petId: string, day: string, timeZone: string | null | undefined) {
+  const start = householdDayStart(day, timeZone);
+  // Date-only or differently formatted strings compare as text: a one-day margin keeps them in range.
+  const stringFloor = new Date(start.getTime() - 24 * 3_600_000).toISOString().slice(0, 10);
+  const ref = logsRef(householdId, petId);
+  const shapes = await Promise.all([
+    getDocs(query(ref, where('date', '>=', Timestamp.fromDate(start)), orderBy('date', 'desc'), limit(DAY_READ_LIMIT))),
+    getDocs(query(ref, where('date', '>=', stringFloor), orderBy('date', 'desc'), limit(DAY_READ_LIMIT))),
+  ]);
+  return shapes.flatMap((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as { id: string; date: unknown; loggedByUid?: string; loggedByName?: string }));
+}
+
 /**
  * Logs a feeding, or returns `needsConfirm` (with who fed and when) so the UI
  * can ask "Sam fed Rex 12 min ago. Feed again?"; call again with `confirm: true`.
@@ -120,13 +150,23 @@ export async function feedPet(input: FeedPetInput): Promise<FeedPetResult> {
     const stateSnapshot = await tx.get(stateRef(householdId, petId));
     const perDay = petSnapshot.exists() ? feedingPlan(petSnapshot.data() as PetProfile).perDay : null;
     const raw = stateSnapshot.exists() ? stateSnapshot.data() : null;
-    const state = readFeedingState(raw);
+    const stored = readFeedingState(raw);
+    // A latest feed deleted offline is not a feed (its log is gone).
+    const latestSurvives = stored?.lastLogId ? (await tx.get(doc(logsRef(householdId, petId), stored.lastLogId))).exists() : false;
+    const state = withSurvivingLatest(stored, latestSurvives);
     const now = new Date();
     const today = householdDay(now, timeZone);
+    // Today's feedings counted from the logs themselves, read on every attempt:
+    // never a stored or loaded count that may include a deleted feeding.
+    const todays = await dayFeedings(householdId, petId, today, timeZone);
+    const countToday = countOnHouseholdDay(todays, today, timeZone, now);
+    const fresh = knownFromLogs(todays, now, timeZone);
+    // The caller's loaded logs only help while the pet has no state (before the backfill).
+    const latestKnown = stored ? fresh : newerKnown(fresh, known);
 
     let repeat: Repeat = 'none';
     if (!backdated) {
-      const check = feedConfirmDecision({ state, known, now, timeZone, perDay });
+      const check = feedConfirmDecision({ state, known: latestKnown, now, timeZone, perDay, countToday });
       if (check.needsConfirm && !input.confirm) return { status: 'needsConfirm', ...check } as const;
       if (check.needsConfirm) repeat = 'confirmed';
     }
@@ -135,9 +175,8 @@ export async function feedPet(input: FeedPetInput): Promise<FeedPetResult> {
     const logRef = doc(logsRef(householdId, petId));
     tx.set(logRef, logData(input, fedAt, repeat, !backdated));
 
-    // Feedings that synced from offline are in the logs but not in the state's count.
-    const count = countAfterFeed(reconcileDayCount(state, known, today), householdDay(fedAt, timeZone));
-    if (becomesLatest(fedAt, backdated, state, known)) {
+    const count = countAfterFeed({ day: today, countOnDay: countToday }, householdDay(fedAt, timeZone));
+    if (becomesLatest(fedAt, backdated, state, latestKnown)) {
       tx.set(stateRef(householdId, petId), {
         lastLogId: logRef.id,
         lastFedAt: backdated ? Timestamp.fromDate(fedAt) : serverTimestamp(),
@@ -147,7 +186,7 @@ export async function feedPet(input: FeedPetInput): Promise<FeedPetResult> {
         countOnDay: count.countOnDay,
         prev: previousOf(raw),
       });
-    } else if (state && (count.day !== state.day || count.countOnDay !== state.countOnDay)) {
+    } else if (stored && (count.day !== stored.day || count.countOnDay !== stored.countOnDay)) {
       // An older backdated entry: only today's count can change, never who fed last.
       tx.update(stateRef(householdId, petId), { day: count.day, countOnDay: count.countOnDay });
     }
@@ -210,6 +249,10 @@ export async function undoFeed(input: {
     const prevSurvives = prevLogId ? (await tx.get(doc(logsRef(householdId, petId), prevLogId))).exists() : false;
     const date = toDate(logSnapshot.get('date'));
     const plan = planUndo(state, { id: logId, day: date ? householdDay(date, timeZone) : null }, prevSurvives);
+    // The count is today's surviving feedings, read now (repairs a count left by an offline delete).
+    const now = new Date();
+    const today = householdDay(now, timeZone);
+    const countOnDay = state ? countOnHouseholdDay(await dayFeedings(householdId, petId, today, timeZone), today, timeZone, now, logId) : 0;
     tx.delete(logRef);
     if (plan.kind === 'restore') {
       const prev = plan.restorePrev ? previousOf(raw?.prev ?? null) : null;
@@ -218,16 +261,16 @@ export async function undoFeed(input: {
         lastFedAt: prev?.lastFedAt ?? null,
         lastFedByUid: prev?.lastFedByUid ?? null,
         lastFedByName: prev?.lastFedByName ?? null,
-        day: plan.day,
-        countOnDay: plan.countOnDay,
+        day: today,
+        countOnDay,
         prev: null,
       });
-    } else if (plan.kind === 'count') {
+    } else if (plan.kind === 'count' || (state && (state.day !== today || state.countOnDay !== countOnDay))) {
       // Deleting the feed `prev` points at clears `prev`, so no later Undo restores it.
       tx.update(stateRef(householdId, petId), {
-        day: plan.day,
-        countOnDay: plan.countOnDay,
-        ...(plan.dropPrev ? { prev: null } : {}),
+        day: today,
+        countOnDay,
+        ...(plan.kind === 'count' && plan.dropPrev ? { prev: null } : {}),
       });
     }
   });

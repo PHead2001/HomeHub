@@ -9,7 +9,7 @@
  * functions/src/shared/calendar.ts. (No `src/lib/household-day.ts` helper exists
  * on main yet; switch to it once the dashboard data PR adds one.)
  */
-import { DEFAULT_TIME_ZONE, localDay, safeTimeZone } from '../../../functions/src/shared/calendar';
+import { DEFAULT_TIME_ZONE, localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { formatAgo, seenFeedingDate, toDate, type FeedingEntry } from './care';
 
 /** A feeding this recent asks "Feed again?" (audit PE-1/PE-23: "under about 90 minutes"). */
@@ -116,6 +116,12 @@ export function feedConfirmDecision(input: {
   now: Date;
   timeZone?: string | null;
   perDay: number | null;
+  /**
+   * Today's feedings counted from the logs read in the operation's transaction.
+   * When given it is the count (no max with stored or loaded counts, which can
+   * still include a feeding deleted offline or while "Feed again?" was open).
+   */
+  countToday?: number | null;
 }): FeedCheck {
   const { state, known, now, perDay } = input;
   const today = householdDay(now, input.timeZone);
@@ -128,7 +134,7 @@ export function feedConfirmDecision(input: {
     lastFedByName = known.lastFedByName;
   }
   const stateCount = state && state.day === today ? state.countOnDay : 0;
-  const countToday = Math.max(stateCount, known?.countToday ?? 0);
+  const countToday = typeof input.countToday === 'number' ? input.countToday : Math.max(stateCount, known?.countToday ?? 0);
   // A future time (another device's clock) counts as recent.
   const recent = Boolean(lastFedAt) && now.getTime() - lastFedAt!.getTime() < FEED_REPEAT_WINDOW_MS;
   const complete = perDay != null && perDay > 0 && countToday >= perDay;
@@ -161,20 +167,43 @@ export function lastFedLine(lastFedAt: Date | null, lastFedByName: string | null
   return `Last fed ${formatAgo(lastFedAt, now)}${lastFedByName ? ` by ${lastFedByName}` : ''}`;
 }
 
+/** The instant a household day starts (for the bounded "today's feedings" read). */
+export function householdDayStart(day: string, timeZone?: string | null): Date {
+  return new Date(zonedMidnightIso(day, safeTimeZone(timeZone ?? DEFAULT_TIME_ZONE)));
+}
+
 /**
- * The day count to add a feeding to: the state's count, reconciled with the
- * feedings this client has loaded for today's household day (`known.countToday`).
- * A feed queued offline never reaches the state, so once it syncs the logs can
- * hold more feedings today than the state counts; the larger number wins.
+ * Feedings on one household day, counted from the logs themselves (the online
+ * operation reads them in its transaction). This is the count the state stores:
+ * a feeding queued offline that has synced is in it, and one deleted offline or
+ * by someone else meanwhile is not, so a stale stored count repairs itself.
+ * `excludeId` leaves out a log being deleted in the same commit.
  */
-export function reconcileDayCount(state: FeedingStateView | null, known: KnownFeedings | null | undefined, today: string): { day: string; countOnDay: number } {
-  const loaded = known?.countToday ?? null;
-  if (!state) return { day: today, countOnDay: loaded ?? 0 };
-  const day = state.day ?? today;
-  if (day === today) return { day, countOnDay: Math.max(state.countOnDay, loaded ?? 0) };
-  // The state still counts an earlier day: today's loaded feedings start today's count.
-  if (day < today && loaded !== null && loaded > 0) return { day: today, countOnDay: loaded };
-  return { day, countOnDay: state.countOnDay };
+export function countOnHouseholdDay(logs: (FeedingEntry & { id?: string })[], day: string, timeZone: string | null | undefined, now: Date, excludeId?: string): number {
+  const seen = new Set<string>();
+  let count = 0;
+  for (const log of logs) {
+    if (log.id && (log.id === excludeId || seen.has(log.id))) continue;
+    if (log.id) seen.add(log.id);
+    const date = seenFeedingDate(log.date, now);
+    if (date && householdDay(date, timeZone) === day) count += 1;
+  }
+  return count;
+}
+
+/** The newer of two last-fed views (each may be null). */
+export function newerKnown(a: KnownFeedings | null | undefined, b: KnownFeedings | null | undefined): KnownFeedings | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  if (!a.lastFedAt) return b.lastFedAt ? b : a;
+  if (!b.lastFedAt) return a;
+  return b.lastFedAt > a.lastFedAt ? b : a;
+}
+
+/** The state as the check should read it: a latest feed whose log is gone (deleted offline) is not a feed. */
+export function withSurvivingLatest(state: FeedingStateView | null, latestSurvives: boolean): FeedingStateView | null {
+  if (!state || latestSurvives || !state.lastLogId) return state;
+  return { ...state, lastFedAt: null, lastFedByUid: null, lastFedByName: null };
 }
 
 /** The day count after logging a feeding on `logDay`. */

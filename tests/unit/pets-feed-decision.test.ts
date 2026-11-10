@@ -15,7 +15,10 @@ import {
   knownFromLogs,
   planUndo,
   readFeedingState,
-  reconcileDayCount,
+  countOnHouseholdDay,
+  householdDayStart,
+  newerKnown,
+  withSurvivingLatest,
   type FeedingStateView,
 } from '../../src/lib/pets/feed-decision';
 
@@ -126,23 +129,43 @@ describe('feed operation: the state document', () => {
     assert.equal(readFeedingState({ prev: { lastLogId: 'a' } })?.prevLogId, 'a');
   });
 
-  it('reconciles the day count with synced feedings the state never counted (online, offline, online)', () => {
+  it('counts the day from the logs themselves: synced offline feeds count, deleted ones do not', () => {
     const today = '2026-11-10';
-    // Online feed 1 (state 1), offline feed 2 synced as a log only, online feed 3: 3, not 2.
-    const afterOffline = state({ day: today, countOnDay: 1 });
-    const base = reconcileDayCount(afterOffline, { lastFedAt: null, lastFedByName: null, countToday: 2 }, today);
-    assert.deepEqual(base, { day: today, countOnDay: 2 });
-    assert.deepEqual(countAfterFeed(base, today), { day: today, countOnDay: 3 });
-    // The state never drops below its own count; unknown loaded count keeps it.
-    assert.deepEqual(reconcileDayCount(state({ day: today, countOnDay: 3 }), { lastFedAt: null, lastFedByName: null, countToday: 1 }, today), { day: today, countOnDay: 3 });
-    assert.deepEqual(reconcileDayCount(state({ day: today, countOnDay: 1 }), { lastFedAt: null, lastFedByName: null, countToday: null }, today), { day: today, countOnDay: 1 });
-    // The state still counts yesterday, but today already has synced feedings.
-    assert.deepEqual(reconcileDayCount(state({ day: '2026-11-09', countOnDay: 2 }), { lastFedAt: null, lastFedByName: null, countToday: 1 }, today), { day: today, countOnDay: 1 });
-    assert.deepEqual(reconcileDayCount(state({ day: '2026-11-09', countOnDay: 2 }), null, today), { day: '2026-11-09', countOnDay: 2 });
-    assert.deepEqual(reconcileDayCount(null, { lastFedAt: null, lastFedByName: null, countToday: 2 }, today), { day: today, countOnDay: 2 });
-    // The check also sees the reconciled count: two synced feedings complete a two-a-day plan.
-    const check = feedConfirmDecision({ state: state({ day: today, countOnDay: 1, lastFedAt: at('2026-11-10T12:00:00Z') }), known: { lastFedAt: null, lastFedByName: null, countToday: 2 }, now: at('2026-11-10T22:00:00Z'), timeZone: CHI, perDay: 2 });
-    assert.equal(check.reason, 'complete');
+    const now = at('2026-11-10T22:00:00Z'); // 16:00 in Chicago
+    const logs = [
+      { id: 'a', date: at('2026-11-10T14:00:00Z') },
+      { id: 'b', date: '2026-11-10T18:00:00.000Z' }, // an offline feed that synced (device time)
+      { id: 'b', date: '2026-11-10T18:00:00.000Z' }, // the same log from both shape queries
+      { id: 'y', date: at('2026-11-10T05:30:00Z') }, // 23:30 on Nov 9 in Chicago
+      { id: 'f', date: at('2026-11-12T00:00:00Z') }, // far in the future: ignored
+    ];
+    assert.equal(countOnHouseholdDay(logs, today, CHI, now), 2);
+    // Online, offline, online: the third feed persists 3.
+    assert.deepEqual(countAfterFeed({ day: today, countOnDay: countOnHouseholdDay(logs, today, CHI, now) }, today), { day: today, countOnDay: 3 });
+    // The log being deleted in the same commit is left out.
+    assert.equal(countOnHouseholdDay(logs, today, CHI, now, 'a'), 1);
+    assert.equal(householdDayStart(today, CHI).toISOString(), '2026-11-10T06:00:00.000Z');
+  });
+
+  it('a stale stored or loaded count never outweighs the counted logs', () => {
+    const now = at('2026-11-10T22:00:00Z');
+    // Today's only feed was deleted offline: the state still says 1 (and points at it), the logs say 0.
+    const stale = state({ day: '2026-11-10', countOnDay: 1, lastLogId: 'gone', lastFedAt: at('2026-11-10T21:30:00Z') });
+    const check = feedConfirmDecision({ state: withSurvivingLatest(stale, false), now, timeZone: CHI, perDay: 1, countToday: 0 });
+    assert.equal(check.needsConfirm, false);
+    assert.equal(check.countToday, 0);
+    assert.equal(check.lastFedAt, null);
+    // "Feed again?" was open while someone deleted a feeding: the old known count (2) is ignored.
+    const accepted = feedConfirmDecision({ state: state({ countOnDay: 2, lastFedAt: at('2026-11-10T12:00:00Z') }), known: { lastFedAt: null, lastFedByName: null, countToday: 2 }, now, timeZone: CHI, perDay: 2, countToday: 1 });
+    assert.equal(accepted.reason, null);
+    assert.equal(accepted.countToday, 1);
+    // A surviving latest feed is kept as is.
+    assert.equal(withSurvivingLatest(stale, true), stale);
+    // Without a state, the caller's loaded logs still supply the last feed (newer wins).
+    const older = { lastFedAt: at('2026-11-10T10:00:00Z'), lastFedByName: 'Sam', countToday: 1 };
+    const newer = { lastFedAt: at('2026-11-10T11:00:00Z'), lastFedByName: 'Alex', countToday: 1 };
+    assert.equal(newerKnown(older, newer)?.lastFedByName, 'Alex');
+    assert.equal(newerKnown(null, older), older);
   });
 
   it('counts per household day; backdated entries count only on their own day', () => {
@@ -218,6 +241,12 @@ describe('feed operation: every entry point uses it', () => {
     assert.match(read('src/components/command/command-palette.tsx'), /undoFeed\(/);
     assert.match(read('src/components/pets/feed-picker-dialog.tsx'), /useQuickFeed/);
     assert.match(read('src/components/pets/hold-to-feed.tsx'), /feed\('hold'\)/);
+  });
+
+  it('online feeds and undos count the day from the logs read in the transaction', () => {
+    const op = read('src/lib/pets/feed-operation.ts');
+    assert.equal((op.match(/await dayFeedings\(/g) ?? []).length, 2, 'feedPet and undoFeed');
+    assert.doesNotMatch(op, /reconcileDayCount|Math\.max/);
   });
 
   it('online feeds use server time; offline ones are marked and say so', () => {
