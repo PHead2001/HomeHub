@@ -64,3 +64,51 @@ export const memberUidByEmail = (
   }
   return (email) => byEmail.get(email.toLowerCase()) ?? null;
 };
+
+/**
+ * The `audience` values a member's list queries ask for:
+ * `where("audience", "array-contains-any", audienceQueryValues(uid))`.
+ * The read rule (release 3) accepts exactly the documents whose audience
+ * names the caller or everyone, so every client list query carries this
+ * filter.
+ * @param {string} uid The signed-in member's uid.
+ * @return {string[]} `[uid, "*"]`.
+ */
+export const audienceQueryValues = (uid: string): string[] =>
+  [uid, AUDIENCE_EVERYONE];
+
+type AddressedNotification = {
+  [field: string]: unknown;
+  audience?: unknown;
+  targetUserUid?: unknown;
+  targetUserEmail?: unknown;
+};
+
+/**
+ * Whether a notification is addressed to a member. A stored `audience`
+ * decides on its own: it names the member's uid or `"*"`. A document
+ * written before the field existed falls back to the old targeting: a
+ * `targetUserUid` must be the member, a `targetUserEmail` must be the
+ * member's email (case-insensitive), and an untargeted one is for everyone.
+ * Category permission is a separate check (push-audience.ts).
+ * @param {AddressedNotification} notification The notification document.
+ * @param {object} member The member (`uid`, optional `email`).
+ * @return {boolean} True when the member is in the notification's audience.
+ */
+export const isAddressedToMember = (
+  notification: AddressedNotification,
+  member: {uid: string; email?: string | null},
+): boolean => {
+  if (hasAudience(notification.audience)) {
+    return notification.audience.includes(AUDIENCE_EVERYONE) ||
+      notification.audience.includes(member.uid);
+  }
+  const uid = text(notification.targetUserUid);
+  if (uid) return uid === member.uid;
+  const email = text(notification.targetUserEmail);
+  if (email) {
+    return typeof member.email === "string" &&
+      email.toLowerCase() === member.email.toLowerCase();
+  }
+  return true;
+};
