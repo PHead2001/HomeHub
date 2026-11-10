@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { MemberAvatar } from '@/components/member-avatar';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chores/list';
+import { completerLabel } from '@/lib/chores/completion';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
 import { cn, stableSlugify } from '@/lib/utils';
@@ -56,6 +57,8 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   const due = choreDueKey(chore);
   const isCompleted = chore.isCompleted;
   const isOverdue = !isCompleted && due !== '' && due < today;
+  // Chores can be completed from their due day on (the server refuses earlier ones, CH-2).
+  const isFuture = !isCompleted && due !== '' && due > today;
   const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
   const isOpen = props.openIds.has(chore.id);
   const user = props.usersByEmail.get(chore.assignedToEmail);
@@ -64,6 +67,10 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   const remaining = openSubTasks(chore).length;
   const total = chore.subTasks?.length || 0;
   const completedAt = completionInstant(chore);
+  const completedBy = isCompleted ? completerLabel(chore, email => {
+    const completer = props.usersByEmail.get(email);
+    return completer ? memberName(completer) : undefined;
+  }) : null;
 
   const avatar = (
     <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size="sm" decorative />
@@ -88,6 +95,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             <Checkbox
               checked={props.selectedIds.has(chore.id)}
               onCheckedChange={() => props.onToggleSelect(chore)}
+              disabled={isFuture}
               aria-label={`Select ${chore.task}`}
               className="h-5 w-5"
             />
@@ -96,7 +104,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
           <CompletionCheck
             ref={checkRef}
             checked={isCompleted}
-            disabled={!capabilities.canComplete}
+            disabled={!capabilities.canComplete || isFuture}
             label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
             onToggle={() => props.onToggleDone(chore, checkRef.current)}
           />
@@ -123,7 +131,9 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             </span>
           )}
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            {isCompleted && completedAt ? <span>Done {format(completedAt, 'MMM d')}</span> : <span>{dueLabel(due, today)}</span>}
+            {isCompleted && completedAt
+              ? <span>{completedBy ? `Done by ${completedBy} · ${format(completedAt, 'MMM d')}` : `Done ${format(completedAt, 'MMM d')}`}</span>
+              : <span>{dueLabel(due, today)}</span>}
             {isOverdue && <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 font-medium text-destructive">Overdue</span>}
             {total > 0 && !isCompleted && <span>{total - remaining}/{total} steps</span>}
             {missed.length > 0 && (

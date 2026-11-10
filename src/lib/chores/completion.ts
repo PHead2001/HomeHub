@@ -1,51 +1,200 @@
 /**
- * Firestore field updates for completing a chore and undoing it. Every client
- * that marks a chore done must use `completionUpdate`: the rules require a newly
- * completed chore to carry `completedAtServer == request.time`, which is what
- * makes points and streaks (H06) impossible to backdate.
+ * Completing, undoing and reopening chores (H3: CH-2, CH-12, D-7). The server
+ * actions in `src/app/chores/actions.ts` apply these plans inside Admin SDK
+ * transactions (`src/lib/server/chore-completion.ts`); clients never write
+ * completion fields themselves. Pure (no Firebase), so eligibility and undo are
+ * unit-tested.
+ *
+ * - A chore due after today, in the household's timezone, cannot be completed
+ *   (no farming points from future occurrences).
+ * - The person who completes a chore is recorded (`completedByUid`, `...Email`,
+ *   `...Name`) and gets the points.
+ * - Every completion carries a random `completionId`; Undo reverts only while it
+ *   still matches, so an Undo can never revert someone else's later completion.
  */
-import { deleteField, serverTimestamp, type DocumentData } from 'firebase/firestore';
-import type { Chore } from '../types';
+import { isDayString, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 
-export type CompletionSnapshot = {
-  completedAt: Chore['completedAt'];
-  completedSubTasks: Chore['completedSubTasks'];
+/** Undo is offered this long after completing. */
+export const CHORE_UNDO_MS = 10_000;
+
+/** At most this many chores per completion request (one transaction). */
+export const MAX_COMPLETION_BATCH = 50;
+
+export type StoredChore = {
+  isCompleted?: unknown;
+  completedAt?: unknown;
+  completedSubTasks?: unknown;
+  subTasks?: unknown;
+  originalDueDate?: unknown;
+  dueDate?: unknown;
+  completionId?: unknown;
+  completedByUid?: unknown;
+  completedByEmail?: unknown;
+  completedByName?: unknown;
 };
 
-/** What Undo must restore. Taken before the completion is written. */
-export function completionSnapshot(chore: Pick<Chore, 'completedAt' | 'completedSubTasks'>): CompletionSnapshot {
+/** Who completed a chore and when, as the client shows it. */
+export type CompletionRecord = {
+  completionId: string | null;
+  completedAt: string | null;
+  completedByUid: string | null;
+  completedByEmail: string | null;
+  completedByName: string | null;
+  completedSubTasks: string[];
+};
+
+export type Completer = { uid: string; email: string; name: string };
+
+/** The completion fields a server completion writes (plus `completedAtServer`). */
+export type CompletionWrite = {
+  isCompleted: true;
+  completedAt: string;
+  completedByUid: string;
+  completedByEmail: string;
+  completedByName: string;
+  completionId: string;
+  completedSubTasks?: string[];
+};
+
+/** Fields every un-completion removes. `completedSubTasks` is handled separately. */
+export const COMPLETION_FIELDS = [
+  'completedAt', 'completedAtServer', 'completedByUid', 'completedByEmail', 'completedByName', 'completionId',
+] as const;
+
+const str = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
+
+/** A list of strings (at most 100, each at most 500 characters), or null. */
+export function stringList(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 100) return null;
+  if (!value.every(item => typeof item === 'string' && item.length <= 500)) return null;
+  return [...value] as string[];
+}
+
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((item, index) => item === b[index]);
+
+/**
+ * The day a chore is due in the household's timezone: `originalDueDate` when it
+ * is a day, else `dueDate` read in that zone. Null when the chore has no due date.
+ */
+export function householdDueDay(chore: Pick<StoredChore, 'originalDueDate' | 'dueDate'>, timeZone: string): string | null {
+  const zone = safeTimeZone(timeZone);
+  if (isDayString(chore.originalDueDate)) return chore.originalDueDate;
+  return toDay(chore.dueDate, zone) ?? toDay(chore.originalDueDate, zone);
+}
+
+/** 'early' when the chore is due after today in the household's timezone (CH-2). */
+export function completionEligibility(chore: Pick<StoredChore, 'originalDueDate' | 'dueDate'>, now: Date, timeZone: string): 'ok' | 'early' {
+  const due = householdDueDay(chore, timeZone);
+  return due !== null && due > localDay(now, safeTimeZone(timeZone)) ? 'early' : 'ok';
+}
+
+/** What the stored chore says about its current completion. */
+export function completionRecord(chore: StoredChore): CompletionRecord {
   return {
-    completedAt: chore.completedAt,
-    completedSubTasks: chore.completedSubTasks ? [...chore.completedSubTasks] : chore.completedSubTasks,
+    completionId: str(chore.completionId),
+    completedAt: str(chore.completedAt),
+    completedByUid: str(chore.completedByUid),
+    completedByEmail: str(chore.completedByEmail),
+    completedByName: str(chore.completedByName),
+    completedSubTasks: stringList(chore.completedSubTasks) ?? [],
   };
 }
 
-/** Marks a chore done. `completeSubTasks` ticks every sub-task too. */
-export function completionUpdate(chore: Pick<Chore, 'subTasks'>, completeSubTasks: boolean, now = new Date()) {
-  const completedAt = now.toISOString();
-  const update: DocumentData = {
+export type CompletionPlan =
+  | { kind: 'early'; dueDay: string }
+  | { kind: 'already'; completion: CompletionRecord }
+  | { kind: 'complete'; fields: CompletionWrite; completion: CompletionRecord; previousCompletedSubTasks: string[] | null };
+
+/**
+ * How to complete one chore. Already completed: nothing to write, and the result
+ * says who did it (idempotent). Due after today: refused. Otherwise the completion
+ * fields, with every step ticked when `completeSubTasks` and some are open
+ * (`previousCompletedSubTasks` is then what Undo puts back).
+ */
+export function planCompletion(
+  chore: StoredChore,
+  options: { completer: Completer; now: Date; timeZone: string; completeSubTasks: boolean; completionId: string },
+): CompletionPlan {
+  if (chore.isCompleted === true) return { kind: 'already', completion: completionRecord(chore) };
+  if (completionEligibility(chore, options.now, options.timeZone) === 'early') {
+    return { kind: 'early', dueDay: householdDueDay(chore, options.timeZone) ?? '' };
+  }
+  const fields: CompletionWrite = {
     isCompleted: true,
-    completedAt,
-    completedAtServer: serverTimestamp(),
+    completedAt: options.now.toISOString(),
+    completedByUid: options.completer.uid,
+    completedByEmail: options.completer.email,
+    completedByName: options.completer.name,
+    completionId: options.completionId,
   };
-  if (completeSubTasks) update.completedSubTasks = [...(chore.subTasks || [])];
-  return { update, local: { isCompleted: true, completedAt, ...(completeSubTasks ? { completedSubTasks: [...(chore.subTasks || [])] } : {}) } };
-}
-
-/** Restores a chore exactly as it was before it was completed. */
-export function undoCompletionUpdate(snapshot: CompletionSnapshot) {
+  const subTasks = stringList(chore.subTasks) ?? [];
+  const before = stringList(chore.completedSubTasks) ?? [];
+  let previousCompletedSubTasks: string[] | null = null;
+  if (options.completeSubTasks && subTasks.some(step => !before.includes(step))) {
+    fields.completedSubTasks = [...subTasks];
+    previousCompletedSubTasks = before;
+  }
   return {
-    update: {
-      isCompleted: false,
-      completedAt: snapshot.completedAt === undefined ? deleteField() : snapshot.completedAt,
-      completedSubTasks: snapshot.completedSubTasks === undefined ? deleteField() : snapshot.completedSubTasks,
-      completedAtServer: deleteField(),
-    } as DocumentData,
-    local: {
-      isCompleted: false,
-      completedAt: snapshot.completedAt,
-      completedSubTasks: snapshot.completedSubTasks,
-      completedAtServer: undefined,
+    kind: 'complete',
+    fields,
+    previousCompletedSubTasks,
+    completion: {
+      completionId: fields.completionId,
+      completedAt: fields.completedAt,
+      completedByUid: fields.completedByUid,
+      completedByEmail: fields.completedByEmail,
+      completedByName: fields.completedByName,
+      completedSubTasks: fields.completedSubTasks ?? before,
     },
   };
+}
+
+/** Per-chore result of a completion request (server action → client). */
+export type ChoreCompletionOutcome =
+  | { choreId: string; status: 'completed'; completion: CompletionRecord; previousCompletedSubTasks: string[] | null }
+  | { choreId: string; status: 'already'; completion: CompletionRecord }
+  | { choreId: string; status: 'refused'; refused: 'early'; dueDay: string }
+  | { choreId: string; status: 'refused'; refused: 'missing' };
+
+export type UndoOutcome = { choreId: string; status: 'undone' | 'stale' | 'open' | 'missing'; completedSubTasks?: string[] };
+export type ReopenOutcome = { choreId: string; status: 'reopened' | 'open' | 'missing' };
+
+/** Steps Undo may put back: only if they are still exactly what the completion ticked. */
+export type SubTaskRestore = { from: string[]; to: string[] };
+
+export type UndoPlan =
+  | { kind: 'noop'; reason: 'open' | 'stale' }
+  | { kind: 'undo'; completedSubTasks: string[] | null };
+
+/**
+ * How to undo one completion. Only the completion named by `completionId` is
+ * reverted (a reopen and a new completion in between give a new id, so a late
+ * Undo is a no-op). Only completion fields are cleared; steps are restored only
+ * when they are unchanged since the completion ticked them, and only to steps
+ * the chore still has.
+ */
+export function planUndo(chore: StoredChore, completionId: string, restore?: SubTaskRestore | null): UndoPlan {
+  if (chore.isCompleted !== true) return { kind: 'noop', reason: 'open' };
+  if (!completionId || str(chore.completionId) !== completionId) return { kind: 'noop', reason: 'stale' };
+  const current = stringList(chore.completedSubTasks);
+  const from = restore ? stringList(restore.from) : null;
+  const to = restore ? stringList(restore.to) : null;
+  if (!current || !from || !to || !sameList(current, from)) return { kind: 'undo', completedSubTasks: null };
+  const steps = new Set(stringList(chore.subTasks) ?? []);
+  return { kind: 'undo', completedSubTasks: to.filter(step => steps.has(step)) };
+}
+
+/** Reopening: nothing to do for an open chore; otherwise clear the completion fields (steps stay ticked). */
+export function planReopen(chore: StoredChore): { kind: 'noop' } | { kind: 'reopen' } {
+  return chore.isCompleted === true ? { kind: 'reopen' } : { kind: 'noop' };
+}
+
+/** Plain-language name for who completed a chore ("Done by Sam"), or null when not recorded. */
+export function completerLabel(
+  chore: Pick<StoredChore, 'completedByName' | 'completedByEmail'>,
+  nameForEmail?: (email: string) => string | undefined,
+): string | null {
+  const email = str(chore.completedByEmail);
+  const known = email && nameForEmail ? nameForEmail(email) : undefined;
+  return known || str(chore.completedByName) || email;
 }

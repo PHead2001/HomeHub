@@ -1087,6 +1087,69 @@ describe('chore completion stamps and chore settings', () => {
   });
 });
 
+describe('chore completion attribution and occurrence keys (H3, rules stage R1)', () => {
+  const chore = (user: Identity, id = 'task') => doc(dbFor(user), 'households', householdA, 'chores', id);
+  const serverWrite = (id: string, data: Record<string, unknown>) => environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'households', householdA, 'chores', id), data);
+  });
+
+  test('clients cannot write who completed a chore or the completion id', async () => {
+    for (const field of ['completedByUid', 'completedByEmail', 'completedByName', 'completionId']) {
+      const value = field === 'completedByUid' ? users.member.uid : field === 'completedByEmail' ? users.member.email : 'forged';
+      // Not with a completion, not on its own, not by editors, not on create.
+      await assertFails(updateDoc(chore(users.child), {
+        isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z', completedAtServer: serverTimestamp(), [field]: value,
+      }));
+      await assertFails(updateDoc(chore(users.owner), { [field]: value }));
+      await assertFails(setDoc(doc(dbFor(users.member), 'households', householdA, 'chores', `forged-${field}`), {
+        task: 'Forged', isCompleted: false, [field]: value,
+      }));
+    }
+  });
+
+  test('attribution written by the server cannot be changed or removed by clients', async () => {
+    await serverWrite('server-done', {
+      task: 'Server done', isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z',
+      completedAtServer: Timestamp.fromDate(new Date('2026-08-04T12:00:00.000Z')),
+      completedByUid: users.member.uid, completedByEmail: users.member.email, completedByName: 'Member', completionId: 'c-1',
+    });
+    await assertFails(updateDoc(chore(users.owner, 'server-done'), { completedByEmail: users.owner.email }));
+    await assertFails(updateDoc(chore(users.owner, 'server-done'), { completedByUid: deleteField() }));
+    await assertFails(updateDoc(chore(users.owner, 'server-done'), { completionId: 'c-2' }));
+    // Other edits of a server-completed chore keep working.
+    await assertSucceeds(updateDoc(chore(users.owner, 'server-done'), { task: 'Server done (renamed)' }));
+    // An older release can still reopen it with client writes (R1 is compatible) ...
+    await assertSucceeds(updateDoc(chore(users.child, 'server-done'), {
+      isCompleted: false, completedAt: deleteField(), completedAtServer: deleteField(),
+    }));
+    // ... but not complete it again while it carries someone's attribution.
+    await assertFails(updateDoc(chore(users.child, 'server-done'), {
+      isCompleted: true, completedAt: '2026-08-04T13:00:00.000Z', completedAtServer: serverTimestamp(),
+    }));
+  });
+
+  test('client completions without attribution still work in stage R1', async () => {
+    await assertSucceeds(updateDoc(chore(users.child), {
+      isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z', completedAtServer: serverTimestamp(),
+    }));
+  });
+
+  test('occurrenceKey is set only by the server and is immutable for clients', async () => {
+    await assertFails(setDoc(doc(dbFor(users.member), 'households', householdA, 'chores', 'forged-occurrence'), {
+      task: 'Forged occurrence', isCompleted: false, occurrenceKey: 'trash|general|2026-08-05',
+    }));
+    await serverWrite('generated', {
+      task: 'Trash', isCompleted: false, templateId: 'trash', originalDueDate: '2026-08-04',
+      dueDate: '2026-08-04T05:00:00.000Z', roomIds: [], occurrenceKey: 'trash|general|2026-08-04',
+    });
+    await assertFails(updateDoc(chore(users.owner, 'generated'), { occurrenceKey: 'trash|general|2026-08-05' }));
+    await assertFails(updateDoc(chore(users.owner, 'generated'), { occurrenceKey: deleteField() }));
+    await assertFails(updateDoc(chore(users.owner, 'task'), { occurrenceKey: 'trash|general|2026-08-06' }));
+    // Moving the chore keeps its occurrence identity.
+    await assertSucceeds(updateDoc(chore(users.owner, 'generated'), { originalDueDate: '2026-08-06', dueDate: '2026-08-06T17:00:00.000Z' }));
+  });
+});
+
 describe('yearly chore stats', () => {
   const stats = (user: Identity, household = householdA) => doc(dbFor(user), 'households', household, 'stats', 'chores-2026');
 

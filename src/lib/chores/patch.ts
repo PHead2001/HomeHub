@@ -5,7 +5,9 @@
  */
 import type { ChoreRecord } from './dates';
 
-export type CompletionFields = Pick<ChoreRecord, 'isCompleted' | 'completedAt' | 'completedSubTasks' | 'completedAtServer'>;
+export type CompletionFields = Pick<ChoreRecord,
+  'isCompleted' | 'completedAt' | 'completedSubTasks' | 'completedAtServer' |
+  'completedByUid' | 'completedByEmail' | 'completedByName' | 'completionId'>;
 
 export function completionFields(chore: ChoreRecord): CompletionFields {
   return {
@@ -13,6 +15,10 @@ export function completionFields(chore: ChoreRecord): CompletionFields {
     completedAt: chore.completedAt,
     completedSubTasks: chore.completedSubTasks,
     completedAtServer: chore.completedAtServer,
+    completedByUid: chore.completedByUid,
+    completedByEmail: chore.completedByEmail,
+    completedByName: chore.completedByName,
+    completionId: chore.completionId,
   };
 }
 
