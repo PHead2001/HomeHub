@@ -41,7 +41,7 @@ import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmission
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
-import { deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision } from '@/lib/shopping/live-state';
+import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
@@ -256,9 +256,11 @@ export function ShoppingListClient({
   const [openSections, setOpenSections] = useState<string[]>(['needed']);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [handoffMode, setHandoffMode] = useState<null | 'pantry' | 'then-clear'>(null);
-  // The purchased items shown when Clear was pressed: exactly those are cleared,
-  // even if the live list changes while the dialog is open.
-  const [clearIds, setClearIds] = useState<string[]>([]);
+  // The purchased items shown when Clear was pressed, with the household and list
+  // they came from: exactly those are cleared, even if the live list changes while
+  // the dialog is open, and never on another list (`clearIdsFor`).
+  const [clearTarget, setClearTarget] = useState<ClearTarget | null>(null);
+  const clearIds = clearIdsFor(clearTarget, householdId, selectedListId) ?? [];
   // The list this device is deleting, so its own deletion never reads as "deleted elsewhere".
   const [deletingListId, setDeletingListId] = useState<string | null>(null);
   // The open list as last seen in this household's lists snapshot (shown when it is
@@ -332,6 +334,9 @@ export function ShoppingListClient({
   useEffect(() => {
     setOpenSections(['needed']);
     setIsReceiptOpen(false);
+    // A Clear confirmation belongs to the list it was opened on.
+    setIsClearAlertOpen(false);
+    setClearTarget(null);
   }, [selectedListId]);
 
   // A `?list=` link to a list that no longer exists falls back to the overview.
@@ -768,13 +773,17 @@ export function ShoppingListClient({
    * the screen, and "the list is empty, delete it?" is decided from a re-read of
    * the list (the confirmed state), not from a local status filter.
    */
-  const clearPurchasedItems = async (itemIds: readonly string[]) => {
+  const clearPurchasedItems = async (target: ClearTarget | null) => {
+    setIsClearAlertOpen(false);
+    setClearTarget(null);
     if (!householdId || !selectedList) return;
-    // Only clear the list that is on screen: the ids below came from it.
+    // Only clear the list that is on screen, and only with ids captured from it:
+    // a confirmation left over from another list (or household) does nothing.
     if (selectedListIdRef.current !== selectedList.id) return;
+    const itemIds = clearIdsFor(target, householdId, selectedList.id);
+    if (!itemIds) return;
     const list = selectedList;
     const ids = [...new Set(itemIds)];
-    setIsClearAlertOpen(false);
     if (ids.length === 0) {
       toast({ title: 'Nothing to clear' });
       return;
@@ -850,7 +859,12 @@ export function ShoppingListClient({
   };
 
   const openClear = () => {
-    setClearIds(listItemsRef.current.filter(item => item.status === 'purchased').map(item => item.id));
+    if (!householdId || !selectedListId) return;
+    setClearTarget({
+      householdId,
+      listId: selectedListId,
+      ids: listItemsRef.current.filter(item => item.status === 'purchased').map(item => item.id),
+    });
     setIsClearAlertOpen(true);
   };
 
@@ -924,7 +938,7 @@ export function ShoppingListClient({
                     </AlertDialogHeader>
                     <AlertDialogFooter className="gap-2">
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void clearPurchasedItems(clearIds)} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
+                    <AlertDialogAction onClick={() => void clearPurchasedItems(clearTarget)} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
                         {canHandoff ? 'Clear only' : 'Clear Purchased'}
                     </AlertDialogAction>
                     {canHandoff && (

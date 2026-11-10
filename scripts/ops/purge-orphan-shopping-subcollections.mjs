@@ -14,15 +14,21 @@
 // The account needs Firestore read/write.
 //
 // It finds list references whose document is missing with listDocuments() (which
-// also returns references that only have subcollections), re-checks each one just
-// before deleting, and then deletes only its subcollections (recursiveDelete per
-// subcollection), never a list document: a list created meanwhile under the same
-// id keeps its document. Output is counts only: never names, ids or contents.
-// Everything it deletes is gone for good, so a stopped run is resumed by running
-// it again; a re-run finds only what is left.
+// also returns references that only have subcollections) and deletes only what
+// is under them, never a list document. With --apply, while members keep using
+// Shopping, a member can re-create a list under the same id (ids derive from the
+// name) at any moment, so every delete goes through purgeOrphanList
+// (./shopping-orphans.mjs): pages of at most 200 documents, each one Firestore
+// transaction that re-reads the list document and deletes nothing if the list
+// exists, in which case the rest of that list is left alone and counted as
+// re-created. No document under an existing list is ever deleted. Output is
+// counts only: never names, ids or contents. Everything it deletes is gone for
+// good, so a stopped run is resumed by running it again; a re-run finds only
+// what is left.
 import { FieldPath } from 'firebase-admin/firestore';
 import { parseOpsArgs } from './profile-privacy.mjs';
 import { opsFirestore } from './credentials.mjs';
+import { purgeOrphanList } from './shopping-orphans.mjs';
 
 const PAGE_SIZE = 400;
 const GET_ALL_CHUNK = 100;
@@ -33,7 +39,7 @@ const { db, label } = await opsFirestore(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (orphaned items and categories will be deleted)' : 'dry run (no writes)'}.`);
 
-const totals = { households: 0, listRefs: 0, lists: 0, orphans: 0, orphanItems: 0, orphanConfig: 0, otherDocs: 0, purged: 0, recreated: 0 };
+const totals = { households: 0, listRefs: 0, lists: 0, orphans: 0, orphanItems: 0, orphanConfig: 0, otherDocs: 0, purged: 0, recreated: 0, deleted: 0 };
 
 const countOf = async collection => (await collection.count().get()).data().count;
 
@@ -64,13 +70,25 @@ const purgeOrphan = async listRef => {
     else totals.otherDocs += size;
   }
   if (!apply) return;
-  // A list created meanwhile under this id is a real list again: leave it alone.
-  if ((await listRef.get()).exists) {
-    totals.recreated += 1;
-    return;
-  }
-  for (const collection of collections) await db.recursiveDelete(collection);
-  totals.purged += 1;
+  const result = await purgeOrphanList(store, listRef);
+  totals.deleted += result.deleted;
+  if (result.outcome === 'recreated') totals.recreated += 1;
+  else totals.purged += 1;
+};
+
+/** Firestore calls for purgeOrphanList; each deletePage is one transaction. */
+const store = {
+  subcollections: ref => ref.listCollections(),
+  documentRefs: collection => collection.listDocuments(),
+  deletePage: (listRef, collection, pageSize) => db.runTransaction(async transaction => {
+    // Reading the list document inside the transaction serializes this page with
+    // a member re-creating the list: either the page sees the list and deletes
+    // nothing, or the re-creation commits after the page.
+    if ((await transaction.get(listRef)).exists) return { listExists: true, deleted: 0 };
+    const page = await transaction.get(collection.select().limit(pageSize));
+    for (const doc of page.docs) transaction.delete(doc.ref);
+    return { listExists: false, deleted: page.size };
+  }),
 };
 
 let householdCursor = null;
@@ -94,5 +112,5 @@ console.log(`  orphaned items: ${totals.orphanItems}`);
 console.log(`  orphaned category documents: ${totals.orphanConfig}`);
 console.log(`  other orphaned documents: ${totals.otherDocs}`);
 console.log(apply
-  ? `Orphaned lists purged: ${totals.purged}. Re-created meanwhile and left alone: ${totals.recreated}.`
+  ? `Orphaned lists purged: ${totals.purged} (documents deleted: ${totals.deleted}). Re-created meanwhile and left alone: ${totals.recreated}.`
   : 'Dry run only. Re-run with --apply to delete them.');
