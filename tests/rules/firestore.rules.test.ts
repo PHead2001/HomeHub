@@ -58,7 +58,17 @@ const now = () => Timestamp.fromDate(new Date('2026-08-01T12:00:00.000Z'));
 // Notifications and invites are checked against the real request time.
 const inMinutes = (minutes: number) => Timestamp.fromMillis(Date.now() + minutes * 60_000);
 
-const notification = (overrides: Record<string, unknown> = {}) => ({
+// The audience a producer derives (notificationAudience): [targetUserUid],
+// [] for an email-only target, otherwise ['*'].
+const derivedAudience = (overrides: Record<string, unknown>) => {
+  if (typeof overrides.targetUserUid === 'string') return [overrides.targetUserUid];
+  if (typeof overrides.targetUserEmail === 'string') return [];
+  return ['*'];
+};
+
+// A notification document. `audience` defaults to the derived value; pass
+// `audience: undefined` for a document written before the field existed.
+const notification = (overrides: Record<string, unknown> = {}) => Object.fromEntries(Object.entries({
   householdId: householdA,
   category: 'chores',
   title: 'New chore assigned',
@@ -68,8 +78,9 @@ const notification = (overrides: Record<string, unknown> = {}) => ({
   deepLink: '/chores',
   readBy: {},
   dismissedBy: {},
+  audience: derivedAudience(overrides),
   ...overrides,
-});
+}).filter(([, value]) => value !== undefined));
 
 const seed = async () => {
   await environment.clearFirestore();
@@ -498,6 +509,13 @@ describe('independent review regressions', () => {
     await assertFails(addDoc(collection(dbFor(users.member), 'households', householdA, 'notifications'), notice(users.member)));
     // Departure records must describe the leaver.
     await assertFails(leave(users.member, (b, db) => b.set(doc(collection(db, 'households', householdA, 'auditLogs')), { ...audit(users.member), targetUid: users.owner.uid })));
+    // The notice is household-wide: its audience must be ['*'].
+    for (const audience of [undefined, [], [users.member.uid], [users.owner.uid]]) {
+      await assertFails(leave(users.member, (b, db) => {
+        b.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(users.member));
+        b.set(doc(collection(db, 'households', householdA, 'notifications')), notification({ ...notice(users.member), audience }));
+      }));
+    }
     await assertSucceeds(leave(users.admin, (b, db) => {
       b.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(users.admin));
       b.set(doc(collection(db, 'households', householdA, 'notifications')), notice(users.admin));
@@ -744,9 +762,11 @@ describe('notifications', () => {
 
   test('restricted members can list with the bell category filter', async () => {
     // The bell, center and dashboard tile filter categories in the query for
-    // members who cannot see every module (see notification-query.ts).
+    // members who cannot see every module, next to the audience filter every
+    // list query carries (see notification-query.ts).
     const bellQuery = query(
       collection(dbFor(users.child), 'households', householdA, 'notifications'),
+      where('audience', 'array-contains-any', [users.child.uid, '*']),
       where('category', 'in', ['chores', 'pets', 'system', 'general']),
       where('createdAt', '>=', Timestamp.fromDate(new Date(Date.now() - 7 * 86400000))),
       orderBy('createdAt', 'desc'),
@@ -755,6 +775,7 @@ describe('notifications', () => {
     await assertSucceeds(getDocs(bellQuery));
     await assertFails(getDocs(query(
       collection(dbFor(users.pending), 'households', householdA, 'notifications'),
+      where('audience', 'array-contains-any', [users.pending.uid, '*']),
       where('category', 'in', ['system', 'general']),
     )));
   });
@@ -770,19 +791,19 @@ describe('notifications', () => {
     await assertFails(updateDoc(doc(db, 'households', householdA, 'notifications', 'existing'), { message: 'changed' }));
   });
 
-  test('audience, when present, must match the targeting; absent is still accepted', async () => {
+  test('audience is required on create and must match the targeting', async () => {
     const col = collection(dbFor(users.member), 'households', householdA, 'notifications');
     const targeted = (overrides: Record<string, unknown> = {}) => notification({
       targetUserUid: users.owner.uid, targetUserEmail: users.owner.email, ...overrides,
     });
-    // Present and valid.
+    // Well formed: [targetUserUid] or ['*'].
     await assertSucceeds(addDoc(col, targeted({ audience: [users.owner.uid] })));
     await assertSucceeds(addDoc(col, notification({ targetUserUid: users.owner.uid, audience: [users.owner.uid] })));
     await assertSucceeds(addDoc(col, notification({ audience: ['*'] })));
-    // Absent: clients cached from before the field existed.
-    await assertSucceeds(addDoc(col, targeted()));
-    await assertSucceeds(addDoc(col, notification()));
-    // Present and wrong on a targeted document.
+    // Missing: clients cached from before the field existed are refused.
+    await assertFails(addDoc(col, targeted({ audience: undefined })));
+    await assertFails(addDoc(col, notification({ audience: undefined })));
+    // Wrong on a targeted document.
     await assertFails(addDoc(col, targeted({ audience: ['*'] })));
     await assertFails(addDoc(col, targeted({ audience: [users.member.uid] })));
     await assertFails(addDoc(col, targeted({ audience: [users.owner.uid, users.member.uid] })));
@@ -791,17 +812,19 @@ describe('notifications', () => {
     await assertFails(addDoc(col, targeted({ audience: users.owner.uid })));
     await assertFails(addDoc(col, targeted({ audience: { 0: users.owner.uid } })));
     await assertFails(addDoc(col, targeted({ audience: [users.owner.email] })));
-    // Present and wrong on a household-wide document.
+    // Wrong on a household-wide document.
     await assertFails(addDoc(col, notification({ audience: [users.member.uid] })));
     await assertFails(addDoc(col, notification({ audience: ['*', users.member.uid] })));
     await assertFails(addDoc(col, notification({ audience: [] })));
     await assertFails(addDoc(col, notification({ audience: '*' })));
     await assertFails(addDoc(col, notification({ audience: [1] })));
     await assertFails(addDoc(col, notification({ audience: null })));
-    // A legacy email-only target has no uid to name: only the empty list.
-    await assertSucceeds(addDoc(col, notification({ targetUserEmail: users.owner.email, audience: [] })));
-    await assertFails(addDoc(col, notification({ targetUserEmail: users.owner.email, audience: ['*'] })));
-    await assertFails(addDoc(col, notification({ targetUserEmail: users.owner.email, audience: [users.owner.uid] })));
+    // An email-only target names nobody by uid: refused whatever the audience.
+    for (const audience of [[], ['*'], [users.owner.uid]]) {
+      await assertFails(addDoc(col, notification({ targetUserEmail: users.owner.email, audience })));
+    }
+    // '*' is not a member uid.
+    await assertFails(addDoc(col, notification({ targetUserUid: '*', audience: ['*'] })));
   });
 
   test('clients cannot change, add or remove audience on update', async () => {
@@ -809,13 +832,13 @@ describe('notifications', () => {
       await setDoc(doc(context.firestore(), 'households', householdA, 'notifications', 'with-audience'),
         notification({ category: 'maintenance', audience: ['*'] }));
       await setDoc(doc(context.firestore(), 'households', householdA, 'notifications', 'legacy-maintenance'),
-        notification({ category: 'maintenance' }));
+        notification({ category: 'maintenance', audience: undefined }));
     });
     const state = { at: now(), uid: users.member.uid };
     const resolved = { resolvedAt: now(), resolvedBy: state };
     for (const user of [users.member, users.owner]) {
       const withAudience = doc(dbFor(user), 'households', householdA, 'notifications', 'with-audience');
-      const legacy = doc(dbFor(user), 'households', householdA, 'notifications', 'existing');
+      const legacy = doc(dbFor(user), 'households', householdA, 'notifications', 'legacy-maintenance');
       await assertFails(updateDoc(withAudience, { audience: [user.uid] }));
       await assertFails(updateDoc(withAudience, { audience: ['*', user.uid] }));
       await assertFails(updateDoc(withAudience, { audience: deleteField() }));
@@ -841,41 +864,20 @@ describe('notifications', () => {
   });
 });
 
-// EXPERIMENT (not the production rules). A later release will make reads
-// require `audience`. This block loads a copy of firestore.rules in which
-// notification `get, list` additionally need
-// `resource.data.audience.hasAny([request.auth.uid, '*'])`, in its own
-// emulator project, and records which query shapes the rules engine accepts.
-// firestore.rules itself keeps the permission-only read rule.
-describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)', () => {
-  const experimentProject = 'demo-homehub-audience-experiment';
-  const productionRead = "allow read: if hasHouseholdPermission(householdId, 'notifications.view');";
-  const experimentRead = "allow get, list: if hasHouseholdPermission(householdId, 'notifications.view') &&\n" +
-    "          resource.data.audience.hasAny([request.auth.uid, '*']);";
-  let experiment: RulesTestEnvironment;
-  const as = (user: Identity) => collection(
-    experiment.authenticatedContext(user.uid, { email: user.email }).firestore(),
-    'households', householdA, 'notifications');
+// Notification get and list need `resource.data.audience` to name the caller
+// or everyone ('*'), on top of `notifications.view`. These cases also record
+// which query shapes the rules engine accepts under that rule.
+describe('notification reads and updates are limited by audience', () => {
+  const as = (user: Identity) => collection(dbFor(user), 'households', householdA, 'notifications');
   const since = () => where('createdAt', '>=', Timestamp.fromDate(new Date(Date.now() - 7 * 86400000)));
   const ids = (snapshot: { docs: Array<{ id: string }> }) => snapshot.docs.map(d => d.id).sort();
   const childCategories = ['chores', 'pets', 'system', 'general'];
-
-  before(async () => {
-    const rules = readFileSync(process.env.HOMEHUB_FIRESTORE_RULES ?? 'firestore.rules', 'utf8');
-    if (rules.split(productionRead).length !== 2) throw new Error('Notification read rule not found exactly once.');
-    experiment = await initializeTestEnvironment({
-      projectId: experimentProject,
-      firestore: { rules: rules.replace(productionRead, experimentRead) },
-    });
-  });
+  const audienceOf = (user: Identity) => where('audience', 'array-contains-any', [user.uid, '*']);
 
   beforeEach(async () => {
-    await experiment.clearFirestore();
-    await experiment.withSecurityRulesDisabled(async context => {
+    await environment.withSecurityRulesDisabled(async context => {
       const db = context.firestore();
-      for (const [user, role] of [[users.owner, 'owner'], [users.member, 'member'], [users.child, 'child']] as const) {
-        await setDoc(doc(db, 'households', householdA, 'members', user.uid), { ...user, role, status: 'active' });
-      }
+      await deleteDoc(doc(db, 'households', householdA, 'notifications', 'existing'));
       const put = (id: string, minutesAgo: number, overrides: Record<string, unknown>) =>
         setDoc(doc(db, 'households', householdA, 'notifications', id), notification({ createdAt: inMinutes(-minutesAgo), ...overrides }));
       await put('everyone-chores', 1, { audience: ['*'] });
@@ -884,31 +886,28 @@ describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)
       await put('for-child', 4, { targetUserUid: users.child.uid, audience: [users.child.uid] });
       await put('for-child-shopping', 5, { category: 'shopping', targetUserUid: users.child.uid, audience: [users.child.uid] });
       await put('for-owner', 6, { category: 'system', targetUserUid: users.owner.uid, audience: [users.owner.uid] });
-      await put('legacy-no-audience', 7, {});
+      await put('legacy-no-audience', 7, { audience: undefined });
       await put('unresolvable', 8, { targetUserEmail: 'gone@example.test', audience: [] });
+      await put('maintenance-for-member', 9, { category: 'maintenance', targetUserUid: users.member.uid, audience: [users.member.uid] });
     });
   });
 
-  after(async () => experiment?.cleanup());
-
-  test('(a) array-contains-any [uid, "*"] with the createdAt window and limit is allowed and returns only matching documents', async () => {
+  test('array-contains-any [uid, "*"] with the createdAt window and limit returns only the caller\'s documents', async () => {
     const snapshot = await assertSucceeds(getDocs(query(
-      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
-      since(), orderBy('createdAt', 'desc'), limit(30))));
-    assert.deepEqual(ids(snapshot), ['everyone-chores', 'everyone-shopping', 'for-member']);
+      as(users.member), audienceOf(users.member), since(), orderBy('createdAt', 'desc'), limit(30))));
+    assert.deepEqual(ids(snapshot), ['everyone-chores', 'everyone-shopping', 'for-member', 'maintenance-for-member']);
   });
 
-  test('(b) the same combined with the category "in" filter', async () => {
-    // Result (emulator, firebase 12 SDK): `array-contains-any` and `in` are
-    // accepted together in one query, by the SDK and by the rules engine
-    // (2 audience values x up to 6 categories stays under Firestore's limit of
-    // 30 disjunctions). The emulator does not enforce composite indexes, so the
-    // index this needs is only checked against live Firestore.
+  test('the same combined with the category "in" filter, and one array-contains query per value', async () => {
+    // `array-contains-any` and `in` are accepted together in one query, by the
+    // SDK and by the rules engine (2 audience values x up to 6 categories stays
+    // under Firestore's limit of 30 disjunctions). The emulator does not
+    // enforce composite indexes, so the index this needs is only checked
+    // against live Firestore.
     const combined = await assertSucceeds(getDocs(query(
-      as(users.child), where('audience', 'array-contains-any', [users.child.uid, '*']),
+      as(users.child), audienceOf(users.child),
       where('category', 'in', childCategories), since(), orderBy('createdAt', 'desc'), limit(30))));
     assert.deepEqual(ids(combined), ['everyone-chores', 'for-child']);
-    // Fallback shape, also accepted: one query per audience value, merged by the client.
     const perValue = async (value: string) => ids(await assertSucceeds(getDocs(query(
       as(users.child), where('audience', 'array-contains', value),
       where('category', 'in', childCategories), since(), orderBy('createdAt', 'desc'), limit(30)))));
@@ -916,18 +915,25 @@ describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)
     assert.deepEqual(await perValue('*'), ['everyone-chores']);
   });
 
-  test('(c) lists that do not name the caller\'s audience are denied', async () => {
+  test('lists that do not name the caller\'s audience are refused', async () => {
     await assertFails(getDocs(as(users.member)));
     await assertFails(getDocs(query(as(users.member), since(), orderBy('createdAt', 'desc'), limit(30))));
     await assertFails(getDocs(query(as(users.member), where('category', 'in', childCategories), since(), orderBy('createdAt', 'desc'))));
+    // Owners and admins are no exception.
+    await assertFails(getDocs(query(as(users.owner), since(), orderBy('createdAt', 'desc'), limit(30))));
+    await assertFails(getDocs(as(users.admin)));
     // Someone else's uid, alone or next to '*'.
     await assertFails(getDocs(query(as(users.member), where('audience', 'array-contains', users.child.uid))));
     await assertFails(getDocs(query(as(users.member), where('audience', 'array-contains-any', [users.child.uid, '*']))));
     await assertFails(getDocs(query(as(users.member), where('audience', 'array-contains-any', [users.member.uid, users.child.uid, '*']))));
+    // The audience filter does not replace membership or the view permission.
+    await assertFails(getDocs(query(as(users.pending), audienceOf(users.pending))));
+    await assertFails(getDocs(query(as(users.ownerB), audienceOf(users.ownerB))));
+    await assertFails(getDocs(query(as(users.stranger), audienceOf(users.stranger))));
   });
 
-  test('(d) the Maintenance Center resolver shapes (sourceType ==/in, sourceId in) are allowed', async () => {
-    await experiment.withSecurityRulesDisabled(async context => {
+  test('the Maintenance Center resolver shapes (sourceType ==/in, sourceId in) are accepted', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
       const db = context.firestore();
       const put = (id: string, overrides: Record<string, unknown>) =>
         setDoc(doc(db, 'households', householdA, 'notifications', id), notification({ category: 'maintenance', ...overrides }));
@@ -935,31 +941,69 @@ describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)
       await put('asset-legacy', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1-0:overdue', audience: ['*'] });
       await put('asset-warranty', { sourceType: 'maintenance_asset_warranty', sourceId: 'asset-1', audience: ['*'] });
       await put('asset-other', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-2:filter', audience: ['*'] });
-      await put('asset-no-audience', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter' });
+      await put('asset-no-audience', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter', audience: undefined });
     });
     // resolveMaintenanceNotifications: one sourceType, the schedule id plus legacy ids.
     const resolver = await assertSucceeds(getDocs(query(
-      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
+      as(users.member), audienceOf(users.member),
       where('sourceType', '==', 'maintenance_asset_schedule'),
       where('sourceId', 'in', ['asset-1:filter', 'asset-1-0:due_soon', 'asset-1-0:due_today', 'asset-1-0:overdue']))));
     assert.deepEqual(ids(resolver), ['asset-legacy', 'asset-schedule']);
     // deleteRegistryRecord: the record's source types; the id prefix is matched by the client.
     const registry = await assertSucceeds(getDocs(query(
-      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
+      as(users.member), audienceOf(users.member),
       where('sourceType', 'in', ['maintenance_asset_schedule', 'maintenance_asset_warranty']))));
     assert.deepEqual(ids(registry), ['asset-legacy', 'asset-other', 'asset-schedule', 'asset-warranty']);
-    // Without the audience filter the same lookup is denied.
+    // Without the audience filter the same lookup is refused.
     await assertFails(getDocs(query(as(users.member), where('sourceType', '==', 'maintenance_asset_schedule'))));
   });
 
-  test('single documents follow the same rule', async () => {
+  test('a single document is readable only by its audience', async () => {
     const at = (user: Identity, id: string) => doc(as(user), id);
     await assertSucceeds(getDoc(at(users.member, 'for-member')));
     await assertSucceeds(getDoc(at(users.member, 'everyone-chores')));
+    await assertSucceeds(getDoc(at(users.child, 'for-child')));
+    // Someone else's targeted document, whatever the reader's role.
     await assertFails(getDoc(at(users.member, 'for-child')));
+    await assertFails(getDoc(at(users.owner, 'for-member')));
+    await assertFails(getDoc(at(users.admin, 'for-owner')));
+    // An empty audience names nobody; a document without the field is unreadable.
     await assertFails(getDoc(at(users.member, 'unresolvable')));
-    // A document written before the field existed is unreadable: the backfill must run first.
     await assertFails(getDoc(at(users.member, 'legacy-no-audience')));
+    await assertFails(getDoc(at(users.owner, 'legacy-no-audience')));
+    // A household-wide document still needs membership and the view permission.
+    await assertFails(getDoc(at(users.pending, 'everyone-chores')));
+    await assertFails(getDoc(at(users.ownerB, 'everyone-chores')));
+  });
+
+  test('server code (rules bypassed) still reads every document', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const found = ids(await getDocs(collection(context.firestore(), 'households', householdA, 'notifications')));
+      assert.ok(found.includes('legacy-no-audience'));
+      assert.ok(found.includes('for-child'));
+    });
+  });
+
+  test('only members in the audience mark read, dismiss or resolve', async () => {
+    const at = (user: Identity, id: string) => doc(as(user), id);
+    const mark = (user: Identity) => ({ at: now(), uid: user.uid });
+    // In the audience: read, dismiss and undo the dismissal.
+    await assertSucceeds(updateDoc(at(users.child, 'for-child'), { [`readBy.${users.child.uid}`]: mark(users.child) }));
+    await assertSucceeds(updateDoc(at(users.child, 'for-child'), { [`dismissedBy.${users.child.uid}`]: mark(users.child) }));
+    await assertSucceeds(updateDoc(at(users.child, 'for-child'), { [`dismissedBy.${users.child.uid}`]: deleteField() }));
+    await assertSucceeds(updateDoc(at(users.member, 'everyone-chores'), { [`readBy.${users.member.uid}`]: mark(users.member) }));
+    // Outside the audience: even their own state on someone else's document is refused.
+    await assertFails(updateDoc(at(users.member, 'for-child'), { [`readBy.${users.member.uid}`]: mark(users.member) }));
+    await assertFails(updateDoc(at(users.member, 'for-child'), { [`dismissedBy.${users.member.uid}`]: mark(users.member) }));
+    await assertFails(updateDoc(at(users.owner, 'for-member'), { [`readBy.${users.owner.uid}`]: mark(users.owner) }));
+    await assertFails(updateDoc(at(users.admin, 'for-owner'), { [`dismissedBy.${users.admin.uid}`]: mark(users.admin) }));
+    // No audience, or an empty one: nobody.
+    await assertFails(updateDoc(at(users.member, 'legacy-no-audience'), { [`readBy.${users.member.uid}`]: mark(users.member) }));
+    await assertFails(updateDoc(at(users.member, 'unresolvable'), { [`dismissedBy.${users.member.uid}`]: mark(users.member) }));
+    // Resolving a maintenance reminder follows the same audience.
+    const resolved = (user: Identity) => ({ resolvedAt: now(), resolvedBy: mark(user) });
+    await assertFails(updateDoc(at(users.owner, 'maintenance-for-member'), resolved(users.owner)));
+    await assertSucceeds(updateDoc(at(users.member, 'maintenance-for-member'), resolved(users.member)));
   });
 });
 
