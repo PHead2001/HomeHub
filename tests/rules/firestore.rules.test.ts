@@ -1283,6 +1283,14 @@ describe('content shapes: chores and templates', () => {
     await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
     // Once a uid is set, changing it to someone else needs chores.assign.
     await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
+    // Review finding on #115: a uid that does not belong to the email beside it is refused,
+    // whether filled into an empty slot, written after clearing, or created that way.
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: '' }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: noAssign.uid }));
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
+    await assertFails(addDoc(chores(noAssign), oneTime('', { assignedToUid: users.member.uid })));
+    await assertFails(setDoc(template(noAssign, 'uid-mismatch'), { ...repeating(noAssign.email), assignedToUid: users.child.uid }));
     await assertSucceeds(updateDoc(chore(users.member, 'generated'), { assignedToEmail: users.child.email, assignedToUid: users.child.uid, assignedToDisplayName: 'Child A' }));
     // Templates: dual-write, stop-repeating clears both, and someone else's uid needs chores.assign.
     await assertSucceeds(setDoc(template(users.member, 'uid-weekly'), { ...repeating(users.owner.email), assignedToUid: users.owner.uid }));

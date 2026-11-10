@@ -498,9 +498,16 @@ service cloud.firestore {
       return email == null || email == '' || email == request.auth.token.email;
     }
 
-    // The uid assignee written alongside the email (member privacy release A).
-    function choreAssigneeUidIsCallerOrNone(uid) {
-      return uid == null || uid == '' || uid == request.auth.uid;
+    // The uid assignee written alongside the email (member privacy release A). Without
+    // chores.assign a uid is accepted only when it is verifiably the assignee the email
+    // names: none, the caller's own uid beside the caller's own email, or a member of this
+    // household whose member document carries that email.
+    function choreAssigneeUidMatchesEmail(householdId, uid, email) {
+      return uid == null || uid == '' ||
+        (uid == request.auth.uid && email == request.auth.token.email) ||
+        (email is string && email != '' &&
+          exists(/databases/$(database)/documents/households/$(householdId)/members/$(uid)) &&
+          get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data.get('email', null) == email);
     }
 
     function validChoreFields(data, keys) {
@@ -530,21 +537,21 @@ service cloud.firestore {
     // covers a chore for yourself or an unassigned one.
     function choreCreateAssignmentAllowed(householdId) {
       return (choreAssigneeIsCallerOrNone(request.resource.data.get('assignedToEmail', null)) &&
-          choreAssigneeUidIsCallerOrNone(request.resource.data.get('assignedToUid', null))) ||
+          choreAssigneeUidMatchesEmail(householdId, request.resource.data.get('assignedToUid', null),
+            request.resource.data.get('assignedToEmail', null))) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
     // Any change of a chore's assignee needs chores.assign.
-    // Adding the uid of the assignee already named by email is not a reassignment (the
-    // uid is filled in as clients and the backfill catch up), but setting it to someone
-    // else is.
+    // Filling in (or correcting) the uid of the assignee already named by email is not a
+    // reassignment, as long as the uid verifiably belongs to that email; any other change
+    // of the assignee needs chores.assign.
     function choreReassignmentAllowed(householdId) {
       let after = request.resource.data;
       let before = resource.data;
       return (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) &&
           (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
-            before.get('assignedToUid', null) == null || before.get('assignedToUid', null) == '' ||
-            choreAssigneeUidIsCallerOrNone(after.get('assignedToUid', null)))) ||
+            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
@@ -604,7 +611,7 @@ service cloud.firestore {
           (recurrenceAssignee(after) == recurrenceAssignee(before) ||
             choreAssigneeIsCallerOrNone(recurrenceAssignee(after))) &&
           (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
-            choreAssigneeUidIsCallerOrNone(after.get('assignedToUid', null)))
+            choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))
         ) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
