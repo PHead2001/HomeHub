@@ -3,6 +3,7 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import { adminAuth, adminDb } from '../../src/lib/server/firebase-admin';
 import type { DocumentReference } from 'firebase-admin/firestore';
 import { deleteShoppingList } from '../../src/app/shopping/actions';
+import { deleteListTree } from '../../src/lib/server/shopping-list-delete';
 
 // SH-9: the deleteShoppingList server action, against the Auth and Firestore
 // emulators: it removes the list and everything under it, only for a member of
@@ -47,6 +48,27 @@ const leftUnder = async (list: DocumentReference) => {
   const [snapshot, items, config] = await Promise.all([list.get(), list.collection('items').get(), list.collection('config').get()]);
   return { exists: snapshot.exists, items: items.size, config: config.size };
 };
+
+// A member's write through the Firestore emulator's REST API with their ID
+// token, so the security rules apply (the Admin SDK would bypass them).
+const memberCreate = async (caller: Caller, path: string, fields: Record<string, string | number | string[]>) => {
+  const slash = path.lastIndexOf('/');
+  const url = `http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/${process.env.GCLOUD_PROJECT}`
+    + `/databases/(default)/documents/${path.slice(0, slash)}?documentId=${encodeURIComponent(path.slice(slash + 1))}`;
+  const encoded = Object.fromEntries(Object.entries(fields).map(([key, value]) => [
+    key, typeof value === 'number' ? { integerValue: String(value) }
+      : Array.isArray(value) ? { arrayValue: { values: value.map(stringValue => ({ stringValue })) } }
+        : { stringValue: value },
+  ]));
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.get(caller)}` },
+    body: JSON.stringify({ fields: encoded }),
+  });
+  return response.status;
+};
+const itemFields = (name: string) => ({ name, quantity: 1, category: 'Other', status: 'needed', addedByUid: CALLERS.owner.uid });
+const itemPath = (listId: string, itemId: string) => `households/${HOUSE}/shopping-lists/${listId}/items/${itemId}`;
 
 const run = (caller: Caller, householdId: string, listId: string) =>
   deleteShoppingList({ idToken: tokens.get(caller)!, householdId, listId });
@@ -120,5 +142,62 @@ describe('deleteShoppingList', () => {
       assert.equal(result.ok ? null : result.code, 'invalid_input', `list id ${JSON.stringify(listId)}`);
     }
     assert.deepEqual(await leftUnder(list), { exists: true, items: 2, config: 1 });
+  });
+
+  // SH-9 race: the list document is deleted before anything under it is
+  // scanned, so a member's add during cleanup is refused instead of surviving
+  // as an orphan behind a successful delete.
+  test('refuses member writes once the list document is gone, and removes everything', async () => {
+    const list = await seedList(house, 'weekly');
+    // Controls: the same kinds of write are valid while the list exists.
+    assert.equal(await memberCreate('owner', itemPath('weekly', 'eggs'), itemFields('Eggs')), 200);
+    await list.collection('config').doc('categories').delete();
+    assert.equal(await memberCreate('owner', `households/${HOUSE}/shopping-lists/weekly/config/categories`, { list: ['Other'] }), 200);
+    const refused: number[] = [];
+    const outcome = await deleteListTree(adminDb, list, {
+      afterBarrier: async () => {
+        refused.push(await memberCreate('owner', itemPath('weekly', 'late-milk'), itemFields('Late milk')));
+        refused.push(await memberCreate('owner', `households/${HOUSE}/shopping-lists/weekly/config/categories2`, { list: ['Other'] }));
+      },
+    });
+    assert.equal(outcome, 'deleted');
+    assert.deepEqual(refused, [403, 403]);
+    assert.deepEqual(await leftUnder(list), { exists: false, items: 0, config: 0 });
+  });
+
+  test('re-checks after each pass and removes a document found after a pass', async () => {
+    const list = await seedList(house, 'weekly');
+    const passes: number[] = [];
+    const outcome = await deleteListTree(adminDb, list, {
+      afterPass: async pass => {
+        passes.push(pass);
+        if (pass === 1) await list.collection('items').doc('straggler').set({ name: 'Straggler', quantity: 1, status: 'needed' });
+      },
+    });
+    assert.equal(outcome, 'deleted');
+    assert.deepEqual(passes, [1, 2]);
+    assert.deepEqual(await leftUnder(list), { exists: false, items: 0, config: 0 });
+  });
+
+  test('leaves a list re-created under the same id during cleanup alone', async () => {
+    const list = await seedList(house, 'weekly');
+    const outcome = await deleteListTree(adminDb, list, {
+      afterBarrier: async () => {
+        assert.equal(await memberCreate('owner', `households/${HOUSE}/shopping-lists/weekly`, { name: 'Weekly again' }), 200);
+        assert.equal(await memberCreate('owner', itemPath('weekly', 'fresh'), itemFields('Fresh')), 200);
+      },
+    });
+    assert.equal(outcome, 'recreated');
+    assert.equal((await list.get()).data()?.name, 'Weekly again');
+    assert.ok((await list.collection('items').doc('fresh').get()).exists);
+  });
+
+  test('leaves nothing behind when members keep adding while the list is deleted', async () => {
+    const list = await seedList(house, 'busy');
+    const adds = Array.from({ length: 20 }, (_, index) => memberCreate('owner', itemPath('busy', `add-${index}`), itemFields(`Add ${index}`)));
+    const [result, statuses] = await Promise.all([run('owner', HOUSE, 'busy'), Promise.all(adds)]);
+    assert.deepEqual(result, { ok: true });
+    for (const status of statuses) assert.ok(status === 200 || status === 403, `add answered ${status}`);
+    assert.deepEqual(await leftUnder(list), { exists: false, items: 0, config: 0 });
   });
 });

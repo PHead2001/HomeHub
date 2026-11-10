@@ -3,6 +3,7 @@
 import { authorizeHouseholdAction } from '@/ai/action-auth';
 import { HomeHubAiError } from '@/ai/errors';
 import { adminDb } from '@/lib/server/firebase-admin';
+import { deleteListTree } from '@/lib/server/shopping-list-delete';
 
 export type DeleteShoppingListResult =
   | { ok: true }
@@ -26,11 +27,14 @@ const isListId = (value: unknown): value is string => typeof value === 'string'
 
 /**
  * Deletes a shopping list for real (SH-9): the list document and everything under
- * it (`items/*`, `config/categories`), with the Admin SDK's `recursiveDelete`.
+ * it (`items/*`, `config/categories`), with `deleteListTree`. The list document
+ * goes first, so the rules refuse any item or category write while the rest is
+ * scanned and deleted (no orphan can slip in after its position was scanned).
  * The caller must be an approved member of `householdId` with `shopping.delete`;
  * the path is built from the verified household, so another household's lists
  * are out of reach. Deleting a list that is already gone also removes anything
- * left under it, so a retry is safe.
+ * left under it, so a retry is safe. Reports `unavailable` if anything is still
+ * left after the bounded cleanup passes.
  */
 export async function deleteShoppingList(input: { idToken: string; householdId: string; listId: string }): Promise<DeleteShoppingListResult> {
   const failure = (code: keyof typeof MESSAGES): DeleteShoppingListResult => ({ ok: false, code, message: MESSAGES[code] });
@@ -38,7 +42,11 @@ export async function deleteShoppingList(input: { idToken: string; householdId: 
     const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, 'shopping.delete');
     if (!isListId(input?.listId)) return failure('invalid_input');
     const listRef = adminDb.collection('households').doc(user.householdId).collection('shopping-lists').doc(input.listId);
-    await adminDb.recursiveDelete(listRef);
+    const outcome = await deleteListTree(adminDb, listRef);
+    if (outcome === 'incomplete') {
+      console.error('Deleting a shopping list left documents behind after every cleanup pass');
+      return failure('unavailable');
+    }
     return { ok: true };
   } catch (error) {
     if (error instanceof HomeHubAiError) {
