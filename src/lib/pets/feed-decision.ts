@@ -174,6 +174,17 @@ export function householdDayStart(day: string, timeZone?: string | null): Date {
 }
 
 /**
+ * Where the online feed's log read starts: today's household midnight, or 90
+ * minutes ago (`FEED_REPEAT_WINDOW_MS`) when that is earlier, so a feeding
+ * logged just before midnight (for example an offline feed that synced at 23:55)
+ * still counts as recent at 00:05. Today's count still counts only today's logs
+ * (`countOnHouseholdDay`), so the extra minutes never add to it.
+ */
+export function feedReadStart(day: string, now: Date, timeZone?: string | null): Date {
+  return new Date(Math.min(householdDayStart(day, timeZone).getTime(), now.getTime() - FEED_REPEAT_WINDOW_MS));
+}
+
+/**
  * Feedings on one household day, counted from the logs themselves (the online
  * operation reads them in its transaction). This is the count the state stores:
  * a feeding queued offline that has synced is in it, and one deleted offline or

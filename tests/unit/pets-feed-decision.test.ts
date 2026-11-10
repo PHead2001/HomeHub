@@ -11,6 +11,7 @@ import {
   FEED_UNDO_MS,
   feedAgainPrompt,
   feedConfirmDecision,
+  feedReadStart,
   householdDay,
   knownFromLogs,
   planUndo,
@@ -80,6 +81,45 @@ describe('feed operation: the "Feed again?" check (PE-23)', () => {
     // A missing or bad zone falls back to the default household zone.
     assert.equal(householdDay(at('2026-11-11T05:30:00Z'), 'Mars/Base'), '2026-11-10');
     assert.equal(householdDay(at('2026-11-11T05:30:00Z'), null), '2026-11-10');
+  });
+
+  it("a feeding just before household midnight still asks; today's count stays today's", () => {
+    // Chicago: 23:55 on Nov 10 is 05:55Z on Nov 11; 00:05 on Nov 11 is 06:05Z.
+    const now = at('2026-11-11T06:05:00Z');
+    const today = householdDay(now, CHI);
+    assert.equal(today, '2026-11-11');
+    // The online read starts 90 minutes back (04:35Z), before midnight (06:00Z).
+    const start = feedReadStart(today, now, CHI);
+    assert.equal(start.toISOString(), '2026-11-11T04:35:00.000Z');
+    assert.ok(start < householdDayStart(today, CHI));
+    // Late in the day the read starts at midnight, as before.
+    assert.equal(feedReadStart('2026-11-11', at('2026-11-11T20:00:00Z'), CHI).toISOString(), householdDayStart('2026-11-11', CHI).toISOString());
+    // The logs that read returns: an offline feed synced at 23:55 (newer than the state).
+    const read = [
+      { id: 'offline', date: at('2026-11-11T05:55:00Z'), loggedByUid: 'alex', loggedByName: 'Alex' },
+      { id: 'earlier', date: at('2026-11-11T04:40:00Z'), loggedByUid: 'sam', loggedByName: 'Sam' },
+    ];
+    const older = state({ lastLogId: 'old', lastFedAt: at('2026-11-10T23:00:00Z'), day: '2026-11-10', countOnDay: 2 });
+    const countToday = countOnHouseholdDay(read, today, CHI, now);
+    assert.equal(countToday, 0, "yesterday's feedings are not today's");
+    const fresh = knownFromLogs(read, now, CHI);
+    assert.equal(fresh.countToday, 0);
+    assert.equal(fresh.lastFedAt?.toISOString(), '2026-11-11T05:55:00.000Z');
+    const check = feedConfirmDecision({ state: older, known: fresh, now, timeZone: CHI, perDay: 2, countToday });
+    assert.equal(check.needsConfirm, true);
+    assert.equal(check.reason, 'recent');
+    assert.equal(check.lastFedByName, 'Alex');
+    assert.equal(check.countToday, 0);
+    // A feeding after midnight is counted once; the pre-midnight ones still are not.
+    const withToday = [...read, { id: 'today', date: at('2026-11-11T06:02:00Z'), loggedByName: 'Sam' }];
+    assert.equal(countOnHouseholdDay(withToday, today, CHI, now), 1);
+    assert.equal(knownFromLogs(withToday, now, CHI).countToday, 1);
+  });
+
+  it('the online feed reads from feedReadStart; Undo counts from the day start', () => {
+    const op = readFileSync(resolve(process.cwd(), 'src/lib/pets/feed-operation.ts'), 'utf8');
+    assert.match(op, /dayFeedings\(householdId, petId, feedReadStart\(today, now, timeZone\)\)/);
+    assert.match(op, /dayFeedings\(householdId, petId, householdDayStart\(today, timeZone\)\)/);
   });
 
   it('works without a state document, from the logs the client already has', () => {

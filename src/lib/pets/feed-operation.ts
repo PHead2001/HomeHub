@@ -40,6 +40,7 @@ import {
   countOnHouseholdDay,
   FEEDING_STATE_ID,
   feedConfirmDecision,
+  feedReadStart,
   householdDay,
   householdDayStart,
   knownFromLogs,
@@ -119,13 +120,13 @@ function previousOf(raw: DocumentData | null) {
 const DAY_READ_LIMIT = 100;
 
 /**
- * A household day's feedings read from the server (both date shapes: Timestamps
- * and older ISO strings, which Firestore orders separately). It runs inside the
- * transaction callback, so a conflicting feed or Undo (each writes the state
- * document) makes the transaction retry with a fresh read.
+ * Feedings dated from `start` on, read from the server (both date shapes:
+ * Timestamps and older ISO strings, which Firestore orders separately; at most
+ * `DAY_READ_LIMIT` of each, newest first). It runs inside the transaction
+ * callback, so a conflicting feed or Undo (each writes the state document) makes
+ * the transaction retry with a fresh read.
  */
-async function dayFeedings(householdId: string, petId: string, day: string, timeZone: string | null | undefined) {
-  const start = householdDayStart(day, timeZone);
+async function dayFeedings(householdId: string, petId: string, start: Date) {
   // Date-only or differently formatted strings compare as text: a one-day margin keeps them in range.
   const stringFloor = new Date(start.getTime() - 24 * 3_600_000).toISOString().slice(0, 10);
   const ref = logsRef(householdId, petId);
@@ -156,11 +157,13 @@ export async function feedPet(input: FeedPetInput): Promise<FeedPetResult> {
     const state = withSurvivingLatest(stored, latestSurvives);
     const now = new Date();
     const today = householdDay(now, timeZone);
-    // Today's feedings counted from the logs themselves, read on every attempt:
-    // never a stored or loaded count that may include a deleted feeding.
-    const todays = await dayFeedings(householdId, petId, today, timeZone);
-    const countToday = countOnHouseholdDay(todays, today, timeZone, now);
-    const fresh = knownFromLogs(todays, now, timeZone);
+    // Surviving feedings from today's start or the last 90 minutes, whichever is
+    // earlier, read on every attempt: a feeding just before household midnight
+    // still counts as recent. Today's count is counted from today's logs among
+    // them, never a stored or loaded count that may include a deleted feeding.
+    const recent = await dayFeedings(householdId, petId, feedReadStart(today, now, timeZone));
+    const countToday = countOnHouseholdDay(recent, today, timeZone, now);
+    const fresh = knownFromLogs(recent, now, timeZone);
     // The caller's loaded logs only help while the pet has no state (before the backfill).
     const latestKnown = stored ? fresh : newerKnown(fresh, known);
 
@@ -252,7 +255,7 @@ export async function undoFeed(input: {
     // The count is today's surviving feedings, read now (repairs a count left by an offline delete).
     const now = new Date();
     const today = householdDay(now, timeZone);
-    const countOnDay = state ? countOnHouseholdDay(await dayFeedings(householdId, petId, today, timeZone), today, timeZone, now, logId) : 0;
+    const countOnDay = state ? countOnHouseholdDay(await dayFeedings(householdId, petId, householdDayStart(today, timeZone)), today, timeZone, now, logId) : 0;
     tx.delete(logRef);
     if (plan.kind === 'restore') {
       const prev = plan.restorePrev ? previousOf(raw?.prev ?? null) : null;
