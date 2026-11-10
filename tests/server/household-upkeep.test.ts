@@ -80,6 +80,7 @@ describe('household upkeep', () => {
     const notes = await house().collection('notifications').where('category', '==', 'maintenance').get();
     assert.equal(notes.size, 1);
     assert.equal(notes.docs[0].data().message, 'Replace filter for Main HVAC is overdue.');
+    assert.deepEqual(notes.docs[0].data().audience, ['*'], 'household-wide');
     assert.equal((await run(now)).createdNotifications, 0);
 
     const eightDaysLater = new Date(now.getTime() + 8 * 86400000);
@@ -89,6 +90,33 @@ describe('household upkeep', () => {
     assert.equal(refreshed.size, 1);
     // Clients list the last 7 days by createdAt, so the refresh must move it.
     assert.equal(refreshed.docs[0].data().createdAt.toDate().toISOString(), eightDaysLater.toISOString());
+    assert.deepEqual(refreshed.docs[0].data().audience, ['*'], 'a refresh keeps the audience');
+  });
+
+  test('refreshing or reopening a reminder written before audience existed adds it', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const ref = (await house().collection('notifications').where('category', '==', 'maintenance').get()).docs[0].ref;
+    const legacy = { ...(await ref.get()).data()! };
+    delete legacy.audience;
+    await ref.set(legacy);
+    assert.equal((await ref.get()).data()!.audience, undefined);
+    assert.equal((await run(new Date(now.getTime() + 5.5 * 86400000))).refreshedNotifications, 1);
+    assert.deepEqual((await ref.get()).data()!.audience, ['*'], 'added on refresh');
+
+    await ref.set({ ...legacy, resolvedAt: new Date('2026-11-05T15:30:00Z'), resolvedBy: { uid: 'o1' } });
+    assert.equal((await run(new Date('2026-11-05T16:00:00Z'))).reopenedNotifications, 1);
+    assert.deepEqual((await ref.get()).data()!.audience, ['*'], 'added on reopen');
+  });
+
+  test('chore reminders are addressed to their member', async () => {
+    await run(new Date('2026-11-05T23:30:00Z')); // 5:30pm Chicago, after the 5pm reminder
+    const reminders = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
+    assert.ok(reminders.size > 0);
+    for (const reminder of reminders.docs) {
+      assert.equal(reminder.data().targetUserUid, 'o1');
+      assert.deepEqual(reminder.data().audience, ['o1']);
+    }
   });
 
   test('a maintenance reminder resolved while its schedule is still actionable is reopened', async () => {

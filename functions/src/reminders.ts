@@ -20,6 +20,10 @@ import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
 } from "./shared/maintenance-reminders";
+import {
+  hasAudience,
+  notificationAudience,
+} from "./shared/notification-audience";
 import {isDocId} from "./shared/push-media";
 import {
   MEDICATION_SOURCE_TYPE, buildMedicationReminders, medicationCycle,
@@ -76,6 +80,7 @@ const notificationBody = (
   readBy: {},
   dismissedBy: {},
   ...fields,
+  audience: notificationAudience(fields),
 });
 
 /**
@@ -290,6 +295,9 @@ export const runHouseholdReminders = async (
       }
       const freshExpiry = ts(new Date(now.getTime() +
         NOTIFICATION_TTL_DAYS * 86400000));
+      // Reminder targets always carry a uid, so this equals what creation
+      // would store for the same reminder.
+      const audience = notificationAudience(fields);
       // Reopen: this reminder is actionable again with the same identity, so
       // whatever resolved it was undone (for example a mistakenly logged dose
       // was deleted, or a maintenance completion never reached its schedule).
@@ -304,6 +312,7 @@ export const runHouseholdReminders = async (
         }
         tx.update(ref, {
           ...fields,
+          audience,
           resolvedAt: null,
           resolvedBy: null,
           createdAt: ts(now),
@@ -324,6 +333,9 @@ export const runHouseholdReminders = async (
           message: fields.message,
           createdAt: ts(now),
           expiresAt: freshExpiry,
+          // Kept as stored; added to a document written before the field
+          // existed.
+          ...(hasAudience(snap.get("audience")) ? {} : {audience}),
         });
         return "refreshed";
       }

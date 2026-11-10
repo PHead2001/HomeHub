@@ -80,6 +80,7 @@ describe('invite redemption', () => {
 
     const notes = await house.collection('notifications').where('sourceId', '==', newcomer.uid).get();
     const targets = notes.docs.map(d => d.data().targetUserUid).sort();
+    for (const note of notes.docs) assert.deepEqual(note.data().audience, [note.data().targetUserUid]);
     assert.deepEqual(targets, [admin.uid, owner.uid].sort());
     for (const note of notes.docs) assert.equal(note.data().deepLink, '/household?tab=members');
   });
@@ -144,6 +145,7 @@ describe('leaving and deleting', () => {
     assert.ok(!((await house.get()).data()?.memberEmails || []).includes(guest.email));
     const notes = await house.collection('notifications').where('sourceType', '==', 'household-member-left').get();
     assert.deepEqual(notes.docs.map(d => d.data().targetUserUid).sort(), [admin.uid, owner.uid].sort());
+    for (const note of notes.docs) assert.deepEqual(note.data().audience, [note.data().targetUserUid]);
   });
 
   test('the owner cannot leave and outsiders are refused', async () => {
