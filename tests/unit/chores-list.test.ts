@@ -143,10 +143,12 @@ describe('chore UI source checks', () => {
     }
   });
 
-  it('completes chores only through the server-stamped helper', () => {
+  it('completes chores only through the server (complete-client)', () => {
     for (const file of files) {
       const source = readFileSync(resolve(process.cwd(), file), 'utf8');
-      assert.doesNotMatch(source, /isCompleted:\s*true/, `${file}: complete chores with completionUpdate()`);
+      // Optimistic local state may say isCompleted: true; no Firestore write may.
+      assert.doesNotMatch(source, /(updateDoc|batch\.update|transaction\.update)\([^)]*\{[^}]*isCompleted:\s*true/, `${file}: complete chores with completeChoresOnServer()`);
+      assert.doesNotMatch(source, /completionUpdate\(/, `${file}: complete chores with completeChoresOnServer()`);
     }
   });
 
