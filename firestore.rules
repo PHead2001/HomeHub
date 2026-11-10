@@ -627,9 +627,21 @@ service cloud.firestore {
         (!('color' in keys) || optionalString(data.color, 64));
     }
 
-    // quantity is checked after any increment() is applied.
+    // quantity is checked after any increment() is applied. nameKey, addedByUid,
+    // restoredByUid, categorySource, size and sizeUnit (S2 save paths) and the S3
+    // stamps (validShoppingItemStamps) are optional, so items
+    // written by older clients stay valid; addedByUid is checked on create and
+    // frozen on update below. size is a package size (BL-1), never the count.
     function validShoppingItemFields(data, keys) {
-      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl']) &&
+      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl',
+          'nameKey', 'addedByUid', 'restoredByUid', 'categorySource', 'size', 'sizeUnit',
+          'purchasedByUid', 'purchasedAt', 'purchaseOpId', 'undoOpId', 'restoreOpId', 'restoredAt', 'editedByUid', 'editedAt']) &&
+        (!('nameKey' in keys) || nonEmptyString(data.nameKey, 500)) &&
+        (!('addedByUid' in keys) || nonEmptyString(data.addedByUid, 128)) &&
+        (!('restoredByUid' in keys) || nonEmptyString(data.restoredByUid, 128)) &&
+        (!('categorySource' in keys) || data.categorySource in ['manual', 'remembered', 'local', 'ai', 'fallback', 'pending']) &&
+        (!('size' in keys) || (data.size is number && data.size > 0 && data.size <= 100000)) &&
+        (!('sizeUnit' in keys) || nonEmptyString(data.sizeUnit, 16)) &&
         (!('name' in keys) || nonEmptyString(data.name, 500)) &&
         (!('quantity' in keys) || (data.quantity is number && data.quantity > 0 && data.quantity <= 100000)) &&
         (!('category' in keys) || boundedString(data.category, 100)) &&
@@ -638,6 +650,84 @@ service cloud.firestore {
         (!('imageUrl' in keys) || boundedString(data.imageUrl, 2048)) &&
         (!('barcode' in keys) || boundedString(data.barcode, 128)) &&
         (!('sourceUrl' in keys) || boundedString(data.sourceUrl, 2048));
+    }
+
+    // S3 tick, edit and Undo stamps (checked on written keys only, so items of
+    // older clients stay valid and editable):
+    // - purchasedByUid is the writer or null, purchasedAt the server's time or null
+    //   (and a set purchasedAt is the writer's own purchase);
+    // - editedByUid is the writer and comes with editedAt == request.time;
+    // - undoOpId (the Undo of a tick) only while the stored purchaseOpId is that
+    //   id, unchanged by the same write, and only back to needed: a newer tick by
+    //   anyone writes a new purchaseOpId (and removes undoOpId), so a late Undo is
+    //   refused instead of overwriting it;
+    // - restoreOpId (the Undo of a delete) only on a create, so a restore never
+    //   overwrites an item that exists again (see shoppingRestoreCreate); once set,
+    //   restoreOpId and restoredAt are frozen (neither changed nor removed), so a
+    //   second tab replaying the same restore (same restoreOpId) is refused whether
+    //   its restoredAt resolves to a new time or is left out.
+    function validShoppingItemStamps(data, keys) {
+      return (!('purchasedByUid' in keys) || data.purchasedByUid == null || data.purchasedByUid == request.auth.uid) &&
+        (!('purchasedAt' in keys) || data.purchasedAt == null ||
+          (data.purchasedAt == request.time && data.get('purchasedByUid', null) == request.auth.uid)) &&
+        (!('purchaseOpId' in keys) || nonEmptyString(data.purchaseOpId, 64)) &&
+        (!('editedByUid' in keys) || (data.editedByUid == request.auth.uid && 'editedAt' in keys)) &&
+        (!('editedAt' in keys) || (data.editedAt == request.time && data.get('editedByUid', null) == request.auth.uid)) &&
+        (!('undoOpId' in keys) || shoppingUndoMatchesPurchase(data, keys)) &&
+        (!('restoreOpId' in keys) || (resource == null && nonEmptyString(data.restoreOpId, 64))) &&
+        (!('restoredAt' in keys) || (resource == null && 'restoreOpId' in data)) &&
+        (resource != null || !('restoreOpId' in data) || shoppingRestoreCreate(data)) &&
+        (resource == null || shoppingRestoreStampsKept(data));
+    }
+
+    // On an update, the stored restore stamps stay exactly as they are: a write that
+    // removes restoredAt (a stale restore payload without it) or changes either one
+    // is refused. Items never restored have neither, and an update may not add them.
+    function shoppingRestoreStampsKept(data) {
+      return data.get('restoreOpId', null) == resource.data.get('restoreOpId', null) &&
+        data.get('restoredAt', null) == resource.data.get('restoredAt', null);
+    }
+
+    // A restore (create with restoreOpId) carries restoredByUid = the writer and
+    // restoredAt == request.time, and none of the purchase, edit or Undo stamps:
+    // those belong to their own writer and time, so a restored item keeps its status
+    // (and purchaseOpId) but not purchasedByUid/At, editedByUid/At or undoOpId.
+    // restoredAt is what makes a restore create-only even when it is replayed: a
+    // setDoc of the same payload onto an item that exists again resolves restoredAt
+    // to a new request.time, so it is a changed key on an update and refused above,
+    // while ordinary updates leave restoredAt untouched.
+    function shoppingRestoreCreate(data) {
+      return data.get('restoredByUid', null) == request.auth.uid &&
+        data.get('restoredAt', null) == request.time &&
+        !data.keys().hasAny(['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId']);
+    }
+
+    function shoppingUndoMatchesPurchase(data, keys) {
+      return resource != null &&
+        nonEmptyString(data.undoOpId, 64) &&
+        data.get('status', null) == 'needed' &&
+        !('purchaseOpId' in keys) &&
+        resource.data.get('purchaseOpId', null) == data.undoOpId;
+    }
+
+    // Who added an item: the writer's own uid on create (or none, for older clients).
+    // Undo of a delete re-creates someone else's item: then addedByUid may name another
+    // member of this household as long as restoredByUid is the writer, so the restore
+    // keeps the original attribution and records who restored it (an item without
+    // addedByUid, from an older client, may be restored too). Never changed later.
+    function shoppingAdderOnCreate(householdId) {
+      let data = request.resource.data;
+      let adder = data.get('addedByUid', null);
+      let restorer = data.get('restoredByUid', null);
+      return (restorer == null && (adder == null || adder == request.auth.uid)) ||
+        (restorer == request.auth.uid &&
+          (adder == null || adder == request.auth.uid ||
+            exists(/databases/$(database)/documents/households/$(householdId)/members/$(adder))));
+    }
+
+    function shoppingAdderUnchanged() {
+      return request.resource.data.get('addedByUid', null) == resource.data.get('addedByUid', null) &&
+        request.resource.data.get('restoredByUid', null) == resource.data.get('restoredByUid', null);
     }
 
     function validShoppingConfig(data, keys) {
@@ -1097,9 +1187,13 @@ service cloud.firestore {
           allow read: if hasHouseholdPermission(householdId, 'shopping.view');
           allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
             request.resource.data.keys().hasAll(['name']) &&
-            validShoppingItemFields(request.resource.data, writtenKeys());
+            validShoppingItemFields(request.resource.data, writtenKeys()) &&
+            validShoppingItemStamps(request.resource.data, writtenKeys()) &&
+            shoppingAdderOnCreate(householdId);
           allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
-            validShoppingItemFields(request.resource.data, writtenKeys());
+            validShoppingItemFields(request.resource.data, writtenKeys()) &&
+            validShoppingItemStamps(request.resource.data, writtenKeys()) &&
+            shoppingAdderUnchanged();
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
 
