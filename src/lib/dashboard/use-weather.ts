@@ -133,7 +133,7 @@ export function useWeatherPreference(): {
  * again; a failed refresh keeps the last good report, marked stale, and tries again in
  * 5 minutes (HP-6a). With no good report at all the weather stays hidden.
  */
-export function useLiveWeatherState(): { report: WeatherReport | null; stale: boolean } {
+export function useLiveWeatherState(): { report: WeatherReport | null; stale: boolean; failed: boolean } {
   const { preference } = useWeatherPreference();
   useSyncExternalStore(subscribe, getVersion, getServerVersion);
   const city = preference.enabled ? preference.city : '';
@@ -155,8 +155,10 @@ export function useLiveWeatherState(): { report: WeatherReport | null; stale: bo
     };
   }, [city, entry]);
 
-  if (!entry?.report) return { report: null, stale: false };
-  return { report: entry.report, stale: isWeatherStale(entry) };
+  // `failed`: the last fetch failed and there is no good report to fall back on (the
+  // dashboard tile then says so instead of loading forever, HP-26).
+  if (!entry?.report) return { report: null, stale: false, failed: Boolean(entry?.failedAt) };
+  return { report: entry.report, stale: isWeatherStale(entry), failed: false };
 }
 
 /** Current weather (see `useLiveWeatherState`), or null. */
