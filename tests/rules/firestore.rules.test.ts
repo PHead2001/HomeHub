@@ -925,6 +925,32 @@ describe('EXPERIMENT: notification reads limited by audience (alternate ruleset)
     await assertFails(getDocs(query(as(users.member), where('audience', 'array-contains-any', [users.member.uid, users.child.uid, '*']))));
   });
 
+  test('(d) the Maintenance Center resolver shapes (sourceType ==/in, sourceId in) are allowed', async () => {
+    await experiment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      const put = (id: string, overrides: Record<string, unknown>) =>
+        setDoc(doc(db, 'households', householdA, 'notifications', id), notification({ category: 'maintenance', ...overrides }));
+      await put('asset-schedule', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter', audience: ['*'] });
+      await put('asset-legacy', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1-0:overdue', audience: ['*'] });
+      await put('asset-warranty', { sourceType: 'maintenance_asset_warranty', sourceId: 'asset-1', audience: ['*'] });
+      await put('asset-other', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-2:filter', audience: ['*'] });
+      await put('asset-no-audience', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter' });
+    });
+    // resolveMaintenanceNotifications: one sourceType, the schedule id plus legacy ids.
+    const resolver = await assertSucceeds(getDocs(query(
+      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
+      where('sourceType', '==', 'maintenance_asset_schedule'),
+      where('sourceId', 'in', ['asset-1:filter', 'asset-1-0:due_soon', 'asset-1-0:due_today', 'asset-1-0:overdue']))));
+    assert.deepEqual(ids(resolver), ['asset-legacy', 'asset-schedule']);
+    // deleteRegistryRecord: the record's source types; the id prefix is matched by the client.
+    const registry = await assertSucceeds(getDocs(query(
+      as(users.member), where('audience', 'array-contains-any', [users.member.uid, '*']),
+      where('sourceType', 'in', ['maintenance_asset_schedule', 'maintenance_asset_warranty']))));
+    assert.deepEqual(ids(registry), ['asset-legacy', 'asset-other', 'asset-schedule', 'asset-warranty']);
+    // Without the audience filter the same lookup is denied.
+    await assertFails(getDocs(query(as(users.member), where('sourceType', '==', 'maintenance_asset_schedule'))));
+  });
+
   test('single documents follow the same rule', async () => {
     const at = (user: Identity, id: string) => doc(as(user), id);
     await assertSucceeds(getDoc(at(users.member, 'for-member')));

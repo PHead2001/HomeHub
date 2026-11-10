@@ -5,6 +5,7 @@ import type { AuthorizedHouseholdUser } from '@/ai/action-auth';
 import { adminDb } from '@/lib/server/firebase-admin';
 import type { HomeOverviewFacts } from '@/ai/overview-types';
 import { redactEmails } from '@/ai/redact';
+import { isAddressedToMember } from '@functions/shared/notification-audience';
 
 const DAY_MS = 86_400_000;
 // Free-text labels (notification titles, item names) can contain an email
@@ -179,8 +180,9 @@ export const aggregateHomeOverviewFacts = async (user: AuthorizedHouseholdUser):
   if (user.permissions['notifications.view']) {
     const notifications = docsData(await household.collection('notifications').get()).filter(notification => {
       const expires = toDate(notification.expiresAt);
-      const targetMatches = (!notification.targetUserUid || notification.targetUserUid === user.uid)
-        && (!notification.targetUserEmail || notification.targetUserEmail === user.email);
+      // `audience` when present ([uid] or ['*']), else the legacy targeting;
+      // the same check as the bell, center and push sender.
+      const targetMatches = isAddressedToMember(notification, { uid: user.uid, email: user.email });
       const dismissedBy = notification.dismissedBy && typeof notification.dismissedBy === 'object' ? notification.dismissedBy as Record<string, unknown> : {};
       return targetMatches && (!expires || expires > now) && !notification.resolvedAt && !dismissedBy[user.uid];
     });
