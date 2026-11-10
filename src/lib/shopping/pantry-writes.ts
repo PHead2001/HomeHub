@@ -4,7 +4,14 @@ import { slugify } from '@/lib/utils';
 import type { PantryItem } from '@/lib/types';
 import { confirmedHandoffChoices, pantryMergeStillValid, planPantryHandoff, type PantryHandoffChoice } from './pantry';
 import { isStillPurchased } from './items';
-import { pantryBatchFields, readPantryBatch, upgradeLegacyBatch } from './pantry-batches';
+import { fillBatch, pantryBatchFields, readPantryBatch, splitPackages, upgradeLegacyBatch } from './pantry-batches';
+
+/**
+ * The most documents one handoff writes (Firestore allows 500 per transaction,
+ * and the clear's deletes count too). A handoff above it is refused before
+ * anything is written, so nothing is cleared.
+ */
+export const MAX_HANDOFF_WRITES = 450;
 
 export type PantryHandoffResult = {
   /** Pantry entries written (incremented or created). */
@@ -37,6 +44,12 @@ export type PantryHandoffResult = {
  * no package size, no expiry). A v2 target grows by `increment()` on both
  * `packages` and the dual-written `quantity`; a legacy target (no `packages` yet)
  * is upgraded with absolute values computed from this transaction's own read.
+ * A batch holds at most 10,000 packages (the rules' limit), so a larger amount is
+ * never clamped: what fits goes to the merge target (`fillBatch`) and the rest,
+ * or a new purchase above 10,000, is split across new batches of at most 10,000
+ * (`splitPackages`). Every purchased package is stored before any shopping item
+ * is cleared; a handoff needing more than `MAX_HANDOFF_WRITES` writes is refused
+ * with a message and writes and clears nothing.
  * New batches carry `addedByUid`/`updatedByUid` (the signed-in member) and
  * `updatedAt` (server time).
  *
@@ -80,31 +93,47 @@ export async function addPurchasesToPantry(
     const increments = plans.filter((plan) => plan.kind === 'increment');
     const targets = await Promise.all(increments.map((plan) => transaction.get(doc(pantry, plan.id))));
 
-    // --- Writes ---
+    // --- Plan every write from those reads (no batch above MAX_PACKAGES, nothing dropped) ---
+    // Each entry is one document write, applied only after the size check below.
+    const writes: Array<() => void> = [];
+    const createOne = (name: string, packages: number, location: PantryItem['location']) => writes.push(() => {
+      const fresh = create(name, packages, location);
+      transaction.set(fresh.ref, fresh.data);
+    });
+    const createAll = (name: string, total: number, location: PantryItem['location']) => {
+      for (const packages of splitPackages(total)) createOne(name, packages, location);
+    };
     increments.forEach((plan, index) => {
       const read = targets[index];
       const data = read.exists() ? read.data() : undefined;
-      if (pantryMergeStillValid(data, plan, plan.location)) {
-        const batch = readPantryBatch(read.id, data);
-        transaction.update(read.ref, batch.legacy
-          ? { ...upgradeLegacyBatch(batch, plan.add), ...stamp() }
-          : { packages: increment(plan.add), quantity: increment(plan.add), ...stamp() });
-      } else {
-        const fresh = create(plan.name, plan.add, plan.location);
-        transaction.set(fresh.ref, fresh.data);
+      if (!pantryMergeStillValid(data, plan, plan.location)) {
+        createAll(plan.name, plan.add, plan.location);
+        return;
       }
+      const batch = readPantryBatch(read.id, data);
+      const { toTarget, newBatches } = fillBatch(plan.add, batch.packages);
+      if (toTarget > 0) {
+        writes.push(() => transaction.update(read.ref, batch.legacy
+          ? { ...upgradeLegacyBatch(batch, toTarget), ...stamp() }
+          : { packages: increment(toTarget), quantity: increment(toTarget), ...stamp() }));
+      }
+      for (const packages of newBatches) createOne(plan.name, packages, plan.location);
     });
     for (const plan of plans) {
-      if (plan.kind !== 'create') continue;
-      const fresh = create(plan.name, plan.quantity, plan.location);
-      transaction.set(fresh.ref, fresh.data);
+      if (plan.kind === 'create') createAll(plan.name, plan.quantity, plan.location);
     }
+    const clearIds = [...new Set(clearItemIds)].filter((id) => isStillPurchased(confirmed.get(id)));
+    if (writes.length + clearIds.length > MAX_HANDOFF_WRITES) {
+      // Thrown before any write is applied: the transaction commits nothing and clears nothing.
+      throw new Error('That is too much to add to the pantry at once. Add the purchases in smaller groups; nothing was added or cleared.');
+    }
+
+    // --- Writes ---
+    for (const write of writes) write();
     const cleared: string[] = [];
-    for (const id of new Set(clearItemIds)) {
-      if (isStillPurchased(confirmed.get(id))) {
-        transaction.delete(itemRef(id));
-        cleared.push(id);
-      }
+    for (const id of clearIds) {
+      transaction.delete(itemRef(id));
+      cleared.push(id);
     }
     return { written: plans.length, cleared, skipped: skipped.map((choice) => choice.item.name) };
   });

@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackages, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
@@ -1043,7 +1043,8 @@ export function PantryInventoryClient() {
   };
 
   // Undo (10 s, SH-29c) adds back exactly the packages the tap removed, as
-  // increment(+n): after the tap every batch is in the v2 shape.
+  // increment(+n): after the tap every batch is in the v2 shape. It exists only
+  // for a tap the server acknowledged, so the +n never outlives a refused -n.
   const undoChanges = useCallback(async (name: string, changes: PackageChange[], token: number) => {
     if (!householdId || !uid) return;
     setAskAdd((current) => (current?.token === token ? null : current));
@@ -1056,29 +1057,39 @@ export function PantryInventoryClient() {
   }, [householdId, uid, toastError]);
 
   // Every change of one tap commits in one write batch (all or nothing); the Undo
-  // and the zero prompt are offered only once it has. A prompt whose write is still
-  // pending when the tab is hidden is dropped (promptRequestRef).
+  // is offered only once the server has acknowledged it (never for a write queued
+  // offline: packageChangeToast), and the zero prompt once it is saved or queued.
+  // A prompt whose write is still pending when the tab is hidden is dropped
+  // (promptRequestRef).
   const applyChanges = async (name: string, changes: PackageChange[], reachedZero: boolean, title: string, description: string) => {
     if (!householdId || !uid || changes.length === 0) return;
     const onError = (error: unknown) => toastError(error, `Could not update ${name}`);
     const request = promptRequestRef.current;
+    let outcome: 'saved' | 'queued';
     try {
-      await changePackagesTogether(householdId, changes, uid, onError);
+      outcome = await changePackagesTogether(householdId, changes, uid, onError);
     } catch (error) {
       onError(error);
       return;
     }
     const token = ++askTokenRef.current;
-    const handle = toast({
-      title,
-      description,
-      duration: USED_UP_UNDO_MS,
-      action: (
-        <ToastAction altText={`Undo: ${title}`} onClick={() => { handle.dismiss(); void undoChanges(name, changes, token); }}>
-          Undo
-        </ToastAction>
-      ),
-    });
+    // Undo only for a write the server acknowledged; a queued offline write gets no Undo
+    // (a queued +n could apply even though the queued -n is refused on reconnect).
+    const shown = packageChangeToast(outcome, title, description);
+    if (shown.offerUndo) {
+      const handle = toast({
+        title: shown.title,
+        description: shown.description,
+        duration: USED_UP_UNDO_MS,
+        action: (
+          <ToastAction altText={`Undo: ${title}`} onClick={() => { handle.dismiss(); void undoChanges(name, changes, token); }}>
+            Undo
+          </ToastAction>
+        ),
+      });
+    } else {
+      toast({ title: shown.title, description: shown.description });
+    }
     if (reachedZero && request === promptRequestRef.current) setAskAdd({ name, token });
   };
 

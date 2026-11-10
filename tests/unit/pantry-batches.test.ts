@@ -32,6 +32,7 @@ import {
   type PantryBatch,
 } from '../../src/lib/shopping/pantry-batches';
 import { daysUntilExpiry, expiryState, pantryLocationForCategory, pantryMergeStillValid, planPantryHandoff } from '../../src/lib/shopping/pantry';
+import { MAX_PACKAGES, fillBatch, packageChangeToast, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
 
 const CENTRAL = 'America/Chicago';
 /** 23:30 Central on Tue 10 Nov 2026 (05:30 UTC on the 11th). */
@@ -293,8 +294,8 @@ describe('every v2 update carries the attribution the rules check', () => {
     }
     const handoff = read('pantry-writes.ts');
     assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
-    assert.match(handoff, /upgradeLegacyBatch\(batch, plan\.add\), \.\.\.stamp\(\)/);
-    assert.match(handoff, /quantity: increment\(plan\.add\), \.\.\.stamp\(\)/);
+    assert.match(handoff, /upgradeLegacyBatch\(batch, toTarget\), \.\.\.stamp\(\)/);
+    assert.match(handoff, /quantity: increment\(toTarget\), \.\.\.stamp\(\)/);
   });
 });
 
@@ -416,5 +417,90 @@ describe('pantry names are at most 120 characters', () => {
     const fields = pantryBatchFields({ name: 'Rice '.repeat(40), location: 'Pantry', unit: 'items', packages: 1, packageSize: null, expiryDate: null });
     assert.ok(fields.name.length <= PANTRY_NAME_MAX);
     assert.equal(fields.name, clampPantryName('Rice '.repeat(40)));
+  });
+});
+
+describe('Undo is offered only for a change the server acknowledged (SH-29c)', () => {
+  test('an acknowledged write offers Undo with the tap wording', () => {
+    assert.deepEqual(packageChangeToast('saved', 'Used one Milk', '1 package left.'), {
+      title: 'Used one Milk', description: '1 package left.', offerUndo: true,
+    });
+  });
+  test('a write queued offline says "Saved on this device" and offers no Undo', () => {
+    const shown = packageChangeToast('queued', 'Used one Milk', 'That was the last one.');
+    assert.equal(shown.offerUndo, false);
+    assert.equal(shown.title, 'Saved on this device');
+    assert.match(shown.description, /^Used one Milk\. That was the last one\./);
+    assert.match(shown.description, /Undo is not available/);
+  });
+  test('the client shows the Undo action only when packageChangeToast allows it', () => {
+    const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'pantry-inventory-client.tsx'), 'utf8');
+    assert.match(client, /outcome = await changePackagesTogether\(householdId, changes, uid, onError\);/);
+    assert.match(client, /const shown = packageChangeToast\(outcome, title, description\);\s*if \(shown\.offerUndo\) \{/);
+  });
+});
+
+describe('purchases above 10,000 packages are split, never clamped', () => {
+  test('splitPackages keeps every package in batches of at most 10,000', () => {
+    assert.deepEqual(splitPackages(25_000), [10_000, 10_000, 5_000]);
+    assert.deepEqual(splitPackages(10_000), [10_000]);
+    assert.deepEqual(splitPackages(3), [3]);
+    assert.deepEqual(splitPackages(0), []);
+    assert.equal(splitPackages(100_000).reduce((sum, n) => sum + n, 0), 100_000);
+    assert.ok(splitPackages(100_000).every((n) => n <= MAX_PACKAGES));
+  });
+  test('fillBatch tops the merge target up to 10,000 and puts the rest in new batches', () => {
+    assert.deepEqual(fillBatch(5, 2), { toTarget: 5, newBatches: [] });
+    assert.deepEqual(fillBatch(2_000, 9_000), { toTarget: 1_000, newBatches: [1_000] });
+    assert.deepEqual(fillBatch(25_000, 10_000), { toTarget: 0, newBatches: [10_000, 10_000, 5_000] });
+  });
+  test('combined same-name purchases above 10,000 are planned in full', () => {
+    const plans = planPantryHandoff([
+      { item: { name: 'Water', quantity: 8_000 }, location: 'Pantry' },
+      { item: { name: 'water', quantity: 7_000 }, location: 'Pantry' },
+    ], []);
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].kind === 'create' && plans[0].quantity, 15_000);
+    assert.deepEqual(splitPackages(15_000), [10_000, 5_000]);
+  });
+  test('the handoff writes split batches and refuses an oversized handoff before clearing', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
+    assert.match(writes, /fillBatch\(plan\.add, batch\.packages\)/);
+    assert.match(writes, /for \(const packages of splitPackages\(total\)\)/);
+    const refusal = writes.indexOf('> MAX_HANDOFF_WRITES');
+    assert.ok(refusal > 0 && refusal < writes.indexOf('transaction.delete(itemRef(id))'), 'the size check comes before any clear');
+    assert.ok(refusal < writes.indexOf('for (const write of writes) write();'), 'and before any pantry write is applied');
+  });
+});
+
+describe('recipe amounts keep tiny package sizes', () => {
+  test('roundAmount keeps three significant digits below 1', () => {
+    assert.equal(roundAmount(0.004), 0.004);
+    assert.equal(roundAmount(0.12345), 0.123);
+    assert.equal(roundAmount(2.345), 2.35);
+    assert.equal(roundAmount(0), 0);
+  });
+  test('0.004 kg yeast and 0.002 L vanilla reach the recipe flow as 4 g and 2 ml', () => {
+    const products = groupPantryBatches([
+      batch('yeast', { name: 'Yeast', nameKey: 'yeast', unit: 'kg', packages: 1, packageSize: 0.004 }),
+      batch('vanilla', { name: 'Vanilla', nameKey: 'vanilla', unit: 'L', packages: 1, packageSize: 0.002 }),
+      batch('flour', { name: 'Flour', nameKey: 'flour', unit: 'kg', packages: 2, packageSize: 1.5 }),
+    ]);
+    const items = usableRecipeItems(products, '2026-11-10');
+    const byName = Object.fromEntries(items.map((item) => [item.name, item]));
+    assert.deepEqual(byName.Yeast, { name: 'Yeast', quantity: 4, unit: 'g' });
+    assert.deepEqual(byName.Vanilla, { name: 'Vanilla', quantity: 2, unit: 'ml' });
+    assert.deepEqual(byName.Flour, { name: 'Flour', quantity: 3, unit: 'kg' });
+    assert.ok(items.every((item) => item.quantity > 0));
+  });
+  test('a small kg total joins the same product g line', () => {
+    const products = groupPantryBatches([
+      batch('a', { name: 'Salt', nameKey: 'salt', unit: 'kg', packages: 1, packageSize: 0.25 }),
+      batch('b', { name: 'Salt', nameKey: 'salt', unit: 'g', packages: 1, packageSize: 100 }),
+    ]);
+    assert.deepEqual(usableRecipeItems(products, '2026-11-10'), [{ name: 'Salt', quantity: 350, unit: 'g' }]);
+  });
+  test('a tile label shows a tiny size instead of 0', () => {
+    assert.equal(batchAmountLabel({ unit: 'kg', packages: 1, packageSize: 0.004 }), '1 × 0.004 kg');
   });
 });

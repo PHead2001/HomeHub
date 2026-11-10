@@ -133,6 +133,32 @@ export function isUsedUpPantryDoc(data: Record<string, unknown> | null | undefin
   return packages !== null && packages <= 0;
 }
 
+/**
+ * Splits a package count into batches of at most `MAX_PACKAGES` each (the rules'
+ * limit per batch), so a large purchase (shopping allows up to 100,000, and a
+ * handoff combines same-name purchases) is stored in full instead of being
+ * clamped to 10,000. `splitPackages(25_000)` is `[10_000, 10_000, 5_000]`.
+ */
+export function splitPackages(total: number): number[] {
+  const whole = Math.max(0, Math.round(total));
+  const parts: number[] = [];
+  for (let left = whole; left > 0; left -= MAX_PACKAGES) parts.push(Math.min(MAX_PACKAGES, left));
+  return parts;
+}
+
+/**
+ * How `add` packages land when they merge into a batch that already holds
+ * `currentPackages`: as many as fit under `MAX_PACKAGES` go to that batch
+ * (`toTarget`, possibly 0), the rest become new batches (`newBatches`, each at
+ * most `MAX_PACKAGES`). Nothing is dropped.
+ */
+export function fillBatch(add: number, currentPackages: number): { toTarget: number; newBatches: number[] } {
+  const whole = Math.max(0, Math.round(add));
+  const headroom = Math.max(0, MAX_PACKAGES - Math.max(0, currentPackages));
+  const toTarget = Math.min(whole, headroom);
+  return { toTarget, newBatches: splitPackages(whole - toTarget) };
+}
+
 /** The `quantity` a v2 write also stores, for older pages: packages for counted units, the package size for measured ones. */
 export function legacyQuantity(batch: Pick<PantryBatch, 'unit' | 'packages' | 'packageSize'>): number {
   if (isCountUnit(batch.unit)) return batch.packages;
@@ -255,6 +281,31 @@ export function usedUpOutcome(product: Pick<PantryProduct, 'batches'>): UsedUpOu
   return { batch, remaining, askAddToList: remaining === 0 };
 }
 
+export type PackageChangeToast = {
+  title: string;
+  description: string;
+  /** Whether the toast carries Undo: only once the server has acknowledged the change. */
+  offerUndo: boolean;
+};
+
+/**
+ * The toast after a "used one" / "Out of this" write (SH-29c). Undo is offered
+ * only when the server acknowledged the write (`'saved'`). A write queued
+ * offline cannot be cancelled, and an Undo queued after it is an independent
+ * increment: on reconnect the server can refuse the decrement (the count was
+ * already 0) yet accept the Undo's +1, creating a package nobody added. So an
+ * offline change says honestly that it is saved on this device and offers no
+ * Undo; "+1" corrects a mistaken tap once it has synced.
+ */
+export function packageChangeToast(outcome: 'saved' | 'queued', title: string, description: string): PackageChangeToast {
+  if (outcome === 'saved') return { title, description, offerUndo: true };
+  return {
+    title: 'Saved on this device',
+    description: `${title}. ${description} It syncs when you are back online; Undo is not available for offline changes.`,
+    offerUndo: false,
+  };
+}
+
 /** Whether a used-up batch may be deleted: no packages left and nobody touched it in the last minute. */
 export function shouldDeleteEmptyBatch(batch: Pick<PantryBatch, 'packages' | 'updatedAtMs'>, nowMs: number): boolean {
   if (batch.packages > 0) return false;
@@ -345,7 +396,29 @@ export function shortExpiryLabel(day: string, today: string): string {
   return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
-const formatAmount = (value: number) => String(Math.round(value * 100) / 100);
+/**
+ * Rounds an amount for display or the recipe flow without losing small values:
+ * two decimals from 1 up, three significant digits below 1 (0.004 stays 0.004,
+ * 0.12345 becomes 0.123), so a valid tiny package never reads as 0.
+ */
+export function roundAmount(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value >= 1 ? Math.round(value * 100) / 100 : Number(value.toPrecision(3));
+}
+
+const formatAmount = (value: number) => String(roundAmount(value));
+
+/** Units a recipe total below 1 kg or 1 L is restated in before rounding (0.004 kg is 4 g, 0.002 L is 2 ml). */
+const SMALLER_UNIT: Partial<Record<PantryItemUnit, { unit: PantryItemUnit; factor: number }>> = {
+  kg: { unit: 'g', factor: 1000 },
+  L: { unit: 'ml', factor: 1000 },
+};
+
+const restateSmall = (quantity: number, unit: PantryItemUnit): { quantity: number; unit: PantryItemUnit } => {
+  const smaller = SMALLER_UNIT[unit];
+  return smaller && quantity > 0 && quantity < 1 ? { quantity: quantity * smaller.factor, unit: smaller.unit } : { quantity, unit };
+};
+
 
 /** One batch's amount: "3 cans", "2 × 450 g", or "1 pack (g)" when a measured size is unknown. */
 export function batchAmountLabel(batch: Pick<PantryBatch, 'packages' | 'packageSize' | 'unit'>): string {
@@ -375,11 +448,13 @@ export const unknownSizeRecipeUnit = (unit: PantryItemUnit, packages: number) =>
  * the package count; measured units with a known size send packages × size,
  * summed per unit. A measured batch with no package size has no amount in its
  * unit, so its packages are sent as their own line ("2 packs of unknown size
- * (g)") and never added to, or passed off as, grams or litres.
+ * (g)") and never added to, or passed off as, grams or litres. Amounts keep
+ * their precision: a total below 1 kg or 1 L is restated in g or ml, then joined
+ * with any g/ml line and rounded by `roundAmount` (0.004 kg of yeast is sent as
+ * 4 g, never 0), capped at the recipe flow's 100,000.
  */
 export function usableRecipeItems(products: readonly PantryProduct[], today: string): RecipeStockItem[] {
   const items: RecipeStockItem[] = [];
-  const round = (value: number) => Math.min(MAX_PACKAGE_SIZE, Math.round(value * 100) / 100);
   for (const product of products) {
     const measured = new Map<PantryItemUnit, number>();
     const unknownSize = new Map<PantryItemUnit, number>();
@@ -392,9 +467,15 @@ export function usableRecipeItems(products: readonly PantryProduct[], today: str
       const amount = isCountUnit(batch.unit) ? batch.packages : batch.packages * batch.packageSize!;
       measured.set(batch.unit, (measured.get(batch.unit) ?? 0) + amount);
     }
-    for (const [unit, quantity] of measured) items.push({ name: product.name, quantity: round(quantity), unit });
+    // A small kg/L total is restated in g/ml first, then joined with any g/ml line, then rounded.
+    const lines = new Map<PantryItemUnit, number>();
+    for (const [unit, quantity] of measured) {
+      const restated = restateSmall(quantity, unit);
+      lines.set(restated.unit, (lines.get(restated.unit) ?? 0) + restated.quantity);
+    }
+    for (const [unit, quantity] of lines) items.push({ name: product.name, quantity: Math.min(MAX_PACKAGE_SIZE, roundAmount(quantity)), unit });
     for (const [unit, packages] of unknownSize) {
-      const quantity = round(packages);
+      const quantity = Math.min(MAX_PACKAGE_SIZE, roundAmount(packages));
       items.push({ name: product.name, quantity, unit: unknownSizeRecipeUnit(unit, quantity) });
     }
   }

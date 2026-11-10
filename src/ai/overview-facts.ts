@@ -60,7 +60,9 @@ export const aggregateHomeOverviewFacts = async (user: AuthorizedHouseholdUser):
     };
 
     const pantry = docsData(await household.collection('pantry-inventory').get());
-    facts.pantry = summarizeOverviewPantry(pantry, now);
+    // Expiry days are household calendar days, so compare them in the household's zone.
+    const timeZone = (await household.get()).get('timeZone');
+    facts.pantry = summarizeOverviewPantry(pantry, now, typeof timeZone === 'string' ? timeZone : null);
 
     facts.barcode = { savedProducts: (await household.collection('barcode-library').count().get()).data().count };
   }
