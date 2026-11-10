@@ -151,7 +151,7 @@ describe('restore document (Undo of a delete)', () => {
   test('keeps the adder, names the restorer, adds restoreOpId and drops writer-only stamps', () => {
     const snapshot = {
       name: 'Milk', quantity: 1, status: 'purchased', addedByUid: 'sam', purchaseOpId: 'op-1',
-      purchasedByUid: 'alex', purchasedAt: 'ts', editedByUid: 'alex', editedAt: 'ts', undoOpId: 'op-0', restoreOpId: 'old',
+      purchasedByUid: 'alex', purchasedAt: 'ts', editedByUid: 'alex', editedAt: 'ts', undoOpId: 'op-0', restoreOpId: 'old', restoredAt: 'ts',
     };
     assert.deepEqual(restoreItemData(snapshot, 'kim', 'restore-9'), {
       name: 'Milk', quantity: 1, status: 'purchased', addedByUid: 'sam', purchaseOpId: 'op-1', restoredByUid: 'kim', restoreOpId: 'restore-9',

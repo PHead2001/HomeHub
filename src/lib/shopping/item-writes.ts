@@ -1,4 +1,4 @@
-import { deleteField, increment, serverTimestamp } from 'firebase/firestore';
+import { deleteField, increment, runTransaction, serverTimestamp, type DocumentReference, type Firestore } from 'firebase/firestore';
 
 /**
  * The update that merges `add` more of an item into an existing shopping-list
@@ -43,4 +43,30 @@ export function undoTickUpdate(purchaseOpId: string) {
 /** An edit from the item sheet (SH-8a): the changed fields, signed by the editor with the server's clock. */
 export function editUpdate(uid: string, changes: { name?: string; nameKey?: string; quantity?: number; category?: string; categorySource?: 'manual' }) {
   return { ...changes, editedByUid: uid, editedAt: serverTimestamp() };
+}
+
+/**
+ * The restore document (Undo of a delete): `restoreItemData`'s output plus
+ * `restoredAt` = the server's time. The rules require it on every restore and
+ * accept it only on a create, so replaying the same restore onto an item that
+ * exists again (and may have changed since) is refused: its restoredAt resolves
+ * to a new time, a changed key on an update.
+ */
+export function restoreDocument<T extends object>(data: T) {
+  return { ...data, restoredAt: serverTimestamp() };
+}
+
+/**
+ * Re-creates a deleted item only if it is absent, online: a transaction that reads
+ * the item and writes nothing when it exists ('exists'). Offline, transactions
+ * cannot run; the caller queues `setDoc(itemRef, restoreDocument(data))`, which
+ * the rules accept only as a create.
+ */
+export function restoreIfAbsent(firestore: Firestore, itemRef: DocumentReference, data: Record<string, unknown>): Promise<'restored' | 'exists'> {
+  return runTransaction(firestore, async (transaction) => {
+    const current = await transaction.get(itemRef);
+    if (current.exists()) return 'exists' as const;
+    transaction.set(itemRef, restoreDocument(data));
+    return 'restored' as const;
+  });
 }

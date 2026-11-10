@@ -39,7 +39,7 @@ import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOut
 import { createSubmissionGuard, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
-import { editUpdate, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
+import { editUpdate, restoreDocument, restoreIfAbsent, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
 import {
   CHANGED_ELSEWHERE_TITLE,
   UNDO_WINDOW_MS,
@@ -699,7 +699,20 @@ export function ShoppingListClient({
     // the rules refuse a restore over an existing item).
     if (planRemoveUndo(knownItem(entry)) === 'already') return;
     const itemRef = doc(db, 'households', entry.householdId, 'shopping-lists', entry.listId, 'items', entry.itemId);
-    await sendWrite(setDoc(itemRef, fromJournalData(entry.data)), (error) => notUndone(entry.name, error));
+    const data = fromJournalData(entry.data);
+    if (isBrowserOffline()) {
+      // Queued; the rules accept it only as a create (restoredAt makes a replay a refused update).
+      await sendWrite(setDoc(itemRef, restoreDocument(data)), (error) => notUndone(entry.name, error));
+    } else {
+      // Online, a transaction: re-created only if the item is still absent.
+      try {
+        const result = await restoreIfAbsent(db, itemRef, data);
+        if (result === 'exists') return;
+      } catch (error) {
+        notUndone(entry.name, error);
+        return;
+      }
+    }
     focusRowWhenShown(`item-${entry.data.status === 'purchased' ? 'purchased' : 'needed'}-${entry.itemId}`);
   };
 

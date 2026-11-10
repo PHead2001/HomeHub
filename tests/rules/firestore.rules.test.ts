@@ -26,6 +26,8 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
+import { restoreItemData } from '../../src/lib/shopping/items';
+import { restoreDocument } from '../../src/lib/shopping/item-writes';
 
 const projectId = 'demo-homehub-e2e';
 const householdA = 'household-a-e2e';
@@ -1300,6 +1302,10 @@ describe('content shapes: chores and templates', () => {
   });
 });
 
+// The restore document the client writes (items.ts restoreItemData + item-writes.ts restoreDocument).
+const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) =>
+  restoreDocument(restoreItemData(snapshot, restorerUid, restoreOpId));
+
 describe('content shapes: shopping', () => {
   const items = (user: Identity, list = 'groceries') => collection(dbFor(user), 'households', householdA, 'shopping-lists', list, 'items');
   const item = (user: Identity, id: string) => doc(items(user), id);
@@ -1446,15 +1452,75 @@ describe('content shapes: shopping', () => {
     const snapshot = (await getDoc(item(users.member, 's3-restore'))).data()!;
     await assertSucceeds(deleteDoc(item(users.owner, 's3-restore')));
     // The owner restores the member's item: original adder kept, restorer recorded.
-    await assertSucceeds(setDoc(item(users.owner, 's3-restore'), { ...snapshot, restoredByUid: users.owner.uid, restoreOpId: 'restore-1' }));
+    await assertSucceeds(setDoc(item(users.owner, 's3-restore'), restoreShape(snapshot, users.owner.uid, 'restore-1')));
     // A second restore (another device, or a replay) does not overwrite the item that is back.
-    await assertFails(setDoc(item(users.member, 's3-restore'), { ...snapshot, restoredByUid: users.member.uid, restoreOpId: 'restore-2' }));
+    await assertFails(setDoc(item(users.member, 's3-restore'), restoreShape(snapshot, users.member.uid, 'restore-2')));
     await assertFails(updateDoc(item(users.owner, 's3-restore'), { restoreOpId: 'restore-3' }));
+    await assertFails(updateDoc(item(users.owner, 's3-restore'), { restoredAt: serverTimestamp() }));
+    // A restore must name the writer as restorer and carry restoredAt == request.time.
+    await assertFails(setDoc(item(users.owner, 's3-no-time'), built({ restoredByUid: users.owner.uid, restoreOpId: 'r' })));
+    await assertFails(setDoc(item(users.owner, 's3-old-time'), built({ restoredByUid: users.owner.uid, restoreOpId: 'r', restoredAt: Timestamp.fromDate(new Date('2026-01-01')) })));
+    await assertFails(setDoc(item(users.owner, 's3-no-restorer'), built({ restoreOpId: 'r', restoredAt: serverTimestamp() })));
+    await assertFails(setDoc(item(users.owner, 's3-time-only'), built({ restoredAt: serverTimestamp() })));
     // The restorer must be the writer, the adder a member; a legacy item without an adder may be restored.
-    await assertFails(setDoc(item(users.owner, 's3-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid, restoreOpId: 'r' })));
-    await assertFails(setDoc(item(users.owner, 's3-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid, restoreOpId: 'r' })));
-    await assertSucceeds(setDoc(item(users.owner, 's3-legacy'), built({ restoredByUid: users.owner.uid, restoreOpId: 'r' })));
-    await assertFails(setDoc(item(users.owner, 's3-empty-op'), built({ restoredByUid: users.owner.uid, restoreOpId: '' })));
+    await assertFails(setDoc(item(users.owner, 's3-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid, restoreOpId: 'r', restoredAt: serverTimestamp() })));
+    await assertFails(setDoc(item(users.owner, 's3-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid, restoreOpId: 'r', restoredAt: serverTimestamp() })));
+    await assertSucceeds(setDoc(item(users.owner, 's3-legacy'), restoreShape(built(), users.owner.uid, 'r')));
+    await assertFails(setDoc(item(users.owner, 's3-empty-op'), restoreShape(built(), users.owner.uid, '')));
+  });
+
+  test('S3 restoring a purchased, edited or tick-undone item drops only the writer-only stamps', async () => {
+    const tickBy = (user: Identity, id: string, op: string) => updateDoc(item(user, id), {
+      status: 'purchased', purchasedByUid: user.uid, purchasedAt: serverTimestamp(), purchaseOpId: op, undoOpId: deleteField(),
+    });
+    // Purchased by the member, deleted, restored by the owner: still purchased, no purchase stamps.
+    await assertSucceeds(setDoc(item(users.member, 's3-r-bought'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(tickBy(users.member, 's3-r-bought', 'op-1'));
+    const bought = (await getDoc(item(users.member, 's3-r-bought'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-r-bought')));
+    // The raw snapshot (another member's purchasedByUid, a past purchasedAt) is refused ...
+    await assertFails(setDoc(item(users.owner, 's3-r-bought'), { ...bought, restoredByUid: users.owner.uid, restoreOpId: 'r1', restoredAt: serverTimestamp() }));
+    // ... the restore shape is accepted.
+    await assertSucceeds(setDoc(item(users.owner, 's3-r-bought'), restoreShape(bought, users.owner.uid, 'r1')));
+    const restored = (await getDoc(item(users.owner, 's3-r-bought'))).data()!;
+    assert.equal(restored.status, 'purchased');
+    assert.equal(restored.purchaseOpId, 'op-1');
+    assert.equal(restored.addedByUid, users.member.uid);
+    assert.equal('purchasedByUid' in restored || 'purchasedAt' in restored, false);
+
+    // Edited by the owner, deleted, restored by the member.
+    await assertSucceeds(setDoc(item(users.member, 's3-r-edited'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(updateDoc(item(users.owner, 's3-r-edited'), { quantity: 4, editedByUid: users.owner.uid, editedAt: serverTimestamp() }));
+    const edited = (await getDoc(item(users.member, 's3-r-edited'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-r-edited')));
+    await assertFails(setDoc(item(users.member, 's3-r-edited'), { ...edited, restoredByUid: users.member.uid, restoreOpId: 'r2', restoredAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(item(users.member, 's3-r-edited'), restoreShape(edited, users.member.uid, 'r2')));
+    assert.equal((await getDoc(item(users.member, 's3-r-edited'))).get('quantity'), 4);
+
+    // Ticked and Undone (undoOpId stored), deleted, restored.
+    await assertSucceeds(setDoc(item(users.member, 's3-r-undone'), built({ addedByUid: users.member.uid })));
+    await assertSucceeds(tickBy(users.member, 's3-r-undone', 'op-u'));
+    await assertSucceeds(updateDoc(item(users.member, 's3-r-undone'), { status: 'needed', undoOpId: 'op-u', purchasedByUid: null, purchasedAt: null }));
+    const undone = (await getDoc(item(users.member, 's3-r-undone'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-r-undone')));
+    await assertFails(setDoc(item(users.member, 's3-r-undone'), { ...undone, restoredByUid: users.member.uid, restoreOpId: 'r3', restoredAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(item(users.member, 's3-r-undone'), restoreShape(undone, users.member.uid, 'r3')));
+  });
+
+  test('S3 a replayed restore cannot reset a newer change', async () => {
+    await assertSucceeds(setDoc(item(users.member, 's3-replay'), built({ addedByUid: users.member.uid, quantity: 1 })));
+    const snapshot = (await getDoc(item(users.member, 's3-replay'))).data()!;
+    await assertSucceeds(deleteDoc(item(users.owner, 's3-replay')));
+    const payload = restoreShape(snapshot, users.owner.uid, 'restore-1');
+    await assertSucceeds(setDoc(item(users.owner, 's3-replay'), payload));
+    // Someone changes it after the restore ...
+    await assertSucceeds(updateDoc(item(users.member, 's3-replay'), { quantity: 2 }));
+    // ... and the same restore (same restoreOpId and restorer) is sent again: refused,
+    // because its restoredAt resolves to a new request.time (a changed key on an update).
+    await assertFails(setDoc(item(users.owner, 's3-replay'), payload));
+    assert.equal((await getDoc(item(users.owner, 's3-replay'))).get('quantity'), 2);
+    // Ordinary updates of a restored item stay allowed.
+    await assertSucceeds(updateDoc(item(users.owner, 's3-replay'), { status: 'purchased', purchasedByUid: users.owner.uid, purchasedAt: serverTimestamp(), purchaseOpId: 'op-9' }));
   });
 
   test('an item with a legacy field stays updatable on its other fields', async () => {

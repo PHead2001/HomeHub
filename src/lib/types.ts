@@ -120,6 +120,8 @@ export type ShoppingListItem = {
   /** The `purchaseOpId` an Undo reversed (rules: only while it is still the current purchase). */
   undoOpId?: string;
   /** Id of the Undo-after-delete that re-created this item (rules: create only). */
+  /** When that restore was written (server time; rules: create only, so a replayed restore is refused). */
+  restoredAt?: unknown;
   restoreOpId?: string;
   /** Who last edited it in the item sheet (the writer's uid) and when (server time) (SH-8a/b). */
   editedByUid?: string;
