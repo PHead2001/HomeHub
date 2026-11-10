@@ -34,6 +34,7 @@ export type MembershipErrorCode =
   | 'household_deleting'
   | 'conflict'
   | 'failed';
+import { notificationAudience } from '@functions/shared/notification-audience';
 
 export class MembershipError extends Error {
   constructor(public readonly userMessage: string, public readonly code: MembershipErrorCode = 'failed') {
@@ -183,6 +184,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
         stateKey: String(now.getTime()),
         sourceId: caller.uid,
         targetUserUid: approver.id,
+        audience: notificationAudience({ targetUserUid: approver.id }),
         readBy: {},
         dismissedBy: {},
       });
@@ -220,6 +222,7 @@ const approverNotices = (
       expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
       deepLink: '/household?tab=members',
       targetUserUid: approver.id,
+      audience: notificationAudience({ targetUserUid: approver.id }),
       readBy: {},
       dismissedBy: {},
       // Per-event state: a repeat event must not inherit earlier read/dismissed state.
@@ -713,6 +716,7 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
       sourceType: 'household-ownership-transfer',
       sourceId: target.uid,
       stateKey: String(now.getTime()),
+      audience: notificationAudience({}),
       readBy: {},
       dismissedBy: {},
     });
