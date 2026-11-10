@@ -7,6 +7,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { playFeedback } from '@/lib/feedback';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { formatPortion, loggerName, type FeedingPlan, type FeedingStatus, type QuickFeedFood } from '@/lib/pets/care';
@@ -114,8 +115,10 @@ export function useQuickFeed({ petId, petName, plan, status, food }: QuickFeedOp
       playFeedback(reachedGoal ? 'celebrate' : 'complete');
       if (!reducedMotion) setBurst({ key: Date.now(), source });
       const { dismiss } = toast({
+        group: 'pet-feed',
         title: reachedGoal ? `${petName} is all fed for today` : `${petName} fed`,
         description: foodFallback ? `${portion} of dry food logged (last feeding unavailable).` : `${portion} logged.`,
+        duration: canUndo ? UNDO_WINDOW_MS : undefined,
         action: canUndo ? (
           <ToastAction
             altText={`Undo feeding for ${petName}`}
@@ -208,7 +211,7 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
 /**
  * One-tap feeding at the planned portion (section 3 Pets, H09) and the accessible
  * alternative to hold to feed (owner decision): the tap logs at once and the
- * toast confirms what was logged, with Undo for 5 s for members who may delete
+ * toast confirms what was logged, with Undo for 10 s for members who may delete
  * logs. A single reversible tap is the alternative to holding; only the "Log
  * feeding" home-screen shortcut asks first (`FeedPickerDialog`), because nothing
  * on a pet was tapped there. The full form stays on the pet page behind "Log

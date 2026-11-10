@@ -24,6 +24,8 @@ import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import dynamic from 'next/dynamic';
 import { Logo } from './brand/logo';
 import { openCommandPalette } from './command/events';
+import { ConnectionStatus } from './shell/connection-status';
+import { useSessionKnown } from '@/hooks/use-session-known';
 
 // The bell reads notifications from Firestore; it loads as its own chunk once a
 // signed-in member with notifications.view is known, so signed-out pages never
@@ -58,6 +60,8 @@ export function Header() {
   const { currentUser, currentMember, permissions, logout } = useAuth();
   const pathname = usePathname() || '/';
   const isPendingNewUser = currentMember?.role === 'newuser';
+  // No Login button before Auth has answered (SL-11): a signed-in member would see it flash.
+  const sessionKnown = useSessionKnown();
 
   return (
     // data-site-header: kept out of the page crossfade during route view transitions.
@@ -161,15 +165,19 @@ export function Header() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </>
-            ) : pathname === '/' ? null : (
+            ) : pathname === '/' ? null : sessionKnown ? (
                 // The signed-out landing has one call to action of its own ("Sign in with
                 // Google", HP-29), so the header adds no second one there.
                 <LoginDialog>
                     <Button>Login</Button>
                 </LoginDialog>
+            ) : (
+                // Holds the Login button's place so nothing shifts when Auth answers.
+                <span aria-hidden data-testid="header-session-pending" className="inline-block h-10 w-[4.5rem]" />
             )}
         </div>
       </div>
+      <ConnectionStatus />
     </header>
   );
 }
