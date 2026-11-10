@@ -244,6 +244,7 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
             size="icon"
             aria-label={`Edit ${item.name}`}
             aria-haspopup="dialog"
+            data-edit-control=""
             className="h-11 w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12"
             onClick={() => onEdit(item)}
           >

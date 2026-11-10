@@ -19,7 +19,7 @@ import {
   type UndoEntry,
 } from '../../src/lib/shopping/undo';
 import { attributionLabel, memberNameMap, shortAge, toMillis } from '../../src/lib/shopping/attribution';
-import { planItemEdit } from '../../src/lib/shopping/edit';
+import { CLOSED_EDIT, editBaseline, nextEditOpening, planItemEdit, saveMayComplete } from '../../src/lib/shopping/edit';
 import { restoreItemData } from '../../src/lib/shopping/items';
 
 const memoryStorage = (): JournalStorage & { data: Map<string, string> } => {
@@ -223,5 +223,40 @@ describe('item edit (SH-8a)', () => {
     assert.equal('error' in planItemEdit(item, { name: 'Milk', quantity: 1.5, category: 'Dairy' }), true);
     assert.equal('error' in planItemEdit(item, { name: 'Milk', quantity: 1000, category: 'Dairy' }), true);
     assert.equal('error' in planItemEdit(item, { name: 'Milk', quantity: Number.NaN, category: 'Dairy' }), true);
+  });
+
+  test('compares to the opening snapshot, so a field changed elsewhere meanwhile is not written back', () => {
+    // Opened at qty 1; someone else sets qty 2 while the member renames it.
+    const live = { name: 'Milk', quantity: 1, category: 'Dairy', status: 'needed' };
+    const baseline = editBaseline(live);
+    live.quantity = 2;
+    live.category = 'Drinks';
+    assert.deepEqual(baseline, { name: 'Milk', quantity: 1, category: 'Dairy' });
+    const draft = { name: 'Oat milk', quantity: 1, category: 'Dairy' };
+    assert.deepEqual(planItemEdit(baseline, draft), { changes: { name: 'Oat milk', nameKey: 'oat milk' } });
+    // Compared to the live item instead, the untouched quantity and category would be reverted.
+    assert.deepEqual(Object.keys((planItemEdit(live, draft) as { changes: object }).changes).sort(), ['category', 'categorySource', 'name', 'nameKey', 'quantity']);
+  });
+
+  test('a slow save completes only its own opening session', () => {
+    const milk = { id: 'milk', name: 'Milk', quantity: 1, category: 'Dairy' };
+    const first = nextEditOpening(CLOSED_EDIT, milk);
+    assert.deepEqual(first.baseline, { name: 'Milk', quantity: 1, category: 'Dairy' });
+    // Live updates of the same open item keep the session and its baseline.
+    assert.equal(nextEditOpening(first, { ...milk, quantity: 2 }), first);
+    assert.equal(saveMayComplete(first.session, first), true);
+    // Closed while saving, then opened for another item: the first save may not close it.
+    const closed = nextEditOpening(first, null);
+    assert.equal(saveMayComplete(first.session, closed), false);
+    const bread = nextEditOpening(closed, { id: 'bread', name: 'Bread', quantity: 1, category: 'Bakery' });
+    assert.equal(saveMayComplete(first.session, bread), false);
+    assert.equal(saveMayComplete(bread.session, bread), true);
+    // Reopening the same item is a new session, with a fresh baseline.
+    const reopened = nextEditOpening(nextEditOpening(bread, null), { id: 'bread', name: 'Rye bread', quantity: 2, category: 'Bakery' });
+    assert.notEqual(reopened.session, bread.session);
+    assert.equal(saveMayComplete(bread.session, reopened), false);
+    assert.deepEqual(reopened.baseline, { name: 'Rye bread', quantity: 2, category: 'Bakery' });
+    // Closed: no session is current.
+    assert.equal(saveMayComplete(reopened.session, nextEditOpening(reopened, null)), false);
   });
 });

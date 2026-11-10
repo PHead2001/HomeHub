@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { Loader2, Minus, Plus, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -8,14 +8,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
-import { MAX_EDIT_QUANTITY as MAX_QUANTITY, MAX_ITEM_NAME as MAX_NAME, planItemEdit, type ItemEditChanges } from '@/lib/shopping/edit';
+import {
+  MAX_EDIT_QUANTITY as MAX_QUANTITY,
+  MAX_ITEM_NAME as MAX_NAME,
+  CLOSED_EDIT,
+  nextEditOpening,
+  planItemEdit,
+  saveMayComplete,
+  type ItemEditChanges,
+} from '@/lib/shopping/edit';
 import type { ShoppingListCategory, ShoppingListItem } from '@/lib/types';
 
 /**
  * The item edit sheet (SH-8a/b): name, quantity −/+ and category, then Save; Delete
  * lives here (SH-13b). It opens from a row's Edit control or a long-press. It
- * edits the live item: if the item disappears meanwhile (deleted elsewhere) the
- * owner closes it. Every control is at least 44 px (48 px on touch, D-2); the
+ * follows the live item (if it disappears meanwhile, deleted elsewhere, the owner
+ * closes it), but Save writes only the fields the member changed from what the
+ * sheet showed when it opened, so someone else's change to another field is kept.
+ * Each open is a session: a slow save's completion closes only its own session. Every control is at least 44 px (48 px on touch, D-2); the
  * close button is this sheet's own, since the dialog's built-in one is smaller.
  */
 export function ItemEditSheet({
@@ -44,23 +54,27 @@ export function ItemEditSheet({
   const [category, setCategory] = useState('');
   const [error, setError] = useState<{ field: 'name' | 'quantity'; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const loadedFor = useRef<string | null>(null);
+  const [opening, setOpening] = useState(CLOSED_EDIT);
 
   // Start from the item each time the sheet opens for it (not on every live update,
-  // so typing is never overwritten by someone else's change).
-  useEffect(() => {
-    if (!item) {
-      loadedFor.current = null;
-      return;
+  // so typing is never overwritten by someone else's change), and keep that opening
+  // snapshot as the baseline Save compares to. Adjusted during render, not in an effect.
+  const nextOpening = nextEditOpening(opening, item);
+  if (nextOpening !== opening) {
+    setOpening(nextOpening);
+    if (item) {
+      setName(item.name);
+      setQuantity(String(item.quantity));
+      setCategory(item.category);
+      setError(null);
+      setSaving(false);
     }
-    if (loadedFor.current === item.id) return;
-    loadedFor.current = item.id;
-    setName(item.name);
-    setQuantity(String(item.quantity));
-    setCategory(item.category);
-    setError(null);
-    setSaving(false);
-  }, [item]);
+  }
+  // The committed opening, for a save that completes later.
+  const openingRef = useRef(opening);
+  useLayoutEffect(() => {
+    openingRef.current = opening;
+  });
 
   const quantityNumber = Number(quantity);
   const step = (amount: number) => {
@@ -72,7 +86,8 @@ export function ItemEditSheet({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!item || !canEdit || saving) return;
-    const plan = planItemEdit(item, { name, quantity: quantityNumber, category });
+    if (!opening.baseline) return;
+    const plan = planItemEdit(opening.baseline, { name, quantity: quantityNumber, category });
     if ('error' in plan) {
       setError(plan.error);
       return;
@@ -81,8 +96,12 @@ export function ItemEditSheet({
       onOpenChange(false);
       return;
     }
+    const session = opening.session;
     setSaving(true);
     const done = await onSave(item, plan.changes);
+    // Closed (or reopened, perhaps for another item) while saving: that later sheet is
+    // not this save's to close or to clear the spinner of.
+    if (!saveMayComplete(session, openingRef.current)) return;
     setSaving(false);
     if (done) onOpenChange(false);
   };

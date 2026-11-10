@@ -294,6 +294,9 @@ export function ShoppingListClient({
   const [undoEntries, setUndoEntries] = useState<UndoEntry[]>([]);
   // Where focus goes when the edit sheet closes after a delete (a checkbox id; '' = the cart).
   const focusAfterSheetRef = useRef<string | null>(null);
+  // The item whose Edit control (or long-press) opened the sheet: Save, Escape and
+  // Close return focus to that row's Edit control (the sheet has no DialogTrigger).
+  const editOpenerRef = useRef<string | null>(null);
   const itemsReadyRef = useRef(false);
   // Row ids in screen order, per section (for focus after a tick or delete).
   const rowOrderRef = useRef<{ needed: string[]; purchased: string[] }>({ needed: [], purchased: [] });
@@ -919,7 +922,23 @@ export function ShoppingListClient({
 
   const openEditor = (item: ShoppingListItem) => {
     focusAfterSheetRef.current = null;
+    editOpenerRef.current = item.id;
     setEditingItemId(item.id);
+  };
+
+  // Back to the Edit control of the row that opened the sheet (it may re-render, for
+  // example under a new category heading, so it is found again by row id). If the row
+  // is gone (deleted elsewhere meanwhile), focus goes to the cart, never to <body>.
+  const focusEditControlWhenShown = (itemId: string, attempts = 10) => {
+    requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(itemId)}"] [data-edit-control]`);
+      if (target) {
+        target.focus({ preventScroll: true });
+        return;
+      }
+      if (attempts > 0) focusEditControlWhenShown(itemId, attempts - 1);
+      else focusRowWhenShown(null);
+    });
   };
 
   const attributionFor = (item: ShoppingListItem) => attributionLabel({
@@ -1157,11 +1176,18 @@ export function ShoppingListClient({
               onDelete={(item) => void deleteItem(item)}
               onCloseAutoFocus={(event) => {
                 // After a delete the row's Edit button is gone: focus the next row (SH-26a).
+                // Otherwise (Save, Escape, Close) focus returns to the opener's Edit control.
                 const target = focusAfterSheetRef.current;
-                if (target === null) return;
+                const opener = editOpenerRef.current;
                 focusAfterSheetRef.current = null;
-                event.preventDefault();
-                focusRowWhenShown(target || null);
+                editOpenerRef.current = null;
+                if (target !== null) {
+                  event.preventDefault();
+                  focusRowWhenShown(target || null);
+                } else if (opener) {
+                  event.preventDefault();
+                  focusEditControlWhenShown(opener);
+                }
               }}
             />
             {handoffMode !== null && (

@@ -189,7 +189,14 @@ test.describe('shopping: tick, edit and Undo', () => {
       expect(edited.editedByUid).toBeTruthy();
       expect(edited.editedAt).toBeTruthy();
       // Focus returns to the row's Edit control.
-      await expect(a.page.getByRole('button', { name: 'Edit E2E apricot jam', exact: true })).toBeFocused();
+      const renamedEdit = a.page.getByRole('button', { name: 'Edit E2E apricot jam', exact: true });
+      await expect(renamedEdit).toBeFocused();
+      // ... and also after Escape.
+      await a.page.keyboard.press('Enter');
+      await expect(a.page.getByRole('dialog', { name: 'Edit E2E apricot jam' })).toBeVisible();
+      await a.page.keyboard.press('Escape');
+      await expect(a.page.getByRole('dialog', { name: 'Edit E2E apricot jam' })).toHaveCount(0);
+      await expect(renamedEdit).toBeFocused();
     } finally {
       await a.context.close();
     }

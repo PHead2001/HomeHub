@@ -41,3 +41,39 @@ export function planItemEdit(
   }
   return { changes };
 }
+
+/** What the sheet showed when it opened: the baseline an edit is compared to. */
+export type ItemEditBaseline = Pick<ShoppingListItem, 'name' | 'quantity' | 'category'>;
+
+/**
+ * The opening snapshot of an item (S3 review). Save compares the draft to this,
+ * never to the live item: a field the member did not touch is not written, even if
+ * someone else changed it while the sheet was open (their change is kept).
+ */
+export function editBaseline(item: ItemEditBaseline): ItemEditBaseline {
+  return { name: item.name, quantity: item.quantity, category: item.category };
+}
+
+/** The sheet's current opening: which item, which session, and its baseline. */
+export type EditOpening = { itemId: string | null; session: number; baseline: ItemEditBaseline | null };
+export const CLOSED_EDIT: EditOpening = { itemId: null, session: 0, baseline: null };
+
+/**
+ * Opening sessions of the edit sheet: every open (or reopen) is a new session with
+ * its own baseline; live updates of the open item keep it (the same object comes
+ * back). Closing is a new session too, so nothing from before stays current.
+ */
+export function nextEditOpening(previous: EditOpening, item: (ItemEditBaseline & { id: string }) | null): EditOpening {
+  const itemId = item?.id ?? null;
+  if (itemId === previous.itemId) return previous;
+  return { itemId, session: previous.session + 1, baseline: item ? editBaseline(item) : null };
+}
+
+/**
+ * A save's completion (close the sheet, clear its spinner) acts only while the
+ * session that submitted it is still the open one, so a slow save never closes a
+ * later sheet opened for another item (or for the same item again).
+ */
+export function saveMayComplete(submittedSession: number, current: EditOpening): boolean {
+  return current.itemId !== null && current.session === submittedSession;
+}
