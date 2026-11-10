@@ -5,25 +5,25 @@ import { motion } from 'motion/react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { format, parseISO } from 'date-fns';
-import type { BarcodeLibraryItem, PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
+import { format } from 'date-fns';
+import type { BarcodeLibraryItem, PantryItemUnit, PantryItemLocation } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
-import { collection, doc, deleteDoc, writeBatch, query, setDoc, updateDoc } from 'firebase/firestore';
-import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
+import { collection, query } from 'firebase/firestore';
+import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, type PantryBatch, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { addToDefaultGroceryList, changePackages, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
+import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
+import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { DURATION, EASE } from '@/lib/motion';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
 import { AiClientError, getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { friendlyError } from '@/lib/friendly-error';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 
 import { Button } from '@/components/ui/button';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
@@ -57,12 +57,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { cn } from '@/lib/utils';
 import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check, LayoutGrid, List as ListIcon, X } from 'lucide-react';
 import { buttonVariants } from './ui/button';
-import { slugify } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
@@ -80,83 +80,98 @@ const allPantryUnits = [
   ...pantryItemUnitCategories.Count,
 ] as [PantryItemUnit, ...PantryItemUnit[]];
 
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// Pantry v2 (17.3): how many packages, and for weights and volumes the size of one
+// package, so "used one" removes a package and never 1 g. Expiry is a date-only day.
 const pantryItemSchema = z.object({
-  name: z.string().min(1, 'Item name is required.'),
-  quantity: z.coerce.number<number>().min(0, 'Quantity cannot be negative.'),
+  name: z.string().trim().min(1, 'Item name is required.').max(500, 'Keep the name under 500 characters.'),
+  packages: z.coerce.number<number>().int('Use whole packages.').min(0, 'Cannot be negative.').max(MAX_PACKAGES, `At most ${MAX_PACKAGES}.`),
   unit: z.enum(allPantryUnits),
+  packageSize: z.string().refine(
+    (value) => value.trim() === '' || (Number(value) > 0 && Number(value) <= MAX_PACKAGE_SIZE),
+    `Enter a size above 0, up to ${MAX_PACKAGE_SIZE}.`,
+  ),
   location: z.enum(['Pantry', 'Fridge', 'Freezer']),
-  expiryDate: z.date().optional(),
+  expiryDate: z.string().regex(DAY_PATTERN).nullable(),
+  barcode: z.string().max(128).optional(),
 });
 
 type PantryItemFormValues = z.infer<typeof pantryItemSchema>;
 
 type UnitCategory = keyof typeof pantryItemUnitCategories;
 
+const EMPTY_FORM: PantryItemFormValues = {
+  name: '', packages: 1, unit: 'items', packageSize: '', location: 'Pantry', expiryDate: null, barcode: undefined,
+};
+
+/** The batch a saved form describes (the measured size only for weights and volumes). */
+const formToBatchInput = (data: PantryItemFormValues): PantryBatchInput => ({
+  name: data.name,
+  location: data.location,
+  unit: data.unit,
+  packages: data.packages,
+  packageSize: isCountUnit(data.unit) || data.packageSize.trim() === '' ? null : Number(data.packageSize),
+  expiryDate: data.expiryDate,
+  barcode: data.barcode || null,
+});
+
+// Determine category from a given unit
+const getCategoryFromUnit = (unit: PantryItemUnit): UnitCategory => {
+  for (const [category, units] of Object.entries(pantryItemUnitCategories)) {
+    if ((units as readonly string[]).includes(unit)) {
+      return category as UnitCategory;
+    }
+  }
+  return 'Count'; // Default category
+};
 
 function PantryItemDialog({
   isOpen,
   onOpenChange,
   onSave,
   itemToEdit,
+  timeZone,
 }: {
   isOpen: boolean,
   onOpenChange: (open: boolean) => void,
   onSave: (data: PantryItemFormValues, id?: string) => Promise<boolean>,
-  itemToEdit: PantryItem | null,
+  itemToEdit: PantryBatch | null,
+  timeZone?: string | null,
 }) {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
   const { toast, toastError } = useToast();
   const { currentUser } = useAuth();
-  
+
   const form = useForm<PantryItemFormValues>({
     resolver: zodResolver(pantryItemSchema),
-    defaultValues: {
-      name: '',
-      quantity: 1,
-      unit: 'items',
-      location: 'Pantry',
-      expiryDate: undefined,
-    },
+    defaultValues: EMPTY_FORM,
   });
-  
+
   const { watch, setValue, getValues, reset } = form;
   const currentUnit = watch('unit');
-  const currentQuantity = watch('quantity');
-
-  // Determine category from a given unit
-  const getCategoryFromUnit = (unit: PantryItemUnit): UnitCategory => {
-    for (const [category, units] of Object.entries(pantryItemUnitCategories)) {
-      if ((units as readonly string[]).includes(unit)) {
-        return category as UnitCategory;
-      }
-    }
-    return 'Count'; // Default category
-  };
+  const currentPackages = watch('packages');
+  const measured = unitCategory !== 'Count';
 
   // Effect to sync category when form's unit changes (e.g., when editing an item)
   useEffect(() => {
     pendingScannedUnit.current = null;
     if (itemToEdit) {
-      const category = getCategoryFromUnit(itemToEdit.unit);
-      setUnitCategory(category);
+      setUnitCategory(getCategoryFromUnit(itemToEdit.unit));
       reset({
         name: itemToEdit.name,
-        quantity: itemToEdit.quantity,
+        packages: itemToEdit.packages,
         unit: itemToEdit.unit,
+        packageSize: itemToEdit.packageSize === null ? '' : String(itemToEdit.packageSize),
         location: itemToEdit.location,
-        expiryDate: itemToEdit.expiryDate ? parseISO(itemToEdit.expiryDate) : undefined,
+        expiryDate: itemToEdit.expiryDate,
+        barcode: itemToEdit.barcode ?? undefined,
       });
     } else {
       setUnitCategory('Count');
-      reset({
-        name: '',
-        quantity: 1,
-        unit: 'items',
-        location: 'Pantry',
-        expiryDate: undefined,
-      });
+      reset(EMPTY_FORM);
     }
   }, [itemToEdit, reset, isOpen]); // Rerun when dialog opens
 
@@ -182,7 +197,7 @@ function PantryItemDialog({
       onOpenChange(false);
     }
   };
-  
+
   const handleBarcodeScan = async (barcode: string) => {
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
@@ -197,10 +212,20 @@ function PantryItemDialog({
         const { productName } = result;
         if (productName) {
             if (!form.formState.dirtyFields.name) form.setValue('name', productName);
+            form.setValue('barcode', barcode);
+            // The scanned amount is the size of ONE package for weights and volumes
+            // (a 450 g bag is 1 package of 450 g, never 450 packages: BL-1, 17.3).
             if (result.quantity && result.unit
-              && !form.formState.dirtyFields.quantity
+              && !form.formState.dirtyFields.packages
+              && !form.formState.dirtyFields.packageSize
               && !form.formState.dirtyFields.unit) {
-              form.setValue('quantity', result.quantity);
+              if (isCountUnit(result.unit)) {
+                form.setValue('packages', Math.max(1, Math.round(result.quantity)));
+                form.setValue('packageSize', '');
+              } else {
+                form.setValue('packages', 1);
+                form.setValue('packageSize', String(result.quantity));
+              }
               pendingScannedUnit.current = result.unit;
               setUnitCategory(getCategoryFromUnit(result.unit));
             }
@@ -208,7 +233,7 @@ function PantryItemDialog({
               title: "Product Found!",
               description: result.quantity && result.unit
                 ? `${productName}, ${result.quantity} ${result.unit}, has been filled in.`
-                : `${productName} has been filled in. Enter the package quantity manually.`,
+                : `${productName} has been filled in. Enter the package size yourself.`,
             });
         } else {
             toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. Type the name instead.' });
@@ -218,11 +243,16 @@ function PantryItemDialog({
     }
   };
 
-  const adjustQuantity = (amount: number) => {
-    const currentVal = getValues('quantity');
-    const newVal = Math.max(0, currentVal + amount); // Allow 0 quantity
-    setValue('quantity', newVal, { shouldValidate: true });
+  const adjustPackages = (amount: number) => {
+    const currentVal = Number(getValues('packages')) || 0;
+    const newVal = Math.min(MAX_PACKAGES, Math.max(0, currentVal + amount));
+    setValue('packages', newVal, { shouldValidate: true, shouldDirty: true });
   }
+
+  const applyChip = (chip: (typeof EXPIRY_CHIPS)[number]['id']) => {
+    setValue('expiryDate', expiryFromChip(chip, new Date(), timeZone), { shouldValidate: true, shouldDirty: true });
+    if (chip === 'freezer3mo') setValue('location', 'Freezer', { shouldDirty: true });
+  };
 
   return (
     <>
@@ -236,10 +266,14 @@ function PantryItemDialog({
         </DialogContent>
     </Dialog>
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-headline">{itemToEdit ? 'Edit Item' : 'Add New Item'}</DialogTitle>
-          <DialogDescription>Fill in the details for your pantry item.</DialogDescription>
+          <DialogDescription>
+            {itemToEdit
+              ? 'Change this batch: how many packages, their size, the shelf or the expiry date.'
+              : 'Adding the same item with the same size, shelf and expiry date adds to the packages already there.'}
+          </DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4 py-4">
@@ -252,28 +286,6 @@ function PantryItemDialog({
                   <FormControl>
                     <Input placeholder="e.g. All-Purpose Flour" {...field} />
                   </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            
-            <FormField
-              control={form.control}
-              name="quantity"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Quantity</FormLabel>
-                   <div className="flex items-center gap-2">
-                        <Button type="button" variant="outline" size="icon" aria-label="Decrease inventory quantity" className="h-10 w-10" onClick={() => adjustQuantity(-1)} disabled={currentQuantity <= 0}>
-                            <Minus className="h-4 w-4" />
-                        </Button>
-                        <FormControl>
-                            <Input type="number" className="text-center" {...field} />
-                        </FormControl>
-                         <Button type="button" variant="outline" size="icon" aria-label="Increase inventory quantity" className="h-10 w-10" onClick={() => adjustQuantity(1)}>
-                            <Plus className="h-4 w-4" />
-                        </Button>
-                    </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -301,7 +313,7 @@ function PantryItemDialog({
                 ))}
               </RadioGroup>
             </FormItem>
-            
+
             <FormField
               control={form.control}
               name="unit"
@@ -324,6 +336,43 @@ function PantryItemDialog({
               )}
             />
 
+            <FormField
+              control={form.control}
+              name="packages"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{measured ? 'Packages' : 'How many'}</FormLabel>
+                   <div className="flex items-center gap-2">
+                        <Button type="button" variant="outline" size="icon" aria-label="One package fewer" className="h-10 w-10" onClick={() => adjustPackages(-1)} disabled={Number(currentPackages) <= 0}>
+                            <Minus className="h-4 w-4" />
+                        </Button>
+                        <FormControl>
+                            <Input type="number" inputMode="numeric" min={0} step={1} className="text-center" {...field} />
+                        </FormControl>
+                         <Button type="button" variant="outline" size="icon" aria-label="One package more" className="h-10 w-10" onClick={() => adjustPackages(1)}>
+                            <Plus className="h-4 w-4" />
+                        </Button>
+                    </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {measured && (
+              <FormField
+                control={form.control}
+                name="packageSize"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Size of one package ({currentUnit}, optional)</FormLabel>
+                    <FormControl>
+                      <Input type="number" inputMode="decimal" min={0} step="any" placeholder="e.g. 450" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
 
              <FormField
                 control={form.control}
@@ -353,25 +402,40 @@ function PantryItemDialog({
               render={({ field }) => (
                 <FormItem className="flex flex-col">
                   <FormLabel>Expiration Date (Optional)</FormLabel>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <FormControl>
-                        <Button
-                          variant={"outline"}
-                          className={cn(
-                            "w-full pl-3 text-left font-normal",
-                            !field.value && "text-muted-foreground"
-                          )}
-                        >
-                          {field.value ? format(field.value, 'PPP') : <span>Pick a date</span>}
-                          <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
-                        </Button>
-                      </FormControl>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
-                    </PopoverContent>
-                  </Popover>
+                  <div className="flex items-center gap-2">
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <FormControl>
+                          <Button
+                            variant={"outline"}
+                            className={cn(
+                              "w-full pl-3 text-left font-normal",
+                              !field.value && "text-muted-foreground"
+                            )}
+                          >
+                            {field.value ? format(pickerDateForDay(field.value) ?? new Date(), 'PPP') : <span>Pick a date</span>}
+                            <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                          </Button>
+                        </FormControl>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        {/* The picked calendar day is stored as that day (yyyy-MM-dd), never as an instant (SH-10a). */}
+                        <Calendar mode="single" selected={pickerDateForDay(field.value)} onSelect={(date) => field.onChange(date ? dayFromPicker(date) : null)} initialFocus />
+                      </PopoverContent>
+                    </Popover>
+                    {field.value && (
+                      <Button type="button" variant="ghost" size="icon" aria-label="Clear the expiration date" onClick={() => field.onChange(null)}>
+                        <X className="h-4 w-4" aria-hidden />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Quick expiry">
+                    {EXPIRY_CHIPS.map((chip) => (
+                      <Button key={chip.id} type="button" size="sm" variant="secondary" className="h-9 rounded-full" onClick={() => applyChip(chip.id)}>
+                        {chip.label}
+                      </Button>
+                    ))}
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -398,13 +462,14 @@ const RECIPE_LIFT_HOLD_MS = 450;
 function RecipeGeneratorDialog({
     isOpen,
     onOpenChange,
-    pantryItems,
+    recipeItems,
     householdId,
     onRecipe,
 }: {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    pantryItems: PantryItem[];
+    /** Usable stock only (SH-27e): products with packages left, expired batches left out. */
+    recipeItems: { name: string; quantity: number; unit: PantryItemUnit }[];
     householdId: string;
     /**
      * Receives each generated recipe so the shelves can lift the items it uses;
@@ -432,7 +497,7 @@ function RecipeGeneratorDialog({
         onRecipe?.(null);
         try {
             const result = unwrapAiActionResult(await generateRecipe(
-              { items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
+              { items: recipeItems },
               await getAiActionContext(householdId)
             ));
             const liftedOnScreen = onRecipe?.(result) ?? 0;
@@ -447,7 +512,7 @@ function RecipeGeneratorDialog({
             requestInFlight.current = false;
             setIsLoading(false);
         }
-    }, [householdId, pantryItems, toast, onRecipe, reduced]);
+    }, [householdId, recipeItems, toast, onRecipe, reduced]);
 
     // The lift holds briefly; any key or pointer press skips straight to the card.
     useEffect(() => {
@@ -598,140 +663,39 @@ function RecipeGeneratorDialog({
     );
 }
 
-const addItemSchema = z.object({
-  name: z.string().min(1, 'Item name is required.'),
-  quantity: z.coerce.number<number>().min(1, 'Quantity must be at least 1.'),
-});
-
-function AddToListDialog({
-  isOpen,
-  onOpenChange,
-  onItemAdd,
-  itemName,
-  shoppingLists,
-}: {
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
-  onItemAdd: (listId: string, itemName: string, quantity: number) => void;
-  itemName: string;
-  shoppingLists: ShoppingList[];
-}) {
-  const [selectedListId, setSelectedListId] = useState<string | null>(null);
-  const form = useForm<z.infer<typeof addItemSchema>>({
-    resolver: zodResolver(addItemSchema),
-    defaultValues: {
-      name: itemName,
-      quantity: 1,
-    },
-  });
-
-  useEffect(() => {
-    if (isOpen) {
-      form.reset({ name: itemName, quantity: 1 });
-      if (shoppingLists.length === 1) {
-        setSelectedListId(shoppingLists[0].id);
-      } else {
-        setSelectedListId(null);
-      }
-    }
-  }, [isOpen, itemName, shoppingLists, form]);
-
-  const handleSubmit = (values: z.infer<typeof addItemSchema>) => {
-    if (!selectedListId) return;
-    onItemAdd(selectedListId, values.name, values.quantity);
-    onOpenChange(false);
-  };
-
-  if (shoppingLists.length === 0) {
-    // This case is handled by the parent, but as a fallback
-    return null;
-  }
-
-  return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Add &quot;{itemName}&quot; to a shopping list</DialogTitle>
-          <DialogDescription>Choose the destination list and quantity for this inventory item.</DialogDescription>
-        </DialogHeader>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
-            {shoppingLists.length > 1 && (
-              <FormItem>
-                <FormLabel>Select a List</FormLabel>
-                <Select onValueChange={setSelectedListId} value={selectedListId || ''}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose a shopping list..." />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {shoppingLists.map((list) => (
-                      <SelectItem key={list.id} value={list.id}>
-                        {list.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FormItem>
-            )}
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Item Name</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="quantity"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Quantity</FormLabel>
-                  <FormControl>
-                    <Input type="number" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <DialogFooter>
-              <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={!selectedListId || form.formState.isSubmitting}>
-                Add to List
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-
 const PANTRY_VIEW_KEY = 'homehub.pantry.view';
 type PantryView = 'shelves' | 'list';
 
+/** What a delete confirmation removes: one product's batches (a tile) or one batch (a list row). */
+type DeleteTarget = { name: string; ids: string[] };
+/** One package change of a used-up tap, kept for its Undo. */
+type PackageChange = { batch: PantryBatch; delta: number };
+
 export function PantryInventoryClient() {
-  const { currentUser, permissions } = useAuth();
+  const { currentUser, household, permissions } = useAuth();
   const { toast, toastError } = useToast();
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
+  const householdId = currentUser?.householdId ?? null;
+  const uid = currentUser?.uid ?? null;
+  // Expiry is counted in the household's zone (D-6) and re-keyed at its midnight (SH-10b).
+  const timeZone = household?.timeZone ?? null;
+  const today = useHouseholdToday(timeZone);
 
   // Live (SH-1c): one listener on the pantry, so another member's additions, moves
   // and deletions show without a reload, and this device's own writes show at once
   // (a rejected one is rolled back in the listener). No re-read after a write.
-  const pantryState = useLivePantry(currentUser?.householdId);
+  const pantryState = useLivePantry(householdId);
   const items = pantryState.value;
   const loading = pantryState.status === 'loading';
+  // Pantry v2: every document is read as a batch (legacy documents derive their
+  // values); a tile groups a name's batches on one shelf; empty batches are hidden.
+  const batches = useMemo(() => items.map((item) => readPantryBatch(item.id, item, timeZone)), [items, timeZone]);
+  const products = useMemo(() => groupPantryBatches(batches), [batches]);
+  const visibleBatches = useMemo(() => products.flatMap((product) => product.batches), [products]);
+  // SH-27e: recipes get only usable stock (packages left, not expired).
+  const recipeItems = useMemo(() => usableRecipeItems(products, today), [products, today]);
+
   // The chosen view is a per-device convenience (this tab only renders client-side, after sign-in).
   const [view, setView] = useState<PantryView>(() => {
     try {
@@ -744,16 +708,17 @@ export function PantryInventoryClient() {
   const [liftedIds, setLiftedIds] = useState<ReadonlySet<string>>(new Set());
 
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
-  const [itemToEdit, setItemToEdit] = useState<PantryItem | null>(null);
-  const [itemToDelete, setItemToDelete] = useState<PantryItem | null>(null);
+  const [itemToEdit, setItemToEdit] = useState<PantryBatch | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<DeleteTarget | null>(null);
   const [isRecipeGenOpen, setIsRecipeGenOpen] = useState(false);
 
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [isBulkDeleteAlertOpen, setIsBulkDeleteAlertOpen] = useState(false);
 
-  const [shoppingLists, setShoppingLists] = useState<ShoppingList[]>([]);
-  const [isAddToListDialogOpen, setIsAddToListDialogOpen] = useState(false);
-  const [itemNameToAddToList, setItemNameToAddToList] = useState<string | null>(null);
+  // D-8: when a product reaches zero, ask "Add to list?" (Add / Not now). The token
+  // ties the question to the tap that raised it, so that tap's Undo withdraws it.
+  const [askAdd, setAskAdd] = useState<{ name: string; token: number } | null>(null);
+  const askTokenRef = useRef(0);
 
   // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
   // browser Back to the lists), so none stays on screen or traps focus there. The
@@ -764,7 +729,7 @@ export function PantryInventoryClient() {
     setItemToDelete(null);
     setIsRecipeGenOpen(false);
     setIsBulkDeleteAlertOpen(false);
-    setIsAddToListDialogOpen(false);
+    setAskAdd(null);
   });
 
   const changeView = (next: PantryView) => {
@@ -781,11 +746,6 @@ export function PantryInventoryClient() {
     if (!open) setItemToEdit(null);
   };
 
-  const getPantryCollectionRef = useCallback(() => {
-    if (!currentUser?.householdId) return null;
-    return collection(db, 'households', currentUser.householdId, 'pantry-inventory');
-  }, [currentUser]);
-
   // A pantry that cannot load says so once (the listener keeps retrying).
   const reportedPantryErrorRef = useRef<unknown>(null);
   useEffect(() => {
@@ -795,39 +755,48 @@ export function PantryInventoryClient() {
     toastError(error, 'Could not load the pantry');
   }, [pantryState.error, toastError]);
 
-  const fetchShoppingLists = useCallback(async () => {
-    if (!currentUser?.householdId) return;
-    const listsCollectionRef = collection(db, 'households', currentUser.householdId, 'shopping-lists');
-    const snapshot = await getDocsOfflineAware(query(listsCollectionRef));
-    const lists = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingList));
-    setShoppingLists(lists);
-    return lists;
-  }, [currentUser]);
+  // A used-up batch (0 packages) is hidden at once and deleted later, online, by a
+  // transaction that re-checks it is still empty and untouched for a minute (an
+  // Undo, a +1 or a hand-off revives it instead). Needs shopping.delete; without
+  // it the empty batch just stays hidden.
+  useEffect(() => {
+    if (!householdId || !canDelete) return;
+    const timers = batches
+      .filter((batch) => batch.packages <= 0)
+      .map((batch) => {
+        const idleFor = batch.updatedAtMs === null ? 0 : Date.now() - batch.updatedAtMs;
+        const wait = Math.max(0, EMPTY_BATCH_GRACE_MS - idleFor) + 1000;
+        return window.setTimeout(() => {
+          if (isBrowserOffline()) return;
+          void deleteEmptyBatchIfIdle(householdId, batch.id, timeZone).catch(() => undefined);
+        }, wait);
+      });
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [batches, householdId, canDelete, timeZone]);
 
   // Product photos for tiles come from the household's barcode library (matched by name).
   const fetchLibrary = useCallback(async () => {
-    if (!currentUser?.householdId) return;
+    if (!householdId) return;
     try {
-      const snapshot = await getDocsOfflineAware(query(collection(db, 'households', currentUser.householdId, 'barcode-library')));
+      const snapshot = await getDocsOfflineAware(query(collection(db, 'households', householdId, 'barcode-library')));
       setLibrary(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BarcodeLibraryItem)));
     } catch {
       // Photos are decoration; tiles fall back to emoji.
     }
-  }, [currentUser]);
+  }, [householdId]);
 
-  // Shopping lists are read on demand (when an item is put on a list); the photo
-  // library once per household.
+  // The photo library is read once per household.
   useEffect(() => {
-    if (currentUser?.householdId) fetchLibrary();
-  }, [currentUser, fetchLibrary]);
+    if (householdId) fetchLibrary();
+  }, [householdId, fetchLibrary]);
 
-  const photos = useMemo(() => Object.fromEntries(items.map(item => [item.id, productPhotoForName(item.name, library)])), [items, library]);
+  const photos = useMemo(() => Object.fromEntries(products.map(product => [product.key, productPhotoForName(product.name, library)])), [products, library]);
 
   // Stable, so the recipe dialog does not regenerate when the lifted tiles change.
-  const itemsRef = useRef(items);
+  const productsRef = useRef(products);
   useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
+    productsRef.current = products;
+  }, [products]);
   const viewRef = useRef(view);
   useEffect(() => {
     viewRef.current = view;
@@ -835,7 +804,7 @@ export function PantryInventoryClient() {
   // H08: the used tiles lift first (the dialog steps aside while they do), then
   // the recipe card flips in. Returns how many lifted tiles are on screen.
   const handleRecipe = useCallback((recipe: GenerateRecipeOutput | null) => {
-    const ids = recipe ? matchRecipeIngredients(recipe.ingredients.used, itemsRef.current) : [];
+    const ids = recipe ? matchRecipeIngredients(recipe.ingredients.used, productsRef.current.map((product) => ({ id: product.key, name: product.name }))) : [];
     setLiftedIds(new Set(ids));
     if (ids.length === 0 || viewRef.current !== 'shelves') return 0;
     requestAnimationFrame(() => {
@@ -844,57 +813,47 @@ export function PantryInventoryClient() {
     return ids.length;
   }, []);
 
-  const handleAddToSpecificList = useCallback(async (listId: string, itemName: string, quantity: number) => {
-    const householdId = currentUser?.householdId;
+  /**
+   * SH-6 / SH-29b: puts a product on the default Grocery list through the
+   * Shopping list's merge path, so an item already needed there gets one more
+   * instead of a duplicate.
+   */
+  const putOnList = useCallback(async (name: string) => {
     if (!householdId) return;
-
     try {
-        const listItemsCollectionRef = collection(db, 'households', householdId, 'shopping-lists', listId, 'items');
-        const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
-
-        const categoriesDoc = await getDocOfflineAware(categoriesDocRef).catch(() => null);
-        const categories = (categoriesDoc?.exists() ? normalizeStoredCategories(categoriesDoc.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
-
-        const categoryResult = await resolveShoppingCategory({
-          itemName,
-          categories,
-          selectedCategory: isBrowserOffline() ? 'Other' : undefined,
-          categorize: async categorizeInput => unwrapAiActionResult(await categorizeGroceryItem(
-            categorizeInput,
-            await getAiActionContext(householdId)
-          )),
-        });
-
-        const { itemId, data } = buildShoppingListItem({ name: itemName, quantity, category: categoryResult.category });
-        const saved = await awaitWriteUnlessOffline(
-          setDoc(doc(listItemsCollectionRef, itemId), data),
-          (error) => toastError(error, `Could not sync ${itemName}`),
-        );
-        toast({ title: saved === 'queued' ? 'Saved offline' : 'Added to the list', description: `${itemName} is on your shopping list.` });
-        if (categoryResult.usedFallback && !isBrowserOffline()) {
-          toast({ title: 'Item saved to Other', description: 'Automatic categorization was unavailable. You can update the category later.' });
-        }
+      const result = await addToDefaultGroceryList(householdId, name, (error) => toastError(error, `Could not sync ${name}`));
+      const where = result.listName;
+      toast({
+        title: result.outcome === 'queued' ? 'Saved offline' : 'On the list',
+        description: result.outcome === 'merged'
+          ? `${name} was already on ${where}; it now needs one more.`
+          : result.usedFallback
+            ? `${name} is on ${where}, under Other (automatic sorting was unavailable).`
+            : `${name} is on ${where}.`,
+      });
     } catch (error) {
-        toastError(error, 'Could not add to the shopping list');
+      toastError(error, 'Could not add to the shopping list');
     }
-  }, [currentUser, toast, toastError]);
+  }, [householdId, toast, toastError]);
 
   const handleSaveItem = async (data: PantryItemFormValues, id?: string): Promise<boolean> => {
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection) return false;
-
-    const itemData = {
-      ...data,
-      name: data.name.trim(),
-      expiryDate: data.expiryDate ? data.expiryDate.toISOString() : null,
-    };
-
-    const itemId = id || slugify(data.name);
-
+    if (!householdId || !uid) return false;
+    const input = formToBatchInput(data);
+    const fields = pantryBatchFields(input);
+    if (!id && fields.packages === 0) {
+      toast({ variant: 'destructive', title: 'Nothing to add', description: 'Add at least one package.' });
+      return false;
+    }
+    // Adding stock that matches a batch exactly (name, shelf, size, unit, expiry) adds to it.
+    const mergeInto = id ? undefined : findPantryMergeTarget(batches, fields);
     try {
-      const itemRef = doc(pantryCollection, itemId);
-      await setDoc(itemRef, itemData, { merge: true });
-      toast({ title: 'Item Saved', description: `${itemData.name} has been saved to your inventory.` });
+      const saved = await saveBatch(householdId, input, uid, { editId: id, mergeInto }, (error) => toastError(error, `Could not sync ${fields.name}`));
+      toast({
+        title: saved === 'queued' ? 'Saved offline' : 'Item Saved',
+        description: mergeInto
+          ? `${pluralize(fields.packages, 'package')} added to ${fields.name}.`
+          : `${fields.name} has been saved to your inventory.`,
+      });
       return true;
     } catch (error) {
       toastError(error, 'Could not save the item');
@@ -902,26 +861,89 @@ export function PantryInventoryClient() {
     }
   };
 
-  const moveItem = async (item: PantryItem, location: PantryItemLocation) => {
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection || item.location === location) return;
+  const moveItem = async (product: PantryProduct, location: PantryItemLocation) => {
+    if (!householdId || !uid || product.location === location) return;
     // The listener moves the tile at once; a rejected write moves it back.
+    const onError = (error: unknown) => toastError(error, `Could not move ${product.name}`);
     try {
-      await awaitWriteUnlessOffline(updateDoc(doc(pantryCollection, item.id), { location }), (error) => {
-        toastError(error, `Could not move ${item.name}`);
-      });
+      await moveBatches(householdId, product.batches, location, uid, onError);
     } catch (error) {
-      toastError(error, `Could not move ${item.name}`);
+      onError(error);
     }
   };
 
-  const handleDeleteItem = async () => {
-    if (!itemToDelete) return;
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection) return;
-
+  // Undo (10 s, SH-29c) adds back exactly the packages the tap removed, as
+  // increment(+n): after the tap every batch is in the v2 shape.
+  const undoChanges = useCallback(async (name: string, changes: PackageChange[], token: number) => {
+    if (!householdId || !uid) return;
+    setAskAdd((current) => (current?.token === token ? null : current));
+    const onError = (error: unknown) => toastError(error, `Could not undo ${name}`);
     try {
-      await deleteDoc(doc(pantryCollection, itemToDelete.id));
+      await Promise.all(changes.map(({ batch, delta }) => changePackages(householdId, { ...batch, legacy: false }, -delta, uid, onError)));
+    } catch (error) {
+      onError(error);
+    }
+  }, [householdId, uid, toastError]);
+
+  const applyChanges = async (name: string, changes: PackageChange[], reachedZero: boolean, title: string, description: string) => {
+    if (!householdId || !uid || changes.length === 0) return;
+    const onError = (error: unknown) => toastError(error, `Could not update ${name}`);
+    try {
+      await Promise.all(changes.map(({ batch, delta }) => changePackages(householdId, batch, delta, uid, onError)));
+    } catch (error) {
+      onError(error);
+      return;
+    }
+    const token = ++askTokenRef.current;
+    const handle = toast({
+      title,
+      description,
+      duration: USED_UP_UNDO_MS,
+      action: (
+        <ToastAction altText={`Undo: ${title}`} onClick={() => { handle.dismiss(); void undoChanges(name, changes, token); }}>
+          Undo
+        </ToastAction>
+      ),
+    });
+    if (reachedZero) setAskAdd({ name, token });
+  };
+
+  // SH-22a / SH-29a: one package from the soonest-expiring batch, never 1 g of a measured amount.
+  const takeOne = (product: PantryProduct) => {
+    const outcome = usedUpOutcome(product);
+    if (!outcome) return;
+    void applyChanges(
+      product.name,
+      [{ batch: outcome.batch, delta: -1 }],
+      outcome.askAddToList,
+      `Used one ${product.name}`,
+      outcome.remaining === 0 ? 'That was the last one.' : `${pluralize(outcome.remaining, 'package')} left.`,
+    );
+  };
+
+  // SH-29: "Out of this" uses every package up, then asks "Add to list?".
+  const outOfThis = (product: PantryProduct) => {
+    void applyChanges(
+      product.name,
+      product.batches.filter((batch) => batch.packages > 0).map((batch) => ({ batch, delta: -batch.packages })),
+      true,
+      `Out of ${product.name}`,
+      'Marked as used up.',
+    );
+  };
+
+  // SH-22b's counterpart: one more package of the soonest batch.
+  const addOne = (product: PantryProduct) => {
+    const batch = product.batches[0];
+    if (!householdId || !uid || !batch) return;
+    const onError = (error: unknown) => toastError(error, `Could not update ${product.name}`);
+    changePackages(householdId, batch, 1, uid, onError).catch(onError);
+  };
+
+  const handleDeleteItem = async () => {
+    if (!itemToDelete || !householdId) return;
+    try {
+      await deleteBatches(householdId, itemToDelete.ids);
       toast({ title: "Item Deleted", description: `${itemToDelete.name} removed from pantry.` });
       setItemToDelete(null);
     } catch (error) {
@@ -930,16 +952,9 @@ export function PantryInventoryClient() {
   };
 
   const handleBulkDelete = async () => {
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection || selectedItems.length === 0) return;
-
-    const batch = writeBatch(db);
-    selectedItems.forEach(id => {
-        batch.delete(doc(pantryCollection, id));
-    });
-
+    if (!householdId || selectedItems.length === 0) return;
     try {
-        await batch.commit();
+        await deleteBatches(householdId, selectedItems);
         toast({ title: 'Items Deleted', description: `${pluralize(selectedItems.length, 'item')} removed.` });
         setSelectedItems([]);
     } catch (error) {
@@ -949,44 +964,21 @@ export function PantryInventoryClient() {
     }
   };
 
-  // Opens the list picker for a pantry item (Grocery lists; creates "Groceries" if there is none).
-  const offerAddToList = async (itemName: string) => {
-    if (!currentUser?.householdId) return;
-    const allLists = await fetchShoppingLists().catch(() => undefined) ?? [];
-    const groceryLists = allLists.filter(list => list.type === 'Grocery');
-
-    if (groceryLists.length === 0) {
-      try {
-        const listsCollectionRef = collection(db, 'households', currentUser.householdId, 'shopping-lists');
-        const newListId = slugify('Groceries');
-        await setDoc(doc(listsCollectionRef, newListId), { name: 'Groceries', icon: 'ShoppingCart', type: 'Grocery', description: '' });
-        await handleAddToSpecificList(newListId, itemName, 1);
-      } catch (error) {
-        toastError(error, 'Could not create a Groceries list');
-      }
-    } else {
-      setItemNameToAddToList(itemName);
-      setIsAddToListDialogOpen(true);
-    }
-  };
-
   const handleDeleteAndAddToList = async () => {
-    if (!itemToDelete || !currentUser?.householdId) return;
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection) return;
+    if (!itemToDelete || !householdId) return;
     const originalItemName = itemToDelete.name;
     try {
-      await deleteDoc(doc(pantryCollection, itemToDelete.id));
+      await deleteBatches(householdId, itemToDelete.ids);
     } catch (error) {
       toastError(error, 'Could not delete the item');
       return;
     }
     setItemToDelete(null);
-    await offerAddToList(originalItemName);
+    await putOnList(originalItemName);
   };
 
-  const openEditDialog = (item: PantryItem) => {
-    setItemToEdit(item);
+  const openEditDialog = (batch: PantryBatch) => {
+    setItemToEdit(batch);
     setIsItemDialogOpen(true);
   };
 
@@ -995,8 +987,14 @@ export function PantryInventoryClient() {
     setIsItemDialogOpen(true);
   };
 
+  const locations: PantryItemLocation[] = ['Pantry', 'Fridge', 'Freezer'];
+  const groupedItems = locations.reduce((acc, loc) => {
+    acc[loc] = visibleBatches.filter(item => item.location === loc);
+    return acc;
+  }, {} as Record<PantryItemLocation, PantryBatch[]>);
+
   const handleSelectAll = (location: PantryItemLocation, isChecked: boolean | 'indeterminate') => {
-    const itemIdsInLocation = items.filter(item => item.location === location).map(item => item.id);
+    const itemIdsInLocation = groupedItems[location].map(item => item.id);
     if (isChecked) {
         setSelectedItems(prev => [...new Set([...prev, ...itemIdsInLocation])]);
     } else {
@@ -1014,13 +1012,9 @@ export function PantryInventoryClient() {
     });
   };
 
-  const locations: PantryItemLocation[] = ['Pantry', 'Fridge', 'Freezer'];
-  const groupedItems = locations.reduce((acc, loc) => {
-    acc[loc] = items.filter(item => item.location === loc);
-    return acc;
-  }, {} as Record<PantryItemLocation, PantryItem[]>);
-  const expiringSoon = items.filter(item => expiryState(item.expiryDate) === 'soon').length;
-  const expired = items.filter(item => expiryState(item.expiryDate) === 'expired').length;
+  const productState = (product: PantryProduct) => expiryStateForDays(daysUntilDay(product.nextExpiry, today, timeZone));
+  const expiringSoon = products.filter(product => productState(product) === 'soon').length;
+  const expired = products.filter(product => productState(product) === 'expired').length;
 
   if (loading) {
     return (
@@ -1032,10 +1026,9 @@ export function PantryInventoryClient() {
     );
   }
 
-  const formatExpiry = (item: PantryItem) => {
-    if (!item.expiryDate) return 'N/A';
-    const date = parseISO(item.expiryDate);
-    return Number.isNaN(date.getTime()) ? 'N/A' : format(date, 'PPP');
+  const formatExpiry = (item: PantryBatch) => {
+    const date = pickerDateForDay(item.expiryDate);
+    return date ? format(date, 'PPP') : 'N/A';
   };
 
   return (
@@ -1046,24 +1039,32 @@ export function PantryInventoryClient() {
           onOpenChange={handleItemDialogClose}
           onSave={handleSaveItem}
           itemToEdit={itemToEdit}
-        />
-      )}
-       {itemNameToAddToList && (
-        <AddToListDialog
-          isOpen={isAddToListDialogOpen}
-          onOpenChange={setIsAddToListDialogOpen}
-          onItemAdd={handleAddToSpecificList}
-          itemName={itemNameToAddToList}
-          shoppingLists={shoppingLists.filter(list => list.type === 'Grocery')}
+          timeZone={timeZone}
         />
       )}
       <RecipeGeneratorDialog
         isOpen={isRecipeGenOpen}
         onOpenChange={setIsRecipeGenOpen}
-        pantryItems={items}
-        householdId={currentUser?.householdId || ''}
+        recipeItems={recipeItems}
+        householdId={householdId || ''}
         onRecipe={handleRecipe}
       />
+      <AlertDialog open={!!askAdd} onOpenChange={(open) => !open && setAskAdd(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Add {askAdd?.name} to the list?</AlertDialogTitle>
+            <AlertDialogDescription>
+              That was the last of it. Add it to your Grocery list?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Not now</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { const name = askAdd?.name; setAskAdd(null); if (name) void putOnList(name); }}>
+              Add
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={!!itemToDelete} onOpenChange={(open) => !open && setItemToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1149,7 +1150,8 @@ export function PantryInventoryClient() {
                     <ListIcon className="mr-1.5 h-4 w-4" aria-hidden /> List
                   </Button>
                 </div>
-                <Button className="min-w-0 px-2 text-xs sm:px-4 sm:text-sm" variant="outline" onClick={() => setIsRecipeGenOpen(true)} disabled={items.length === 0}>
+                {/* The recipe server needs at least two usable items (SH-10, SH-27e). */}
+                <Button className="min-w-0 px-2 text-xs sm:px-4 sm:text-sm" variant="outline" onClick={() => setIsRecipeGenOpen(true)} disabled={recipeItems.length < 2}>
                     <Sparkles className="mr-1 h-4 w-4 shrink-0 sm:mr-2" aria-hidden /> Generate Recipe
                 </Button>
                 {canEdit && (
@@ -1160,7 +1162,7 @@ export function PantryInventoryClient() {
             </div>
         </CardHeader>
         <CardContent className="min-w-0 px-3 sm:px-6">
-          {items.length === 0 ? (
+          {products.length === 0 ? (
             <EmptyState
               kind="generic"
               title="The shelves are empty"
@@ -1170,15 +1172,20 @@ export function PantryInventoryClient() {
             />
           ) : view === 'shelves' ? (
             <PantryShelves
-              items={items}
+              items={products}
               photos={photos}
               liftedIds={liftedIds}
+              today={today}
+              timeZone={timeZone}
               canEdit={canEdit}
               canDelete={canDelete}
               onEdit={openEditDialog}
-              onDelete={setItemToDelete}
-              onMove={(item, location) => void moveItem(item, location)}
-              onAddToList={(item) => void offerAddToList(item.name)}
+              onDelete={(product) => setItemToDelete({ name: product.name, ids: product.batches.map((batch) => batch.id) })}
+              onMove={(product, location) => void moveItem(product, location)}
+              onAddToList={(product) => void putOnList(product.name)}
+              onUseOne={takeOne}
+              onAddOne={addOne}
+              onOutOfThis={outOfThis}
             />
           ) : (
             <Accordion type="multiple" defaultValue={['Pantry', 'Fridge', 'Freezer']} className="w-full space-y-2">
@@ -1207,7 +1214,7 @@ export function PantryInventoryClient() {
                                             )}
                                             <div className="min-w-0 flex-1">
                                                 <p className="break-words text-sm font-medium">{item.name}</p>
-                                                <p className="mt-1 text-xs text-muted-foreground">{item.quantity} {item.unit}</p>
+                                                <p className="mt-1 text-xs text-muted-foreground">{batchAmountLabel(item)}</p>
                                                 <p className="text-xs text-muted-foreground">Expires: {formatExpiry(item)}</p>
                                             </div>
                                             <div className="flex shrink-0 items-center">
@@ -1217,7 +1224,7 @@ export function PantryInventoryClient() {
                                                   </Button>
                                                 )}
                                                 {canDelete && (
-                                                  <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => setItemToDelete(item)}>
+                                                  <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => setItemToDelete({ name: item.name, ids: [item.id] })}>
                                                       <Trash2 className="h-4 w-4" aria-hidden />
                                                   </Button>
                                                 )}
@@ -1261,7 +1268,7 @@ export function PantryInventoryClient() {
                                                       </TableCell>
                                                     )}
                                                     <TableCell className="font-medium p-2">{item.name}</TableCell>
-                                                    <TableCell className="text-center p-2">{item.quantity} {item.unit}</TableCell>
+                                                    <TableCell className="text-center p-2">{batchAmountLabel(item)}</TableCell>
                                                     <TableCell className="p-2">{formatExpiry(item)}</TableCell>
                                                     {(canEdit || canDelete) && (
                                                       <TableCell className="text-right p-2">
@@ -1271,7 +1278,7 @@ export function PantryInventoryClient() {
                                                             </Button>
                                                           )}
                                                           {canDelete && (
-                                                            <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => setItemToDelete(item)}>
+                                                            <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={() => setItemToDelete({ name: item.name, ids: [item.id] })}>
                                                                 <Trash2 className="h-4 w-4" aria-hidden />
                                                             </Button>
                                                           )}

@@ -31,7 +31,7 @@ Lookup is an authenticated server action but does not invoke OpenAI generation, 
 
 Lookup precedence is household library, Open Food Facts v3, then not found. A household hit prevents any public request. The v3 request asks only for product name, package quantity, normalized quantity/unit, and front image, uses a five-second timeout and HomeHub User-Agent, and treats community data as optional. Tests use emulator-only fixtures and never call production Open Food Facts.
 
-Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill pantry quantity/unit. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
+Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill the pantry unit and, for weights and volumes, the size of one package (one package), or for count units the package count. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
 
 ## Data Model and Persistence
 

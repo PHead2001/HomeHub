@@ -1,0 +1,149 @@
+/**
+ * Pantry v2 writes from the Inventory tab (audit 17.3, SH-22, SH-29, SH-6). The
+ * shapes come from the pure helpers in `./pantry-batches`; this file only adds
+ * Firestore increments, attribution (`addedByUid` on create, `updatedByUid` on
+ * every write) and server time (`updatedAt`).
+ *
+ * Package changes on a v2 batch are `increment()`s (they queue offline and two
+ * members' taps add up); the rules keep `packages` between 0 and 10000, so a
+ * second "used one" on a batch someone else just emptied is refused and rolled
+ * back by the listener. A batch still in the legacy shape has no `packages` to
+ * increment, so its first change writes absolute upgraded values from what is on
+ * screen (the migration, scripts/ops/migrate-pantry-v2.mjs, removes this case).
+ */
+import {
+  collection, deleteDoc, doc, getDocs, increment, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch,
+} from 'firebase/firestore';
+import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
+import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
+import { db } from '@/lib/firebase';
+import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { resolveShoppingCategory } from '@/lib/shopping-categorization';
+import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
+import type { PantryItemLocation, ShoppingList, ShoppingListItem } from '@/lib/types';
+import { slugify } from '@/lib/utils';
+import { findMergeTarget, itemNameKey } from './items';
+import { mergeIntoNeededItem } from './item-transactions';
+import {
+  isCountUnit, pantryBatchFields, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
+  type PantryBatch, type PantryBatchInput,
+} from './pantry-batches';
+
+const pantryCollection = (householdId: string) => collection(db, 'households', householdId, 'pantry-inventory');
+const touched = (uid: string) => ({ updatedByUid: uid, updatedAt: serverTimestamp() });
+
+/** The update that changes a batch's package count by `delta` (negative to use, positive to add or undo). */
+export function packageChange(batch: PantryBatch, delta: number, uid: string) {
+  if (batch.legacy) return { ...upgradeLegacyBatch(batch, delta), ...touched(uid) };
+  // Counted units dual-write quantity = packages; measured ones keep quantity = package size.
+  return isCountUnit(batch.unit)
+    ? { packages: increment(delta), quantity: increment(delta), ...touched(uid) }
+    : { packages: increment(delta), ...touched(uid) };
+}
+
+/** Changes one batch's packages; offline the write is queued. Late rejections go to `onLateError`. */
+export function changePackages(householdId: string, batch: PantryBatch, delta: number, uid: string, onLateError: (error: unknown) => void) {
+  return awaitWriteUnlessOffline(updateDoc(doc(pantryCollection(householdId), batch.id), packageChange(batch, delta, uid)), onLateError);
+}
+
+/**
+ * Saves the add/edit form. Editing writes the batch by id. Adding merges into an
+ * existing batch with the same merge key (`mergeInto`, found by the caller with
+ * `findPantryMergeTarget`) by adding packages, otherwise creates a new batch.
+ */
+export function saveBatch(
+  householdId: string,
+  input: PantryBatchInput,
+  uid: string,
+  { editId, mergeInto }: { editId?: string; mergeInto?: PantryBatch } = {},
+  onLateError: (error: unknown) => void = () => undefined,
+) {
+  const pantry = pantryCollection(householdId);
+  const fields = pantryBatchFields(input);
+  if (editId) return awaitWriteUnlessOffline(updateDoc(doc(pantry, editId), { ...fields, ...touched(uid) }), onLateError);
+  if (mergeInto) return changePackages(householdId, mergeInto, fields.packages, uid, onLateError);
+  return awaitWriteUnlessOffline(setDoc(doc(pantry, slugify(fields.name)), { ...fields, addedByUid: uid, ...touched(uid) }), onLateError);
+}
+
+/** Moves every batch of a product to another shelf in one batch write. */
+export function moveBatches(householdId: string, batches: readonly PantryBatch[], location: PantryItemLocation, uid: string, onLateError: (error: unknown) => void) {
+  const batch = writeBatch(db);
+  for (const entry of batches) batch.update(doc(pantryCollection(householdId), entry.id), { location, ...touched(uid) });
+  return awaitWriteUnlessOffline(batch.commit(), onLateError);
+}
+
+/** Deletes the given batch documents (one product, or the list view's selection). */
+export function deleteBatches(householdId: string, ids: readonly string[]) {
+  if (ids.length === 1) return deleteDoc(doc(pantryCollection(householdId), ids[0]));
+  const batch = writeBatch(db);
+  for (const id of ids) batch.delete(doc(pantryCollection(householdId), id));
+  return batch.commit();
+}
+
+/**
+ * Deletes a used-up batch, online only: a transaction re-reads it and deletes it
+ * only if it still has no packages and nobody touched it in the last minute (an
+ * Undo, a +1 or a hand-off revives it instead). Resolves whether it was deleted.
+ */
+export function deleteEmptyBatchIfIdle(householdId: string, id: string, timeZone?: string | null): Promise<boolean> {
+  const ref = doc(pantryCollection(householdId), id);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) return false;
+    const batch = readPantryBatch(id, snapshot.data(), timeZone);
+    if (!shouldDeleteEmptyBatch(batch, Date.now())) return false;
+    transaction.delete(ref);
+    return true;
+  });
+}
+
+/** The household's default Grocery list: one named "Groceries", else the first Grocery list by name. */
+export function defaultGroceryList<T extends Pick<ShoppingList, 'id' | 'name' | 'type'>>(lists: readonly T[]): T | undefined {
+  const grocery = lists.filter((list) => list.type === 'Grocery').sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return grocery.find((list) => itemNameKey(list.name) === 'groceries') ?? grocery[0];
+}
+
+export type AddToListResult = {
+  listName: string;
+  outcome: 'merged' | 'saved' | 'queued';
+  /** The new item went under Other because categorization was unavailable (online only). */
+  usedFallback: boolean;
+};
+
+/**
+ * Puts a pantry product on the default Grocery list (SH-6, SH-29b), creating a
+ * "Groceries" list when there is none. Online, a still-needed item with the same
+ * name is raised by one through the Shopping list's own merge path
+ * (`findMergeTarget` + `mergeIntoNeededItem`, which re-checks it is still needed),
+ * so "we're out of milk" never adds a second Milk. Otherwise (or offline, where
+ * nothing merges) a new needed item is created with the shared category resolution.
+ */
+export async function addToDefaultGroceryList(householdId: string, name: string, onLateError: (error: unknown) => void): Promise<AddToListResult> {
+  const listsRef = collection(db, 'households', householdId, 'shopping-lists');
+  const lists = (await getDocsOfflineAware(query(listsRef))).docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingList, 'id'>), id: entry.id }));
+  let list: Pick<ShoppingList, 'id' | 'name'> | undefined = defaultGroceryList(lists);
+  if (!list) {
+    const id = slugify('Groceries');
+    await awaitWriteUnlessOffline(setDoc(doc(listsRef, id), { name: 'Groceries', icon: 'ShoppingCart', type: 'Grocery', description: '' }), onLateError);
+    list = { id, name: 'Groceries' };
+  }
+  const itemsRef = collection(listsRef, list.id, 'items');
+  const offline = isBrowserOffline();
+  if (!offline) {
+    const needed = (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
+      ?.docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingListItem, 'id'>), id: entry.id })) ?? [];
+    const target = findMergeTarget(needed, name);
+    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), 1)) return { listName: list.name, outcome: 'merged', usedFallback: false };
+  }
+  const categoriesSnapshot = await getDocOfflineAware(doc(listsRef, list.id, 'config', 'categories')).catch(() => null);
+  const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
+  const { category, usedFallback } = await resolveShoppingCategory({
+    itemName: name,
+    categories,
+    selectedCategory: offline ? 'Other' : undefined,
+    categorize: async (input) => unwrapAiActionResult(await categorizeGroceryItem(input, await getAiActionContext(householdId))),
+  });
+  const { itemId, data } = buildShoppingListItem({ name, quantity: 1, category });
+  const outcome = await awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
+  return { listName: list.name, outcome, usedFallback: usedFallback && !offline };
+}

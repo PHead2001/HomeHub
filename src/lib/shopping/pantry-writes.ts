@@ -1,9 +1,10 @@
-import { collection, doc, getDocs, increment, runTransaction } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, doc, getDocs, increment, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
 import { slugify } from '@/lib/utils';
 import type { PantryItem } from '@/lib/types';
 import { confirmedHandoffChoices, pantryMergeStillValid, planPantryHandoff, type PantryHandoffChoice } from './pantry';
 import { isStillPurchased } from './items';
+import { pantryBatchFields, readPantryBatch, upgradeLegacyBatch } from './pantry-batches';
 
 export type PantryHandoffResult = {
   /** Pantry entries written (incremented or created). */
@@ -32,6 +33,13 @@ export type PantryHandoffResult = {
  * nothing. Without clear the items stay purchased on the list, so the handoff can
  * be repeated on purpose; it still skips items no longer purchased.
  *
+ * Pantry v2: a purchase is a batch counted in `items` (packages = quantity bought,
+ * no package size, no expiry). A v2 target grows by `increment()` on both
+ * `packages` and the dual-written `quantity`; a legacy target (no `packages` yet)
+ * is upgraded with absolute values computed from this transaction's own read.
+ * New batches carry `addedByUid`/`updatedByUid` (the signed-in member) and
+ * `updatedAt` (server time).
+ *
  * Merge candidates come from one pantry read made before the transaction (Firestore
  * web transactions cannot run queries); each is re-validated inside it. An entry
  * created by someone else after that read is not merged into, so a same-name entry
@@ -50,9 +58,15 @@ export async function addPurchasesToPantry(
   const readIds = [...new Set([...choices.map((choice) => choice.itemId), ...clearItemIds])];
   if (readIds.length === 0) return { written: 0, cleared: [], skipped: [] };
 
+  const uid = auth.currentUser?.uid;
+  const stamp = () => (uid ? { updatedByUid: uid, updatedAt: serverTimestamp() } : { updatedAt: serverTimestamp() });
   const create = (name: string, quantity: number, location: PantryItem['location']) => ({
     ref: doc(pantry, slugify(name)),
-    data: { name, quantity, unit: 'items', location, expiryDate: null },
+    data: {
+      ...pantryBatchFields({ name, location, unit: 'items', packages: quantity, packageSize: null, expiryDate: null }),
+      ...(uid ? { addedByUid: uid } : {}),
+      ...stamp(),
+    },
   });
 
   return runTransaction(db, async (transaction) => {
@@ -67,8 +81,12 @@ export async function addPurchasesToPantry(
     // --- Writes ---
     increments.forEach((plan, index) => {
       const read = targets[index];
-      if (pantryMergeStillValid(read.exists() ? read.data() : undefined, plan, plan.location)) {
-        transaction.update(read.ref, { quantity: increment(plan.add) });
+      const data = read.exists() ? read.data() : undefined;
+      if (pantryMergeStillValid(data, plan, plan.location)) {
+        const batch = readPantryBatch(read.id, data);
+        transaction.update(read.ref, batch.legacy
+          ? { ...upgradeLegacyBatch(batch, plan.add), ...stamp() }
+          : { packages: increment(plan.add), quantity: increment(plan.add), ...stamp() });
       } else {
         const fresh = create(plan.name, plan.add, plan.location);
         transaction.set(fresh.ref, fresh.data);
