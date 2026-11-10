@@ -96,3 +96,5 @@ Firestore rules require `shopping.view` to read, `shopping.edit` to create or up
 ## When This Document Must Be Updated
 
 Update this README when inventory fields or paths, recipe inputs/outputs, shopping handoffs, barcode intake, permission enforcement, AI configuration, or inventory failure/cleanup behavior changes.
+
+Pantry rules, stage S4a (ahead of the Pantry v2 client): pantry writes are shape-checked and accept both the legacy fields (`quantity`, ISO `expiryDate`) and the v2 fields (`nameKey`, `packages` 0 to 10000 checked after any increment, `packageSize` null or above 0 and up to 100000, a date-only `expiryDate`, `schemaVersion`). `location` is Pantry, Fridge or Freezer and `unit` one of the existing units. `addedByUid` is the writer on create and can never change; `updatedByUid` must be the writer and `updatedAt` the server time. Stage S4b (later) accepts only a date-only or null expiry.
