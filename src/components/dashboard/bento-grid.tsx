@@ -6,11 +6,13 @@
  * peek (H26) lists the details on hover or keyboard focus. Tiles tilt slightly
  * toward the cursor on fine pointers (visual layer only; the link never moves).
  * Weather (only when the member turned live weather on) and household streaks
- * (Chores' own stats) complete the grid. Sections the member
- * cannot view are left out; sections still loading show a fixed-size skeleton so
- * nothing shifts.
+ * (Chores' own stats) complete the grid. Which tiles appear, in what order and with
+ * what spans comes from one descriptor list (`dashboardTiles`, HP-26) built from
+ * permissions and the member's weather opt-in, so the loading skeleton and the real
+ * grid match and the last row is always full. Sections still loading show a
+ * skeleton in their own cell, so nothing shifts.
  */
-import type { PointerEvent, ReactNode } from 'react';
+import { useMemo, type PointerEvent, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Bell, CheckSquare, CloudSun, Flame, PawPrint, Plus, Refrigerator, ShoppingCart, Wrench, type LucideIcon } from 'lucide-react';
 import { NumberTicker } from '@/components/motion/number-ticker';
@@ -24,12 +26,14 @@ import { feedingFailureKey } from '@/lib/dashboard/assemble';
 import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
+import { dashboardTiles, type TileId } from '@/lib/dashboard/tiles';
 import { dailyLabel, temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
-import { useLiveWeatherState } from '@/lib/dashboard/use-weather';
+import { useLiveWeatherState, useWeatherPreference } from '@/lib/dashboard/use-weather';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
 import { PeekCard } from './peek-card';
+import { TileCell, TileSkeleton } from './tile-grid-skeleton';
 import styles from './dashboard.module.css';
 
 const fineHover = () => typeof window !== 'undefined'
@@ -85,13 +89,13 @@ function Tile({
   );
   if (!href) {
     return (
-      <div data-testid={testId} className={cn('relative min-w-0', className)}>
-        <div className="flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised">{body}</div>
+      <div data-testid={testId} className={cn('relative h-full min-w-0', className)}>
+        <div className={cn(styles.tileBody, 'flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>{body}</div>
       </div>
     );
   }
   return (
-    <PeekCard peek={peek ?? null} className={cn('relative min-w-0', className)}>
+    <PeekCard peek={peek ?? null} className={cn('relative h-full min-w-0', className)}>
       <Link
         href={href}
         data-testid={testId}
@@ -99,7 +103,7 @@ function Tile({
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
       >
-        <span className={cn(styles.tiltLayer, 'glow-card flex h-full min-h-[8.5rem] flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised transition-ui hover:border-primary/40')}>
+        <span className={cn(styles.tiltLayer, styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised transition-ui hover:border-primary/40')}>
           {body}
         </span>
       </Link>
@@ -140,13 +144,13 @@ function UnavailableTile({
   href, title, icon: Icon, testId, className, unauthorized = false, onRetry,
 }: { href: string; title: string; icon: LucideIcon; testId: string; className?: string; unauthorized?: boolean; onRetry?: () => void }) {
   return (
-    <div className={cn('relative min-w-0', className)}>
+    <div className={cn('relative h-full min-w-0', className)}>
       <Link
         href={href}
         data-testid={testId}
         data-unavailable="true"
         data-section-state={unauthorized ? 'unauthorized' : 'failed'}
-        className="flex h-full min-h-[8.5rem] min-w-0 flex-col gap-2 rounded-xl border border-dashed bg-card p-4 text-sm transition-ui"
+        className={cn(styles.tileBody, 'flex h-full min-w-0 flex-col gap-2 rounded-xl border border-dashed bg-card p-4 text-sm transition-ui')}
       >
         <span className="flex items-center gap-2 font-medium text-muted-foreground">
           <Icon aria-hidden className="h-4 w-4" />
@@ -168,17 +172,13 @@ function UnavailableTile({
   );
 }
 
-function TileSkeleton({ className }: { className?: string }) {
-  return <div aria-hidden className={cn('min-h-[8.5rem] animate-pulse rounded-xl border bg-muted/40', className)} />;
-}
-
 /** HP-2b: an empty track when nothing is scheduled; full (green) only when today's work is all done. */
 function ProgressRing({ done, total, settled }: { done: number; total: number; settled: boolean }) {
   const radius = 30;
   const circumference = 2 * Math.PI * radius;
   const ratio = total > 0 ? Math.min(1, done / total) : 0;
   return (
-    <svg viewBox="0 0 72 72" className="h-20 w-20 shrink-0 -rotate-90" aria-hidden>
+    <svg viewBox="0 0 72 72" className={cn(styles.ring, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
       <circle cx="36" cy="36" r={radius} fill="none" strokeWidth="7" className="stroke-muted" />
       <circle
         cx="36"
@@ -216,21 +216,28 @@ export function BentoGrid({
   onRetry?: () => void;
 }) {
   const { permissions } = useAuth();
-  const { report: weather, stale: weatherStale } = useLiveWeatherState();
-  const tiles: ReactNode[] = [];
+  const { report: weather, stale: weatherStale, failed: weatherFailed } = useLiveWeatherState();
+  const { preference: weatherPreference } = useWeatherPreference();
+  const weatherEnabled = weatherPreference.enabled && Boolean(weatherPreference.city);
+  const descriptors = useMemo(
+    () => dashboardTiles({ permissions, weatherEnabled, streaksHidden: facts.streaksHidden }),
+    [permissions, weatherEnabled, facts.streaksHidden],
+  );
+  // Each tile's content (or its unavailable state, or its skeleton) by id; the descriptor
+  // list alone decides which cells exist and in what order.
+  const tiles = new Map<TileId, ReactNode>();
   const hint = (...groups: string[]) => sectionHint(sections, groups, timeZone);
   const unauthorized = (...groups: string[]) => groups.some((group) => sections[group]?.status === 'unauthorized');
 
   if (permissions['chores.view']) {
     const chores = facts.chores;
-    tiles.push(chores ? (
+    tiles.set('chores', chores ? (
       <Tile
         key="chores"
         href="/chores"
         title="Today's chores"
         icon={CheckSquare}
         testId="dashboard-tile-chores"
-        className="sm:col-span-2 lg:row-span-2"
         hint={hint('chores')}
         quickAdd={permissions['chores.create'] ? { shortcut: 'new-chore', label: 'Add a chore' } : undefined}
         peek={chores.nextUp.length > 0 ? (
@@ -274,24 +281,23 @@ export function BentoGrid({
           )}
         </span>
         {chores.nextUp.length > 0 && (
-          <span className="hidden text-sm text-muted-foreground lg:block">
+          <span className={cn(styles.wideHide, 'hidden text-sm text-muted-foreground lg:block')}>
             Next: <span className="text-foreground">{chores.nextUp[0].task}</span> ({chores.nextUp[0].dueLabel})
           </span>
         )}
       </Tile>
-    ) : failed.has('chores') ? <UnavailableTile key="chores" href="/chores" title="Today's chores" icon={CheckSquare} testId="dashboard-tile-chores" className="sm:col-span-2 lg:row-span-2" unauthorized={unauthorized('chores')} onRetry={onRetry} /> : loading ? <TileSkeleton key="chores" className="sm:col-span-2 lg:row-span-2" /> : null);
+    ) : failed.has('chores') ? <UnavailableTile key="chores" href="/chores" title="Today's chores" icon={CheckSquare} testId="dashboard-tile-chores" unauthorized={unauthorized('chores')} onRetry={onRetry} /> : <TileSkeleton key="chores" />);
   }
 
   if (permissions['shopping.view']) {
     const shopping = facts.shopping;
-    tiles.push(shopping ? (
+    tiles.set('shopping', shopping ? (
       <Tile
         key="shopping"
         href="/shopping"
         title="Shopping"
         icon={ShoppingCart}
         testId="dashboard-tile-shopping"
-        className="sm:col-span-2"
         hint={hint('shopping')}
         quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
         peek={shopping.lists.length > 0 ? (
@@ -313,12 +319,12 @@ export function BentoGrid({
           <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>
         )}
       </Tile>
-    ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" className="sm:col-span-2" unauthorized={unauthorized('shopping')} onRetry={onRetry} /> : loading ? <TileSkeleton key="shopping" className="sm:col-span-2" /> : null);
+    ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" unauthorized={unauthorized('shopping')} onRetry={onRetry} /> : <TileSkeleton key="shopping" />);
   }
 
   if (permissions['pets.view']) {
     const pets = facts.pets;
-    tiles.push(pets ? (
+    tiles.set('pets', pets ? (
       <Tile
         key="pets"
         href="/pets"
@@ -345,13 +351,13 @@ export function BentoGrid({
           </ul>
         )}
       </Tile>
-    ) : failed.has('pets') ? <UnavailableTile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets" unauthorized={unauthorized('pets')} onRetry={onRetry} /> : loading ? <TileSkeleton key="pets" /> : null);
+    ) : failed.has('pets') ? <UnavailableTile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets" unauthorized={unauthorized('pets')} onRetry={onRetry} /> : <TileSkeleton key="pets" />);
   }
 
   if (permissions['maintenance.view']) {
     const maintenance = facts.maintenance;
     const next = maintenance?.next;
-    tiles.push(maintenance ? (
+    tiles.set('maintenance', maintenance ? (
       <Tile
         key="maintenance"
         href={next?.href ?? MAINTENANCE_REMINDERS_HREF}
@@ -386,12 +392,12 @@ export function BentoGrid({
           <span className="text-sm text-muted-foreground">Nothing scheduled.</span>
         )}
       </Tile>
-    ) : failed.has('maintenance') ? <UnavailableTile key="maintenance" href={MAINTENANCE_REMINDERS_HREF} title="Next maintenance" icon={Wrench} testId="dashboard-tile-maintenance" unauthorized={unauthorized('maintenance')} onRetry={onRetry} /> : loading ? <TileSkeleton key="maintenance" /> : null);
+    ) : failed.has('maintenance') ? <UnavailableTile key="maintenance" href={MAINTENANCE_REMINDERS_HREF} title="Next maintenance" icon={Wrench} testId="dashboard-tile-maintenance" unauthorized={unauthorized('maintenance')} onRetry={onRetry} /> : <TileSkeleton key="maintenance" />);
   }
 
   if (permissions['shopping.view']) {
     const pantry = facts.pantry;
-    tiles.push(pantry ? (
+    tiles.set('pantry', pantry ? (
       <Tile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" hint={hint('pantry')}>
         {pantry.expiringSoon === 0 && pantry.expired === 0 ? (
           // HP-22d: said once, not "0 this week" over "Nothing close to expiring".
@@ -407,25 +413,28 @@ export function BentoGrid({
           <span className="truncate text-sm text-muted-foreground">{pantry.nearest[0].name} {pantry.nearest[0].label}</span>
         )}
       </Tile>
-    ) : failed.has('pantry') ? <UnavailableTile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" unauthorized={unauthorized('pantry')} onRetry={onRetry} /> : loading ? <TileSkeleton key="pantry" /> : null);
+    ) : failed.has('pantry') ? <UnavailableTile key="pantry" href={PANTRY_HREF} title="Expiring soon" icon={Refrigerator} testId="dashboard-tile-pantry" unauthorized={unauthorized('pantry')} onRetry={onRetry} /> : <TileSkeleton key="pantry" />);
   }
 
   if (permissions['notifications.view'] && failed.has('notifications')) {
-    tiles.push(<UnavailableTile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" unauthorized={unauthorized('notifications')} onRetry={onRetry} />);
+    tiles.set('notifications', <UnavailableTile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" unauthorized={unauthorized('notifications')} onRetry={onRetry} />);
   } else if (permissions['notifications.view'] && facts.notifications) {
-    tiles.push(
+    tiles.set('notifications',
       <Tile key="notifications" href="/notifications" title="Notifications" icon={Bell} testId="dashboard-tile-notifications" hint={hint('notifications')}>
         <Big value={facts.notifications.unread} suffix="unread" />
         <span className="text-sm text-muted-foreground">{facts.notifications.unread === 0 ? 'All caught up.' : 'See what needs you.'}</span>
       </Tile>,
     );
+  } else if (permissions['notifications.view']) {
+    // HP-26c: the notifications tile has its own placeholder, so it never pops in late.
+    tiles.set('notifications', <TileSkeleton key="notifications" />);
   }
 
   // Hidden entirely (no names, ranking, peek or screen-reader sentence) when the
   // household turned the Chores leaderboard off.
   if (permissions['chores.view'] && !facts.streaksHidden) {
     const streaks = facts.streaks;
-    tiles.push(streaks ? (
+    tiles.set('streaks', streaks ? (
       <Tile
         key="streaks"
         href="/chores"
@@ -463,7 +472,7 @@ export function BentoGrid({
 
   if (weather) {
     const daily = dailyLabel(weather);
-    tiles.push(
+    tiles.set('weather',
       // HP-24: not a link (there is no forecast page to open); the house holds the settings.
       <Tile
         key="weather"
@@ -479,17 +488,28 @@ export function BentoGrid({
         {daily && <span aria-hidden className="truncate text-xs text-muted-foreground" data-testid="weather-tile-daily">{daily}</span>}
       </Tile>,
     );
+  } else if (weatherFailed) {
+    // No good report at all: said so (HP-24: not a link), never a skeleton that never ends.
+    tiles.set('weather', (
+      <Tile key="weather" title="Weather" icon={CloudSun} testId="dashboard-tile-weather">
+        <span className="text-sm text-muted-foreground" data-testid="weather-tile-unavailable">Unavailable right now.</span>
+      </Tile>
+    ));
+  } else {
+    tiles.set('weather', <TileSkeleton key="weather" />);
   }
 
-  const visible = tiles.filter(Boolean);
-
   return (
-    <section aria-labelledby="dashboard-grid-heading" className="mb-8">
-      <h2 id="dashboard-grid-heading" className="mb-3 font-headline text-xl font-semibold">Your Dashboard</h2>
-      {visible.length > 0 ? (
-        // Tiles (and their skeletons) enter in turn (H12 stagger budget).
-        <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-busy={loading || undefined} data-testid="dashboard-grid">
-          {visible}
+    <section aria-labelledby="dashboard-grid-heading" className={cn(styles.tilesSection, 'mb-8')}>
+      {/* HP-12: beside the house the tiles speak for themselves; the heading stays for screen readers. */}
+      <h2 id="dashboard-grid-heading" className={cn(styles.wideSrOnly, 'mb-3 font-headline text-xl font-semibold')}>Your Dashboard</h2>
+      {descriptors.length > 0 ? (
+        // Tiles (and their skeletons) enter in turn (H12 stagger budget). One cell per
+        // descriptor, the same cells the loading skeleton draws (HP-26b).
+        <Stagger className={styles.tileGrid} aria-busy={loading || undefined} data-testid="dashboard-grid">
+          {descriptors.map((tile) => (
+            <TileCell key={tile.id} tile={tile}>{tiles.get(tile.id) ?? <TileSkeleton />}</TileCell>
+          ))}
         </Stagger>
       ) : (
         <p className="text-sm text-muted-foreground">Nothing to show yet. Your household role decides which sections appear here.</p>
