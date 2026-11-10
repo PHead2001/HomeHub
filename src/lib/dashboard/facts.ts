@@ -31,6 +31,9 @@ export type RawDoc = Record<string, unknown> & { id: string };
 
 export type DashboardViewer = { uid: string; email: string };
 
+/** Open chores kept per room: the most the wide layout shows inline (HP-13a). */
+export const ROOM_CHORES = 5;
+
 export type RoomStatus = 'overdue' | 'due' | 'clear';
 
 export type RoomState = {
@@ -43,7 +46,8 @@ export type RoomState = {
   doneToday: number;
   status: RoomStatus;
   /**
-   * Up to three open chores for peeks and the room's label (HP-10): overdue first (most
+   * Up to five open chores (`ROOM_CHORES`) for peeks, the room's label and the inline
+   * touch lines (HP-10, HP-13a): overdue first (most
    * overdue first), then today's, then the soonest within the upcoming window; undated
    * chores last; anything beyond `UPCOMING_DAYS` is left out.
    */
@@ -307,7 +311,7 @@ export function computeChoreFacts(
     // on ties, so chores keep their document order.
     room.chores = (roomOrder.get(room.id) ?? [])
       .sort((a, b) => a.days - b.days)
-      .slice(0, 3)
+      .slice(0, ROOM_CHORES)
       .map((entry) => entry.chore);
   }
 

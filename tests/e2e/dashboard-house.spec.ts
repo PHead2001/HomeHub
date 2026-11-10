@@ -134,12 +134,16 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     try {
       await openDashboard(page);
       await expect(page.getByTestId('dashboard-tile-weather')).toHaveCount(0);
+      // HP-18a: the switch is a menuitemcheckbox in the house's "…" menu.
       const toggle = page.getByTestId('weather-toggle');
-      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await page.getByTestId('house-menu').click();
+      await expect(toggle).toHaveAttribute('role', 'menuitemcheckbox');
+      await expect(toggle).toHaveAttribute('aria-checked', 'false');
+      await expect(toggle).toHaveAccessibleName('Live weather');
       expect(requests).toHaveLength(0);
 
       await toggle.click();
-      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByLabel('City for weather (optional)')).toBeFocused();
       await page.getByLabel('City for weather (optional)').fill('Austin');
       await page.getByTestId('weather-city-form').getByRole('button', { name: 'Save' }).click();
 
@@ -160,7 +164,8 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
       await expect.poll(async () => (await userDoc.get()).get('preferences.weather')).toEqual({ enabled: true, city: 'Austin' });
       const before = requests.length;
       await openDashboard(page);
-      await expect(page.getByTestId('weather-toggle')).toHaveAttribute('aria-pressed', 'true');
+      await page.getByTestId('house-menu').click();
+      await expect(page.getByTestId('weather-toggle')).toHaveAttribute('aria-checked', 'true');
       await expect(page.getByTestId('dashboard-tile-weather')).toContainText('64°F');
       expect(requests.length).toBe(before);
 
@@ -180,7 +185,9 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     await userDoc.set({ preferences: { weather: { enabled: true, city: 'Atlantis' } } }, { merge: true });
     try {
       await openDashboard(page);
-      await expect(page.getByTestId('weather-toggle')).toHaveAttribute('aria-pressed', 'true');
+      await page.getByTestId('house-menu').click();
+      await expect(page.getByTestId('weather-toggle')).toHaveAttribute('aria-checked', 'true');
+      await page.keyboard.press('Escape');
       await expect(page.getByTestId('dashboard-tile-weather')).toHaveCount(0);
       await expect(page.getByTestId('weather-house')).toHaveCount(0);
       // No error toast and no error announcement (Next's route announcer is an empty alert).
