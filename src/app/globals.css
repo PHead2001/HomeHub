@@ -243,6 +243,12 @@
     height: max(100%, var(--target-min));
     transform: translate(-50%, -50%);
   }
+  /* Tightly packed grids (calendar days) size each cell to the target instead:
+     an overflowing hit area there would overlap the neighbor and pick it. */
+  .hit-slop-off::after {
+    content: none;
+  }
+
 
   /* The one scoped transition for interactive UI (replaces `transition-all`). */
   .transition-ui {
