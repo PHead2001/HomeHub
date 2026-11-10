@@ -67,7 +67,7 @@ A Firestore create trigger resolves recipients, sends FCM, and removes invalid r
 
 `Notification`, `NotificationCategory`, `NotificationUserAction`, and `NotificationUserActionMap` define categories, source/deep-link fields, optional `stateKey`, targeting, UID-keyed `readBy`/`dismissedBy`, and optional resolution metadata. `expiresAt` defaults to seven days after `createdAt`; parsing supplies that fallback for older records.
 
-`audience` (list of strings) names who a notification is for: `[targetUserUid]` when it targets one member, `['*']` when it is household-wide. It is written at creation by every server-side producer (the web app builder starts writing it in the next release, once these rules are live), each through `notificationAudience` in `functions/src/shared/notification-audience.ts` (shared by the Functions code and the app, like `push-audience.ts`):
+`audience` (list of strings) names who a notification is for: `[targetUserUid]` when it targets one member, `['*']` when it is household-wide. It is written at creation by every producer, the web app builder included, each through `notificationAudience` in `functions/src/shared/notification-audience.ts` (shared by the Functions code and the app, like `push-audience.ts`):
 
 - the web app's `buildNotificationDocument` (chore assignment in the Chores page and quick add; pending-member reminder and ownership transfer in household management);
 - the upkeep function (`functions/src/reminders.ts`): maintenance and pet medication reminders are `['*']`, chore reminders `[uid]`. A refresh leaves the stored value alone and a reopen writes it again; both add it to a reminder written before the field existed;
