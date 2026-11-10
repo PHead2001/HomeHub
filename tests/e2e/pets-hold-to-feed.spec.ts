@@ -19,10 +19,13 @@ const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 
 async function clearPixelFeedings() {
   const logs = await pixelLogs.get();
   await Promise.all(logs.docs.map((entry) => entry.ref.delete()));
+  // The shared feed operation's state, so the next hold is not a "Feed again?".
+  await household.collection('pets').doc('pixel').collection('feeding-state').doc('current').delete();
 }
 
 async function openPets(page: Page) {
-  await page.clock.setFixedTime(fixedNow);
+  // Feedings carry the emulator's server time (PE-5): run the page at the real time.
+  await page.clock.setFixedTime(new Date());
   await page.goto('/pets');
   await expect(page.getByRole('heading', { name: 'Your Pets', exact: true })).toBeVisible();
   const card = page.getByTestId('pet-card-pixel');

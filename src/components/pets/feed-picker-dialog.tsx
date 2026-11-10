@@ -4,22 +4,56 @@ import * as React from 'react';
 import { ChevronLeft, Utensils } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { feedingPlan, formatPortion } from '@/lib/pets/care';
+import { feedingCountLabel, feedingHeadline, formatPortion } from '@/lib/pets/care';
 import type { PetProfile } from '@/lib/pets/types';
-import { usePetCare } from './pet-care-summary';
+import { usePetCare, type PetCare } from './pet-care-summary';
 import { FeedConfirmPanel, useQuickFeed } from './quick-feed-button';
+
+/** "Fed 12 min ago by Sam · 1 of 2 today", "Checking…" while loading, or "Last feeding unavailable" (PE-19). */
+function fedStatusLine(care: PetCare): string {
+  if (care.feedings.loading) return 'Checking last feeding…';
+  if (!care.status) return 'Last feeding unavailable';
+  const headline = feedingHeadline(care.status, care.now);
+  return care.status.last ? `${headline} · ${feedingCountLabel(care.status)}` : headline;
+}
 
 function ConfirmStep({ pet, householdId, onDone }: { pet: PetProfile; householdId: string; onDone: () => void }) {
   const care = usePetCare(pet, householdId);
-  const quick = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food });
+  const quick = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food, known: care.known });
   const titleId = React.useId();
-  return <FeedConfirmPanel petName={pet.name} quick={quick} titleId={titleId} onDone={onDone} />;
+  const lastFed = care.status?.last ? fedStatusLine(care) : null;
+  return <FeedConfirmPanel petName={pet.name} quick={quick} titleId={titleId} onDone={onDone} lastFed={lastFed} />;
+}
+
+/** One pet in the list, with its portion and fed status. */
+function PetRow({ pet, householdId, onChoose }: { pet: PetProfile; householdId: string; onChoose: () => void }) {
+  const care = usePetCare(pet, householdId);
+  const portion = formatPortion(care.plan.amount, care.plan.unit);
+  const status = fedStatusLine(care);
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      className="h-auto min-h-12 w-full justify-start py-2"
+      onClick={onChoose}
+      aria-label={`${pet.name}, ${portion}. ${status}`}
+    >
+      <Utensils aria-hidden className="mr-2 h-4 w-4 shrink-0" />
+      <span className="min-w-0 text-left">
+        <span className="block truncate">{pet.name}</span>
+        <span className="block truncate text-xs font-normal text-muted-foreground" data-testid={`feed-picker-status-${pet.id}`}>{status}</span>
+      </span>
+      <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">{portion}</span>
+    </Button>
+  );
 }
 
 /**
  * "Log feeding" from the home-screen shortcut (`/pets?feed=1`, H17): with one pet
- * it opens straight to the confirm step; with several it lists them first. Every
- * path ends in the same tap-plus-confirm step and writer as the Feed button.
+ * it opens straight to the confirm step; with several it lists them first, each
+ * with its fed status ("Fed 12 min ago by Sam · 1 of 2 today", PE-19). Every
+ * path ends in the same confirm step and shared feed operation as the Feed
+ * button, including its "Feed again?" check.
  */
 export function FeedPickerDialog({
   open,
@@ -58,19 +92,11 @@ export function FeedPickerDialog({
           </div>
         ) : (
           <ul className="space-y-2" aria-label="Pets">
-            {pets.map((pet) => {
-              const plan = feedingPlan(pet);
-              const portion = formatPortion(plan.amount, plan.unit);
-              return (
-                <li key={pet.id}>
-                  <Button type="button" variant="outline" className="w-full justify-start" onClick={() => setChosenId(pet.id)} aria-label={`${pet.name}, ${portion}`}>
-                    <Utensils aria-hidden className="mr-2 h-4 w-4" />
-                    <span className="truncate">{pet.name}</span>
-                    <span className="ml-auto pl-2 text-xs text-muted-foreground">{portion}</span>
-                  </Button>
-                </li>
-              );
-            })}
+            {pets.map((pet) => (
+              <li key={pet.id}>
+                <PetRow pet={pet} householdId={householdId} onChoose={() => setChosenId(pet.id)} />
+              </li>
+            ))}
           </ul>
         )}
       </DialogContent>

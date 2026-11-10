@@ -20,6 +20,22 @@ async function feed(scope: Locator | Page, name: string) {
   await scope.getByRole('button', { name }).click();
 }
 
+/** The shared feed operation's "Feed again?" (PE-23): answer it with Feed again. */
+async function feedAgain(page: Page, reason: string | RegExp) {
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toContainText(reason);
+  await dialog.getByRole('button', { name: 'Feed again' }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
+/**
+ * Feedings are stamped with the emulator's (real) server time (PE-5), so tests
+ * that log one run the browser at the real time instead of `fixedNow`.
+ */
+async function useLiveClock(page: Page) {
+  await page.clock.setFixedTime(new Date());
+}
+
 async function openPets(page: Page) {
   await page.clock.setFixedTime(fixedNow);
   await page.goto('/pets');
@@ -28,9 +44,11 @@ async function openPets(page: Page) {
 
 /** Removes anything these tests wrote, leaving the seeded pet data as it was. */
 async function restorePetsSeed() {
-  for (const petId of ['maple', 'pixel']) {
+  for (const petId of ['maple', 'pixel', TEST_PET]) {
     const logs = await household.collection('pets').doc(petId).collection('feeding-logs').get();
     await Promise.all(logs.docs.filter((entry) => entry.id !== SEEDED_FEEDING).map((entry) => entry.ref.delete()));
+    // The shared feed operation's per-pet state: without this, the next test's first feed would ask "Feed again?".
+    await household.collection('pets').doc(petId).collection('feeding-state').doc('current').delete();
   }
   await household.collection('pets').doc('pixel').collection('medication-logs').doc('flea-prevention')
     .update({ nextDueDate: FieldValue.delete() }).catch(() => undefined);
@@ -87,6 +105,10 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
 
     const pixel = page.getByTestId('pet-card-pixel');
     await expect(pixel).toContainText('No feedings logged yet');
+    // From here on feedings carry server time: run the page at the real time.
+    await useLiveClock(page);
+    await page.reload();
+    await expect(pixel).toContainText('No feedings logged yet');
     await feed(pixel, 'Feed Pixel, 1 can');
     await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('Fed just now by Alex');
@@ -94,11 +116,13 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
 
     await expect.poll(async () => {
       const logs = await household.collection('pets').doc('pixel').collection('feeding-logs').get();
-      return logs.docs.map((entry) => entry.data()).map(({ cups, foodAmountType, loggedByUid }) => ({ cups, foodAmountType, loggedByUid }));
-    }).toEqual([{ cups: 1, foodAmountType: 'Cans', loggedByUid: ownerUid }]);
+      return logs.docs.map((entry) => entry.data()).map(({ cups, foodAmountType, loggedByUid, repeat }) => ({ cups, foodAmountType, loggedByUid, repeat }));
+    }).toEqual([{ cups: 1, foodAmountType: 'Cans', loggedByUid: ownerUid, repeat: 'none' }]);
+    await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-state').doc('current').get()).data()?.countOnDay).toBe(1);
 
-    // The second feeding completes the day.
+    // The second feeding right after asks first (PE-23), then completes the day.
     await feed(pixel, 'Feed Pixel, 1 can');
+    await feedAgain(page, 'You fed Pixel just now.');
     // Radix also mirrors the toast into its own live region; target the visible title.
     await expect(page.getByText('Pixel is all fed for today', { exact: true })).toBeVisible();
     await expect(pixel).toContainText('All fed today');
@@ -112,7 +136,8 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await Promise.all(Array.from({ length: 25 }, (_, i) => logs.doc(`legacy-${i}`).set({
       date: new Date(Date.UTC(2026, 6, 1 + i, 8)).toISOString(), cups: 1, foodType: 'Wet', foodAmountType: 'Cans', comments: '', ampm: 'AM',
     })));
-    await openPets(page);
+    await useLiveClock(page);
+    await page.goto('/pets');
     const pixel = page.getByTestId('pet-card-pixel');
     await expect(pixel).toContainText('0 of 2 today');
     await feed(pixel, 'Feed Pixel, 1 can');
@@ -196,7 +221,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await pixelLogs.doc('e2e-wet-yesterday').set({
       date: new Date('2026-07-31T18:00:00.000Z'), cups: 1, foodType: 'Wet', foodAmountType: 'Cans', comments: '', ampm: 'PM',
     });
-    await page.clock.setFixedTime(fixedNow);
+    await useLiveClock(page);
     await page.goto('/pets?feed=1');
     const dialog = page.getByRole('dialog', { name: 'Log a feeding' });
     await expect(dialog).toBeVisible();
@@ -309,7 +334,9 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     await page.clock.setFixedTime(fixedNow);
     await page.goto('/pets/maple');
     await expect(page.getByRole('heading', { name: 'Maple', exact: true })).toBeVisible();
+    // Maple's seeded feeding is "just now" at fixedNow: the tap asks first.
     await feed(page, 'Feed Maple, 1.5 cups');
+    await feedAgain(page, 'Maple was fed just now.');
     await expect(page.getByText('by Alex').first()).toBeVisible();
     await expect(page.getByText('1.5 cups of dry food').first()).toBeVisible();
 
