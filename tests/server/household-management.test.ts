@@ -275,6 +275,15 @@ describe('approve and change role', () => {
     assert.equal(entry.targetEmail, pending.email);
     assert.equal(entry.targetName, pending.displayName);
     assert.deepEqual(entry.details, { role: 'member', previousRole: 'newuser' });
+    // Approval writes the protected contact document for people who joined before it existed.
+    const contact = (await memberRef(pending).collection('private').doc('contact').get()).data();
+    assert.deepEqual(contact, { email: pending.email, updatedAt: NOW.toISOString() });
+  });
+
+  test('a role change of an approved member leaves the contact document alone', async () => {
+    await memberRef(member).collection('private').doc('contact').set({ email: member.email, updatedAt: 'before' });
+    await changeMemberRole(admin, HOUSE, member.uid, 'guest', NOW);
+    assert.equal((await memberRef(member).collection('private').doc('contact').get()).data()?.updatedAt, 'before');
   });
 
   test('the owner promotes a member to admin and their overrides are reset', async () => {
@@ -442,8 +451,10 @@ describe('remove member', () => {
     await house().collection('chore-templates').doc('recurring').set({ task: 'Trash', assignedToEmail: guest.email, recurrence: { frequency: 'daily', assignedToEmail: guest.email } });
     await house().collection('chore-templates').doc('plain').set({ task: 'Sweep', assignedToEmail: guest.email });
 
+    await memberRef(guest).collection('private').doc('contact').set({ email: guest.email, updatedAt: 'x' });
     assert.deepEqual(await removeMember(admin, HOUSE, guest.uid, NOW), { denied: false });
     assert.equal((await memberRef(guest).get()).exists, false);
+    assert.equal((await memberRef(guest).collection('private').doc('contact').get()).exists, false);
     const data = (await house().get()).data();
     assert.ok(!data?.memberEmails.includes(guest.email));
     assert.ok(data?.memberEmails.includes(member.email));

@@ -101,6 +101,14 @@ describe('invite redemption', () => {
     assert.equal(member?.displayName, 'Jordan');
   });
 
+  test('joining writes the protected contact document with the verified email', async () => {
+    await invite('CONT-ACTX-XX');
+    await redeemInvite(newcomer, 'CONT-ACTX-XX', NOW);
+    const contact = (await adminDb.collection('households').doc(HOUSE).collection('members').doc(newcomer.uid)
+      .collection('private').doc('contact').get()).data();
+    assert.deepEqual(contact, { email: newcomer.email, updatedAt: NOW.toISOString() });
+  });
+
   test('a joiner whose token name is an email gets no public name', async () => {
     await invite('MAIL-NAME-XX');
     await redeemInvite({ ...second, displayName: second.email }, 'MAIL-NAME-XX', NOW);
@@ -182,8 +190,10 @@ describe('leaving and deleting', () => {
     await house.collection('chores').doc('c1').set({ task: 'Trash', assignedToEmail: guest.email, isCompleted: false });
     await house.collection('chores').doc('c2').set({ task: 'Done', assignedToEmail: guest.email, isCompleted: true });
     await house.collection('chore-templates').doc('t1').set({ task: 'Trash', assignedToEmail: guest.email, recurrence: { frequency: 'daily', assignedToEmail: guest.email } });
+    await house.collection('members').doc(guest.uid).collection('private').doc('contact').set({ email: guest.email, updatedAt: 'x' });
     await leaveHousehold(guest, HOUSE, NOW);
     assert.equal((await house.collection('members').doc(guest.uid).get()).exists, false);
+    assert.equal((await house.collection('members').doc(guest.uid).collection('private').doc('contact').get()).exists, false);
     assert.equal((await house.collection('chores').doc('c1').get()).data()?.assignedToEmail, '');
     assert.equal((await house.collection('chores').doc('c2').get()).data()?.assignedToEmail, guest.email);
     const template = (await house.collection('chore-templates').doc('t1').get()).data();
@@ -228,10 +238,16 @@ describe('leaving and deleting', () => {
     await house.collection('pets').doc('p1').collection('feeding-logs').doc('f1').set({ amount: 1 });
     await adminDb.collection('users').doc(owner.email).set({ email: owner.email, householdId: HOUSE, role: 'owner' });
     await invite('DELE-TEME-XX');
+    for (const person of [owner, guest]) {
+      await house.collection('members').doc(person.uid).collection('private').doc('contact').set({ email: person.email, updatedAt: 'x' });
+    }
     await rejects(deleteHousehold(admin, HOUSE, 'Join House'), /Only the household owner/);
     await rejects(deleteHousehold(owner, HOUSE, 'join house'), /exactly/);
     await deleteHousehold(owner, HOUSE, 'Join House');
     assert.equal((await house.get()).exists, false);
+    for (const person of [owner, guest]) {
+      assert.equal((await house.collection('members').doc(person.uid).collection('private').doc('contact').get()).exists, false);
+    }
     assert.equal((await house.collection('chores').get()).size, 0);
     assert.equal((await house.collection('pets').doc('p1').collection('feeding-logs').get()).size, 0);
     assert.equal((await adminDb.collection('inviteCodes').doc('DELE-TEME-XX').get()).exists, false);
