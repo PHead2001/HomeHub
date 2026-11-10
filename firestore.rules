@@ -788,7 +788,9 @@ service cloud.firestore {
           'name', 'nameKey', 'location', 'unit', 'packages', 'packageSize', 'quantity', 'expiryDate',
           'barcode', 'addedByUid', 'updatedByUid', 'updatedAt', 'schemaVersion'
         ]) &&
-        (!('name' in keys) || nonEmptyString(data.name, 500)) &&
+        // Names are at most 120 characters, the recipe flow's limit; older longer names stay
+        // editable on other fields because only written keys are checked.
+        (!('name' in keys) || nonEmptyString(data.name, 120)) &&
         (!('nameKey' in keys) || boundedString(data.nameKey, 500)) &&
         (!('location' in keys) || data.location in ['Pantry', 'Fridge', 'Freezer']) &&
         (!('unit' in keys) || data.unit in ['g', 'kg', 'oz', 'lbs', 'ml', 'L', 'fl oz', 'items', 'cans', 'bottles', 'pieces', 'slices']) &&

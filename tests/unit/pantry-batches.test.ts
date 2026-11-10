@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   addMonthsToDay,
+  clampPantryName,
+  PANTRY_NAME_MAX,
   batchAmountLabel,
   chooseUsedUpBatch,
   dayFromPicker,
@@ -393,5 +395,26 @@ describe('"Out of this" and its Undo commit together; late prompts stay off othe
     assert.match(client, /useOnTabDeactivate\(\(\) => \{[^}]*promptRequestRef\.current \+= 1;/);
     assert.match(client, /const request = promptRequestRef\.current;/);
     assert.match(client, /<AlertDialog open=\{tabActive && !!askAdd\}/);
+  });
+});
+
+describe('pantry names are at most 120 characters', () => {
+  test('clampPantryName collapses whitespace, keeps short names and cuts long ones to 120', () => {
+    assert.equal(clampPantryName('  Oat   milk '), 'Oat milk');
+    assert.equal(clampPantryName('n'.repeat(120)), 'n'.repeat(120));
+    assert.equal(clampPantryName('n'.repeat(500)).length, PANTRY_NAME_MAX);
+    assert.equal(PANTRY_NAME_MAX, 120);
+  });
+  test('a cut never leaves half of a surrogate pair or trailing space', () => {
+    const name = 'a'.repeat(119) + '🥛🥛';
+    const clamped = clampPantryName(name);
+    assert.ok(clamped.length <= 120);
+    assert.ok(!/[\uD800-\uDBFF]$/.test(clamped));
+    assert.equal(clampPantryName('a'.repeat(119) + ' bcd'), 'a'.repeat(119));
+  });
+  test('pantryBatchFields stores the clamped name and its key', () => {
+    const fields = pantryBatchFields({ name: 'Rice '.repeat(40), location: 'Pantry', unit: 'items', packages: 1, packageSize: null, expiryDate: null });
+    assert.ok(fields.name.length <= PANTRY_NAME_MAX);
+    assert.equal(fields.name, clampPantryName('Rice '.repeat(40)));
   });
 });

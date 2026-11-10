@@ -1749,6 +1749,8 @@ describe('content shapes: pantry (Pantry v2, stage S4a)', () => {
     await assertFails(setDoc(batch(member, 'x10'), v2(member, { expiryDate: `2026-11-20T${'0'.repeat(40)}` })));
     await assertFails(setDoc(batch(member, 'x11'), v2(member, { schemaVersion: 3 })));
     await assertFails(setDoc(batch(member, 'x12'), v2(member, { name: '' })));
+    await assertFails(setDoc(batch(member, 'x12b'), v2(member, { name: 'n'.repeat(121) })));
+    await assertSucceeds(setDoc(batch(member, 'x12c'), v2(member, { name: 'n'.repeat(120) })));
     await assertFails(setDoc(batch(member, 'x13'), v2(member, { quantity: -1 })));
     await assertFails(setDoc(batch(member, 'x14'), v2(member, { updatedAt: new Date('2020-01-01') })));
     await assertFails(setDoc(batch(member, 'x15'), { quantity: 1, unit: 'items', location: 'Pantry' }));

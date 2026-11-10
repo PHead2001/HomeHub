@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackages, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
@@ -86,7 +86,7 @@ const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 // Pantry v2 (17.3): how many packages, and for weights and volumes the size of one
 // package, so "used one" removes a package and never 1 g. Expiry is a date-only day.
 const pantryItemSchema = z.object({
-  name: z.string().trim().min(1, 'Item name is required.').max(500, 'Keep the name under 500 characters.'),
+  name: z.string().trim().min(1, 'Item name is required.').max(PANTRY_NAME_MAX, `Keep the name to ${PANTRY_NAME_MAX} characters.`),
   packages: z.coerce.number<number>().int('Use whole packages.').min(0, 'Cannot be negative.').max(MAX_PACKAGES, `At most ${MAX_PACKAGES}.`),
   unit: z.enum(allPantryUnits),
   packageSize: z.string().refine(

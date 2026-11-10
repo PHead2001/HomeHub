@@ -444,9 +444,25 @@ export type PantryBatchInput = {
   barcode?: string | null;
 };
 
+/** The longest pantry item name (the recipe flow accepts no more; the rules enforce it). */
+export const PANTRY_NAME_MAX = 120;
+
+/**
+ * A pantry name as stored: whitespace collapsed, trimmed, and cut to
+ * `PANTRY_NAME_MAX` UTF-16 units (never leaving half of a surrogate pair), so a
+ * longer shopping item name still saves when it moves to the pantry.
+ */
+export function clampPantryName(raw: string): string {
+  let name = raw.replace(/\s+/g, ' ').trim();
+  if (name.length <= PANTRY_NAME_MAX) return name;
+  name = name.slice(0, PANTRY_NAME_MAX);
+  if (/[\uD800-\uDBFF]$/.test(name)) name = name.slice(0, -1);
+  return name.trimEnd();
+}
+
 /** The v2 fields of a batch, with the dual-written legacy `quantity`. Attribution and time are added by the writer. */
 export function pantryBatchFields(input: PantryBatchInput) {
-  const name = input.name.replace(/\s+/g, ' ').trim();
+  const name = clampPantryName(input.name);
   const packages = clampPackages(Math.round(input.packages));
   const packageSize = isCountUnit(input.unit) ? null : validSize(input.packageSize);
   const expiryDate = input.expiryDate && isDayString(input.expiryDate) ? input.expiryDate : null;
