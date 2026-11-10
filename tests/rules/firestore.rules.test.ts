@@ -1342,6 +1342,14 @@ describe('content shapes: shopping', () => {
     await assertFails(updateDoc(item(users.member, 's2-own'), { addedByUid: deleteField() }));
     await assertFails(setDoc(item(users.member, 's2-own'), built()));
     await assertFails(updateDoc(item(users.member, 'legacy'), { addedByUid: users.member.uid }));
+    // Review finding on #121: Undo of a delete re-creates another member's item with its
+    // original attribution, recording the restorer; a restore cannot invent a member or
+    // be credited to someone else.
+    await assertSucceeds(setDoc(item(users.owner, 's2-restore'), built({ addedByUid: users.member.uid, restoredByUid: users.owner.uid })));
+    await assertFails(setDoc(item(users.owner, 's2-restore-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
+    await assertFails(setDoc(item(users.owner, 's2-restore-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid })));
+    await assertFails(setDoc(item(users.owner, 's2-restore-unmarked'), built({ addedByUid: users.member.uid })));
+    await assertFails(updateDoc(item(users.owner, 's2-restore'), { restoredByUid: users.member.uid }));
   });
 
   test('categorySource and package size are bounded', async () => {
