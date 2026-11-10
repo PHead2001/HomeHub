@@ -24,6 +24,7 @@ import { assignableRoles, householdPermissions } from '@/lib/permissions';
 import {
   PENDING_REMINDER_SOURCE_TYPE,
   householdIdFor,
+  membershipAvatarUrl,
   normalizeTimeZone,
   pendingReminderDue,
   pendingReminderStateKey,
@@ -135,11 +136,13 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     }
 
     const joinedAt = now.toISOString();
+    // A photo removed in Profile stays removed; see membershipAvatarUrl.
+    const avatarUrl = membershipAvatarUrl(profileSnap.exists ? profileSnap.data() : undefined, caller.avatarUrl);
     const member: HouseholdMember = {
       uid: caller.uid,
       email: caller.email,
       ...(caller.displayName ? { displayName: caller.displayName } : {}),
-      ...(caller.avatarUrl ? { avatarUrl: caller.avatarUrl } : {}),
+      ...(avatarUrl ? { avatarUrl } : {}),
       role: 'newuser',
       status: 'pending',
       inviteCode: code,
@@ -494,11 +497,7 @@ export const createHousehold = async (
     const iso = now.toISOString();
     // The name and photo the person chose in HomeHub; the token's are the fallback.
     const displayName = typeof profile.displayName === 'string' && profile.displayName ? profile.displayName : caller.displayName;
-    // A photo removed in Profile is saved as `avatarUrl: null`: that removal is kept.
-    // The token's photo is used only when the profile has no avatarUrl field at all.
-    const avatarUrl = 'avatarUrl' in profile
-      ? (typeof profile.avatarUrl === 'string' && profile.avatarUrl ? profile.avatarUrl : undefined)
-      : caller.avatarUrl;
+    const avatarUrl = membershipAvatarUrl(profile, caller.avatarUrl);
     const householdData: Omit<Household, 'id'> = {
       name,
       ownerEmail: caller.email,

@@ -71,3 +71,15 @@ export const pendingReminderDue = (lastReminderAt: unknown, now: Date): boolean 
  * write the same notification document instead of a duplicate.
  */
 export const pendingReminderStateKey = (now: Date): string => `pending|${now.toISOString().slice(0, 10)}`;
+
+/**
+ * The photo for a new membership. A photo removed in Profile is saved as
+ * `avatarUrl: null` and stays removed (as does ''); a non-empty string wins; only
+ * a profile with no avatarUrl field at all falls back to the ID token's picture.
+ */
+export const membershipAvatarUrl = (profile: Record<string, unknown> | undefined, tokenAvatarUrl?: string): string | undefined => {
+  if (profile && Object.prototype.hasOwnProperty.call(profile, 'avatarUrl')) {
+    return typeof profile.avatarUrl === 'string' && profile.avatarUrl ? profile.avatarUrl : undefined;
+  }
+  return tokenAvatarUrl || undefined;
+};

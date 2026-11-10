@@ -4,6 +4,7 @@ import {
   HOUSEHOLD_NAME_MAX,
   PENDING_REMINDER_INTERVAL_HOURS,
   householdIdFor,
+  membershipAvatarUrl,
   normalizeTimeZone,
   pendingReminderDue,
   pendingReminderStateKey,
@@ -102,5 +103,23 @@ describe('who may send the reminder', () => {
   test('pending people and missing records are refused', () => {
     assert.deepEqual(canRemindPendingMembers(member('newuser', {}, 'pending')), { ok: false, reason: 'not_member' });
     assert.deepEqual(canRemindPendingMembers(null), { ok: false, reason: 'not_member' });
+  });
+});
+
+describe('membership avatar', () => {
+  const token = 'https://example.test/google.png';
+  test('a photo removed in Profile (null or empty) stays removed', () => {
+    assert.equal(membershipAvatarUrl({ avatarUrl: null }, token), undefined);
+    assert.equal(membershipAvatarUrl({ avatarUrl: '' }, token), undefined);
+    assert.equal(membershipAvatarUrl({ avatarUrl: 42 }, token), undefined);
+  });
+  test('a chosen photo wins over the token', () => {
+    assert.equal(membershipAvatarUrl({ avatarUrl: 'https://example.test/me.png' }, token), 'https://example.test/me.png');
+  });
+  test('only a missing field or missing profile falls back to the token', () => {
+    assert.equal(membershipAvatarUrl({ displayName: 'Sam' }, token), token);
+    assert.equal(membershipAvatarUrl(undefined, token), token);
+    assert.equal(membershipAvatarUrl({}, undefined), undefined);
+    assert.equal(membershipAvatarUrl({}, ''), undefined);
   });
 });
