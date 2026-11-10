@@ -38,7 +38,7 @@ import { useLiveWeatherState, useWeatherPreference } from '@/lib/dashboard/use-w
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
-import { HouseholdChores, PetFedButton, useChoreDone } from './one-tap';
+import { HouseholdChores, HouseholdSummaryLine, PetFedButton, useChoreDone } from './one-tap';
 import { PeekCard } from './peek-card';
 import { TileCell, TileSkeleton } from './tile-grid-skeleton';
 import styles from './dashboard.module.css';
@@ -140,7 +140,7 @@ function Tile({
     return (
       <PeekCard peek={peek} className={cn('relative h-full min-w-0', className)}>
         <div data-testid={testId} className={cn(styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>
-          <Link href={href} data-testid={`${testId}-link`} className="flex min-w-0 flex-col gap-2 rounded-md">
+          <Link href={href} data-testid={`${testId}-link`} className={cn(styles.tileLink, 'flex min-w-0 flex-col gap-2 rounded-md')}>
             {body}
           </Link>
           {actions}
@@ -312,7 +312,7 @@ export function BentoGrid({
         inlineDetails={work.length > 0 ? [] : undefined}
         actions={work.length > 0 ? <HouseholdChores work={work} total={chores.todayWorkTotal ?? work.length} canComplete={Boolean(permissions['chores.complete'])} done={done} /> : undefined}
       >
-        <span className="flex flex-1 items-center gap-4">
+        <span className={cn(styles.choresHeadline, 'flex flex-1 items-center gap-4')}>
           <ProgressRing done={chores.todayDone} total={chores.todayTotal} settled={chores.overdueTotal === 0} />
           {chores.todayTotal === 0 ? (
             // HP-2a: 0 of 0 is an empty state, with the overdue count as the headline when there is one.
@@ -326,18 +326,21 @@ export function BentoGrid({
                 Nothing scheduled today
               </span>
               {chores.mineOpen > 0 && (
-                <span className="block text-sm text-muted-foreground"><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</span>
+                <span className={cn('block text-sm text-muted-foreground', work.length > 0 && styles.wideHide)}><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</span>
               )}
+              {work.length > 0 && <HouseholdSummaryLine work={work} />}
             </span>
           ) : (
             <span className="min-w-0">
               <span className="block font-headline text-2xl font-semibold tabular-nums">
                 <NumberTicker value={chores.todayDone} /> of <NumberTicker value={chores.todayTotal} /> done
               </span>
-              <span className="block text-sm text-muted-foreground">
+              {/* Beside the house the summary line below takes this line's place (HP-12d). */}
+              <span className={cn('block text-sm text-muted-foreground', work.length > 0 && styles.wideHide)}>
                 {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</>}
                 {chores.overdueTotal > 0 && <span className="text-warning">{` · ${chores.overdueTotal} overdue`}</span>}
               </span>
+              {work.length > 0 && <HouseholdSummaryLine work={work} />}
             </span>
           )}
         </span>
@@ -394,7 +397,7 @@ export function BentoGrid({
         actions={pets.pets.length > 0 ? (
           <ul className="space-y-1 text-sm">
             {pets.pets.slice(0, 3).map((pet) => (
-              <li key={pet.id} className="flex min-h-6 items-center justify-between gap-2">
+              <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
                 <span className="flex shrink-0 items-center gap-2">
                   <span className={cn('text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>

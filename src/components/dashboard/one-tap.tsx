@@ -189,26 +189,38 @@ function ActionButton({
 const TILE_ROWS = 3;
 
 /**
- * HP-32a + HP-33b: who has what today ("Sam: Dishes (overdue) · You: Trash (today)") and
- * the most urgent chores with their assignee, room and Done. Overdue work comes first and
- * folded missed instances are named, so nothing overdue or missed is hidden; the rest is
- * one link away.
+ * HP-32a: who has what today ("Sam: Dishes (overdue) · You: Trash (today)"), under the
+ * tile's headline inside its link. Beside the house it is one truncating line in place
+ * of "N open for you" (HP-12d: the wide layout fits one screen); its full text is the
+ * element's title. Overdue work comes first and folded missed instances are named.
+ */
+export function HouseholdSummaryLine({ work }: { work: ChoreEntry[] }) {
+  if (work.length === 0) return null;
+  const summary = householdSummary(work);
+  return (
+    <span className={cn(styles.choresSummary, 'block text-sm text-muted-foreground')} data-testid="household-summary" title={summary.text}>
+      {summary.parts.map((part, index) => (
+        <span key={part.key || 'unassigned'}>
+          {index > 0 && ' · '}
+          <span className={cn(part.overdue > 0 && 'text-warning')}>{summaryPhrase(part)}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * HP-33b: the most urgent chores with their assignee, room and Done, below the tile's
+ * link. Overdue work comes first and folded missed instances are named, so nothing
+ * overdue or missed is hidden; the rest is one link away ("+N more today", or beside the
+ * house the tile itself).
  */
 export function HouseholdChores({ work, total, canComplete, done }: { work: ChoreEntry[]; total: number; canComplete: boolean; done: ChoreDone }) {
   if (work.length === 0) return null;
-  const summary = householdSummary(work);
   const rows = work.slice(0, TILE_ROWS);
   const more = total - rows.length;
   return (
-    <div className="flex min-w-0 flex-col gap-2" data-testid="household-chores">
-      <p className="text-sm text-muted-foreground" data-testid="household-summary">
-        {summary.parts.map((part, index) => (
-          <span key={part.key || 'unassigned'}>
-            {index > 0 && ' · '}
-            <span className={cn(part.overdue > 0 && 'text-warning')}>{summaryPhrase(part)}</span>
-          </span>
-        ))}
-      </p>
+    <div className={cn(styles.choresWork, 'flex min-w-0 flex-col gap-2')} data-testid="household-chores">
       <ul className="flex flex-col gap-1.5" aria-label="Today's household chores">
         {rows.map((chore, index) => {
           const meta = [chore.mine ? 'You' : chore.assignee ?? (chore.assigneeKey ? 'Someone' : 'Unassigned'), chore.room, chore.dueLabel].filter(Boolean).join(' · ');
@@ -235,7 +247,7 @@ export function HouseholdChores({ work, total, canComplete, done }: { work: Chor
         })}
       </ul>
       {more > 0 && (
-        <Link href="/chores" className={cn(styles.hitSlop, 'self-start text-xs text-muted-foreground hover:text-foreground')} data-testid="household-chores-more">
+        <Link href="/chores" className={cn(styles.hitSlop, styles.wideHide, 'self-start text-xs text-muted-foreground hover:text-foreground')} data-testid="household-chores-more">
           +{more} more today
         </Link>
       )}

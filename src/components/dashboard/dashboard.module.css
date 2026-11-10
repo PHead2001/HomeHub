@@ -563,6 +563,21 @@
     width: 4rem;
     height: 4rem;
   }
+  /*
+   * HP-33b beside the house: the Chores tile's household work fits the budget the inline
+   * details had. The summary is one truncating line in place of "N open for you", only the
+   * first chore (with Done) shows, "+N more today" is the tile link itself, and the gaps
+   * are the compact tile's.
+   */
+  .tileGrid .tileLink,
+  .tileGrid .choresWork {
+    gap: 0.25rem;
+  }
+  .tileGrid .choresSummary {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   .tileGrid .wideHide,
   .page .wideHidden {
     display: none;
@@ -725,6 +740,17 @@
 @media (min-width: 1024px) and (orientation: landscape) and (max-height: 49.99rem) {
   .tileGrid .tileDetails {
     display: none;
+  }
+}
+/*
+ * HP-33b with HP-12d: the Chores tile's Done row (48 px on touch) replaces its inline
+ * detail row, so below 54rem, where at most one detail row fits, the ring shrinks to the
+ * height of the headline and summary beside it (3.25rem).
+ */
+@media (min-width: 1024px) and (orientation: landscape) and (max-height: 53.99rem) {
+  .tileGrid .choresHeadline .ring {
+    width: 3.25rem;
+    height: 3.25rem;
   }
 }
 
