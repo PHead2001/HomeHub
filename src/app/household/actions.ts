@@ -3,10 +3,12 @@
 import {
   MembershipError,
   changeMemberRole,
+  createHousehold,
   createInvite,
   deleteHousehold,
   leaveHousehold,
   redeemInvite,
+  remindPendingMembers,
   removeMember,
   renameHousehold,
   revokeAllInvites,
@@ -77,6 +79,18 @@ const manage = async <T>(idToken: string, run: (caller: VerifiedCaller) => Promi
   }
 };
 
+/**
+ * Creates a household owned by the caller (household, owner membership, profile
+ * pointer and `household.created` activity entry in one transaction).
+ */
+export async function createHouseholdAction(input: { idToken: string; name: string; timeZone?: string }): Promise<HouseholdActionResult<JoinResult>> {
+  return manage(input?.idToken, async caller => {
+    const result = await createHousehold(caller, { name: input?.name, timeZone: input?.timeZone });
+    // Plain JSON for the client boundary.
+    return JSON.parse(JSON.stringify(result)) as JoinResult;
+  });
+}
+
 export async function renameHouseholdAction(input: { idToken: string; householdId: string; name: string }): Promise<HouseholdActionResult<{ name: string }>> {
   return manage(input?.idToken, caller => renameHousehold(caller, input.householdId, input.name));
 }
@@ -91,6 +105,11 @@ export async function revokeInviteAction(input: { idToken: string; householdId: 
 
 export async function revokeAllInvitesAction(input: { idToken: string; householdId: string }): Promise<HouseholdActionResult<{ count: number }>> {
   return manage(input?.idToken, caller => revokeAllInvites(caller, input.householdId));
+}
+
+/** The daily reminder about pending people; returns how many were due. */
+export async function remindPendingMembersAction(input: { idToken: string; householdId: string }): Promise<HouseholdActionResult<{ count: number }>> {
+  return manage(input?.idToken, caller => remindPendingMembers(caller, input.householdId));
 }
 
 /** Approves a pending person or changes a member's role. */
