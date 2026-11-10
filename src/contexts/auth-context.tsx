@@ -29,7 +29,7 @@ import { pushSignOutGate, runPushSignOut } from '@/lib/push-tokens';
 import { hasPushSubscription } from '@/lib/service-worker';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { friendlyError } from '@/lib/friendly-error';
-import { deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
+import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction } from '@/app/household/actions';
 import type {
   Household,
   HouseholdMember,
@@ -92,28 +92,6 @@ interface AuthContextType {
 }
 
 export const AuthContext = createContext<AuthContextType | null>(null);
-
-const INVITE_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-const generateShortCode = (length: number) => {
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += INVITE_CODE_CHARS.charAt(Math.floor(Math.random() * INVITE_CODE_CHARS.length));
-  }
-  return result;
-};
-
-const slugifyHouseholdName = (name: string) => {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  return slug || 'household';
-};
-
-const generateHouseholdId = (name: string) => `${slugifyHouseholdName(name)}-${generateShortCode(4).toLowerCase()}`;
 
 /**
  * The Google ID-token claims Firebase Auth already returns at sign-in
@@ -577,7 +555,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [currentUser, toast]);
 
   const createHousehold = useCallback(async (name: string) => {
-    if (!currentUser?.email || !currentUser.uid) {
+    const firebaseUser = auth.currentUser;
+    if (!currentUser?.email || !currentUser.uid || !firebaseUser) {
         toast({ variant: 'destructive', title: 'Not Authenticated' });
         return;
     }
@@ -588,74 +567,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
     }
 
-    const { db, doc, collection, writeBatch } = await loadData();
-    const userDocRef = doc(db, 'users', currentUser.email);
-    
-    let createdHousehold: Household | null = null;
-    let createdMember: HouseholdMember | null = null;
-
     try {
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const newHouseholdId = generateHouseholdId(trimmedName);
-        const householdDocRef = doc(db, 'households', newHouseholdId);
-        const memberDocRef = doc(db, 'households', newHouseholdId, 'members', currentUser.uid);
-        const auditDocRef = doc(collection(db, 'households', newHouseholdId, 'auditLogs'));
-        const now = new Date().toISOString();
-        const newHouseholdData: Omit<Household, 'id'> = {
-          name: trimmedName,
-          ownerEmail: currentUser.email,
-          ownerUid: currentUser.uid,
-          memberEmails: [currentUser.email],
-          createdAt: now,
-          updatedAt: now,
-          // Reminders and recurring chores run on the server in this timezone.
-          timeZone: browserTimeZone(),
-        };
-        const ownerMember: HouseholdMember = {
-          uid: currentUser.uid,
-          email: currentUser.email,
-          displayName: currentUser.displayName,
-          avatarUrl: currentUser.avatarUrl,
-          role: 'owner',
-          status: 'active',
-          joinedAt: now,
-          approvedAt: now,
-          approvedByUid: currentUser.uid,
-        };
-        const batch = writeBatch(db);
-        batch.set(householdDocRef, newHouseholdData);
-        batch.set(memberDocRef, ownerMember);
-        batch.set(userDocRef, { householdId: newHouseholdId, role: 'owner', permissions: {} }, { merge: true });
-        batch.set(auditDocRef, {
-          actorUid: currentUser.uid,
-          actorEmail: currentUser.email,
-          actorName: currentUser.displayName,
-          action: 'household.created',
-          createdAt: now,
-          details: { householdName: trimmedName },
-        });
-
-        try {
-          await batch.commit();
-          createdHousehold = { id: newHouseholdId, ...newHouseholdData };
-          createdMember = ownerMember;
-          break;
-        } catch (error) {
-          if (attempt === 7) throw error;
-        }
+      // The server writes the household, the owner membership, the profile pointer
+      // and the activity entry in one transaction.
+      const idToken = await firebaseUser.getIdToken();
+      const result = await createHouseholdAction({ idToken, name: trimmedName, timeZone: browserTimeZone() });
+      if (!result.ok) {
+        toast({ variant: 'destructive', title: 'Creation Failed', description: result.message });
+        return;
       }
 
-      const createdHouseholdResult = createdHousehold;
-      const createdMemberResult = createdMember;
-      if (!createdHouseholdResult || !createdMemberResult) {
-        throw new Error('Could not reserve a unique household ID.');
-      }
+      const { household: createdHousehold, member: createdMember } = result.data;
+      setCurrentUser(prev => prev ? { ...prev, householdId: createdHousehold.id, role: 'owner', permissions: {} } : null);
+      setHousehold(createdHousehold);
+      setCurrentMember(createdMember);
 
-      setCurrentUser(prev => prev ? { ...prev, householdId: createdHouseholdResult.id, role: 'owner', permissions: {} } : null);
-      setHousehold(createdHouseholdResult);
-      setCurrentMember(createdMemberResult);
-
-      toast({ title: 'Household Created!', description: `Welcome to ${trimmedName}!` });
+      toast({ title: 'Household Created!', description: `Welcome to ${createdHousehold.name}!` });
     } catch (error) {
         console.error('Failed to create household', error);
         toast({

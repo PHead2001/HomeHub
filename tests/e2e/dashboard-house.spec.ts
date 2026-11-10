@@ -178,7 +178,7 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
     }
   });
 
-  test('H02: a weather failure hides the weather quietly', async ({ page }, testInfo) => {
+  test('H02: a weather failure keeps the effects off and says so only in the weather tile', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await page.route(/open-meteo\.com/, (route) => route.fulfill({ status: 503, body: 'down' }));
     const userDoc = firestore.collection('users').doc(ownerEmail);
@@ -188,8 +188,10 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
       await page.getByTestId('house-menu').click();
       await expect(page.getByTestId('weather-toggle')).toHaveAttribute('aria-checked', 'true');
       await page.keyboard.press('Escape');
-      await expect(page.getByTestId('dashboard-tile-weather')).toHaveCount(0);
+      // The tile says it is unavailable (HP-6a, no good report yet); the house and shell effects stay off.
+      await expect(page.getByTestId('weather-tile-unavailable')).toHaveText('Unavailable right now.');
       await expect(page.getByTestId('weather-house')).toHaveCount(0);
+      await expect(page.getByTestId('weather-shell')).toHaveCount(0);
       // No error toast and no error announcement (Next's route announcer is an empty alert).
       await expect(page.getByRole('region', { name: /^Notifications/ }).locator('li')).toHaveCount(0);
       await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0);
