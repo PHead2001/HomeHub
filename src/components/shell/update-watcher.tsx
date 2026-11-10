@@ -15,6 +15,7 @@ import {
   decideUpdatePrompt,
   parseForcedReload,
   shouldCheckOnVisible,
+  waitForReloadChance,
 } from '@/lib/shell/update-check';
 
 const PAGE_BUILD_ID = process.env.NEXT_PUBLIC_HOMEHUB_BUILD_ID;
@@ -132,19 +133,21 @@ export function UpdateWatcher() {
         writeForcedReload(PAGE_BUILD_ID);
         window.location.reload();
       } else if (decision === 'wait' && !stopWaitingRequired) {
-        // Re-decide when the shell goes idle or the browser comes back online.
-        const retry = () => {
-          stopRequiredWait();
-          if (!disposed) considerMinimum(minimum);
-        };
-        const unsubscribe = subscribeShellBusy((busy) => {
-          if (!busy) retry();
+        // Re-decide once the shell is idle and the browser online. One subscription for
+        // the whole wait, so an idle notice while offline never re-subscribes mid-dispatch.
+        stopWaitingRequired = waitForReloadChance({
+          subscribeBusy: subscribeShellBusy,
+          addOnlineListener: (listener) => {
+            window.addEventListener('online', listener);
+            return () => window.removeEventListener('online', listener);
+          },
+          isBusy: isShellBusy,
+          isOnline: () => navigator.onLine !== false,
+          onChance: () => {
+            stopWaitingRequired = null;
+            if (!disposed) considerMinimum(minimum);
+          },
         });
-        window.addEventListener('online', retry);
-        stopWaitingRequired = () => {
-          unsubscribe();
-          window.removeEventListener('online', retry);
-        };
       }
     };
 

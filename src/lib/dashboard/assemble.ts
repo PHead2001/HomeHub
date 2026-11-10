@@ -110,7 +110,8 @@ export function assembleDashboardFacts(
     // (computeChoreFacts then reads its completion with `completionInstant`).
     const merged = new Map<string, RawDoc>();
     [...raw.openChores!, ...raw.todayChores!, ...raw.doneToday!, ...raw.doneTodayServer!].forEach((chore) => merged.set(chore.id, chore));
-    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone);
+    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone,
+      raw.members ? streakMembersFrom(raw.members) : undefined);
   });
 
   const listsReady = Boolean(raw.lists && raw.lists.every((list) => raw.items?.[list.id] !== undefined));

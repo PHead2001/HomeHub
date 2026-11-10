@@ -8,7 +8,7 @@
 import { relativeDays, toDateValue } from './dates';
 import { choreDueKey, completionInstant, diffDayKeys, type ChoreRecord } from '../chores/dates';
 import { collapseMissedRecurring } from '../chores/list';
-import { isAssignedTo } from '../../../functions/src/shared/assignee';
+import { isAssignedTo, type AssigneePerson } from '../../../functions/src/shared/assignee';
 import { daysUntilExpiry } from '../shopping/pantry';
 import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
 import type { PetProfile } from '../pets/types';
@@ -214,6 +214,8 @@ export function computeChoreFacts(
   now: Date,
   recurringTemplateIds: ReadonlySet<string> = new Set(),
   timeZone?: string | null,
+  /** Household people (uid, email where known), so folding resolves assignees as the Chores page does. */
+  people?: readonly AssigneePerson[],
 ): ChoreFacts {
   // D-6: "today" and "completed today" are the household's day (device zone only when the
   // household has none); due dates are date-only keys and are compared as stored.
@@ -222,7 +224,7 @@ export function computeChoreFacts(
   const records = chores as unknown as ChoreRecord[];
   // Same folding as the Chores page: only the latest instance of each recurring series counts.
   const dueByToday = records.filter((chore) => chore.isCompleted !== true && choreDueKey(chore) !== '' && choreDueKey(chore) <= today);
-  const folded = new Set(collapseMissedRecurring(dueByToday, recurringTemplateIds).flatMap((entry) => entry.missed.map((missed) => missed.id)));
+  const folded = new Set(collapseMissedRecurring(dueByToday, recurringTemplateIds, people).flatMap((entry) => entry.missed.map((missed) => missed.id)));
 
   const roomMap = new Map<string, RoomState>();
   const ensureRoom = (id: string, name: string) => {

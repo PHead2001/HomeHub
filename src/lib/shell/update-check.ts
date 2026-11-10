@@ -143,3 +143,37 @@ export function decideRequiredReload(input: {
   if (lastForcedReload && lastForcedReload.buildId === pageBuildId && now - lastForcedReload.at < FORCED_RELOAD_GUARD_MS) return 'manual';
   return busy || !online ? 'wait' : 'reload';
 }
+
+/**
+ * Waits for a moment to reload: the shell idle and the browser online. Keeps one
+ * busy subscription and one `online` listener for as long as it waits (an idle
+ * notice while offline, or coming online while busy, keeps waiting rather than
+ * re-subscribing), and calls `onChance` once, after removing both, when both
+ * hold. Returns the cancel function.
+ */
+export function waitForReloadChance(deps: {
+  subscribeBusy: (listener: (busy: boolean) => void) => () => void;
+  addOnlineListener: (listener: () => void) => () => void;
+  isBusy: () => boolean;
+  isOnline: () => boolean;
+  onChance: () => void;
+}): () => void {
+  let done = false;
+  let unsubscribeBusy: (() => void) | null = null;
+  let removeOnline: (() => void) | null = null;
+  const stop = () => {
+    done = true;
+    unsubscribeBusy?.();
+    removeOnline?.();
+    unsubscribeBusy = null;
+    removeOnline = null;
+  };
+  const check = () => {
+    if (done || deps.isBusy() || !deps.isOnline()) return;
+    stop();
+    deps.onChance();
+  };
+  unsubscribeBusy = deps.subscribeBusy(() => check());
+  removeOnline = deps.addOnlineListener(check);
+  return stop;
+}

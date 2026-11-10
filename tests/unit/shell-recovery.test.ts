@@ -16,6 +16,7 @@ import {
   buildInfoFromMessage,
   decideRequiredReload,
   decideUpdatePrompt,
+  waitForReloadChance,
   FORCED_RELOAD_GUARD_MS,
   MINIMUM_SUPPORTED_BUILD_ID,
   minimumBuildId,
@@ -208,6 +209,69 @@ describe('minimum supported build (member privacy release C)', () => {
     assert.equal(parseForcedReload('{'), null);
     assert.equal(parseForcedReload(JSON.stringify({ buildId: 'x', at: 1 })), null);
     assert.equal(parseForcedReload(null), null);
+  });
+});
+
+describe('waiting to reload (review finding on #140)', () => {
+  const setup = (online: { value: boolean }) => {
+    const onlineListeners = new Set<() => void>();
+    let chances = 0;
+    let subscriptions = 0;
+    const stop = waitForReloadChance({
+      subscribeBusy: (listener) => {
+        subscriptions += 1;
+        return subscribeShellBusy(listener);
+      },
+      addOnlineListener: (listener) => {
+        onlineListeners.add(listener);
+        return () => onlineListeners.delete(listener);
+      },
+      isBusy: isShellBusy,
+      isOnline: () => online.value,
+      onChance: () => { chances += 1; },
+    });
+    return { stop, onlineListeners, chances: () => chances, subscriptions: () => subscriptions };
+  };
+
+  test('going idle while offline keeps the one subscription and does not loop', () => {
+    const online = { value: false };
+    const release = markBusy('save');
+    const waiter = setup(online);
+    release(); // idle, but offline: keeps waiting
+    assert.equal(waiter.chances(), 0);
+    assert.equal(waiter.subscriptions(), 1);
+    online.value = true;
+    waiter.onlineListeners.forEach((listener) => listener());
+    assert.equal(waiter.chances(), 1);
+    assert.equal(waiter.onlineListeners.size, 0, 'both listeners removed');
+    markBusy('save')();
+    assert.equal(waiter.chances(), 1, 'called once');
+  });
+
+  test('coming online while busy waits for idle; cancel stops it', () => {
+    const online = { value: false };
+    const release = markBusy('save');
+    const waiter = setup(online);
+    online.value = true;
+    waiter.onlineListeners.forEach((listener) => listener());
+    assert.equal(waiter.chances(), 0);
+    release();
+    assert.equal(waiter.chances(), 1);
+    const other = setup({ value: true });
+    other.stop();
+    markBusy('save')();
+    assert.equal(other.chances(), 0);
+  });
+
+  test('a listener added during a busy dispatch is not called in that dispatch', () => {
+    let calls = 0;
+    const release = markBusy('save');
+    const first = subscribeShellBusy(() => {
+      first();
+      subscribeShellBusy(() => { calls += 1; });
+    });
+    release();
+    assert.equal(calls, 0);
   });
 });
 

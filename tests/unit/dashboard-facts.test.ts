@@ -270,6 +270,31 @@ describe('chore folding', () => {
     assert.equal(unfolded.mineOverdue, 2);
   });
 
+  it('resolves assignees before folding: a chore an older build reassigned to you stays yours', () => {
+    // Ana (another member) had the series; an older build reassigned the overdue one to the
+    // viewer by email only, leaving Ana's uid behind. A later instance is still Ana's.
+    const ana = { uid: 'ana-uid', email: 'ana@example.test' };
+    const people = [viewer, ana];
+    const base = { task: 'Water plants', templateId: 'water', isCompleted: false, roomIds: ['kitchen'] };
+    const records = [
+      { ...base, id: 'w1', dueDate: '2026-07-31', originalDueDate: '2026-07-31', assignedToUid: ana.uid, assignedToEmail: viewer.email },
+      { ...base, id: 'w2', dueDate: '2026-08-01', originalDueDate: '2026-08-01', assignedToUid: ana.uid, assignedToEmail: ana.email },
+    ];
+    const recurring = recurringTemplateIdsFrom([{ id: 'water', recurrence: { frequency: 'daily', interval: 1 } }], '2026-08-01');
+    const facts = computeChoreFacts(records, rooms, viewer, now, recurring, undefined, people);
+    assert.equal(facts.mineOverdue, 1, "the viewer's reassigned chore is not folded into Ana's series");
+    // A series with older (email and uid) and newer (uid only) instances is still one series.
+    const mixed = [
+      { ...base, id: 'm1', dueDate: '2026-07-31', originalDueDate: '2026-07-31', assignedToUid: viewer.uid, assignedToEmail: viewer.email },
+      { ...base, id: 'm2', dueDate: '2026-08-01', originalDueDate: '2026-08-01', assignedToUid: viewer.uid },
+    ];
+    const folded = computeChoreFacts(mixed, rooms, viewer, now, recurring, undefined, people);
+    assert.equal(folded.mineOverdue, 0);
+    assert.equal(folded.mineDueToday, 1);
+    // Without people the email decides, so the reassigned chore is never hidden either.
+    assert.equal(computeChoreFacts(records, rooms, viewer, now, recurring).mineOverdue, 1);
+  });
+
   it('reads completion from the server stamp when present', () => {
     const facts = computeChoreFacts([{
       id: 'k', task: 'Reset', assignedToEmail: viewer.email, originalDueDate: '2026-08-01', dueDate: '2026-08-01', isCompleted: true,

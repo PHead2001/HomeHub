@@ -804,7 +804,7 @@ export function ChoreChartClient() {
 
   const byDue = (a: ChoreRecord, b: ChoreRecord) => choreDueKey(a).localeCompare(choreDueKey(b)) || a.task.localeCompare(b.task);
   const recurringTemplateIds = new Set(choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence)).map(t => t.id));
-  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds);
+  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds, householdUsers);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);
   const visibleFutureChores = showFullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
