@@ -172,11 +172,17 @@ export function pantryMergeKey(batch: PantryMergeFields): string {
   return JSON.stringify([batch.nameKey, batch.location, batch.packageSize ?? null, batch.unit, batch.expiryDate ?? null]);
 }
 
-/** The existing batch a new one merges into: same merge key. Prefers a batch that still has stock. */
+/**
+ * The existing batch a new one merges into: same merge key. Prefers a batch that
+ * still has stock and room below `MAX_PACKAGES`, then one with room (an empty
+ * one), and only then a full one (the add then goes to new batches: `planMergeAdd`).
+ */
 export function findPantryMergeTarget<T extends PantryBatch>(batches: readonly T[], incoming: PantryMergeFields): T | undefined {
   const key = pantryMergeKey(incoming);
   const matches = batches.filter((batch) => pantryMergeKey(batch) === key);
-  return matches.find((batch) => batch.packages > 0) ?? matches[0];
+  return matches.find((batch) => batch.packages > 0 && batch.packages < MAX_PACKAGES)
+    ?? matches.find((batch) => batch.packages < MAX_PACKAGES)
+    ?? matches[0];
 }
 
 export type PantryMergeDecision =
@@ -559,6 +565,21 @@ export function pantryBatchFields(input: PantryBatchInput) {
     schemaVersion: PANTRY_SCHEMA_VERSION,
   };
   return input.barcode ? { ...fields, barcode: input.barcode.slice(0, 128) } : fields;
+}
+
+/**
+ * An online add merged into `targetPackages` (the target as re-read inside the
+ * transaction) without passing the rules' `MAX_PACKAGES` per batch: the target
+ * is filled up to 10,000 (`toTarget`, possibly 0) and the overflow becomes new
+ * batches of the same product (`newBatches`, full fields, each at most 10,000).
+ * Nothing is dropped.
+ */
+export function planMergeAdd(targetPackages: number, input: PantryBatchInput): {
+  toTarget: number;
+  newBatches: ReturnType<typeof pantryBatchFields>[];
+} {
+  const { toTarget, newBatches } = fillBatch(pantryBatchFields(input).packages, targetPackages);
+  return { toTarget, newBatches: newBatches.map((packages) => pantryBatchFields({ ...input, packages })) };
 }
 
 /**

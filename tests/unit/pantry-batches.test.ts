@@ -32,7 +32,7 @@ import {
   type PantryBatch,
 } from '../../src/lib/shopping/pantry-batches';
 import { daysUntilExpiry, expiryState, pantryLocationForCategory, pantryMergeStillValid, planPantryHandoff } from '../../src/lib/shopping/pantry';
-import { MAX_PACKAGES, fillBatch, packageChangeToast, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
+import { MAX_PACKAGES, fillBatch, packageChangeToast, planMergeAdd, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
 
 const CENTRAL = 'America/Chicago';
 /** 23:30 Central on Tue 10 Nov 2026 (05:30 UTC on the 11th). */
@@ -502,5 +502,47 @@ describe('recipe amounts keep tiny package sizes', () => {
   });
   test('a tile label shows a tiny size instead of 0', () => {
     assert.equal(batchAmountLabel({ unit: 'kg', packages: 1, packageSize: 0.004 }), '1 × 0.004 kg');
+  });
+});
+
+describe('an online add to a matching batch never passes 10,000 (saveBatch)', () => {
+  const input = { name: 'Rice', location: 'Pantry' as const, unit: 'g' as const, packages: 3_000, packageSize: 450, expiryDate: null };
+
+  test('the target is filled up to 10,000 and the rest becomes a new batch of the same product', () => {
+    const plan = planMergeAdd(9_000, input);
+    assert.equal(plan.toTarget, 1_000);
+    assert.equal(plan.newBatches.length, 1);
+    assert.deepEqual(plan.newBatches[0], pantryBatchFields({ ...input, packages: 2_000 }));
+    assert.equal(plan.toTarget + plan.newBatches.reduce((sum, fields) => sum + fields.packages, 0), 3_000, 'nothing dropped');
+  });
+
+  test('a full target takes nothing and the whole add is a new batch; a roomy one takes it all', () => {
+    const full = planMergeAdd(MAX_PACKAGES, input);
+    assert.equal(full.toTarget, 0);
+    assert.deepEqual(full.newBatches.map((fields) => fields.packages), [3_000]);
+    assert.deepEqual(planMergeAdd(2, input), { toTarget: 3_000, newBatches: [] });
+  });
+
+  test('counted overflow batches dual-write quantity = packages', () => {
+    const plan = planMergeAdd(9_999, { name: 'Eggs', location: 'Fridge', unit: 'items', packages: 10_000, packageSize: null, expiryDate: null });
+    assert.equal(plan.toTarget, 1);
+    assert.deepEqual(plan.newBatches.map((fields) => [fields.packages, fields.quantity]), [[9_999, 9_999]]);
+  });
+
+  test('findPantryMergeTarget prefers a batch with room over a full one', () => {
+    const base = { nameKey: 'rice', location: 'Pantry' as const, packageSize: 450, unit: 'g' as const, expiryDate: null };
+    const full = batch('full', { packages: MAX_PACKAGES });
+    assert.equal(findPantryMergeTarget([full, batch('roomy', { packages: 5 })], base)?.id, 'roomy');
+    assert.equal(findPantryMergeTarget([full, batch('empty', { packages: 0 })], base)?.id, 'empty');
+    assert.equal(findPantryMergeTarget([full], base)?.id, 'full', 'a full one is still the target; the add then overflows');
+  });
+
+  test('saveBatch checks the combined count inside the transaction', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
+    const transaction = writes.slice(writes.indexOf('const merged = await runTransaction('), writes.indexOf("return { outcome: 'saved', merged };"));
+    assert.match(transaction, /const plan = planMergeAdd\(decision\.target\.packages, input\);/);
+    assert.match(transaction, /if \(plan\.toTarget > 0\) transaction\.update\(ref, packageChange\(decision\.target, plan\.toTarget, uid\)\);/);
+    assert.match(transaction, /for \(const extra of plan\.newBatches\)/);
+    assert.doesNotMatch(transaction, /packageChange\(decision\.target, fields\.packages/);
   });
 });

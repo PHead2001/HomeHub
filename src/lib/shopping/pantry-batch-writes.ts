@@ -25,7 +25,7 @@ import { slugify } from '@/lib/utils';
 import { findMergeTarget } from './items';
 import { mergeIntoNeededItem } from './item-transactions';
 import {
-  decidePantryMerge, isCountUnit, pantryBatchFields, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
+  decidePantryMerge, isCountUnit, pantryBatchFields, planMergeAdd, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
   type PantryBatch, type PantryBatchInput,
 } from './pantry-batches';
 
@@ -78,7 +78,9 @@ const isUnavailable = (error: unknown) =>
  * is on screen) re-reads that batch in a transaction and adds the packages only
  * while its merge key (name, shelf, package size, unit, expiry) still matches
  * (`decidePantryMerge`); otherwise, offline, or when the server cannot be reached
- * to verify it, a separate batch is created instead.
+ * to verify it, a separate batch is created instead. A merge never takes the
+ * target above 10,000 packages (the rules' limit): the combined count is checked
+ * in the transaction and the overflow goes to new batches (`planMergeAdd`).
  */
 export async function saveBatch(
   householdId: string,
@@ -102,8 +104,14 @@ export async function saveBatch(
           offline: false, targetId: mergeInto.id, stored: snapshot.exists() ? snapshot.data() : null, incoming: fields, timeZone,
         });
         if (decision.kind === 'merge') {
-          transaction.update(ref, packageChange(decision.target, fields.packages, uid));
-          return true;
+          // The rules cap a batch at 10,000: fill the target up to that and put
+          // the rest in new batches, so a nearly full target never refuses the add.
+          const plan = planMergeAdd(decision.target.packages, input);
+          if (plan.toTarget > 0) transaction.update(ref, packageChange(decision.target, plan.toTarget, uid));
+          for (const extra of plan.newBatches) {
+            transaction.set(doc(pantry, slugify(extra.name)), { ...extra, addedByUid: uid, ...touched(uid) });
+          }
+          return plan.toTarget > 0 || plan.newBatches.length === 0;
         }
         transaction.set(doc(pantry, slugify(fields.name)), created());
         return false;
