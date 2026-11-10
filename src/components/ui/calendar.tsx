@@ -7,6 +7,12 @@ import { DayPicker } from "react-day-picker"
 import { cn } from "@/lib/utils"
 import { buttonVariants } from "@/components/ui/button"
 
+// One day cell: the touch target (48 px coarse, 44 px fine), but never so wide that
+// seven of them plus the calendar's padding overflow the screen (a 390 px phone at
+// 130% text gets 50 px cells). Arbitrary classes, so they replace the button's height.
+const CELL_W = "w-[min(var(--target-min),calc((100vw-40px)/7))]"
+const CELL_H = "h-[min(var(--target-min),calc((100vw-40px)/7))]"
+
 export type CalendarProps = React.ComponentProps<typeof DayPicker>
 
 function Calendar({
@@ -34,12 +40,16 @@ function Calendar({
         table: "w-full border-collapse space-y-1",
         head_row: "flex",
         head_cell:
-          "text-muted-foreground rounded-md w-9 font-normal text-[0.8rem]",
+          cn("text-muted-foreground rounded-md font-normal text-[0.8rem]", CELL_W),
         row: "flex w-full mt-2",
-        cell: "h-9 w-9 text-center text-sm p-0 relative [&:has([aria-selected].day-range-end)]:rounded-r-md [&:has([aria-selected].day-outside)]:bg-accent/50 [&:has([aria-selected])]:bg-accent first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md focus-within:relative focus-within:z-20",
+        cell: cn(CELL_W, CELL_H, "text-center text-sm p-0 relative [&:has([aria-selected].day-range-end)]:rounded-r-md [&:has([aria-selected].day-outside)]:bg-accent/50 [&:has([aria-selected])]:bg-accent first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md focus-within:relative focus-within:z-20"),
         day: cn(
           buttonVariants({ variant: "ghost" }),
-          "h-9 w-9 p-0 font-normal aria-selected:opacity-100"
+          // Each day fills its cell exactly (the target size) with no overflowing hit
+          // area, so a tap near an edge never selects the neighboring date.
+          CELL_W,
+          CELL_H,
+          "hit-slop-off p-0 font-normal aria-selected:opacity-100"
         ),
         day_range_end: "day-range-end",
         day_selected:

@@ -187,7 +187,7 @@ export function RecurrenceFields({
                   key={day}
                   value={String(i)}
                   aria-label={fullDayNames[i]}
-                  className="h-9 min-w-11 rounded-full border border-input px-3 data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                  className="h-[var(--target-min)] min-w-[var(--target-min)] rounded-full border border-input px-3 data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
                 >
                   {day}
                 </ToggleGroupItem>
