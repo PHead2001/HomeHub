@@ -16,6 +16,7 @@ import {
   getDoc,
   getDocs,
   deleteField,
+  increment,
   limit,
   orderBy,
   query,
@@ -1132,5 +1133,430 @@ describe('yearly chore stats', () => {
       await assertFails(deleteDoc(stats(user)));
     }
     await assertFails(setDoc(doc(dbFor(users.owner), 'households', householdA, 'stats', 'anything-else'), { completed: 1 }));
+  });
+});
+
+// Content shapes (QA-8). Every accepted fixture is built from a real client
+// writer (file noted per fixture); the rest are the shapes that must be refused.
+describe('content shapes: chores and templates', () => {
+  const noAssign = { uid: 'no-assign-a', email: 'no.assign.a@example.test' };
+  const chores = (user: Identity) => collection(dbFor(user), 'households', householdA, 'chores');
+  const chore = (user: Identity, id: string) => doc(dbFor(user), 'households', householdA, 'chores', id);
+  const template = (user: Identity, id: string) => doc(dbFor(user), 'households', householdA, 'chore-templates', id);
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      // A member whose chores.assign is switched off: may create, edit, complete.
+      await setDoc(doc(db, 'households', householdA, 'members', noAssign.uid), {
+        uid: noAssign.uid, email: noAssign.email, role: 'member', status: 'active', permissions: { 'chores.assign': false },
+      });
+      // Shape the server upkeep writes (functions/src/reminders.ts), plus a legacy field.
+      await setDoc(doc(db, 'households', householdA, 'chores', 'generated'), {
+        task: 'Generated', assignedToEmail: users.member.email, assignedToDisplayName: 'Member A',
+        dueDate: '2026-08-01T05:00:00.000Z', isCompleted: false, notes: '', subTasks: ['One'], completedSubTasks: [],
+        templateId: 'tpl', originalDueDate: '2026-08-01', roomIds: [], legacyPriority: 'high',
+      });
+      await setDoc(doc(db, 'households', householdA, 'chore-templates', 'existing'), {
+        task: 'Existing', notes: '', roomIds: ['kitchen'], subTasks: [], legacyColor: 'red',
+        assignedToEmail: users.member.email,
+        recurrence: { frequency: 'daily', interval: 1, assignedToEmail: users.member.email, dailyOptions: { excludeWeekends: false } },
+      });
+    });
+  });
+
+  // chore-chart-client.tsx handleCreateChore / quick-add-actions.ts createOneTimeChore
+  const oneTime = (assignedToEmail: string, overrides: Record<string, unknown> = {}) => ({
+    task: 'Water plants', notes: '', assignedToEmail, assignedToDisplayName: 'Someone',
+    dueDate: '2026-08-02T12:00:00.000Z', originalDueDate: '2026-08-02', roomIds: [], isCompleted: false,
+    completedSubTasks: [], sourceType: 'temporary', ...overrides,
+  });
+  // chore-chart-client.tsx handleAssignChores (one-time library assignment)
+  const fromLibrary = (assignedToEmail: string) => ({
+    task: 'Vacuum', assignedToEmail, assignedToDisplayName: 'Someone', dueDate: '2026-08-02T12:00:00.000Z',
+    isCompleted: false, notes: '', subTasks: ['Rugs'], completedSubTasks: [], templateId: 'vacuum',
+    sourceType: 'template', originalDueDate: '2026-08-02', roomIds: ['kitchen'],
+  });
+
+  test('every shipped chore write shape is accepted', async () => {
+    await assertSucceeds(addDoc(chores(users.member), oneTime(users.owner.email)));
+    await assertSucceeds(addDoc(chores(users.member), fromLibrary(users.child.email)));
+    // Old clients: no sourceType, deterministic id over an existing chore.
+    const { sourceType: _unused, ...legacy } = fromLibrary(users.member.email);
+    void _unused;
+    await assertSucceeds(setDoc(chore(users.member, 'generated'), legacy));
+    await assertSucceeds(updateDoc(chore(users.child, 'task'), { completedSubTasks: ['Wipe'] }));
+    // completion.ts completionUpdate / undoCompletionUpdate
+    await assertSucceeds(updateDoc(chore(users.child, 'task'), {
+      isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z', completedAtServer: serverTimestamp(), completedSubTasks: [],
+    }));
+    await assertSucceeds(updateDoc(chore(users.child, 'task'), {
+      isCompleted: false, completedAt: deleteField(), completedSubTasks: deleteField(), completedAtServer: deleteField(),
+    }));
+    // household-calendar.tsx moveChore; template edit propagation
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { dueDate: '2026-08-05T12:00:00.000Z', originalDueDate: '2026-08-05' }));
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { task: 'Renamed', notes: 'n', subTasks: [] }));
+    // chore-chart-client.tsx handleReassign; household-management-client.tsx member removal
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { assignedToEmail: users.child.email, assignedToDisplayName: 'Child A' }));
+    await assertSucceeds(updateDoc(chore(users.owner, 'generated'), { assignedToEmail: '', assignedToDisplayName: 'Unassigned' }));
+  });
+
+  test('a chore with a legacy field stays updatable on its other fields', async () => {
+    await assertSucceeds(updateDoc(chore(users.member, 'generated'), { notes: 'Still editable' }));
+    await assertSucceeds(updateDoc(chore(users.child, 'generated'), {
+      isCompleted: true, completedAt: '2026-08-04T12:00:00.000Z', completedAtServer: serverTimestamp(),
+    }));
+    // ...but a client cannot add a new unknown field or rewrite the legacy one.
+    await assertFails(updateDoc(chore(users.member, 'generated'), { legacyPriority: 'low' }));
+  });
+
+  test('unknown fields, wrong types and over-long strings are refused', async () => {
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { points: 9000 })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { isCompleted: 'no' })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { roomIds: 'kitchen' })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { task: 'x'.repeat(501) })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { task: '' })));
+    await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { sourceType: 'server' })));
+    const { task: _task, ...noTask } = oneTime(users.member.email);
+    void _task;
+    await assertFails(addDoc(chores(users.member), noTask));
+    await assertFails(updateDoc(chore(users.member, 'task'), { notes: 'x'.repeat(5001) }));
+    await assertFails(updateDoc(chore(users.child, 'task'), { completedSubTasks: 'all' }));
+  });
+
+  test('assigning a chore to someone else needs chores.assign', async () => {
+    await assertFails(addDoc(chores(noAssign), oneTime(users.member.email)));
+    await assertSucceeds(addDoc(chores(users.member), oneTime(users.owner.email)));
+    // chores.create alone: yourself or unassigned.
+    await assertSucceeds(addDoc(chores(noAssign), oneTime(noAssign.email)));
+    await assertSucceeds(addDoc(chores(noAssign), oneTime('')));
+    // Changing the assignee needs chores.assign, even to yourself.
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToEmail: users.child.email, assignedToDisplayName: 'Child A' }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToEmail: noAssign.email }));
+    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { task: 'Edited without reassigning' }));
+  });
+
+  // chore-chart-client.tsx handleCreateChore (repeat) / quick-add-writes.ts repeatingChoreTemplate
+  const repeating = (assignedToEmail: string, recurrence: Record<string, unknown> = { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1, 3] } }) => ({
+    task: 'Trash night', notes: '', roomIds: [], subTasks: [], recurrence: { ...recurrence, assignedToEmail }, assignedToEmail,
+  });
+
+  test('every shipped template write shape is accepted', async () => {
+    await assertSucceeds(setDoc(template(users.member, 'weekly'), repeating(users.owner.email)));
+    await assertSucceeds(setDoc(template(users.member, 'biweekly'), repeating(users.member.email,
+      { frequency: 'biweekly', interval: 2, weeklyOptions: { daysOfWeek: [6] }, startDate: '2026-07-20' })));
+    await assertSucceeds(setDoc(template(users.member, 'monthly'), repeating(users.member.email,
+      { frequency: 'monthly', interval: 1, monthlyOptions: { mode: 'nthWeekday', nthWeekday: { week: 2, dayOfWeek: 3 } } })));
+    await assertSucceeds(setDoc(template(users.member, 'daily'), repeating(users.member.email,
+      { frequency: 'daily', interval: 1, dailyOptions: { excludeWeekends: true } })));
+    // Library chore (chore-dialogs.tsx handleSave), then edited with merge.
+    await assertSucceeds(setDoc(template(users.member, 'library'), { task: 'Dust', notes: '', roomIds: ['kitchen'], subTasks: ['Shelves'] }));
+    await assertSucceeds(setDoc(template(users.member, 'existing'), { task: 'Existing (renamed)', notes: 'n', roomIds: [], subTasks: [] }, { merge: true }));
+    // handleAssignChores (recurring, merge), handleUpdateRecurringTask, handleDeleteRecurringTask, handleDeleteRoom
+    await assertSucceeds(setDoc(template(users.member, 'existing'), {
+      recurrence: { frequency: 'monthly', interval: 1, monthlyOptions: { mode: 'dayOfMonth', dayOfMonth: 15 }, assignedToEmail: users.child.email },
+      assignedToEmail: users.child.email,
+    }, { merge: true }));
+    await assertSucceeds(updateDoc(template(users.member, 'existing'), {
+      assignedToEmail: users.member.email, recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, assignedToEmail: users.member.email },
+    }));
+    await assertSucceeds(updateDoc(template(users.member, 'existing'), { roomIds: [] }));
+    await assertSucceeds(updateDoc(template(users.member, 'existing'), { recurrence: null, assignedToEmail: null }));
+  });
+
+  test('template shapes are validated, including the recurrence map', async () => {
+    await assertFails(setDoc(template(users.member, 'bad1'), { ...repeating(users.member.email), points: 5 }));
+    await assertFails(setDoc(template(users.member, 'bad2'), { ...repeating(users.member.email), subTasks: 'one' }));
+    await assertFails(setDoc(template(users.member, 'bad3'), { ...repeating(users.member.email), task: 'x'.repeat(501) }));
+    await assertFails(setDoc(template(users.member, 'bad4'), repeating(users.member.email, { frequency: 'hourly', interval: 1 })));
+    await assertFails(setDoc(template(users.member, 'bad5'), repeating(users.member.email, { frequency: 'daily', interval: 1, cron: '* * *' })));
+    await assertFails(setDoc(template(users.member, 'bad6'), repeating(users.member.email, { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [0, 1, 2, 3, 4, 5, 6, 0] } })));
+    await assertFails(setDoc(template(users.member, 'bad7'), { notes: 'No task' }));
+    // A legacy field does not block edits of the other fields.
+    await assertSucceeds(updateDoc(template(users.member, 'existing'), { notes: 'Edited' }));
+  });
+
+  test('setting a template assignee other than yourself needs chores.assign', async () => {
+    await assertFails(setDoc(template(noAssign, 'other'), repeating(users.member.email)));
+    await assertSucceeds(setDoc(template(noAssign, 'mine'), repeating(noAssign.email)));
+    await assertSucceeds(setDoc(template(noAssign, 'lib'), { task: 'Dust', notes: '', roomIds: [], subTasks: [] }));
+    // Only the recurrence assignee changed to someone else: still refused.
+    await assertFails(updateDoc(template(noAssign, 'existing'), {
+      recurrence: { frequency: 'daily', interval: 1, assignedToEmail: users.child.email },
+    }));
+    await assertFails(setDoc(template(noAssign, 'existing'), { recurrence: repeating(users.child.email).recurrence, assignedToEmail: users.child.email }, { merge: true }));
+    // Keeping the current assignee or switching to yourself (EditRecurringTaskDialog) is allowed.
+    await assertSucceeds(updateDoc(template(noAssign, 'existing'), {
+      assignedToEmail: users.member.email, recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1] }, assignedToEmail: users.member.email },
+    }));
+    await assertSucceeds(updateDoc(template(noAssign, 'existing'), {
+      assignedToEmail: noAssign.email, recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1] }, assignedToEmail: noAssign.email },
+    }));
+    await assertSucceeds(setDoc(template(users.member, 'assigned'), repeating(users.child.email)));
+  });
+});
+
+describe('content shapes: shopping', () => {
+  const items = (user: Identity, list = 'groceries') => collection(dbFor(user), 'households', householdA, 'shopping-lists', list, 'items');
+  const item = (user: Identity, id: string) => doc(items(user), id);
+  // shopping-items.ts buildShoppingListItem (shopping list, quick add, share target, pantry hand-off, barcode adds)
+  const built = (overrides: Record<string, unknown> = {}) => ({
+    name: 'Milk', quantity: 2, category: 'Dairy', createdAt: new Date(), status: 'needed', ...overrides,
+  });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'shopping-lists', 'groceries', 'items', 'legacy'), {
+        name: 'Eggs', quantity: 12, category: 'Dairy', status: 'needed', createdAt: now(), aisle: 4,
+      });
+    });
+  });
+
+  test('every shipped item write shape is accepted', async () => {
+    await assertSucceeds(setDoc(item(users.member, 'milk'), built()));
+    await assertSucceeds(setDoc(item(users.member, 'scanned'), built({
+      imageUrl: 'https://images.openfoodfacts.org/images/products/1.jpg', barcode: '012345678905',
+    })));
+    await assertSucceeds(setDoc(item(users.member, 'shared'), built({ sourceUrl: 'https://example.test/recipe' })));
+    await assertSucceeds(setDoc(item(users.member, 'offline'), built({ category: 'Other' })));
+    // Tick / untick (shopping-list-client.tsx), quantity merge (item-transactions.ts), legacy absolute merge.
+    await assertSucceeds(updateDoc(item(users.member, 'milk'), { status: 'purchased' }));
+    await assertSucceeds(updateDoc(item(users.member, 'milk'), { status: 'needed' }));
+    await assertSucceeds(updateDoc(item(users.member, 'milk'), { quantity: increment(3) }));
+    await assertSucceeds(updateDoc(item(users.member, 'milk'), { quantity: 7 }));
+    // Undo of a delete restores the document as it was read (createdAt comes back as a Timestamp).
+    const snapshot = await getDoc(item(users.member, 'milk'));
+    await assertSucceeds(deleteDoc(item(users.owner, 'milk')));
+    await assertSucceeds(setDoc(item(users.member, 'milk'), snapshot.data()!));
+  });
+
+  test('item shapes are validated', async () => {
+    await assertFails(setDoc(item(users.member, 'x1'), built({ price: 3 })));
+    await assertFails(setDoc(item(users.member, 'x2'), built({ quantity: '2' })));
+    await assertFails(setDoc(item(users.member, 'x3'), built({ quantity: 0 })));
+    await assertFails(setDoc(item(users.member, 'x4'), built({ quantity: -1 })));
+    await assertFails(setDoc(item(users.member, 'x5'), built({ quantity: 100001 })));
+    await assertFails(setDoc(item(users.member, 'x6'), built({ status: 'stolen' })));
+    await assertFails(setDoc(item(users.member, 'x7'), built({ name: 'x'.repeat(501) })));
+    await assertFails(setDoc(item(users.member, 'x8'), built({ name: '' })));
+    await assertFails(setDoc(item(users.member, 'x9'), { quantity: 1, status: 'needed' }));
+    await assertFails(updateDoc(item(users.member, 'legacy'), { status: 1 }));
+  });
+
+  test('an item with a legacy field stays updatable on its other fields', async () => {
+    await assertSucceeds(updateDoc(item(users.member, 'legacy'), { status: 'purchased' }));
+    await assertSucceeds(updateDoc(item(users.member, 'legacy'), { quantity: increment(1) }));
+    await assertFails(updateDoc(item(users.member, 'legacy'), { aisle: 5 }));
+  });
+
+  test('list documents and categories are validated', async () => {
+    const list = (id: string) => doc(dbFor(users.member), 'households', householdA, 'shopping-lists', id);
+    // shopping-list-client.tsx handleSaveList (merge) and pantry-inventory-client.tsx offerAddToList
+    await assertSucceeds(setDoc(list('hardware'), { name: 'Hardware', description: '', icon: 'Hammer', type: 'Hardware', color: 'tint-6' }, { merge: true }));
+    await assertSucceeds(setDoc(list('groceries-2'), { name: 'Groceries', icon: 'ShoppingCart', type: 'Grocery', description: '' }));
+    await assertSucceeds(setDoc(list('groceries'), { name: 'Renamed', icon: 'ShoppingCart', type: 'Grocery' }, { merge: true }));
+    await assertFails(setDoc(list('bad1'), { name: 'Bad', owner: 'me' }));
+    await assertFails(setDoc(list('bad2'), { name: 'x'.repeat(101) }));
+    await assertFails(setDoc(list('bad3'), { name: 'Bad', icon: 7 }));
+    const categories = doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'groceries', 'config', 'categories');
+    await assertSucceeds(setDoc(categories, { list: ['Dairy', 'Other', 'Produce'] }));
+    await assertFails(setDoc(categories, { list: 'Dairy' }));
+    await assertFails(setDoc(categories, { list: [], extra: true }));
+  });
+});
+
+describe('content shapes: pet logs', () => {
+  const logs = (user: Identity, kind: string) => collection(dbFor(user), 'households', householdA, 'pets', 'maple', kind);
+  const log = (user: Identity, kind: string, id: string) => doc(logs(user, kind), id);
+  const by = (user: Identity) => ({ loggedByUid: user.uid, loggedByName: 'Someone' });
+  // pet-log-api.ts addFeedingLog; medication-log.tsx and care-log.tsx onSubmit
+  const feeding = (user: Identity) => ({ date: new Date(), cups: 1.5, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM', ...by(user) });
+  const medication = (user: Identity) => ({ date: new Date().toISOString(), medication: 'Flea drops', dosage: '1 dose', notes: '', nextDueDate: '2026-09-01', ...by(user) });
+  const care = (user: Identity) => ({ date: new Date().toISOString(), activity: 'Walk', notes: '', ...by(user) });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'households', householdA, 'pets', 'maple'), { name: 'Maple', type: 'Dog' });
+      await setDoc(doc(db, 'households', householdA, 'pets', 'maple', 'feeding-logs', '1'), {
+        date: now(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+      });
+      await setDoc(doc(db, 'households', householdA, 'pets', 'maple', 'feeding-logs', 'signed'), {
+        date: now(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'PM',
+        loggedByUid: users.member.uid, loggedByName: 'Member A', legacyMood: 'happy',
+      });
+    });
+  });
+
+  test('every shipped log write shape is accepted', async () => {
+    await assertSucceeds(addDoc(logs(users.member, 'feeding-logs'), feeding(users.member)));
+    await assertSucceeds(addDoc(logs(users.child, 'feeding-logs'), feeding(users.child)));
+    await assertSucceeds(addDoc(logs(users.member, 'medication-logs'), medication(users.member)));
+    const { nextDueDate: _due, ...noDue } = medication(users.member);
+    void _due;
+    await assertSucceeds(addDoc(logs(users.member, 'medication-logs'), noDue));
+    await assertSucceeds(addDoc(logs(users.member, 'care-logs'), care(users.member)));
+    // Clients from before "who logged it" (count + 1 ids, no logger), including overwriting an older entry.
+    const legacy = { cups: 1, foodAmountType: 'Cups', foodType: 'Wet', comments: '', date: new Date(), ampm: 'PM' };
+    await assertSucceeds(setDoc(log(users.member, 'feeding-logs', '2'), legacy));
+    await assertSucceeds(setDoc(log(users.member, 'feeding-logs', '1'), legacy));
+    await assertSucceeds(addDoc(logs(users.member, 'care-logs'), { date: new Date().toISOString(), activity: 'Brush', notes: '' }));
+  });
+
+  test('loggedByUid must be the writer and cannot change afterwards', async () => {
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), feeding(users.child)));
+    await assertFails(addDoc(logs(users.member, 'medication-logs'), medication(users.owner)));
+    await assertFails(addDoc(logs(users.member, 'care-logs'), care(users.child)));
+    await assertFails(addDoc(logs(users.member, 'care-logs'), { date: new Date().toISOString(), activity: 'Walk', notes: '', loggedByName: 'Forged' }));
+    await assertFails(updateDoc(log(users.owner, 'feeding-logs', 'signed'), { loggedByUid: users.owner.uid }));
+    await assertFails(updateDoc(log(users.member, 'feeding-logs', 'signed'), { loggedByName: 'Someone else' }));
+    await assertFails(updateDoc(log(users.member, 'feeding-logs', 'signed'), { loggedByUid: deleteField() }));
+    // An old client overwriting a signed entry would drop who logged it: refused.
+    await assertFails(setDoc(log(users.member, 'feeding-logs', 'signed'), { cups: 2, foodAmountType: 'Cups', foodType: 'Dry', comments: '', date: new Date(), ampm: 'AM' }));
+    // Other fields of a signed entry with a legacy field can still change.
+    await assertSucceeds(updateDoc(log(users.member, 'feeding-logs', 'signed'), { comments: 'Ate half' }));
+  });
+
+  test('log shapes are validated', async () => {
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), treats: 3 }));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), cups: 'one' }));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), ampm: 'noon' }));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), comments: 'x'.repeat(2001) }));
+    await assertFails(addDoc(logs(users.member, 'medication-logs'), { ...medication(users.member), medication: 'x'.repeat(201) }));
+    await assertFails(addDoc(logs(users.member, 'medication-logs'), { ...medication(users.member), refill: true }));
+    await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), activity: 5 }));
+    await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), notes: 'x'.repeat(2001) }));
+  });
+});
+
+describe('content shapes: maintenance', () => {
+  const col = (user: Identity, name: string) => collection(dbFor(user), 'households', householdA, name);
+  const ref = (user: Identity, name: string, id: string) => doc(col(user, name), id);
+  const nowIso = '2026-08-01T12:00:00.000Z';
+  // maintenance-log-client.tsx handleSaveLog (after cleanForFirestore) / applyScheduleCompletion / quick-add-writes.ts quickMaintenanceLog
+  const formLog = (overrides: Record<string, unknown> = {}) => ({
+    householdId: householdA, targetType: 'vehicle', vehicleId: 'car', title: 'Oil change', item: 'Oil change',
+    date: '2026-08-01', type: 'routine', notes: 'Synthetic', cost: 79.99, partsUsed: 'Filter', serviceProvider: 'Shop',
+    mileage: 42000, createdAt: nowIso, updatedAt: nowIso, ...overrides,
+  });
+  const asset = (overrides: Record<string, unknown> = {}) => ({
+    householdId: householdA, name: 'Furnace', category: 'HVAC', location: 'Basement', brand: 'Acme', model: 'X1',
+    serialNumber: 'SN', purchaseDate: '2020-01-01', purchasePrice: 3000, warrantyExpiration: '2030-01-01',
+    warrantyProvider: 'Acme', status: 'active', notes: '',
+    schedules: [{ id: 's1', mode: 'scheduled', scheduleName: 'Filter', frequencyType: 'months', intervalValue: 3, nextDueDate: '2026-09-01' }],
+    createdAt: nowIso, updatedAt: nowIso, ...overrides,
+  });
+  const vehicle = (overrides: Record<string, unknown> = {}) => ({
+    householdId: householdA, nickname: 'Car', year: 2019, make: 'Make', model: 'Model', trim: 'LX', vin: 'VIN',
+    licensePlate: 'ABC', currentMileage: 42000, purchaseDate: '2019-05-01', purchasePrice: 20000,
+    insuranceProvider: 'Ins', registrationExpiration: '2027-01-01', inspectionExpiration: '2027-01-01',
+    status: 'active', notes: '', serviceSchedules: [{ id: 'v1', serviceName: 'Oil', intervalMiles: 5000 }],
+    createdAt: nowIso, updatedAt: nowIso, ...overrides,
+  });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      // The first release's log shape (item, notes, date) plus an unknown legacy field.
+      await setDoc(doc(db, 'households', householdA, 'maintenance', 'legacy'), {
+        item: 'Gutter clean', notes: 'Old', date: '2025-06-01T00:00:00.000Z', vendorRef: 'v-1',
+      });
+      await setDoc(doc(db, 'households', householdA, 'home-assets', 'furnace'), { ...asset(), legacyTag: 'x' });
+      await setDoc(doc(db, 'households', householdA, 'vehicles', 'car'), vehicle());
+    });
+  });
+
+  test('every shipped log, asset and vehicle write shape is accepted', async () => {
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'oil'), formLog()));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'general'), {
+      householdId: householdA, targetType: 'general', title: 'Smoke alarms', item: 'Smoke alarms', date: '2026-08-01',
+      type: 'routine', notes: 'Odometer: 12 mi', createdAt: nowIso, updatedAt: nowIso,
+    }));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'asset-log'), (() => {
+      const { vehicleId: _v, mileage: _m, ...log } = formLog({ targetType: 'home_asset', assetId: 'furnace' });
+      void _v; void _m;
+      return log;
+    })()));
+    // Editing carries summary and receiptUrl through.
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'oil'), formLog({ summary: 'AI summary', receiptUrl: 'https://example.test/r.pdf' })));
+    // Deleting the target re-links its logs (maintenance-log-client.tsx deleteRegistryRecord).
+    await assertSucceeds(updateDoc(ref(users.member, 'maintenance', 'oil'), {
+      targetType: 'general', vehicleId: deleteField(), formerTargetType: 'vehicle', formerTargetName: 'Car', updatedAt: nowIso,
+    }));
+    await assertSucceeds(setDoc(ref(users.member, 'home-assets', 'dishwasher'), asset({ name: 'Dishwasher' })));
+    await assertSucceeds(setDoc(ref(users.member, 'vehicles', 'truck'), vehicle({ nickname: 'Truck' })));
+    // Schedule completion re-writes the whole record; snooze updates only its schedules.
+    await assertSucceeds(setDoc(ref(users.member, 'home-assets', 'furnace'), { ...asset(), legacyTag: 'x', updatedAt: '2026-08-02T00:00:00.000Z' }));
+    await assertSucceeds(updateDoc(ref(users.member, 'home-assets', 'furnace'), { schedules: [{ id: 's1', nextDueDate: '2026-09-08', snoozedUntil: '2026-09-08' }], updatedAt: nowIso }));
+    await assertSucceeds(updateDoc(ref(users.member, 'vehicles', 'car'), { serviceSchedules: [], updatedAt: nowIso }));
+    await assertSucceeds(setDoc(ref(users.member, 'vehicles', 'car'), vehicle({ currentMileage: 43000 })));
+    // A negative or zero cost typed into the form has always been stored.
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'refund'), formLog({ cost: -10 })));
+  });
+
+  test('a legacy log stays updatable on its other fields', async () => {
+    await assertSucceeds(updateDoc(ref(users.member, 'maintenance', 'legacy'), { notes: 'Edited', updatedAt: nowIso }));
+    await assertFails(updateDoc(ref(users.member, 'maintenance', 'legacy'), { vendorRef: 'v-2' }));
+  });
+
+  test('shapes are validated and householdId must match the path', async () => {
+    await assertFails(setDoc(ref(users.member, 'maintenance', 'x1'), formLog({ householdId: householdB })));
+    await assertFails(updateDoc(ref(users.member, 'maintenance', 'legacy'), { householdId: householdB }));
+    await assertFails(setDoc(ref(users.member, 'home-assets', 'x2'), asset({ householdId: householdB })));
+    await assertFails(setDoc(ref(users.member, 'vehicles', 'x3'), vehicle({ householdId: householdB })));
+    await assertFails(setDoc(ref(users.member, 'maintenance', 'x4'), formLog({ approvedBy: 'me' })));
+    await assertFails(setDoc(ref(users.member, 'maintenance', 'x5'), formLog({ cost: '80' })));
+    await assertFails(setDoc(ref(users.member, 'maintenance', 'x6'), formLog({ type: 'bribe' })));
+    await assertFails(setDoc(ref(users.member, 'maintenance', 'x7'), formLog({ title: 'x'.repeat(1001) })));
+    await assertFails(setDoc(ref(users.member, 'home-assets', 'x8'), asset({ status: 'broken' })));
+    await assertFails(setDoc(ref(users.member, 'home-assets', 'x9'), asset({ schedules: 'monthly' })));
+    await assertFails(setDoc(ref(users.member, 'vehicles', 'x10'), vehicle({ year: '2019' })));
+    await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { color: 'red' }));
+  });
+});
+
+describe('content shapes: barcode library', () => {
+  const item = (user: Identity, id: string) => doc(dbFor(user), 'households', householdA, 'barcode-library', id);
+  const storageUrl = (household = householdA, bucket = 'homehub-j91jb.appspot.com') =>
+    `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/households%2F${household}%2Fbarcode-library%2Fabc.jpg?alt=media&token=1-2-3`;
+  // barcode-library-client.tsx handleSave
+  const saved = (overrides: Record<string, unknown> = {}) => ({
+    name: 'Oat cereal', imageUrl: storageUrl(), imagePath: `households/${householdA}/barcode-library/abc.jpg`,
+    createdAt: '2026-08-01T12:00:00.000Z', ...overrides,
+  });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'barcode-library', '012345678905'), {
+        name: 'Seeded', imageUrl: '/favicon.ico', createdAt: '2026-07-25T15:00:00.000Z',
+      });
+    });
+  });
+
+  test('uploaded, emulator and Open Food Facts images are accepted', async () => {
+    await assertSucceeds(setDoc(item(users.member, '111'), saved()));
+    await assertSucceeds(setDoc(item(users.member, '112'), saved({ imageUrl: storageUrl(householdA, 'homehub-j91jb.firebasestorage.app') })));
+    await assertSucceeds(setDoc(item(users.member, '113'), saved({
+      imageUrl: `http://127.0.0.1:9199/v0/b/demo-homehub-e2e.appspot.com/o/households%2F${householdA}%2Fbarcode-library%2Fabc.jpg?alt=media&token=t`,
+    })));
+    await assertSucceeds(setDoc(item(users.member, '114'), { name: 'OFF', imageUrl: 'https://images.openfoodfacts.org/images/products/1/front.jpg', createdAt: '2026-08-01T12:00:00.000Z' }));
+  });
+
+  test('an existing product keeps a legacy image URL when edited', async () => {
+    await assertSucceeds(setDoc(item(users.member, '012345678905'), { name: 'Renamed', imageUrl: '/favicon.ico', createdAt: '2026-07-25T15:00:00.000Z' }));
+    await assertSucceeds(setDoc(item(users.member, '012345678905'), saved({ name: 'New photo' })));
+  });
+
+  test('image URLs, paths and fields are restricted', async () => {
+    await assertFails(setDoc(item(users.member, '201'), saved({ imageUrl: 'https://evil.example.test/pixel.gif' })));
+    await assertFails(setDoc(item(users.member, '202'), saved({ imageUrl: storageUrl(householdB) })));
+    await assertFails(setDoc(item(users.member, '203'), saved({ imageUrl: storageUrl(householdA, 'attacker-project.appspot.com') })));
+    await assertFails(setDoc(item(users.member, '204'), saved({ imageUrl: 'javascript:alert(1)' })));
+    await assertFails(updateDoc(item(users.member, '012345678905'), { imageUrl: 'https://evil.example.test/x.png' }));
+    await assertFails(setDoc(item(users.member, '205'), saved({ imagePath: `households/${householdB}/barcode-library/abc.jpg` })));
+    await assertFails(setDoc(item(users.member, '206'), saved({ name: 'x'.repeat(201) })));
+    await assertFails(setDoc(item(users.member, '207'), saved({ price: 3 })));
+    await assertFails(setDoc(item(users.member, '208'), saved({ name: 7 })));
+    await assertFails(setDoc(item(users.member, 'x'.repeat(129)), saved()));
   });
 });

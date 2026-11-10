@@ -50,6 +50,8 @@ The server-action lookup receives `householdId` and an ID token from its caller,
 
 The library UI follows the same permissions: Add Item and Edit appear with `shopping.edit`, Delete with `shopping.delete`, and without `shopping.view` the page explains that the library is not shared (after membership has loaded, so it never flashes). The Shopping Center hides its Barcode Library link without `shopping.view`.
 
+Firestore rules also validate product shapes (QA-8, BL-17): a product may only set `name` (1 to 200 characters), `imageUrl`, `imagePath` and `createdAt`, and the barcode ID is at most 128 characters on create. A written `imageUrl` must be empty, a Firebase Storage download URL for this household's `barcode-library/` folder in this project's bucket (`homehub-j91jb.appspot.com` or `homehub-j91jb.firebasestorage.app`, or the Storage emulator for `demo-` projects), or an Open Food Facts image (`images.` or `static.openfoodfacts.org`/`.net`); `imagePath` must be `households/{householdId}/barcode-library/<file>`. Only changed keys are checked on update, so an existing product whose stored `imageUrl` predates the rule can still be renamed while its image stays as is.
+
 Storage rules accept barcode-image creates and updates only when the object is 5 MB or smaller and its content type is `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/heic`, `image/heif`, or `image/avif`. The shared upload UI also validates images client-side.
 
 ## Integrations and Background Processing
