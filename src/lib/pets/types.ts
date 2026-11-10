@@ -30,7 +30,16 @@ export type LoggedBy = {
   loggedByName?: string;
 };
 
-export type PetFeedingLog = FeedingLog & LoggedBy;
+export type PetFeedingLog = FeedingLog & LoggedBy & {
+  /** Server time the entry was written (shared feed operation); the author may delete it for 10 minutes after. */
+  loggedAt?: unknown;
+  /** `none`: no recent feed; `confirmed`: logged after "Feed again?"; `offline`: queued offline, nobody else's feed could be checked. */
+  repeat?: 'none' | 'confirmed' | 'offline';
+  /** `device`: `date` is this device's clock (offline); otherwise it is server time or a chosen time. */
+  clockSource?: 'device' | 'server';
+  /** A deliberately chosen past time from the detailed form. */
+  backdated?: boolean;
+};
 
 export type PetMedicationLog = MedicationLog & LoggedBy & {
   /** Next dose due, as a local calendar date `yyyy-MM-dd`. */

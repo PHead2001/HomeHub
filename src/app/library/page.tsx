@@ -2,6 +2,8 @@
 
 import { BarcodeLibraryClient } from "@/components/barcode-library-client";
 import { useAuth } from "@/hooks/use-auth";
+import { useSessionKnown } from '@/hooks/use-session-known';
+import Loading from './loading';
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -9,6 +11,9 @@ import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
 export default function LibraryPage() {
     const { currentUser } = useAuth();
+    const sessionKnown = useSessionKnown();
+    // SL-11: the route skeleton, not the sign-in prompt, until Auth has answered.
+    if (!currentUser && !sessionKnown) return <Loading />;
     return (
         <div className="container mx-auto px-4 py-8">
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

@@ -4,6 +4,7 @@
 // the app.
 
 import {safePushLink} from "./shared/push-link";
+import {isAddressedToMember} from "./shared/notification-audience";
 
 export type MemberRecord = {
   uid: string;
@@ -28,9 +29,14 @@ const emailOf = (member: MemberRecord): string[] =>
   typeof member.email === "string" && member.email ? [member.email] : [];
 
 /**
- * Returns the emails of members who should receive a push. Targeted
- * notifications go only to that approved member; untargeted ones go to every
- * approved member (never to pending joiners or former members).
+ * Returns the emails of members who should receive a push. A stored
+ * `audience` decides: `[uid]` selects exactly that approved member, `["*"]`
+ * every approved member, `[]` nobody. A document without `audience` (written
+ * before the field existed) falls back to `targetUserUid`, then
+ * `targetUserEmail`, then everyone. Never pending joiners or former members.
+ * The same addressing check (`isAddressedToMember`) decides what the bell,
+ * center, dashboard and AI overview show. Category permission is applied
+ * afterwards by the caller (`filterRecipientsByCategory`).
  * @param {MemberRecord[]} members Membership records of the household.
  * @param {Record<string, unknown>} notification The notification document.
  * @return {string[]} Recipient emails.
@@ -39,21 +45,12 @@ export const selectRecipientEmails = (
   members: MemberRecord[],
   notification: Record<string, unknown>,
 ): string[] => {
-  const approved = members.filter(isApprovedMember);
-  const targetUid = notification.targetUserUid;
-  const targetEmail = notification.targetUserEmail;
-
-  if (typeof targetUid === "string") {
-    return approved.filter((m) => m.uid === targetUid).flatMap(emailOf);
-  }
-  if (typeof targetEmail === "string") {
-    const target = targetEmail.toLowerCase();
-    return approved
-      .filter((m) =>
-        typeof m.email === "string" && m.email.toLowerCase() === target)
-      .flatMap(emailOf);
-  }
-  return [...new Set(approved.flatMap(emailOf))];
+  const recipients = members.filter(isApprovedMember).filter((member) =>
+    isAddressedToMember(notification, {
+      uid: member.uid,
+      email: typeof member.email === "string" ? member.email : null,
+    }));
+  return [...new Set(recipients.flatMap(emailOf))];
 };
 
 /**
