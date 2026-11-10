@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { computeChoreFacts, roomSummary, ROOM_CHORES } from '../../src/lib/dashboard/facts';
 import { layoutHouse } from '../../src/lib/dashboard/house-layout';
@@ -11,6 +13,7 @@ import {
   PEEK_ROOM_CHORES,
   pointInPolygon,
   registerTap,
+  roomDetailRows,
   roomLinkName,
 } from '../../src/lib/dashboard/touch';
 
@@ -51,6 +54,50 @@ describe('inline room chores (HP-13a)', () => {
     ], rooms, viewer, new Date(2026, 7, 1, 12, 0, 0));
     const kitchen = facts.rooms.find((entry) => entry.id === 'kitchen')!;
     assert.deepEqual(inlineRoomChores(kitchen, INLINE_CHORES.narrow).map((entry) => entry.task), ['Mop floor', 'Dishes']);
+  });
+});
+
+describe('room details under the house on phones (HP-13a)', () => {
+  const rooms = [
+    { id: 'kitchen', ...room },
+    { id: 'garage', name: 'Garage', chores: [] },
+    { id: 'bath', name: 'Bathroom', chores: [chore('f', 'Scrub tub', 'due today')] },
+  ];
+
+  it('lists rooms with open chores in house order, two chores each', () => {
+    assert.deepEqual(roomDetailRows(rooms).map((row) => [row.id, row.name, row.chores.map((entry) => entry.id)]), [
+      ['kitchen', 'Kitchen', ['a', 'b']],
+      ['bath', 'Bathroom', ['f']],
+    ]);
+    assert.equal(roomDetailRows(rooms, false, INLINE_CHORES.regular)[0].chores.length, 3);
+  });
+
+  it('lists nothing while the rooms are loading', () => {
+    assert.deepEqual(roomDetailRows(rooms, true), []);
+  });
+});
+
+describe('touch geometry in the stylesheet (HP-13a)', () => {
+  const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8').replace(/\r\n/g, '\n');
+  const css = read('src/components/dashboard/dashboard.module.css');
+  const menu = read('src/components/dashboard/house-menu.tsx');
+
+  it('shows an in-room chore line only when the room is tall enough for it', () => {
+    assert.ok(css.includes('.roomChores {\n  container: room-chores / size;'));
+    assert.ok(css.includes('.roomChores > * {\n  display: none;'));
+    ['1.125rem', '2.25rem', '3.375rem'].forEach((height, index) => {
+      assert.ok(css.includes(`@container room-chores (min-height: ${height}) {\n  .roomChores > :nth-child(${index + 1}) {\n    display: block;`), height);
+    });
+  });
+
+  it('moves the chore lines under the house below 640 px', () => {
+    assert.ok(css.includes('@media (max-width: 639.98px) {\n  :global(html) .roomChores {\n    display: none;'));
+    assert.ok(css.includes('@media (min-width: 640px) {\n  :global(html) .roomDetails {\n    display: none;'));
+  });
+
+  it('caps the house menu at the width Radix says is available', () => {
+    assert.match(menu, /max-w-\[min\(20rem,var\(--radix-dropdown-menu-content-available-width,100vw\)\)\]/);
+    assert.match(menu, /min-w-\[min\(13rem,var\(--radix-dropdown-menu-content-available-width,100vw\)\)\]/);
   });
 });
 

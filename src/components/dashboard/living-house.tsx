@@ -52,7 +52,7 @@ import { playPetSound } from '@/lib/dashboard/pet-sound';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
 import { staleHint, type SectionState } from '@/lib/dashboard/dashboard-store';
 import type { HouseOutlineRoom } from '@/lib/dashboard/house-snapshot';
-import { attentionKey, INLINE_CHORES, inlineRoomChores, onRoof, PEEK_ROOM_CHORES, registerTap, roomLinkName } from '@/lib/dashboard/touch';
+import { attentionKey, INLINE_CHORES, inlineRoomChores, onRoof, PEEK_ROOM_CHORES, registerTap, roomDetailRows, roomLinkName } from '@/lib/dashboard/touch';
 import { useDayLight, WeatherLayer } from './time-of-day';
 import { useWeatherSettings, WeatherCityForm } from './weather-controls';
 import { HouseMenu } from './house-menu';
@@ -278,12 +278,14 @@ function RoomLink({
                 <Sparkles aria-hidden className={cn(styles.sparkle, 'h-4 w-4 shrink-0 text-success')} />
               ) : null}
             </span>
-            <span className="min-w-0">
+            <span className="flex min-h-0 min-w-0 flex-1 flex-col justify-end">
               <span className={cn(styles.roomState, 'hidden truncate text-[11px] min-[420px]:block sm:text-xs', room.status === 'overdue' ? 'text-foreground' : 'text-muted-foreground')}>{summary}</span>
               {inline.length > 0 && (
-                <span aria-hidden className={cn(styles.touchOnly, styles.roomChores, 'mt-0.5 block min-w-0')} data-testid={`house-room-chores-${room.id}`}>
+                // HP-13a: a size container; only the lines that fit the room's height show
+                // (dashboard.module.css), and on phones the list moves under the house.
+                <span aria-hidden className={cn(styles.touchOnly, styles.roomChores, 'min-w-0')} data-testid={`house-room-chores-${room.id}`}>
                   {inline.map((chore) => (
-                    <span key={chore.id} className={cn('block truncate', chore.overdue ? 'text-warning' : 'text-muted-foreground')}>{chore.task}</span>
+                    <span key={chore.id} className={cn('truncate', chore.overdue ? 'text-warning' : 'text-muted-foreground')}>{chore.task}</span>
                   ))}
                 </span>
               )}
@@ -292,6 +294,29 @@ function RoomLink({
         </Link>
       </PeekCard>
     </li>
+  );
+}
+
+/**
+ * HP-13a on phones: the room overlays are too short for chore lines (a 3-column room is
+ * about 70 px tall at 390 px), so on coarse pointers below 640 px the titles are listed
+ * here, under the house, two per room. Hidden from assistive tech: each room link's
+ * name already carries the titles (HP-28b).
+ */
+function RoomDetails({ rooms }: { rooms: RoomState[] }) {
+  const rows = roomDetailRows(rooms);
+  if (rows.length === 0) return null;
+  return (
+    <ul aria-hidden className={cn(styles.touchOnly, styles.roomDetails, 'mt-2 grid grid-cols-2 gap-x-3 gap-y-2 px-1 text-sm')} data-testid="house-room-details">
+      {rows.map((row) => (
+        <li key={row.id} className="min-w-0" data-testid={`house-room-details-${row.id}`}>
+          <span className="block truncate font-medium text-foreground">{row.name}</span>
+          {row.chores.map((chore) => (
+            <span key={chore.id} className={cn('block truncate', chore.overdue ? 'text-warning' : 'text-muted-foreground')}>{chore.task}</span>
+          ))}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -711,6 +736,7 @@ export function LivingHouse({
               </div>
             )}
           </div>
+          {roomsState === 'rooms' && facts.chores && <RoomDetails rooms={shownRooms} />}
           {hiddenRooms > 0 && (
             // HP-28c: a real control with a D-2 hit area, not a tiny text link.
             <p className="mt-1 flex justify-center">

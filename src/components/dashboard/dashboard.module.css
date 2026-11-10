@@ -648,18 +648,61 @@
   }
 }
 
-/* HP-13a: a room's inline chores, two lines on phones, three wider, five in the wide layout. */
-.roomChores > :nth-child(n + 3) {
+/*
+ * HP-13a: a room's inline chores. The block is a size container filling the room below
+ * its name and state, and a line shows only when the container is tall enough for it
+ * (1.125rem a line, the tallest line height used here; rem, so the thresholds move with
+ * the text scale), never more than three from 640 px or five in the wide layout. On
+ * phones (below 640 px) the rooms are too short, so the lines move under the house
+ * (`.roomDetails`, two per room) and the in-room block is hidden.
+ */
+.roomChores {
+  container: room-chores / size;
+  flex: 1 1 0%;
+  min-height: 0;
+  margin-top: 0.125rem;
+  overflow: hidden;
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+.roomChores > * {
   display: none;
 }
-@media (min-width: 640px) {
+@container room-chores (min-height: 1.125rem) {
+  .roomChores > :nth-child(1) {
+    display: block;
+  }
+}
+@container room-chores (min-height: 2.25rem) {
+  .roomChores > :nth-child(2) {
+    display: block;
+  }
+}
+@container room-chores (min-height: 3.375rem) {
   .roomChores > :nth-child(3) {
     display: block;
   }
 }
 @media (min-width: 1024px) and (orientation: landscape) {
-  .roomChores > :nth-child(n + 3) {
-    display: block;
+  @container room-chores (min-height: 4.5rem) {
+    .roomChores > :nth-child(4) {
+      display: block;
+    }
+  }
+  @container room-chores (min-height: 5.625rem) {
+    .roomChores > :nth-child(5) {
+      display: block;
+    }
+  }
+}
+@media (max-width: 639.98px) {
+  :global(html) .roomChores {
+    display: none;
+  }
+}
+@media (min-width: 640px) {
+  :global(html) .roomDetails {
+    display: none;
   }
 }
 /* HP-13b: inline tile details; two rows in the compact tiles beside the house. */
@@ -693,10 +736,6 @@
   :global(html) .roomDot {
     height: 0.625rem;
     width: 0.625rem;
-  }
-  .roomChores {
-    font-size: 0.8125rem;
-    line-height: 1.0625rem;
   }
   :global(html) .yardLabel {
     font-size: 0.875rem;

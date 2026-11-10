@@ -42,7 +42,10 @@ export function HouseMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="min-w-[13rem]"
+        collisionPadding={8}
+        // Never wider than the room Radix measured beside the trigger (or the screen), so
+        // a long weather city truncates inside the menu instead of widening it.
+        className="min-w-[min(13rem,var(--radix-dropdown-menu-content-available-width,100vw))] max-w-[min(20rem,var(--radix-dropdown-menu-content-available-width,100vw))]"
         onCloseAutoFocus={(event) => {
           // The city form just opened and focuses its own field, not the trigger.
           if (weather.cityFocus) event.preventDefault();
@@ -63,7 +66,7 @@ export function HouseMenu({
         {weather.ready && preference.enabled && preference.city && (
           <DropdownMenuItem onSelect={weather.startEditing} data-testid="weather-city-edit" className={cn(styles.menuItem, 'pl-8')}>
             <MapPin aria-hidden />
-            <span className="min-w-0 truncate">Change weather city ({preference.city})</span>
+            <span className="min-w-0 truncate" title={preference.city}>Change weather city ({preference.city})</span>
           </DropdownMenuItem>
         )}
         {seasonal && (

@@ -6,10 +6,12 @@ import type { Point } from './house-layout';
 import type { RoomState } from './facts';
 
 /**
- * How many of a room's chores show inline on coarse pointers (HP-13a): two lines on
- * phones, three on wider screens, five beside the tiles in the wide landscape layout.
- * The CSS (`dashboard.module.css` `.roomChores`) hides the lines past each limit, so
- * the component renders `INLINE_CHORES.wide` and the screen decides how many fit.
+ * How many of a room's chores show on coarse pointers (HP-13a): two per room on phones,
+ * where they are listed under the house (`roomDetailRows`) because a phone's room
+ * overlays are too short for them; inside the room up to three from 640 px and five
+ * beside the tiles in the wide landscape layout. Inside the room the CSS
+ * (`dashboard.module.css` `.roomChores`) also shows only the lines that fit the room's
+ * height, so the component renders `INLINE_CHORES.wide` and the room decides.
  */
 export const INLINE_CHORES = { narrow: 2, regular: 3, wide: 5 } as const;
 
@@ -25,6 +27,22 @@ type RoomChore = RoomState['chores'][number];
 export function inlineRoomChores(room: Pick<RoomState, 'chores'>, limit: number, loading = false): RoomChore[] {
   if (loading || limit <= 0) return [];
   return room.chores.slice(0, Math.floor(limit));
+}
+
+export type RoomDetailRow = { id: string; name: string; chores: RoomChore[] };
+
+/**
+ * The phone list under the house (HP-13a): each room that has open chores, in house
+ * order, with its first `limit` chores (two by default). Nothing while loading.
+ */
+export function roomDetailRows(
+  rooms: readonly Pick<RoomState, 'id' | 'name' | 'chores'>[],
+  loading = false,
+  limit: number = INLINE_CHORES.narrow,
+): RoomDetailRow[] {
+  return rooms
+    .map((room) => ({ id: room.id, name: room.name, chores: inlineRoomChores(room, limit, loading) }))
+    .filter((row) => row.chores.length > 0);
 }
 
 /** "Mop floor, due 2 days ago": one inline chore line, as read aloud. */
