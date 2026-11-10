@@ -16,6 +16,7 @@ delete process.env.OPENAI_OVERVIEW_MODEL;
 
 type Tasks = {
   categorize: typeof import('../../src/ai/tasks/categorize-grocery-item');
+  categorizeBatch: typeof import('../../src/ai/tasks/categorize-grocery-items');
   recipe: typeof import('../../src/ai/tasks/generate-recipe');
   maintenance: typeof import('../../src/ai/tasks/summarize-maintenance-log');
   overview: typeof import('../../src/ai/tasks/generate-home-overview');
@@ -25,14 +26,15 @@ let tasks: Tasks;
 let modelConfig: typeof import('../../src/ai/model-config');
 
 before(async () => {
-  const [categorize, recipe, maintenance, overview, loadedModelConfig] = await Promise.all([
+  const [categorize, categorizeBatch, recipe, maintenance, overview, loadedModelConfig] = await Promise.all([
     import('../../src/ai/tasks/categorize-grocery-item'),
+    import('../../src/ai/tasks/categorize-grocery-items'),
     import('../../src/ai/tasks/generate-recipe'),
     import('../../src/ai/tasks/summarize-maintenance-log'),
     import('../../src/ai/tasks/generate-home-overview'),
     import('../../src/ai/model-config'),
   ]);
-  tasks = { categorize, recipe, maintenance, overview };
+  tasks = { categorize, categorizeBatch, recipe, maintenance, overview };
   modelConfig = loadedModelConfig;
 });
 
@@ -139,6 +141,36 @@ describe('deterministic OpenAI task provider', () => {
       }), assertAiCode(code));
     });
   }
+
+  test('batched categorization returns one allowed category per name, in order (QA-6)', async () => {
+    const output = await tasks.categorizeBatch.categorizeGroceryItemsFlow({
+      itemNames: ['Oat milk', 'Gala apples', 'Zorblax'],
+      categories: ['Produce', 'Dairy', 'Pantry'],
+    });
+    assert.deepEqual(output, { categories: ['Dairy', 'Produce', 'Produce'] });
+
+    const { getLastDeterministicGeneration } = await import('../../src/ai/structured-generation');
+    const metadata = getLastDeterministicGeneration();
+    assert.equal(metadata?.flowName, 'categorization-batch');
+    assert.equal(metadata?.model, 'gpt-6-luna');
+    assert.deepEqual(metadata?.untrustedInput, { itemNames: ['Oat milk', 'Gala apples', 'Zorblax'], categories: ['Produce', 'Dairy', 'Pantry', 'Other'] });
+  });
+
+  test('batched categorization maps answers outside the list to Other and bounds the batch', async () => {
+    assert.deepEqual(await tasks.categorizeBatch.categorizeGroceryItemsFlow({
+      itemNames: ['AI-TEST:outside-category thing', 'Milk'],
+      categories: ['Dairy'],
+    }), { categories: ['Other', 'Other'] });
+    await assert.rejects(tasks.categorizeBatch.categorizeGroceryItemsFlow({
+      itemNames: Array.from({ length: tasks.categorizeBatch.MAX_CATEGORIZE_BATCH + 1 }, (_, index) => `Item ${index}`),
+      categories: ['Other'],
+    }));
+    await assert.rejects(tasks.categorizeBatch.categorizeGroceryItemsFlow({ itemNames: [], categories: ['Other'] }));
+    await assert.rejects(tasks.categorizeBatch.categorizeGroceryItemsFlow({
+      itemNames: ['AI-TEST:timeout item', 'Milk'],
+      categories: ['Dairy'],
+    }), assertAiCode('timeout'));
+  });
 
   test('recipe generation keeps its structured contract', async () => {
     const output = await tasks.recipe.generateRecipeFlow({

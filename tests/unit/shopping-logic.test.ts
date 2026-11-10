@@ -243,9 +243,10 @@ describe('decisions from confirmed (re-read) state, not the cached list', () => 
   });
 
   test('the merge is a transaction online and never happens offline', () => {
-    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
-    assert.match(source, /const target = offline \? undefined : findMergeTarget\(/);
-    assert.match(source, /await mergeIntoNeededItem\(/);
+    // The shared save path (add-items.ts) used by the list, palette, pantry and share target.
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'add-items.ts'), 'utf8');
+    assert.match(source, /const target = allowMerge && !offline \? findMergeTarget\(/);
+    assert.match(source, /trackWrite\(mergeIntoNeededItem\(/);
     const tx = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'item-transactions.ts'), 'utf8');
     assert.match(tx, /runTransaction\(db, async \(transaction\) => \{\s*const snapshot = await transaction\.get\(itemRef\);\s*if \(!canMergeInto/);
     const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
@@ -306,7 +307,7 @@ describe('quick-add partial failures', () => {
   });
 
   test('every multi-write path is per-entry or atomic', () => {
-    const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
+    const client = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'add-items.ts'), 'utf8');
     assert.match(client, /Promise\.allSettled\(entries\.map/);
     assert.doesNotMatch(client, /Promise\.all\(entries\.map/);
     const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');

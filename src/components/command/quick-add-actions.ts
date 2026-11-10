@@ -4,10 +4,10 @@
  * Writes for natural-language quick-add (H13). Each one uses the same document
  * contract as the module that owns the data, so Firestore rules and the module's
  * screens treat the result exactly like something added there:
- * - shopping items: merged into a still-needed item of the same name with the
- *   Shopping list's own transaction (`findMergeTarget` + `mergeIntoNeededItem`),
- *   otherwise created with `buildShoppingListItem` and the shared category
- *   resolution (the guarded, quota-counted categorizer; "Other" offline);
+ * - shopping items: the Shopping list's own save path (`addItemsToList`): merged
+ *   online into a still-needed item of the same name, otherwise created at once
+ *   with a remembered or local category, then one batched, quota-counted AI call
+ *   for the rest;
  * - feedings: the Pets module's `addFeedingLog`, defaulting to the pet's usual
  *   portion (`feedingPlan`) and the latest feeding's food type (`knownFoodType`),
  *   exactly like the one-tap feed button;
@@ -21,24 +21,21 @@
  * Firestore rules check the same permissions as on those screens (chores.create,
  * maintenance.createLogs). Nothing is written until the person confirms the preview.
  */
-import { Timestamp, collection, doc, getDocs, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { Timestamp, collection, doc, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { format } from 'date-fns';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
-import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { auth, db } from '@/lib/firebase';
-import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware } from '@/lib/firestore-offline';
 import { addFeedingLog, petLogsCollection } from '@/components/pets/pet-log-api';
 import { foodTypeFromLatest } from '@/lib/dashboard/quick-add';
 import type { RawDoc } from '@/lib/dashboard/facts';
 import { loggerName } from '@/lib/pets/care';
 import type { FoodType, PortionUnit } from '@/lib/pets/types';
-import { findMergeTarget, type QuickAddEntry } from '@/lib/shopping/items';
+import type { QuickAddEntry } from '@/lib/shopping/items';
+import { addItemsToList } from '@/lib/shopping/add-items';
 import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
-import { mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
+import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { Chore, ShoppingListItem, User } from '@/lib/types';
 import type { MaintenanceTarget, QuickAddList, QuickAddMember, QuickAddRepeat, QuickAddRoom } from '@/lib/dashboard/quick-add';
 import { quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '@/lib/dashboard/quick-add-writes';
@@ -51,27 +48,30 @@ export async function addShoppingItems(
 ): Promise<ShoppingAddOutcome> {
   const categoriesSnapshot = await getDocOfflineAware(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
-  const offline = isBrowserOffline();
   const itemsRef = collection(db, 'households', householdId, 'shopping-lists', list.id, 'items');
-  // As on the Shopping list: online, a name that is still needed merges into that
-  // item (the transaction re-checks it is still needed); offline nothing merges.
-  const needed = offline ? [] : (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
+  // The list's items give merge targets (needed ones, merged online only) and
+  // remembered categories; offline they come from the cache.
+  const knownItems = (await getDocsOfflineAware(itemsRef).catch(() => null))
     ?.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<ShoppingListItem, 'id'>) })) ?? [];
-  // Each entry is its own write, settled independently (Shopping's quick-add
-  // contract): one failure never hides which entries were saved, and a retry
-  // sends only the failed ones, so nothing is added twice.
-  const settled = await Promise.allSettled(items.map(async (item): Promise<'saved' | 'queued'> => {
-    const target = findMergeTarget(needed, item.name);
-    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), item.quantity)) return 'saved';
-    const { category } = await resolveShoppingCategory({
-      itemName: item.name,
-      categories,
-      selectedCategory: offline ? 'Other' : undefined,
-      categorize: async (input) => unwrapAiActionResult(await categorizeGroceryItem(input, await getAiActionContext(householdId))),
-    });
-    const { itemId, data } = buildShoppingListItem({ name: item.name, quantity: item.quantity, category });
-    return awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
-  }));
+  // The Shopping list's own save path: saved at once with a remembered or local
+  // category, one batched AI call afterwards, each write classified honestly.
+  const { outcomes } = await addItemsToList({
+    householdId,
+    listId: list.id,
+    uid: auth.currentUser?.uid,
+    entries: items,
+    categories,
+    knownItems,
+    // Late AI answers only while the same household is signed in (the palette has no open list).
+    active: () => ({ householdId: auth.currentUser ? householdId : null, listId: list.id }),
+    onLateError: (_name, error) => onLateError(error),
+  });
+  // The palette's contract is saved / queued / failed. A write without an answer yet
+  // (`sending`, `uncertain`) is kept as "queued": Firestore still holds it, and a
+  // later rejection is reported through onLateError, so a retry never adds it twice.
+  const settled: PromiseSettledResult<'saved' | 'queued'>[] = outcomes.map((outcome) => outcome.state === 'failed'
+    ? { status: 'rejected', reason: outcome.error ?? new Error('save-failed') }
+    : { status: 'fulfilled', value: outcome.state === 'saved' ? 'saved' : 'queued' });
   return shoppingAddOutcome(items, settled);
 }
 

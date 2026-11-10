@@ -31,6 +31,8 @@ Lookup is an authenticated server action but does not invoke OpenAI generation, 
 
 Lookup precedence is household library, Open Food Facts v3, then not found. A household hit prevents any public request. The v3 request asks only for product name, package quantity, normalized quantity/unit, and front image, uses a five-second timeout and HomeHub User-Agent, and treats community data as optional. Tests use emulator-only fixtures and never call production Open Food Facts.
 
+Scanning into a shopping list adds ONE package (BL-1, audit 17.3): `scanToShoppingEntry` (`src/lib/shopping/scan.ts`) maps the lookup to quantity 1 and keeps the package size and unit separately as the item's `size`/`sizeUnit` (only when the size is above 0 and at most 100000 and the unit at most 16 characters), shown as a note on the row ("450 g"). A scan of a name already needed on the list merges and adds 1. The package size is never the count (the e2e fixtures 128 fl oz and 450 g used to become x128 and x450).
+
 Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill pantry quantity/unit. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
 
 ## Data Model and Persistence
@@ -64,7 +66,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 
 ## Cross-Module Dependencies
 
-- [Shopping](../shopping/README.md) consumes lookup results for list items.
+- [Shopping](../shopping/README.md) consumes lookup results for list items (one package per scan, size kept as `size`/`sizeUnit`).
 - [Pantry Inventory and Recipes](../pantry-recipes/README.md) consumes lookup results for inventory and product photos for its shelf tiles.
 - [Application Shell](../application-shell/README.md) supplies `EmptyState`, `FieldError` and `toastError`.
 - [AI and OpenAI](../ai-genkit/README.md) supplies shared server authorization and sanitized action errors; barcode lookup itself is model-free.

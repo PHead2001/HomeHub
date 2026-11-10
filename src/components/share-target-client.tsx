@@ -1,11 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { collection, doc, query, setDoc } from 'firebase/firestore';
+import { collection, doc, query } from 'firebase/firestore';
 import { CheckCircle2, CloudOff, Link2, Loader2, Minus, Plus } from 'lucide-react';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
-import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -20,13 +18,14 @@ import { listTint } from '@/lib/shopping/list-style';
 import { cn } from '@/lib/utils';
 import { renderListIcon } from '@/components/shopping/list-icons';
 import { db } from '@/lib/firebase';
-import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { getDocOfflineAware, getDocsOfflineAware } from '@/lib/firestore-offline';
 import { MAX_ITEM_NAME_LENGTH, type SharedContent } from '@/lib/share-target';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import type { ShoppingList } from '@/lib/types';
+import { addItemsToList } from '@/lib/shopping/add-items';
+import { isPendingState, saveStateLabel, type SaveState } from '@/lib/shopping/save-status';
+import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
+import type { ShoppingList, ShoppingListItem } from '@/lib/types';
 
-type SaveResult = { listId: string; listName: string; itemName: string; queued: boolean };
+type SaveResult = { listId: string; listName: string; itemName: string; state: Exclude<SaveState, 'failed'> };
 
 function SharedPreview({ shared }: { shared: SharedContent }) {
   if (!shared.title && !shared.text && !shared.url) {
@@ -81,6 +80,11 @@ export function ShareTargetClient({ shared }: { shared: SharedContent }) {
   const [saveLink, setSaveLink] = useState(Boolean(shared.url));
   const [isSaving, setIsSaving] = useState(false);
   const [result, setResult] = useState<SaveResult | null>(null);
+  // The household a late AI answer may still touch (none once signed out or switched).
+  const activeHouseholdRef = useRef<string | null>(householdId);
+  useEffect(() => {
+    activeHouseholdRef.current = householdId;
+  }, [householdId]);
 
   useEffect(() => {
     if (!householdId || !canEdit) return;
@@ -114,27 +118,35 @@ export function ShareTargetClient({ shared }: { shared: SharedContent }) {
       ).catch(() => null);
       const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null)
         ?? DEFAULT_SHOPPING_CATEGORIES;
-      const { category } = await resolveShoppingCategory({
-        itemName: trimmedName,
+      // Remembered categories come from the list's items (cache offline).
+      const knownItems = (await getDocsOfflineAware(collection(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items')).catch(() => null))
+        ?.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<ShoppingListItem, 'id'>) })) ?? [];
+      const list = selectedList;
+      // The shared save path: saved at once with a remembered or local category,
+      // then one batched AI call. The share target always creates (it may carry a link).
+      const { outcomes } = await addItemsToList({
+        householdId,
+        listId: list.id,
+        uid: currentUser?.uid,
+        entries: [{ name: trimmedName, quantity }],
         categories,
-        // Offline there is no model to ask; save under Other like any AI fallback.
-        selectedCategory: isBrowserOffline() ? 'Other' : undefined,
-        categorize: async (categorizeInput) => unwrapAiActionResult(await categorizeGroceryItem(
-          categorizeInput,
-          await getAiActionContext(householdId)
-        )),
-      });
-      const { itemId, data } = buildShoppingListItem({
-        name: trimmedName,
-        quantity,
-        category,
+        knownItems,
         sourceUrl: saveLink ? shared.url : undefined,
+        allowMerge: false,
+        active: () => ({ householdId: activeHouseholdRef.current, listId: list.id }),
+        onLateError: (name, error) => toastError(error, `Could not sync ${name}`),
       });
-      const saved = await awaitWriteUnlessOffline(
-        setDoc(doc(db, 'households', householdId, 'shopping-lists', selectedList.id, 'items', itemId), data),
-        (error) => toastError(error, `Could not sync ${trimmedName}`),
-      );
-      setResult({ listId: selectedList.id, listName: selectedList.name, itemName: trimmedName, queued: saved === 'queued' });
+      const [outcome] = outcomes;
+      if (outcome.state === 'failed') throw outcome.error ?? new Error('save-failed');
+      setResult({ listId: list.id, listName: list.name, itemName: trimmedName, state: outcome.state });
+      if (isPendingState(outcome.state)) {
+        void outcome.settled.then((final) => {
+          // A late failure was reported by onLateError; back to the form to retry.
+          setResult((current) => current && current.state === outcome.state && current.itemName === trimmedName
+            ? (final === 'saved' ? { ...current, state: 'saved' } : null)
+            : current);
+        });
+      }
     } catch (error) {
       toastError(error, 'Could not add the item');
     } finally {
@@ -186,16 +198,20 @@ export function ShareTargetClient({ shared }: { shared: SharedContent }) {
   if (result) {
     return (
       <StateCard
-        title={result.queued ? 'Saved offline' : 'Added to your list'}
-        description={result.queued
-          ? `${result.itemName} will be added to ${result.listName} when you're back online.`
-          : `${result.itemName} was added to ${result.listName}.`}
+        title={result.state === 'saved' ? 'Added to your list' : result.state === 'stored-locally' ? 'Saved, will sync' : 'Still sending…'}
+        description={result.state === 'saved'
+          ? `${result.itemName} was added to ${result.listName}.`
+          : result.state === 'stored-locally'
+            ? `${result.itemName} is saved on this device and will be added to ${result.listName} when you're back online.`
+            : `${result.itemName} has not reached ${result.listName} yet. Keep this page open; it updates once it is confirmed.`}
       >
         <div className="flex items-center gap-2 text-sm" role="status">
-          {result.queued
-            ? <CloudOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            : <CheckCircle2 className="h-4 w-4 text-primary" aria-hidden="true" />}
-          <span>{result.queued ? 'Waiting to sync' : 'Saved'}</span>
+          {result.state === 'saved'
+            ? <CheckCircle2 className="h-4 w-4 text-primary" aria-hidden="true" />
+            : result.state === 'stored-locally'
+              ? <CloudOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              : <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />}
+          <span>{result.state === 'saved' ? 'Saved' : saveStateLabel(result.state)}</span>
         </div>
         <Button asChild className="w-full sm:w-auto">
           <Link href={`/shopping?list=${encodeURIComponent(result.listId)}`}>Open {result.listName}</Link>

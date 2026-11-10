@@ -602,9 +602,18 @@ service cloud.firestore {
         (!('color' in keys) || optionalString(data.color, 64));
     }
 
-    // quantity is checked after any increment() is applied.
+    // quantity is checked after any increment() is applied. nameKey, addedByUid,
+    // categorySource, size and sizeUnit (S2 save paths) are optional, so items
+    // written by older clients stay valid; addedByUid is checked on create and
+    // frozen on update below. size is a package size (BL-1), never the count.
     function validShoppingItemFields(data, keys) {
-      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl']) &&
+      return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl',
+          'nameKey', 'addedByUid', 'categorySource', 'size', 'sizeUnit']) &&
+        (!('nameKey' in keys) || nonEmptyString(data.nameKey, 500)) &&
+        (!('addedByUid' in keys) || nonEmptyString(data.addedByUid, 128)) &&
+        (!('categorySource' in keys) || data.categorySource in ['manual', 'remembered', 'local', 'ai', 'fallback', 'pending']) &&
+        (!('size' in keys) || (data.size is number && data.size > 0 && data.size <= 100000)) &&
+        (!('sizeUnit' in keys) || nonEmptyString(data.sizeUnit, 16)) &&
         (!('name' in keys) || nonEmptyString(data.name, 500)) &&
         (!('quantity' in keys) || (data.quantity is number && data.quantity > 0 && data.quantity <= 100000)) &&
         (!('category' in keys) || boundedString(data.category, 100)) &&
@@ -613,6 +622,16 @@ service cloud.firestore {
         (!('imageUrl' in keys) || boundedString(data.imageUrl, 2048)) &&
         (!('barcode' in keys) || boundedString(data.barcode, 128)) &&
         (!('sourceUrl' in keys) || boundedString(data.sourceUrl, 2048));
+    }
+
+    // Who added an item: only the writer's own uid on create (or none, for older
+    // clients and restores of someone else's item); never changed or removed later.
+    function shoppingAdderOnCreate() {
+      return !('addedByUid' in request.resource.data) || request.resource.data.addedByUid == request.auth.uid;
+    }
+
+    function shoppingAdderUnchanged() {
+      return request.resource.data.get('addedByUid', null) == resource.data.get('addedByUid', null);
     }
 
     function validShoppingConfig(data, keys) {
@@ -947,10 +966,12 @@ service cloud.firestore {
           allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
             shoppingListExists(householdId, listId) &&
             request.resource.data.keys().hasAll(['name']) &&
-            validShoppingItemFields(request.resource.data, writtenKeys());
+            validShoppingItemFields(request.resource.data, writtenKeys()) &&
+            shoppingAdderOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
             shoppingListExists(householdId, listId) &&
-            validShoppingItemFields(request.resource.data, writtenKeys());
+            validShoppingItemFields(request.resource.data, writtenKeys()) &&
+            shoppingAdderUnchanged();
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
 

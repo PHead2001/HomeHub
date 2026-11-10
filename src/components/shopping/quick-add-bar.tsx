@@ -10,10 +10,17 @@ import { MAX_QUICK_ADD_ITEMS, mergeRetryText, parseQuickAdd, quickAddFailureMess
 
 /**
  * What happened to a quick-add submission: `failed` are the entries that could not
- * be saved (the others were). `null` means nothing was saved, so every submitted
- * entry counts as failed.
+ * be saved. `pending` are entries without an answer yet (save-status.ts `sending`
+ * or `uncertain`): they show in a status chip and `settled` resolves with those of
+ * them that finally failed. The others were saved. `null` means nothing was
+ * saved, so every submitted entry counts as failed.
  */
-export type QuickAddOutcome = { failed: QuickAddEntry[] } | null;
+export type QuickAddOutcome = {
+  failed: QuickAddEntry[];
+  pending?: { entries: QuickAddEntry[]; label: string; settled: Promise<QuickAddEntry[]> };
+} | null;
+
+type PendingChip = { id: number; names: string; label: string };
 
 /**
  * The inline quick-add field pinned to the bottom of an open list (H07). It takes
@@ -29,16 +36,22 @@ export type QuickAddOutcome = { failed: QuickAddEntry[] } | null;
  * - When the save finishes, entries that failed are put back in front of whatever
  *   is in the field now, with an inline message naming them; on full success the
  *   field is left as the member has it. Saved entries are never put back.
+ * - The wait is bounded (SH-4c): entries the save could not confirm in time leave
+ *   the spinner and show in a "Still sending…" / "Checking…" chip under the field,
+ *   so further adds work at once. When they settle, the chip goes; entries that
+ *   finally failed are put back into the field with the inline message (Retry =
+ *   press Add), so typed input is never lost and nothing is added twice.
  * - Focus stays in the field. Mount it with a key per list: if it unmounts while
  *   saving (another list or page was opened), failed entries are reported in a
  *   toast instead, since there is no field to put them back into.
- * - Offline, entries are queued by Firestore and count as saved.
  */
 export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome> }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [chips, setChips] = useState<PendingChip[]>([]);
   const busyRef = useRef(false);
+  const chipIdRef = useRef(0);
   const mountedRef = useRef(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const fieldId = `quick-add-${useId().replace(/:/g, '')}`;
@@ -69,6 +82,7 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
     try {
       const outcome = await onAdd(entries);
       failed = outcome ? outcome.failed : entries;
+      if (outcome?.pending) trackPending(outcome.pending);
     } catch {
       failed = entries;
     } finally {
@@ -82,6 +96,27 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
         toast({ variant: 'destructive', title: `Not added to ${listName}`, description: failed.map((entry) => entry.name).join(', ') });
       }
     }
+  };
+
+  // Entries still waiting for an answer: a chip until they settle; late failures
+  // go back into the field like any failure.
+  const trackPending = (pending: NonNullable<QuickAddOutcome>['pending'] & object) => {
+    chipIdRef.current += 1;
+    const id = chipIdRef.current;
+    setChips((current) => [...current, { id, names: pending.entries.map((entry) => entry.name).join(', '), label: pending.label }]);
+    void pending.settled.catch(() => pending.entries).then((lateFailed) => {
+      if (!mountedRef.current) {
+        if (lateFailed.length > 0) {
+          toast({ variant: 'destructive', title: `Not added to ${listName}`, description: lateFailed.map((entry) => entry.name).join(', ') });
+        }
+        return;
+      }
+      setChips((current) => current.filter((chip) => chip.id !== id));
+      if (lateFailed.length > 0) {
+        setValue((current) => mergeRetryText(lateFailed, current));
+        setError(quickAddFailureMessage(lateFailed));
+      }
+    });
   };
 
   return (
@@ -113,6 +148,16 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
         </Button>
       </div>
       <FieldError id={fieldId} className="mt-1.5 px-1">{error}</FieldError>
+      {chips.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1.5 px-1" role="status" aria-live="polite" data-testid="quick-add-pending">
+          {chips.map((chip) => (
+            <li key={chip.id} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+              <span>{chip.label} {chip.names}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </form>
   );
 }
