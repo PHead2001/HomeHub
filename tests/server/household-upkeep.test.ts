@@ -173,6 +173,21 @@ describe('household upkeep', () => {
     assert.equal(data.readBy.o1, true, 'read state kept');
   });
 
+  test('the reminder email comes from the contact document first, then the membership record', async () => {
+    // A record without its email (as after the move): the contact document still reaches the profile.
+    await house().collection('members').doc('o1').update({ email: 'stale@example.test' });
+    await house().collection('members').doc('o1').collection('private').doc('contact').set({ email: 'owner@example.test', updatedAt: 'x' });
+    await run(new Date('2026-11-05T23:30:00Z'));
+    const reminders = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
+    assert.deepEqual(reminders.docs.map(d => d.id), ['o1-reminder-2026-11-05']);
+  });
+
+  test('without a contact document the membership record email is used', async () => {
+    await run(new Date('2026-11-05T23:30:00Z'));
+    const reminders = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
+    assert.deepEqual(reminders.docs.map(d => d.id), ['o1-reminder-2026-11-05']);
+  });
+
   test('chore reminders respect the member’s reminder time and never duplicate', async () => {
     await run(new Date('2026-11-05T15:00:00Z')); // 9am: before the 5pm reminder
     const morning = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
