@@ -72,7 +72,8 @@ function loadWeather(city: string): Promise<void> {
     emit();
     return Promise.resolve();
   }
-  const task = fetchWeather(city, { unit: unit() })
+  // The device storage also holds the city's geocoded coordinates (30 days, HP-35b).
+  const task = fetchWeather(city, { unit: unit(), storage: storage() })
     .then((report) => {
       // A failed fetch keeps the last good report (from this session, or the device cache).
       const last = previous?.report ? previous : { report: readCachedWeather(storage(), city, unit(), Date.now(), WEATHER_STALE_MAX_MS), failedAt: null };
@@ -125,7 +126,8 @@ export function useWeatherPreference(): {
 }
 
 /**
- * Current weather when the member opted in and set a city, with whether it is stale.
+ * Current weather (with today's high, low and rain chance, HP-35a) when the member opted
+ * in and set a city, with whether it is stale.
  * Cached for 30 minutes (per device, by city). The next refresh is scheduled at the
  * report's `fetchedAt + 30 min` (HP-6b), and re-checked when the page becomes visible
  * again; a failed refresh keeps the last good report, marked stale, and tries again in

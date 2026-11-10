@@ -76,8 +76,26 @@ const byStanding = (a: MemberChoreStats, b: MemberChoreStats) =>
   a.name.localeCompare(b.name);
 
 /**
- * Stats for each member, best this week first. Points go to the chore's assignee.
- * Chores assigned to someone who is no longer a member are ignored.
+ * Who a completed chore's points go to (D-7, CH-12): the member who completed it
+ * (`completedByUid`, else `completedByEmail`, written by the server), else its
+ * assignee for completions recorded before attribution existed. Returns the
+ * member's email, or the raw email when it matches no member.
+ */
+export function creditedEmail(
+  chore: Pick<ChoreRecord, 'assignedToEmail' | 'completedByUid' | 'completedByEmail'>,
+  members: readonly Pick<StatsMember, 'email' | 'uid'>[],
+): string {
+  if (chore.completedByUid) {
+    const member = members.find(candidate => candidate.uid === chore.completedByUid);
+    if (member) return member.email;
+  }
+  return chore.completedByEmail || chore.assignedToEmail;
+}
+
+/**
+ * Stats for each member, best this week first. Points go to whoever completed the
+ * chore (`creditedEmail`); fair share counts the chores assigned to each member.
+ * Completions credited to someone who is no longer a member are ignored.
  */
 export function computeChoreStats(chores: readonly ChoreRecord[], members: readonly StatsMember[], now: Date): ChoreStats {
   const today = dayKey(now);
@@ -98,17 +116,19 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
       weekTotal += 1;
       if (entry) entry.weekAssigned += 1;
     }
-    if (!entry || !known.has(chore.assignedToEmail)) continue;
     const completed = completionInstant(chore);
     if (!completed) continue;
+    const creditedTo = creditedEmail(chore, members);
+    const credited = acc.get(creditedTo);
+    if (!credited || !known.has(creditedTo)) continue;
     const completedDay = dayKey(completed);
     if (completedDay > today) continue; // clock skew: never count the future
     const points = chorePoints(chore);
-    entry.totalPoints += points;
-    entry.days.add(completedDay);
+    credited.totalPoints += points;
+    credited.days.add(completedDay);
     if (inWeek(completedDay)) {
-      entry.weekPoints += points;
-      entry.weekCompleted += 1;
+      credited.weekPoints += points;
+      credited.weekCompleted += 1;
     }
   }
 

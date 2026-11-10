@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { HOUSE_SNAPSHOT_KEY, clearHouseSnapshot, readHouseSnapshot, writeHouseSnapshot } from '../../src/lib/dashboard/house-snapshot';
+import { HOUSE_SNAPSHOT_KEY, clearHouseSnapshot, readHouseOutline, readHouseSnapshot, writeHouseSnapshot } from '../../src/lib/dashboard/house-snapshot';
 import type { ChoreFacts } from '../../src/lib/dashboard/facts';
 
 const memory = () => {
@@ -19,7 +19,20 @@ const chores: ChoreFacts = {
   mineOpen: 2, mineOverdue: 1, mineDueToday: 1, todayTotal: 3, todayDone: 1, overdueTotal: 1,
   rooms: [{ id: 'kitchen', name: 'Kitchen', overdue: 1, dueToday: 0, upcoming: 1, doneToday: 0, status: 'overdue', chores: [{ id: 'c1', task: 'Wipe counters', dueLabel: 'Yesterday', overdue: true }] }],
   nextUp: [{ id: 'c1', task: 'Wipe counters', dueLabel: 'Yesterday', overdue: true, mine: true }],
+  mineNext: [{ id: 'c1', task: 'Wipe counters', dueLabel: 'Yesterday', overdue: true, mine: true }],
 };
+
+describe('house outline from an earlier day (HP-7b)', () => {
+  it("gives yesterday's room ids and names only, for the same user and household", () => {
+    const storage = memory();
+    writeHouseSnapshot(storage, 'uid-a', 'house-1', '2026-11-09', JSON.stringify(chores));
+    assert.equal(readHouseSnapshot(storage, 'uid-a', 'house-1', '2026-11-10'), null, 'counts are never reused on a new day');
+    assert.deepEqual(readHouseOutline(storage, 'uid-a', 'house-1'), [{ id: 'kitchen', name: 'Kitchen' }]);
+    assert.equal(readHouseOutline(storage, 'uid-b', 'house-1'), null, 'another user');
+    assert.equal(readHouseOutline(storage, 'uid-a', 'house-2'), null, 'another household');
+    assert.equal(readHouseOutline(null, 'uid-a', 'house-1'), null);
+  });
+});
 
 describe('last-known house rooms (H01)', () => {
   it('returns the saved rooms only for the same user, household and day', () => {
@@ -65,8 +78,11 @@ describe('last-known house rooms (H01)', () => {
     const hook = readFileSync(resolve(__dirname, '../../src/lib/dashboard/use-dashboard-data.ts'), 'utf8');
     const helper = hook.slice(hook.indexOf('function useHouseSnapshot('));
     // Shown only while live chores are missing and the section hasn't failed...
-    assert.match(helper, /const snapshot = !live && householdId && !choresFailed \? readHouseSnapshot\(/);
-    assert.match(helper, /return snapshot \? \{ \.\.\.facts, chores: snapshot \} : facts;/);
+    assert.match(helper, /const waiting = !live && Boolean\(householdId\) && !choresFailed;/);
+    assert.match(helper, /const snapshot = waiting \? readHouseSnapshot\(/);
+    assert.match(helper, /return \{ facts: snapshot \? \{ \.\.\.facts, chores: snapshot \} : facts, outline \};/);
+    // ...and an earlier day's layout only when there is no snapshot for today (HP-7b).
+    assert.match(helper, /const outline = waiting && !snapshot \? readHouseOutline\(/);
     // ...every live change is saved...
     assert.match(helper, /if \(liveRooms && householdId && uid\) writeHouseSnapshot\(/);
     // ...and only with chores permission (no household id otherwise).
