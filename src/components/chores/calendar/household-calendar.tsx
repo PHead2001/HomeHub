@@ -21,6 +21,7 @@ import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { MemberAvatar } from '@/components/member-avatar';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { useToday } from '@/components/chores/use-today';
 import { auth, db } from '@/lib/firebase';
@@ -53,7 +54,6 @@ type Member = CalendarMember & { avatarUrl?: string | null };
 type SourceErrors = Partial<Record<'chores' | 'maintenance' | 'pets', string>>;
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const UNDO_MS = 5000;
 
 // Public member data only (name, photo): housemates' profiles are never read.
 async function loadMembers(householdId: string, viewer: { uid: string; email: string }): Promise<Member[]> {
@@ -221,7 +221,7 @@ function EventChip({
  * between days (arrow keys and the previous/next buttons do the same). Chores
  * are colored by member, today glows and overdue items stack in a red rail. Members who may edit chores can drag a
  * chore to another day or use "Move to date" from its details (keyboard friendly);
- * every move can be undone for 5 s. Maintenance and pet data are read-only here.
+ * every move can be undone for 10 s (`UNDO_WINDOW_MS`). Maintenance and pet data are read-only here.
  */
 export function HouseholdCalendar() {
   const { currentUser, household, permissions } = useAuth();
@@ -360,9 +360,10 @@ export function HouseholdCalendar() {
     }
     playFeedback('add');
     const handle = toast({
+      group: 'chore-move',
       title: 'Chore moved',
       description: `${chore.task} is now on ${format(dayFromKey(day), 'EEE, MMM d')}.`,
-      duration: UNDO_MS,
+      duration: UNDO_WINDOW_MS,
       action: (
         <ToastAction altText={`Undo moving ${chore.task}`} onClick={async () => {
           handle.dismiss();

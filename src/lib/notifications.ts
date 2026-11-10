@@ -3,6 +3,7 @@ import type { DocumentData, QueryDocumentSnapshot, Timestamp } from 'firebase/fi
 import type { Notification, NotificationCategory, NotificationUserAction } from '@/lib/types';
 import type { User as HomeHubUser } from '@/lib/types';
 import { stableSlugify } from '@/lib/utils';
+import { hasAudience, isAddressedToMember, notificationAudience } from '@functions/shared/notification-audience';
 
 const NOTIFICATION_TTL_DAYS = 7;
 
@@ -94,6 +95,7 @@ export const parseNotificationDoc = (snapshot: QueryDocumentSnapshot<DocumentDat
     stateKey: typeof data.stateKey === 'string' ? data.stateKey : undefined,
     targetUserUid: typeof data.targetUserUid === 'string' ? data.targetUserUid : undefined,
     targetUserEmail: typeof data.targetUserEmail === 'string' ? data.targetUserEmail : undefined,
+    audience: hasAudience(data.audience) ? data.audience : undefined,
     readBy: parseActionMap(data.readBy),
     dismissedBy: parseActionMap(data.dismissedBy),
     resolvedAt: data.resolvedAt ? toDate(data.resolvedAt) : undefined,
@@ -114,14 +116,16 @@ export const isNotificationDismissedBy = (notification: Notification, uid: strin
   return Boolean(notification.dismissedBy[uid]);
 };
 
+/**
+ * Defence in depth behind the audience-filtered queries: the stored `audience`
+ * decides when present (the member's uid or `'*'`), otherwise the legacy
+ * `targetUserUid` / `targetUserEmail` targeting. The same check as the push
+ * sender and AI overview (`isAddressedToMember`).
+ */
 export const isNotificationVisibleToUser = (
   notification: Notification,
   user: Pick<HomeHubUser, 'uid' | 'email'>
-) => {
-  if (notification.targetUserUid) return notification.targetUserUid === user.uid;
-  if (notification.targetUserEmail) return notification.targetUserEmail === user.email;
-  return true;
-};
+) => isAddressedToMember(notification, user);
 
 export const getNotificationLink = (notification: Notification) => notification.deepLink || notification.href || '#';
 
@@ -222,6 +226,9 @@ export const buildNotificationDocument = ({
     sourceId,
     stateKey,
     targetUserUid: targetUser?.uid,
+    // Who may see it: [uid] for one member, ['*'] for the household. The read rule
+    // enforces it from release 3 on.
+    audience: notificationAudience({ targetUserUid: targetUser?.uid }),
     readBy: {},
     dismissedBy: {},
   };

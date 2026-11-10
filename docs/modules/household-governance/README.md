@@ -153,3 +153,5 @@ In the rules, invite codes are created, listed and revoked by owners/admins (`us
 ## When This Document Must Be Updated
 
 Update this README when the management policy, a management server action or its writes change, when Household Manager tabs, member cards, the approval banner or the permission matrix change, or when household/member/invite/audit paths or fields, role presets, permission helpers, approval/reminder behavior, ownership/leave/delete workflows, legacy compatibility, system notifications, emulator seed membership, or governance security rules change.
+
+Session restore (release 2.1, SL-11): while the signed-in session is still being restored the page shows its own loading skeleton, never the sign-in prompt; a genuinely signed-out visitor still gets the prompt. The shared gate is described in [Application Shell](../application-shell/README.md).
