@@ -208,30 +208,6 @@ export const hasPermission = (
   return Boolean(getEffectivePermissions(roleInput, overrides)[permission]);
 };
 
-export const canManageMember = (actor?: HouseholdMember | null, target?: HouseholdMember | null) => {
-  if (!actor || !target) return false;
-  if (actor.uid === target.uid) return false;
-  if (actor.role === 'owner') return true;
-  if (actor.role === 'admin') return target.role !== 'owner';
-  return false;
-};
-
-export const canRemoveMember = canManageMember;
-
-export const canChangeRole = (actor?: HouseholdMember | null, target?: HouseholdMember | null, nextRole?: HouseholdRole) => {
-  if (!actor || !target) return false;
-  if (nextRole === 'newuser') return false;
-  if (nextRole === 'owner') return false;
-  if (target.role === 'owner') return false;
-  if (actor.role === 'owner') return true;
-  if (actor.role === 'admin') return true;
-  return false;
-};
-
-export const canTransferOwnership = (actor?: HouseholdMember | null, target?: HouseholdMember | null) => {
-  return Boolean(actor && target && actor.role === 'owner' && actor.uid !== target.uid && target.role !== 'newuser');
-};
-
 const approvedMemberRoles: HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest'];
 
 // Client permissions come only from the caller's approved membership record,
