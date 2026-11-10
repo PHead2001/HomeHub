@@ -635,7 +635,7 @@ service cloud.firestore {
     function validShoppingItemFields(data, keys) {
       return keys.hasOnly(['name', 'quantity', 'category', 'createdAt', 'status', 'imageUrl', 'barcode', 'sourceUrl',
           'nameKey', 'addedByUid', 'restoredByUid', 'categorySource', 'size', 'sizeUnit',
-          'purchasedByUid', 'purchasedAt', 'purchaseOpId', 'undoOpId', 'restoreOpId', 'editedByUid', 'editedAt']) &&
+          'purchasedByUid', 'purchasedAt', 'purchaseOpId', 'undoOpId', 'restoreOpId', 'restoredAt', 'editedByUid', 'editedAt']) &&
         (!('nameKey' in keys) || nonEmptyString(data.nameKey, 500)) &&
         (!('addedByUid' in keys) || nonEmptyString(data.addedByUid, 128)) &&
         (!('restoredByUid' in keys) || nonEmptyString(data.restoredByUid, 128)) &&
@@ -662,7 +662,7 @@ service cloud.firestore {
     //   anyone writes a new purchaseOpId (and removes undoOpId), so a late Undo is
     //   refused instead of overwriting it;
     // - restoreOpId (the Undo of a delete) only on a create, so a restore never
-    //   overwrites an item that exists again.
+    //   overwrites an item that exists again (see shoppingRestoreCreate).
     function validShoppingItemStamps(data, keys) {
       return (!('purchasedByUid' in keys) || data.purchasedByUid == null || data.purchasedByUid == request.auth.uid) &&
         (!('purchasedAt' in keys) || data.purchasedAt == null ||
@@ -671,7 +671,23 @@ service cloud.firestore {
         (!('editedByUid' in keys) || (data.editedByUid == request.auth.uid && 'editedAt' in keys)) &&
         (!('editedAt' in keys) || (data.editedAt == request.time && data.get('editedByUid', null) == request.auth.uid)) &&
         (!('undoOpId' in keys) || shoppingUndoMatchesPurchase(data, keys)) &&
-        (!('restoreOpId' in keys) || (resource == null && nonEmptyString(data.restoreOpId, 64)));
+        (!('restoreOpId' in keys) || (resource == null && nonEmptyString(data.restoreOpId, 64))) &&
+        (!('restoredAt' in keys) || (resource == null && 'restoreOpId' in data)) &&
+        (resource != null || !('restoreOpId' in data) || shoppingRestoreCreate(data));
+    }
+
+    // A restore (create with restoreOpId) carries restoredByUid = the writer and
+    // restoredAt == request.time, and none of the purchase, edit or Undo stamps:
+    // those belong to their own writer and time, so a restored item keeps its status
+    // (and purchaseOpId) but not purchasedByUid/At, editedByUid/At or undoOpId.
+    // restoredAt is what makes a restore create-only even when it is replayed: a
+    // setDoc of the same payload onto an item that exists again resolves restoredAt
+    // to a new request.time, so it is a changed key on an update and refused above,
+    // while ordinary updates leave restoredAt untouched.
+    function shoppingRestoreCreate(data) {
+      return data.get('restoredByUid', null) == request.auth.uid &&
+        data.get('restoredAt', null) == request.time &&
+        !data.keys().hasAny(['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId']);
     }
 
     function shoppingUndoMatchesPurchase(data, keys) {
