@@ -5,6 +5,7 @@
  */
 
 import type { ShoppingListItem } from '@/lib/types';
+import { STORE_WALK_ORDER, categoryKey, cleanCategoryName } from './category-order';
 
 /** Longest item name accepted from quick-add and the add-item dialog. */
 export const MAX_ITEM_NAME_LENGTH = 120;
@@ -142,44 +143,58 @@ export function quickAddFailureMessage(failed: readonly QuickAddEntry[]): string
 /**
  * The order a typical supermarket walk visits departments: fresh produce at the
  * door, then bakery, deli/meat, dairy along the back wall, frozen, the centre
- * aisles, and household goods by the tills.
+ * aisles, and household goods by the tills. Defined with the category order
+ * helpers (`./category-order.ts`).
  */
-export const STORE_WALK_ORDER = ['Produce', 'Bakery', 'Meat', 'Dairy', 'Frozen', 'Pantry', 'Snacks', 'Drinks', 'Household'] as const;
+export { STORE_WALK_ORDER };
 
 export type AisleGroup<T> = { category: string; items: T[] };
 
 /**
- * Groups items by category in store-walk order: known departments first in
- * {@link STORE_WALK_ORDER}, then the list's custom categories in their configured
- * order, then categories that only exist on items (for example one removed from
- * the list's configuration, so its items never disappear), and `Other` last.
- * Items inside a group are sorted by name.
+ * Groups items by category. Categories are one aisle regardless of case and
+ * spacing ("dairy" and "Dairy", SH-10d); the heading uses the list's spelling,
+ * else the first item's.
+ *
+ * Without `order` (lists whose categories were never reordered): known
+ * departments first in {@link STORE_WALK_ORDER}, then the list's custom
+ * categories in their configured order. With `order` (the list's own order, or
+ * its store's aisle order, S6): exactly that order. Either way categories that
+ * only exist on items (for example one removed from the list's configuration, so
+ * its items never disappear) come next, alphabetically, and `Other` last. Items
+ * inside a group are sorted by name.
  */
 export function groupItemsByAisle<T extends Pick<ShoppingListItem, 'name' | 'category'>>(
   items: readonly T[],
   configuredCategories: readonly string[],
+  options: { order?: readonly string[] } = {},
 ): AisleGroup<T>[] {
-  const byCategory = new Map<string, T[]>();
+  const spelling = new Map<string, string>();
+  for (const category of [...(options.order ?? []), ...configuredCategories]) {
+    const key = categoryKey(category);
+    if (key && !spelling.has(key)) spelling.set(key, cleanCategoryName(category));
+  }
+  const byCategory = new Map<string, { category: string; items: T[] }>();
   for (const item of items) {
-    const category = item.category?.trim() || 'Other';
-    const bucket = byCategory.get(category);
-    if (bucket) bucket.push(item);
-    else byCategory.set(category, [item]);
+    const raw = cleanCategoryName(item.category ?? '') || 'Other';
+    const key = raw.toLowerCase();
+    const bucket = byCategory.get(key);
+    if (bucket) bucket.items.push(item);
+    else byCategory.set(key, { category: spelling.get(key) ?? raw, items: [item] });
   }
 
-  const walkIndex = (category: string) => {
-    const index = STORE_WALK_ORDER.findIndex((known) => known.toLowerCase() === category.toLowerCase());
-    return index;
-  };
-  const configuredIndex = (category: string) => configuredCategories.findIndex((c) => c.toLowerCase() === category.toLowerCase());
-
-  const rank = (category: string): [number, number, string] => {
-    if (category.toLowerCase() === 'other') return [3, 0, category];
-    const walk = walkIndex(category);
-    if (walk >= 0) return [0, walk, category];
-    const configured = configuredIndex(category);
-    if (configured >= 0) return [1, configured, category];
-    return [2, 0, category.toLowerCase()];
+  const indexIn = (list: readonly string[], key: string) => list.findIndex((entry) => categoryKey(entry) === key);
+  const rank = (key: string): [number, number, string] => {
+    if (key === 'other') return [3, 0, key];
+    if (options.order) {
+      const ordered = indexIn(options.order, key);
+      if (ordered >= 0) return [0, ordered, key];
+      return [2, 0, key];
+    }
+    const walk = indexIn(STORE_WALK_ORDER, key);
+    if (walk >= 0) return [0, walk, key];
+    const configured = indexIn(configuredCategories, key);
+    if (configured >= 0) return [1, configured, key];
+    return [2, 0, key];
   };
 
   return [...byCategory.entries()]
@@ -188,9 +203,9 @@ export function groupItemsByAisle<T extends Pick<ShoppingListItem, 'name' | 'cat
       const [gb, ib, nb] = rank(b);
       return ga - gb || ia - ib || na.localeCompare(nb);
     })
-    .map(([category, groupItems]) => ({
-      category,
-      items: [...groupItems].sort((x, y) => x.name.localeCompare(y.name)),
+    .map(([, group]) => ({
+      category: group.category,
+      items: [...group.items].sort((x, y) => x.name.localeCompare(y.name)),
     }));
 }
 

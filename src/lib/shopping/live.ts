@@ -13,8 +13,9 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { onDataChanged } from '@/lib/data-changed';
-import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
-import type { PantryItem, ShoppingList, ShoppingListCategory, ShoppingListItem } from '@/lib/types';
+import { DEFAULT_SHOPPING_CATEGORIES } from '@/lib/shopping-items';
+import type { PantryItem, ShoppingList, ShoppingListItem, ShoppingStore } from '@/lib/types';
+import { readCategoryConfig, type CategoryConfig } from './category-order';
 import {
   countItems,
   docsToRecords,
@@ -106,14 +107,35 @@ export function useLiveListItems(householdId: string | null | undefined, listId:
   ));
 }
 
-/** One list's categories (`config/categories`), or the defaults when it has none. */
-export function useLiveListCategories(householdId: string | null | undefined, listId: string | null | undefined): LiveState<ShoppingListCategory[]> {
+const NO_CONFIG: CategoryConfig = readCategoryConfig(null, false, DEFAULT_SHOPPING_CATEGORIES);
+
+/**
+ * One list's category configuration (`config/categories`): the categories in
+ * display order (`list`, the defaults when there is no document), the stored
+ * spellings and whether the member's order is kept (`ordered`, S6).
+ */
+export function useLiveCategoryConfig(householdId: string | null | undefined, listId: string | null | undefined): LiveState<CategoryConfig> {
   const key = liveKey('categories', householdId, listId);
-  return useLive(key, DEFAULT_SHOPPING_CATEGORIES, (next, fail) => onSnapshot(
+  return useLive(key, NO_CONFIG, (next, fail) => onSnapshot(
     doc(db, 'households', householdId as string, 'shopping-lists', listId as string, 'config', 'categories'),
     { includeMetadataChanges: true },
+    (snapshot) => next(readCategoryConfig(snapshot.data(), snapshot.exists(), DEFAULT_SHOPPING_CATEGORIES), snapshot.metadata),
+    fail,
+  ));
+}
+
+const NO_STORES: ShoppingStore[] = [];
+
+/** The household's stores (`stores/{storeId}`, S6: SH-34b), sorted by name. */
+export function useLiveStores(householdId: string | null | undefined): LiveState<ShoppingStore[]> {
+  const key = liveKey('stores', householdId);
+  return useLive(key, NO_STORES, (next, fail) => onSnapshot(
+    collection(db, 'households', householdId as string, 'stores'),
+    { includeMetadataChanges: true },
     (snapshot) => next(
-      (snapshot.exists() ? normalizeStoredCategories(snapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES,
+      docsToRecords<ShoppingStore>(snapshot.docs)
+        .map((store) => ({ ...store, name: String(store.name ?? ''), aisleOrder: Array.isArray(store.aisleOrder) ? store.aisleOrder : [] }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
       snapshot.metadata,
     ),
     fail,
