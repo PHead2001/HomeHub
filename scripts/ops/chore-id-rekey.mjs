@@ -22,7 +22,53 @@ export const MAX_DUPLICATE_SLOT = 9;
 // lone digit.
 const DUPLICATE_SUFFIX = /^[2-9]$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const LEGACY_ID = /^(.+-\d{4}-\d{2}-\d{2})-(.+)$/;
+const DAY_AT = /^\d{4}-\d{2}-\d{2}(?=-|$)/;
+const ENDS_WITH_DAY = /-\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The occurrence id inside a legacy id whose occurrence key is unknown (no stored
+ * key, and a room that no longer matches it): `<template slug>-<room slug>-<day>`.
+ * The assignee part after the day may itself contain date-shaped parts (an email
+ * such as `alice-2025-01-01@work...`), so the day is never taken from the end.
+ * Candidates are the date-shaped parts after the template slug and a non-empty
+ * room part. One candidate is the day (the real day is always among them). With
+ * several, the one whose room part is a known room (`roomSlugs`) decides; when
+ * that does not single one out the id is ambiguous.
+ * @param {string} id
+ * @param {string} templateSlug `stableSlugify(templateId)`.
+ * @param {ReadonlySet<string> | null} roomSlugs `stableSlugify` of the household's room ids and "general".
+ * @returns {{ base: string } | { ambiguous: true } | null} Null when the id is not a generated id.
+ */
+export function legacyOccurrenceBase(id, templateSlug, roomSlugs) {
+  const prefix = `${templateSlug}-`;
+  if (!templateSlug || !id.startsWith(prefix)) return null;
+  const rest = id.slice(prefix.length);
+  const candidates = [];
+  for (let index = 2; index < rest.length; index += 1) {
+    if (rest[index - 1] !== '-') continue;
+    const day = DAY_AT.exec(rest.slice(index));
+    if (day) candidates.push({ room: rest.slice(0, index - 1), base: `${prefix}${rest.slice(0, index + day[0].length)}` });
+  }
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return { base: candidates[0].base };
+  const known = roomSlugs ? candidates.filter(candidate => roomSlugs.has(candidate.room)) : [];
+  return known.length === 1 ? { base: known[0].base } : { ambiguous: true };
+}
+
+/**
+ * Guard on every move target: the occurrence id ends with its day, so nothing of
+ * the old id's assignee part can survive in it (the only thing ever added after
+ * the day is a `-2`..`-9` duplicate slot, see rekeyTargets).
+ * @param {string} base
+ * @param {string} templateSlug
+ * @returns {string} base
+ */
+export function assertOccurrenceBase(base, templateSlug) {
+  if (!ENDS_WITH_DAY.test(base) || !base.startsWith(`${templateSlug}-`)) {
+    throw new Error('chore id re-key: a target id must be <template>-<room>-<day>');
+  }
+  return base;
+}
 
 const text = value => (typeof value === 'string' ? value.trim() : '');
 
@@ -62,17 +108,21 @@ export function rekeyTargets(base) {
  *   `templateId`, `roomIds`, `sourceType`, `occurrenceKey`).
  * @param {ReadonlySet<string>} [memberUidSlugs] `stableSlugify(uid)` of the household's
  *   members, only to count how many assignee parts were uids (`suffix`).
- * @returns {{ kind: 'one-time' | 'current' | 'unrecognized' } | { kind: 'rekey', base: string, suffix: 'uid' | 'other', occurrenceKey: string | null }}
+ * @param {ReadonlySet<string> | null} [roomSlugs] `stableSlugify` of the household's room
+ *   ids and "general", to place the day in a keyless id with several date-shaped parts.
+ * @returns {{ kind: 'one-time' | 'current' | 'unrecognized' | 'ambiguous' } | { kind: 'rekey', base: string, suffix: 'uid' | 'other', occurrenceKey: string | null }}
  *   - `one-time`: not a generated chore (a `sourceType`, or no template);
  *   - `current`: already under its occurrence id (or a numbered duplicate of it);
  *   - `unrecognized`: has a template, but the id is not a generated id: left alone;
+ *   - `ambiguous`: a generated id without a usable key in which the day cannot be
+ *     told apart from date-shaped parts of the assignee: left alone and counted;
  *   - `rekey`: move it to `base` (or the first free `rekeyTargets(base)` slot).
  *     `suffix` says whether the assignee part was a member's uid or anything else
  *     (an email, or a former member's uid). `occurrenceKey` is the key to add when
  *     the chore has none and its id names its room exactly (null otherwise: the
  *     move then keeps the fields as they are).
  */
-export function choreIdRekeyPlan(id, chore, memberUidSlugs = new Set()) {
+export function choreIdRekeyPlan(id, chore, memberUidSlugs = new Set(), roomSlugs = null) {
   if (!chore || (chore.sourceType !== undefined && chore.sourceType !== null)) return { kind: 'one-time' };
   const templateId = text(chore.templateId) ? chore.templateId : '';
   if (!templateId) return { kind: 'one-time' };
@@ -82,12 +132,13 @@ export function choreIdRekeyPlan(id, chore, memberUidSlugs = new Set()) {
   let base = parsed ? occurrenceChoreIdJs(parsed.templateId, parsed.roomId, parsed.day) : null;
   if (!base || !(id === base || id.startsWith(`${base}-`))) {
     // No key, or a room that no longer matches the id (the chore was moved to
-    // another room): the occurrence id is the id up to its day, as long as it
-    // starts with the template's slug.
-    const match = LEGACY_ID.exec(id);
-    if (!match || !match[1].startsWith(`${stableSlugify(templateId)}-`)) return { kind: 'unrecognized' };
-    base = match[1];
+    // another room): the occurrence id is the id up to its day (legacyOccurrenceBase).
+    const found = legacyOccurrenceBase(id, stableSlugify(templateId), roomSlugs);
+    if (!found) return { kind: 'unrecognized' };
+    if ('ambiguous' in found) return { kind: 'ambiguous' };
+    base = found.base;
   }
+  assertOccurrenceBase(base, stableSlugify(templateId));
   if (id === base) return { kind: 'current' };
   const suffix = id.slice(base.length + 1);
   if (!suffix) return { kind: 'unrecognized' };

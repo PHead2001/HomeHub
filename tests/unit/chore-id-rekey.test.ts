@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { occurrenceChoreId, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
 import {
+  assertOccurrenceBase,
   choreIdRekeyPlan,
+  legacyOccurrenceBase,
   occurrenceChoreIdJs,
   parseOccurrenceKey,
   rekeyTargets,
@@ -45,6 +47,54 @@ describe('chore id re-key decisions', () => {
     const id = recurringChoreId('trash', 'kitchen', '2026-11-05', EMAIL);
     const plan = choreIdRekeyPlan(id, { templateId: 'trash', roomIds: ['garage'] });
     assert.deepEqual(plan, { kind: 'rekey', base: 'trash-kitchen-2026-11-05', suffix: 'other', occurrenceKey: null });
+    // The runtime recovery (upkeep, calendar) is anchored on the stored room and reads
+    // only the ten characters after it, so it never reaches into the assignee part.
+    assert.equal(storedOccurrenceKey(recurringChoreId('trash', 'kitchen', '2026-11-05', 'alice-2025-01-01@work.example.test'), { templateId: 'trash', roomIds: ['kitchen'] }), 'trash|kitchen|2026-11-05');
+  });
+
+  test('the day is never taken from date-shaped parts of the email', () => {
+    // Keyless, and the chore's room changed since: the id is the only source.
+    const rooms = new Set(['general', 'kitchen', 'garage']);
+    const fields = { templateId: 'trash', roomIds: ['garage'] };
+    const id = recurringChoreId('trash', 'kitchen', '2026-11-05', 'alice-2025-01-01@work.example.test');
+    assert.equal(id, 'trash-kitchen-2026-11-05-alice-2025-01-01workexampletest');
+    const codexExample = 'trash-kitchen-2026-11-05-alice-2025-01-01-workexampletest';
+    for (const legacy of [id, codexExample]) {
+      const plan = choreIdRekeyPlan(legacy, fields, new Set(), rooms);
+      assert.equal(plan.kind, 'rekey', legacy);
+      if (plan.kind === 'rekey') assert.equal(plan.base, 'trash-kitchen-2026-11-05', legacy);
+    }
+    // An email with several date-like parts.
+    const several = recurringChoreId('trash', 'kitchen', '2026-11-05', 'x-2024-02-02-2023-03-03-1999-12-31@example.test');
+    const plan = choreIdRekeyPlan(several, fields, new Set(), rooms);
+    assert.equal(plan.kind === 'rekey' && plan.base, 'trash-kitchen-2026-11-05');
+  });
+
+  test('an id whose day cannot be told apart is left alone and counted as ambiguous', () => {
+    const fields = { templateId: 'trash', roomIds: ['garage'] };
+    const id = 'trash-kitchen-2026-11-05-alice-2025-01-01-workexampletest';
+    // The room it names was deleted (or no rooms are known): two candidate days.
+    assert.deepEqual(choreIdRekeyPlan(id, fields, new Set(), new Set(['general', 'garage'])), { kind: 'ambiguous' });
+    assert.deepEqual(choreIdRekeyPlan(id, fields), { kind: 'ambiguous' });
+    assert.deepEqual(legacyOccurrenceBase(id, 'trash', null), { ambiguous: true });
+    // A single date-shaped part is the day, whatever the room.
+    assert.deepEqual(legacyOccurrenceBase('trash-kitchen-2026-11-05-samexampletest', 'trash', null), { base: 'trash-kitchen-2026-11-05' });
+  });
+
+  test('a move target never keeps anything after the day', () => {
+    assert.throws(() => assertOccurrenceBase('trash-kitchen-2026-11-05-alice', 'trash'));
+    assert.throws(() => assertOccurrenceBase('mop-kitchen-2026-11-05', 'trash'));
+    assert.equal(assertOccurrenceBase('trash-kitchen-2026-11-05', 'trash'), 'trash-kitchen-2026-11-05');
+    const cases: Array<[string, Record<string, unknown>]> = [
+      [recurringChoreId('trash', 'kitchen', '2026-11-05', 'a-2020-01-01@b.c'), { templateId: 'trash', roomIds: ['kitchen'] }],
+      [recurringChoreId('trash', 'kitchen', '2026-11-05', 'a-2020-01-01@b.c'), { templateId: 'trash', roomIds: [], occurrenceKey: 'trash|kitchen|2026-11-05' }],
+      [recurringChoreId('trash', 'kitchen', '2026-11-05', 'a-2020-01-01@b.c'), { templateId: 'trash', roomIds: ['garage'] }],
+    ];
+    for (const [id, chore] of cases) {
+      const plan = choreIdRekeyPlan(id, chore, new Set(), new Set(['general', 'kitchen', 'garage']));
+      assert.equal(plan.kind, 'rekey');
+      if (plan.kind === 'rekey') assert.match(plan.base, /^trash-kitchen-2026-11-05$/);
+    }
   });
 
   test('uid-keyed chores move too, counted as uids of current members', () => {
@@ -65,8 +115,9 @@ describe('chore id re-key decisions', () => {
     assert.deepEqual(choreIdRekeyPlan(recurringChoreId('trash', 'general', '2026-11-05', EMAIL), { templateId: 'trash', sourceType: 'template' }), { kind: 'one-time' });
     assert.deepEqual(choreIdRekeyPlan('anything', { task: 'No template' }), { kind: 'one-time' });
     assert.deepEqual(choreIdRekeyPlan('AbCdEf0123456789wxyz', { templateId: 'trash', roomIds: [] }), { kind: 'unrecognized' });
-    // A template whose id contains a date is not mistaken for a generated id.
-    assert.deepEqual(choreIdRekeyPlan('x-2025-01-01-r-2026-11-05', { templateId: 'x-2025-01-01', roomIds: ['elsewhere'] }), { kind: 'unrecognized' });
+    // A template whose id contains a date: its own date is part of the prefix, not a day.
+    assert.deepEqual(choreIdRekeyPlan('x-2025-01-01-r-2026-11-05', { templateId: 'x-2025-01-01', roomIds: ['elsewhere'] }), { kind: 'current' });
+    assert.deepEqual(choreIdRekeyPlan('x-2025-01-01-r', { templateId: 'x-2025-01-01', roomIds: ['elsewhere'] }), { kind: 'unrecognized' });
   });
 
   test('running the plan on its own output finds nothing to do', () => {

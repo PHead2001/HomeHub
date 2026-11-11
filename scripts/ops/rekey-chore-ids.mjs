@@ -16,7 +16,10 @@
 // - a day that already has a chore under the new id (two chores for one day,
 //   from before upkeep checked occurrence keys) moves to `<id>-2` .. `<id>-9`;
 // - one-time chores (auto ids) and chores whose id is not a generated id are
-//   left alone and counted.
+//   left alone and counted, as are generated chores without an occurrence key
+//   whose room changed and whose id has several date-shaped parts that the
+//   household's rooms cannot tell apart (the email may contain dates); the
+//   target id always ends with the occurrence day.
 // Nothing else refers to a generated chore id: notifications name one-time
 // chores (their own auto ids), templates or days, never a generated id. A page
 // that listed a chore just before it moved acts on the old id once, like on a
@@ -52,13 +55,15 @@ const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIR
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (chores will be moved to new ids)' : 'dry run (no writes)'}.`);
 
 const totals = {
-  households: 0, scanned: 0, 'one-time': 0, current: 0, unrecognized: 0, rekey: 0, uid: 0, other: 0,
+  households: 0, scanned: 0, 'one-time': 0, current: 0, unrecognized: 0, ambiguous: 0, rekey: 0, uid: 0, other: 0,
   moved: 0, duplicate: 0, changed: 0, 'no-free-id': 0, stopped: 0,
 };
 
 const rekeyHousehold = async householdRef => {
   const members = await householdRef.collection('members').select().get();
   const memberUidSlugs = new Set(members.docs.map(member => stableSlugify(member.id)));
+  const rooms = await householdRef.collection('rooms').select().get();
+  const roomSlugs = new Set(['general', ...rooms.docs.map(room => stableSlugify(room.id))]);
   let cursor = null;
   for (;;) {
     let page = householdRef.collection('chores')
@@ -69,7 +74,7 @@ const rekeyHousehold = async householdRef => {
     if (snapshot.empty) break;
     for (const chore of snapshot.docs) {
       totals.scanned += 1;
-      const plan = choreIdRekeyPlan(chore.id, chore.data(), memberUidSlugs);
+      const plan = choreIdRekeyPlan(chore.id, chore.data(), memberUidSlugs, roomSlugs);
       totals[plan.kind] += 1;
       if (plan.kind !== 'rekey') continue;
       totals[plan.suffix] += 1;
@@ -101,6 +106,7 @@ console.log(`Households: ${totals.households}. Chores scanned: ${totals.scanned}
 console.log(`  one-time or not generated (left alone): ${totals['one-time']}`);
 console.log(`  already under an email-free id: ${totals.current}`);
 console.log(`  generated, id not recognized (left alone): ${totals.unrecognized}`);
+console.log(`  generated, no key and the day cannot be told from the assignee part (left alone, follow up): ${totals.ambiguous}`);
 console.log(`  to move: ${totals.rekey} (assignee part a member's uid: ${totals.uid}; an email or a former member: ${totals.other})`);
 if (apply) {
   console.log(`  moved: ${totals.moved}; moved to a numbered id (day already had a chore): ${totals.duplicate}`);
