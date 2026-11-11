@@ -112,6 +112,8 @@ export function useTripFlow({
   if (shownScope !== scope) {
     setShownScope(scope);
     setPutAway(null);
+    // The trip history too: opened from one list's menu, it never reopens on the next list.
+    setHistoryOpen(false);
   }
   useLayoutEffect(() => {
     openGate.setScope(scope);

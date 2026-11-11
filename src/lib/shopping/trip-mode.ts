@@ -77,3 +77,12 @@ export type ListScoped<T> = { listId: string | null; value: T };
 export function scopeToList<T>(state: ListScoped<T>, listId: string | null, empty: T): ListScoped<T> {
   return state.listId === listId ? state : { listId, value: empty };
 }
+
+/**
+ * The needed rows' focus order after a tick: the rows on screen, in walk order.
+ * With a find filter active that is the narrowed groups, never every needed item
+ * (a hidden row cannot take focus).
+ */
+export function neededFocusOrder<T extends { id: string }>(shownGroups: readonly AisleGroup<T>[]): string[] {
+  return shownGroups.flatMap((group) => group.items.map((item) => item.id));
+}

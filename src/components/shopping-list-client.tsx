@@ -47,7 +47,7 @@ import { ScanToTick } from './shopping/scan-to-tick';
 import { TripHeader } from './shopping/trip-header';
 import { TripNeededGroups } from './shopping/trip-needed-groups';
 import { useTripMode } from './shopping/use-trip-mode';
-import { scopeToList, type ListScoped } from '@/lib/shopping/trip-mode';
+import { neededFocusOrder, scopeToList, type ListScoped } from '@/lib/shopping/trip-mode';
 import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { rowPhoto } from '@/lib/shopping/row-photo';
@@ -320,6 +320,25 @@ export function ShoppingListClient({
     setEditingItemId(null);
   });
 
+  // Dialogs and sheets of the open list belong to that opening of it: leaving it
+  // (Back to all lists, browser Back with one open, another list) closes them all,
+  // so none reopens when a list opens next. Their state lives here, above the open
+  // list, so it is reset in the render that sees the change. The one exception is
+  // Add Item opened by the quick-add shortcut for the list being opened
+  // (`addItemFor`), which must survive that list's arrival.
+  const [shownListId, setShownListId] = useState(selectedListId);
+  const [addItemFor, setAddItemFor] = useState<string | null>(null);
+  if (shownListId !== selectedListId) {
+    setShownListId(selectedListId);
+    if (addItemFor !== selectedListId || selectedListId === null) setIsAddItemDialogOpen(false);
+    setAddItemFor(null);
+    setIsScannerOpen(false);
+    setIsClearAlertOpen(false);
+    setEmptyList(null);
+    setIsReceiptOpen(false);
+    setEditingItemId(null);
+  }
+
   // The Add Item scanner is nested in the Add Item dialog: it never outlives it
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
@@ -454,6 +473,7 @@ export function ShoppingListClient({
     if (!quickAddKind || quickAddKind === 'wait') return;
     onQuickAddHandled?.(quickAddListId ?? selectedListId);
     if (quickAddKind === 'open') {
+      setAddItemFor(quickAddListId);
       setIsAddItemDialogOpen(true);
     } else if (quickAddKind === 'choose') {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
@@ -939,7 +959,16 @@ export function ShoppingListClient({
         focusRowWhenShown(checkboxId, attempts - 1);
         return;
       }
-      if (!checkboxId) document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"], [data-testid="grocery-overview"] [data-overview-focus]')?.focus({ preventScroll: true });
+      if (checkboxId) return;
+      // No row left to focus. While the open list's find field holds text (a filter
+      // whose last match was just ticked), back to that field; otherwise the cart
+      // (or the overview's focus target).
+      const findField = document.querySelector<HTMLInputElement>('[data-testid="open-list"] form[aria-label^="Quick add to "] input');
+      if (findField?.value.trim()) {
+        findField.focus({ preventScroll: true });
+        return;
+      }
+      document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"], [data-testid="grocery-overview"] [data-overview-focus]')?.focus({ preventScroll: true });
     });
   };
   const nextRowFocusId = (item: ShoppingListItem) => {
@@ -1407,7 +1436,8 @@ export function ShoppingListClient({
     const assigned = assignedStore(selectedList.storeId, storesState);
     const store = assigned.store;
     const groups = trip.groups;
-    rowOrderRef.current = { needed: groups.flatMap((group) => group.items.map((item) => item.id)), purchased: purchasedItems.map((item) => item.id) };
+    // Focus after a tick follows the rows on screen: with a find filter, only the matches.
+    rowOrderRef.current = { needed: neededFocusOrder(trip.shownGroups), purchased: purchasedItems.map((item) => item.id) };
     const tint = listTint(selectedList);
     const canHandoff = selectedList.type === 'Grocery' && canEdit && online;
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel, scopeToList } from '../../src/lib/shopping/trip-mode';
+import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel, neededFocusOrder, scopeToList } from '../../src/lib/shopping/trip-mode';
 import { keyboardInset } from '../../src/lib/keyboard-inset';
 import { createWakeLockController, wakeLockWanted, type WakeLockSentinelLike } from '../../src/lib/shopping/wake-lock';
 import { LIST_TINT_LABELS } from '../../src/lib/shopping/list-style';
@@ -63,6 +63,20 @@ describe('trip mode: find or add (SH-18c)', () => {
     assert.equal(findHint('milk', 2, 'milk'), '2 needed items match. Press Enter to add milk.');
     assert.equal(findHint('milk', 1, ' milk '), '1 needed item matches. Press Enter to add milk.');
     assert.equal(findHint('kale', 0, 'kale'), 'No needed item matches. Press Enter to add kale.');
+  });
+});
+
+describe('trip mode: focus order after a tick follows the rows on screen', () => {
+  const groups = [
+    { category: 'Dairy', items: [{ id: 'milk', name: 'Milk' }, { id: 'oat', name: 'Oat milk' }, { id: 'butter', name: 'Butter' }] },
+    { category: 'Bakery', items: [{ id: 'bread', name: 'Bread' }] },
+  ];
+  test('every needed row in walk order without a filter', () => {
+    assert.deepEqual(neededFocusOrder(groups), ['milk', 'oat', 'butter', 'bread']);
+  });
+  test('only the matches while the find filter is active (a hidden row cannot take focus)', () => {
+    assert.deepEqual(neededFocusOrder(filterAisleGroups(groups, 'milk')), ['milk', 'oat']);
+    assert.deepEqual(neededFocusOrder(filterAisleGroups(groups, 'kale')), []);
   });
 });
 

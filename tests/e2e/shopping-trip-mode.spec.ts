@@ -327,6 +327,33 @@ test.describe('shopping trip mode: the open list in the store', () => {
         await expect(scanner, 'the scanner does not reopen').toHaveCount(0);
         await expect(a.page.getByRole('dialog'), 'no dialog reopens').toHaveCount(0);
       });
+
+      await test.step('no other dialog or sheet of the list reopens after browser Back either', async () => {
+        const card = a.page.getByTestId(`list-card-${listIdFor(testInfo)}`).getByRole('button', { name: `Open List: ${LIST_NAME}` });
+        const openList = a.page.getByTestId('open-list');
+        const fromMenu = (name: string) => async () => {
+          await press(a.page, openList.getByRole('button', { name: 'More list actions' }));
+          const item = a.page.getByRole('menu').getByRole('menuitem', { name, exact: true });
+          await item.focus();
+          await a.page.keyboard.press('Enter');
+        };
+        const cases: Array<{ what: string; open: () => Promise<void>; dialog: ReturnType<Page['locator']> }> = [
+          { what: 'Trips', open: fromMenu('Trips'), dialog: a.page.getByRole('dialog', { name: 'Recent trips' }) },
+          { what: 'Manage Categories', open: fromMenu('Manage Categories'), dialog: a.page.getByRole('dialog', { name: 'Manage Categories' }) },
+          { what: 'Add Item', open: () => press(a.page, openList.getByRole('button', { name: 'Add Item' })), dialog: a.page.getByRole('dialog', { name: 'Add Item to List' }) },
+          { what: 'the edit sheet', open: () => press(a.page, openList.getByRole('button', { name: 'Edit E2E tm milk' })), dialog: a.page.getByTestId('item-edit-sheet') },
+        ];
+        for (const { what, open, dialog } of cases) {
+          await open();
+          await expect(dialog, `${what} opens`).toBeVisible();
+          await a.page.goBack();
+          await expect(card, `back on the overview from ${what}`).toBeVisible();
+          await expect(dialog, `${what} closed with the list`).toHaveCount(0);
+          await press(a.page, card);
+          await expect(openList.locator('#item-needed-tm-apples'), `the list is open again after ${what}`).toBeAttached();
+          await expect(a.page.getByRole('dialog'), `${what} does not reopen`).toHaveCount(0);
+        }
+      });
     } finally {
       await a.context.close();
     }
@@ -409,6 +436,29 @@ test.describe('shopping trip mode: the open list in the store', () => {
       await expect(a.page.getByLabel(`Items to add to ${LIST_NAME}`), 'the field starts empty').toHaveValue('');
       await expect(reopened.getByTestId('aisle-chips'), 'the aisle chips are back').toBeVisible();
       await expect(a.page.getByTestId('quick-add-hint'), 'no find hint').toHaveCount(0);
+    } finally {
+      await a.context.close();
+    }
+  });
+
+  test('phone: with a find filter, a keyboard tick moves focus to the next match, then back to the field', async ({ browser }, testInfo) => {
+    phoneOnly(testInfo);
+    await seed(testInfo);
+    const a = await session(browser, PHONE, { mobile: true });
+    try {
+      const list = await openList(a.page, testInfo);
+      const field = a.page.getByLabel(`Items to add to ${LIST_NAME}`);
+      await field.fill('milk');
+      await expect(list.locator('[data-row-section="needed"]'), 'two matches').toHaveCount(2);
+      const first = list.locator('#item-needed-tm-milk');
+      await first.focus();
+      await a.page.keyboard.press('Space');
+      // The other match takes focus, never a row the filter hides (or the page).
+      await expect(list.locator('#item-needed-tm-oat-milk'), 'focus moves to the remaining match').toBeFocused();
+      await a.page.keyboard.press('Space');
+      // No match left: back to the find field (its text still filters).
+      await expect(field, 'focus goes back to the find field').toBeFocused();
+      await expect(field).toHaveValue('milk');
     } finally {
       await a.context.close();
     }
