@@ -5,7 +5,7 @@ import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { parseNotificationDoc } from '../../src/lib/notifications';
 import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
-import { choreStatsAssigneeKey, deterministicNotificationId, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey, deterministicNotificationId, recurringChoreId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -312,6 +312,20 @@ describe('household upkeep', () => {
     assert.equal(second.purgedChores, 0);
     assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 3);
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
+  });
+
+  test('a uid-only completion of someone who has left is purged under their uid key, not dropped', async () => {
+    const chores = house().collection('chores');
+    // Gil (uid g1) left: their membership and contact documents are gone. One completion was
+    // recorded without a completer (an older client), one with Gil as completer by uid only.
+    await chores.doc('gil-assigned').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToUid: 'g1', assignedToDisplayName: 'Gil' });
+    await chores.doc('gil-completed').set({ task: 'Older', isCompleted: true, completedAt: '2026-07-02T12:00:00.000Z', assignedToUid: 'o1', completedByUid: 'g1', completedByName: 'Gil' });
+    const result = await run(new Date('2026-11-05T15:00:00Z'));
+    assert.equal(result.purgedChores, 2);
+    const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats?.completed, 2);
+    assert.deepEqual(stats?.byAssignee, { [choreStatsMemberKey('g1')]: 2 }, 'both kept for Gil, none for the owner');
+    assert.deepEqual(stats?.names, { [choreStatsMemberKey('g1')]: 'Gil' });
   });
 
   describe('pet medication reminders', () => {

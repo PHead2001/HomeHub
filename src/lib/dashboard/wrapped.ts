@@ -7,7 +7,7 @@ import { completionInstant, type ChoreRecord } from '../chores/dates';
 import type { RawDoc } from './facts';
 import { localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { choreStatsAssigneeKey } from '../../../functions/src/shared/ids';
-import { creditedPerson, readChoreStats, type CreditPerson, type PurgedChore } from '../../../functions/src/shared/chore-stats';
+import { creditedPerson, creditedStatsKey, readChoreStats, type CreditPerson, type PurgedChore } from '../../../functions/src/shared/chore-stats';
 
 export type WrappedSummary = {
   year: number;
@@ -69,8 +69,8 @@ export function countInYear(dates: readonly unknown[], year: number, timeZone?: 
  * Each retained completion counts for its completer, else its assignee
  * (`creditedPerson`, the rule upkeep uses when it moves it into the stats; a
  * uid-only chore is credited through `people`).
- * Scores are grouped by the stable key (`choreStatsAssigneeKey` of that
- * email), so two members who share a first name never pool their chores and a
+ * Scores are grouped by the stable key (`creditedStatsKey`: `choreStatsAssigneeKey`
+ * of that email, or the uid key of someone whose email is not known), so two members who share a first name never pool their chores and a
  * renamed member keeps one score; only the winner's label is shortened to a first
  * name (member record, then the credited person's name on the chore, then the
  * stats' name; never the email).
@@ -106,7 +106,7 @@ export function summarizeChores(
     // 90-day boundary.
     const person = creditedPerson(chore as Omit<PurgedChore, 'completedAt'>, options.people);
     if (!person) continue;
-    const key = choreStatsAssigneeKey(person.email);
+    const key = creditedStatsKey(person);
     counts.set(key, (counts.get(key) ?? 0) + 1);
     // Labels only: a name that looks like an email is never used.
     if (!labels.has(key) && typeof person.name === 'string' && person.name.trim() && !person.name.includes('@')) labels.set(key, person.name);

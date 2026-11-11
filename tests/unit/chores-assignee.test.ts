@@ -10,7 +10,7 @@ import {
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
 import { addPurgedChores, creditedPerson, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
-import { choreStatsAssigneeKey, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
 import { occurrenceIds } from '../../src/lib/chores/calendar';
 import { computeChoreStats } from '../../src/lib/chores/stats';
@@ -209,7 +209,7 @@ describe('yearly stats credit for uid-only chores (review finding on #140)', () 
   const uidOnly = { assignedToUid: 'uid-sam', assignedToDisplayName: 'Sam', isCompleted: true, completedAt: at };
 
   test('the assignee uid is credited through the member, under the same key as the email', () => {
-    assert.deepEqual(creditedPerson(uidOnly, people), { email: 'Sam@example.test', name: 'Sam' });
+    assert.deepEqual(creditedPerson(uidOnly, people), { email: 'Sam@example.test', uid: 'uid-sam', name: 'Sam' });
     const byUid = addPurgedChores(readChoreStats(undefined, 2026), [uidOnly], people);
     const byEmail = addPurgedChores(readChoreStats(undefined, 2026), [{ assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: at }]);
     assert.deepEqual(byUid.byAssignee, byEmail.byAssignee);
@@ -218,13 +218,27 @@ describe('yearly stats credit for uid-only chores (review finding on #140)', () 
     assert.deepEqual(summarizeChores([{ id: 'c1', ...uidOnly }], 2026, { timeZone: 'UTC', people }).champion, { name: 'Sam', count: 1 });
   });
 
-  test('a completer recorded by uid wins over the assignee; unknown uids credit nobody', () => {
-    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-ana', completedByName: 'Ana' }, people), { email: 'ana@example.test', name: 'Ana' });
-    // A recorded completer who left is not replaced by the assignee.
-    assert.equal(creditedPerson({ ...uidOnly, completedByUid: 'uid-gone' }, people), null);
-    assert.equal(creditedPerson({ ...uidOnly, assignedToUid: 'uid-gone' }, people), null);
-    // Without the member list nothing can be resolved (as before).
-    assert.equal(creditedPerson(uidOnly), null);
+  test('a completer recorded by uid wins over the assignee', () => {
+    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-ana', completedByName: 'Ana' }, people), { email: 'ana@example.test', uid: 'uid-ana', name: 'Ana' });
+  });
+
+  test('someone who left (no email known for their uid) keeps the credit under their uid key (review finding on #140)', () => {
+    // A recorded completer who left: their uid, never the assignee.
+    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-gone', completedByName: 'Gil' }, people), { email: '', uid: 'uid-gone', name: 'Gil' });
+    // An assignee who left, on a completion without a recorded completer.
+    const gone = { ...uidOnly, assignedToUid: 'uid-gone', assignedToDisplayName: 'Gil' };
+    assert.deepEqual(creditedPerson(gone, people), { email: '', uid: 'uid-gone', name: 'Gil' });
+    const stats = addPurgedChores(readChoreStats(undefined, 2026), [gone, { ...gone, completedAt: '2026-03-02T12:00:00Z' }, uidOnly], people);
+    assert.deepEqual(stats.byAssignee, { [choreStatsMemberKey('uid-gone')]: 2, [choreStatsAssigneeKey('sam@example.test')]: 1 });
+    assert.deepEqual(stats.names, { [choreStatsMemberKey('uid-gone')]: 'Gil', [choreStatsAssigneeKey('sam@example.test')]: 'Sam' });
+    assert.equal(stats.completed, 3);
+    // Home Wrapped counts it the same way (one score with the archived ones).
+    const archived = { year: 2026, completed: 4, byAssignee: { [choreStatsMemberKey('uid-gone')]: 4 }, names: { [choreStatsMemberKey('uid-gone')]: 'Gil' } };
+    assert.deepEqual(summarizeChores([{ id: 'g1', ...gone }], 2026, { timeZone: 'UTC', people, stats: archived }).champion, { name: 'Gil', count: 5 });
+    // Uid keys never collide with email-derived keys.
+    assert.ok(choreStatsMemberKey('uid-gone').includes('-') && !choreStatsAssigneeKey('gone@example.test').includes('-'));
+    // A chore that names nobody credits nobody.
+    assert.equal(creditedPerson({ assignedToDisplayName: 'Nobody' }, people), null);
   });
 });
 
