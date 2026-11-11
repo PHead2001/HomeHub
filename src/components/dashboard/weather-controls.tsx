@@ -10,8 +10,9 @@
  * (`house-menu.tsx`); the house shows only the city form, and only while a city is
  * being set (weather just turned on without one, or the member chose to change it).
  */
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useId, useRef, useState, type FocusEvent, type FormEvent } from 'react';
 import { useToast } from '@/hooks/use-toast';
+import { createFocusIntent } from '@/lib/dashboard/focus-intent';
 import { useWeatherPreference } from '@/lib/dashboard/use-weather';
 import { MAX_CITY_LENGTH, normalizeCity, type WeatherPreference } from '@/lib/dashboard/weather';
 import { cn } from '@/lib/utils';
@@ -30,12 +31,14 @@ export type WeatherSettings = {
   startEditing: () => void;
   cancelEditing: () => void;
   submit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  /** The city field mounted (or unmounted, `null`): focuses it while the menu's request is pending. */
+  cityFieldMounted: (node: HTMLInputElement | null) => void;
+  onCityBlur: (event: FocusEvent<HTMLInputElement>) => void;
   /**
-   * The city form was just opened from the menu: the menu must not return focus to its
-   * trigger, and the form focuses its field (then clears this).
+   * The "…" menu finished closing (`onCloseAutoFocus`): puts focus in the city field
+   * when the menu opened it, and returns true when the menu must not focus its trigger.
    */
-  cityFocus: boolean;
-  clearCityFocus: () => void;
+  menuClosed: () => boolean;
 };
 
 /** State shared by the "…" menu (the switch) and the city form on the house. */
@@ -45,9 +48,28 @@ export function useWeatherSettings(): WeatherSettings {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
-  const [cityFocus, setCityFocus] = useState(false);
+  // A plain object, not state: the request must exist synchronously at the menu
+  // selection, before React re-renders and before the save is awaited.
+  const [cityFocus] = useState(createFocusIntent);
+  const cityNode = useRef<HTMLInputElement | null>(null);
   const showForm = ready && preference.enabled && (editing || !preference.city);
-  const clearCityFocus = useCallback(() => setCityFocus(false), []);
+
+  const focusCity = useCallback(() => {
+    const node = cityNode.current;
+    if (!node?.isConnected) return false;
+    node.focus();
+    return document.activeElement === node;
+  }, []);
+  const cityFieldMounted = useCallback((node: HTMLInputElement | null) => {
+    cityNode.current = node;
+    if (node) cityFocus.fieldReady(focusCity);
+  }, [cityFocus, focusCity]);
+  const onCityBlur = useCallback((event: FocusEvent<HTMLInputElement>) => {
+    const to = event.relatedTarget;
+    // Focus moving into the closing menu (or nowhere) is the menu's doing, not the member's.
+    cityFocus.fieldBlurred(to instanceof Element && !to.closest('[role="menu"]'));
+  }, [cityFocus]);
+  const menuClosed = useCallback(() => cityFocus.menuClosed(focusCity), [cityFocus, focusCity]);
 
   const persist = async (next: { enabled: boolean; city: string }) => {
     setSaving(true);
@@ -68,18 +90,18 @@ export function useWeatherSettings(): WeatherSettings {
     // wipe whatever the member typed while the write was in flight.
     if (enabled) {
       setDraft(preference.city);
-      if (!preference.city) setCityFocus(true);
+      if (!preference.city) cityFocus.request();
     } else {
       setEditing(false);
-      setCityFocus(false);
+      cityFocus.cancel();
     }
-    if (!(await persist({ enabled, city: preference.city }))) setCityFocus(false);
+    if (!(await persist({ enabled, city: preference.city }))) cityFocus.cancel();
   };
 
   const startEditing = () => {
     setDraft(preference.city);
     setEditing(true);
-    setCityFocus(true);
+    cityFocus.request();
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -89,7 +111,7 @@ export function useWeatherSettings(): WeatherSettings {
 
   return {
     preference, ready, saving, showForm, editing, draft, setDraft, toggle, startEditing,
-    cancelEditing: () => setEditing(false), submit, cityFocus, clearCityFocus,
+    cancelEditing: () => setEditing(false), submit, cityFieldMounted, onCityBlur, menuClosed,
   };
 }
 
@@ -97,26 +119,20 @@ export function useWeatherSettings(): WeatherSettings {
 export function WeatherCityForm({ settings }: { settings: WeatherSettings }) {
   const inputId = useId();
   const hintId = useId();
-  const input = useRef<HTMLInputElement>(null);
-  const { showForm, cityFocus, clearCityFocus } = settings;
 
-  // After the menu closed (next frame), move focus into the field it just opened.
-  useEffect(() => {
-    if (!showForm || !cityFocus) return;
-    const frame = window.requestAnimationFrame(() => {
-      input.current?.focus();
-      clearCityFocus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [showForm, cityFocus, clearCityFocus]);
+  const { cityFieldMounted } = settings;
+  // Focus: the field takes it when it mounts (`cityFieldMounted`) and again when the "…" menu
+  // has finished closing (`menuClosed`), while the menu's request is pending.
+  const inputRef = useCallback((node: HTMLInputElement | null) => cityFieldMounted(node), [cityFieldMounted]);
 
-  if (!showForm) return null;
+  if (!settings.showForm) return null;
   return (
     <form id="weather-settings" onSubmit={settings.submit} className="flex w-full min-w-0 flex-wrap items-center gap-1.5 px-4 pt-2" data-testid="weather-city-form">
       <label htmlFor={inputId} className="text-sm text-muted-foreground">City for weather (optional)</label>
       <input
-        ref={input}
+        ref={inputRef}
         id={inputId}
+        onBlur={settings.onCityBlur}
         value={settings.draft}
         onChange={(event) => settings.setDraft(event.target.value)}
         maxLength={MAX_CITY_LENGTH}
