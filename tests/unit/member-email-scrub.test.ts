@@ -202,6 +202,23 @@ describe('former-member keys', () => {
     assert.equal(proposeFormerIdentity('max@example.test', evidence, 's'), formerMemberKey('s', 'max@example.test'), 'no evidence');
   });
 
+  test('a recorded completion decides over a stale assignee pairing; two people stay two', () => {
+    const current = { uids: new Set<string>(), emails: new Set<string>() };
+    const evidence = formerEvidence([
+      { completedByEmail: 'lee@example.test', completedByUid: 'uid-lee' },
+      { assignedToEmail: 'lee@example.test', assignedToUid: 'uid-carl' },
+      { completedByEmail: 'carl@example.test', completedByUid: 'uid-carl' },
+    ], current);
+    assert.equal(proposeFormerIdentity('lee@example.test', evidence, 's'), 'uid-lee');
+    assert.equal(proposeFormerIdentity('carl@example.test', evidence, 's'), 'uid-carl');
+    // Two recorded uids for one email: never guessed.
+    const twice = formerEvidence([
+      { completedByEmail: 'kim@example.test', completedByUid: 'uid-a' },
+      { completedByEmail: 'kim@example.test', completedByUid: 'uid-b' },
+    ], current);
+    assert.equal(proposeFormerIdentity('kim@example.test', twice, 's'), formerMemberKey('s', 'kim@example.test'));
+  });
+
   test('a legacy key nobody is named for any more gets its own stable opaque key', () => {
     const legacy = choreStatsAssigneeKey('gone@example.test');
     assert.match(unknownLegacyKey('s', legacy), /^former-[0-9a-f]{24}$/);
