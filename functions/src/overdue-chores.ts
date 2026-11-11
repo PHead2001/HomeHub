@@ -58,6 +58,7 @@ const storedState = (
  * @param {OverdueView} view The person's overdue chores and timing.
  * @param {boolean} dailyReminderCovers Today's daily reminder carries it.
  * @param {boolean} sweepLegacy Look for dated documents even if unchanged.
+ * @param {ReadonlySet<string>} existingChoreIds Every chore ID in the house.
  * @return {Promise<OverdueResult>} What was written.
  */
 export const syncOverdueNotification = async (
@@ -66,6 +67,7 @@ export const syncOverdueNotification = async (
   view: OverdueView,
   dailyReminderCovers: boolean,
   sweepLegacy: boolean,
+  existingChoreIds: ReadonlySet<string>,
 ): Promise<OverdueResult> => {
   const {db, house, now, ts} = ctx;
   const ref = house.collection("notifications").doc(overdueNotificationId(uid));
@@ -76,6 +78,7 @@ export const syncOverdueNotification = async (
     today: view.today,
     alertsAllowed: view.alertsAllowed,
     dailyReminderCovers,
+    existingChoreIds,
   });
   // A plain read first: most runs change nothing and need no transaction.
   if (decide(await ref.get()).action === "none" && !sweepLegacy) {

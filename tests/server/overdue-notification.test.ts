@@ -125,7 +125,17 @@ describe('overdue chores notification (NO-1)', () => {
     assert.equal(data.resolvedAt, null);
     assert.equal(data.message, '"Dishes" is overdue.');
     assert.equal(data.renotifyAt.toMillis(), now.getTime());
+    assert.deepEqual(data.notifiedChoreIds, ['sweep', 'dishes'], 'the first chore is still remembered');
     assert.deepEqual(await choreReminders(), ['o1-overdue']);
+
+    // Days later the first chore's completion is undone: already told about, so no push and state kept.
+    await stable().update({ 'dismissedBy.o1': { at: 'x' } });
+    await house().collection('chores').doc('sweep').update({ isCompleted: false });
+    await run(at('2026-11-08', 8));
+    data = (await stable().get()).data()!;
+    assert.equal(data.message, 'You have 2 overdue chores.');
+    assert.equal(data.renotifyAt.toMillis(), now.getTime(), 'no new push');
+    assert.deepEqual(data.dismissedBy, { o1: { at: 'x' } });
   });
 
   test('the daily reminder carries the overdue count: the overdue notification is created silently', async () => {

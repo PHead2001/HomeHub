@@ -1,20 +1,27 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  decideOverdue, legacyOverdueNotificationIds, overdueNotificationId,
+  decideOverdue, legacyOverdueNotificationIds, NOTIFIED_CHORE_IDS_CAP, overdueNotificationId,
   type OverdueInput, type StoredOverdue,
 } from '../../functions/src/shared/overdue-notification';
 import { overdueChoresFor, overdueMessage } from '../../functions/src/shared/chore-reminders';
 import { pushOnCreate, pushOnUpdate } from '../../functions/src/push-policy';
+import { recurringChoreId } from '../../functions/src/shared/ids';
 
 const TODAY = '2026-11-11';
 const stored = (fields: Partial<StoredOverdue> = {}): StoredOverdue => ({
   resolved: false, overdueChoreIds: ['a'], notifiedChoreIds: ['a'], lastPushDay: '2026-11-10',
   nearExpiry: false, seenByRun: true, ...fields,
 });
+const EXISTING = new Set(['a', 'b', 'c']);
 const decide = (fields: Partial<OverdueInput>) => decideOverdue({
-  stored: null, overdueIds: [], today: TODAY, alertsAllowed: true, dailyReminderCovers: false, ...fields,
+  stored: null, overdueIds: [], today: TODAY, alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: EXISTING, ...fields,
 });
+const after = (d: ReturnType<typeof decideOverdue>, prev: StoredOverdue | null): StoredOverdue | null => {
+  if (d.action === 'none') return prev;
+  if (d.action === 'resolve') return { ...prev!, resolved: true, overdueChoreIds: [] };
+  return { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
+};
 
 describe('overdue notification decision (NO-1)', () => {
   test('one stable id per person, and the dated ids it replaces', () => {
@@ -138,13 +145,58 @@ describe('overdue notification decision (NO-1)', () => {
     let pushes = 0;
     for (let day = 11; day <= 17; day++) {
       for (let hour = 7; hour < 24; hour++) {
-        const d = decideOverdue({ stored: state, overdueIds: ['a'], today: `2026-11-${day}`, alertsAllowed: true, dailyReminderCovers: false });
+        const d = decideOverdue({ stored: state, overdueIds: ['a'], today: `2026-11-${day}`, alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: EXISTING });
         if (d.action !== 'write') continue;
         if (d.push) pushes++;
         state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
       }
     }
     assert.equal(pushes, 1);
+  });
+
+  test('announce A; A completed and B announced; A’s completion undone: A is not news', () => {
+    let state = after(decide({ overdueIds: ['a'], today: '2026-11-11' }), null);
+    // Next day: A done, B overdue.
+    const b = decide({ stored: state, overdueIds: ['b'], today: '2026-11-12' });
+    assert.equal(b.action === 'write' && b.push, true);
+    assert.deepEqual(b.action === 'write' && b.notifiedChoreIds, ['a', 'b'], 'A is remembered');
+    state = after(b, state);
+    // A later day: A's completion is undone.
+    const undo = decide({ stored: state, overdueIds: ['a', 'b'], today: '2026-11-14' });
+    assert.equal(undo.action, 'write', 'the list changed');
+    if (undo.action !== 'write') return;
+    assert.equal(undo.push, false);
+    assert.equal(undo.fresh, false, 'read and dismissed state kept');
+    // Same after a resolution in between (A undone while nothing else is overdue).
+    const resolved = after(decide({ stored: state, overdueIds: [], today: '2026-11-13' }), state);
+    const reopened = decide({ stored: resolved, overdueIds: ['a'], today: '2026-11-14' });
+    assert.equal(reopened.action === 'write' && reopened.reopen && !reopened.push && !reopened.fresh, true);
+  });
+
+  test('a recurring chore’s next occurrence has its own ID, so it is news', () => {
+    const tue = recurringChoreId('trash', 'general', '2026-11-10', 'uid-sam');
+    const wed = recurringChoreId('trash', 'general', '2026-11-11', 'uid-sam');
+    assert.notEqual(tue, wed);
+    const existing = new Set([tue, wed]);
+    const state = after(decideOverdue({ stored: null, overdueIds: [tue], today: '2026-11-11', alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: existing }), null);
+    const next = decideOverdue({ stored: state, overdueIds: [wed], today: '2026-11-12', alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: existing });
+    assert.equal(next.action === 'write' && next.push && next.fresh, true);
+  });
+
+  test('told-about IDs are bounded: chores that no longer exist are forgotten, and at most the cap, oldest first', () => {
+    const gone = decide({ stored: stored({ notifiedChoreIds: ['a', 'deleted'] }), overdueIds: ['a', 'b'] });
+    assert.deepEqual(gone.action === 'write' && gone.notifiedChoreIds, ['a', 'b']);
+    const many = Array.from({ length: NOTIFIED_CHORE_IDS_CAP }, (_, i) => `old-${String(i).padStart(3, '0')}`);
+    const existing = new Set([...many, 'new-1']);
+    const capped = decideOverdue({
+      stored: stored({ overdueChoreIds: [], notifiedChoreIds: many }), overdueIds: ['new-1'], today: TODAY,
+      alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: existing,
+    });
+    assert.equal(capped.action, 'write');
+    if (capped.action !== 'write') return;
+    assert.equal(capped.notifiedChoreIds.length, NOTIFIED_CHORE_IDS_CAP);
+    assert.equal(capped.notifiedChoreIds.includes('old-000'), false, 'oldest dropped');
+    assert.equal(capped.notifiedChoreIds.at(-1), 'new-1');
   });
 });
 

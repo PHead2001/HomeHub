@@ -540,6 +540,7 @@ export const runHouseholdReminders = async (
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
+  const choreIdSet = new Set(choreDocs.map((d) => d.id));
   // Reminder settings live on the email-keyed profile, so members with no
   // email in either their contact document or their record are skipped.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
@@ -587,7 +588,8 @@ export const runHouseholdReminders = async (
     }, member.uid, overdue, reminderSent || overdue.dailyReminderPending,
     // Dated documents from earlier versions: swept in the first hour of the
     // person's day, and whenever the notification is written.
-    localMinutes(now, person.timeZone) < UPKEEP_INTERVAL_MS / 60000);
+    localMinutes(now, person.timeZone) < UPKEEP_INTERVAL_MS / 60000,
+    choreIdSet);
     if (status === "stopped") return result;
     if (status === "created") result.createdNotifications++;
     if (status === "reopened") result.reopenedNotifications++;
