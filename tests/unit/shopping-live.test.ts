@@ -4,6 +4,7 @@ import {
   LIVE_COUNT_LIMIT,
   STALE_AFTER_HIDDEN_MS,
   backoffDelay,
+  clearIdsFor,
   countItems,
   docsToRecords,
   errorToState,
@@ -18,6 +19,7 @@ import {
   loadingState,
   planCountSources,
   quickAddDecision,
+  sameListenerError,
   snapshotToState,
   stateFor,
 } from '../../src/lib/shopping/live-state';
@@ -133,7 +135,7 @@ describe('live state: deleted and missing lists', () => {
 });
 
 describe('live state: keepListening', () => {
-  type Handlers = { healthy: () => void; failed: () => void };
+  type Handlers = { healthy: (fromCache: boolean) => void; failed: () => void };
   const globals = globalThis as unknown as { window?: EventTarget; document?: EventTarget & { visibilityState: string } };
   let opened: Handlers[];
   let closed: number;
@@ -179,7 +181,7 @@ describe('live state: keepListening', () => {
     mock.timers.tick(1);
     assert.equal(opened.length, 3);
     // A healthy snapshot resets the backoff.
-    opened[2].healthy();
+    opened[2].healthy(false);
     opened[2].failed();
     mock.timers.tick(1000);
     assert.equal(opened.length, 4);
@@ -204,7 +206,7 @@ describe('live state: keepListening', () => {
 
   test('a healthy listener is renewed after a long hide, the new one starting before the old one stops', () => {
     const stop = start();
-    opened[0].healthy();
+    opened[0].healthy(false);
     setVisibility('hidden');
     mock.timers.tick(1_000);
     setVisibility('visible');
@@ -226,6 +228,56 @@ describe('live state: keepListening', () => {
     stop();
   });
 
+  test('a cached answer before each denial never resets the backoff, and the loop reports one error', () => {
+    // The useLive reducer: snapshot and error states for one key.
+    const key = 'items/h/a';
+    let state = snapshotToState(key, ['milk'], { fromCache: false, hasPendingWrites: false });
+    const reported: unknown[] = [];
+    const report = () => {
+      if (state.error && reported.at(-1) !== state.error) reported.push(state.error);
+    };
+    const opensAt: number[] = [];
+    const stop = start();
+    opensAt.push(Date.now());
+    const denied = () => Object.assign(new Error('Missing or insufficient permissions.'), { code: 'permission-denied' });
+    for (let cycle = 0; cycle < 6; cycle += 1) {
+      const handlers = opened.at(-1)!;
+      // Firestore answers the resubscribe from the cache, then the server denies it.
+      handlers.healthy(true);
+      state = snapshotToState(key, ['milk'], { fromCache: true, hasPendingWrites: false }, state);
+      report();
+      handlers.failed();
+      state = errorToState(state, key, denied(), [] as string[]);
+      report();
+      const before = opened.length;
+      while (opened.length === before) mock.timers.tick(1);
+      opensAt.push(Date.now());
+    }
+    const delays = opensAt.slice(1).map((at, index) => at - opensAt[index]);
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000]);
+    assert.equal(reported.length, 1, 'one toast for the whole loop');
+    assert.equal(state.value[0], 'milk', 'the cached list stays on screen');
+    // A server-confirmed snapshot clears the error and resets the schedule.
+    opened.at(-1)!.healthy(false);
+    state = snapshotToState(key, ['milk'], { fromCache: false, hasPendingWrites: false }, state);
+    assert.equal(state.error, null);
+    opened.at(-1)!.failed();
+    mock.timers.tick(1000);
+    assert.equal(opened.length, 8);
+    stop();
+  });
+
+  test('errors with the same code are one failure; a different code is new', () => {
+    const key = 'k';
+    const ready = snapshotToState(key, ['x'], { fromCache: false, hasPendingWrites: false });
+    const first = errorToState(ready, key, { code: 'unavailable' }, [] as string[]);
+    const again = errorToState(first, key, { code: 'unavailable' }, [] as string[]);
+    assert.equal(again.error, first.error);
+    const other = errorToState(again, key, { code: 'permission-denied' }, [] as string[]);
+    assert.notEqual(other.error, first.error);
+    assert.equal(sameListenerError(new Error('a'), new Error('a')), false, 'no code: identity only');
+  });
+
   test('an error raised while opening is handled, and nothing runs after stop', () => {
     let first = true;
     const stop = keepListening((handlers) => {
@@ -245,6 +297,17 @@ describe('live state: keepListening', () => {
     globals.window!.dispatchEvent(new Event('online'));
     mock.timers.tick(60_000);
     assert.equal(opened.length, 2);
+  });
+});
+
+describe('clear purchased: the confirmation belongs to its list', () => {
+  test('ids captured on list A are never used on list B or in another household', () => {
+    const target = { householdId: 'h1', listId: 'a', ids: ['a1', 'a2'] };
+    assert.deepEqual(clearIdsFor(target, 'h1', 'a'), ['a1', 'a2']);
+    assert.equal(clearIdsFor(target, 'h1', 'b'), null);
+    assert.equal(clearIdsFor(target, 'h2', 'a'), null);
+    assert.equal(clearIdsFor(target, 'h1', null), null, 'back on the overview');
+    assert.equal(clearIdsFor(null, 'h1', 'a'), null);
   });
 });
 

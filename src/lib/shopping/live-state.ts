@@ -36,15 +36,34 @@ export const loadingState = <T>(key: string, empty: T): LiveState<T> => ({
   hasPendingWrites: false,
 });
 
-/** The state after a snapshot: its mapped value and metadata. */
-export const snapshotToState = <T>(key: string, value: T, metadata: LiveMetadata): LiveState<T> => ({
+/**
+ * The state after a snapshot: its mapped value and metadata. A cached snapshot
+ * (`fromCache`) does not prove the listener works, so it keeps the error of the
+ * same subscription on screen; only a snapshot the server confirmed clears it.
+ * Without this, a refused listener that answers from the cache before each
+ * denial would raise a "new" error (and a new toast) on every retry.
+ */
+export const snapshotToState = <T>(key: string, value: T, metadata: LiveMetadata, previous?: LiveState<T>): LiveState<T> => ({
   key,
   status: 'ready',
   value,
-  error: null,
+  error: metadata.fromCache && previous?.key === key ? previous.error : null,
   fromCache: metadata.fromCache,
   hasPendingWrites: metadata.hasPendingWrites,
 });
+
+const errorCode = (error: unknown): unknown =>
+  error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
+
+/**
+ * Whether two listener errors are the same failure: the same object, or errors
+ * with the same Firestore `code` (each retry raises a new error object).
+ */
+export const sameListenerError = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true;
+  const code = errorCode(a);
+  return code !== undefined && code === errorCode(b);
+};
 
 /**
  * The state after a listener error: the last value stays on screen (a failed
@@ -52,7 +71,14 @@ export const snapshotToState = <T>(key: string, value: T, metadata: LiveMetadata
  */
 export const errorToState = <T>(previous: LiveState<T>, key: string, error: unknown, empty: T): LiveState<T> => (
   previous.key === key
-    ? { ...previous, status: previous.status === 'ready' ? 'ready' : 'error', error, fromCache: true }
+    ? {
+      ...previous,
+      status: previous.status === 'ready' ? 'ready' : 'error',
+      // The same failure again keeps the first error object, so the screens
+      // (which report an error once, by identity) show one toast for a retry loop.
+      error: sameListenerError(previous.error, error) ? previous.error : error,
+      fromCache: true,
+    }
     : { ...loadingState(key, empty), status: 'error', error }
 );
 
@@ -208,17 +234,36 @@ export const deletionSettled = ({
   listIds: readonly string[];
 }): boolean => Boolean(deletingListId && selectedListId !== deletingListId && !listIds.includes(deletingListId));
 
+/** The purchased items captured when Clear was pressed, and the list they came from. */
+export type ClearTarget = { householdId: string; listId: string; ids: readonly string[] };
+
+/**
+ * The ids a Clear confirmation may delete on the list now on screen: its captured
+ * ids when it was opened on this household and list, else null (a confirmation
+ * left open across Back and another list never clears that list).
+ */
+export const clearIdsFor = (
+  target: ClearTarget | null,
+  householdId: string | null | undefined,
+  listId: string | null | undefined,
+): readonly string[] | null => (
+  target && householdId && listId && target.householdId === householdId && target.listId === listId ? target.ids : null
+);
+
 export const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
 /**
  * Keeps one listener alive: `open` starts it and returns its unsubscribe. After an
- * error it is reopened after `backoffDelay(attempt)` (reset by the next healthy
- * snapshot); while the page is hidden no retry is scheduled, and showing the page
+ * error it is reopened after `backoffDelay(attempt)`. Only a snapshot the server
+ * confirmed (`healthy(false)`, from `!snapshot.metadata.fromCache`) resets the
+ * backoff: Firestore answers each resubscribe from the cache before a denial, so
+ * a cached answer resetting it would keep a refused listener retrying every
+ * second forever (the dashboard's `resilientListener` does the same); while the page is hidden no retry is scheduled, and showing the page
  * or coming back online reopens it at once. A renewal starts the new listener
  * before stopping the old one, so the target never leaves Firestore's cache.
  * Returns the stop function.
  */
-export function keepListening(open: (handlers: { healthy: () => void; failed: () => void }) => Unsubscribe): () => void {
+export function keepListening(open: (handlers: { healthy: (fromCache: boolean) => void; failed: () => void }) => Unsubscribe): () => void {
   let current: Unsubscribe | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let attempt = 0;
@@ -243,8 +288,8 @@ export function keepListening(open: (handlers: { healthy: () => void; failed: ()
       unsubscribe = null;
     };
     unsubscribe = open({
-      healthy: () => {
-        if (active) attempt = 0;
+      healthy: (fromCache) => {
+        if (active && !fromCache) attempt = 0;
       },
       failed: () => {
         if (!active) return;
