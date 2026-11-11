@@ -4,7 +4,7 @@
  * a module carries an `href` so the UI can render it as a link.
  */
 import type { DashboardFacts } from './facts';
-import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from './links';
+import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, choresFilteredHref, petFeedingHref } from './links';
 
 /** What a linked phrase points at, so the UI can show its peek card (H26). */
 export type BriefPeek =
@@ -54,16 +54,31 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
     // brief never says "Nothing needs you" while the house has overdue chores.
     const houseToday = Math.max(0, chores.todayTotal - chores.todayDone);
     const houseOverdue = chores.overdueTotal;
+    // HP-25: overdue phrases open Chores filtered to overdue (`&who=me` for your own);
+    // your chores today open it filtered to you.
+    const mineHref = choresFilteredHref({ mine: true });
+    const mineOverdueHref = choresFilteredHref({ overdue: true, mine: true });
+    const houseOverdueHref = choresFilteredHref({ overdue: true });
     if (chores.mineOverdue > 0 && today > 0) {
-      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: mine }, { text: ` (${chores.mineOverdue} overdue)` }]);
+      phrases.push([
+        { text: `${plural(today, 'chore')} today`, href: mineHref, peek: mine },
+        { text: ' (' },
+        { text: `${chores.mineOverdue} overdue`, href: mineOverdueHref, peek: mine },
+        { text: ')' },
+      ]);
     } else if (chores.mineOverdue > 0) {
-      phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: '/chores', peek: mine }]);
+      phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: mineOverdueHref, peek: mine }]);
     } else if (today > 0) {
-      phrases.push([{ text: `${plural(today, 'chore')} today`, href: '/chores', peek: mine }]);
+      phrases.push([{ text: `${plural(today, 'chore')} today`, href: mineHref, peek: mine }]);
     } else if (houseOverdue > 0 && houseToday > 0) {
-      phrases.push([{ text: `${plural(houseToday, 'household chore')} today`, href: '/chores', peek: household }, { text: ` (${houseOverdue} overdue)` }]);
+      phrases.push([
+        { text: `${plural(houseToday, 'household chore')} today`, href: '/chores', peek: household },
+        { text: ' (' },
+        { text: `${houseOverdue} overdue`, href: houseOverdueHref, peek: household },
+        { text: ')' },
+      ]);
     } else if (houseOverdue > 0) {
-      phrases.push([{ text: plural(houseOverdue, 'overdue household chore'), href: '/chores', peek: household }]);
+      phrases.push([{ text: plural(houseOverdue, 'overdue household chore'), href: houseOverdueHref, peek: household }]);
     } else if (houseToday > 0) {
       phrases.push([{ text: `${plural(houseToday, 'household chore')} today`, href: '/chores', peek: household }]);
     }

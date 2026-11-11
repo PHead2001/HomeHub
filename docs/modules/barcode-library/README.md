@@ -25,7 +25,7 @@ This module owns camera/manual barcode capture, household product mappings, prod
 
 ## Architecture and Data Flow
 
-`BarcodeScanner` uses the device camera through `react-zxing` and returns a decoded value to its host form. `lookupBarcode` first attempts the household Firestore mapping and then calls Open Food Facts. The library client manages mappings and uploads images to household-scoped Storage before writing Firestore metadata.
+`BarcodeScanner` uses the device camera through `react-zxing` and returns a decoded value to its host form. The camera runs only while the scanner is mounted: on unmount (its dialog closed, or the Shopping Center tab that owns it hidden, see [Shopping](../shopping/README.md)) react-zxing resets its reader and `BarcodeScanner` also stops every track of the video's `MediaStream` and clears `srcObject`, so no host can leave the camera on behind a closed or hidden dialog. `lookupBarcode` first attempts the household Firestore mapping and then calls Open Food Facts. The library client manages mappings and uploads images to household-scoped Storage before writing Firestore metadata.
 
 Lookup is an authenticated server action but does not invoke OpenAI generation, does not need `OPENAI_API_KEY`, and remains usable when model configuration is absent. It verifies the Firebase ID token, household membership, and `shopping.view`, then uses Firebase Admin for `households/{householdId}/barcode-library/{barcode}`.
 
@@ -90,6 +90,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
 - `tests/e2e/shopping-trip.spec.ts` covers the product count wording, product photos and the missing-photo placeholder, search, and the inline missing-photo error; `tests/e2e/verification-findings.spec.ts` keeps covering prompt deletes and the add dialog.
 - Manually test camera denial, manual entry, local-library precedence, public fallback, unknown barcodes, and mapping CRUD.
+- Camera release: open a scanner (Pantry > Add Item > Scan Barcode, list Add Item > Scan Barcode, the library), then close it, press Escape, or use browser Back to switch Shopping tabs: the browser's camera-in-use indicator turns off at once, and `chrome://media-internals` (or DevTools > Media) shows the video track ended. `tests/unit/shopping-live.test.ts` checks the scanner stops its tracks and that nested scanners close with their dialog and tab.
 - Verify image upload/delete behavior for an existing object, missing object, external URL, no image, and unavailable Storage; metadata deletion must remain prompt.
 - Runtime-test the server action while authenticated before claiming the private library lookup always succeeds.
 

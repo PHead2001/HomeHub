@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy } from 'lucide-react';
+import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy, User as UserIcon } from 'lucide-react';
 import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
@@ -21,7 +21,6 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ChevronDown } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
@@ -32,7 +31,7 @@ import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
-import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
+import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, isPodiumDay, statsMemberFrom } from '@/lib/chores/stats';
@@ -52,27 +51,12 @@ import { morphStyle } from '@/lib/motion';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
-import { ALL_ROOMS, choresRoomHref, effectiveChoresRoom, parseChoresRoom, roomSharedId } from '@/lib/chores/url-state';
-import { cleanHouseRooms, houseCleanStorageKey, type CleanRoom } from '@/lib/chores/house-clean';
+import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
+import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, type CleanRoom } from '@/lib/chores/house-clean';
 
 
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
 const statsNow = (today: string) => { const d = dayFromKey(today); d.setHours(23, 59, 59, 999); return d; };
-
-// The "house is clean" moment fires at most once per household per day on this
-// device: the flag lives in localStorage (shared by tabs, survives reloads), and
-// an in-memory set covers storage being blocked.
-const celebratedDays = new Set<string>();
-
-function readFlag(key: string): boolean {
-  if (celebratedDays.has(key)) return true;
-  try { return window.localStorage.getItem(key) === '1'; } catch { return false; }
-}
-
-function writeFlag(key: string) {
-  celebratedDays.add(key);
-  try { window.localStorage.setItem(key, '1'); } catch { /* storage blocked: the in-memory flag still holds for this visit */ }
-}
 
 export function ChoreChartClient() {
   const { currentUser, currentMember, household, permissions } = useAuth();
@@ -104,17 +88,19 @@ export function ChoreChartClient() {
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
-  // The room filter lives in the URL (`/chores?room=kitchen`), read on every
-  // render so dashboard links, Back/Forward and client navigation stay in sync.
+  // The filters live in the URL (`/chores?room=kitchen&due=overdue&who=me`), read on
+  // every render so dashboard links, Back/Forward, reload and client navigation stay in sync.
   const searchParams = useSearchParams();
   const pathname = usePathname() || '/chores';
-  const requestedRoomId = parseChoresRoom(searchParams);
-  const setFilterRoomId = useCallback((roomId: string) => {
-    const href = choresRoomHref(pathname, new URLSearchParams(window.location.search), roomId);
+  const filters = parseChoresFilters(searchParams);
+  const requestedRoomId = filters.room;
+  const setFilters = useCallback((change: Partial<ChoresFilters>) => {
+    const href = choresFiltersHref(pathname, new URLSearchParams(window.location.search), change);
     if (href === `${window.location.pathname}${window.location.search}`) return;
     // Shallow update: Next.js syncs useSearchParams with history.replaceState.
     window.history.replaceState(null, '', href);
   }, [pathname]);
+  const setFilterRoomId = useCallback((roomId: string) => setFilters({ room: roomId }), [setFilters]);
 
   // Chores that already celebrated in this visit: confetti never fires twice for one chore.
   const celebrated = useRef(new Set<string>());
@@ -520,8 +506,8 @@ export function ChoreChartClient() {
     const hadDue = !isToDoClear(before, today);
     if (!hadDue || !isToDoClear(after, today)) return;
     const key = houseCleanStorageKey(currentUser.householdId, today);
-    if (readFlag(key)) return;
-    writeFlag(key);
+    if (houseCleanShown(key)) return;
+    markHouseCleanShown(key);
     const doneToday = after.filter(chore => {
       const instant = completionInstant(chore);
       return instant && dayKey(instant) === today;
@@ -796,7 +782,10 @@ export function ChoreChartClient() {
     return frame(<SignInPrompt what="manage chores" />);
   }
 
+  const reader = { uid: currentUser.uid, email: currentUser.email };
   const filteredChores = assignedChores.filter(chore => {
+    // `?who=me`: the reader's chores (assignee by uid or email, as everywhere).
+    if (!matchesWhoFilter(chore, filters.who, reader)) return false;
     if (filterRoomId === 'all') return true;
     if (filterRoomId === 'general') return !chore.roomIds || chore.roomIds.length === 0;
     return chore.roomIds?.includes(filterRoomId);
@@ -804,7 +793,9 @@ export function ChoreChartClient() {
 
   const byDue = (a: ChoreRecord, b: ChoreRecord) => choreDueKey(a).localeCompare(choreDueKey(b)) || a.task.localeCompare(b.task);
   const recurringTemplateIds = new Set(choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence)).map(t => t.id));
-  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds, householdUsers);
+  // `?due=overdue`: To Do keeps only chores due before today (folded missed instances stay with their row).
+  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds, householdUsers)
+    .filter(entry => filters.due !== 'overdue' || choreDueKey(entry.chore) < today || entry.missed.length > 0);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);
   const visibleFutureChores = showFullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
@@ -854,10 +845,11 @@ export function ChoreChartClient() {
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
     const groups = groupByRoom(entries);
-    // Keyed on the room filter: defaultValue only applies on mount, so a new
-    // filter remounts the groups with the newly selected room open.
+    // Keyed on every filter: defaultValue only applies on mount, so a new room, due or
+    // who filter remounts the groups with each newly listed room open (clearing Mine
+    // brings in housemates' rooms, which would otherwise stay collapsed).
     return (
-      <Accordion key={`${prefix}-${filterRoomId}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
+      <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
         {groups.map(group => (
           <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
@@ -1066,6 +1058,25 @@ export function ChoreChartClient() {
                   </DropdownMenuRadioGroup>
                 </DropdownMenuContent>
               </DropdownMenu>
+              {/* GOAL-filters: static labels with aria-pressed (HP-28a); the state lives in the URL. */}
+              <Button
+                variant={filters.due === 'overdue' ? 'secondary' : 'outline'}
+                size="sm"
+                aria-pressed={filters.due === 'overdue'}
+                data-testid="chores-filter-overdue"
+                onClick={() => setFilters({ due: filters.due === 'overdue' ? 'all' : 'overdue' })}
+              >
+                <AlarmClock className="mr-2 h-4 w-4" /> Overdue
+              </Button>
+              <Button
+                variant={filters.who === 'me' ? 'secondary' : 'outline'}
+                size="sm"
+                aria-pressed={filters.who === 'me'}
+                data-testid="chores-filter-mine"
+                onClick={() => setFilters({ who: filters.who === 'me' ? 'all' : 'me' })}
+              >
+                <UserIcon className="mr-2 h-4 w-4" /> Mine
+              </Button>
               {capabilities.canComplete && (
                 <Button
                   variant={selectMode ? 'secondary' : 'ghost'}
@@ -1099,7 +1110,7 @@ export function ChoreChartClient() {
                       kind="chores"
                       compact
                       headingLevel={3}
-                      title={completedToday > 0 ? 'All done for today' : 'Nothing due today'}
+                      title={filters.due === 'overdue' ? 'Nothing overdue' : completedToday > 0 ? 'All done for today' : 'Nothing due today'}
                       description={nextUp ? `Next up: ${nextUp.task}, ${format(new Date(`${choreDueKey(nextUp)}T12:00:00`), 'EEE, MMM d')}.` : 'Nothing is scheduled. Add a chore when something comes up.'}
                       action={capabilities.canCreate ? { label: 'Add Chore', icon: <Plus className="h-4 w-4" />, onClick: openAdd } : undefined}
                     />

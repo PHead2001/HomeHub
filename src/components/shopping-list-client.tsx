@@ -1,12 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { onDataChanged } from '@/lib/data-changed';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AnimatePresence, motion } from 'motion/react';
-import { collection, doc, updateDoc, deleteDoc, setDoc, query, waitForPendingWrites } from 'firebase/firestore';
+import { collection, doc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { ArchiveX, ArrowLeft, Loader2, Minus, Plus, PlusCircle, ScanBarcode, Settings, X } from 'lucide-react';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
@@ -38,16 +37,21 @@ import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
-import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
-import { findMergeTarget, groupItemsByAisle, isTripComplete, normalizeItemName, pluralize, splitSettled, withoutIds, type QuickAddEntry } from '@/lib/shopping/items';
+import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
+import { buildShoppingListItem } from '@/lib/shopping-items';
+import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, splitSettled, type QuickAddEntry } from '@/lib/shopping/items';
+import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
+import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
+import { useOnTabDeactivate } from './shopping/tab-activity';
+import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
 import { deleteStillPurchasedItems, mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
-import { ListCard, type ListCounts } from './shopping/list-card';
+import { ListCard } from './shopping/list-card';
+import { ListCardsSkeleton } from './shopping/shopping-skeletons';
 import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
@@ -85,11 +89,14 @@ function useOnline() {
   return online;
 }
 
-function ManageCategoriesDialog({ categories, setCategories, householdId, listId, isListOpen, onUpdate }: { categories: ShoppingListCategory[], setCategories: React.Dispatch<React.SetStateAction<ShoppingListCategory[]>>, householdId: string, listId: string, /** False once another list is open, so a late save never overwrites its categories. */ isListOpen: () => boolean, onUpdate: () => void }) {
+/** The open list's categories (live: the listener shows a save at once, and another member's edits as they land). */
+function ManageCategoriesDialog({ categories, householdId, listId }: { categories: ShoppingListCategory[], householdId: string, listId: string }) {
   const { toastError } = useToast();
   const [newCategory, setNewCategory] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  // Closed when the Shopping Lists tab is hidden (its portal is outside the panel).
+  useOnTabDeactivate(() => setIsCategoryDialogOpen(false));
 
   const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
 
@@ -111,9 +118,7 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
     const updatedCategories = [...categories, name].sort((a, b) => a.localeCompare(b));
     try {
       await setDoc(categoriesDocRef, { list: updatedCategories });
-      if (isListOpen()) setCategories(updatedCategories);
       setNewCategory('');
-      onUpdate();
     } catch (cause) {
       toastError(cause, 'Could not add the category');
     }
@@ -124,8 +129,6 @@ function ManageCategoriesDialog({ categories, setCategories, householdId, listId
     const updatedCategories = categories.filter(c => c !== categoryToRemove);
     try {
       await setDoc(categoriesDocRef, { list: updatedCategories });
-      if (isListOpen()) setCategories(updatedCategories);
-      onUpdate();
     } catch (cause) {
       toastError(cause, 'Could not remove the category');
     }
@@ -230,13 +233,19 @@ export function ShoppingListClient({
   // The list whose rows already played their staggered entrance.
   const enteredRowsRef = useRef<string | null>(null);
 
-  const [lists, setLists] = useState<ShoppingList[]>([]);
-  const [counts, setCounts] = useState<Record<string, ListCounts>>({});
-  const [listItems, setListItems] = useState<ShoppingListItem[]>([]);
-  const [categories, setCategories] = useState<ShoppingListCategory[]>(DEFAULT_SHOPPING_CATEGORIES);
-
-  const [loading, setLoading] = useState(true);
-  const [loadingItems, setLoadingItems] = useState(false);
+  const householdId = currentUser?.householdId ?? null;
+  // Live data (SH-1): the lists, the open list's items and categories, and the card
+  // counts are listeners. Each is keyed by household (and list), so a list switch
+  // or household change shows loading, never another list's items.
+  const listsState = useLiveShoppingLists(householdId);
+  const lists = listsState.value;
+  const loading = listsState.status !== 'ready';
+  const itemsState = useLiveListItems(householdId, selectedListId);
+  const categoriesState = useLiveListCategories(householdId, selectedListId);
+  const listItems = itemsState.value;
+  const categories = categoriesState.value;
+  const loadingItems = Boolean(selectedListId) && (itemsState.status === 'loading' || categoriesState.status === 'loading');
+  const counts = useLiveListCounts(householdId, lists.map((list) => list.id), selectedListId ?? '');
 
   const [isAddItemDialogOpen, setIsAddItemDialogOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -248,16 +257,55 @@ export function ShoppingListClient({
   const [openSections, setOpenSections] = useState<string[]>(['needed']);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [handoffMode, setHandoffMode] = useState<null | 'pantry' | 'then-clear'>(null);
+  // The purchased items shown when Clear was pressed, with the household and list
+  // they came from: exactly those are cleared, even if the live list changes while
+  // the dialog is open, and never on another list (`clearIdsFor`).
+  const [clearTarget, setClearTarget] = useState<ClearTarget | null>(null);
+  const clearIds = clearIdsFor(clearTarget, householdId, selectedListId) ?? [];
+  // The list this device is deleting, so its own deletion never reads as "deleted elsewhere".
+  const [deletingListId, setDeletingListId] = useState<string | null>(null);
+  // The open list as last seen in this household's lists snapshot (shown when it is
+  // deleted elsewhere). Scoped by household, so another household's list never shows.
+  const [seen, setSeen] = useState<{ householdId: string; list: ShoppingList } | null>(null);
+
+  // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
+  // browser Back to `?tab=pantry`), so none stays on screen or traps focus there.
+  useOnTabDeactivate(() => {
+    setIsAddItemDialogOpen(false);
+    setIsScannerOpen(false);
+    setIsListDialogOpen(false);
+    setListToDelete(null);
+    setIsClearAlertOpen(false);
+    setIsArchiveAlertOpen(false);
+    setIsReceiptOpen(false);
+    setHandoffMode(null);
+  });
+
+  // The Add Item scanner is nested in the Add Item dialog: it never outlives it
+  // (otherwise reopening Add Item would bring the camera back).
+  if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
-  const reconcilingListRef = useRef<string | null>(null);
-  const reconcileAgainRef = useRef(false);
-  const fetchItemsRef = useRef<((listId: string, options?: { silent?: boolean }) => Promise<ShoppingListItem[] | null>) | null>(null);
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
 
   const selectedList = useMemo(() => lists.find((list) => list.id === selectedListId) ?? null, [lists, selectedListId]);
+  if (selectedList && householdId && (seen?.list !== selectedList || seen.householdId !== householdId)) setSeen({ householdId, list: selectedList });
+  const seenList = seen && seen.householdId === householdId ? seen.list : null;
+  const listIds = useMemo(() => lists.map((list) => list.id), [lists]);
+  // The marker covers only the deletion in flight: once this device has left the
+  // list and the snapshot no longer holds it, it is cleared.
+  if (deletionSettled({ deletingListId, selectedListId, listIds })) setDeletingListId(null);
+  // Deleted while open (here: by another member or device): the list's document is
+  // gone from the snapshot. Its screen says so and offers no write controls (SH-1e).
+  const deletedList = isOpenListDeleted({
+    listId: selectedListId,
+    seenListId: seenList?.id ?? null,
+    listIds,
+    listsReady: !loading,
+    deletingListId,
+  }) ? seenList : null;
   // After the first render of a loaded list, later rows (added, re-sorted) enter without the stagger.
   useEffect(() => {
     if (!selectedListId) enteredRowsRef.current = null;
@@ -265,182 +313,67 @@ export function ShoppingListClient({
   });
   listItemsRef.current = listItems;
 
-  // Re-reads the list once Firestore has settled every queued write, so the screen
-  // shows the confirmed state: rejected writes are rolled back in the local cache.
-  // Used after a failed write and when a list loads with writes still queued (offline
-  // ticks restored after a reload, whose rejection promises did not survive). Only one
-  // pass runs per list at a time; a request made meanwhile triggers one more pass.
-  const reconcileWithServer = useCallback((listId: string) => {
-    if (reconcilingListRef.current === listId) {
-      reconcileAgainRef.current = true;
-      return;
-    }
-    reconcilingListRef.current = listId;
-    reconcileAgainRef.current = false;
-    waitForPendingWrites(db)
-      .then(() => {
-        if (selectedListIdRef.current === listId) return fetchItemsRef.current?.(listId, { silent: true });
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (reconcilingListRef.current !== listId) return;
-        reconcilingListRef.current = null;
-        if (reconcileAgainRef.current) reconcileWithServer(listId);
-      });
-  }, []);
   // The open list's id (from the URL), so async results for another list are never shown.
   selectedListIdRef.current = selectedListId;
 
-  // --- Data Fetching ---
-
   const getListsCollectionRef = useCallback(() => {
-    if (!currentUser?.householdId) return null;
-    return collection(db, 'households', currentUser.householdId, 'shopping-lists');
-  }, [currentUser]);
+    if (!householdId) return null;
+    return collection(db, 'households', householdId, 'shopping-lists');
+  }, [householdId]);
 
-  // Item counts for the list cards. Loaded after the lists so cards never wait on them.
-  const fetchCounts = useCallback(async (loadedLists: ShoppingList[]) => {
-    const householdId = currentUser?.householdId;
-    if (!householdId) return;
-    const entries = await Promise.all(loadedLists.map(async (list) => {
-      try {
-        const snapshot = await getDocsOfflineAware(query(collection(db, 'households', householdId, 'shopping-lists', list.id, 'items')));
-        let needed = 0;
-        let purchased = 0;
-        snapshot.docs.forEach((itemDoc) => {
-          if (itemDoc.data().status === 'purchased') purchased += 1;
-          else needed += 1;
-        });
-        return [list.id, { needed, purchased }] as const;
-      } catch {
-        return null;
-      }
-    }));
-    setCounts(Object.fromEntries(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== null)));
-  }, [currentUser]);
-
-  const fetchLists = useCallback(async () => {
-    const listsCollection = getListsCollectionRef();
-    if (!listsCollection) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const snapshot = await getDocsOfflineAware(query(listsCollection));
-      const listsData = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as ShoppingList))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      setLists(listsData);
-      void fetchCounts(listsData);
-    } catch (error) {
-      toastError(error, 'Could not load shopping lists');
-    } finally {
-      setLoading(false);
-    }
-  }, [getListsCollectionRef, toastError, fetchCounts]);
-
-  // Re-reads a list. Resolves with the items read (the confirmed state, or the local
-  // cache offline), or null when the read failed or another list is now open.
-  const fetchItemsAndCategories = useCallback(async (listId: string, { silent = false }: { silent?: boolean } = {}): Promise<ShoppingListItem[] | null> => {
-    if (!currentUser?.householdId) return null;
-    if (!silent) setLoadingItems(true);
-    try {
-      const itemsCollection = collection(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'items');
-      const categoriesDoc = doc(db, 'households', currentUser.householdId, 'shopping-lists', listId, 'config', 'categories');
-
-      const [itemsSnapshot, categoriesSnapshot] = await Promise.all([
-        getDocsOfflineAware(query(itemsCollection)),
-        getDocOfflineAware(categoriesDoc)
-      ]);
-
-      // The member may have opened another list meanwhile (e.g. an Undo toast for list A
-      // pressed while list B is open): never render A's items under B's header.
-      if (selectedListIdRef.current !== listId) return null;
-      const itemsData = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
-      setListItems(itemsData);
-
-      // Ticks queued offline survive a reload, but the promise that would report a
-      // server rejection does not: re-read once the queue settles.
-      if (itemsSnapshot.docs.some(item => item.metadata.hasPendingWrites) && reconcilingListRef.current !== listId) {
-        reconcileWithServer(listId);
-      }
-
-      const storedCategories = categoriesSnapshot.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null;
-      // Reset to default if no specific categories are set for this list
-      setCategories(storedCategories ?? DEFAULT_SHOPPING_CATEGORIES);
-      return itemsData;
-    } catch (error) {
-      if (selectedListIdRef.current === listId) toastError(error, 'Could not load list items');
-      return null;
-    } finally {
-      if (!silent && selectedListIdRef.current === listId) setLoadingItems(false);
-    }
-  }, [currentUser, reconcileWithServer, toastError]);
-  fetchItemsRef.current = fetchItemsAndCategories;
-
+  // A listener that cannot load says so once (it keeps retrying with backoff).
+  const reportedErrorRef = useRef<unknown>(null);
   useEffect(() => {
-    if (currentUser?.householdId) {
-      fetchLists();
-    }
-  }, [currentUser, fetchLists]);
-
-  // Items added from elsewhere (the command palette's quick add): silently re-read
-  // the open list if it changed, and the card counts. Reads stay offline-aware.
-  useEffect(() => {
-    const householdId = currentUser?.householdId;
-    if (!householdId) return;
-    return onDataChanged('shopping', householdId, (detail) => {
-      if (detail.listId && selectedListIdRef.current === detail.listId) void fetchItemsRef.current?.(detail.listId, { silent: true });
-      void fetchCounts(lists);
-    });
-  }, [currentUser?.householdId, fetchCounts, lists]);
+    const error = listsState.error ?? itemsState.error ?? categoriesState.error;
+    if (!error || reportedErrorRef.current === error) return;
+    reportedErrorRef.current = error;
+    toastError(error, listsState.error ? 'Could not load shopping lists' : 'Could not load list items');
+  }, [listsState.error, itemsState.error, categoriesState.error, toastError]);
 
   useEffect(() => {
     setOpenSections(['needed']);
     setIsReceiptOpen(false);
-    if (selectedListId) {
-      fetchItemsAndCategories(selectedListId);
-    } else {
-      setListItems([]);
-    }
-  }, [selectedListId, fetchItemsAndCategories]);
-
-  // Back on the overview: refresh the card counts so they reflect the trip.
-  const wasInListRef = useRef(false);
-  useEffect(() => {
-    if (selectedListId) {
-      wasInListRef.current = true;
-    } else if (wasInListRef.current) {
-      wasInListRef.current = false;
-      void fetchCounts(lists);
-    }
-  }, [selectedListId, fetchCounts, lists]);
+    // A Clear confirmation belongs to the list it was opened on.
+    setIsClearAlertOpen(false);
+    setClearTarget(null);
+  }, [selectedListId]);
 
   // A `?list=` link to a list that no longer exists falls back to the overview.
+  // Decided from a snapshot the server confirmed (or, offline, from the cache), and
+  // never for a list this screen saw (that one shows "This list was deleted").
+  const confirmed = listsConfirmed({ listsReady: !loading, fromCache: listsState.fromCache, offline: isBrowserOffline() });
+  const linkMissing = isListLinkMissing({
+    listId: selectedListId,
+    listIds,
+    listsReady: !loading,
+    fromCache: listsState.fromCache,
+    offline: isBrowserOffline(),
+  }) && !deletedList && deletingListId !== selectedListId;
   useEffect(() => {
-    if (loading || !selectedListId || !currentUser?.householdId) return;
-    if (!lists.some((list) => list.id === selectedListId)) {
-      onSelectList(null);
-      toast({ title: 'List not found', description: 'That list was deleted or you no longer have access to it.' });
-    }
-  }, [loading, selectedListId, lists, onSelectList, toast, currentUser]);
+    if (!linkMissing) return;
+    onSelectList(null);
+    toast({ title: 'List not found', description: 'That list was deleted or you no longer have access to it.' });
+  }, [linkMissing, onSelectList, toast]);
 
   // The home-screen shortcut "Add to shopping" opens /shopping?quickAdd=1: open
   // the add-item dialog on the only list, or else on the first Grocery list.
   // The request comes from the URL on every render (useSearchParams), so it works
   // for a fresh load and for in-app navigation alike; handling it removes it.
+  // Cached lists are drawn at once, but the one-shot choice waits for lists the
+  // server confirmed (or the cache offline), so a cached Grocery list deleted
+  // elsewhere is never opened and the request is not lost.
+  const quickAdd = quickAddDecision({ requested: quickAddRequested, confirmed, canEdit, lists });
+  const quickAddKind = quickAdd?.kind ?? null;
+  const quickAddListId = quickAdd?.kind === 'open' ? quickAdd.listId : null;
   useEffect(() => {
-    if (loading || !quickAddRequested) return;
-    const target = canEdit ? (lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery')) : undefined;
-    onQuickAddHandled?.(target ? target.id : selectedListId);
-    if (!canEdit) return;
-    if (target) {
+    if (!quickAddKind || quickAddKind === 'wait') return;
+    onQuickAddHandled?.(quickAddListId ?? selectedListId);
+    if (quickAddKind === 'open') {
       setIsAddItemDialogOpen(true);
-    } else if (lists.length > 0) {
+    } else if (quickAddKind === 'choose') {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
     }
-  }, [loading, quickAddRequested, lists, onQuickAddHandled, selectedListId, toast, canEdit]);
+  }, [quickAddKind, quickAddListId, onQuickAddHandled, selectedListId, toast]);
 
   // --- List CRUD ---
 
@@ -451,29 +384,34 @@ export function ShoppingListClient({
     try {
       await setDoc(doc(listsCollection, listId), { ...data, name: data.name.trim() }, { merge: true });
       toast({ title: id ? 'List updated' : 'List created' });
-      fetchLists();
     } catch (error) {
       toastError(error, 'Could not save the list');
     }
   };
 
-  const handleDeleteList = async () => {
-    const listIdToDelete = listToDelete?.id;
-    if (!listIdToDelete) return;
-
-    const listsCollection = getListsCollectionRef();
-    if (!listsCollection) return;
-
+  /**
+   * Deletes a list for real (SH-9): the server action removes the list document,
+   * its items and its categories in one recursive delete. It needs a connection.
+   */
+  const handleDeleteList = async (list: ShoppingList | null = listToDelete) => {
+    if (!list || !householdId) return;
+    if (isBrowserOffline()) {
+      toast({ title: 'You are offline', description: 'Delete the list once you are back online.' });
+      return;
+    }
+    setDeletingListId(list.id);
     try {
-      // This does not delete subcollections. For a production app, a Cloud Function would be needed for that.
-      await deleteDoc(doc(listsCollection, listIdToDelete));
-      toast({ title: 'List deleted' });
-      setListToDelete(null);
-      if (selectedListId === listIdToDelete) {
-        onSelectList(null);
+      const result = await deleteShoppingList({ ...(await getAiActionContext(householdId)), listId: list.id });
+      if (!result.ok) {
+        setDeletingListId(null);
+        toast({ variant: 'destructive', title: 'Could not delete the list', description: result.message });
+        return;
       }
-      await fetchLists();
+      toast({ title: 'List deleted', description: `${list.name} and its items are gone.` });
+      setListToDelete(null);
+      if (selectedListIdRef.current === list.id) onSelectList(null);
     } catch (error) {
+      setDeletingListId(null);
       toastError(error, 'Could not delete the list');
     }
   };
@@ -497,19 +435,18 @@ export function ShoppingListClient({
     entries: QuickAddEntry[],
     { selectedCategory, libraryItem, barcode }: { selectedCategory?: string; libraryItem?: BarcodeLibraryItem | null; barcode?: string } = {},
   ): Promise<{ results: AddResult[]; failed: QuickAddEntry[]; firstError?: unknown } | null> => {
-    const householdId = currentUser?.householdId;
     const list = selectedList;
     if (!householdId || !list) return null;
     const offline = isBrowserOffline();
+    // A rejected queued write is rolled back in the listener; only say so.
     const onLateError = (name: string) => (error: unknown) => {
       toastError(error, `Could not sync ${name}`);
-      reconcileWithServer(list.id);
     };
 
     // Each entry is its own write: settle them all, so one failure never hides
     // which entries were saved (and a retry never adds those twice).
     const settled = await Promise.allSettled(entries.map(async (entry): Promise<AddResult> => {
-      // The list on screen comes from a one-time read, so its statuses can be stale.
+      // The list on screen is live but can trail the server by a moment.
       // Online, the merge re-reads the target in a transaction and only increments it
       // if it is still needed; otherwise (bought or deleted meanwhile) a new needed
       // item is created below. Offline, transactions cannot run, so there is no merge
@@ -546,8 +483,7 @@ export function ShoppingListClient({
     const { succeeded, failed, firstError } = splitSettled(entries, settled);
 
     if (succeeded.length > 0) playFeedback('add');
-    // Always refresh: whatever was saved shows, even when other entries failed.
-    await fetchItemsAndCategories(list.id, { silent: true });
+    // No re-read (SH-27a): the listener already shows whatever was saved.
     return { results: succeeded, failed, firstError };
   };
 
@@ -631,7 +567,7 @@ export function ShoppingListClient({
   };
 
   const toggleItemStatus = async (item: ShoppingListItem) => {
-      if (!currentUser?.householdId || !selectedList) return;
+      if (!householdId || !selectedList) return;
 
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
@@ -641,19 +577,14 @@ export function ShoppingListClient({
       const isListOpen = () => selectedListIdRef.current === list.id;
       const lastNeeded = isCheckingOff && isListOpen()
         && listItemsRef.current.filter(listItem => listItem.status === 'needed' && listItem.id !== item.id).length === 0;
-      const setItemStatus = (status: ShoppingListItem['status']) => {
-        if (!isListOpen()) return;
-        setListItems(prev => prev.map(listItem => listItem.id === item.id ? { ...listItem, status } : listItem));
-      };
-      // A failed write is not undone by restoring this tick's starting status: several
-      // ticks on one item can be queued offline and fail together, and each captured a
-      // different predecessor. Show the confirmed state from Firestore instead.
+      // A rejected write is rolled back by Firestore in the listener, so the screen
+      // settles on the confirmed state (also when several ticks queued offline are
+      // rejected together); only the toast is left to do here.
       const failToggle = () => {
         toast({ variant: 'destructive', title: 'Error', description: 'Could not update item status.' });
         // The receipt was opened optimistically on the last tick; a rejected tick
         // means the trip is not complete after all.
         if (isListOpen()) setIsReceiptOpen(false);
-        reconcileWithServer(list.id);
       };
 
       // Into the cart (H07): a copy of the name flies from the row (measured before
@@ -663,10 +594,10 @@ export function ShoppingListClient({
         cartFlight.launch(row?.querySelector('label') ?? row ?? null, item.name);
       }
 
-      // Show the tick immediately. Offline, the write waits in Firestore's persistent
-      // queue (it survives reloads) and syncs when the connection returns.
-      setItemStatus(newStatus);
-      const itemRef = doc(db, 'households', currentUser.householdId, 'shopping-lists', list.id, 'items', item.id);
+      // The listener shows the tick at once (Firestore applies local writes to it
+      // immediately). Offline, the write waits in Firestore's queue and syncs when
+      // the connection returns.
+      const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
       const write = updateDoc(itemRef, { status: newStatus });
 
       // Ticking never leaves the list: the pantry is offered at the end of the trip
@@ -693,15 +624,17 @@ export function ShoppingListClient({
 
       try {
         await write;
-        // Online, "trip complete" is decided from the confirmed list (another member
-        // may have added items since this device last read it), not from the cache.
-        const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
-        if (isCheckingOff && confirmed && isListOpen() && isTripComplete(confirmed)) {
-          playFeedback('celebrate');
-          setIsReceiptOpen(true);
-        }
       } catch {
-          failToggle();
+        failToggle();
+        return;
+      }
+      // Online, "trip complete" is decided by the server (another member may have
+      // added an item a moment ago): one count query, not a re-read of the list.
+      if (!isCheckingOff || !isListOpen()) return;
+      const stillNeeded = await countNeededOnServer(householdId, list.id).catch(() => null);
+      if (stillNeeded === 0 && isListOpen()) {
+        playFeedback('celebrate');
+        setIsReceiptOpen(true);
       }
   };
 
@@ -726,20 +659,17 @@ export function ShoppingListClient({
   };
 
   // Deletes at once, with the shared Undo window to undo (the item is written back as it was).
+  // The listener removes and restores the row; a rejected write is rolled back there.
   const deleteItem = async (item: ShoppingListItem) => {
-    const householdId = currentUser?.householdId;
     const list = selectedList;
     if (!householdId || !list) return;
     const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
-    setListItems(prev => prev.filter(listItem => listItem.id !== item.id));
     try {
       await awaitWriteUnlessOffline(deleteDoc(itemRef), (error) => {
         toastError(error, `Could not delete ${item.name}`);
-        reconcileWithServer(list.id);
       });
     } catch (error) {
       toastError(error, `Could not delete ${item.name}`);
-      await fetchItemsAndCategories(list.id, { silent: true });
       return;
     }
     const { id: _id, ...data } = item;
@@ -752,20 +682,13 @@ export function ShoppingListClient({
         <ToastAction
           altText={`Undo removing ${item.name}`}
           onClick={() => {
-            // The restore always writes to the item's own list; the screen is only
-            // touched if that list is still the open one.
-            if (selectedListIdRef.current === list.id) {
-              setListItems(prev => (prev.some(listItem => listItem.id === item.id) ? prev : [...prev, item]));
-            }
+            // The restore always writes to the item's own list (refused once that
+            // list has been deleted).
             awaitWriteUnlessOffline(setDoc(itemRef, data), (error) => {
               toastError(error, `Could not restore ${item.name}`);
-              reconcileWithServer(list.id);
-            })
-              .then(() => fetchItemsAndCategories(list.id, { silent: true }))
-              .catch((error: unknown) => {
-                toastError(error, `Could not restore ${item.name}`);
-                void fetchItemsAndCategories(list.id, { silent: true });
-              });
+            }).catch((error: unknown) => {
+              toastError(error, `Could not restore ${item.name}`);
+            });
           }}
         >
           Undo
@@ -781,14 +704,17 @@ export function ShoppingListClient({
    * the screen, and "the list is empty, delete it?" is decided from a re-read of
    * the list (the confirmed state), not from a local status filter.
    */
-  const clearPurchasedItems = async (itemIds: readonly string[]) => {
-    if (!currentUser?.householdId || !selectedList) return;
-    // Only clear the list that is on screen: the ids below came from it.
-    if (selectedListIdRef.current !== selectedList.id) return;
-    const list = selectedList;
-    const householdId = currentUser.householdId;
-    const ids = [...new Set(itemIds)];
+  const clearPurchasedItems = async (target: ClearTarget | null) => {
     setIsClearAlertOpen(false);
+    setClearTarget(null);
+    if (!householdId || !selectedList) return;
+    // Only clear the list that is on screen, and only with ids captured from it:
+    // a confirmation left over from another list (or household) does nothing.
+    if (selectedListIdRef.current !== selectedList.id) return;
+    const itemIds = clearIdsFor(target, householdId, selectedList.id);
+    if (!itemIds) return;
+    const list = selectedList;
+    const ids = [...new Set(itemIds)];
     if (ids.length === 0) {
       toast({ title: 'Nothing to clear' });
       return;
@@ -803,21 +729,19 @@ export function ShoppingListClient({
     try {
       const deleted = await deleteStillPurchasedItems(householdId, list.id, ids);
       toast({ title: deleted.length === ids.length ? 'Purchased items cleared' : `${pluralize(deleted.length, 'item')} cleared`, description: deleted.length === ids.length ? undefined : 'Items changed by someone else meanwhile were left on the list.' });
-      await afterCleared(list, deleted);
+      await afterCleared(list);
     } catch (error) {
       toastError(error, 'Could not clear purchased items');
-      void fetchItemsAndCategories(list.id, { silent: true });
     }
   };
 
-  // After a confirmed clear: drop exactly the deleted ids, then decide "empty"
-  // from a re-read. Leaves another list's screen alone.
-  const afterCleared = async (list: ShoppingList, deleted: string[]) => {
-    if (selectedListIdRef.current !== list.id) return;
+  // After a confirmed clear (the listener drops the deleted rows): "empty" is
+  // decided by the server with one count query. Leaves another list's screen alone.
+  const afterCleared = async (list: ShoppingList) => {
+    if (selectedListIdRef.current !== list.id || !householdId) return;
     setIsReceiptOpen(false);
-    setListItems(prev => withoutIds(prev, deleted));
-    const confirmed = await fetchItemsAndCategories(list.id, { silent: true });
-    if (confirmed && confirmed.length === 0 && selectedListIdRef.current === list.id) {
+    const remaining = await countAllOnServer(householdId, list.id).catch(() => null);
+    if (remaining === 0 && selectedListIdRef.current === list.id) {
       setListToDelete(list);
       setIsArchiveAlertOpen(true);
     }
@@ -826,7 +750,6 @@ export function ShoppingListClient({
   // `shownIds` are the purchased items listed in the dialog (ticked or not): with
   // "then clear", exactly those are cleared after the pantry write succeeds.
   const sendToPantry = async (choices: PantryHandoffChoice[], shownIds: string[]): Promise<boolean> => {
-    const householdId = currentUser?.householdId;
     if (!householdId) return false;
     if (isBrowserOffline()) {
       toast({ title: 'You are offline', description: 'Add items to the pantry once you are back online.' });
@@ -853,8 +776,7 @@ export function ShoppingListClient({
         action: onOpenPantry ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
       });
       setIsReceiptOpen(false);
-      if (thenClear) await afterCleared(list, cleared);
-      else void fetchItemsAndCategories(list.id, { silent: true });
+      if (thenClear && cleared.length > 0) await afterCleared(list);
       return true;
     } catch (error) {
       toastError(error, 'Could not add to the pantry');
@@ -863,8 +785,18 @@ export function ShoppingListClient({
   };
 
   const archiveList = async () => {
-    await handleDeleteList();
     setIsArchiveAlertOpen(false);
+    await handleDeleteList(listToDelete);
+  };
+
+  const openClear = () => {
+    if (!householdId || !selectedListId) return;
+    setClearTarget({
+      householdId,
+      listId: selectedListId,
+      ids: listItemsRef.current.filter(item => item.status === 'purchased').map(item => item.id),
+    });
+    setIsClearAlertOpen(true);
   };
 
   const adjustQuantity = (amount: number) => {
@@ -880,11 +812,34 @@ export function ShoppingListClient({
 
   // --- Render Logic ---
 
+  // The same skeleton as the route and the page (SH-25a); later snapshots never
+  // bring it back (SH-25c).
   if (loading) {
     return (
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3" role="status" aria-label="Loading shopping lists">
-        <Skeleton className="h-48 w-full" />
-        <Skeleton className="h-48 w-full" />
+      <div role="status" aria-label="Loading shopping lists">
+        <ListCardsSkeleton />
+      </div>
+    );
+  }
+
+  // The open list was deleted elsewhere: say so, with the way back and nothing to write with.
+  if (deletedList) {
+    return (
+      <div className="rounded-xl border bg-card text-card-foreground shadow-raised" data-testid="open-list" data-list-deleted="true">
+        <div className="p-4 sm:p-6">
+          <Button variant="ghost" onClick={() => onSelectList(null)} className="mb-3 pl-1">
+            <ArrowLeft className="mr-2" aria-hidden /> Back to all lists
+          </Button>
+          <h2 className="min-w-0 break-words font-headline text-2xl font-semibold leading-tight">{deletedList.name}</h2>
+          <EmptyState
+            compact
+            kind="lists"
+            headingLevel={3}
+            title="This list was deleted"
+            description="Someone in your household deleted this list, its items and its categories. Nothing more can be added or ticked here."
+            className="mt-4"
+          />
+        </div>
       </div>
     );
   }
@@ -905,7 +860,7 @@ export function ShoppingListClient({
             <AlertDialog open={isClearAlertOpen} onOpenChange={setIsClearAlertOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                    <AlertDialogTitle>Clear {pluralize(purchasedItems.length, 'purchased item')}?</AlertDialogTitle>
+                    <AlertDialogTitle>Clear {pluralize(clearIds.length, 'purchased item')}?</AlertDialogTitle>
                     <AlertDialogDescription>
                         {canHandoff
                           ? 'They will be removed from this list. You can put them on the pantry shelves first.'
@@ -914,7 +869,7 @@ export function ShoppingListClient({
                     </AlertDialogHeader>
                     <AlertDialogFooter className="gap-2">
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void clearPurchasedItems(purchasedItems.map(item => item.id))} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
+                    <AlertDialogAction onClick={() => void clearPurchasedItems(clearTarget)} className={buttonVariants({ variant: canHandoff ? 'outline' : 'destructive' })}>
                         {canHandoff ? 'Clear only' : 'Clear Purchased'}
                     </AlertDialogAction>
                     {canHandoff && (
@@ -935,7 +890,7 @@ export function ShoppingListClient({
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                     <AlertDialogCancel onClick={() => setListToDelete(null)}>No, keep it</AlertDialogCancel>
-                    <AlertDialogAction onClick={archiveList} className={buttonVariants({ variant: "destructive"})}>
+                    <AlertDialogAction onClick={() => void archiveList()} className={buttonVariants({ variant: "destructive"})}>
                         Yes, delete it
                     </AlertDialogAction>
                     </AlertDialogFooter>
@@ -947,7 +902,7 @@ export function ShoppingListClient({
               listName={selectedList.name}
               items={purchasedItems}
               onSendToPantry={canHandoff ? () => { setIsReceiptOpen(false); setHandoffMode('pantry'); } : undefined}
-              onClearPurchased={canDelete ? () => { setIsReceiptOpen(false); setIsClearAlertOpen(true); } : undefined}
+              onClearPurchased={canDelete ? () => { setIsReceiptOpen(false); openClear(); } : undefined}
             />
             {handoffMode !== null && (
             <PantryHandoffDialog
@@ -958,7 +913,13 @@ export function ShoppingListClient({
               onConfirm={sendToPantry}
             />
             )}
-            <div className="rounded-xl border bg-card text-card-foreground shadow-raised" data-testid="open-list" style={morphStyle(listMorph.morphName === listMorphName ? listMorphName : null)}>
+            <div
+              className="rounded-xl border bg-card text-card-foreground shadow-raised"
+              data-testid="open-list"
+              data-from-cache={itemsState.fromCache ? 'true' : 'false'}
+              data-pending-writes={itemsState.hasPendingWrites ? 'true' : 'false'}
+              style={morphStyle(listMorph.morphName === listMorphName ? listMorphName : null)}
+            >
                 <div className="flex flex-col items-stretch gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
                     <div className="min-w-0">
                         <Button variant="ghost" onClick={(event) => listMorph.run(listMorphName, () => onSelectList(null), { event })} className="mb-3 pl-1">
@@ -974,7 +935,7 @@ export function ShoppingListClient({
                     </div>
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
-                        {currentUser?.householdId && <ManageCategoriesDialog categories={categories} setCategories={setCategories} householdId={currentUser.householdId} listId={selectedList.id} isListOpen={() => selectedListIdRef.current === selectedList.id} onUpdate={() => fetchItemsAndCategories(selectedList.id, { silent: true })}/>}
+                        {householdId && <ManageCategoriesDialog categories={categories} householdId={householdId} listId={selectedList.id} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
@@ -1125,7 +1086,7 @@ export function ShoppingListClient({
                             <div className="flex items-center">
                                 <AccordionTrigger className="flex-1 font-headline text-lg"><span>Purchased (<NumberTicker value={purchasedItems.length} animateOnMount={false} />)</span></AccordionTrigger>
                                 {purchasedItems.length > 0 && canDelete && (
-                                    <Button variant="ghost" size="sm" onClick={() => setIsClearAlertOpen(true)} className="text-muted-foreground hover:text-destructive">
+                                    <Button variant="ghost" size="sm" onClick={openClear} className="text-muted-foreground hover:text-destructive">
                                         <ArchiveX className="mr-2 h-4 w-4" aria-hidden /> Clear
                                     </Button>
                                 )}
@@ -1178,14 +1139,14 @@ export function ShoppingListClient({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {listToDelete?.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this list and all its items. This action cannot be undone.
+              This permanently deletes the list, its items and its categories for everyone in the household. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
-              onClick={handleDeleteList}>
+              onClick={() => void handleDeleteList()}>
               Delete List
             </AlertDialogAction>
           </AlertDialogFooter>
