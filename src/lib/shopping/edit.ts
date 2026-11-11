@@ -1,5 +1,6 @@
-/** The item edit sheet's pure logic (S3, SH-8a): what an edit writes. Unit tested in tests/unit/shopping-undo.test.ts. */
+/** The item edit sheet's pure logic (S3, SH-8a): what an edit writes and when the sheet closes. Unit tested in tests/unit/shopping-undo.test.ts. */
 import { itemNameKey, normalizeItemName } from './items';
+import { isSettledForInput, type SaveState, type SettledState } from './save-status';
 import type { ShoppingListItem } from '@/lib/types';
 
 /** The fields an edit changes (only those that differ from the item). */
@@ -81,27 +82,40 @@ export function saveMayComplete(submittedSession: number, current: EditOpening):
 /** The sheet's fields as the member typed them (quantity is the raw input text). */
 export type ItemEditDraft = { name: string; quantity: string; category: string };
 
+/** What an edit save reports: its state when the wait ended, and its final answer. */
+export type ItemSaveResult = { state: SaveState; settled: Promise<SettledState> };
+
 /**
- * What a save's completion does with the sheet (S3 review). The fields stay
- * editable while a save waits, so the member may change something meanwhile:
- * closing then would drop that newer input. So the sheet closes only when the save
- * succeeded and the draft is still the one submitted. If it changed, the sheet
- * stays open with the newer input, and its baseline becomes the values just saved,
- * so the next Save writes only what changed after the submit. A failed save keeps
- * the sheet and its baseline as they were.
+ * What the sheet does with a save's state (S3 review):
+ * - `close`: confirmed by the server (`saved`) or verified on this device
+ *   (`stored-locally`), and the draft is still the one submitted.
+ * - `keep`: confirmed, but the member changed a field while it waited. The sheet
+ *   stays open with that newer input; the saved values are the new baseline, so the
+ *   next Save writes only the later change.
+ * - `pending`: `sending` or `uncertain`. Neither confirmed nor known to survive a
+ *   reload, so the sheet stays open with its draft and waits for the final answer.
+ * - `failed`: rejected. The sheet stays open with the draft and its old baseline,
+ *   so Save tries the same change again.
  */
+export type ItemSaveOutcome =
+  | { kind: 'close' }
+  | { kind: 'keep'; baseline: ItemEditBaseline }
+  | { kind: 'pending' }
+  | { kind: 'failed'; baseline: ItemEditBaseline };
+
 export function settleItemSave(
   baseline: ItemEditBaseline,
   changes: ItemEditChanges,
   submitted: ItemEditDraft,
   current: ItemEditDraft,
-  saved: boolean,
-): { close: true } | { close: false; baseline: ItemEditBaseline } {
-  if (!saved) return { close: false, baseline };
+  state: SaveState,
+): ItemSaveOutcome {
+  if (state === 'failed') return { kind: 'failed', baseline };
+  if (!isSettledForInput(state)) return { kind: 'pending' };
   const unchanged = submitted.name === current.name && submitted.quantity === current.quantity && submitted.category === current.category;
-  if (unchanged) return { close: true };
+  if (unchanged) return { kind: 'close' };
   return {
-    close: false,
+    kind: 'keep',
     baseline: {
       name: changes.name ?? baseline.name,
       quantity: changes.quantity ?? baseline.quantity,
