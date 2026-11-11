@@ -18,7 +18,9 @@ import {
   settleItemSave,
   type ItemEditChanges,
   type ItemEditDraft,
+  type ItemSaveResult,
 } from '@/lib/shopping/edit';
+import { saveStateLabel, type SaveState } from '@/lib/shopping/save-status';
 import type { ShoppingListCategory, ShoppingListItem } from '@/lib/types';
 
 /**
@@ -28,7 +30,9 @@ import type { ShoppingListCategory, ShoppingListItem } from '@/lib/types';
  * closes it), but Save writes only the fields the member changed from what the
  * sheet showed when it opened, so someone else's change to another field is kept.
  * Each open is a session: a slow save's completion closes only its own session, and
- * only when nothing was typed while it waited (`settleItemSave`). Every control is at least 44 px (48 px on touch, D-2); the
+ * only once the edit is confirmed or verified on this device, and nothing was typed
+ * while it waited (`settleItemSave`). Until then the draft stays, with a status
+ * line ("Still sending…", or "Not saved" after a rejection). Every control is at least 44 px (48 px on touch, D-2); the
  * close button is this sheet's own, since the dialog's built-in one is smaller.
  */
 export function ItemEditSheet({
@@ -46,8 +50,8 @@ export function ItemEditSheet({
   canEdit: boolean;
   canDelete: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Writes the changes; resolves true when the sheet may close. */
-  onSave: (item: ShoppingListItem, changes: ItemEditChanges) => Promise<boolean>;
+  /** Writes the changes; reports the save's state when the wait ended and its final answer. */
+  onSave: (item: ShoppingListItem, changes: ItemEditChanges) => Promise<ItemSaveResult>;
   onDelete: (item: ShoppingListItem) => void;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
@@ -57,6 +61,7 @@ export function ItemEditSheet({
   const [category, setCategory] = useState('');
   const [error, setError] = useState<{ field: 'name' | 'quantity'; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
   const [opening, setOpening] = useState(CLOSED_EDIT);
 
   // Start from the item each time the sheet opens for it (not on every live update,
@@ -71,6 +76,7 @@ export function ItemEditSheet({
       setCategory(item.category);
       setError(null);
       setSaving(false);
+      setSaveNote(null);
     }
   }
   // The committed opening and draft, for a save that completes later.
@@ -106,16 +112,32 @@ export function ItemEditSheet({
     const baseline = opening.baseline;
     const submitted = draft;
     setSaving(true);
-    const done = await onSave(item, plan.changes);
-    // Closed (or reopened, perhaps for another item) while saving: that later sheet is
-    // not this save's to close or to clear the spinner of.
-    if (!saveMayComplete(session, openingRef.current)) return;
-    setSaving(false);
-    // Input typed while the save waited stays in the sheet; the saved values become
-    // the baseline, so the next Save writes only that newer change.
-    const outcome = settleItemSave(baseline, plan.changes, submitted, draftRef.current, done);
-    if (outcome.close) onOpenChange(false);
-    else if (outcome.baseline !== baseline) setOpening((current) => (current.session === session ? { ...current, baseline: outcome.baseline } : current));
+    setSaveNote(null);
+    const result = await onSave(item, plan.changes);
+    // Acts on a state of this save. Closed (or reopened, perhaps for another item)
+    // while saving: that later sheet is not this save's to close or to update.
+    const apply = (state: SaveState) => {
+      if (!saveMayComplete(session, openingRef.current)) return 'gone' as const;
+      const outcome = settleItemSave(baseline, plan.changes, submitted, draftRef.current, state);
+      if (outcome.kind === 'pending') {
+        // Not confirmed, and not known to survive a reload: keep the draft and wait.
+        setSaveNote(saveStateLabel(state));
+        return outcome.kind;
+      }
+      setSaving(false);
+      if (outcome.kind === 'close') {
+        onOpenChange(false);
+      } else if (outcome.kind === 'failed') {
+        setSaveNote('Not saved. Your changes are still here; Save to try again.');
+      } else {
+        // Input typed while the save waited stays in the sheet; the saved values
+        // become the baseline, so the next Save writes only that newer change.
+        setSaveNote(null);
+        setOpening((current) => (current.session === session ? { ...current, baseline: outcome.baseline } : current));
+      }
+      return outcome.kind;
+    };
+    if (apply(result.state) === 'pending') apply(await result.settled);
   };
 
   const categoryOptions = item && item.category && !categories.includes(item.category) ? [...categories, item.category] : categories;
@@ -177,6 +199,7 @@ export function ItemEditSheet({
             </Select>
           </div>
         </form>
+        <p role="status" aria-live="polite" className="min-h-5 text-sm text-muted-foreground" data-testid="item-edit-status">{saveNote}</p>
         <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between">
           {canDelete && item ? (
             <Button type="button" variant="outline" className={`${touch} text-destructive hover:text-destructive`} onClick={() => onDelete(item)}>

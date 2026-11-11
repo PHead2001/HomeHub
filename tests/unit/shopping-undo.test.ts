@@ -268,21 +268,31 @@ describe('item edit (SH-8a)', () => {
     assert.equal(saveMayComplete(reopened.session, nextEditOpening(reopened, null)), false);
   });
 
-  test('a save closes the sheet only when nothing was typed while it waited', () => {
+  test('a save closes the sheet only once confirmed and only when nothing was typed while it waited', () => {
     const baseline = { name: 'Milk', quantity: 1, category: 'Dairy' };
     const submitted = { name: 'Oat milk', quantity: '1', category: 'Dairy' };
     const plan = planItemEdit(baseline, { name: submitted.name, quantity: 1, category: submitted.category });
     assert.ok('changes' in plan);
-    // Draft unchanged: close.
-    assert.deepEqual(settleItemSave(baseline, plan.changes, submitted, { ...submitted }, true), { close: true });
-    // Quantity changed during the save: stay open, the saved values are the new baseline.
+    const settle = (current: typeof submitted, state: Parameters<typeof settleItemSave>[4]) => settleItemSave(baseline, plan.changes, submitted, current, state);
+    // Acknowledged, or verified in the durable cache: close.
+    assert.deepEqual(settle({ ...submitted }, 'saved'), { kind: 'close' });
+    assert.deepEqual(settle({ ...submitted }, 'stored-locally'), { kind: 'close' });
+    // Still sending (or unanswered): the sheet waits with its draft, then closes on confirmation.
+    assert.deepEqual(settle(submitted, 'sending'), { kind: 'pending' });
+    assert.deepEqual(settle(submitted, 'uncertain'), { kind: 'pending' });
+    assert.deepEqual(settle(submitted, 'saved'), { kind: 'close' });
+    // Sending, then rejected: the draft stays with the old baseline, so Save retries the same change.
+    assert.deepEqual(settle(submitted, 'failed'), { kind: 'failed', baseline });
+    assert.deepEqual(planItemEdit(baseline, { name: submitted.name, quantity: 1, category: submitted.category }), plan);
+    // Quantity changed while it waited: no new baseline until the edit is confirmed.
     const current = { ...submitted, quantity: '3' };
-    const outcome = settleItemSave(baseline, plan.changes, submitted, current, true);
-    assert.deepEqual(outcome, { close: false, baseline: { name: 'Oat milk', quantity: 1, category: 'Dairy' } });
-    assert.ok(!outcome.close);
+    assert.deepEqual(settle(current, 'sending'), { kind: 'pending' });
+    const outcome = settle(current, 'saved');
+    assert.deepEqual(outcome, { kind: 'keep', baseline: { name: 'Oat milk', quantity: 1, category: 'Dairy' } });
+    assert.ok(outcome.kind === 'keep');
     // So the next Save writes only the newer change.
     assert.deepEqual(planItemEdit(outcome.baseline, { name: current.name, quantity: 3, category: current.category }), { changes: { quantity: 3 } });
-    // A failed save keeps the sheet and its baseline.
-    assert.deepEqual(settleItemSave(baseline, plan.changes, submitted, submitted, false), { close: false, baseline });
+    // Changed meanwhile and then rejected: both the draft and the old baseline stay.
+    assert.deepEqual(settle(current, 'failed'), { kind: 'failed', baseline });
   });
 });
