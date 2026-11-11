@@ -15,7 +15,9 @@ import {
   planCategoryAdd,
   planCategoryRemove,
   planListReorder,
+  planSeededChange,
   planStoreReorder,
+  changeSeedsOrder,
   readCategoryConfig,
   storeForList,
   storeWalkFor,
@@ -33,8 +35,9 @@ describe('category names (SH-10d)', () => {
     assert.equal(categoryKey('  Dairy  '), categoryKey('dairy'));
     assert.deepEqual(dedupeCategories(['Dairy', 'dairy', ' Frozen  food ', 'frozen food', '', 3]), ['Dairy', 'Frozen food']);
     assert.deepEqual(normalizeStoredCategories({ list: ['Dairy', 'dairy', 'other'] }), ['Dairy', 'other']);
-    // Other readers (quick-add, share target, pantry) see the aisle order first, then older-client names.
-    assert.deepEqual(normalizeStoredCategories({ list: ['Bakery', 'Garage'], ordered: ['Party', 'Bakery'] }), ['Party', 'Bakery', 'Garage', 'Other']);
+    // Other readers (quick-add, share target, pantry) read it as the screen does:
+    // `list` decides which categories exist, `ordered` their order.
+    assert.deepEqual(normalizeStoredCategories({ list: ['Garage', 'Bakery', 'Party'], ordered: ['Party', 'Bakery', 'Removed'] }), ['Party', 'Bakery', 'Garage', 'Other']);
     // Entries the rules could not bound are never used.
     assert.deepEqual(dedupeCategories(['x'.repeat(101), 'Ok']), ['Ok']);
   });
@@ -160,6 +163,61 @@ describe('adding and removing categories never rewrites the list (SH-10c)', () =
   test('a remove with no document creates it without that category', () => {
     const rest = WALK_DEFAULTS.filter((name) => name !== 'Snacks');
     assert.deepEqual(planCategoryRemove('Snacks', missing), { unionList: rest, unionOrdered: rest });
+  });
+});
+
+describe('the first edit that introduces `ordered` (concurrent first edits)', () => {
+  // Applies a plan the way Firestore applies arrayUnion / arrayRemove.
+  const apply = (data: { list?: string[]; ordered?: string[] } | undefined, plan: ReturnType<typeof planCategoryRemove>) => {
+    const union = (base: string[] = [], add: string[] = []) => [...base, ...add.filter((entry) => !base.includes(entry))];
+    const remove = (base: string[] = [], drop: string[] = []) => base.filter((entry) => !drop.includes(entry));
+    let list = data?.list;
+    let ordered = data?.ordered;
+    if (plan?.unionList) list = union(list, plan.unionList);
+    if (plan?.removeList) list = remove(list, plan.removeList);
+    if (plan?.unionOrdered) ordered = union(ordered, plan.unionOrdered);
+    if (plan?.removeOrdered) ordered = remove(ordered, plan.removeOrdered);
+    return { list, ordered };
+  };
+
+  test('two members removing different categories from an older document: both stay removed', () => {
+    const stored = { list: ['Dairy', 'Produce', 'Other'] };
+    const seen = readCategoryConfig(stored, true, defaults);
+    assert.equal(changeSeedsOrder(seen), true);
+    // Offline fallback: both arrayUnion seeds land with their stale remainders.
+    const afterBoth = apply(apply(stored, planCategoryRemove('Dairy', seen)), planCategoryRemove('Produce', seen));
+    assert.deepEqual(afterBoth.list, ['Other']);
+    assert.ok(afterBoth.ordered?.includes('Dairy') && afterBoth.ordered.includes('Produce'));
+    // `list` decides membership, so neither removed category comes back.
+    assert.deepEqual(readCategoryConfig(afterBoth, true, defaults).list, ['Other']);
+    // Online: the transaction plans from what is stored when it runs.
+    const first = planSeededChange({ data: stored, exists: true }, defaults, { kind: 'remove', category: 'Dairy' });
+    assert.deepEqual(first, { list: ['Produce', 'Other'], ordered: ['Produce', 'Other'] });
+    const second = planSeededChange({ data: first, exists: true }, defaults, { kind: 'remove', category: 'Produce' });
+    assert.deepEqual(second, { list: ['Other'], ordered: ['Other'] });
+  });
+
+  test('no document: two first removals in transactions both land', () => {
+    const first = planSeededChange({ data: undefined, exists: false }, defaults, { kind: 'remove', category: 'Snacks' });
+    assert.deepEqual(first?.list, WALK_DEFAULTS.filter((name) => name !== 'Snacks'));
+    // The second transaction re-reads the document the first one created.
+    const second = planSeededChange({ data: first, exists: true }, defaults, { kind: 'remove', category: 'Dairy' });
+    assert.deepEqual(second?.list, WALK_DEFAULTS.filter((name) => name !== 'Snacks' && name !== 'Dairy'));
+    assert.deepEqual(readCategoryConfig(second, true, defaults).list, second?.ordered);
+  });
+
+  test('a seeded add or remove made stale meanwhile writes nothing', () => {
+    const stored = { list: ['Dairy', 'Garden', 'Other'], ordered: ['Garden', 'Dairy', 'Other'] };
+    assert.equal(planSeededChange({ data: stored, exists: true }, defaults, { kind: 'add', name: 'garden' }), null);
+    assert.equal(planSeededChange({ data: stored, exists: true }, defaults, { kind: 'remove', category: 'Produce' }), null);
+    assert.equal(planSeededChange({ data: stored, exists: true }, defaults, { kind: 'remove', category: 'Other' }), null);
+    // An add keeps the stored order (someone else's order and removals included).
+    assert.deepEqual(planSeededChange({ data: stored, exists: true }, defaults, { kind: 'add', name: 'Party' }), {
+      list: ['Garden', 'Dairy', 'Party', 'Other'], ordered: ['Garden', 'Dairy', 'Party', 'Other'],
+    });
+    // Once `ordered` exists, edits are plain arrayUnion / arrayRemove writes.
+    assert.equal(changeSeedsOrder(readCategoryConfig(stored, true, defaults)), false);
+    assert.equal(changeSeedsOrder(readCategoryConfig(undefined, false, defaults)), true);
   });
 });
 

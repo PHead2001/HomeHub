@@ -1,6 +1,6 @@
 import type { ShoppingListItem } from '@/lib/types';
 import { slugify } from '@/lib/utils';
-import { dedupeCategories, isOtherCategory } from '@/lib/shopping/category-order';
+import { dedupeCategories, isOtherCategory, readCategoryConfig } from '@/lib/shopping/category-order';
 import { itemNameKey } from '@/lib/shopping/items';
 import type { CategorySource } from '@/lib/shopping/local-categories';
 import { packageSize } from '@/lib/shopping/scan';
@@ -9,14 +9,16 @@ export const DEFAULT_SHOPPING_CATEGORIES = ['Produce', 'Dairy', 'Meat', 'Bakery'
 
 /**
  * Categories stored at `config/categories`, always including `Other` (the AI
- * fallback): the aisle order (`ordered`, S6) first, then any name only the older
- * `list` holds. Spellings that differ only in case or spacing are one category
- * ("dairy" and "Dairy", SH-10d): the first one is kept.
+ * fallback). With `ordered` (S6) they are read as the Shopping screen reads
+ * them (`readCategoryConfig`: `list` decides which exist, `ordered` the order);
+ * otherwise `list` as stored. Spellings that differ only in case or spacing are
+ * one category ("dairy" and "Dairy", SH-10d): the first one is kept.
  */
 export function normalizeStoredCategories(value: unknown): string[] | null {
   if (!value || typeof value !== 'object' || !('list' in value || 'ordered' in value)) return null;
-  const { list, ordered } = value as { list?: unknown; ordered?: unknown };
-  const stored = dedupeCategories([...(Array.isArray(ordered) ? ordered : []), ...(Array.isArray(list) ? list : [])]);
+  if (Array.isArray((value as { ordered?: unknown }).ordered)) return readCategoryConfig(value, true, []).list;
+  const list = (value as { list?: unknown }).list;
+  const stored = dedupeCategories(Array.isArray(list) ? list : []);
   return stored.some(isOtherCategory) ? stored : [...stored, 'Other'];
 }
 

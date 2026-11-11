@@ -18,6 +18,8 @@ import { db } from '@/lib/firebase';
 import { DEFAULT_SHOPPING_CATEGORIES } from '@/lib/shopping-items';
 import {
   planListReorder,
+  planSeededChange,
+  type CategoryChange,
   planStoreReorder,
   type CategoryWritePlan,
   type MoveDirection,
@@ -39,6 +41,22 @@ export function writeCategoryPlan(householdId: string, listId: string, plan: Cat
   // A remove needs the document; arrayUnion on a missing document creates it with exactly these values.
   if (plan.removeList?.length || plan.removeOrdered?.length) return updateDoc(ref, data);
   return setDoc(ref, data, { merge: true });
+}
+
+/**
+ * The first add or remove that introduces `ordered` (or the document), online:
+ * a transaction that re-reads the document and writes `list` and `ordered` from
+ * what is stored then. Resolves false when nothing was written.
+ */
+export function writeSeededCategoryChange(householdId: string, listId: string, change: CategoryChange): Promise<boolean> {
+  const ref = categoriesRef(householdId, listId);
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    const plan = planSeededChange({ data: snapshot.data(), exists: snapshot.exists() }, DEFAULT_SHOPPING_CATEGORIES, change);
+    if (!plan) return false;
+    transaction.set(ref, plan, { merge: true });
+    return true;
+  });
 }
 
 /** Moves a category one step in the list's own order. Resolves false when nothing moved. */

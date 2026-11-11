@@ -8,14 +8,22 @@
  * - `ordered`: the list's categories in the member's aisle order. Adds and
  *   removes are `arrayUnion` / `arrayRemove` on it, a move is a transaction that
  *   rewrites it from the order the server holds at that moment.
- * - `list`: the categories as older clients write them (rewritten whole,
- *   sorted). This release keeps it in step with the same `arrayUnion` /
- *   `arrayRemove` values, so older readers still see every category; its order
- *   is not used once `ordered` exists. A name found only in `list` (added by an
- *   older client) is shown after the ordered ones.
+ * - `list`: which categories the list has. Older clients rewrite it whole
+ *   (sorted); this release changes it with the same `arrayUnion` / `arrayRemove`
+ *   values as `ordered`. Once `list` exists it is the authority for membership:
+ *   `ordered` only supplies the order, an `ordered` entry missing from `list` is
+ *   ignored, and a `list` name missing from `ordered` (an older client's add) is
+ *   shown after the ordered ones. So a stale `ordered` seed can never bring back
+ *   a category another member removed.
  * - Without `ordered` (older documents, and the defaults when there is no
- *   document) categories are shown in store-walk order; the first add, remove or
- *   move writes `ordered` from the order on screen.
+ *   document) categories are shown in store-walk order. The first add or remove
+ *   that introduces `ordered` (or the document) runs online in a transaction
+ *   that re-reads the document and writes both fields from what is stored then
+ *   (`planSeededChange`), so two members' first edits both land. Offline it falls
+ *   back to the `arrayUnion` seed; with `list` as the authority that is safe for
+ *   an existing document, and for a missing one two offline first edits on
+ *   different devices may bring back a default the other removed. The first
+ *   move is a transaction anyway.
  * - Categories are one aisle regardless of case and spacing ("dairy" = "Dairy",
  *   SH-10d): the first spelling wins. Entries are strings of at most
  *   {@link MAX_STORED_CATEGORY} characters (the rules cannot check list entries).
@@ -103,6 +111,8 @@ export type CategoryConfig = {
   exists: boolean;
 };
 
+const withoutOther = (names: readonly string[]) => names.filter((name) => !isOtherCategory(name));
+
 const stringsOf = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 
@@ -115,8 +125,56 @@ export function readCategoryConfig(data: unknown, exists: boolean, defaults: rea
   const rawList = stringsOf(record.list);
   const rawOrdered = stringsOf(record.ordered);
   const ordered = Array.isArray(record.ordered);
-  const list = ordered ? effectiveCategoryOrder([...rawOrdered, ...rawList], true) : effectiveCategoryOrder(rawList, false);
+  let list: string[];
+  if (!ordered) {
+    list = effectiveCategoryOrder(rawList, false);
+  } else if (!Array.isArray(record.list)) {
+    list = effectiveCategoryOrder(rawOrdered, true);
+  } else {
+    // `list` says which categories exist; `ordered` only says in which order.
+    const members = dedupeCategories(rawList);
+    const memberKeys = new Set(members.map(categoryKey));
+    const kept = dedupeCategories(rawOrdered).filter((name) => memberKeys.has(categoryKey(name)));
+    const keptKeys = new Set(kept.map(categoryKey));
+    list = effectiveCategoryOrder([...kept, ...members.filter((name) => !keptKeys.has(categoryKey(name)))], true);
+  }
   return { list, rawList, rawOrdered, ordered, exists: true };
+}
+
+/** An add or a remove, as the category dialog asks for it. */
+export type CategoryChange = { kind: 'add'; name: string } | { kind: 'remove'; category: string };
+
+/**
+ * Whether a change would introduce `ordered` (or the document itself): such a
+ * change runs online as a transaction (`planSeededChange`) instead of a seed
+ * by `arrayUnion` from the screen's possibly stale copy.
+ */
+export const changeSeedsOrder = (config: CategoryConfig): boolean => !config.exists || !config.ordered;
+
+/**
+ * The first add or remove that introduces `ordered`, planned inside a
+ * transaction from the document as stored now (a removal or add another member
+ * made meanwhile is respected): both fields are written with the resulting
+ * order. Null: nothing to write (already added, already gone, `Other`, or full).
+ */
+export function planSeededChange(
+  server: { data: unknown; exists: boolean },
+  defaults: readonly string[],
+  change: CategoryChange,
+): { list: string[]; ordered: string[] } | null {
+  const fresh = readCategoryConfig(server.data, server.exists, defaults);
+  if (change.kind === 'add') {
+    const name = cleanCategoryName(change.name);
+    if (!name || name.length > MAX_CATEGORY_NAME) return null;
+    if (fresh.list.some((entry) => categoryKey(entry) === categoryKey(name))) return null;
+    if (fresh.list.length >= MAX_LIST_CATEGORIES) return null;
+    const next = [...withoutOther(fresh.list), name, OTHER_CATEGORY];
+    return { list: next, ordered: next };
+  }
+  const key = categoryKey(change.category);
+  if (isOtherCategory(change.category) || !fresh.list.some((entry) => categoryKey(entry) === key)) return null;
+  const next = fresh.list.filter((entry) => categoryKey(entry) !== key);
+  return { list: next, ordered: next };
 }
 
 /**
@@ -132,8 +190,6 @@ export type CategoryWritePlan = {
 };
 
 export type CategoryAddResult = { ok: true; name: string; plan: CategoryWritePlan } | { ok: false; error: string };
-
-const withoutOther = (names: readonly string[]) => names.filter((name) => !isOtherCategory(name));
 
 export function planCategoryAdd(input: string, config: CategoryConfig): CategoryAddResult {
   const name = cleanCategoryName(input);

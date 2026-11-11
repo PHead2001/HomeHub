@@ -11,6 +11,7 @@ import { toastError } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import {
   categoryKey,
+  changeSeedsOrder,
   checkStoreName,
   initialAisleOrder,
   isOtherCategory,
@@ -27,6 +28,7 @@ import {
   reorderStoreAisle,
   TooManyAislesError,
   writeCategoryPlan,
+  writeSeededCategoryChange,
 } from '@/lib/shopping/category-writes';
 import type { ShoppingList, ShoppingStore } from '@/lib/types';
 import { useOnTabDeactivate } from './tab-activity';
@@ -114,8 +116,14 @@ export function CategoriesDialog({
     }
     setCategoryError(null);
     setNewCategory('');
-    const tracked = await save.track(writeCategoryPlan(householdId, list.id, result.plan), {
-      kind: 'write',
+    // The first edit that introduces `ordered` re-reads the document in a
+    // transaction online; otherwise (and offline) one arrayUnion write.
+    const seed = online && changeSeedsOrder(config);
+    const write: Promise<unknown> = seed
+      ? writeSeededCategoryChange(householdId, list.id, { kind: 'add', name: result.name })
+      : writeCategoryPlan(householdId, list.id, result.plan);
+    const tracked = await save.track(write, {
+      kind: seed ? 'transaction' : 'write',
       subject: `${result.name} added`,
       failTitle: `Could not add ${result.name}`,
     });
@@ -126,8 +134,12 @@ export function CategoriesDialog({
   const removeCategory = (category: string) => {
     const plan = planCategoryRemove(category, config);
     if (!plan) return;
-    void save.track(writeCategoryPlan(householdId, list.id, plan), {
-      kind: 'write',
+    const seed = online && changeSeedsOrder(config);
+    const write: Promise<unknown> = seed
+      ? writeSeededCategoryChange(householdId, list.id, { kind: 'remove', category })
+      : writeCategoryPlan(householdId, list.id, plan);
+    void save.track(write, {
+      kind: seed ? 'transaction' : 'write',
       subject: `${category} removed`,
       failTitle: `Could not remove ${category}`,
     });
