@@ -514,51 +514,94 @@ export function productSummary(product: Pick<PantryProduct, 'batches'>, today: s
     .join(', ');
 }
 
-/** One line of stock sent to the recipe flow. `unit` is free text there (a stored unit, or a pack label). */
-export type RecipeStockItem = { name: string; quantity: number; unit: string };
+/**
+ * One line of stock sent to the recipe flow. `unit` is free text there (a stored
+ * unit, or a pack label). `expiresOn` is the soonest expiry (date-only, household
+ * day) among the batches in this line, and `expiresInDays` the days from the
+ * household's today to it (0 = today); both null when no batch has an expiry.
+ */
+export type RecipeStockItem = {
+  name: string;
+  quantity: number;
+  unit: string;
+  expiresOn: string | null;
+  expiresInDays: number | null;
+};
+
+/** The recipe flow accepts at most this many stock lines. */
+export const RECIPE_MAX_ITEMS = 60;
 
 /** The recipe unit for packages of a measured product whose size is unknown: "packs of unknown size (g)". */
 export const unknownSizeRecipeUnit = (unit: PantryItemUnit, packages: number) =>
   `${packages === 1 ? 'pack' : 'packs'} of unknown size (${unit})`;
 
+const soonerDay = (a: string | null, b: string | null) => (a === null ? b : b === null ? a : a < b ? a : b);
+
 /**
- * Stock a recipe may use (SH-27e): products with packages left whose soonest
- * usable batch has not expired. Expired batches are left out. Counted units send
- * the package count; measured units with a known size send packages × size,
- * summed per unit. A measured batch with no package size has no amount in its
- * unit, so its packages are sent as their own line ("2 packs of unknown size
- * (g)") and never added to, or passed off as, grams or litres. Amounts keep
- * their precision: a total below 1 kg or 1 L is restated in g or ml, then joined
- * with any g/ml line and rounded by `roundAmount` (0.004 kg of yeast is sent as
- * 4 g, never 0), capped at the recipe flow's 100,000.
+ * Stock a recipe may use (SH-27e, SH-31a), soonest expiry first. Left out:
+ * used-up batches (no packages), batches that need repair (their amount is not
+ * usable stock until edited) and expired batches (expiry before the household's
+ * today; a batch expiring today is still offered). Counted units send the package
+ * count; measured units with a known size send packages × size, summed per unit.
+ * A measured batch with no package size has no amount in its unit, so its
+ * packages are sent as their own line ("2 packs of unknown size (g)") and never
+ * added to, or passed off as, grams or litres. Amounts keep their precision: a
+ * total below 1 kg or 1 L is restated in g or ml, then joined with any g/ml line
+ * and rounded by `roundAmount` (0.004 kg of yeast is sent as 4 g, never 0),
+ * capped at the recipe flow's 100,000. Each line carries the soonest expiry of
+ * its batches; lines are ordered by it (undated last, then by name) and cut to
+ * the flow's 60 lines, so what is about to go off is always sent.
  */
 export function usableRecipeItems(products: readonly PantryProduct[], today: string): RecipeStockItem[] {
   const items: RecipeStockItem[] = [];
+  const line = (name: string, quantity: number, unit: string, expiresOn: string | null) => {
+    items.push({ name, quantity, unit, expiresOn, expiresInDays: expiresOn === null ? null : Math.max(0, diffDays(expiresOn, today)) });
+  };
   for (const product of products) {
-    const measured = new Map<PantryItemUnit, number>();
-    const unknownSize = new Map<PantryItemUnit, number>();
+    const measured = new Map<PantryItemUnit, { quantity: number; expiresOn: string | null }>();
+    const unknownSize = new Map<PantryItemUnit, { quantity: number; expiresOn: string | null }>();
+    const addTo = (map: typeof measured, unit: PantryItemUnit, quantity: number, expiresOn: string | null) => {
+      const current = map.get(unit);
+      map.set(unit, current
+        ? { quantity: current.quantity + quantity, expiresOn: soonerDay(current.expiresOn, expiresOn) }
+        : { quantity, expiresOn });
+    };
     for (const batch of product.batches) {
-      if (batch.packages <= 0 || (batch.expiryDate !== null && batch.expiryDate < today)) continue;
+      if (batch.packages <= 0 || batch.needsRepair || (batch.expiryDate !== null && batch.expiryDate < today)) continue;
       if (!isCountUnit(batch.unit) && batch.packageSize === null) {
-        unknownSize.set(batch.unit, (unknownSize.get(batch.unit) ?? 0) + batch.packages);
+        addTo(unknownSize, batch.unit, batch.packages, batch.expiryDate);
         continue;
       }
       const amount = isCountUnit(batch.unit) ? batch.packages : batch.packages * batch.packageSize!;
-      measured.set(batch.unit, (measured.get(batch.unit) ?? 0) + amount);
+      addTo(measured, batch.unit, amount, batch.expiryDate);
     }
     // A small kg/L total is restated in g/ml first, then joined with any g/ml line, then rounded.
-    const lines = new Map<PantryItemUnit, number>();
-    for (const [unit, quantity] of measured) {
-      const restated = restateSmall(quantity, unit);
-      lines.set(restated.unit, (lines.get(restated.unit) ?? 0) + restated.quantity);
+    const lines = new Map<PantryItemUnit, { quantity: number; expiresOn: string | null }>();
+    for (const [unit, entry] of measured) {
+      const restated = restateSmall(entry.quantity, unit);
+      addTo(lines, restated.unit, restated.quantity, entry.expiresOn);
     }
-    for (const [unit, quantity] of lines) items.push({ name: product.name, quantity: Math.min(MAX_PACKAGE_SIZE, roundAmount(quantity)), unit });
-    for (const [unit, packages] of unknownSize) {
-      const quantity = Math.min(MAX_PACKAGE_SIZE, roundAmount(packages));
-      items.push({ name: product.name, quantity, unit: unknownSizeRecipeUnit(unit, quantity) });
+    for (const [unit, entry] of lines) line(product.name, Math.min(MAX_PACKAGE_SIZE, roundAmount(entry.quantity)), unit, entry.expiresOn);
+    for (const [unit, entry] of unknownSize) {
+      const quantity = Math.min(MAX_PACKAGE_SIZE, roundAmount(entry.quantity));
+      line(product.name, quantity, unknownSizeRecipeUnit(unit, quantity), entry.expiresOn);
     }
   }
-  return items;
+  // Stable sort: products arrive by name, so equal expiries keep name order.
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const x = a.item.expiresOn;
+      const y = b.item.expiresOn;
+      if (x !== y) {
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return x < y ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .slice(0, RECIPE_MAX_ITEMS)
+    .map(({ item }) => item);
 }
 
 // --- Where "Put on a shopping list" goes (SH-6) -------------------------
