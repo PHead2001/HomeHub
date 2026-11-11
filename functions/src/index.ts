@@ -65,7 +65,10 @@ export const sendPushOnNewNotification = onDocumentCreated(
     const records: MemberRecord[] = membersSnap.docs
       .map((doc) => ({uid: doc.id, ...doc.data()}));
     // Emails come only from each approved member's contact document; any
-    // legacy email on a membership record is ignored.
+    // legacy email on a membership record is ignored. A failed read is
+    // retried briefly; if it keeps failing, readMemberContacts throws and
+    // this invocation fails (logged as an error, nothing sent; the trigger
+    // has no retries, so a notification is never pushed twice).
     const members = withContactEmails(records, await readMemberContacts(
       house, records.filter(isApprovedMember).map((m) => m.uid)));
     // Members who cannot see this category in the app (for example no

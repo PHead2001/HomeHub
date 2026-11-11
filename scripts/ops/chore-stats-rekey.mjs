@@ -70,40 +70,59 @@ export function legacyKeyMap(members) {
 }
 
 /**
+ * Adds the legacy keys of departed people to `byLegacy`: each email's legacy key
+ * goes to the stats key of its settled identity (`identityOf`, from
+ * ./former-member-key.mjs: their uid or their former-member key).
+ * @param {Map<string, string>} byLegacy From legacyKeyMap (current members win).
+ * @param {Iterable<string>} emails Departed people's emails.
+ * @param {(email: string) => string} identityOf
+ * @returns {Map<string, string>} The same map.
+ */
+export function addFormerLegacyKeys(byLegacy, emails, identityOf) {
+  for (const email of emails) {
+    const identity = identityOf(email);
+    const legacy = choreStatsAssigneeKeyJs(email);
+    if (identity && !byLegacy.has(legacy)) byLegacy.set(legacy, choreStatsMemberKeyJs(identity));
+  }
+  return byLegacy;
+}
+
+/**
  * What the re-key does with one stats document.
  * @param {Record<string, unknown> | null | undefined} data Stats data.
- * @param {Map<string, string>} byLegacy From legacyKeyMap.
- * @returns {{ kind: 'clean' } | { kind: 'rekey', byAssignee: Record<string, number>, names: Record<string, string>, members: number, former: number }}
- *   - `clean`: no legacy key in `byAssignee` or `names`;
- *   - `rekey`: the new `byAssignee` and `names` maps. A legacy key of a current
- *     member is folded into their uid key (counts added, an existing uid-key label
- *     kept); any other legacy key (someone who has left) becomes an opaque
- *     `former-<n>` key with the same count and label, so the email cannot be
- *     recovered from it. `members` and `former` count the keys moved each way.
+ * @param {Map<string, string>} byLegacy Legacy key to stats key: current members
+ *   (legacyKeyMap) and departed people still named on chores (addFormerLegacyKeys).
+ * @param {(legacyKey: string) => string} [unknownKeyOf] Identity for any other
+ *   legacy key (`unknownLegacyKey`); without it such keys are left in place.
+ * @returns {{ kind: 'clean' } | { kind: 'rekey', byAssignee: Record<string, number>, names: Record<string, string>, moved: number, unknown: number }}
+ *   - `clean`: no legacy key that this call moves;
+ *   - `rekey`: the new `byAssignee` and `names` maps: each moved legacy key's
+ *     count is added to its target key and its label kept unless the target has
+ *     one. `moved` counts keys moved through `byLegacy`, `unknown` the others.
  *   Running it again on its own output finds nothing to do.
  */
-export function statsRekeyPlan(data, byLegacy) {
+export function statsRekeyPlan(data, byLegacy, unknownKeyOf) {
   const counts = isMap(data?.byAssignee) ? data.byAssignee : {};
   const labels = isMap(data?.names) ? data.names : {};
-  const legacy = [...new Set([...Object.keys(counts), ...Object.keys(labels)])].filter(isLegacyStatsKey).sort();
+  const targetOf = key => {
+    if (byLegacy.has(key)) return byLegacy.get(key);
+    const identity = unknownKeyOf ? unknownKeyOf(key) : '';
+    return identity ? choreStatsMemberKeyJs(identity) : '';
+  };
+  const legacy = [...new Set([...Object.keys(counts), ...Object.keys(labels)])]
+    .filter(key => isLegacyStatsKey(key) && targetOf(key)).sort();
   if (legacy.length === 0) return { kind: 'clean' };
-  const byAssignee = Object.fromEntries(Object.entries(counts).filter(([key]) => !isLegacyStatsKey(key)));
-  const names = Object.fromEntries(Object.entries(labels).filter(([key]) => !isLegacyStatsKey(key)));
-  let next = Object.keys({ ...byAssignee, ...names }).filter(key => key.startsWith(FORMER_PREFIX))
-    .map(key => Number(key.slice(FORMER_PREFIX.length))).filter(Number.isInteger)
-    .reduce((max, n) => Math.max(max, n), 0) + 1;
-  let members = 0;
-  let former = 0;
+  const moving = new Set(legacy);
+  const byAssignee = Object.fromEntries(Object.entries(counts).filter(([key]) => !moving.has(key)));
+  const names = Object.fromEntries(Object.entries(labels).filter(([key]) => !moving.has(key)));
+  let moved = 0;
+  let unknown = 0;
   for (const key of legacy) {
-    let target = byLegacy.get(key);
-    if (target) members += 1;
-    else {
-      target = `${FORMER_PREFIX}${next}`;
-      next += 1;
-      former += 1;
-    }
+    const target = targetOf(key);
+    if (byLegacy.has(key)) moved += 1;
+    else unknown += 1;
     if (typeof counts[key] === 'number') byAssignee[target] = (byAssignee[target] ?? 0) + counts[key];
     if (typeof labels[key] === 'string' && !(target in names)) names[target] = labels[key];
   }
-  return { kind: 'rekey', byAssignee, names, members, former };
+  return { kind: 'rekey', byAssignee, names, moved, unknown };
 }

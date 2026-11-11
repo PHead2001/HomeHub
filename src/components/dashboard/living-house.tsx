@@ -35,7 +35,7 @@
  * (names only, each labelled "Loading…") or a plain four-room outline, never the
  * no-permission copy and never "All clear".
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import Link from 'next/link';
 import { AirVent, Car, Cat, Dog, PawPrint, Refrigerator, Sparkles, Wrench, type LucideProps } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -46,7 +46,7 @@ import { seasonFor, type Season } from '@/lib/dashboard/ambience';
 import { isComposingKey, isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
 import { roomSummary, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
 import { choresRoomHref, roomMorphName, MAINTENANCE_OVERVIEW_HREF, MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from '@/lib/dashboard/links';
-import { layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout, type NavKey, type PetPlacement, type RoomPlacement } from '@/lib/dashboard/house-layout';
+import { fitHouse, layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout, type NavKey, type PetPlacement, type RoomPlacement } from '@/lib/dashboard/house-layout';
 import { healthSummaryText, type HealthResult } from '@/lib/maintenance/health';
 import { playPetSound } from '@/lib/dashboard/pet-sound';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
@@ -119,7 +119,7 @@ function RoomShape({ placement, room, lit, active }: { placement: RoomPlacement;
       <polygon points={points([{ x, y }, { x: x + i, y: y + i }, { x: x + i, y: y + h - i }, { x, y: y + h }])} className="fill-muted/50" />
       <polygon points={points([{ x: x + w, y }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + w - i, y: y + i }])} className="fill-muted/30" />
       <polygon points={points([{ x, y: y + h }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + i, y: y + h - i }])} className="fill-secondary" />
-      <rect x={x + w - 34} y={y + i + 6} width="16" height="12" rx="1.5" className="fill-background stroke-border" strokeWidth="1" />
+      <rect x={x + w - 34} y={y + i + 6} width="16" height="12" rx="1.5" className="fill-background stroke-border" strokeWidth="1" data-room-window={room.id} />
       <rect x={x + w - 33} y={y + i + 7} width="14" height="10" rx="1" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.75 : 0 } as CSSProperties} />
       {room.status === 'overdue' && (
         // HP-16a: keyed by the count, so a newly overdue chore runs the glow again.
@@ -155,11 +155,12 @@ function Scenery({ layout, season, golden, lit }: { layout: HouseLayout; season:
       <rect x="0" y={groundY} width={width} height={height - groundY} className="fill-secondary/70" />
       <line x1="0" x2={width} y1={groundY} y2={groundY} className="stroke-border" strokeWidth="1.5" />
       <polygon points={points(layout.sideWall)} className="fill-muted stroke-border" strokeWidth="1.5" strokeLinejoin="round" />
-      <rect x={apex.x + body.w / 4} y={body.y - 50} width="16" height="30" rx="2" className="fill-muted stroke-border" strokeWidth="1.5" />
+      {/* The chimney and the attic window keep their place on a steeper roof (HP-12e). */}
+      <rect x={apex.x + body.w / 4} y={body.y - Math.round(layout.roofH * 0.86)} width="16" height={Math.round(layout.roofH * 0.52)} rx="2" className="fill-muted stroke-border" strokeWidth="1.5" />
       <polygon points={points(layout.roofSide)} className={cn(golden ? 'fill-warning/60' : 'fill-muted', 'stroke-border')} strokeWidth="1.5" strokeLinejoin="round" />
       <polygon points={points(layout.roofFront)} className={cn(golden ? 'fill-warning/80 stroke-warning' : 'fill-secondary stroke-border')} strokeWidth="2" strokeLinejoin="round" />
-      <circle cx={apex.x} cy={body.y - 22} r="10" className="fill-background stroke-border" strokeWidth="2" />
-      <circle cx={apex.x} cy={body.y - 22} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.85 : 0 } as CSSProperties} />
+      <circle cx={apex.x} cy={body.y - Math.round(layout.roofH * 0.38)} r="10" className="fill-background stroke-border" strokeWidth="2" />
+      <circle cx={apex.x} cy={body.y - Math.round(layout.roofH * 0.38)} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.85 : 0 } as CSSProperties} />
       <rect x={body.x} y={body.y} width={body.w} height={body.h} className="fill-background/40 stroke-border" strokeWidth="2" />
       {layout.emptyCells.map((cell) => (
         <g key={`${cell.x}-${cell.y}`}>
@@ -268,7 +269,7 @@ function RoomLink({
             style={morphing ? morphStyle(roomMorphName(room.id)) : undefined}
           >
             <span className="flex min-w-0 items-start justify-between gap-1">
-              <span className={cn(styles.roomName, 'truncate text-xs font-semibold sm:text-sm')}>{room.name}</span>
+              <span className={cn(styles.roomName, 'truncate text-xs font-semibold sm:text-sm')} data-room-name={room.id}>{room.name}</span>
               {loading ? null : room.overdue > 0 ? (
                 <span aria-hidden className={cn(styles.roomBadge, 'flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-warning px-1 text-[10px] font-semibold text-warning-foreground sm:h-5 sm:min-w-5 sm:text-[11px]')}>
                   {room.overdue}
@@ -433,6 +434,38 @@ function HealthBadge({ health }: { health: HealthResult }) {
 /* The house                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/** The two-pane layout (HP-12); the same query as `.page` in dashboard.module.css. */
+const WIDE_LAYOUT_QUERY = '(min-width: 1024px) and (orientation: landscape)';
+
+/**
+ * The size of the stage's pane on the wide layout, or null elsewhere. There the pane is a
+ * size container whose size comes from the page (the house column's height), never from
+ * the scene, so growing the rooms to fill it cannot feed back into it. Stacked layouts
+ * keep the default room height (the stage there is sized by its width).
+ */
+function useWideStageBox(ref: RefObject<HTMLDivElement | null>) {
+  const [box, setBox] = useState<{ width: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia(WIDE_LAYOUT_QUERY);
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      const next = query.matches && rect.width > 0 && rect.height > 0 ? { width: Math.round(rect.width), height: Math.round(rect.height) } : null;
+      setBox((current) => (current?.width === next?.width && current?.height === next?.height ? current : next));
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    query.addEventListener?.('change', measure);
+    return () => {
+      observer?.disconnect();
+      query.removeEventListener?.('change', measure);
+    };
+  }, [ref]);
+  return box;
+}
+
 export function LivingHouse({
   facts,
   title,
@@ -469,6 +502,8 @@ export function LivingHouse({
   const discoTimer = useRef<number | null>(null);
   const roofTaps = useRef<number[]>([]);
   const roomsRef = useRef<HTMLUListElement>(null);
+  const stageBoxRef = useRef<HTMLDivElement>(null);
+  const stageBox = useWideStageBox(stageBoxRef);
   const disco = discoRequested && !reduced;
   const season = seasonFor(now);
 
@@ -549,7 +584,16 @@ export function LivingHouse({
     () => (choresLoading && shownRooms.length === 0 ? OUTLINE_IDS.map((id) => placeholderRoom(id, '')) : shownRooms),
     [choresLoading, shownRooms],
   );
-  const layout = useMemo(() => layoutHouse(drawnRooms.map((room) => room.id)), [drawnRooms]);
+  // Wall tablet (HP-12e): on the wide layout the rooms grow taller, then the roof steeper,
+  // to fill the house's pane; the default geometry's aspect sizes the pane's width.
+  const fit = stageBox ? fitHouse(drawnRooms.length, stageBox) : null;
+  const cellH = fit?.cellH;
+  const roofH = fit?.roofH;
+  const layout = useMemo(() => layoutHouse(drawnRooms.map((room) => room.id), { cellH, roofH }), [drawnRooms, cellH, roofH]);
+  const baseAspect = useMemo(() => {
+    const base = layoutHouse(drawnRooms.map((room) => room.id));
+    return base.width / base.height;
+  }, [drawnRooms]);
   const pets = useMemo(() => facts.pets?.pets ?? [], [facts.pets]);
   const petPlacements = useMemo(
     () => placePets(pets, layout, Object.fromEntries(shownRooms.map((room) => [room.id, room.name]))),
@@ -640,9 +684,9 @@ export function LivingHouse({
   };
 
   return (
-    <section aria-labelledby="living-house-title" className={cn(styles.houseSection, 'mb-6')} data-testid="living-house">
+    <section aria-labelledby="living-house-title" className={cn(styles.houseSection, styles.houseFill, 'mb-6')} data-testid="living-house">
       <div
-        className={cn(styles.house, 'overflow-hidden rounded-2xl border bg-card/80 shadow-raised', disco && styles.disco)}
+        className={cn(styles.house, styles.houseCard, 'overflow-hidden rounded-2xl border bg-card/80 shadow-raised', disco && styles.disco)}
         style={light?.style}
         data-disco={disco ? 'true' : undefined}
       >
@@ -662,80 +706,84 @@ export function LivingHouse({
         <p className="sr-only">{summary}</p>
         <p id="house-pet-sound-hint" className="sr-only">Long-press a pet, or press Space on it, to hear it when Sound is on in Profile, Appearance.</p>
 
-        <div className="px-3 pt-1 sm:px-6">
-          <div
-            className={cn(styles.stage, styles.stageFrame, 'relative', zoom && styles.zooming)}
-            // HP-12a: on wide landscape screens the stage height is capped to the screen and
-            // its width follows from this ratio (dashboard.module.css `.stageFrame`).
-            style={{ aspectRatio: `${layout.width} / ${layout.height}`, '--house-aspect': layout.width / layout.height, ...(zoom ? { transformOrigin: `${zoom.x}% ${zoom.y}%` } : null) } as CSSProperties}
-            data-zoom={zoom?.id}
-            onClick={onStageClick}
-          >
-            <svg aria-hidden viewBox={`0 0 ${layout.width} ${layout.height}`} className="absolute inset-0 h-full w-full overflow-visible">
-              <Scenery layout={layout} season={activeSeason} golden={golden} lit={lit} />
-              {layout.rooms.map((placement) => {
-                const room = drawnRooms[placement.index];
-                return <RoomShape key={room.id} placement={placement} room={room} lit={lit} active={activeRoom === room.id} />;
-              })}
-              {petPlacements.map((placement) => (placement.mode === 'bowl' && placement.bowl ? (
-                <path key={`bowl-${placement.id}`} d={`M${placement.bowl.x - 8} ${placement.bowl.y - 5}h16l-3 6h-10z`} className="fill-warning" />
-              ) : null))}
-              {petPlacements.map((placement, index) => (
-                <PetFigure
-                  // HP-16a: the walk runs three times, and again after the next feeding.
-                  key={attentionKey(placement.id, placement.mode, pets[index].countLabel)}
-                  pet={pets[index]}
-                  placement={reduced && placement.mode === 'wander' ? { ...placement, mode: 'idle' } : placement}
-                  hopping={hoppingPet === placement.id && !reduced}
-                  onHopEnd={() => setHoppingPet(null)}
-                />
-              ))}
-            </svg>
-
-            {roomsState === 'rooms' ? (
-              <ul ref={roomsRef} aria-label="Rooms" className="absolute inset-0" onKeyDown={onRoomsKeyDown}>
+        <div className={cn(styles.stageWrap, 'px-3 pt-1 sm:px-6')}>
+          {/* HP-12e: on wide landscape screens a size container filling the card's free
+              height; the stage fits inside it (dashboard.module.css `.stageBox`). */}
+          <div ref={stageBoxRef} className={styles.stageBox} style={{ '--house-aspect-base': baseAspect } as CSSProperties} data-testid="house-stage-box">
+            <div
+              className={cn(styles.stage, styles.stageFrame, styles.stageFit, 'relative', zoom && styles.zooming)}
+              // HP-12a: on wide landscape screens the stage fits its pane and its width follows
+              // from this ratio (dashboard.module.css `.stageFit`).
+              style={{ aspectRatio: `${layout.width} / ${layout.height}`, '--house-aspect': layout.width / layout.height, ...(zoom ? { transformOrigin: `${zoom.x}% ${zoom.y}%` } : null) } as CSSProperties}
+              data-zoom={zoom?.id}
+              onClick={onStageClick}
+            >
+              <svg aria-hidden viewBox={`0 0 ${layout.width} ${layout.height}`} className="absolute inset-0 h-full w-full overflow-visible">
+                <Scenery layout={layout} season={activeSeason} golden={golden} lit={lit} />
                 {layout.rooms.map((placement) => {
-                  const room = shownRooms[placement.index];
-                  return (
-                    <RoomLink
-                      key={room.id}
-                      room={room}
-                      placement={placement}
-                      sparkle={room.status === 'clear' && room.doneToday > 0}
-                      morphing={zoom?.id === room.id}
-                      loading={!facts.chores}
-                      onActive={setActiveRoom}
-                      onNavigate={onRoomNavigate}
-                    />
-                  );
+                  const room = drawnRooms[placement.index];
+                  return <RoomShape key={room.id} placement={placement} room={room} lit={lit} active={activeRoom === room.id} />;
                 })}
-              </ul>
-            ) : (
-              <div className="absolute flex items-center justify-center px-3 text-center" style={bodyBox}>
-                {roomsState === 'empty' ? (
-                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">
-                    Add rooms to your chores and they will appear here.{' '}
-                    <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
-                  </p>
-                ) : roomsState === 'unavailable' ? (
-                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
-                    Rooms are unavailable right now.{' '}
-                    {onRetry && (
-                      <button type="button" onClick={onRetry} data-testid="house-rooms-retry" className={cn(styles.hitSlop, 'font-medium text-primary underline-offset-4 hover:underline')}>Retry</button>
-                    )}{onRetry ? ' · ' : null}
-                    <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
-                  </p>
-                ) : roomsState === 'unauthorized' ? (
-                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unauthorized">
-                    Rooms are not shared with you.
-                  </p>
-                ) : roomsState === 'loading' ? (
-                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-loading" aria-busy="true">{LOADING_LABEL}</p>
-                ) : (
-                  <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">Welcome home.</p>
-                )}
-              </div>
-            )}
+                {petPlacements.map((placement) => (placement.mode === 'bowl' && placement.bowl ? (
+                  <path key={`bowl-${placement.id}`} d={`M${placement.bowl.x - 8} ${placement.bowl.y - 5}h16l-3 6h-10z`} className="fill-warning" />
+                ) : null))}
+                {petPlacements.map((placement, index) => (
+                  <PetFigure
+                    // HP-16a: the walk runs three times, and again after the next feeding.
+                    key={attentionKey(placement.id, placement.mode, pets[index].countLabel)}
+                    pet={pets[index]}
+                    placement={reduced && placement.mode === 'wander' ? { ...placement, mode: 'idle' } : placement}
+                    hopping={hoppingPet === placement.id && !reduced}
+                    onHopEnd={() => setHoppingPet(null)}
+                  />
+                ))}
+              </svg>
+
+              {roomsState === 'rooms' ? (
+                <ul ref={roomsRef} aria-label="Rooms" className="absolute inset-0" onKeyDown={onRoomsKeyDown}>
+                  {layout.rooms.map((placement) => {
+                    const room = shownRooms[placement.index];
+                    return (
+                      <RoomLink
+                        key={room.id}
+                        room={room}
+                        placement={placement}
+                        sparkle={room.status === 'clear' && room.doneToday > 0}
+                        morphing={zoom?.id === room.id}
+                        loading={!facts.chores}
+                        onActive={setActiveRoom}
+                        onNavigate={onRoomNavigate}
+                      />
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="absolute flex items-center justify-center px-3 text-center" style={bodyBox}>
+                  {roomsState === 'empty' ? (
+                    <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">
+                      Add rooms to your chores and they will appear here.{' '}
+                      <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+                    </p>
+                  ) : roomsState === 'unavailable' ? (
+                    <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unavailable">
+                      Rooms are unavailable right now.{' '}
+                      {onRetry && (
+                        <button type="button" onClick={onRetry} data-testid="house-rooms-retry" className={cn(styles.hitSlop, 'font-medium text-primary underline-offset-4 hover:underline')}>Retry</button>
+                      )}{onRetry ? ' · ' : null}
+                      <Link href="/chores" className="font-medium text-primary underline-offset-4 hover:underline">Open Chores</Link>
+                    </p>
+                  ) : roomsState === 'unauthorized' ? (
+                    <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-unauthorized">
+                      Rooms are not shared with you.
+                    </p>
+                  ) : roomsState === 'loading' ? (
+                    <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground" data-testid="house-rooms-loading" aria-busy="true">{LOADING_LABEL}</p>
+                  ) : (
+                    <p className="rounded-md bg-card/90 px-2 py-1 text-sm text-muted-foreground">Welcome home.</p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           {roomsState === 'rooms' && facts.chores && <RoomDetails rooms={shownRooms} />}
           {hiddenRooms > 0 && (

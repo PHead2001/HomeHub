@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
-import { runHouseholdReminders } from '../../functions/src/reminders';
+import { MemberContactsUnavailable, readMemberContacts, runHouseholdReminders } from '../../functions/src/reminders';
+import { contactEmailOf } from '../../functions/src/shared/member-contact';
 import { parseNotificationDoc } from '../../src/lib/notifications';
 import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
 import { choreStatsAssigneeKey, choreStatsMemberKey, deterministicNotificationId, occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
-import { choreMemberEmailPlan } from '../../scripts/ops/member-email-scrub.mjs';
-import { formerMemberKey, formerMemberSecret } from '../../scripts/ops/former-member-key.mjs';
+import { readHouseholdPeople, scrubChoreCollection, settleHouseholdFormerPeople } from '../../scripts/ops/member-privacy-household.mjs';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -363,6 +363,31 @@ describe('household upkeep', () => {
     assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 2);
   });
 
+  test('the push trigger\'s contact read retries a failed read, and fails rather than report no recipients', async () => {
+    // The household reference's Firestore fails getAll (the contact read) the next `failures` times.
+    let failures = 1;
+    const flakyHouse = bind(house(), d => d === 'firestore'
+      ? bind(adminDb, f => f === 'getAll'
+        ? async (...refs: Parameters<typeof adminDb.getAll>) => {
+          if (failures > 0) { failures -= 1; throw new Error('unavailable'); }
+          return adminDb.getAll(...refs);
+        }
+        : undefined)
+      : undefined);
+    const waits: number[] = [];
+    const wait = async (ms: number) => { waits.push(ms); };
+    const contacts = await readMemberContacts(flakyHouse as never, ['o1'], [5, 10], wait);
+    assert.equal(contactEmailOf(contacts.get('o1')), 'owner@example.test', 'the second read succeeds: recipients found once');
+    assert.deepEqual(waits, [5]);
+
+    failures = 99;
+    waits.length = 0;
+    await assert.rejects(readMemberContacts(flakyHouse as never, ['o1'], [5, 10], wait),
+      (error: unknown) => error instanceof MemberContactsUnavailable && error.attempts === 3);
+    assert.deepEqual(waits, [5, 10], 'three reads in all, then it fails');
+    assert.equal(failures, 96);
+  });
+
   test('a failed contact read defers templates that still carry an email; uid-only ones still generate', async () => {
     // Bob and Anna are members. A legacy template was reassigned by email only to Anna by an
     // older build, so its uid is Bob's, stale; another template is assigned by uid only.
@@ -401,18 +426,14 @@ describe('household upkeep', () => {
     assert.equal(first.purgedChores, 0, 'the email names nobody: purging now would drop the credit');
     assert.equal((await chores.get()).docs.filter(d => d.id.startsWith('lee-')).length, 2);
 
-    // scripts/ops/scrub-member-emails.mjs: the household's stored secret, then each plan applied.
-    const secretRef = house().collection('ops').doc('former-members');
-    const { secret } = await formerMemberSecret(secretRef, { create: true });
-    assert.equal((await formerMemberSecret(secretRef, { create: true })).secret, secret, 'a later run reuses it');
-    const uidByEmail = new Map([['owner@example.test', 'o1']]);
-    for (const id of ['lee-assigned', 'lee-completed']) {
-      const plan = choreMemberEmailPlan((await chores.doc(id).get()).data(), uidByEmail, email => formerMemberKey(secret, email));
-      assert.equal(plan.kind, 'scrub');
-      const { set, remove } = plan as { set: Record<string, unknown>; remove: string[][] };
-      await chores.doc(id).update({ ...set, ...Object.fromEntries(remove.map(path => [path.join('.'), FieldValue.delete()])) });
-    }
-    const lee = formerMemberKey(secret, 'lee@example.test');
+    // scripts/ops/scrub-member-emails.mjs's chore step: Lee's identity settled and stored, then the chores scrubbed.
+    const people = await readHouseholdPeople(adminDb as never, house());
+    const former = await settleHouseholdFormerPeople(adminDb as never, house(), people, { apply: true });
+    const counts = { scanned: 0, clean: 0, kept: 0, scrub: 0, assignee: 0, completer: 0, former: 0, written: 0, changed: 0 };
+    await scrubChoreCollection(adminDb as never, chores, { apply: true, uidByEmail: people.uidByEmail, formerKeyOf: former.identityOf, counts });
+    assert.equal(counts.former, 2);
+    const lee = former.identityOf('lee@example.test');
+    assert.match(lee, /^former-[0-9a-f]{24}$/, 'no uid pairs with the email: an opaque key');
     assert.equal((await chores.doc('lee-assigned').get()).data()?.assignedToUid, lee);
     assert.equal((await chores.doc('lee-completed').get()).data()?.completedByUid, lee);
 

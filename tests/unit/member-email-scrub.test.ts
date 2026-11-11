@@ -4,9 +4,10 @@ import { choreStatsAssigneeKey, choreStatsMemberKey } from '../../functions/src/
 import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { choreEmailScrubPlan } from '../../scripts/ops/shared-email-scrub.mjs';
 import { choreMemberEmailPlan, memberRecordEmailPlan } from '../../scripts/ops/member-email-scrub.mjs';
-import { FORMER_KEY_PREFIX, formerMemberKey, formerMemberSecret } from '../../scripts/ops/former-member-key.mjs';
+import { FORMER_KEY_PREFIX, formerEvidence, formerMemberKey, proposeFormerIdentity, unknownLegacyKey } from '../../scripts/ops/former-member-key.mjs';
 import {
   choreStatsAssigneeKeyJs,
+  addFormerLegacyKeys,
   choreStatsMemberKeyJs,
   isLegacyStatsKey,
   legacyKeyMap,
@@ -108,10 +109,17 @@ describe('chore email scrub (release D)', () => {
     const open = choreMemberEmailPlan({ ...stale, isCompleted: false }, uidByEmail, keyOf);
     assert.ok(open.kind === 'scrub' && open.assignee === 'cleared');
     assert.equal((open as { set: Record<string, unknown> }).set.assignedToUid, '');
-    // A stored uid that is not a current member's (the person's own) already carries the credit.
-    const ownUid = choreMemberEmailPlan({ isCompleted: true, assignedToUid: 'uid-lee', assignedToEmail: 'gone@example.test' }, uidByEmail, keyOf);
+    // The identity is the person's own uid (settled from the chores): a chore holding it is left as is,
+    // one holding another uid is credited to the identity.
+    const identityIsUid = (email: string) => (email === 'gone@example.test' ? 'uid-lee' : '');
+    const ownUid = choreMemberEmailPlan({ isCompleted: true, assignedToUid: 'uid-lee', assignedToEmail: 'gone@example.test' }, uidByEmail, identityIsUid);
     assert.ok(ownUid.kind === 'scrub' && ownUid.assignee === 'scrub');
     assert.deepEqual((ownUid as { set: Record<string, unknown> }).set, {});
+    const otherUid = choreMemberEmailPlan({ isCompleted: true, assignedToUid: 'uid-kim', assignedToEmail: 'gone@example.test' }, uidByEmail, identityIsUid);
+    assert.ok(otherUid.kind === 'scrub' && otherUid.assignee === 'former');
+    assert.equal((otherUid as { set: Record<string, unknown> }).set.assignedToUid, 'uid-lee');
+    // An email with no settled identity yet is kept, never dropped.
+    assert.deepEqual(choreMemberEmailPlan({ isCompleted: true, assignedToEmail: 'new@example.test' }, uidByEmail, () => ''), { kind: 'kept' });
     // A recorded completer means the assignee's email carries no credit.
     const byCompleter = choreMemberEmailPlan({ isCompleted: true, assignedToEmail: 'gone@example.test', completedByUid: 'uid-sam' }, uidByEmail, keyOf);
     assert.ok(byCompleter.kind === 'scrub' && byCompleter.assignee === 'scrub');
@@ -171,43 +179,35 @@ describe('former-member keys', () => {
     assert.equal(formerMemberKey('', 'lee@example.test'), '');
   });
 
-  // A fake of the one document: get and create as the Admin SDK has them.
-  const fakeRef = (initial?: string) => {
-    let stored: Record<string, unknown> | undefined = initial === undefined ? undefined : { secret: initial };
-    const creates: unknown[] = [];
-    const ref = {
-      creates,
-      onGet: () => {},
-      race(secret: string) { stored = { secret }; },
-      async get() { const data = stored; ref.onGet(); return { exists: data !== undefined, get: (field: string) => data?.[field] }; },
-      async create(data: Record<string, unknown>) {
-        if (stored) throw Object.assign(new Error('exists'), { code: 6 });
-        creates.push(data);
-        stored = data;
-      },
-    };
-    return ref;
-  };
+  test('a departed email is their uid only when the chores pair it with exactly one, and that uid with no other email', () => {
+    const current = { uids: new Set(['uid-sam']), emails: new Set(['sam@example.test']) };
+    const evidence = formerEvidence([
+      { assignedToEmail: 'Lee@example.test', assignedToUid: 'uid-lee', isCompleted: true },
+      { completedByEmail: 'lee@example.test', completedByUid: 'uid-lee' },
+      { assignedToEmail: 'lee@example.test' },
+      // Kim's email next to two uids (an older build's email-only reassignment left one behind).
+      { assignedToEmail: 'kim@example.test', assignedToUid: 'uid-kim' },
+      { assignedToEmail: 'kim@example.test', assignedToUid: 'uid-old' },
+      // Two emails next to one uid.
+      { assignedToEmail: 'ann@example.test', assignedToUid: 'uid-shared' },
+      { recurrence: { assignedToEmail: 'bo@example.test' }, assignedToUid: 'uid-shared' },
+      // A current member's uid is never evidence, and a current member is never departed.
+      { assignedToEmail: 'max@example.test', assignedToUid: 'uid-sam' },
+      { assignedToEmail: 'sam@example.test', assignedToUid: 'uid-sam' },
+    ], current);
+    assert.deepEqual([...evidence.emails].sort(), ['ann@example.test', 'bo@example.test', 'kim@example.test', 'lee@example.test', 'max@example.test']);
+    assert.equal(proposeFormerIdentity('lee@example.test', evidence, 's'), 'uid-lee');
+    assert.equal(proposeFormerIdentity('kim@example.test', evidence, 's'), formerMemberKey('s', 'kim@example.test'), 'ambiguous: two uids');
+    assert.equal(proposeFormerIdentity('ann@example.test', evidence, 's'), formerMemberKey('s', 'ann@example.test'), 'ambiguous: uid with two emails');
+    assert.equal(proposeFormerIdentity('max@example.test', evidence, 's'), formerMemberKey('s', 'max@example.test'), 'no evidence');
+  });
 
-  test('the secret is read, stored only when asked, and a concurrent creation wins', async () => {
-    const existing = fakeRef('kept-secret');
-    assert.deepEqual(await formerMemberSecret(existing, { create: true }), { secret: 'kept-secret', stored: true, created: false });
-    assert.equal(existing.creates.length, 0);
-
-    const missing = fakeRef();
-    const dry = await formerMemberSecret(missing, { create: false });
-    assert.equal(dry.stored, false);
-    assert.ok(dry.secret.length >= 40);
-    assert.equal(missing.creates.length, 0, 'nothing stored until asked');
-    const made = await formerMemberSecret(missing, { create: true, candidate: dry.secret, now: () => 'now' });
-    assert.deepEqual(made, { secret: dry.secret, stored: true, created: true });
-    assert.deepEqual(missing.creates, [{ secret: dry.secret, createdAt: 'now' }]);
-
-    // Another run stores its secret between our read and our create: we adopt theirs.
-    const raced = fakeRef();
-    let first = true;
-    raced.onGet = () => { if (first) { first = false; raced.race('their-secret'); } };
-    assert.deepEqual(await formerMemberSecret(raced, { create: true, candidate: 'mine' }), { secret: 'their-secret', stored: true, created: false });
+  test('a legacy key nobody is named for any more gets its own stable opaque key', () => {
+    const legacy = choreStatsAssigneeKey('gone@example.test');
+    assert.match(unknownLegacyKey('s', legacy), /^former-[0-9a-f]{24}$/);
+    assert.equal(unknownLegacyKey('s', legacy), unknownLegacyKey('s', legacy));
+    assert.notEqual(unknownLegacyKey('s', legacy), formerMemberKey('s', 'gone@example.test'));
+    assert.equal(unknownLegacyKey('', legacy), '');
   });
 });
 
@@ -224,28 +224,39 @@ describe('yearly chore stats re-key', () => {
     assert.equal(isLegacyStatsKey('former-3'), false);
   });
 
-  test('members are folded into their uid key; people who left get an opaque key', () => {
+  test('members and departed people go to their identities; anyone else to a stable opaque key', () => {
     const sam = choreStatsAssigneeKey('sam@example.test');
+    const lee = choreStatsAssigneeKey('lee@example.test');
     const gone = choreStatsAssigneeKey('gone@example.test');
     const byLegacy = legacyKeyMap([{ uid: 'uid-sam', email: 'Sam@Example.test' }, { uid: 'uid-ana', email: '' }, { uid: '', email: 'x@example.test' }]);
     assert.deepEqual([...byLegacy.entries()], [[sam, choreStatsMemberKey('uid-sam')]]);
+    const leeIdentity = formerMemberKey('s', 'lee@example.test');
+    addFormerLegacyKeys(byLegacy, ['lee@example.test', 'sam@example.test'], email => (email === 'lee@example.test' ? leeIdentity : 'never-used'));
+    assert.equal(byLegacy.get(lee), choreStatsMemberKey(leeIdentity));
+    assert.equal(byLegacy.get(sam), choreStatsMemberKey('uid-sam'), 'a current member keeps their uid key');
     const data = {
-      year: 2026, completed: 12,
-      byAssignee: { [sam]: 5, [choreStatsMemberKey('uid-sam')]: 2, [gone]: 4, 'former-1': 1 },
-      names: { [sam]: 'Sam M', [choreStatsMemberKey('uid-sam')]: 'Sam Member', [gone]: 'Lee' },
+      year: 2026, completed: 18,
+      byAssignee: { [sam]: 5, [choreStatsMemberKey('uid-sam')]: 2, [lee]: 6, [gone]: 4, 'former-1': 1 },
+      names: { [sam]: 'Sam M', [choreStatsMemberKey('uid-sam')]: 'Sam Member', [lee]: 'Lee', [gone]: 'Gil' },
     };
-    const plan = statsRekeyPlan(data, byLegacy);
+    const unknownKeyOf = (key: string) => unknownLegacyKey('s', key);
+    const plan = statsRekeyPlan(data, byLegacy, unknownKeyOf);
+    const goneKey = choreStatsMemberKey(unknownLegacyKey('s', gone));
     assert.deepEqual(plan, {
       kind: 'rekey',
-      byAssignee: { [choreStatsMemberKey('uid-sam')]: 7, 'former-1': 1, 'former-2': 4 },
-      names: { [choreStatsMemberKey('uid-sam')]: 'Sam Member', 'former-2': 'Lee' },
-      members: 1,
-      former: 1,
+      byAssignee: { [choreStatsMemberKey('uid-sam')]: 7, 'former-1': 1, [choreStatsMemberKey(leeIdentity)]: 6, [goneKey]: 4 },
+      names: { [choreStatsMemberKey('uid-sam')]: 'Sam Member', [choreStatsMemberKey(leeIdentity)]: 'Lee', [goneKey]: 'Gil' },
+      moved: 2,
+      unknown: 1,
     });
     // Nothing left that is derived from an email, and a second run does nothing.
     const after = { ...data, byAssignee: (plan as { byAssignee: Record<string, number> }).byAssignee, names: (plan as { names: Record<string, string> }).names };
-    assert.ok(!JSON.stringify(after).includes('sam_') && !JSON.stringify(after).includes('gone'));
-    assert.deepEqual(statsRekeyPlan(after, byLegacy), { kind: 'clean' });
+    assert.ok(!JSON.stringify(after).includes('sam_') && !JSON.stringify(after).includes('lee_') && !JSON.stringify(after).includes('gone'));
+    assert.deepEqual(statsRekeyPlan(after, byLegacy, unknownKeyOf), { kind: 'clean' });
+    // Without unknownKeyOf (the scrub's re-key), a legacy key of nobody known is left for the re-key script.
+    const partial = statsRekeyPlan(data, byLegacy) as { byAssignee: Record<string, number>; unknown: number };
+    assert.equal(partial.byAssignee[gone], 4);
+    assert.equal(partial.unknown, 0);
   });
 
   test('a stats document already keyed by uid, or empty, is clean', () => {
@@ -253,7 +264,8 @@ describe('yearly chore stats re-key', () => {
     assert.deepEqual(statsRekeyPlan(undefined, new Map()), { kind: 'clean' });
     // A label without a count still moves.
     const legacy = choreStatsAssigneeKey('sam@example.test');
-    assert.deepEqual(statsRekeyPlan({ names: { [legacy]: 'Sam' } }, new Map()), { kind: 'rekey', byAssignee: {}, names: { 'former-1': 'Sam' }, members: 0, former: 1 });
+    const key = choreStatsMemberKey(unknownLegacyKey('s', legacy));
+    assert.deepEqual(statsRekeyPlan({ names: { [legacy]: 'Sam' } }, new Map(), k => unknownLegacyKey('s', k)), { kind: 'rekey', byAssignee: {}, names: { [key]: 'Sam' }, moved: 0, unknown: 1 });
   });
 
   test('the script and upkeep fold a member the same way', () => {
