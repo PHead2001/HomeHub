@@ -49,6 +49,7 @@ export function QuickAddBar({
   className,
   large = false,
   loading = false,
+  loadingText,
 }: {
   listName: string;
   onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
@@ -63,6 +64,8 @@ export function QuickAddBar({
    * already-needed item can only be found once the items are known.
    */
   loading?: boolean;
+  /** The status line while `loading` (default "Loading {list}…"). */
+  loadingText?: string;
 }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +173,7 @@ export function QuickAddBar({
         </Button>
       </div>
       <FieldError id={fieldId} className="mt-1.5 px-1">{error}</FieldError>
-      {loading && <p role="status" className="mt-1.5 px-1 text-sm text-muted-foreground" data-testid="quick-add-loading">Loading {listName}…</p>}
+      {loading && <p role="status" className="mt-1.5 px-1 text-sm text-muted-foreground" data-testid="quick-add-loading">{loadingText ?? `Loading ${listName}…`}</p>}
       {chips.length > 0 && (
         <ul className="mt-1.5 flex flex-wrap gap-1.5 px-1" role="status" aria-live="polite" data-testid="quick-add-pending">
           {chips.map((chip) => (

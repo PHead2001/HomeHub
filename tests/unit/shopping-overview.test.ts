@@ -9,6 +9,8 @@ import {
   expiringChips,
   expiryWhen,
   overviewWriteReady,
+  writeWait,
+  writeWaitText,
   readLocalTicks,
   recordLocalTick,
   groceryListsOf,
@@ -21,7 +23,7 @@ import {
 } from '../../src/lib/shopping/overview';
 import { readCategoryConfig } from '../../src/lib/shopping/category-order';
 import { DEFAULT_SHOPPING_CATEGORIES } from '../../src/lib/shopping-items';
-import { quickAddDecision } from '../../src/lib/shopping/live-state';
+import { errorToState, loadingState, quickAddDecision, snapshotToState } from '../../src/lib/shopping/live-state';
 
 const weekly = { id: 'weekly', type: 'Grocery' as const };
 const costco = { id: 'costco', type: 'Grocery' as const };
@@ -275,8 +277,27 @@ describe('overview: writes wait for the shown list to load (no duplicate instead
     // Just after a switch: the listener already follows the new list, the old target is refused.
     assert.equal(overviewWriteReady({ ...ready, itemsListId: 'costco' }), false);
     assert.equal(overviewWriteReady({ ...ready, targetListId: null, itemsListId: null }), false);
-    // A failed listener keeps its last value: writes still go (the rules decide), as in the open list.
-    assert.equal(overviewWriteReady({ ...ready, itemsStatus: 'error' }), true);
+  });
+
+  test('a listener that failed before its first snapshot blocks writes and says it is retrying', () => {
+    const ready = { targetListId: 'weekly', itemsListId: 'weekly', itemsStatus: 'ready', categoriesStatus: 'ready' } as const;
+    // errorToState: a failure before any snapshot is `error` with the empty initial items.
+    const initialError = errorToState(loadingState('items/h/weekly', [] as string[]), 'items/h/weekly', new Error('unavailable'), []);
+    assert.equal(initialError.status, 'error');
+    assert.equal(overviewWriteReady({ ...ready, itemsStatus: initialError.status }), false);
+    assert.equal(writeWait({ ...ready, itemsStatus: initialError.status }), 'retrying');
+    assert.equal(writeWaitText('retrying', 'Groceries'), 'Could not load Groceries yet. Retrying…');
+    assert.equal(writeWait({ ...ready, itemsStatus: 'loading' }), 'loading');
+    assert.equal(writeWaitText('loading', 'Groceries'), 'Loading Groceries…');
+    // A failure after a snapshot keeps `ready` with the last items: writes still go (the rules decide).
+    const loaded = snapshotToState('items/h/weekly', ['milk'], { fromCache: false, hasPendingWrites: false });
+    const laterError = errorToState(loaded, 'items/h/weekly', new Error('unavailable'), []);
+    assert.equal(laterError.status, 'ready');
+    assert.deepEqual(laterError.value, ['milk']);
+    assert.equal(overviewWriteReady({ ...ready, itemsStatus: laterError.status }), true);
+    assert.equal(writeWait({ ...ready, itemsStatus: laterError.status }), null);
+    // Categories that failed first leave the defaults: no merge depends on them, so writes go.
+    assert.equal(overviewWriteReady({ ...ready, categoriesStatus: 'error' }), true);
   });
 });
 

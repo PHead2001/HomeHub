@@ -70,7 +70,7 @@ import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveShoppingPreferences, useLiveStores } from '@/lib/shopping/live';
-import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, overviewWriteReady, preferencesKnown, readLocalTicks, readRecentGrocery, rememberRecentGrocery } from '@/lib/shopping/overview';
+import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, preferencesKnown, writeWait, writeWaitText, readLocalTicks, readRecentGrocery, rememberRecentGrocery } from '@/lib/shopping/overview';
 import { assignedStore, storesListed } from '@/lib/shopping/assigned-store';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
@@ -343,12 +343,15 @@ export function ShoppingListClient({
   itemsStatusRef.current = itemsState.status;
   const categoriesStatusRef = useRef(categoriesState.status);
   categoriesStatusRef.current = categoriesState.status;
-  const writeReadyFor = (listId: string | null | undefined) => overviewWriteReady({
+  const writeWaitFor = (listId: string | null | undefined) => writeWait({
     targetListId: listId,
     itemsListId: itemsListIdRef.current,
     itemsStatus: itemsStatusRef.current,
     categoriesStatus: categoriesStatusRef.current,
   });
+  // Adds and ticks need the items from a snapshot: a listener that failed before
+  // its first one leaves them unknown, and merges would be missed (duplicates).
+  const writeReadyFor = (listId: string | null | undefined) => writeWaitFor(listId) === null;
   const householdIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
@@ -658,6 +661,13 @@ export function ShoppingListClient({
     }
   };
 
+  // An add the open list refused because its items are not known yet (`writeWait`) says so.
+  const sayWriteWait = () => {
+    const list = selectedList;
+    const wait = list ? writeWaitFor(list.id) : null;
+    if (wait && list) toast({ title: 'Not added yet', description: writeWaitText(wait, list.name) });
+  };
+
   const onAddItemSubmit = async (
     values: z.infer<typeof itemSchema>,
     extras: { libraryItem?: BarcodeLibraryItem | null; barcode?: string; size?: number; sizeUnit?: string } = {},
@@ -673,7 +683,11 @@ export function ShoppingListClient({
         [{ name, quantity: values.quantity, size: extras.size, sizeUnit: extras.sizeUnit }],
         { selectedCategory: values.category, libraryItem: extras.libraryItem, barcode: extras.barcode },
       );
-      if (!outcomes) return;
+      if (!outcomes) {
+        // Not a silent no-op: the dialog keeps its values and says why.
+        sayWriteWait();
+        return;
+      }
       const [outcome] = outcomes;
       if (outcome.state === 'failed') {
         // Nothing was saved: keep the dialog and its values for a retry.
@@ -797,7 +811,11 @@ export function ShoppingListClient({
     }, showStatus);
   };
   const scanAddDeps = {
-    add: addEntries,
+    add: async (...args: Parameters<typeof addEntries>) => {
+      const outcomes = await addEntries(...args);
+      if (!outcomes) sayWriteWait();
+      return outcomes;
+    },
     report: reportAddResults,
     fail: (error: unknown) => toastError(error, 'Could not add the item'),
   };
@@ -1666,6 +1684,9 @@ export function ShoppingListClient({
                             key={selectedList.id}
                             listName={selectedList.name}
                             onAdd={onQuickAdd}
+                            // Waits (with why) while the items are unknown: a listener that failed before its first snapshot.
+                            loading={writeWaitFor(selectedList.id) !== null}
+                            loadingText={writeWaitFor(selectedList.id) ? writeWaitText(writeWaitFor(selectedList.id)!, selectedList.name) : undefined}
                             above={tripFlow.chips || snackbarEntries.length > 0 ? (
                               <>
                                 {tripFlow.chips}
@@ -1737,7 +1758,7 @@ export function ShoppingListClient({
           onToggle: (item) => {
             if (writeReadyFor(overviewList.id) && listItemsRef.current.some((entry) => entry.id === item.id)) void toggleItemStatus(item, overviewList);
           },
-          writeReady: writeReadyFor(overviewList.id),
+          writeWait: writeWaitFor(overviewList.id),
           onQuickAdd: (entries) => onQuickAdd(entries, overviewList),
           onOpen: () => onSelectList(overviewList.id),
         } : null}

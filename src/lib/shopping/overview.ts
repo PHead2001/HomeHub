@@ -271,24 +271,37 @@ export function browserStorage(): KeyValueStorage | null {
   }
 }
 
-/**
- * Whether an overview write (a quick-add, a tick) may run against `targetListId`
- * now: the page's items and categories listener must follow that list and both
- * must have answered. Before that the known items are empty or another list's,
- * so a duplicate name would not merge into the needed item (it would be added
- * twice) and a category guess would use the wrong list.
- */
-export const overviewWriteReady = ({
-  targetListId,
-  itemsListId,
-  itemsStatus,
-  categoriesStatus,
-}: {
+type WriteGateInput = {
   targetListId: string | null | undefined;
   itemsListId: string | null | undefined;
   itemsStatus: 'loading' | 'ready' | 'error';
   categoriesStatus: 'loading' | 'ready' | 'error';
-}): boolean => Boolean(targetListId) && targetListId === itemsListId && itemsStatus !== 'loading' && categoriesStatus !== 'loading';
+};
+
+/**
+ * Why a write (a quick-add, an Add Item save, an overview tick) must wait, or null
+ * when it may run against `targetListId`: the page's items and categories listener
+ * must follow that list, its items must have arrived in a snapshot (`ready`; a
+ * listener that failed after one stays `ready` with its last items) and the
+ * categories must have answered. Before that the known items are empty or another
+ * list's, so a duplicate name would not merge into the needed item (it would be
+ * added twice) and a category guess would use the wrong list. `retrying`: the
+ * items listener failed before its first snapshot (the items are unknown; it
+ * keeps retrying); `loading`: otherwise.
+ */
+export function writeWait({ targetListId, itemsListId, itemsStatus, categoriesStatus }: WriteGateInput): 'loading' | 'retrying' | null {
+  if (!targetListId || targetListId !== itemsListId) return 'loading';
+  if (itemsStatus === 'error') return 'retrying';
+  if (itemsStatus !== 'ready' || categoriesStatus === 'loading') return 'loading';
+  return null;
+}
+
+/** Whether a write may run now (`writeWait` is null). */
+export const overviewWriteReady = (input: WriteGateInput): boolean => writeWait(input) === null;
+
+/** The status line of a waiting quick-add field. */
+export const writeWaitText = (wait: 'loading' | 'retrying', listName: string): string =>
+  wait === 'retrying' ? `Could not load ${listName} yet. Retrying…` : `Loading ${listName}…`;
 
 /** Where this device keeps the purchase ids of its own recent ticks (SH-28c), per household and list. */
 export const LOCAL_TICKS_KEY = 'homehub.shopping.localTicks.v1';
