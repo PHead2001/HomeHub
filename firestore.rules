@@ -29,10 +29,6 @@ service cloud.firestore {
       return /databases/$(database)/documents/households/$(householdId)/members/$(uid);
     }
 
-    function householdPath(householdId) {
-      return /databases/$(database)/documents/households/$(householdId);
-    }
-
     function hasMemberDoc(householdId) {
       return signedIn() && exists(memberPath(householdId, request.auth.uid));
     }
@@ -48,13 +44,6 @@ service cloud.firestore {
 
     function isApprovedMember(householdId) {
       return hasMemberDoc(householdId) && isApprovedMemberData(myMember(householdId));
-    }
-
-    // Approved membership as it will exist after the current write/batch.
-    function isApprovedMemberAfter(householdId) {
-      return signedIn() &&
-        existsAfter(memberPath(householdId, request.auth.uid)) &&
-        isApprovedMemberData(getAfter(memberPath(householdId, request.auth.uid)).data);
     }
 
     function isOwnerRole(householdId) {
@@ -109,73 +98,10 @@ service cloud.firestore {
     // Household document invariants
     // ---------------------------------------------------------------------
 
-    function ownerCreatesHousehold(householdId) {
-      return signedIn() &&
-        request.resource.data.ownerUid == request.auth.uid &&
-        !request.resource.data.keys().hasAny(['ownerEmail', 'memberEmails']) &&
-        request.resource.data.name is string &&
-        request.resource.data.name.size() > 0 &&
-        request.resource.data.name.size() <= 80 &&
-        // The creator's owner membership must be written in the same batch.
-        existsAfter(memberPath(householdId, request.auth.uid)) &&
-        getAfter(memberPath(householdId, request.auth.uid)).data.role == 'owner';
-    }
-
-    // household.ownerUid must always point at an active owner membership.
-    function ownerPointerStaysValid(householdId) {
-      let ownerUid = getAfter(householdPath(householdId)).data.get('ownerUid', '');
-      return ownerUid is string && ownerUid.size() > 0 &&
-        existsAfter(memberPath(householdId, ownerUid)) &&
-        getAfter(memberPath(householdId, ownerUid)).data.role == 'owner' &&
-        getAfter(memberPath(householdId, ownerUid)).data.get('status', 'active') == 'active';
-    }
-
-    function previousOwnerDemotedIfMoved(householdId) {
-      let before = resource.data.get('ownerUid', '');
-      let after = request.resource.data.get('ownerUid', '');
-      return before == after ||
-        !(before is string && before.size() > 0) ||
-        !existsAfter(memberPath(householdId, before)) ||
-        getAfter(memberPath(householdId, before)).data.role != 'owner';
-    }
-
-    function validHouseholdName() {
-      return (!('timeZone' in request.resource.data) ||
-          (request.resource.data.timeZone is string && request.resource.data.timeZone.size() <= 64)) &&
-        (!('name' in request.resource.data) ||
-          (request.resource.data.name is string &&
-            request.resource.data.name.size() > 0 &&
-            request.resource.data.name.size() <= 80));
-    }
-
-    // ---------------------------------------------------------------------
-    // Membership document invariants
-    // ---------------------------------------------------------------------
-
-    // Emails are not part of membership records: they live in the protected contact
-    // document, and `email` is not among the fields an update may change.
-    function memberIdentityUnchanged() {
-      return request.resource.data.uid == resource.data.uid;
-    }
-
-    // Only the household owner record may hold role 'owner', and the record
-    // that household.ownerUid points at must stay an active owner.
-    function memberUpdateFieldsAllowed() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-        'role', 'status', 'permissions', 'approvedAt', 'approvedByUid',
-        'lastNewUserReminderAt', 'displayName', 'avatarUrl'
-      ]);
-    }
-
-    function noOwnerOnlyOverrides() {
-      let overrides = request.resource.data.get('permissions', {});
-      return overrides.get('household.delete', false) == false &&
-        overrides.get('household.transferOwnership', false) == false;
-    }
-
-    function ownerRoleChangeIsConsistent(householdId, memberUid) {
-      let ownerUidAfter = getAfter(householdPath(householdId)).data.get('ownerUid', '');
-      return (request.resource.data.role == 'owner') == (ownerUidAfter == memberUid);
+    // The only client write to a household document: owners and admins may set
+    // the household time zone. Name, owner and member fields are server-written.
+    function validHouseholdTimeZone() {
+      return request.resource.data.timeZone is string && request.resource.data.timeZone.size() <= 64;
     }
 
     // ---------------------------------------------------------------------
@@ -238,36 +164,14 @@ service cloud.firestore {
         );
     }
 
-    // A user may point their own profile cache at a household only when their
-    // membership there exists (after this write) with the same role, or clear it.
-    function updatesOwnMembershipCache(userEmail) {
+    // The server (Admin SDK) writes the household fields of every profile. The only
+    // client write to them is a person clearing their own stale household pointer.
+    function clearsOwnMembershipCache(userEmail) {
       return isProfileOwner(userEmail) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['householdId', 'role', 'permissions']) &&
-        (
-          (
-            request.resource.data.householdId is string &&
-            existsAfter(memberPath(request.resource.data.householdId, request.auth.uid)) &&
-            getAfter(memberPath(request.resource.data.householdId, request.auth.uid)).data.role == request.resource.data.role
-          ) ||
-          (
-            request.resource.data.householdId == null &&
-            request.resource.data.role == 'member'
-          )
-        );
-    }
-
-    // Owners/admins may update the compatibility cache of profiles that already
-    // belong to their household: change role/permissions or clear the household.
-    // They can never point someone else's profile at a household.
-    function managerUpdatesMemberProfileCache() {
-      return signedIn() &&
-        resource.data.get('householdId', null) is string &&
-        isOwnerOrAdmin(resource.data.householdId) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['householdId', 'role', 'permissions']) &&
-        (
-          request.resource.data.get('householdId', null) == resource.data.householdId ||
-          request.resource.data.get('householdId', null) == null
-        );
+        request.resource.data.householdId == null &&
+        request.resource.data.role == 'member' &&
+        request.resource.data.get('permissions', {}) == {};
     }
 
     function canReadProfile(userEmail) {
@@ -391,67 +295,8 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
-    // Audit log and attachments
+    // Attachments
     // ---------------------------------------------------------------------
-
-    function validNewAuditEntry(householdId) {
-      let data = request.resource.data;
-      let after = getAfter(memberPath(householdId, request.auth.uid)).data;
-      return isApprovedMemberAfter(householdId) &&
-        after.role in ['owner', 'admin'] &&
-        data.keys().hasOnly(['actorUid', 'actorEmail', 'actorName', 'action', 'targetUid', 'targetEmail',
-          'targetName', 'createdAt', 'details']) &&
-        data.action in ['household.created', 'household.renamed', 'invite.generated', 'invite.revoked',
-          'invite.revoked_all', 'member.role_changed', 'member.permissions_changed', 'member.removed',
-          'member.approved', 'ownership.transferred'] &&
-        data.actorUid == request.auth.uid &&
-        data.actorEmail == request.auth.token.email &&
-        data.action is string && data.action.size() <= 80 &&
-        data.createdAt is string;
-    }
-
-    function leavingMember(householdId) {
-      return signedIn() &&
-        exists(memberPath(householdId, request.auth.uid)) &&
-        get(memberPath(householdId, request.auth.uid)).data.get('status', 'active') == 'active' &&
-        get(memberPath(householdId, request.auth.uid)).data.role != 'owner' &&
-        !existsAfter(memberPath(householdId, request.auth.uid));
-    }
-
-    function validDepartureAudit(householdId) {
-      let data = request.resource.data;
-      return leavingMember(householdId) &&
-        data.keys().hasOnly(['actorUid', 'actorEmail', 'actorName', 'action', 'targetUid', 'targetEmail',
-          'targetName', 'createdAt', 'details']) &&
-        data.action == 'member.left' &&
-        data.actorUid == request.auth.uid && data.targetUid == request.auth.uid &&
-        data.actorEmail == request.auth.token.email &&
-        data.createdAt is string;
-    }
-
-    function validDepartureNotice(householdId) {
-      let data = request.resource.data;
-      return leavingMember(householdId) &&
-        data.householdId == householdId &&
-        data.category == 'system' &&
-        data.get('sourceType', '') == 'household-member-left' &&
-        data.get('sourceId', '') == request.auth.uid &&
-        !('targetUserUid' in data) && !('targetUserEmail' in data) &&
-        data.keys().hasOnly([
-          'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
-          'deepLink', 'sourceType', 'sourceId', 'stateKey', 'readBy', 'dismissedBy', 'createdByUid',
-          'audience'
-        ]) &&
-        // Untargeted, so the audience must be ['*'].
-        validNotificationAudience(data) &&
-        (!('createdByUid' in data) || data.createdByUid == request.auth.uid) &&
-        data.message is string && data.message.size() > 0 && data.message.size() <= 300 &&
-        (!('title' in data) || (data.title is string && data.title.size() <= 120)) &&
-        data.createdAt is timestamp && data.createdAt < request.time + duration.value(15, 'm') &&
-        data.expiresAt is timestamp && data.expiresAt <= request.time + duration.value(8, 'd') &&
-        data.readBy == {} && data.dismissedBy == {} &&
-        validDeepLink(data);
-    }
 
     function validNewMaintenanceAttachment(householdId) {
       return request.resource.data.householdId == householdId &&
@@ -1247,60 +1092,21 @@ service cloud.firestore {
       // name on their own membership record (`householdName`).
       allow get: if isApprovedMember(householdId);
       allow list: if false;
-      allow create: if ownerCreatesHousehold(householdId);
-      allow update: if validHouseholdName() &&
-        (
-          (isOwnerRole(householdId) &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'name', 'updatedAt', 'ownerUid', 'inviteCode', 'timeZone'
-            ]) &&
-            ownerPointerStaysValid(householdId) &&
-            previousOwnerDemotedIfMoved(householdId)) ||
-          (isAdminRole(householdId) &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'updatedAt', 'timeZone']))
-        );
+      // Households are created, renamed, re-owned and deleted only by the server
+      // (Admin SDK); no one writes memberEmails or ownerEmail any more (release C).
+      allow create: if false;
+      allow update: if isOwnerOrAdmin(householdId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['timeZone', 'updatedAt']) &&
+        validHouseholdTimeZone();
       allow delete: if false;
 
       match /members/{memberUid} {
         allow get: if isApprovedMember(householdId) || (signedIn() && request.auth.uid == memberUid);
         allow list: if isApprovedMember(householdId);
 
-        // The only client-created membership is the creator's owner record while
-        // creating a brand-new household. Joining goes through the server.
-        allow create: if signedIn() &&
-          memberUid == request.auth.uid &&
-          !exists(householdPath(householdId)) &&
-          getAfter(householdPath(householdId)).data.get('ownerUid', '') == request.auth.uid &&
-          request.resource.data.uid == request.auth.uid &&
-          // Emails live in the protected contact document, never on the record.
-          !('email' in request.resource.data) &&
-          request.resource.data.role == 'owner' &&
-          request.resource.data.status == 'active' &&
-          request.resource.data.get('permissions', {}) == {};
-
-        allow update: if memberIdentityUnchanged() &&
-          memberUpdateFieldsAllowed() &&
-          ownerRoleChangeIsConsistent(householdId, memberUid) &&
-          request.resource.data.role in ['owner', 'admin', 'member', 'child', 'guest', 'newuser'] &&
-          request.resource.data.get('status', 'active') in ['active', 'pending'] &&
-          (request.resource.data.role != 'owner' || request.resource.data.get('status', 'active') == 'active') &&
-          (request.resource.data.role == 'owner' || noOwnerOnlyOverrides()) &&
-          (
-            isOwnerRole(householdId) ||
-            (isAdminRole(householdId) &&
-              memberUid != request.auth.uid &&
-              resource.data.role != 'owner' &&
-              request.resource.data.role != 'owner' &&
-              request.resource.data.role != 'newuser')
-          );
-
-        // Owners must transfer ownership before their record can be removed.
-        allow delete: if resource.data.role != 'owner' &&
-          (
-            isOwnerRole(householdId) ||
-            (isAdminRole(householdId)) ||
-            (signedIn() && request.auth.uid == memberUid)
-          );
+        // Membership records are written only by the server (household creation,
+        // joining, approval, role and permission changes, removal, leaving, transfer).
+        allow create, update, delete: if false;
 
         // The member's contact document (`contact`: their email), written only by
         // the server. Readable by the person and by holders of household.manageMembers.
@@ -1318,7 +1124,7 @@ service cloud.firestore {
         // (or array-contains of either value); one without it is refused.
         allow get, list: if hasHouseholdPermission(householdId, 'notifications.view') &&
           resource.data.audience.hasAny([request.auth.uid, '*']);
-        allow create: if validNewNotification(householdId) || validDepartureNotice(householdId);
+        allow create: if validNewNotification(householdId);
         allow update: if notificationAddressedToCaller() && (
           (hasHouseholdPermission(householdId, 'notifications.dismiss') && updatesOnlyOwnNotificationState()) ||
           (hasHouseholdPermission(householdId, 'maintenance.edit') && resolvesMaintenanceNotification()));
@@ -1333,9 +1139,9 @@ service cloud.firestore {
       }
 
       match /auditLogs/{auditId} {
-        allow read: if isOwnerOrAdmin(householdId);
-        allow create: if validNewAuditEntry(householdId) || validDepartureAudit(householdId);
-        allow update, delete: if false;
+        // Written only by the server, next to the change it records.
+        allow read: if hasHouseholdPermission(householdId, 'household.manageMembers');
+        allow write: if false;
       }
 
       match /chores/{choreId} {
@@ -1614,36 +1420,15 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
-    // Invite codes: owners/admins create, list and revoke. Redemption happens
-    // on the server, which validates expiry, revocation and use count.
+    // Invite codes: created, revoked and redeemed only by the server, which checks
+    // household.manageInvites, expiry, revocation and use count. Holders of
+    // household.manageInvites read their household's codes (the Invite Codes tab).
     // ---------------------------------------------------------------------
 
     match /inviteCodes/{code} {
-      // Reading a code that does not exist only reveals that it is free, which owners
-      // and admins need for collision checks while generating a new code.
-      allow get: if signedIn() &&
-        (resource == null || (resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId)));
-      allow list: if resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId);
-      allow create: if request.resource.data.householdId is string &&
-        isOwnerOrAdmin(request.resource.data.householdId) &&
-        request.resource.data.code == code &&
-        request.resource.data.createdByUid == request.auth.uid &&
-        request.resource.data.createdByEmail == request.auth.token.email &&
-        request.resource.data.useCount == 0 &&
-        (
-          (request.resource.data.expiresAt is timestamp &&
-            request.resource.data.expiresAt > request.time &&
-            request.resource.data.expiresAt <= request.time + duration.value(2, 'h')) ||
-          (request.resource.data.expiresAt is string &&
-            request.resource.data.expiresAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$'))
-        ) &&
-        request.resource.data.maxUses is int &&
-        request.resource.data.maxUses >= 1 &&
-        request.resource.data.maxUses <= 10;
-      // Only revocation is a client operation.
-      allow update: if isOwnerOrAdmin(resource.data.householdId) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revokedAt']);
-      allow delete: if false;
+      allow read: if resource.data.householdId is string &&
+        hasHouseholdPermission(resource.data.householdId, 'household.manageInvites');
+      allow write: if false;
     }
 
     // ---------------------------------------------------------------------
@@ -1660,8 +1445,7 @@ service cloud.firestore {
         !request.resource.data.keys().hasAny(['birthday', 'gender', 'fcmTokens']) &&
         (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid);
       allow update: if updatesOwnProfileOnly(userEmail) ||
-        updatesOwnMembershipCache(userEmail) ||
-        managerUpdatesMemberProfileCache();
+        clearsOwnMembershipCache(userEmail);
       allow delete: if isProfileOwner(userEmail);
 
       // Owner-only data housemates must never see. Only the push-token document

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ShoppingListClient } from './shopping-list-client';
@@ -8,6 +8,8 @@ import { PantryInventoryClient } from '@/components/pantry-inventory-client';
 import { ClipboardList, Archive } from 'lucide-react';
 import { parseShoppingUrlState, shoppingHref, type ShoppingTab } from '@/lib/shopping/url-state';
 import { TabActivity } from '@/components/shopping/tab-activity';
+import { useAuth } from '@/hooks/use-auth';
+import { useLivePantry } from '@/lib/shopping/live';
 
 /**
  * The Shopping Center: Shopping Lists and Pantry Inventory tabs. The open tab and
@@ -23,6 +25,12 @@ export function ShoppingCenterClient() {
   const searchParams = useSearchParams();
   const pathname = usePathname() || '/shopping';
   const state = parseShoppingUrlState(searchParams);
+  const { currentUser } = useAuth();
+  // One pantry listener for the page: the Pantry tab and the overview's expiring
+  // chips (SH-11c) share it.
+  const pantryState = useLivePantry(currentUser?.householdId);
+  // The pantry item an expiring chip asked to open (consumed by the Pantry tab).
+  const [pantryFocus, setPantryFocus] = useState<string | null>(null);
 
   // The list id this component last pushed onto history, so "Back to all lists"
   // can step back (instead of stacking another entry) when that entry is current.
@@ -58,6 +66,13 @@ export function ShoppingCenterClient() {
     go({ tab: 'inventory', listId: null }, 'push');
   }, [go]);
 
+  // An expiring chip: the Pantry tab, opened on that item.
+  const openPantryItem = useCallback((itemId: string) => {
+    setPantryFocus(itemId);
+    openPantry();
+  }, [openPantry]);
+  const clearPantryFocus = useCallback(() => setPantryFocus(null), []);
+
   // The one-shot `?quickAdd=1` request is consumed by replacing the entry, so Back
   // never reopens the dialog.
   const handleQuickAddHandled = useCallback((listId: string | null) => {
@@ -84,12 +99,14 @@ export function ShoppingCenterClient() {
             onOpenPantry={openPantry}
             quickAddRequested={state.quickAdd}
             onQuickAddHandled={handleQuickAddHandled}
+            pantryItems={pantryState.value}
+            onOpenPantryItem={openPantryItem}
           />
         </TabActivity>
       </TabsContent>
       <TabsContent value="inventory" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
         <TabActivity active={state.tab === 'inventory'}>
-          <PantryInventoryClient />
+          <PantryInventoryClient pantryState={pantryState} focusItemId={pantryFocus} onFocusHandled={clearPantryFocus} />
         </TabActivity>
       </TabsContent>
     </Tabs>

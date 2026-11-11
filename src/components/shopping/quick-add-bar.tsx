@@ -39,7 +39,34 @@ type PendingChip = { id: number; names: string; label: string };
  * The Undo snackbar (SH-15a) is passed as `above` and drawn in the same sticky
  * dock, directly above the field (outside the form).
  */
-export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>; above?: ReactNode }) {
+/** The dock under an open list: sticky above the phone tab bar, near the thumb. */
+const DOCK_CLASSES = 'sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-10 -mx-2 mt-4 space-y-2 md:bottom-2';
+
+export function QuickAddBar({
+  listName,
+  onAdd,
+  above,
+  className,
+  large = false,
+  loading = false,
+  loadingText,
+}: {
+  listName: string;
+  onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
+  above?: ReactNode;
+  /** Replaces the sticky dock's placement (the overview places the field itself). */
+  className?: string;
+  /** A taller field and button (the overview's always-visible quick add, SH-11b). */
+  large?: boolean;
+  /**
+   * The list's items or categories are still loading: the field stays usable for
+   * typing, but submitting waits ("Loading {list}…"), since a merge into an
+   * already-needed item can only be found once the items are known.
+   */
+  loading?: boolean;
+  /** The status line while `loading` (default "Loading {list}…"). */
+  loadingText?: string;
+}) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,6 +88,8 @@ export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAd
     event.preventDefault();
     // One save at a time; the ref also blocks a second Enter before re-render.
     if (busyRef.current) return;
+    // Not yet: the text stays in the field and the status line says why.
+    if (loading) return;
     const entries = parseQuickAdd(value);
     if (entries.length === 0) {
       setError('Type an item, or several separated by commas.');
@@ -114,7 +143,7 @@ export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAd
   };
 
   return (
-    <div className="sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-10 -mx-2 mt-4 space-y-2 md:bottom-2">
+    <div className={className ?? DOCK_CLASSES}>
     {above}
     <form
       onSubmit={submit}
@@ -135,15 +164,16 @@ export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAd
           autoComplete="off"
           enterKeyHint="done"
           maxLength={MAX_QUICK_ADD_ITEMS * 40}
-          className="h-11 flex-1 [@media(pointer:coarse)]:h-12"
+          className={large ? 'h-14 flex-1 text-lg md:text-lg coarse:text-lg' : 'h-11 flex-1 [@media(pointer:coarse)]:h-12'}
           {...fieldErrorProps(fieldId, error)}
         />
-        <Button type="submit" disabled={busy} aria-label={`Add to ${listName}`} className="h-11 min-w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:min-w-12">
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Plus className="h-4 w-4" aria-hidden />}
+        <Button type="submit" disabled={busy || loading} aria-label={`Add to ${listName}`} className={large ? 'h-14 min-w-14 shrink-0 px-5 text-base' : 'h-11 min-w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:min-w-12'}>
+          {busy || loading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Plus className="h-4 w-4" aria-hidden />}
           <span className="ml-1 hidden sm:inline">Add</span>
         </Button>
       </div>
       <FieldError id={fieldId} className="mt-1.5 px-1">{error}</FieldError>
+      {loading && <p role="status" className="mt-1.5 px-1 text-sm text-muted-foreground" data-testid="quick-add-loading">{loadingText ?? `Loading ${listName}…`}</p>}
       {chips.length > 0 && (
         <ul className="mt-1.5 flex flex-wrap gap-1.5 px-1" role="status" aria-live="polite" data-testid="quick-add-pending">
           {chips.map((chip) => (
