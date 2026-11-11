@@ -91,10 +91,9 @@ export function HouseholdManagementClient() {
   const canRename = canRenameHousehold(currentMember).ok;
   const canRemind = canRemindPendingMembers(currentMember).ok;
   const isOwner = currentMember?.role === 'owner';
-  // Audit entries and the invite list are readable by owners and admins only (firestore.rules).
-  const isOwnerOrAdmin = currentMember?.role === 'owner' || currentMember?.role === 'admin';
-  const canReadAudit = isOwnerOrAdmin;
-  const canListInvites = canManageInvites && isOwnerOrAdmin;
+  // firestore.rules: audit entries are readable with `household.manageMembers`, the
+  // invite list with `household.manageInvites` (role defaults and overrides both count).
+  const canReadAudit = Boolean(canManageMembers);
 
   const visibleTabs = useMemo(
     () => householdTabs.filter((tab) => (tab === 'invites' ? canManageInvites : tab === 'activity' ? canReadAudit : true)),
@@ -121,19 +120,12 @@ export function HouseholdManagementClient() {
   const live = useHouseholdLiveData({
     householdId: household?.id,
     currentMember,
-    canListInvites,
+    canListInvites: canManageInvites,
     canReadAudit,
     canViewChores: Boolean(permissions['chores.view']),
     canManageMembers: canSeeMemberEmails(permissions),
   });
-  const { members, auditLogs, choreStats, choreStatsReady } = live;
-  // Someone who may manage invites but cannot list them under the current rules
-  // (a member granted `household.manageInvites`) sees the codes they created in this visit.
-  const [sessionInvites, setSessionInvites] = useState<InviteCode[]>([]);
-  const invites = useMemo(
-    () => (canListInvites ? live.invites : sessionInvites.filter((invite) => invite.householdId === household?.id)),
-    [canListInvites, household?.id, live.invites, sessionInvites],
-  );
+  const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
   const householdDisplayName = live.name ?? household?.name ?? '';
 
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -235,7 +227,6 @@ export function HouseholdManagementClient() {
       const invite = await runAction('Could not create an invite code', (idToken) =>
         createInviteAction({ idToken, householdId }));
       if (!invite) return;
-      setSessionInvites((prev) => [invite, ...prev]);
       // The code exists now; copying is a convenience that must not turn a successful
       // invite into a reported failure (iOS often blocks clipboard writes after an await).
       const copied = await copyText(invite.code);
@@ -256,8 +247,6 @@ export function HouseholdManagementClient() {
     const revoked = await runAction('Could not revoke the invite', (idToken) =>
       revokeInviteAction({ idToken, householdId, code: invite.code }));
     if (!revoked) return;
-    const now = new Date().toISOString();
-    setSessionInvites((prev) => prev.map((item) => (item.id === invite.id ? { ...item, revokedAt: now } : item)));
     toast({ title: 'Invite revoked', description: `${invite.code} can no longer be used.` });
   };
 
@@ -267,8 +256,6 @@ export function HouseholdManagementClient() {
     const revoked = await runAction('Could not revoke the invites', (idToken) =>
       revokeAllInvitesAction({ idToken, householdId }));
     if (!revoked) return;
-    const now = new Date().toISOString();
-    setSessionInvites((prev) => prev.map((item) => (item.revokedAt ? item : { ...item, revokedAt: now })));
     toast({ title: 'Invites revoked', description: 'Every active invite code was revoked.' });
   };
 
