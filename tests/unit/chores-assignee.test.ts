@@ -8,8 +8,9 @@ import {
   unassignedChoreFields,
 } from '../../functions/src/shared/assignee';
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
-import { addPurgedChores } from '../../functions/src/shared/chore-stats';
-import { recurringChoreId } from '../../functions/src/shared/ids';
+import { addPurgedChores, creditedPerson, readChoreStats } from '../../functions/src/shared/chore-stats';
+import { summarizeChores } from '../../src/lib/dashboard/wrapped';
+import { choreStatsAssigneeKey, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
 import { occurrenceIds } from '../../src/lib/chores/calendar';
 import { computeChoreStats } from '../../src/lib/chores/stats';
@@ -197,6 +198,33 @@ describe('chore assignee (uid with email fallback)', () => {
     ]);
     assert.equal(next.completed, 2);
     assert.deepEqual(next.names, {});
+  });
+});
+
+describe('yearly stats credit for uid-only chores (review finding on #140)', () => {
+  const people = [{ uid: 'uid-sam', email: 'Sam@example.test' }, { uid: 'uid-ana', email: 'ana@example.test' }];
+  const at = '2026-03-01T12:00:00Z';
+  // Written by uid only (release C, or scrubbed while open), then completed by a cached
+  // older client that records no completer.
+  const uidOnly = { assignedToUid: 'uid-sam', assignedToDisplayName: 'Sam', isCompleted: true, completedAt: at };
+
+  test('the assignee uid is credited through the member, under the same key as the email', () => {
+    assert.deepEqual(creditedPerson(uidOnly, people), { email: 'Sam@example.test', name: 'Sam' });
+    const byUid = addPurgedChores(readChoreStats(undefined, 2026), [uidOnly], people);
+    const byEmail = addPurgedChores(readChoreStats(undefined, 2026), [{ assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: at }]);
+    assert.deepEqual(byUid.byAssignee, byEmail.byAssignee);
+    assert.deepEqual(byUid.byAssignee, { [choreStatsAssigneeKey('sam@example.test')]: 1 });
+    // Home Wrapped counts it for Sam too.
+    assert.deepEqual(summarizeChores([{ id: 'c1', ...uidOnly }], 2026, { timeZone: 'UTC', people }).champion, { name: 'Sam', count: 1 });
+  });
+
+  test('a completer recorded by uid wins over the assignee; unknown uids credit nobody', () => {
+    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-ana', completedByName: 'Ana' }, people), { email: 'ana@example.test', name: 'Ana' });
+    // A recorded completer who left is not replaced by the assignee.
+    assert.equal(creditedPerson({ ...uidOnly, completedByUid: 'uid-gone' }, people), null);
+    assert.equal(creditedPerson({ ...uidOnly, assignedToUid: 'uid-gone' }, people), null);
+    // Without the member list nothing can be resolved (as before).
+    assert.equal(creditedPerson(uidOnly), null);
   });
 });
 

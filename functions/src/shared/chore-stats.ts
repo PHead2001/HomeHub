@@ -15,11 +15,12 @@ export type ChoreStatsDoc = {
 };
 
 export type PurgedChore = {
-  /** Not used for the key yet (see choreStatsAssigneeKey); kept for later. */
+  /** Resolved to the member's email through `people` (see creditedPerson). */
   assignedToUid?: unknown;
   assignedToEmail?: unknown;
   assignedToDisplayName?: unknown;
   /** Who completed it (D-7: the completer gets the credit). */
+  completedByUid?: unknown;
   completedByEmail?: unknown;
   completedByName?: unknown;
   completedAt: string;
@@ -28,23 +29,42 @@ export type PurgedChore = {
 const filled = (value: unknown): value is string =>
   typeof value === "string" && value.trim() !== "";
 
+/** A household member for crediting: uid and (where known) email. */
+export type CreditPerson = {uid: string; email?: string | null};
+
 /**
  * Who a completed chore counts for: the person who completed it when the
- * server recorded them (`completedByEmail`), else its assignee (completions
- * made before attribution existed). The same rule as the Chores page.
+ * server recorded them (`completedByEmail`, else `completedByUid` resolved
+ * through `people`), else its assignee (completions made before attribution
+ * existed, or by an older client): `assignedToEmail`, else `assignedToUid`
+ * resolved through `people`. Since member privacy release C chores carry the
+ * uid only, so the uid is resolved to the member's email, keeping the stats
+ * key (`choreStatsAssigneeKey(email)`) the same for every shape of the same
+ * member until release E rekeys the stats by uid.
  * @param {PurgedChore} chore Chore fields.
+ * @param {CreditPerson[]} people Household members (emails where known).
  * @return {{email: string, name: unknown} | null} Credited person, or null.
  */
 export const creditedPerson = (
   chore: Omit<PurgedChore, "completedAt">,
+  people: readonly CreditPerson[] = [],
 ): {email: string; name: unknown} | null => {
+  const emailOf = (uid: unknown): string => {
+    if (!filled(uid)) return "";
+    const email = people.find((person) => person.uid === uid)?.email;
+    return filled(email) ? email : "";
+  };
   if (filled(chore.completedByEmail)) {
     return {email: chore.completedByEmail, name: chore.completedByName};
   }
+  const completer = emailOf(chore.completedByUid);
+  if (completer) return {email: completer, name: chore.completedByName};
+  if (filled(chore.completedByUid)) return null;
   if (filled(chore.assignedToEmail)) {
     return {email: chore.assignedToEmail, name: chore.assignedToDisplayName};
   }
-  return null;
+  const assignee = emailOf(chore.assignedToUid);
+  return assignee ? {email: assignee, name: chore.assignedToDisplayName} : null;
 };
 
 /**
@@ -108,11 +128,12 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
 export const addPurgedChores = (
   stats: ChoreStatsDoc,
   chores: PurgedChore[],
+  people: readonly CreditPerson[] = [],
 ): ChoreStatsDoc => {
   const byAssignee = {...stats.byAssignee};
   const names = {...stats.names};
   for (const chore of chores) {
-    const person = creditedPerson(chore);
+    const person = creditedPerson(chore, people);
     if (!person) continue;
     const key = choreStatsAssigneeKey(person.email);
     byAssignee[key] = (byAssignee[key] ?? 0) + 1;
