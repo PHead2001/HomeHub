@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel, neededFocusOrder, scopeToList, withSectionOpen } from '../../src/lib/shopping/trip-mode';
 import { keyboardInset } from '../../src/lib/keyboard-inset';
-import { createWakeLockController, wakeLockWanted, type WakeLockSentinelLike } from '../../src/lib/shopping/wake-lock';
+import { createWakeLockController, wakeLockWanted, watchTripWakeLock, type WakeLockSentinelLike } from '../../src/lib/shopping/wake-lock';
 import { LIST_TINT_LABELS } from '../../src/lib/shopping/list-style';
 import { blend, contrastRatio, hslTokenToRgb } from '../../src/lib/theme/contrast';
 import { PRESET_LIST } from '../../src/lib/theme/tokens';
@@ -215,6 +215,83 @@ describe('trip mode: wake lock (SH-33a)', () => {
     const none = createWakeLockController(null);
     none.set(true);
     assert.equal(none.state(), 'idle');
+  });
+});
+
+describe('trip mode: wake lock follows the phone breakpoint and visibility (SH-33a)', () => {
+  const setup = (startsAsPhone: boolean) => {
+    const listeners = { change: new Set<() => void>(), visibilitychange: new Set<() => void>() };
+    const phone = {
+      matches: startsAsPhone,
+      addEventListener: (_type: 'change', fn: () => void) => listeners.change.add(fn),
+      removeEventListener: (_type: 'change', fn: () => void) => listeners.change.delete(fn),
+    };
+    const page = {
+      visibilityState: 'visible',
+      addEventListener: (_type: 'visibilitychange', fn: () => void) => listeners.visibilitychange.add(fn),
+      removeEventListener: (_type: 'visibilitychange', fn: () => void) => listeners.visibilitychange.delete(fn),
+    };
+    const log: string[] = [];
+    const api = {
+      request: async () => {
+        log.push('request');
+        let released = false;
+        return { get released() { return released; }, release: async () => { released = true; log.push('release'); } };
+      },
+    };
+    const fire = (type: 'change' | 'visibilitychange') => listeners[type].forEach((fn) => fn());
+    return { phone, page, api, log, listeners, fire };
+  };
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  test('opened in landscape (too wide), then turned to portrait: the lock is requested then', async () => {
+    const env = setup(false);
+    const stop = watchTripWakeLock(env);
+    await flush();
+    assert.deepEqual(env.log, []);
+    env.phone.matches = true;
+    env.fire('change');
+    await flush();
+    assert.deepEqual(env.log, ['request']);
+    stop();
+  });
+
+  test('stops matching (turned to landscape, window widened): the lock is released', async () => {
+    const env = setup(true);
+    const stop = watchTripWakeLock(env);
+    await flush();
+    env.phone.matches = false;
+    env.fire('change');
+    await flush();
+    assert.deepEqual(env.log, ['request', 'release']);
+    stop();
+  });
+
+  test('hidden then shown again: released by the page, requested again', async () => {
+    const env = setup(true);
+    const stop = watchTripWakeLock(env);
+    await flush();
+    env.page.visibilityState = 'hidden';
+    env.fire('visibilitychange');
+    await flush();
+    env.page.visibilityState = 'visible';
+    env.fire('visibilitychange');
+    await flush();
+    assert.deepEqual(env.log, ['request', 'release', 'request']);
+    stop();
+  });
+
+  test('stopping releases the lock and removes both listeners', async () => {
+    const env = setup(true);
+    const stop = watchTripWakeLock(env);
+    await flush();
+    assert.equal(env.listeners.change.size, 1);
+    assert.equal(env.listeners.visibilitychange.size, 1);
+    stop();
+    await flush();
+    assert.deepEqual(env.log, ['request', 'release']);
+    assert.equal(env.listeners.change.size, 0);
+    assert.equal(env.listeners.visibilitychange.size, 0);
   });
 });
 

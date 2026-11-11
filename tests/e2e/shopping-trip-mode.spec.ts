@@ -491,7 +491,12 @@ test.describe('shopping trip mode: the open list in the store', () => {
     try {
       const list = await openList(a.page, testInfo);
       // One lock held while the list is open.
-      await expect.poll(async () => (await wake(a.page)).held).toBe(1);
+      await expect.poll(async () => (await wake(a.page)).held, { message: 'held while the list is open' }).toBe(1);
+      // Turned to landscape (wider than the phone breakpoint): let go; back to portrait: held again.
+      await a.page.setViewportSize({ width: PHONE.height, height: PHONE.width });
+      await expect.poll(async () => (await wake(a.page)).held, { message: 'released in landscape' }).toBe(0);
+      await a.page.setViewportSize(PHONE);
+      await expect.poll(async () => (await wake(a.page)).held, { message: 'held again in portrait' }).toBe(1);
       // Hidden: the browser drops it and nothing asks again while hidden.
       await setHidden(a.page, true);
       await expect.poll(async () => (await wake(a.page)).held).toBe(0);

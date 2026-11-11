@@ -103,3 +103,42 @@ export function createWakeLockController(api: WakeLockApi | null | undefined): W
     state: () => (sentinel && !sentinel.released ? 'held' : requesting ? 'requesting' : 'idle'),
   };
 }
+
+/** A media query list as the wake lock needs it (`window.matchMedia(WAKE_LOCK_MEDIA)`). */
+export type MediaQueryLike = {
+  readonly matches: boolean;
+  addEventListener: (type: 'change', listener: () => void) => void;
+  removeEventListener: (type: 'change', listener: () => void) => void;
+};
+
+/** The page's visibility as the wake lock needs it (`document`). */
+export type VisibilityLike = {
+  readonly visibilityState: string;
+  addEventListener: (type: 'visibilitychange', listener: () => void) => void;
+  removeEventListener: (type: 'visibilitychange', listener: () => void) => void;
+};
+
+/**
+ * Keeps the screen on while an open list is shown on a phone: decides now and
+ * again whenever the page is shown or hidden and whenever the phone query starts
+ * or stops matching (a phone turned from landscape to portrait, or a window made
+ * narrower or wider). Returns the stop, which releases the lock and removes both
+ * listeners.
+ */
+export function watchTripWakeLock({ api, page, phone }: { api: WakeLockApi; page: VisibilityLike; phone: MediaQueryLike | null }): () => void {
+  const controller = createWakeLockController(api);
+  const update = () => controller.set(wakeLockWanted({
+    listOpen: true,
+    visible: page.visibilityState === 'visible',
+    phone: Boolean(phone?.matches),
+    supported: true,
+  }));
+  update();
+  page.addEventListener('visibilitychange', update);
+  phone?.addEventListener('change', update);
+  return () => {
+    page.removeEventListener('visibilitychange', update);
+    phone?.removeEventListener('change', update);
+    controller.dispose();
+  };
+}

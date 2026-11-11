@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import type { AisleChip } from '@/lib/shopping/trip-mode';
 import { cn } from '@/lib/utils';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import styles from './trip-mode.module.css';
 
 export type ListAction = { key: string; label: string; icon: LucideIcon; onSelect: () => void };
@@ -75,8 +76,20 @@ export const TripHeader = forwardRef<HTMLDivElement, {
   onBack: (event: MouseEvent<HTMLButtonElement>) => void;
   /** Opens the Needed section (an aisle chip tapped while it is collapsed). */
   onOpenNeeded: () => void;
-}>(function TripHeader({ icon, iconClass, name, storeName, left, cart, addItem, actions, chips, onBack, onOpenNeeded }, forwarded) {
+  /** The open list's identity (household and list): a change drops a jump still waiting. */
+  scopeKey: string;
+}>(function TripHeader({ icon, iconClass, name, storeName, left, cart, addItem, actions, chips, onBack, onOpenNeeded, scopeKey }, forwarded) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // In-app Reduce motion as well as the system setting (`useReducedMotion`).
+  const reduced = useReducedMotion();
+  // Counts jumps; bumped when the list changes or the header unmounts, which drops a waiting jump.
+  const jumpRef = useRef(0);
+  useEffect(() => {
+    const jumps = jumpRef;
+    return () => {
+      jumps.current += 1;
+    };
+  }, [scopeKey]);
 
   useEffect(() => {
     const node = ref.current;
@@ -91,6 +104,10 @@ export const TripHeader = forwardRef<HTMLDivElement, {
   }, []);
 
   const jump = async (targetId: string) => {
+    // A jump belongs to the list it was tapped on: if another list opens (or this
+    // header unmounts) while it waits for the aisle, it is dropped.
+    const ticket = ++jumpRef.current;
+    const stillCurrent = () => jumpRef.current === ticket && Boolean(ref.current?.isConnected);
     // A collapsed Needed section has no aisles in it: open it first, then wait (a
     // bounded number of frames) for the aisle to mount and the section's opening
     // animation to finish, so the page is tall enough to scroll to it.
@@ -99,16 +116,24 @@ export const TripHeader = forwardRef<HTMLDivElement, {
     for (let frame = 0; frame < 60 && !heading; frame += 1) {
       heading = document.getElementById(targetId);
       if (!heading) await new Promise((resolve) => requestAnimationFrame(resolve));
+      if (!stillCurrent()) return;
     }
     if (!heading) return;
+    // Bounded: under reduced motion there may be no animation at all, and a
+    // cancelled or paused one must not hold the jump.
     const region = heading.closest<HTMLElement>('[role="region"]');
     const running = region && typeof region.getAnimations === 'function' ? region.getAnimations() : [];
-    await Promise.all(running.map((animation) => animation.finished.catch(() => undefined)));
-    if (!heading.isConnected) return;
+    if (running.length > 0) {
+      await Promise.race([
+        Promise.all(running.map((animation) => animation.finished.catch(() => undefined))),
+        new Promise((resolve) => window.setTimeout(resolve, 600)),
+      ]);
+    }
+    if (!heading.isConnected || !stillCurrent()) return;
     // The aisle's section (its scroll margin clears the sticky header), not the
     // sticky heading itself, whose own box moves while it sticks.
     const target = heading.closest('section') ?? heading;
-    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // The member's motion setting (system or Profile → Appearance), read at the tap.
     target.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
   };
 

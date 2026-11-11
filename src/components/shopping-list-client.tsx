@@ -1544,6 +1544,7 @@ export function ShoppingListClient({
                   left={loadingItems ? null : trip.left}
                   chips={loadingItems ? [] : trip.chips}
                   onOpenNeeded={() => setOpenSections((current) => withSectionOpen(current, 'needed'))}
+                  scopeKey={`${householdId ?? ''}/${selectedList.id}`}
                   onBack={(event) => listMorph.run(listMorphName, () => onSelectList(null), { event })}
                   cart={<CartIndicator ref={cartFlight.cartRef} count={purchasedItems.length} inFlight={cartFlight.inFlight} onClick={openPurchased} />}
                   actions={canEdit ? [
