@@ -1436,6 +1436,29 @@ A dedicated motion pass (tap feedback, completion moments, transitions per page,
 
 The overall order, including what must come before the tablets, is in 16.5.
 
+### 15.6 The real wall tablet screen (measured on the installed tablet, 2026-11-11)
+
+**Status:** the first tablet is on the wall and signed in with a personal account, so these rows apply to the standard app now (WT-15, D-5), not only to the registered-tablet interface. Earlier sections tested "tablet" at a generic 1280×800; the real screen is shorter and a little narrower. All sizes are CSS pixels, landscape, touch, no hover.
+
+| Mode | Viewport | Use |
+|---|---|---|
+| Installed web app (URL bar hidden) | **1263 × 818** | **Primary target.** This is how the tablet runs. |
+| Chrome with the URL bar | 1263 × 722 | Must still fit: it is what a fresh browser tab shows. |
+| Fully fullscreen (upper bound) | about 1264 × 843 | Depends on the Android system bars. |
+| Device default scaling (not in use) | 1200 × 800 | For reference: the owner changed the display scaling. |
+
+| # | Finding or requirement | Detail | Effort | Source |
+|---|---|---|---|---|
+| WT-23 | **Use the real sizes as the tablet test sizes.** | Automated tests and live checks use 1263 × 818 first, then 1263 × 722 and 1264 × 843, with touch and a coarse pointer, in place of the generic 1280 × 800. | Q | Owner |
+| WT-24 | **The homepage does not fit the real screen.** | At 1263 × 722 the page is 729 px tall: it scrolls by 7 px and the Home Wrapped button at the bottom of the right column is clipped. The house card ends at about 490 px, leaving the lower third of the left column empty while the right column is over-full. At 1264 × 843 it fits, but both columns leave dead space because tiles do not grow. Fix: a layout driven by the available height (the house card and the tiles share the column height), with no page scroll and no clipped control at all three sizes. | M | Live |
+| WT-25 | **Adaptive, not tuned to one screen.** | The same layout rules must hold on other landscape tablets and wide screens without per-device numbers: 1024 × 768, 1180 × 820, 1200 × 800, 1280 × 800, 1340 × 800 and 1366 × 1024, and short landscape windows down to about 1024 × 600. Use available height and width (dynamic viewport units, flex or grid with shrinkable rows, container queries); when content truly cannot fit (large text scale, very short windows) the page may scroll, but nothing may be clipped or overlap. 1263 × 818 stays the priority when a trade-off is needed. | M | Owner |
+| WT-26 | **Touch targets under 48 px on the tablet.** | Measured by visible size, several controls are under 48 px: header Search, Notifications and Account (40 × 40), House settings (32 × 32), the health chip (22 px tall), the greeting's inline links (23 px tall) and the Pets tile link (20 px tall). Checked against the code, the header buttons, House settings and the health chip already extend an invisible hit area to the minimum; the greeting's links and the Pets tile link did not. Requirement: every control has a 48 px hit area on a coarse pointer (the visible size may stay), and checks measure the hit area, not the visible box. Extends HP-14. | Q | Live + Code |
+| WT-27 | **A room label overlaps its lamp icon.** | In the house drawing a longer room name ("Audit Laundry") runs under the lamp at this width. Truncate or reflow the label so the two never overlap. | Q | Live |
+| WT-28 | **Every other page at 1263 × 818.** | Shopping (overview, open list, pantry), Chores, Pets, Calendar, Maintenance, Notifications, Household and Profile have not been checked at the real size. Capture each, then fix what scrolls sideways, clips, wastes the width (SH-14 aisle columns) or sits under 48 px. | M | To do |
+| WT-29 | **Installed web app behaviour.** | The manifest already uses `display: standalone`, which is what hides the URL bar. Still to verify on the device: the app opens from the home-screen icon at 1263 × 818, the dynamic viewport height is what layouts use (so the Android bars never cover content), and dialogs stay above the on-screen keyboard at this height. | Q | To do |
+
+**Order:** WT-23, WT-24, WT-26 and WT-27 first (the homepage at the primary size), with WT-25 as the rule the fix must follow; then WT-28 page by page; WT-29 needs the device.
+
 ---
 
 ## 16. Consistency review (2026-11-09, before implementation)
