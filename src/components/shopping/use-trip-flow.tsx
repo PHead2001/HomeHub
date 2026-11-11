@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { getAiActionContext } from '@/ai/client';
 import { putAwayAndClear, undoTrip } from '@/app/shopping/actions';
 import { ToastAction } from '@/components/ui/toast';
@@ -96,6 +96,20 @@ export function useTripFlow({
     openGate.invalidate();
     setPutAway(null);
   });
+  // Another household or list (the overview, another list) cancels a pending opening and
+  // drops a dialog of the previous list (in the render that sees the change); so does
+  // unmounting. The layout effect runs in the same commit as the change, before a
+  // lookup's answer can be handled.
+  const scope = `${householdId ?? ''}/${list?.id ?? ''}`;
+  const [shownScope, setShownScope] = useState(scope);
+  if (shownScope !== scope) {
+    setShownScope(scope);
+    setPutAway(null);
+  }
+  useLayoutEffect(() => {
+    openGate.setScope(scope);
+    return () => openGate.invalidate();
+  }, [openGate, scope]);
 
   /** Put away & clear needs both permissions the rules ask for; members who cannot delete put away only. */
   const putAwayMode: TripMode | null = isGrocery && canEdit ? (canDelete ? 'putAwayAndClear' : 'putAway') : null;

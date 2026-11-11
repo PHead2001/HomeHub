@@ -367,7 +367,7 @@ describe('pantry handoff credits only confirmed purchases', () => {
       'transaction.getAll(...input.items',
       "trips.where('creditedPurchaseOpIds', 'array-contains-any'",
       'decideTripItems(input.items, read, purchasesCreditedBy(',
-      'planTripPantry(creditsOf(eligible), existing)',
+      'planTripPantry(creditsOf(eligible), existing, timeZone)',
       'transaction.getAll(...targetIds',
       "transaction.getAll(...allUsualIds",
     ]) {

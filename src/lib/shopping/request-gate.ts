@@ -9,11 +9,23 @@ export type RequestGate = {
   begin: () => number;
   isCurrent: (ticket: number) => boolean;
   invalidate: () => void;
+  /**
+   * Records what the openings belong to (e.g. household and list); a different
+   * scope makes every pending ticket stale. Returns whether it changed.
+   */
+  setScope: (scope: string) => boolean;
 };
 
 export function createRequestGate(): RequestGate {
   let generation = 0;
+  let current: string | null = null;
   return {
+    setScope: (scope) => {
+      if (scope === current) return false;
+      current = scope;
+      generation += 1;
+      return true;
+    },
     begin: () => {
       generation += 1;
       return generation;

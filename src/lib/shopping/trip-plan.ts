@@ -297,6 +297,7 @@ export type TripPantryPlan = PurchaseBatchKey & {
 export function planTripPantry(
   credits: ReadonlyArray<PurchaseBatchKey & { quantity: number }>,
   existing: ReadonlyArray<{ id: string; data: Record<string, unknown> }>,
+  timeZone: string,
 ): TripPantryPlan[] {
   const combined = new Map<string, TripPantryPlan>();
   for (const credit of credits) {
@@ -308,7 +309,7 @@ export function planTripPantry(
     if (entry) entry.packages += packages;
     else combined.set(key, { name, location: credit.location, expiryDate: credit.expiryDate, packages, targetId: null });
   }
-  const batches = existing.map(({ id, data }) => readPantryBatch(id, data)).filter((batch) => !batch.needsRepair);
+  const batches = existing.map(({ id, data }) => readPantryBatch(id, data, timeZone)).filter((batch) => !batch.needsRepair);
   for (const [key, plan] of combined) {
     const matches = batches.filter((batch) => pantryMergeKey(batch) === key);
     const target = matches.find((batch) => batch.packages < 10_000) ?? matches[0];
@@ -318,9 +319,9 @@ export function planTripPantry(
 }
 
 /** Whether a planned target, as re-read inside the transaction, still has the purchase's merge key. */
-export function tripTargetStillValid(data: Record<string, unknown> | undefined, plan: PurchaseBatchKey): boolean {
+export function tripTargetStillValid(data: Record<string, unknown> | undefined, plan: PurchaseBatchKey, timeZone: string): boolean {
   if (!data || typeof data.name !== 'string' || data.unit !== 'items') return false;
-  const batch = readPantryBatch('', data);
+  const batch = readPantryBatch('', data, timeZone);
   return !batch.needsRepair && pantryMergeKey(batch) === purchaseMergeKey(plan);
 }
 
@@ -354,10 +355,10 @@ export type PantryReversal =
  * created that nobody has touched since (`untouched`) is deleted when it would
  * be empty.
  */
-export function planPantryReversal(effect: PantryEffect, current: Record<string, unknown> | undefined, untouched: boolean): PantryReversal {
+export function planPantryReversal(effect: PantryEffect, current: Record<string, unknown> | undefined, untouched: boolean, timeZone: string): PantryReversal {
   if (!current) return { kind: 'skip', reason: 'gone' };
-  if (!tripTargetStillValid(current, effect)) return { kind: 'skip', reason: 'changed' };
-  const batch = readPantryBatch('', current);
+  if (!tripTargetStillValid(current, effect, timeZone)) return { kind: 'skip', reason: 'changed' };
+  const batch = readPantryBatch('', current, timeZone);
   const left = batch.packages - effect.packages;
   if (left <= 0 && effect.kind === 'create' && untouched) return { kind: 'delete' };
   return { kind: 'set', packages: Math.max(0, left), clamped: left < 0 };

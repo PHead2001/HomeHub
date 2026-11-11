@@ -152,7 +152,7 @@ describe('pantry credit plan (Pantry v2, 10,000 per batch)', () => {
       { name: 'milk', quantity: 2, location: 'Fridge', expiryDate: null },
       { name: 'Milk', quantity: 1, location: 'Fridge', expiryDate: '2026-11-17' },
       { name: 'Milk', quantity: 1, location: 'Freezer', expiryDate: null },
-    ], [{ id: 'm1', data: v2(3) }, { id: 'm2', data: v2(1, { expiryDate: '2026-12-01' }) }]);
+    ], [{ id: 'm1', data: v2(3) }, { id: 'm2', data: v2(1, { expiryDate: '2026-12-01' }) }], 'America/Chicago');
     assert.deepEqual(plans.map((plan) => [plan.location, plan.expiryDate, plan.packages, plan.targetId]), [
       ['Fridge', null, 3, 'm1'],
       ['Fridge', '2026-11-17', 1, null],
@@ -165,22 +165,22 @@ describe('pantry credit plan (Pantry v2, 10,000 per batch)', () => {
     assert.ok(long.length > 120);
     const stored = pantryBatchFields({ name: long, location: 'Fridge', unit: 'items', packages: 2, packageSize: null, expiryDate: null });
     assert.equal(stored.name.length <= 120, true);
-    const [plan] = planTripPantry([{ name: long, quantity: 1, location: 'Fridge', expiryDate: null }], [{ id: 'm1', data: stored }]);
+    const [plan] = planTripPantry([{ name: long, quantity: 1, location: 'Fridge', expiryDate: null }], [{ id: 'm1', data: stored }], 'America/Chicago');
     assert.equal(plan.name, stored.name, 'the plan (and so the trip effect) carries the stored name');
     assert.equal(plan.targetId, 'm1', 'merges into the batch an earlier trip created');
-    assert.equal(tripTargetStillValid(stored, { ...plan, name: long }), true);
+    assert.equal(tripTargetStillValid(stored, { ...plan, name: long }, 'America/Chicago'), true);
     // Undo recognises the untouched batch, also for an effect recorded with the full shopping name.
     const effect = { pantryId: 'm1', kind: 'create' as const, packages: 2, name: long, location: 'Fridge' as const, expiryDate: null };
-    assert.deepEqual(planPantryReversal(effect, stored, true), { kind: 'delete' });
-    assert.deepEqual(planPantryReversal({ ...effect, name: plan.name }, stored, true), { kind: 'delete' });
+    assert.deepEqual(planPantryReversal(effect, stored, true, 'America/Chicago'), { kind: 'delete' });
+    assert.deepEqual(planPantryReversal({ ...effect, name: plan.name }, stored, true, 'America/Chicago'), { kind: 'delete' });
   });
 
   test('a target is re-checked inside the transaction and filled up to 10,000 with the rest split', () => {
     const plan = { name: 'Milk', location: 'Fridge' as const, expiryDate: null, packages: 12_500, targetId: 'm1' };
-    assert.equal(tripTargetStillValid(v2(9_000), plan), true);
-    assert.equal(tripTargetStillValid(v2(9_000, { location: 'Pantry' }), plan), false);
-    assert.equal(tripTargetStillValid(v2(9_000, { expiryDate: '2026-11-17' }), plan), false);
-    assert.equal(tripTargetStillValid(undefined, plan), false);
+    assert.equal(tripTargetStillValid(v2(9_000), plan, 'America/Chicago'), true);
+    assert.equal(tripTargetStillValid(v2(9_000, { location: 'Pantry' }), plan, 'America/Chicago'), false);
+    assert.equal(tripTargetStillValid(v2(9_000, { expiryDate: '2026-11-17' }), plan, 'America/Chicago'), false);
+    assert.equal(tripTargetStillValid(undefined, plan, 'America/Chicago'), false);
     assert.deepEqual(tripPlanWrites(plan, { packages: 9_000 }), { toTarget: 1_000, newBatches: [10_000, 1_500] });
     assert.deepEqual(tripPlanWrites({ ...plan, packages: 25_000 }, null), { toTarget: 0, newBatches: [10_000, 10_000, 5_000] });
   });
@@ -254,19 +254,19 @@ describe('Undo of the pantry credit (SH-2d)', () => {
   const batch = (packages: number, extra: Record<string, unknown> = {}) => ({ name: 'Milk', location: 'Fridge', unit: 'items', packages, packageSize: null, expiryDate: null, ...extra });
 
   test('subtracts only what the trip added, never below zero', () => {
-    assert.deepEqual(planPantryReversal(effect, batch(5), false), { kind: 'set', packages: 2, clamped: false });
+    assert.deepEqual(planPantryReversal(effect, batch(5), false, 'America/Chicago'), { kind: 'set', packages: 2, clamped: false });
     // Someone already used two of the three: only what is left comes off.
-    assert.deepEqual(planPantryReversal(effect, batch(1), false), { kind: 'set', packages: 0, clamped: true });
+    assert.deepEqual(planPantryReversal(effect, batch(1), false, 'America/Chicago'), { kind: 'set', packages: 0, clamped: true });
   });
 
   test('leaves a batch someone changed or removed since; deletes an untouched batch the trip created', () => {
-    assert.deepEqual(planPantryReversal(effect, batch(5, { location: 'Pantry' }), false), { kind: 'skip', reason: 'changed' });
-    assert.deepEqual(planPantryReversal(effect, batch(5, { expiryDate: '2026-12-01' }), false), { kind: 'skip', reason: 'changed' });
-    assert.deepEqual(planPantryReversal(effect, undefined, false), { kind: 'skip', reason: 'gone' });
+    assert.deepEqual(planPantryReversal(effect, batch(5, { location: 'Pantry' }), false, 'America/Chicago'), { kind: 'skip', reason: 'changed' });
+    assert.deepEqual(planPantryReversal(effect, batch(5, { expiryDate: '2026-12-01' }), false, 'America/Chicago'), { kind: 'skip', reason: 'changed' });
+    assert.deepEqual(planPantryReversal(effect, undefined, false, 'America/Chicago'), { kind: 'skip', reason: 'gone' });
     const created = { ...effect, kind: 'create' as const };
-    assert.deepEqual(planPantryReversal(created, batch(3), true), { kind: 'delete' });
-    assert.deepEqual(planPantryReversal(created, batch(3), false), { kind: 'set', packages: 0, clamped: false });
-    assert.deepEqual(planPantryReversal(created, batch(4), true), { kind: 'set', packages: 1, clamped: false });
+    assert.deepEqual(planPantryReversal(created, batch(3), true, 'America/Chicago'), { kind: 'delete' });
+    assert.deepEqual(planPantryReversal(created, batch(3), false, 'America/Chicago'), { kind: 'set', packages: 0, clamped: false });
+    assert.deepEqual(planPantryReversal(created, batch(4), true, 'America/Chicago'), { kind: 'set', packages: 1, clamped: false });
   });
 
   test('the 15-minute window and the latest-trip offer', () => {
@@ -422,6 +422,28 @@ describe('wiring (source checks)', () => {
   });
 });
 
+describe('expiry days are household days (D-6) in the put-away plan', () => {
+  // A legacy batch saved as the instant of local midnight on 18 November in Auckland.
+  const legacy = { name: 'Milk', location: 'Fridge', unit: 'items', quantity: 3, expiryDate: '2026-11-17T11:00:00Z' };
+  const AUCKLAND = 'Pacific/Auckland';
+  const CHICAGO = 'America/Chicago';
+
+  test('a purchase dated the 17th does not merge into a batch that is the 18th in the household zone', () => {
+    const credit = (expiryDate: string) => [{ name: 'Milk', quantity: 1, location: 'Fridge' as const, expiryDate }];
+    assert.equal(planTripPantry(credit('2026-11-17'), [{ id: 'old', data: legacy }], AUCKLAND)[0].targetId, null);
+    assert.equal(planTripPantry(credit('2026-11-18'), [{ id: 'old', data: legacy }], AUCKLAND)[0].targetId, 'old');
+    assert.equal(tripTargetStillValid(legacy, { name: 'Milk', location: 'Fridge', expiryDate: '2026-11-17' }, AUCKLAND), false);
+    // The default zone is unchanged: there the same instant is the 17th.
+    assert.equal(planTripPantry(credit('2026-11-17'), [{ id: 'old', data: legacy }], CHICAGO)[0].targetId, 'old');
+  });
+
+  test('Undo recognises its own batch by its household day', () => {
+    const effect = { pantryId: 'old', kind: 'upgrade' as const, packages: 1, name: 'Milk', location: 'Fridge' as const, expiryDate: '2026-11-18' };
+    assert.deepEqual(planPantryReversal(effect, legacy, false, AUCKLAND), { kind: 'set', packages: 2, clamped: false });
+    assert.deepEqual(planPantryReversal(effect, legacy, false, CHICAGO), { kind: 'skip', reason: 'changed' });
+  });
+});
+
 describe('opening the put-away dialog after a lookup', () => {
   test('a pending opening is stale once the tab is left or a newer opening starts', () => {
     const gate = createRequestGate();
@@ -435,6 +457,19 @@ describe('opening the put-away dialog after a lookup', () => {
     assert.equal(gate.isCurrent(third), true);
   });
 
+  test('a pending opening is stale once the household or list changes; the same scope keeps it', () => {
+    const gate = createRequestGate();
+    assert.equal(gate.setScope('house/weekly'), true);
+    const ticket = gate.begin();
+    assert.equal(gate.setScope('house/weekly'), false);
+    assert.equal(gate.isCurrent(ticket), true, 'a re-render of the same list');
+    assert.equal(gate.setScope('house/'), true, 'back to the overview');
+    assert.equal(gate.isCurrent(ticket), false);
+    const next = gate.begin();
+    gate.setScope('other-house/weekly');
+    assert.equal(gate.isCurrent(next), false, 'another household');
+  });
+
   test('the hook checks the gate after the lookup and only shows the dialog on the active tab', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping', 'use-trip-flow.tsx'), 'utf8');
     const open = source.slice(source.indexOf('const openPutAway'), source.indexOf('const confirm'));
@@ -443,5 +478,6 @@ describe('opening the put-away dialog after a lookup', () => {
     assert.ok(open.indexOf('if (!openGate.isCurrent(ticket)) return;') < open.indexOf('setPutAway('));
     assert.match(source, /useOnTabDeactivate\(\(\) => \{\s*openGate\.invalidate\(\);\s*setPutAway\(null\);/);
     assert.match(source, /const dialog: ReactNode = putAway && tabActive &&/);
+    assert.match(source, /useLayoutEffect\(\(\) => \{\s*openGate\.setScope\(scope\);[\s\S]*?return \(\) => openGate\.invalidate\(\);\s*\}, \[openGate, scope\]\);/);
   });
 });

@@ -331,6 +331,28 @@ describe('putAwayAndClear', () => {
   });
 });
 
+describe('household time zone (D-6)', () => {
+  test('a legacy expiry is a household day: no merge across days, no rewritten date, and Undo finds its batch', async () => {
+    await house.update({ timeZone: 'Pacific/Auckland' });
+    // Saved as the instant of local midnight on 18 November in Auckland (the 17th in UTC and Chicago).
+    const legacy = { name: 'Milk', location: 'Fridge', unit: 'items', quantity: 3, expiryDate: '2026-11-17T11:00:00Z' };
+    await pantry.doc('milk-legacy').set(legacy);
+
+    await run('owner', 'trip-zone-0001', 'putAwayAndClear', [pick('milk', 'Milk', 2, 'Fridge', '2026-11-17')]);
+    assert.deepEqual((await pantry.doc('milk-legacy').get()).data(), legacy, 'the 18th is not topped up or re-dated');
+    assert.deepEqual((await pantry.where('expiryDate', '==', '2026-11-17').get()).docs.map((entry) => entry.data().packages), [2]);
+
+    await items.doc('milk').set(bought('Milk', 1, 'Dairy', 'op-zone'));
+    await run('owner', 'trip-zone-0002', 'putAwayAndClear', [pick('milk', 'Milk', 1, 'Fridge', '2026-11-18', 'op-zone')]);
+    const upgraded = (await pantry.doc('milk-legacy').get()).data()!;
+    assert.deepEqual({ packages: upgraded.packages, expiryDate: upgraded.expiryDate }, { packages: 4, expiryDate: '2026-11-18' });
+
+    const result = await undo('owner', 'trip-zone-0002');
+    assert.deepEqual(result.ok && { reversed: result.undo.reversed, kept: result.undo.kept }, { reversed: 1, kept: [] });
+    assert.equal((await pantry.doc('milk-legacy').get()).data()?.packages, 3);
+  });
+});
+
 describe('undoTrip', () => {
   test('reverses the credit and puts the cleared items back, once; a repeat (or a reload) reports it already undone', async () => {
     await run('owner', 'trip-undo-0001');

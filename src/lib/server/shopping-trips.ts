@@ -2,6 +2,7 @@ import 'server-only';
 
 import { FieldValue, Timestamp, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore';
 import { slugify } from '@/lib/utils';
+import { safeTimeZone } from '../../../functions/src/shared/calendar';
 import { usualId } from '@/lib/shopping/usual-id';
 import { pantryBatchFields, planLegacyUpgrade, readPantryBatch } from '@/lib/shopping/pantry-batches';
 import {
@@ -161,6 +162,8 @@ export async function applyTrip(
     // --- Reads (all before any write; recomputed on every retry) ---
     const trip = await transaction.get(tripRef);
     if (trip.exists) return summaryOf(input.tripId, trip.data() ?? {}, true);
+    // Expiry days are household days (D-6): a legacy ISO expiry is read in the household's zone.
+    const timeZone = safeTimeZone((await transaction.get(house)).get('timeZone'));
     const list = await transaction.get(listRef);
     if (!list.exists) throw new TripRefused('list_missing');
     const listData = list.data() ?? {};
@@ -187,7 +190,7 @@ export async function applyTrip(
       expiryDate: entry.choice.expiryDate,
     }));
     // Every target any run of the items can plan (a plan's target depends only on its merge key).
-    const allPlans = planTripPantry(creditsOf(eligible), existing);
+    const allPlans = planTripPantry(creditsOf(eligible), existing, timeZone);
     const targetIds = [...new Set(allPlans.flatMap((plan) => (plan.targetId ? [plan.targetId] : [])))];
     const targets = targetIds.length > 0 ? await transaction.getAll(...targetIds.map((id) => pantry.doc(id))) : [];
     const targetById = new Map(targets.map((snapshot) => [snapshot.id, snapshot]));
@@ -215,11 +218,11 @@ export async function applyTrip(
           ...stamp(),
         }));
       };
-      for (const plan of planTripPantry(creditsOf(entries), existing)) {
+      for (const plan of planTripPantry(creditsOf(entries), existing, timeZone)) {
         const snapshot = plan.targetId ? targetById.get(plan.targetId) : undefined;
         const data = snapshot?.exists ? snapshot.data() : undefined;
-        const valid = Boolean(snapshot && tripTargetStillValid(data, plan));
-        const batch = valid ? readPantryBatch(snapshot!.id, data) : null;
+        const valid = Boolean(snapshot && tripTargetStillValid(data, plan, timeZone));
+        const batch = valid ? readPantryBatch(snapshot!.id, data, timeZone) : null;
         const { toTarget, newBatches } = tripPlanWrites(plan, batch);
         if (batch && toTarget > 0) {
           const ref = snapshot!.ref;
@@ -349,6 +352,7 @@ export async function undoTripOnServer(
     if (latest.docs[0]?.id !== tripId) throw new TripRefused('not_latest');
     const appliedAt = data.appliedAt instanceof Timestamp ? data.appliedAt : null;
     if (!tripUndoOpen(appliedAt?.toMillis() ?? null, nowMs)) throw new TripRefused('expired');
+    const timeZone = safeTimeZone((await transaction.get(house)).get('timeZone'));
 
     const listRef = house.collection('shopping-lists').doc(String(data.listId));
     const items = (Array.isArray(data.items) ? data.items : []) as TripItemRecord[];
@@ -367,7 +371,7 @@ export async function undoTripOnServer(
       const snapshot = pantrySnapshots[index];
       const current = snapshot.exists ? snapshot.data() : undefined;
       const untouched = Boolean(current) && sameTime(current!.updatedAt, appliedAt) && current!.updatedByUid === data.appliedByUid;
-      const reversal = planPantryReversal(effect, current, untouched);
+      const reversal = planPantryReversal(effect, current, untouched, timeZone);
       if (reversal.kind === 'skip') {
         summary.kept.push(effect.name);
         return;
@@ -378,7 +382,7 @@ export async function undoTripOnServer(
         return;
       }
       if (reversal.clamped) summary.clamped += 1;
-      const batch = readPantryBatch(snapshot.id, current);
+      const batch = readPantryBatch(snapshot.id, current, timeZone);
       transaction.update(snapshot.ref, {
         packages: reversal.packages,
         quantity: reversal.packages,
