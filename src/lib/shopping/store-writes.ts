@@ -4,7 +4,7 @@
  * writes. Callers classify every returned write with `trackWrite`.
  */
 
-import { doc, runTransaction, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDocsFromServer, runTransaction, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { StoreChangeDeclined, planStoreDelete, planStoreRestore, type StoreRestore } from './store-manage';
 
@@ -50,15 +50,22 @@ export function deleteStoreAndUnassign(
  * The delete's Undo: re-creates the store with the same id (its name and aisle
  * order, the restorer as `createdByUid`, as the rules require on a create) and
  * points the lists it cleared back at it, in one transaction (needs a
- * connection). Resolves with whether the store is now listed as the
- * restorer's; rejects with `StoreChangeDeclined` when the store is back
- * already or its name was taken meanwhile.
+ * connection). Everything it decides on is read when it runs, never taken
+ * from the screen (the dialog may be closed by then): the household's stores
+ * from the server, just before the transaction (a client transaction cannot
+ * query, so a store named the same in the moment between the two is not
+ * seen), then the same-id store and each list inside the transaction.
+ * Resolves with whether the store is now listed as the restorer's; rejects
+ * with `StoreChangeDeclined` when the store is back already or another store
+ * has its name.
  */
-export function restoreDeletedStore(
+export async function restoreDeletedStore(
   householdId: string,
   restore: StoreRestore,
-  { uid, stores }: { uid: string; stores: readonly { id: string; name: string }[] },
+  { uid }: { uid: string },
 ): Promise<{ restoredAsYours: boolean }> {
+  const listed = await getDocsFromServer(collection(db, 'households', householdId, 'stores'));
+  const stores = listed.docs.map((entry) => ({ id: entry.id, name: String(entry.data().name ?? '') }));
   return runTransaction(db, async (transaction) => {
     const store = await transaction.get(storeRef(householdId, restore.storeId));
     const lists = await Promise.all(restore.listIds.map(async (id) => {

@@ -5,10 +5,12 @@ import {
   checkStoreRename,
   deleteStoreQuestion,
   listsUsingStore,
+  outcomeAppliesTo,
   planStoreDelete,
   planStoreRestore,
   storeDeclinedMessage,
   storeDeletedSubject,
+  storeRenamedSubject,
   storeRestoredSubject,
   undoRemaining,
   type StoreRestore,
@@ -163,5 +165,37 @@ describe('undoRemaining', () => {
     assert.equal(undoRemaining(1_000, 1_000, UNDO_WINDOW_MS), UNDO_WINDOW_MS);
     assert.equal(undoRemaining(1_000, 4_000, UNDO_WINDOW_MS), UNDO_WINDOW_MS - 3_000);
     assert.equal(undoRemaining(1_000, 1_000 + UNDO_WINDOW_MS + 5, UNDO_WINDOW_MS), 0);
+  });
+});
+
+describe('the Undo decides on what is stored when it runs', () => {
+  const restore: StoreRestore = { storeId: 'corner', name: 'Corner Shop', aisleOrder: [], createdByUid: 'member', listIds: ['a'] };
+
+  test('a store named the same since the dialog closed (any case) declines, whatever the screen showed', () => {
+    // The screen's copy (frozen when the dialog closed) had no such store; the server snapshot read by the Undo does.
+    const screen: { id: string; name: string }[] = [];
+    const server = [{ id: 'new-one', name: 'CORNER  shop' }];
+    assert.equal(planStoreRestore({ restore, uid: 'member', storeExists: false, lists: [{ id: 'a', exists: true, storeId: null }], stores: screen }).kind, 'restore');
+    assert.deepEqual(
+      planStoreRestore({ restore, uid: 'member', storeExists: false, lists: [{ id: 'a', exists: true, storeId: null }], stores: server }),
+      { kind: 'declined', reason: 'name-taken' },
+    );
+  });
+
+  test('each list is pointed back only on its current storeId', () => {
+    const plan = planStoreRestore({ restore, uid: 'member', storeExists: false, lists: [{ id: 'a', exists: true, storeId: 'elsewhere' }], stores: [] });
+    assert.deepEqual(plan.kind === 'restore' && plan.listIds, []);
+  });
+});
+
+describe('late outcomes stay with their store', () => {
+  test('a rejected rename gives its draft back only while the same store is selected', () => {
+    assert.equal(outcomeAppliesTo('a', 'a'), true);
+    assert.equal(outcomeAppliesTo('a', 'b'), false);
+    assert.equal(outcomeAppliesTo('a', null), false);
+  });
+
+  test('the rename status names both stores', () => {
+    assert.equal(storeRenamedSubject('Corner Shop', 'Corner Market'), 'Corner Shop renamed to Corner Market');
   });
 });

@@ -17,6 +17,8 @@ import {
   deleteStoreQuestion,
   listsUsingStore,
   storeDeletedSubject,
+  outcomeAppliesTo,
+  storeRenamedSubject,
   storeRestoredSubject,
   undoRemaining,
   type StoreRestore,
@@ -81,10 +83,11 @@ export function StoreManageControls({
   useEffect(() => {
     pendingRef.current = pending;
   }, [pending]);
-  const latest = useRef({ householdId, uid, stores, track });
+  // Only what a late Undo needs to run; what it decides on is read from Firestore then.
+  const latest = useRef({ householdId, uid, track });
   useEffect(() => {
-    latest.current = { householdId, uid, stores, track };
-  }, [householdId, uid, stores, track]);
+    latest.current = { householdId, uid, track };
+  }, [householdId, uid, track]);
   const mounted = useRef(true);
 
   // A store deleted elsewhere (or this one once deleted) ends any rename or confirm.
@@ -93,8 +96,14 @@ export function StoreManageControls({
   if (shownStoreId !== storeId) {
     setShownStoreId(storeId);
     setMode('idle');
+    setName('');
     setError(null);
   }
+  // The store selected now (read when a write submitted earlier answers late).
+  const currentStoreId = useRef(storeId);
+  useEffect(() => {
+    currentStoreId.current = storeId;
+  }, [storeId]);
 
   // The Undo leaves when its window ends.
   useEffect(() => {
@@ -104,14 +113,14 @@ export function StoreManageControls({
   }, [pending]);
 
   const undo = async (entry: PendingUndo, fromToast: boolean) => {
-    const { householdId: household, uid: restorer, stores: listed, track: run } = latest.current;
+    const { householdId: household, uid: restorer, track: run } = latest.current;
     if (!restorer) return;
     if (mounted.current) setPending(null);
     if (isBrowserOffline()) {
       toast({ variant: 'destructive', title: `Could not restore ${entry.restore.name}`, description: 'Undo needs a connection.' });
       return;
     }
-    const tracked = await run(restoreDeletedStore(household, entry.restore, { uid: restorer, stores: listed }), {
+    const tracked = await run(restoreDeletedStore(household, entry.restore, { uid: restorer }), {
       kind: 'transaction',
       subject: `${entry.restore.name} restored`,
       failTitle: `Could not restore ${entry.restore.name}`,
@@ -169,11 +178,12 @@ export function StoreManageControls({
     const target = store;
     await track(renameStore(householdId, target.id, check.name), {
       kind: 'write',
-      subject: `Renamed to ${check.name}`,
+      subject: storeRenamedSubject(target.name, check.name),
       failTitle: `Could not rename ${target.name}`,
-      // The name comes back in the field unless something else was typed there since.
+      // The name comes back in the field only while the same store is selected and
+      // nothing else was typed there since; never into another store's rename.
       onRejected: () => {
-        if (!mounted.current) return;
+        if (!mounted.current || !outcomeAppliesTo(target.id, currentStoreId.current)) return;
         const restore = rejectedInputRestore(nameRef.current, check.name);
         if (!restore.restored) return;
         setName(restore.value);

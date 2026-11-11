@@ -252,7 +252,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
 
     await field.fill(`  ${RENAMED_NAME} `);
     await page.keyboard.press('Enter');
-    await expect(dialog.getByTestId('categories-save-status')).toHaveText(`Renamed to ${RENAMED_NAME} · Saved`);
+    await expect(dialog.getByTestId('categories-save-status')).toHaveText(`${STORE_NAME} renamed to ${RENAMED_NAME} · Saved`);
     const stored = (await stores.doc(STORE_ID).get()).data();
     expect(stored).toMatchObject({ name: RENAMED_NAME, createdByUid: OWNER_UID, aisleOrder: ['Party', 'Dairy', 'Bakery'] });
     expect(stored?.updatedAt).not.toEqual(fixedNow);

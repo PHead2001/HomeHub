@@ -181,7 +181,7 @@ export function planStoreRestore({
   uid: string;
   storeExists: boolean;
   lists: readonly ListRead[];
-  /** The household's stores as listed now. */
+  /** The household's stores as read from the server when the Undo runs (never the screen's copy). */
   stores: readonly { id: string; name: string }[];
 }): StoreRestorePlan {
   if (storeExists) return { kind: 'declined', reason: 'exists' };
@@ -198,6 +198,20 @@ export function planStoreRestore({
     listIds,
     restoredAsYours: restore.createdByUid !== uid,
   };
+}
+
+/** The status subject after a rename: it names both, so it reads right whichever store is selected by then. */
+export function storeRenamedSubject(from: string, to: string): string {
+  return `${from} renamed to ${to}`;
+}
+
+/**
+ * Whether a late outcome of a write submitted for `submittedFor` may touch the
+ * controls now showing `current` (give back a rejected draft): only while the
+ * same store is still the one selected.
+ */
+export function outcomeAppliesTo(submittedFor: string, current: string | null): boolean {
+  return current === submittedFor;
 }
 
 /** The status subject after a delete. */
