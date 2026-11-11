@@ -164,13 +164,15 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, membershipEnded, dismissMembershipEnded, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
-  // Screens are keyed by household: moving from one household to another remounts every
-  // screen, so no screen state, listener or pending write of the previous household
-  // survives the switch. The first household of a page load keeps the initial key.
-  const [scope, setScope] = useState<{ householdId: string | null; key: number }>({ householdId: null, key: 0 });
+  // Screens are keyed by account and household: another household, or another person in
+  // the same household, remounts every screen, so no screen state, listener, Undo offer or
+  // pending write of the previous one survives. The first household of a page load keeps
+  // the initial key.
+  const [scope, setScope] = useState<{ uid: string | null; householdId: string | null; key: number }>({ uid: null, householdId: null, key: 0 });
+  const scopeUid = currentUser?.uid ?? null;
   const scopeHouseholdId = currentUser?.householdId ?? null;
-  if (scopeHouseholdId && scopeHouseholdId !== scope.householdId) {
-    setScope({ householdId: scopeHouseholdId, key: scope.householdId ? scope.key + 1 : scope.key });
+  if (scopeUid && scopeHouseholdId && (scopeHouseholdId !== scope.householdId || scopeUid !== scope.uid)) {
+    setScope({ uid: scopeUid, householdId: scopeHouseholdId, key: scope.householdId ? scope.key + 1 : scope.key });
   }
   const [finishingDelete, setFinishingDelete] = useState(false);
   const [isCreating, setIsCreating] = useState(false);

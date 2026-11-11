@@ -81,12 +81,15 @@ describe('repeat-visit fast path (H01)', () => {
     // The stale-pointer cleanup waits for the server-confirmed profile, once per household.
     assert.match(source, /const stalePointer = profileConfirmed && profileHouseholdId !== null && \(/);
     const clear = source.slice(source.indexOf('const clearedPointer = useRef'), source.indexOf('const shownHousehold ='));
-    assert.match(clear, /if \(!stalePointer \|\| !email \|\| clearedPointer\.current === stalePointer\) return;/);
+    assert.match(clear, /if \(!stalePointer \|\| !email \|\| clearedPointer\.current === `\$\{email\}\|\$\{stalePointer\}`\) return;/);
+    // The watch is keyed by account as well as household: another account in the same
+    // household restarts from its own record (tests/unit/live-membership.test.ts).
+    assert.match(source, /dispatchMembership\(\{ type: 'watch', uid, householdId: profileHouseholdId \}\);\s+\}, \[profileHouseholdId, uid\]\);/);
+    assert.match(source, /membershipView\(membership, uid, profileHouseholdId, profileConfirmed\)/);
     // Each listener is stopped by the next run, and answers for another household are ignored
     // by the state machine (tests/unit/live-membership.test.ts).
     assert.ok((source.match(/return \(\) => \{ stopped = true; stop\?\.\(\); \};/g) ?? []).length >= 3);
     // The membership view shows an ended or stale membership as loading until the profile is confirmed.
-    assert.match(source, /membershipView\(membership, profileHouseholdId, profileConfirmed\)/);
   });
 
   it('builds the profile forms only from the server-confirmed profile', () => {

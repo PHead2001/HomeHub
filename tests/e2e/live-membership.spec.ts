@@ -147,6 +147,32 @@ test.describe('live membership', () => {
     }
   });
 
+  test('another account of the same household signing in from another tab takes over the open page', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    // Lee is a Child (no shopping); the owner, in the same household, has everything.
+    await seedPerson({ role: 'child', status: 'active' });
+    const { context, page } = await signIn(browser);
+    try {
+      await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
+      await expect(shoppingLink(page)).toHaveCount(0);
+      await markPage(page);
+
+      // A sign-in in another tab of the same browser reaches this page through Auth's
+      // shared persistence, without a reload.
+      const other = await context.newPage();
+      await other.goto('/e2e-login?uid=e2e-owner-uid');
+      await expect(other).toHaveURL('/');
+
+      // This page follows the owner's own record: never stuck loading, never Lee's role.
+      await expect(shoppingLink(page)).toBeVisible();
+      await expect(page.getByText('Your role changed')).toHaveCount(0);
+      await pageWasNotReloaded(page);
+      await other.close();
+    } finally {
+      await context.close();
+    }
+  });
+
   test('a removed member is taken out, with nothing of the household left on screen', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);
     await seedPerson({ role: 'member', status: 'active' });

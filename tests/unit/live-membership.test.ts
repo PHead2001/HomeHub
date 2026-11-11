@@ -20,9 +20,9 @@ const H = 'house-a';
 const UID = 'uid-1';
 
 const run = (events: MembershipEvent[], from: LiveMembershipState = initialMembershipState) => events.reduce(membershipReducer, from);
-const watch = (householdId: string | null): MembershipEvent => ({ type: 'watch', householdId });
-const member = (data: Record<string, unknown> | null, { fromCache = false, offline = false, householdId = H } = {}): MembershipEvent => ({
-  type: 'member', householdId, uid: UID, exists: data !== null, data: data ?? undefined, fromCache, offline,
+const watch = (householdId: string | null, uid: string | null = UID): MembershipEvent => ({ type: 'watch', uid, householdId });
+const member = (data: Record<string, unknown> | null, { fromCache = false, offline = false, householdId = H, uid = UID } = {}): MembershipEvent => ({
+  type: 'member', householdId, uid, exists: data !== null, data: data ?? undefined, fromCache, offline,
 });
 const householdDoc = (data: Record<string, unknown> | null, { fromCache = false, householdId = H } = {}): MembershipEvent => ({
   type: 'household', householdId, exists: data !== null, data: data ?? undefined, fromCache,
@@ -32,7 +32,8 @@ const pending = (extra: Record<string, unknown> = {}) => ({ role: 'newuser', sta
 
 /** An approved member with the household document loaded. */
 const approved = (role = 'member') => run([watch(H), member(active(role)), householdDoc({ name: 'The Foxes', ownerUid: 'o' })]);
-const view = (state: LiveMembershipState, pointer: string | null = state.householdId, confirmed = true) => membershipView(state, pointer, confirmed);
+const view = (state: LiveMembershipState, pointer: string | null = state.householdId, confirmed = true, profileUid: string | null = state.uid) =>
+  membershipView(state, profileUid, pointer, confirmed);
 
 const profile = (extra: Partial<User> = {}): User => ({
   uid: UID, email: 'pat@example.test', firstName: '', lastName: '', displayName: 'Pat', avatarUrl: null,
@@ -106,7 +107,7 @@ describe('live membership: changes while the page is open', () => {
     const inside = membershipReducer(approvedRecord, householdDoc({ name: 'The Foxes' }));
     assert.equal(view(inside).phase, 'member');
     assert.deepEqual(
-      membershipChangeNotice({ householdId: H, phase: 'pending', role: 'newuser' }, { householdId: H, phase: 'member', role: 'member' }),
+      membershipChangeNotice({ uid: UID, householdId: H, phase: 'pending', role: 'newuser' }, { uid: UID, householdId: H, phase: 'member', role: 'member' }),
       { title: "You're in", description: 'An owner or admin approved you as Member.' },
     );
   });
@@ -122,7 +123,7 @@ describe('live membership: changes while the page is open', () => {
     assert.equal(user?.role, 'child');
     assert.equal(user?.householdId, H);
     assert.deepEqual(
-      membershipChangeNotice({ householdId: H, phase: 'member', role: 'member' }, { householdId: H, phase: 'member', role: 'child' }),
+      membershipChangeNotice({ uid: UID, householdId: H, phase: 'member', role: 'member' }, { uid: UID, householdId: H, phase: 'member', role: 'child' }),
       { title: 'Your role changed', description: 'Your role is now Child. What you can do here changed with it.' },
     );
   });
@@ -132,7 +133,7 @@ describe('live membership: changes while the page is open', () => {
     const after = membershipReducer(before, member(active('member', { permissions: { 'shopping.view': false } })));
     assert.equal(getMemberPermissions(view(after).member)['shopping.view'], false);
     assert.deepEqual(liveProfile(profile(), view(after), H)?.permissions, { 'shopping.view': false });
-    assert.equal(membershipChangeNotice({ householdId: H, phase: 'member', role: 'member' }, { householdId: H, phase: 'member', role: 'member' }), null);
+    assert.equal(membershipChangeNotice({ uid: UID, householdId: H, phase: 'member', role: 'member' }, { uid: UID, householdId: H, phase: 'member', role: 'member' }), null);
   });
 
   test('a snapshot that changes nothing keeps the same state (no re-render, no re-run)', () => {
@@ -148,9 +149,9 @@ describe('live membership: changes while the page is open', () => {
   });
 
   test('no notice on the first load, for another household, or the same role', () => {
-    assert.equal(membershipChangeNotice(null, { householdId: H, phase: 'member', role: 'member' }), null);
-    assert.equal(membershipChangeNotice({ householdId: 'b', phase: 'pending', role: 'newuser' }, { householdId: H, phase: 'member', role: 'member' }), null);
-    assert.equal(membershipChangeNotice({ householdId: H, phase: 'member', role: 'admin' }, { householdId: H, phase: 'none', role: null }), null);
+    assert.equal(membershipChangeNotice(null, { uid: UID, householdId: H, phase: 'member', role: 'member' }), null);
+    assert.equal(membershipChangeNotice({ uid: UID, householdId: 'b', phase: 'pending', role: 'newuser' }, { uid: UID, householdId: H, phase: 'member', role: 'member' }), null);
+    assert.equal(membershipChangeNotice({ uid: UID, householdId: H, phase: 'member', role: 'admin' }, { uid: UID, householdId: H, phase: 'none', role: null }), null);
   });
 });
 
@@ -223,8 +224,9 @@ describe('live membership: access ends', () => {
     assert.equal(view(membershipReducer(frozen, { type: 'endingHere', householdId: H })).phase, 'deleting');
   });
 
-  test('sign-out resets everything without a notice', () => {
-    assert.deepEqual(membershipReducer(approved(), { type: 'reset' }), initialMembershipState);
+  test('leaving here resets the household but keeps the account; sign-out resets everything, without a notice', () => {
+    assert.deepEqual(membershipReducer(approved(), { type: 'reset' }), { ...initialMembershipState, uid: UID });
+    assert.deepEqual(membershipReducer(approved(), watch(null, null)), initialMembershipState);
   });
 });
 
@@ -279,7 +281,7 @@ describe('live membership: offline is not removal', () => {
 describe('live membership: household switched', () => {
   test('a new pointer drops everything of the old household and any notice', () => {
     const switched = membershipReducer(approved(), watch('house-b'));
-    assert.deepEqual(switched, { ...initialMembershipState, householdId: 'house-b' });
+    assert.deepEqual(switched, { ...initialMembershipState, uid: UID, householdId: 'house-b' });
     const afterNotice = run([member(null), watch('house-b')], approved());
     assert.equal(afterNotice.ended, null);
   });
@@ -292,11 +294,13 @@ describe('live membership: household switched', () => {
   });
 
   test('a household created or joined here is shown at once', () => {
-    const created = membershipReducer(initialMembershipState, {
+    // Signed in with no household yet: the account is known.
+    const noHousehold = run([watch(null)]);
+    const created = membershipReducer(noHousehold, {
       type: 'adopt', householdId: 'new', member: { uid: UID, role: 'owner', status: 'active', joinedAt: 'x' } as HouseholdMember, household: { id: 'new', name: 'New' },
     });
     assert.equal(view(created).phase, 'member');
-    const joined = membershipReducer(initialMembershipState, {
+    const joined = membershipReducer(noHousehold, {
       type: 'adopt', householdId: 'new', member: { uid: UID, role: 'newuser', status: 'pending', joinedAt: 'x' } as HouseholdMember, household: { id: 'new', name: 'New' },
     });
     assert.equal(view(joined).phase, 'pending');
@@ -349,5 +353,57 @@ describe('household data on this device', () => {
     assert.deepEqual(readJournal(storage, 0).map((e) => e.opId), ['b']);
     clearJournal(storage);
     assert.equal(storage.values.has(UNDO_JOURNAL_KEY), false);
+  });
+});
+
+describe('live membership: account switched on an open page', () => {
+  const B = 'uid-b';
+
+  test('account A -> account B in the same household: B starts from nothing and gets its own record', () => {
+    const a = approved('admin');
+    const switched = membershipReducer(a, watch(H, B));
+    assert.deepEqual(switched, { ...initialMembershipState, uid: B, householdId: H });
+    assert.equal(canWatchHousehold(switched), false, "A's household listener closes until B's record answers");
+    // The household stays watched (the old bug: a reset left nothing watched, loading for ever).
+    assert.equal(view(switched, H, true, B).phase, 'loading');
+    // A late answer from A's listener is ignored.
+    assert.equal(membershipReducer(switched, member(active('admin'))), switched);
+    // B's own record, then the household document: B's role and permissions, never A's.
+    const b = run([member(active('child'), { uid: B }), householdDoc({ name: 'The Foxes' })], switched);
+    const shown = view(b, H, true, B);
+    assert.equal(shown.phase, 'member');
+    assert.equal(shown.member?.role, 'child');
+    assert.equal(shown.member?.uid, B);
+    assert.equal(getMemberPermissions(shown.member)['household.manageMembers'], false);
+    // No "role changed" toast for a different person.
+    assert.equal(membershipChangeNotice({ uid: UID, householdId: H, phase: 'member', role: 'admin' }, { uid: B, householdId: H, phase: 'member', role: 'child' }), null);
+  });
+
+  test("while the profile already belongs to B, A's membership is never shown", () => {
+    assert.equal(view(approved('admin'), H, true, B).phase, 'loading');
+    assert.equal(liveProfile(profile({ uid: B, role: 'member' }), view(approved('admin'), H, true, B), H)?.role, 'member');
+  });
+
+  test('account A -> account B in another household', () => {
+    const switched = membershipReducer(approved(), watch('house-b', B));
+    assert.deepEqual(switched, { ...initialMembershipState, uid: B, householdId: 'house-b' });
+    const b = run([member(active('member'), { uid: B, householdId: 'house-b' }), householdDoc({ name: 'Otters' }, { householdId: 'house-b' })], switched);
+    assert.equal(view(b, 'house-b', true, B).household?.name, 'Otters');
+  });
+
+  test("A's access-ended notice is not carried to B", () => {
+    const ended = membershipReducer(approved(), member(null));
+    assert.ok(ended.ended);
+    assert.equal(membershipReducer(ended, watch(H, B)).ended, null);
+    assert.equal(membershipReducer(ended, watch(null, B)).ended, null);
+  });
+
+  test('account A -> signed out -> account A again: the household is watched afresh', () => {
+    const out = membershipReducer(approved(), watch(null, null));
+    assert.deepEqual(out, initialMembershipState);
+    assert.equal(view(out, null, false, null).phase, 'loading');
+    const back = membershipReducer(out, watch(H, UID));
+    assert.deepEqual(back, { ...initialMembershipState, uid: UID, householdId: H });
+    assert.equal(view(run([member(active()), householdDoc({ name: 'The Foxes' })], back)).phase, 'member');
   });
 });

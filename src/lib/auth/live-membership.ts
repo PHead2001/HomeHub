@@ -35,6 +35,8 @@ export type AccessEndReason = 'removed' | 'declined' | 'deleted';
 export type AccessEnd = { householdId: string; reason: AccessEndReason };
 
 export type LiveMembershipState = {
+  /** The signed-in account whose membership this is; another account starts from nothing. */
+  uid: string | null;
   /** The household being watched (the profile pointer, or one just created or joined here). */
   householdId: string | null;
   /** The latest known own membership record for `householdId` (from the cache or the server). */
@@ -58,6 +60,7 @@ export type LiveMembershipState = {
 };
 
 export const initialMembershipState: LiveMembershipState = {
+  uid: null,
   householdId: null,
   member: null,
   memberFromServer: false,
@@ -71,8 +74,12 @@ export const initialMembershipState: LiveMembershipState = {
 };
 
 export type MembershipEvent =
-  /** The profile pointer changed (null: no household, or signed out). */
-  | { type: 'watch'; householdId: string | null }
+  /**
+   * The signed-in account or its profile pointer changed (`uid` null: signed out;
+   * `householdId` null: no household). Another account, even in the same household,
+   * starts from nothing.
+   */
+  | { type: 'watch'; uid: string | null; householdId: string | null }
   | {
       type: 'member';
       householdId: string;
@@ -123,10 +130,11 @@ const endAccess = (state: LiveMembershipState, householdId: string): LiveMembers
   if (!state.member || state.endingHere === householdId) {
     // Never knew a membership here (a stale profile pointer), or this person is leaving
     // or deleting it on this device: nothing to explain.
-    return { ...initialMembershipState, householdId, memberFromServer: true };
+    return { ...initialMembershipState, uid: state.uid, householdId, memberFromServer: true };
   }
   return {
     ...initialMembershipState,
+    uid: state.uid,
     householdId,
     memberFromServer: true,
     ended: { householdId, reason: endReason(state.member) },
@@ -136,20 +144,26 @@ const endAccess = (state: LiveMembershipState, householdId: string): LiveMembers
 export function membershipReducer(state: LiveMembershipState, event: MembershipEvent): LiveMembershipState {
   switch (event.type) {
     case 'watch': {
+      if (event.uid !== state.uid) {
+        // A different account (or signed out): nothing of the previous one carries over,
+        // not even an access-ended notice.
+        return { ...initialMembershipState, uid: event.uid, householdId: event.uid ? event.householdId : null };
+      }
       if (event.householdId === state.householdId) return state;
+      const { uid } = state;
       if (event.householdId === null) {
         // The pointer was cleared. If this session still knew a membership, access ended
         // (a removal can reach the profile before the record's own snapshot does).
-        if (state.ended) return { ...initialMembershipState, ended: state.ended };
+        if (state.ended) return { ...initialMembershipState, uid, ended: state.ended };
         if (state.householdId && state.member && state.endingHere !== state.householdId) {
-          return { ...initialMembershipState, ended: { householdId: state.householdId, reason: endReason(state.member) } };
+          return { ...initialMembershipState, uid, ended: { householdId: state.householdId, reason: endReason(state.member) } };
         }
-        return initialMembershipState;
+        return { ...initialMembershipState, uid };
       }
-      return { ...initialMembershipState, householdId: event.householdId };
+      return { ...initialMembershipState, uid, householdId: event.householdId };
     }
     case 'member': {
-      if (event.householdId !== state.householdId) return state;
+      if (event.householdId !== state.householdId || event.uid !== state.uid) return state;
       if (!event.exists) {
         if (event.fromCache) {
           // The cache cannot prove a record is gone. Offline with nothing known: say so.
@@ -207,6 +221,7 @@ export function membershipReducer(state: LiveMembershipState, event: MembershipE
       const pendingView = pending ? (event.household ?? pendingHouseholdView(event.householdId, event.member)) : null;
       return {
         ...initialMembershipState,
+        uid: state.uid,
         householdId: event.householdId,
         member: event.member,
         memberFromServer: true,
@@ -221,7 +236,8 @@ export function membershipReducer(state: LiveMembershipState, event: MembershipE
     case 'endingHereCancelled':
       return state.endingHere ? { ...state, endingHere: null, keepPageWhileEnding: false } : state;
     case 'reset':
-      return initialMembershipState;
+      // The account stays (a sign-out is a `watch` with no account).
+      return { ...initialMembershipState, uid: state.uid };
     case 'dismissEnded':
       return state.ended ? { ...state, ended: null } : state;
     default:
@@ -266,14 +282,16 @@ export type MembershipView = {
 };
 
 /**
- * What the app shows. `profileHouseholdId` is the confirmed or cached profile pointer;
+ * What the app shows. `profileUid` and `profileHouseholdId` are the signed-in account and the confirmed or cached profile pointer;
  * until the machine watches that same household the view is `loading`, so a new pointer
  * never flashes onboarding. Before the profile is confirmed by the server, an ended or
  * stale membership also shows as `loading`: the confirmed profile decides.
  */
-export function membershipView(state: LiveMembershipState, profileHouseholdId: string | null, profileConfirmed: boolean): MembershipView {
+export function membershipView(state: LiveMembershipState, profileUid: string | null, profileHouseholdId: string | null, profileConfirmed: boolean): MembershipView {
   const phase = membershipPhase(state);
   const loading: MembershipView = { phase: 'loading', household: null, member: null, ended: null };
+  // Another account's membership is never shown, not even for one render.
+  if ((profileUid ?? null) !== state.uid) return loading;
   if (phase === 'ended') return profileConfirmed ? { phase, household: null, member: null, ended: state.ended } : loading;
   if ((profileHouseholdId ?? null) !== state.householdId) return loading;
   switch (phase) {
@@ -306,7 +324,7 @@ const ROLE_NAMES: Record<HouseholdRole, string> = {
 };
 
 /** The settled membership a notice compares (loading states are skipped by the caller). */
-export type NoticeSnapshot = { householdId: string | null; phase: MembershipPhase; role: HouseholdRole | null };
+export type NoticeSnapshot = { uid: string | null; householdId: string | null; phase: MembershipPhase; role: HouseholdRole | null };
 
 /**
  * The toast for a change made by someone else while this page was open: an approval
@@ -314,7 +332,7 @@ export type NoticeSnapshot = { householdId: string | null; phase: MembershipPhas
  * same role.
  */
 export function membershipChangeNotice(previous: NoticeSnapshot | null, next: NoticeSnapshot): { title: string; description: string } | null {
-  if (!previous || !next.householdId || previous.householdId !== next.householdId || next.phase !== 'member' || !next.role) return null;
+  if (!previous || !next.householdId || previous.uid !== next.uid || previous.householdId !== next.householdId || next.phase !== 'member' || !next.role) return null;
   const role = ROLE_NAMES[next.role] ?? 'Member';
   if (previous.phase === 'pending') return { title: "You're in", description: `An owner or admin approved you as ${role}.` };
   if (previous.phase === 'member' && previous.role && previous.role !== next.role) {

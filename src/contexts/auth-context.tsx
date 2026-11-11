@@ -290,10 +290,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const profileHouseholdId = profile?.householdId ?? null;
   const watchedHouseholdId = membership.householdId;
 
-  // The profile pointer chooses the household to watch.
+  // The signed-in account and its profile pointer choose the household to watch. Keyed by
+  // both: another account in the same household starts from nothing (its own record).
   useEffect(() => {
-    dispatchMembership({ type: 'watch', householdId: profileHouseholdId });
-  }, [profileHouseholdId]);
+    dispatchMembership({ type: 'watch', uid, householdId: profileHouseholdId });
+  }, [profileHouseholdId, uid]);
 
   // The profile itself, once the server has confirmed it: a pointer moved by the server
   // (removal, a join or a new household on another device) reaches this session.
@@ -382,8 +383,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [householdReadable, listenAttempt, watchedHouseholdId]);
 
   const view = useMemo(
-    () => membershipView(membership, profileHouseholdId, profileConfirmed),
-    [membership, profileConfirmed, profileHouseholdId],
+    () => membershipView(membership, uid, profileHouseholdId, profileConfirmed),
+    [membership, profileConfirmed, profileHouseholdId, uid],
   );
   // Same identity while the data is the same: screens that reload on a new `currentUser`
   // (the Chores page) must not reload for a membership snapshot that changes nothing they use.
@@ -413,8 +414,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   ) ? profileHouseholdId : null;
   const clearedPointer = useRef<string | null>(null);
   useEffect(() => {
-    if (!stalePointer || !email || clearedPointer.current === stalePointer) return;
-    clearedPointer.current = stalePointer;
+    if (!stalePointer || !email || clearedPointer.current === `${email}|${stalePointer}`) return;
+    clearedPointer.current = `${email}|${stalePointer}`;
     void (async () => {
       try {
         const { db, doc, setDoc } = await loadData();
@@ -428,23 +429,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Nothing of a household this device no longer shows stays on it: the dashboard's
   // last-known house, Undo journal entries and in-memory memories (screens remount).
+  // Keyed by account too: another person in the same household starts with nothing of the
+  // previous person's (their Undo offers, the house snapshot, in-memory memories).
   const shownHousehold = membership.ended ? null : watchedHouseholdId;
-  const lastShownHousehold = useRef<string | null>(null);
+  const lastShown = useRef<{ uid: string | null; householdId: string | null }>({ uid: null, householdId: null });
   useEffect(() => {
-    const previous = lastShownHousehold.current;
-    lastShownHousehold.current = shownHousehold;
-    if (previous && previous !== shownHousehold) forgetHouseholdOnDevice(previous);
-  }, [shownHousehold]);
+    const previous = lastShown.current;
+    lastShown.current = { uid: membership.uid, householdId: shownHousehold };
+    if (previous.householdId && (previous.householdId !== shownHousehold || previous.uid !== membership.uid)) {
+      forgetHouseholdOnDevice(previous.householdId);
+    }
+  }, [membership.uid, shownHousehold]);
 
   // An approval or a new role made by someone else while this page is open.
   const lastSettled = useRef<NoticeSnapshot | null>(null);
   useEffect(() => {
     if (view.phase === 'loading') return;
-    const next: NoticeSnapshot = { householdId: watchedHouseholdId, phase: view.phase, role: view.member?.role ?? null };
+    const next: NoticeSnapshot = { uid: membership.uid, householdId: watchedHouseholdId, phase: view.phase, role: view.member?.role ?? null };
     const notice = membershipChangeNotice(lastSettled.current, next);
     lastSettled.current = next;
     if (notice) toast(notice);
-  }, [toast, view.member?.role, view.phase, watchedHouseholdId]);
+  }, [membership.uid, toast, view.member?.role, view.phase, watchedHouseholdId]);
 
   // Legacy permanent invite codes are removed by the owner's client (older households).
   const legacyInviteHousehold = view.phase === 'member' && currentMember?.role === 'owner' && household?.inviteCode ? household.id : null;
@@ -469,7 +474,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const memberShown = view.phase === 'member' || view.phase === 'pending';
   const profileDrift = profileConfirmed && memberShown && watchedHouseholdId && currentMember && profile &&
     memberProfileDiffers(currentMember, { displayName: profile.displayName, avatarUrl: profile.avatarUrl })
-    ? `${watchedHouseholdId}|${profile.displayName ?? ''}|${profile.avatarUrl ?? ''}`
+    ? `${profile.uid}|${watchedHouseholdId}|${profile.displayName ?? ''}|${profile.avatarUrl ?? ''}`
     : null;
   const driftSynced = useRef<string | null>(null);
   useEffect(() => {
@@ -485,9 +490,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoringSession.current = false;
       setLoading(true);
       if (firebaseUser) {
-        // Another account on this page: nothing of the previous one's household stays.
+        // Another account on this page (for example a sign-in synchronised from another
+        // tab): nothing of the previous one stays. The membership restarts from the new
+        // account's own record when its profile arrives (the watch is keyed by account).
         if (profileRef.current && profileRef.current.uid !== firebaseUser.uid) {
-          dispatchMembership({ type: 'reset' });
           forgetHouseholdOnDevice(null);
         }
         // Repeat visit: render from this user's cached profile at once; the server copy
