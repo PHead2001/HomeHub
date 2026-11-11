@@ -2,16 +2,17 @@
 
 import { useRef, useState } from 'react';
 import Image from 'next/image';
-import { Archive, GripVertical, MoreVertical, Refrigerator, ShoppingCart, Snowflake, Trash2, Edit, ArrowRightLeft, X } from 'lucide-react';
+import { Archive, GripVertical, MoreVertical, Refrigerator, ShoppingCart, Snowflake, Trash2, Edit, ArrowRightLeft, X, Minus, Plus, PackageX } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TabDropdownMenu } from './tab-activity';
-import type { PantryItem, PantryItemLocation } from '@/lib/types';
+import type { PantryItemLocation } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { PANTRY_LOCATIONS, expiryLabel, expiryState, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
+import { PANTRY_LOCATIONS, expiryLabelForDays, expiryStateForDays, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
+import { batchAmountLabel, daysUntilDay, productSummary, type PantryBatch, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { shownPhoto } from '@/lib/shopping/row-photo';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
@@ -37,28 +38,29 @@ const DRAG_THRESHOLD = 6;
 type DragState = { id: string; pointerId: number; startX: number; startY: number; moved: boolean };
 
 export type PantryShelvesProps = {
-  items: PantryItem[];
-  /** Product photos by pantry item id (from the barcode library). */
+  /** Products (a name's visible batches on one shelf), one tile each. */
+  items: PantryProduct[];
+  /** Product photos by product key (from the barcode library). */
   photos: Record<string, string | undefined>;
-  /** Ids lifted off the shelf by the last generated recipe. */
+  /** Product keys lifted off the shelf by the last generated recipe. */
   liftedIds: ReadonlySet<string>;
+  /** Today in the household zone; expiry states are counted from it (SH-10b). */
+  today: string;
+  timeZone?: string | null;
   canEdit: boolean;
   canDelete: boolean;
-  onEdit: (item: PantryItem) => void;
-  onDelete: (item: PantryItem) => void;
-  onMove: (item: PantryItem, location: PantryItemLocation) => void;
-  onAddToList?: (item: PantryItem) => void;
+  onEdit: (batch: PantryBatch) => void;
+  onDelete: (item: PantryProduct) => void;
+  onMove: (item: PantryProduct, location: PantryItemLocation) => void;
+  onAddToList?: (item: PantryProduct) => void;
+  /** "Used one": one package from the soonest-expiring batch (SH-22a). */
+  onUseOne: (item: PantryProduct) => void;
+  /** "+1": one more package of the soonest batch. */
+  onAddOne: (item: PantryProduct) => void;
+  /** "Out of this": every package used up, then "Add to list?" (SH-29). */
+  onOutOfThis: (item: PantryProduct) => void;
 };
 
-/**
- * The pantry as real shelves (H08): Pantry, Fridge and Freezer are shelves of
- * item tiles (a product photo from the barcode library, or a food emoji). Items
- * expiring within three days glow amber, expired ones fade and tilt, freezer
- * tiles get a frost edge. Members who can edit move a tile to another shelf by
- * dragging its handle (mouse or touch), by keyboard (focus the handle, Space or
- * Enter to pick up, arrow keys to choose a shelf, Space or Enter to drop, Escape
- * to cancel), or by tapping the handle and then "Move here" on a shelf.
- */
 /** A tile's product photo; one that fails to load (e.g. its object was deleted) falls back to the emoji. */
 function TilePhoto({ src, fallback }: { src: string; fallback: string }) {
   const [failed, setFailed] = useState<string | null>(null);
@@ -68,20 +70,33 @@ function TilePhoto({ src, fallback }: { src: string; fallback: string }) {
     : <>{fallback}</>;
 }
 
-export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, onEdit, onDelete, onMove, onAddToList }: PantryShelvesProps) {
+/**
+ * The pantry as real shelves (H08): Pantry, Fridge and Freezer are shelves of
+ * product tiles (a product photo from the barcode library, or a food emoji). A
+ * tile groups a product's batches ("2 × 450 g · next Fri, 1 × 450 g") and has
+ * one-tap "Used one" (−) and "One more" (+) buttons; its menu has Edit (per
+ * batch), Move to, Put on a shopping list, Out of this and Delete. Expiry is
+ * counted from the household's today. Items
+ * expiring within three days glow amber, expired ones fade and tilt, freezer
+ * tiles get a frost edge. Members who can edit move a tile to another shelf by
+ * dragging its handle (mouse or touch), by keyboard (focus the handle, Space or
+ * Enter to pick up, arrow keys to choose a shelf, Space or Enter to drop, Escape
+ * to cancel), or by tapping the handle and then "Move here" on a shelf.
+ */
+export function PantryShelves({
+  items, photos, liftedIds, today, timeZone, canEdit, canDelete, onEdit, onDelete, onMove, onAddToList, onUseOne, onAddOne, onOutOfThis,
+}: PantryShelvesProps) {
   const [picked, setPicked] = useState<{ id: string; target: PantryItemLocation } | null>(null);
   const [ghost, setGhost] = useState<{ id: string; x: number; y: number } | null>(null);
   const [overShelf, setOverShelf] = useState<PantryItemLocation | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const dragRef = useRef<DragState | null>(null);
   const suppressClickRef = useRef(false);
-  const now = new Date();
-
-  const byId = new Map(items.map((item) => [item.id, item]));
+  const byId = new Map(items.map((item) => [item.key, item]));
   const pickedItem = picked ? byId.get(picked.id) ?? null : null;
   const ghostItem = ghost ? byId.get(ghost.id) ?? null : null;
 
-  const drop = (item: PantryItem, location: PantryItemLocation) => {
+  const drop = (item: PantryProduct, location: PantryItemLocation) => {
     setPicked(null);
     if (location === item.location) {
       setAnnouncement(`${item.name} stays in the ${item.location}.`);
@@ -91,28 +106,28 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
     onMove(item, location);
   };
 
-  const pickUp = (item: PantryItem) => {
-    setPicked({ id: item.id, target: item.location });
+  const pickUp = (item: PantryProduct) => {
+    setPicked({ id: item.key, target: item.location });
     setAnnouncement(`Picked up ${item.name} from the ${item.location}. Use the arrow keys to choose a shelf, then press Enter to drop or Escape to cancel. You can also press Move here on a shelf.`);
   };
 
-  const cancel = (item: PantryItem) => {
+  const cancel = (item: PantryProduct) => {
     setPicked(null);
     setAnnouncement(`${item.name} put back in the ${item.location}.`);
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent, item: PantryItem) => {
-    if (!picked || picked.id !== item.id) return;
+  const handleKeyDown = (event: React.KeyboardEvent, item: PantryProduct) => {
+    if (!picked || picked.id !== item.key) return;
     const index = PANTRY_LOCATIONS.indexOf(picked.target);
     if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
       event.preventDefault();
       const target = PANTRY_LOCATIONS[(index + 1) % PANTRY_LOCATIONS.length];
-      setPicked({ id: item.id, target });
+      setPicked({ id: item.key, target });
       setAnnouncement(`Over the ${target}.`);
     } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
       event.preventDefault();
       const target = PANTRY_LOCATIONS[(index + PANTRY_LOCATIONS.length - 1) % PANTRY_LOCATIONS.length];
-      setPicked({ id: item.id, target });
+      setPicked({ id: item.key, target });
       setAnnouncement(`Over the ${target}.`);
     } else if (event.key === 'Escape') {
       event.preventDefault();
@@ -124,18 +139,18 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
     }
   };
 
-  const handleHandleClick = (item: PantryItem) => {
+  const handleHandleClick = (item: PantryProduct) => {
     if (suppressClickRef.current) {
       suppressClickRef.current = false;
       return;
     }
-    if (picked?.id === item.id) drop(item, picked.target);
+    if (picked?.id === item.key) drop(item, picked.target);
     else pickUp(item);
   };
 
-  const onPointerDown = (event: React.PointerEvent, item: PantryItem) => {
+  const onPointerDown = (event: React.PointerEvent, item: PantryProduct) => {
     if (event.button !== 0) return;
-    dragRef.current = { id: item.id, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false };
+    dragRef.current = { id: item.key, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   };
 
@@ -207,13 +222,15 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
             ) : (
               <Stagger as="ul" count={shelfItems.length} className="grid grid-cols-2 gap-3 min-[420px]:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                 {shelfItems.map((item) => {
-                  const state = expiryState(item.expiryDate, now);
-                  const label = expiryLabel(item.expiryDate, now);
-                  const photo = photos[item.id];
-                  const lifted = liftedIds.has(item.id);
-                  const isPicked = picked?.id === item.id || ghost?.id === item.id;
+                  const days = daysUntilDay(item.nextExpiry, today, timeZone);
+                  const state = expiryStateForDays(days);
+                  const label = expiryLabelForDays(days);
+                  const summary = productSummary(item, today);
+                  const photo = photos[item.key];
+                  const lifted = liftedIds.has(item.key);
+                  const isPicked = picked?.id === item.key || ghost?.id === item.key;
                   return (
-                    <StaggerItem as="li" key={item.id} data-expiry={state} data-lifted={lifted ? 'true' : undefined}>
+                    <StaggerItem as="li" key={item.key} data-expiry={state} data-lifted={lifted ? 'true' : undefined}>
                       {/* A recipe lifts the tile off the shelf (H08): the card and its picture rise, the controls' hit areas stay put. */}
                       <div className="relative">
                       {/* Visual layer: tilt, glow and frost change only this, never the controls. */}
@@ -231,9 +248,9 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                         <button
                           type="button"
                           className="flex w-full flex-1 flex-col items-center gap-1 rounded-lg disabled:cursor-default"
-                          onClick={() => canEdit && onEdit(item)}
+                          onClick={() => canEdit && onEdit(item.batches[0])}
                           disabled={!canEdit}
-                          aria-label={`${item.name}, ${item.quantity} ${item.unit}${label ? `, ${label}` : ''}${lifted ? ', used in the recipe' : ''}${canEdit ? '. Edit' : ''}`}
+                          aria-label={`${item.name}, ${summary}${label ? `, ${label}` : ''}${lifted ? ', used in the recipe' : ''}${canEdit ? '. Edit' : ''}`}
                         >
                           <span className={cn('flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg text-4xl transition-transform duration-200 ease-out', state === 'expired' && 'opacity-60', lifted && '-translate-y-2')} aria-hidden>
                             {photo ? (
@@ -243,7 +260,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                             )}
                           </span>
                           <span className="line-clamp-2 break-words text-sm font-medium leading-tight">{item.name}</span>
-                          <span className="text-xs text-muted-foreground">{item.quantity} {item.unit}</span>
+                          <span className="text-xs text-muted-foreground" data-testid="pantry-tile-summary">{summary}</span>
                         </button>
                         {(label || lifted) && (
                           <span
@@ -257,6 +274,16 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                             {lifted ? 'In the recipe' : label}
                           </span>
                         )}
+                        {canEdit && (
+                          <div className="mt-1 flex items-center gap-1">
+                            <Button variant="outline" size="icon" className="h-9 w-9" aria-label={`Used one ${item.name}`} onClick={() => onUseOne(item)}>
+                              <Minus className="h-4 w-4" aria-hidden />
+                            </Button>
+                            <Button variant="outline" size="icon" className="h-9 w-9" aria-label={`One more ${item.name}`} onClick={() => onAddOne(item)}>
+                              <Plus className="h-4 w-4" aria-hidden />
+                            </Button>
+                          </div>
+                        )}
                         {(canEdit || canDelete) && (
                           <div className="absolute right-1 top-1 flex flex-col">
                             <TabDropdownMenu>
@@ -266,7 +293,16 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
-                                {canEdit && <DropdownMenuItem onClick={() => onEdit(item)}><Edit className="mr-2 h-4 w-4" aria-hidden /> Edit</DropdownMenuItem>}
+                                {canEdit && (item.batches.length === 1 ? (
+                                  <DropdownMenuItem onClick={() => onEdit(item.batches[0])}><Edit className="mr-2 h-4 w-4" aria-hidden /> Edit</DropdownMenuItem>
+                                ) : item.batches.map((batch) => (
+                                  <DropdownMenuItem key={batch.id} onClick={() => onEdit(batch)}>
+                                    <Edit className="mr-2 h-4 w-4" aria-hidden /> Edit {batchAmountLabel(batch)}{batch.expiryDate ? ` (${batch.expiryDate})` : ''}
+                                  </DropdownMenuItem>
+                                )))}
+                                {canEdit && (
+                                  <DropdownMenuItem onClick={() => onOutOfThis(item)}><PackageX className="mr-2 h-4 w-4" aria-hidden /> Out of this</DropdownMenuItem>
+                                )}
                                 {canEdit && (
                                   <>
                                     <DropdownMenuLabel className="text-xs text-muted-foreground">Move to</DropdownMenuLabel>
@@ -290,11 +326,11 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                             </TabDropdownMenu>
                             {canEdit && (
                               <Button
-                                variant={picked?.id === item.id ? 'secondary' : 'ghost'}
+                                variant={picked?.id === item.key ? 'secondary' : 'ghost'}
                                 size="icon"
                                 className="h-7 w-7 cursor-grab touch-none active:cursor-grabbing"
                                 aria-label={`Move ${item.name}`}
-                                aria-pressed={picked?.id === item.id}
+                                aria-pressed={picked?.id === item.key}
                                 onClick={() => handleHandleClick(item)}
                                 onKeyDown={(event) => handleKeyDown(event, item)}
                                 onPointerDown={(event) => onPointerDown(event, item)}
@@ -326,7 +362,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
           className="pointer-events-none fixed left-0 top-0 z-[90] flex items-center gap-2 rounded-xl border bg-popover px-3 py-2 text-sm font-medium shadow-overlay"
           style={{ transform: `translate(${ghost.x + 12}px, ${ghost.y + 12}px)` }}
         >
-          <span className="text-2xl">{photos[ghostItem.id] ? '📦' : pantryEmoji(ghostItem.name, ghostItem.location)}</span>
+          <span className="text-2xl">{photos[ghostItem.key] ? '📦' : pantryEmoji(ghostItem.name, ghostItem.location)}</span>
           {ghostItem.name}
         </div>
       )}

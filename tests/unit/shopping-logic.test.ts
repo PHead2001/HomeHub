@@ -168,7 +168,7 @@ describe('pantry handoff is concurrency-safe', () => {
 
   test('the writer applies increments with Firestore increment(), which also queues offline', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    assert.match(source, /quantity: increment\(plan\.add\)/);
+    assert.match(source, /quantity: increment\(toTarget\)/);
   });
 });
 

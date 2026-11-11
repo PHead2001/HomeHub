@@ -140,7 +140,10 @@ function Tile({
     return (
       <PeekCard peek={peek} className={cn('relative h-full min-w-0', className)}>
         <div data-testid={testId} className={cn(styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>
-          <Link href={href} data-testid={`${testId}-link`} className={cn(styles.tileLink, 'flex min-w-0 flex-col gap-2 rounded-md')}>
+          {/* D-2: with nothing but the title inside (Pets), the link itself is at least 44 px
+              tall (48 px on touch); no overflowing hit area, so it never covers the action
+              buttons below it. */}
+          <Link href={href} data-testid={`${testId}-link`} className={cn(styles.tileLink, styles.target, 'flex min-w-0 flex-col gap-2 rounded-md')}>
             {body}
           </Link>
           {actions}
@@ -239,7 +242,7 @@ function ProgressRing({ done, total, settled }: { done: number; total: number; s
   const circumference = 2 * Math.PI * radius;
   const ratio = total > 0 ? Math.min(1, done / total) : 0;
   return (
-    <svg viewBox="0 0 72 72" className={cn(styles.ring, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
+    <svg viewBox="0 0 72 72" className={cn(styles.progressRing, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
       <circle cx="36" cy="36" r={radius} fill="none" strokeWidth="7" className="stroke-muted" />
       <circle
         cx="36"
