@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { householdManagerReads } from '../../src/components/household/household-model';
+import { householdManagerReads, memberStat } from '../../src/components/household/household-model';
 import { getMemberPermissions } from '../../src/lib/permissions';
 import type { HouseholdMember } from '../../src/lib/types';
 
@@ -53,5 +53,16 @@ describe('householdManagerReads (HO-2a)', () => {
     assert.deepEqual(readsFor({ role: 'admin', status: 'deleting', permissions: {} }), none);
     assert.deepEqual(readsFor(null), none);
     assert.deepEqual(householdManagerReads(null), none);
+  });
+});
+
+describe('memberStat (HO-10b)', () => {
+  it('shows the pending count to member managers only', () => {
+    assert.deepEqual(memberStat(3, 1, true), { approved: 3, pending: 1, text: '3 · 1 pending' });
+    assert.deepEqual(memberStat(3, 1, false), { approved: 3, pending: null, text: '3' });
+    assert.deepEqual(memberStat(3, 0, true), { approved: 3, pending: null, text: '3' });
+    // A member without household.manageMembers (the default member role) never sees it.
+    const memberPermissions = getMemberPermissions({ role: 'member', status: 'active' } as HouseholdMember);
+    assert.equal(memberStat(2, 4, Boolean(memberPermissions['household.manageMembers'])).text, '2');
   });
 });
