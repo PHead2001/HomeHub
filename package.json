@@ -23,6 +23,7 @@
     "test:e2e:all": "node scripts/e2e/run-suite.mjs",
     "test:e2e:local": "node scripts/e2e/run-local.mjs",
     "test:e2e:ci": "node scripts/e2e/run-local.mjs --smoke-only",
+    "test:e2e:extended:ci": "node scripts/e2e/run-local.mjs --extended-only",
     "test:e2e:feature:local": "node scripts/e2e/run-local.mjs --feature-only",
     "test:e2e:ai:local": "node scripts/e2e/run-local.mjs --ai-only",
     "test:visual:update:local": "node scripts/e2e/run-local.mjs --visual-update"
