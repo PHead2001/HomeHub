@@ -9,8 +9,8 @@ import { useToast } from '@/hooks/use-toast';
 import { isBrowserOffline } from '@/lib/firestore-offline';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import type { QuickAddEntry } from '@/lib/shopping/items';
-import { rememberAfterTrip, useAfterTripPreference, useShoppingUsuals } from '@/lib/shopping/trip-live';
-import { isAlreadyCredited, tripOutcomeText, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
+import { purchasesAlreadyPutAway, rememberAfterTrip, useAfterTripPreference, useShoppingUsuals } from '@/lib/shopping/trip-live';
+import { tripGroup, tripOutcomeText, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
 import type { TripUndo, UndoEntry } from '@/lib/shopping/undo';
 import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import type { ShoppingList, ShoppingListItem } from '@/lib/types';
@@ -20,7 +20,17 @@ import { TripHistoryButton } from './trip-history';
 import { UsualChips } from './usual-chips';
 import type { SnackbarEntry } from './undo-snackbar';
 
-type PutAwayTarget = { mode: TripMode; householdId: string; listId: string; listName: string; items: ShoppingListItem[] };
+type PutAwayTarget = {
+  mode: TripMode;
+  householdId: string;
+  listId: string;
+  listName: string;
+  items: ShoppingListItem[];
+  /** Items whose purchase is already on the shelves (cleared, never credited again). */
+  shelvedIds: ReadonlySet<string>;
+  /** Purchases not in this trip (more than one trip carries): they stay on the list for another. */
+  left: number;
+};
 
 const OFFLINE_TITLE = 'You are offline';
 
@@ -82,20 +92,26 @@ export function useTripFlow({
   /** Put away & clear needs both permissions the rules ask for; members who cannot delete put away only. */
   const putAwayMode: TripMode | null = isGrocery && canEdit ? (canDelete ? 'putAwayAndClear' : 'putAway') : null;
 
+  // Always written: until the stored preference has loaded, `afterTrip` is only the default.
   const remember = useCallback((choice: AfterTrip) => {
-    if (!canEdit || !householdId || choice === afterTrip) return;
+    if (!canEdit || !householdId) return;
     void rememberAfterTrip(householdId, choice).catch(() => undefined);
-  }, [afterTrip, canEdit, householdId]);
+  }, [canEdit, householdId]);
 
-  const openPutAway = useCallback((mode: TripMode) => {
+  const openPutAway = useCallback(async (mode: TripMode) => {
     if (!householdId || !list) return;
-    // "Put away" leaves the items on the list: purchases already in the pantry are not offered again.
-    const items = mode === 'putAway' ? purchasedItems.filter((item) => !isAlreadyCredited(item)) : purchasedItems;
-    if (items.length === 0) {
+    const listId = list.id;
+    const listName = list.name;
+    const items = purchasedItems;
+    // A purchase already in the pantry: by its credit stamp, or by an earlier trip
+    // that credited its purchase id (a deleted and restored item has no stamp).
+    const credited = await purchasesAlreadyPutAway(householdId, items.flatMap((item) => (item.purchaseOpId ? [item.purchaseOpId] : [])));
+    const group = tripGroup(items, mode, credited);
+    if (group.items.length === 0) {
       toast({ title: 'Already put away', description: 'These purchases are already on the pantry shelves.' });
       return;
     }
-    setPutAway({ mode, householdId, listId: list.id, listName: list.name, items });
+    setPutAway({ mode, householdId, listId, listName, items: group.items, shelvedIds: group.shelvedIds, left: group.left });
   }, [householdId, list, purchasedItems, toast]);
 
   const confirm = async (target: PutAwayTarget, tripId: string, choices: TripChoice[]): Promise<boolean> => {
@@ -117,7 +133,9 @@ export function useTripFlow({
         return result.code === 'list_missing';
       }
       const trip = result.trip;
-      const text = tripOutcomeText({ mode: trip.mode, credited: trip.credited, cleared: trip.cleared.length, skipped: trip.skipped });
+      const text = tripOutcomeText({
+        mode: trip.mode, credited: trip.credited, cleared: trip.cleared.length, skipped: trip.skipped, remaining: target.left + trip.deferred.length,
+      });
       toast({
         title: text.title,
         description: text.description,
@@ -194,6 +212,8 @@ export function useTripFlow({
       open
       onOpenChange={(open) => { if (!open) setPutAway(null); }}
       items={putAway.items}
+      shelvedIds={putAway.shelvedIds}
+      left={putAway.left}
       mode={putAway.mode}
       today={today}
       offline={!online}
@@ -221,7 +241,7 @@ export function useTripFlow({
     receiptPutAway: putAwayMode ? () => {
       remember('putAwayAndClear');
       closeReceipt();
-      openPutAway(putAwayMode);
+      void openPutAway(putAwayMode);
     } : undefined,
     /** Receipt "Done": remembered; the list stays as it is. */
     receiptDone: () => {

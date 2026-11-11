@@ -13,6 +13,7 @@ import { shortExpiryLabel } from '@/lib/shopping/pantry-batches';
 import { newOpId } from '@/lib/shopping/undo';
 import {
   EXPIRY_PICKS,
+  MAX_TRIP_ITEMS,
   expiryForPick,
   pickAfterShelfChange,
   shelfDefaultPick,
@@ -20,6 +21,8 @@ import {
   type TripChoice,
   type TripMode,
 } from '@/lib/shopping/trip-plan';
+
+const NO_IDS: ReadonlySet<string> = new Set();
 
 type Row = {
   item: ShoppingListItem;
@@ -29,6 +32,8 @@ type Row = {
   pick: ExpiryPick;
   /** The member chose a chip, so a shelf change no longer resets it. */
   picked: boolean;
+  /** This purchase is already on the shelves: it is only cleared, never credited again. */
+  onShelves: boolean;
 };
 
 /**
@@ -41,12 +46,17 @@ type Row = {
  *
  * The trip id is made when the dialog opens and kept for every attempt, so
  * pressing the button again after a failure or a lost response never puts the
- * same purchases away twice.
+ * same purchases away twice. Purchases already on the shelves (`shelvedIds`)
+ * are shown as such and only cleared. One trip carries at most
+ * `MAX_TRIP_ITEMS` purchases (`tripGroup`); the dialog says how many more
+ * (`left`) stay on the list for another trip.
  */
 export function PutAwayDialog({
   open,
   onOpenChange,
   items,
+  shelvedIds = NO_IDS,
+  left = 0,
   mode,
   today,
   offline,
@@ -55,6 +65,10 @@ export function PutAwayDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   items: ShoppingListItem[];
+  /** Items whose purchase is already on the shelves. */
+  shelvedIds?: ReadonlySet<string>;
+  /** Purchases not in this trip; they stay on the list for another. */
+  left?: number;
   mode: TripMode;
   /** Today in the household zone (`yyyy-MM-dd`); the chips count from it. */
   today: string;
@@ -68,7 +82,8 @@ export function PutAwayDialog({
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((item) => {
       const location = pantryLocationForCategory(item.category, item.name);
-      return { item, shelve: true, location, pick: shelfDefaultPick(location), picked: false };
+      const onShelves = shelvedIds.has(item.id);
+      return { item, shelve: !onShelves, location, pick: shelfDefaultPick(location), picked: false, onShelves };
     }));
   const [saving, setSaving] = useState(false);
   const shelved = rows.filter((row) => row.shelve).length;
@@ -117,12 +132,14 @@ export function PutAwayDialog({
                   <Checkbox
                     id={id}
                     checked={row.shelve}
+                    disabled={row.onShelves}
                     onCheckedChange={(checked) => update(index, (r) => ({ ...r, shelve: Boolean(checked) }))}
                   />
                   <label htmlFor={id} className="min-w-0 flex-1 break-words text-sm font-medium">
                     {row.item.name} <span className="text-muted-foreground">(x{row.item.quantity})</span>
+                    {row.onShelves && <span className="block text-xs font-normal text-muted-foreground">Already on the shelves</span>}
                   </label>
-                  <Select
+                  {!row.onShelves && <Select
                     value={row.location}
                     disabled={!row.shelve}
                     onValueChange={(value) => update(index, (r) => {
@@ -138,7 +155,7 @@ export function PutAwayDialog({
                         <SelectItem key={location} value={location}>{location}</SelectItem>
                       ))}
                     </SelectContent>
-                  </Select>
+                  </Select>}
                 </div>
                 {row.shelve && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-7" role="group" aria-label={`Use by for ${row.item.name}`}>
@@ -164,6 +181,11 @@ export function PutAwayDialog({
             );
           })}
         </ul>
+        {left > 0 && (
+          <p className="text-sm text-muted-foreground" data-testid="put-away-left">
+            {pluralize(left, 'more purchase')} {left === 1 ? 'stays' : 'stay'} on the list for another trip (one trip carries up to {MAX_TRIP_ITEMS}).
+          </p>
+        )}
         {offline && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" aria-hidden /> You are offline. Putting away needs a connection.

@@ -15,7 +15,7 @@
 import type { PantryItemLocation } from '@/lib/types';
 import { addDays, isDayString } from '../../../functions/src/shared/calendar';
 import { itemNameKey } from './items';
-import { addMonthsToDay, fillBatch, pantryMergeKey, readPantryBatch, splitPackages } from './pantry-batches';
+import { addMonthsToDay, clampPantryName, fillBatch, pantryMergeKey, readPantryBatch, splitPackages } from './pantry-batches';
 
 export const TRIP_LOCATIONS: readonly PantryItemLocation[] = ['Pantry', 'Fridge', 'Freezer'];
 
@@ -23,6 +23,13 @@ export const TRIP_LOCATIONS: readonly PantryItemLocation[] = ['Pantry', 'Fridge'
 export const MAX_TRIP_ITEMS = 200;
 /** The most document writes one trip's transaction may make (pantry, items, usuals and the trip itself). */
 export const MAX_TRIP_WRITES = 450;
+/**
+ * The most a trip document may carry, as an estimate of its item snapshots and
+ * pantry effects in JSON (Firestore's document limit is 1 MiB; this leaves room).
+ */
+export const MAX_TRIP_RECORD_BYTES = 700_000;
+/** Purchase ids per `array-contains-any` lookup of earlier trips (Firestore allows 30). */
+export const CREDITED_LOOKUP_CHUNK = 30;
 /** How long after it was applied a trip can still be undone (the server's window). */
 export const TRIP_UNDO_WINDOW_MS = 15 * 60_000;
 /** How many recent trip dates a usual keeps for its cadence. */
@@ -123,11 +130,62 @@ export function isAlreadyCredited(data: { pantryCreditedAt?: unknown; purchasedA
   return purchased === null || purchased <= credited;
 }
 
+/**
+ * The purchases (`purchaseOpId`s) among `wanted` that an earlier trip still in
+ * force (not undone) already put in the pantry: each trip records the purchase
+ * ids it credited (`creditedPurchaseOpIds`). This survives what the item's own
+ * credit stamp does not: deleting a put-away item and undoing the delete puts
+ * the purchase back without its server-only stamp, under the same purchase id.
+ */
+export function purchasesCreditedBy(
+  trips: ReadonlyArray<{ undoneAt?: unknown; creditedPurchaseOpIds?: unknown }>,
+  wanted: Iterable<string>,
+): Set<string> {
+  const want = new Set(wanted);
+  const found = new Set<string>();
+  for (const trip of trips) {
+    if (trip.undoneAt || !Array.isArray(trip.creditedPurchaseOpIds)) continue;
+    for (const opId of trip.creditedPurchaseOpIds) if (typeof opId === 'string' && want.has(opId)) found.add(opId);
+  }
+  return found;
+}
+
+/** `values` in groups of at most `size` (for `array-contains-any`). */
+export function chunked<T>(values: readonly T[], size = CREDITED_LOOKUP_CHUNK): T[][] {
+  const groups: T[][] = [];
+  for (let index = 0; index < values.length; index += size) groups.push(values.slice(index, index + size));
+  return groups;
+}
+
+/**
+ * The purchases one put-away trip offers, in the dialog's order (by name):
+ * "Put away" leaves out purchases already on the shelves (a credit stamp, or a
+ * purchase id in `creditedPurchases`); "Put away & clear" offers them to clear
+ * only (`shelvedIds`). At most `MAX_TRIP_ITEMS` go in one trip; `left` more stay
+ * on the list for another.
+ */
+export function tripGroup<T extends { id: string; name: string; purchaseOpId?: string | null; pantryCreditedAt?: unknown; purchasedAt?: unknown }>(
+  items: readonly T[],
+  mode: TripMode,
+  creditedPurchases: ReadonlySet<string>,
+): { items: T[]; shelvedIds: Set<string>; left: number } {
+  const shelved = (item: T) => isAlreadyCredited(item) || (typeof item.purchaseOpId === 'string' && creditedPurchases.has(item.purchaseOpId));
+  const offered = (mode === 'putAway' ? items.filter((item) => !shelved(item)) : [...items])
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const group = offered.slice(0, MAX_TRIP_ITEMS);
+  return { items: group, shelvedIds: new Set(group.filter(shelved).map((item) => item.id)), left: offered.length - group.length };
+}
+
 export type SkipReason = 'gone' | 'not-purchased' | 'changed';
 
 export type TripItemDecision = {
-  /** Items the trip applies to: credited (when they have a shelf and are not yet credited) and, with clear, cleared. */
-  apply: Array<{ choice: TripChoice; data: Record<string, unknown>; credit: boolean }>;
+  /**
+   * Items the trip applies to: credited (when they have a shelf and their
+   * purchase is not yet in the pantry) and, with clear, cleared.
+   * `alreadyCredited`: an earlier trip already put this purchase away (and
+   * counted it in the usuals), so this trip neither credits nor counts it.
+   */
+  apply: Array<{ choice: TripChoice; data: Record<string, unknown>; credit: boolean; alreadyCredited: boolean }>;
   /** Items left exactly as they are. */
   skipped: Array<{ itemId: string; name: string; reason: SkipReason }>;
 };
@@ -137,10 +195,15 @@ export type TripItemDecision = {
  * does with each confirmed choice. An item that is gone, no longer purchased,
  * renamed, re-counted or bought again (a new `purchaseOpId`) since the member
  * confirmed is skipped: the trip neither credits nor clears it. An item whose
- * current purchase is already in the pantry is cleared (with clear) but not
- * credited again.
+ * current purchase is already in the pantry (its credit stamp, or its purchase
+ * id in `creditedPurchases`, see `purchasesCreditedBy`) is cleared (with clear)
+ * but not credited again.
  */
-export function decideTripItems(choices: readonly TripChoice[], read: ReadonlyMap<string, Record<string, unknown> | undefined>): TripItemDecision {
+export function decideTripItems(
+  choices: readonly TripChoice[],
+  read: ReadonlyMap<string, Record<string, unknown> | undefined>,
+  creditedPurchases: ReadonlySet<string> = new Set(),
+): TripItemDecision {
   const apply: TripItemDecision['apply'] = [];
   const skipped: TripItemDecision['skipped'] = [];
   for (const choice of choices) {
@@ -157,7 +220,8 @@ export function decideTripItems(choices: readonly TripChoice[], read: ReadonlyMa
     ) {
       skipped.push({ itemId: choice.itemId, name, reason: 'changed' });
     } else {
-      apply.push({ choice, data, credit: choice.location !== null && !isAlreadyCredited(data) });
+      const alreadyCredited = isAlreadyCredited(data) || (choice.seen.purchaseOpId !== null && creditedPurchases.has(choice.seen.purchaseOpId));
+      apply.push({ choice, data, credit: choice.location !== null && !alreadyCredited, alreadyCredited });
     }
   }
   return { apply, skipped };
@@ -168,8 +232,10 @@ export function decideTripItems(choices: readonly TripChoice[], read: ReadonlyMa
 /** The batch a purchase becomes: counted in `items`, no package size, the chosen shelf and expiry. */
 export type PurchaseBatchKey = { name: string; location: PantryItemLocation; expiryDate: string | null };
 
+// The pantry stores a name cut to 120 characters (`clampPantryName`); a longer
+// shopping name is keyed (and recorded on the trip) as it is stored.
 const purchaseMergeKey = (key: PurchaseBatchKey) => pantryMergeKey({
-  nameKey: itemNameKey(key.name),
+  nameKey: itemNameKey(clampPantryName(key.name)),
   location: key.location,
   packageSize: null,
   unit: 'items',
@@ -188,6 +254,8 @@ export type TripPantryPlan = PurchaseBatchKey & {
  * into an existing batch only with the same merge key (Pantry v2: name, shelf,
  * unit `items`, no package size, same expiry). `existing` comes from a read
  * made just before the transaction; each target is re-checked inside it.
+ * Each plan carries the name as the pantry stores it (`clampPantryName`), so
+ * the trip's recorded effects match the batch they changed.
  */
 export function planTripPantry(
   credits: ReadonlyArray<PurchaseBatchKey & { quantity: number }>,
@@ -195,7 +263,7 @@ export function planTripPantry(
 ): TripPantryPlan[] {
   const combined = new Map<string, TripPantryPlan>();
   for (const credit of credits) {
-    const name = credit.name.trim();
+    const name = clampPantryName(credit.name);
     if (!name) continue;
     const packages = Math.max(1, Math.round(Number(credit.quantity) || 1));
     const key = purchaseMergeKey({ ...credit, name });
@@ -442,8 +510,31 @@ export function offerEmptyListDelete(listType: string | undefined, remaining: nu
   return remaining === 0 && listType !== 'Grocery';
 }
 
+/**
+ * The most items (a prefix of `count`) for which `fits` holds, by binary search;
+ * `fits` must hold for every prefix of a fitting one (more items never need
+ * fewer writes or less room). 0 when not even one fits.
+ */
+export function largestFittingCount(count: number, fits: (size: number) => boolean): number {
+  let low = 0;
+  let high = count;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
 /** "Put away and cleared 3 items" style summary of a trip's outcome for the toast. */
-export function tripOutcomeText(outcome: { mode: TripMode; credited: number; cleared: number; skipped: ReadonlyArray<{ name: string; reason: SkipReason }> }): { title: string; description: string } {
+export function tripOutcomeText(outcome: {
+  mode: TripMode;
+  credited: number;
+  cleared: number;
+  skipped: ReadonlyArray<{ name: string; reason: SkipReason }>;
+  /** Purchases left on the list for another trip (more than one trip can carry). */
+  remaining?: number;
+}): { title: string; description: string } {
   const items = (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`;
   const title = outcome.mode === 'putAwayAndClear'
     ? (outcome.cleared > 0 ? 'Put away and cleared' : 'Nothing to put away')
@@ -454,6 +545,8 @@ export function tripOutcomeText(outcome: { mode: TripMode; credited: number; cle
   if (outcome.skipped.length > 0) {
     parts.push(`Left on the list: ${outcome.skipped.map((entry) => entry.name).join(', ')} (changed or no longer bought).`);
   }
+  const remaining = outcome.remaining ?? 0;
+  if (remaining > 0) parts.push(`${items(remaining)} still on the list: put ${remaining === 1 ? 'it' : 'them'} away in another trip.`);
   if (parts.length === 0) parts.push('Someone else already put these away.');
   return { title, description: parts.join(' ') };
 }

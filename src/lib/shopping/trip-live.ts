@@ -1,10 +1,10 @@
 'use client';
 
-import { collection, doc, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useLive } from './live';
 import { liveKey, type LiveState } from './live-state';
-import { readAfterTrip, type AfterTrip, type TripMode } from './trip-plan';
+import { chunked, purchasesCreditedBy, readAfterTrip, type AfterTrip, type TripMode } from './trip-plan';
 
 /**
  * Live trip data for the receipt, quick add and history (S5): the household's
@@ -34,6 +34,8 @@ export function useAfterTripPreference(householdId: string | null | undefined): 
 /**
  * Remembers the receipt choice for the household. Only `afterTrip` and the server
  * time are written (the rules' allowlist); it queues offline like any write.
+ * Every choice is written, even one equal to the default or to the value shown:
+ * before the preference has loaded the shown value is only the default.
  */
 export function rememberAfterTrip(householdId: string, choice: AfterTrip): Promise<void> {
   return setDoc(
@@ -41,6 +43,30 @@ export function rememberAfterTrip(householdId: string, choice: AfterTrip): Promi
     { afterTrip: choice, updatedAt: serverTimestamp() },
     { merge: true },
   );
+}
+
+/**
+ * The purchases among `purchaseOpIds` that an earlier trip (not undone) already
+ * put in the pantry, by their purchase ids on the trip documents. A deleted
+ * and restored item loses its credit stamp but keeps its purchase id, so the
+ * put-away dialog does not offer it again; the server checks the same way.
+ * Resolves with what it found within `timeoutMs` (empty on failure or timeout:
+ * the server's check still applies).
+ */
+export async function purchasesAlreadyPutAway(householdId: string, purchaseOpIds: readonly string[], timeoutMs = 4_000): Promise<Set<string>> {
+  const wanted = [...new Set(purchaseOpIds.filter(Boolean))];
+  if (wanted.length === 0) return new Set();
+  const trips = collection(db, 'households', householdId, 'trips');
+  const lookup = Promise.all(chunked(wanted).map((group) => getDocs(query(trips, where('creditedPurchaseOpIds', 'array-contains-any', group)))))
+    .then((results) => purchasesCreditedBy(results.flatMap((result) => result.docs.map((entry) => entry.data())), wanted))
+    .catch(() => new Set<string>());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<Set<string>>((resolve) => { timer = setTimeout(() => resolve(new Set()), timeoutMs); });
+  try {
+    return await Promise.race([lookup, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export type UsualRecord = { id: string; name: string; count: number; cadenceDays: number | null; lastBoughtAtMs: number | null };

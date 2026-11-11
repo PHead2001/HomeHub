@@ -1,13 +1,17 @@
 import 'server-only';
 
-import { FieldValue, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore';
 import { slugify } from '@/lib/utils';
 import { pantryBatchFields, planLegacyUpgrade, readPantryBatch } from '@/lib/shopping/pantry-batches';
 import {
+  MAX_TRIP_RECORD_BYTES,
   MAX_TRIP_WRITES,
+  chunked,
   decideTripItems,
+  largestFittingCount,
   planPantryReversal,
   planTripPantry,
+  purchasesCreditedBy,
   tripPlanWrites,
   tripTargetStillValid,
   tripUndoOpen,
@@ -18,6 +22,7 @@ import {
   type SkipReason,
   type TripInput,
   type TripMode,
+  type TripPantryPlan,
   type UsualFields,
 } from '@/lib/shopping/trip-plan';
 
@@ -45,6 +50,8 @@ export type TripSummary = {
   cleared: string[];
   /** Items left exactly as they were, with why. */
   skipped: Array<{ itemId: string; name: string; reason: SkipReason }>;
+  /** Items left exactly as they were because the trip was full (writes or size), for another trip. */
+  deferred: Array<{ itemId: string; name: string }>;
 };
 
 export type TripUndoSummary = {
@@ -64,6 +71,8 @@ type TripItemRecord = {
   name: string;
   quantity: number;
   category: string;
+  /** The purchase this record is (the item's `purchaseOpId` when the trip applied it). */
+  purchaseOpId: string | null;
   location: string | null;
   expiryDate: string | null;
   credited: boolean;
@@ -85,6 +94,7 @@ const summaryOf = (tripId: string, data: Record<string, unknown>, alreadyApplied
     credited: items.filter((item) => item.credited).length,
     cleared: items.filter((item) => item.cleared).map((item) => item.itemId),
     skipped: (Array.isArray(data.skipped) ? data.skipped : []) as TripSummary['skipped'],
+    deferred: (Array.isArray(data.deferred) ? data.deferred : []) as TripSummary['deferred'],
   };
 };
 
@@ -106,21 +116,29 @@ const usualWrite = (fields: UsualFields) => ({
  * 1. Reads `trips/{tripId}` first: if it exists, an earlier attempt applied this
  *    trip (a retry, or a response lost on the way back), so nothing is done
  *    twice and its summary is returned.
- * 2. Reads the list and every chosen item, and keeps only the items that are
- *    still exactly the purchase the member confirmed (`decideTripItems`); items
- *    gone, un-ticked, renamed, re-counted or bought again stay as they are.
+ * 2. Reads the list, every chosen item and the earlier trips (not undone) that
+ *    credited any of those purchases (`creditedPurchaseOpIds`), and keeps only
+ *    the items that are still exactly the purchase the member confirmed
+ *    (`decideTripItems`); items gone, un-ticked, renamed, re-counted or bought
+ *    again stay as they are. A purchase already in the pantry (its credit
+ *    stamp, or an earlier trip that credited its purchase id, which survives a
+ *    delete and its Undo) is cleared but never credited or counted again.
  * 3. Re-reads each planned pantry merge target (planned from a read made just
  *    before the transaction) and the usuals.
- * 4. Writes: the pantry credit (Pantry v2 batches, split at 10,000 packages per
+ * 4. Takes the longest run of those items, in the order sent, whose writes fit
+ *    `MAX_TRIP_WRITES` and whose snapshots fit `MAX_TRIP_RECORD_BYTES`; the
+ *    others are left exactly as they are and reported as `deferred`, for
+ *    another trip.
+ * 5. Writes: the pantry credit (Pantry v2 batches, split at 10,000 packages per
  *    batch), then for `putAwayAndClear` deletes exactly the applied items, for
  *    `putAway` stamps the credited ones with `pantryCreditedAt`/`creditTripId`
  *    (server-only fields), updates the usuals (Grocery lists only), and creates
- *    one trip document with item snapshots and the pantry effects for Undo.
+ *    one trip document with item snapshots, the purchase ids it credited and the
+ *    pantry effects for Undo.
  *
  * Concurrent shoppers serialize on the items: the second transaction finds them
  * deleted or credited and applies nothing (no trip document is written when
- * nothing applies, so history has no empty duplicates). A trip above
- * `MAX_TRIP_WRITES` writes is refused before anything is written.
+ * nothing applies, so history has no empty duplicates).
  */
 export async function applyTrip(
   db: Firestore,
@@ -128,12 +146,14 @@ export async function applyTrip(
 ): Promise<TripSummary> {
   const house = householdRef(db, householdId);
   const listRef = house.collection('shopping-lists').doc(input.listId);
-  const tripRef = house.collection('trips').doc(input.tripId);
+  const trips = house.collection('trips');
+  const tripRef = trips.doc(input.tripId);
   const pantry = house.collection('pantry-inventory');
   const itemRef = (id: string) => listRef.collection('items').doc(id);
   // Merge candidates; each target is re-read and re-checked inside the transaction.
   const existing = (await pantry.get()).docs.map((snapshot) => ({ id: snapshot.id, data: snapshot.data() }));
   const stamp = () => ({ updatedByUid: uid, updatedAt: FieldValue.serverTimestamp() });
+  const purchaseIds = [...new Set(input.items.flatMap((choice) => (choice.seen.purchaseOpId ? [choice.seen.purchaseOpId] : [])))];
 
   return db.runTransaction(async (transaction) => {
     // --- Reads (all before any write; recomputed on every retry) ---
@@ -144,97 +164,120 @@ export async function applyTrip(
     const listData = list.data() ?? {};
     const itemSnapshots = await transaction.getAll(...input.items.map((choice) => itemRef(choice.itemId)));
     const read = new Map(itemSnapshots.map((snapshot, index) => [input.items[index].itemId, snapshot.exists ? snapshot.data() : undefined]));
-    const decision = decideTripItems(input.items, read);
+    const earlier: Array<Record<string, unknown>> = [];
+    for (const group of chunked(purchaseIds)) {
+      const found = await transaction.get(trips.where('creditedPurchaseOpIds', 'array-contains-any', group));
+      earlier.push(...found.docs.map((snapshot) => snapshot.data()));
+    }
+    const decision = decideTripItems(input.items, read, purchasesCreditedBy(earlier, purchaseIds));
     // "Put away" keeps the items on the list: only the ones it credits are part of it.
-    const applied = input.mode === 'putAwayAndClear' ? decision.apply : decision.apply.filter((entry) => entry.credit);
+    const eligible = input.mode === 'putAwayAndClear' ? decision.apply : decision.apply.filter((entry) => entry.credit);
     const nothing: TripSummary = {
-      tripId: input.tripId, listId: input.listId, mode: input.mode, applied: false, alreadyApplied: false, credited: 0, cleared: [], skipped: decision.skipped,
+      tripId: input.tripId, listId: input.listId, mode: input.mode, applied: false, alreadyApplied: false, credited: 0, cleared: [], skipped: decision.skipped, deferred: [],
     };
-    if (applied.length === 0) return nothing;
+    if (eligible.length === 0) return nothing;
+    type Entry = (typeof eligible)[number];
 
-    const credits = applied.filter((entry) => entry.credit).map((entry) => ({
+    const creditsOf = (entries: readonly Entry[]) => entries.filter((entry) => entry.credit).map((entry) => ({
       name: String(entry.data.name),
       quantity: Number(entry.data.quantity),
       location: entry.choice.location!,
       expiryDate: entry.choice.expiryDate,
     }));
-    const plans = planTripPantry(credits, existing);
-    const targetPlans = plans.filter((plan) => plan.targetId !== null);
-    const targets = targetPlans.length > 0 ? await transaction.getAll(...targetPlans.map((plan) => pantry.doc(plan.targetId!))) : [];
+    // Every target any run of the items can plan (a plan's target depends only on its merge key).
+    const allPlans = planTripPantry(creditsOf(eligible), existing);
+    const targetIds = [...new Set(allPlans.flatMap((plan) => (plan.targetId ? [plan.targetId] : [])))];
+    const targets = targetIds.length > 0 ? await transaction.getAll(...targetIds.map((id) => pantry.doc(id))) : [];
     const targetById = new Map(targets.map((snapshot) => [snapshot.id, snapshot]));
 
-    const usualRefs = new Map<string, { ref: DocumentReference; name: string; category: string }>();
-    if (listData.type === 'Grocery') {
-      for (const entry of applied) {
-        const id = usualId(String(entry.data.name));
-        if (id && !usualRefs.has(id)) {
-          usualRefs.set(id, {
-            ref: house.collection('shopping-usuals').doc(id),
+    // Usuals (Grocery lists): one per name bought; a purchase an earlier trip already counted is not counted again.
+    const usualOf = (entry: Entry) => (listData.type === 'Grocery' && !entry.alreadyCredited ? usualId(String(entry.data.name)) : null);
+    const allUsualIds = [...new Set(eligible.flatMap((entry) => {
+      const id = usualOf(entry);
+      return id ? [id] : [];
+    }))];
+    const usualSnapshots = allUsualIds.length > 0 ? await transaction.getAll(...allUsualIds.map((id) => house.collection('shopping-usuals').doc(id))) : [];
+    const usualById = new Map(usualSnapshots.map((snapshot) => [snapshot.id, snapshot]));
+
+    // --- Plan every write of a run of the items from those reads ---
+    const clear = input.mode === 'putAwayAndClear';
+    const build = (entries: readonly Entry[]) => {
+      const writes: Array<() => void> = [];
+      const effects: PantryEffect[] = [];
+      const createBatch = (plan: TripPantryPlan, packages: number) => {
+        const ref = pantry.doc(slugify(plan.name));
+        effects.push({ pantryId: ref.id, kind: 'create', packages, name: plan.name, location: plan.location, expiryDate: plan.expiryDate });
+        writes.push(() => transaction.set(ref, {
+          ...pantryBatchFields({ name: plan.name, location: plan.location, unit: 'items', packages, packageSize: null, expiryDate: plan.expiryDate }),
+          addedByUid: uid,
+          ...stamp(),
+        }));
+      };
+      for (const plan of planTripPantry(creditsOf(entries), existing)) {
+        const snapshot = plan.targetId ? targetById.get(plan.targetId) : undefined;
+        const data = snapshot?.exists ? snapshot.data() : undefined;
+        const valid = Boolean(snapshot && tripTargetStillValid(data, plan));
+        const batch = valid ? readPantryBatch(snapshot!.id, data) : null;
+        const { toTarget, newBatches } = tripPlanWrites(plan, batch);
+        if (batch && toTarget > 0) {
+          const ref = snapshot!.ref;
+          effects.push({ pantryId: ref.id, kind: batch.legacy ? 'upgrade' : 'increment', packages: toTarget, name: plan.name, location: plan.location, expiryDate: plan.expiryDate });
+          writes.push(() => transaction.update(ref, batch.legacy
+            ? { ...planLegacyUpgrade(batch, toTarget).fields, ...stamp() }
+            : { packages: FieldValue.increment(toTarget), quantity: FieldValue.increment(toTarget), ...stamp() }));
+        }
+        for (const packages of newBatches) createBatch(plan, packages);
+      }
+
+      const records: TripItemRecord[] = entries.map(({ choice, data, credit }) => ({
+        itemId: choice.itemId,
+        name: String(data.name),
+        quantity: Number(data.quantity),
+        category: typeof data.category === 'string' ? data.category : 'Other',
+        purchaseOpId: choice.seen.purchaseOpId,
+        location: credit ? choice.location : null,
+        expiryDate: credit ? choice.expiryDate : null,
+        credited: credit,
+        cleared: clear,
+        data: clear ? data : null,
+      }));
+      for (const record of records) {
+        if (record.cleared) writes.push(() => transaction.delete(itemRef(record.itemId)));
+        else if (record.credited) {
+          writes.push(() => transaction.update(itemRef(record.itemId), {
+            pantryCreditedAt: FieldValue.serverTimestamp(),
+            creditTripId: input.tripId,
+          }));
+        }
+      }
+      const usuals = new Map<string, { name: string; category: string }>();
+      for (const entry of entries) {
+        const id = usualOf(entry);
+        if (id && !usuals.has(id)) {
+          usuals.set(id, {
             name: String(entry.data.name),
             category: typeof entry.data.category === 'string' && entry.data.category ? entry.data.category : 'Other',
           });
         }
       }
-    }
-    const usualEntries = [...usualRefs.values()];
-    const usualSnapshots = usualEntries.length > 0 ? await transaction.getAll(...usualEntries.map((entry) => entry.ref)) : [];
-
-    // --- Plan every write from those reads ---
-    const writes: Array<() => void> = [];
-    const effects: PantryEffect[] = [];
-    const createBatch = (plan: (typeof plans)[number], packages: number) => {
-      const ref = pantry.doc(slugify(plan.name));
-      effects.push({ pantryId: ref.id, kind: 'create', packages, name: plan.name, location: plan.location, expiryDate: plan.expiryDate });
-      writes.push(() => transaction.set(ref, {
-        ...pantryBatchFields({ name: plan.name, location: plan.location, unit: 'items', packages, packageSize: null, expiryDate: plan.expiryDate }),
-        addedByUid: uid,
-        ...stamp(),
-      }));
+      for (const [id, bought] of usuals) {
+        const snapshot = usualById.get(id)!;
+        const fields = usualAfterTrip(snapshot.exists ? snapshot.data() : undefined, { ...bought, tripId: input.tripId, atMs: nowMs });
+        writes.push(() => transaction.set(snapshot.ref, usualWrite(fields), { merge: true }));
+      }
+      const creditedPurchaseOpIds = [...new Set(records.flatMap((record) => (record.credited && record.purchaseOpId ? [record.purchaseOpId] : [])))];
+      return { writes, effects, records, usualIds: [...usuals.keys()], creditedPurchaseOpIds };
     };
-    for (const plan of plans) {
-      const snapshot = plan.targetId ? targetById.get(plan.targetId) : undefined;
-      const data = snapshot?.exists ? snapshot.data() : undefined;
-      const valid = Boolean(snapshot && tripTargetStillValid(data, plan));
-      const batch = valid ? readPantryBatch(snapshot!.id, data) : null;
-      const { toTarget, newBatches } = tripPlanWrites(plan, batch);
-      if (batch && toTarget > 0) {
-        const ref = snapshot!.ref;
-        effects.push({ pantryId: ref.id, kind: batch.legacy ? 'upgrade' : 'increment', packages: toTarget, name: plan.name, location: plan.location, expiryDate: plan.expiryDate });
-        writes.push(() => transaction.update(ref, batch.legacy
-          ? { ...planLegacyUpgrade(batch, toTarget).fields, ...stamp() }
-          : { packages: FieldValue.increment(toTarget), quantity: FieldValue.increment(toTarget), ...stamp() }));
-      }
-      for (const packages of newBatches) createBatch(plan, packages);
-    }
-
-    const clear = input.mode === 'putAwayAndClear';
-    const records: TripItemRecord[] = applied.map(({ choice, data, credit }) => ({
-      itemId: choice.itemId,
-      name: String(data.name),
-      quantity: Number(data.quantity),
-      category: typeof data.category === 'string' ? data.category : 'Other',
-      location: credit ? choice.location : null,
-      expiryDate: credit ? choice.expiryDate : null,
-      credited: credit,
-      cleared: clear,
-      data: clear ? data : null,
-    }));
-    for (const record of records) {
-      if (record.cleared) writes.push(() => transaction.delete(itemRef(record.itemId)));
-      else if (record.credited) {
-        writes.push(() => transaction.update(itemRef(record.itemId), {
-          pantryCreditedAt: FieldValue.serverTimestamp(),
-          creditTripId: input.tripId,
-        }));
-      }
-    }
-    usualEntries.forEach((entry, index) => {
-      const previous = usualSnapshots[index].exists ? usualSnapshots[index].data() : undefined;
-      const fields = usualAfterTrip(previous, { name: entry.name, category: entry.category, tripId: input.tripId, atMs: nowMs });
-      writes.push(() => transaction.set(entry.ref, usualWrite(fields), { merge: true }));
-    });
+    const fits = (count: number) => {
+      const plan = build(eligible.slice(0, count));
+      return plan.writes.length + 1 <= MAX_TRIP_WRITES
+        && JSON.stringify([plan.records, plan.effects, plan.creditedPurchaseOpIds, decision.skipped]).length <= MAX_TRIP_RECORD_BYTES;
+    };
+    const count = largestFittingCount(eligible.length, fits);
     // Thrown before any write is applied: the transaction commits nothing.
-    if (writes.length + 1 > MAX_TRIP_WRITES) throw new TripRefused('too_large');
+    if (count === 0) throw new TripRefused('too_large');
+    const { writes, effects, records, usualIds, creditedPurchaseOpIds } = build(eligible.slice(0, count));
+    const deferred = eligible.slice(count).map(({ choice, data }) => ({ itemId: choice.itemId, name: String(data.name) }));
 
     // --- Writes ---
     for (const write of writes) write();
@@ -246,13 +289,15 @@ export async function applyTrip(
       appliedAt: FieldValue.serverTimestamp(),
       appliedByUid: uid,
       items: records,
+      creditedPurchaseOpIds,
       pantryEffects: effects,
       skipped: decision.skipped,
-      usualIds: [...usualRefs.keys()],
+      deferred,
+      usualIds,
       undoneAt: null,
       undoneByUid: null,
     });
-    return summaryOf(input.tripId, { listId: input.listId, mode: input.mode, items: records, skipped: decision.skipped }, false);
+    return summaryOf(input.tripId, { listId: input.listId, mode: input.mode, items: records, skipped: decision.skipped, deferred }, false);
   });
 }
 

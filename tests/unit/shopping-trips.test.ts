@@ -6,17 +6,21 @@ import {
   MAX_TRIP_ITEMS,
   TRIP_UNDO_WINDOW_MS,
   cadenceDays,
+  chunked,
   decideTripItems,
   expiryForPick,
   isAlreadyCredited,
+  largestFittingCount,
   offerEmptyListDelete,
   parseTripInput,
   pickAfterShelfChange,
   planPantryReversal,
   planTripPantry,
+  purchasesCreditedBy,
   readAfterTrip,
   shelfDefaultExpiry,
   shelfDefaultPick,
+  tripGroup,
   tripOutcomeText,
   tripPlanWrites,
   tripTargetStillValid,
@@ -28,6 +32,7 @@ import {
   usualWithoutTrip,
   type TripChoice,
 } from '../../src/lib/shopping/trip-plan';
+import { pantryBatchFields } from '../../src/lib/shopping/pantry-batches';
 import { pushJournal, readJournal, type JournalStorage, type UndoEntry } from '../../src/lib/shopping/undo';
 
 const ts = (ms: number) => ({ toMillis: () => ms });
@@ -96,6 +101,34 @@ describe('which items a trip applies to (SH-2b/c)', () => {
     assert.deepEqual(apply.map((entry) => [entry.choice.itemId, entry.credit]), [['milk', false], ['soap', false]]);
   });
 
+  test('a purchase an earlier trip credited is not credited (or counted) again, even without its stamp', () => {
+    // Deleted after "Put away" and restored by Undo: the stamp is gone, the purchase id is not.
+    const read = new Map<string, Record<string, unknown> | undefined>([
+      ['milk', stored('Milk')],
+      ['rice', stored('Rice')],
+    ]);
+    const { apply } = decideTripItems([choice('milk', 'Milk'), choice('rice', 'Rice')], read, new Set(['op-milk']));
+    assert.deepEqual(apply.map((entry) => [entry.choice.itemId, entry.credit, entry.alreadyCredited]), [['milk', false, true], ['rice', true, false]]);
+    // A stamped purchase is already credited as well; one only cleared (no shelf) is a new purchase.
+    const stamped = decideTripItems(
+      [choice('milk', 'Milk', 1, { location: null }), choice('rice', 'Rice', 1, { location: null })],
+      new Map([['milk', stored('Milk', 1, { pantryCreditedAt: ts(2_000), purchasedAt: ts(1_000) })], ['rice', stored('Rice')]]),
+    );
+    assert.deepEqual(stamped.apply.map((entry) => [entry.choice.itemId, entry.alreadyCredited]), [['milk', true], ['rice', false]]);
+  });
+
+  test('earlier credits are found by purchase id on trips that are not undone', () => {
+    const trips = [
+      { creditedPurchaseOpIds: ['op-a', 'op-b'], undoneAt: null },
+      { creditedPurchaseOpIds: ['op-c'], undoneAt: ts(5) },
+      { creditedPurchaseOpIds: 'op-d' },
+      {},
+    ];
+    assert.deepEqual([...purchasesCreditedBy(trips, ['op-a', 'op-c', 'op-d', 'op-x'])], ['op-a']);
+    assert.deepEqual(chunked(Array.from({ length: 65 }, (_, index) => index)).map((group) => group.length), [30, 30, 5]);
+    assert.deepEqual(chunked([]), []);
+  });
+
   test('a credit stamp counts only until the item is bought again', () => {
     assert.equal(isAlreadyCredited({}), false);
     assert.equal(isAlreadyCredited({ pantryCreditedAt: ts(2_000) }), true);
@@ -123,6 +156,21 @@ describe('pantry credit plan (Pantry v2, 10,000 per batch)', () => {
     ]);
   });
 
+  test('a name longer than the pantry keeps is planned, matched and recorded as the pantry stores it', () => {
+    const long = `Organic ${'very '.repeat(40)}long oat milk`;
+    assert.ok(long.length > 120);
+    const stored = pantryBatchFields({ name: long, location: 'Fridge', unit: 'items', packages: 2, packageSize: null, expiryDate: null });
+    assert.equal(stored.name.length <= 120, true);
+    const [plan] = planTripPantry([{ name: long, quantity: 1, location: 'Fridge', expiryDate: null }], [{ id: 'm1', data: stored }]);
+    assert.equal(plan.name, stored.name, 'the plan (and so the trip effect) carries the stored name');
+    assert.equal(plan.targetId, 'm1', 'merges into the batch an earlier trip created');
+    assert.equal(tripTargetStillValid(stored, { ...plan, name: long }), true);
+    // Undo recognises the untouched batch, also for an effect recorded with the full shopping name.
+    const effect = { pantryId: 'm1', kind: 'create' as const, packages: 2, name: long, location: 'Fridge' as const, expiryDate: null };
+    assert.deepEqual(planPantryReversal(effect, stored, true), { kind: 'delete' });
+    assert.deepEqual(planPantryReversal({ ...effect, name: plan.name }, stored, true), { kind: 'delete' });
+  });
+
   test('a target is re-checked inside the transaction and filled up to 10,000 with the rest split', () => {
     const plan = { name: 'Milk', location: 'Fridge' as const, expiryDate: null, packages: 12_500, targetId: 'm1' };
     assert.equal(tripTargetStillValid(v2(9_000), plan), true);
@@ -131,6 +179,48 @@ describe('pantry credit plan (Pantry v2, 10,000 per batch)', () => {
     assert.equal(tripTargetStillValid(undefined, plan), false);
     assert.deepEqual(tripPlanWrites(plan, { packages: 9_000 }), { toTarget: 1_000, newBatches: [10_000, 1_500] });
     assert.deepEqual(tripPlanWrites({ ...plan, packages: 25_000 }, null), { toTarget: 0, newBatches: [10_000, 10_000, 5_000] });
+  });
+});
+
+describe('one trip at a time (MAX_TRIP_ITEMS)', () => {
+  const item = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, purchaseOpId: `op-${id}`, ...extra });
+
+  test('a trip carries at most MAX_TRIP_ITEMS purchases, by name; the rest are left for another trip', () => {
+    const many = Array.from({ length: MAX_TRIP_ITEMS + 25 }, (_, index) => item(`item-${String(index).padStart(3, '0')}`)).reverse();
+    for (const mode of ['putAwayAndClear', 'putAway'] as const) {
+      const group = tripGroup(many, mode, new Set());
+      assert.equal(group.items.length, MAX_TRIP_ITEMS);
+      assert.equal(group.left, 25);
+      assert.equal(group.items[0].id, 'item-000');
+      assert.ok(parseTripInput({
+        listId: 'weekly', tripId: 'trip-1234-abcd', mode, items: group.items.map((entry) => choice(entry.id, entry.name)),
+      }), 'the group is a valid trip');
+    }
+    assert.equal(tripGroup(many.slice(0, 3), 'putAwayAndClear', new Set()).left, 0);
+  });
+
+  test('purchases already on the shelves: left out of "Put away", only cleared by "Put away & clear"', () => {
+    const items = [item('jam'), item('milk', { pantryCreditedAt: ts(2_000), purchasedAt: ts(1_000) }), item('rice')];
+    const credited = new Set(['op-rice']);
+    const put = tripGroup(items, 'putAway', credited);
+    assert.deepEqual(put.items.map((entry) => entry.id), ['jam']);
+    const clear = tripGroup(items, 'putAwayAndClear', credited);
+    assert.deepEqual(clear.items.map((entry) => entry.id), ['jam', 'milk', 'rice']);
+    assert.deepEqual([...clear.shelvedIds].sort(), ['milk', 'rice']);
+  });
+
+  test('the server takes the longest run of items that fits', () => {
+    assert.equal(largestFittingCount(200, (size) => size * 3 + 1 <= 450), 149);
+    assert.equal(largestFittingCount(10, () => true), 10);
+    assert.equal(largestFittingCount(10, () => false), 0);
+    assert.equal(largestFittingCount(0, () => true), 0);
+    assert.equal(largestFittingCount(1, (size) => size <= 1), 1);
+  });
+
+  test('the outcome text says how many purchases are still on the list', () => {
+    const text = tripOutcomeText({ mode: 'putAwayAndClear', credited: 2, cleared: 2, skipped: [], remaining: 30 });
+    assert.match(text.description, /30 items still on the list: put them away in another trip./);
+    assert.match(tripOutcomeText({ mode: 'putAway', credited: 1, cleared: 0, skipped: [], remaining: 1 }).description, /1 item still on the list: put it away/);
   });
 });
 

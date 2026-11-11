@@ -4,6 +4,7 @@ import { Timestamp, type DocumentReference } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '../../src/lib/server/firebase-admin';
 import { putAwayAndClear, undoTrip } from '../../src/app/shopping/actions';
 import { applyTrip, undoTripOnServer } from '../../src/lib/server/shopping-trips';
+import { restoreItemData } from '../../src/lib/shopping/items';
 import { TRIP_UNDO_WINDOW_MS, type TripChoice, type TripMode } from '../../src/lib/shopping/trip-plan';
 
 // S5 (SH-2, SH-17c, SH-32a): put away and clear as one trip, idempotent by its
@@ -213,6 +214,95 @@ describe('putAwayAndClear', () => {
     assert.equal(milk.category, 'Dairy');
     assert.equal((milk.lastBoughtAt as Timestamp).toMillis(), t0 + 6 * day);
     assert.equal((await usuals.doc('rice').get()).data()?.count, 1);
+  });
+
+  test('"Put away & clear" after "Put away" counts only the purchases not counted yet in the usuals', async () => {
+    await run('editor', 'trip-cnt-00001', 'putAway');
+    // A new purchase that is cleared without going on a shelf still counts once.
+    await items.doc('bread').set(bought('Bread', 1, 'Bakery'));
+    const clear = await run('owner', 'trip-cnt-00002', 'putAwayAndClear', [...tripChoices(), pick('bread', 'Bread', 1, null)]);
+    assert.deepEqual(clear.ok && { credited: clear.trip.credited, cleared: clear.trip.cleared.sort() }, { credited: 0, cleared: ['bread', 'milk', 'rice'] });
+    const milk = (await usuals.doc('milk').get()).data()!;
+    assert.equal(milk.count, 1);
+    assert.deepEqual(milk.recent.map((entry: { tripId: string }) => entry.tripId), ['trip-cnt-00001']);
+    assert.equal(milk.cadenceDays, null);
+    assert.equal((await usuals.doc('rice').get()).data()?.count, 1);
+    assert.equal((await usuals.doc('bread').get()).data()?.count, 1);
+    assert.deepEqual((await trips.doc('trip-cnt-00002').get()).data()?.usualIds, ['bread']);
+  });
+
+  test('a put-away purchase deleted and restored by Undo is not credited again; after the trip is undone it can be', async () => {
+    await run('editor', 'trip-del-00001', 'putAway');
+    assert.deepEqual((await trips.doc('trip-del-00001').get()).data()?.creditedPurchaseOpIds.sort(), ['op-Milk', 'op-Rice']);
+    // Delete, then the client's Undo writes the item back without the server-only stamps.
+    const before = (await items.doc('milk').get()).data()!;
+    await items.doc('milk').delete();
+    const restored = restoreItemData(before, CALLERS.owner.uid, 'restore-0001');
+    assert.equal('pantryCreditedAt' in restored || 'creditTripId' in restored, false);
+    await items.doc('milk').set(restored);
+
+    const again = await run('editor', 'trip-del-00002', 'putAway', [pick('milk', 'Milk', 2, 'Fridge', '2026-11-17')]);
+    assert.equal(again.ok && again.trip.applied, false);
+    const clear = await run('owner', 'trip-del-00003', 'putAwayAndClear', [pick('milk', 'Milk', 2, 'Fridge', '2026-11-17')]);
+    assert.deepEqual(clear.ok && { credited: clear.trip.credited, cleared: clear.trip.cleared }, { credited: 0, cleared: ['milk'] });
+    assert.deepEqual(await pantryRows(), [
+      { name: 'Milk', location: 'Fridge', packages: 2, expiryDate: '2026-11-17' },
+      { name: 'Rice', location: 'Pantry', packages: 1, expiryDate: null },
+    ]);
+    assert.equal((await usuals.doc('milk').get()).data()?.count, 1);
+
+    // Undo the clear (the milk comes back), then the "Put away" itself: now the purchase is credited again once.
+    assert.equal((await undo('owner', 'trip-del-00003')).ok, true);
+    assert.equal((await undo('editor', 'trip-del-00001')).ok, true);
+    assert.equal((await pantry.get()).size, 0);
+    const redo = await run('editor', 'trip-del-00004', 'putAway', [pick('milk', 'Milk', 2, 'Fridge', '2026-11-17')]);
+    assert.equal(redo.ok && redo.trip.credited, 1);
+    assert.deepEqual((await pantryRows()).map((row) => row.packages), [2]);
+  });
+
+  test('a name longer than the pantry keeps is recorded as stored, so Undo takes the untouched batch back', async () => {
+    const long = `Extra ${'creamy '.repeat(30)}yogurt`;
+    assert.ok(long.length > 120);
+    await items.doc('yogurt').set(bought(long, 3, 'Dairy', 'op-yogurt'));
+    await run('owner', 'trip-long-0001', 'putAwayAndClear', [pick('yogurt', long, 3, 'Fridge', null, 'op-yogurt')]);
+    const [batch] = (await pantry.get()).docs;
+    assert.ok(batch.data().name.length <= 120);
+    assert.equal((await trips.doc('trip-long-0001').get()).data()?.pantryEffects[0].name, batch.data().name);
+
+    const result = await undo('owner', 'trip-long-0001');
+    assert.deepEqual(result.ok && { reversed: result.undo.reversed, kept: result.undo.kept, restored: result.undo.restored }, { reversed: 1, kept: [], restored: 1 });
+    assert.equal((await pantry.get()).size, 0);
+    assert.equal((await items.doc('yogurt').get()).data()?.name, long);
+  });
+
+  test('a trip larger than one transaction applies the longest run that fits and leaves the rest for another trip', async () => {
+    await items.doc('milk').delete();
+    await items.doc('rice').delete();
+    const names = Array.from({ length: 200 }, (_, index) => `Item ${String(index).padStart(3, '0')}`);
+    const writer = adminDb.bulkWriter();
+    names.forEach((name, index) => void writer.set(items.doc(`i${index}`), bought(name, 1, 'Pantry')));
+    await writer.close();
+    const choices = names.map((name, index) => pick(`i${index}`, name, 1, 'Pantry'));
+
+    // Each item needs a clear, a new batch and a usual: 200 items are more writes than one trip may make.
+    const first = await run('owner', 'trip-many-0001', 'putAwayAndClear', choices);
+    assert.equal(first.ok, true);
+    const trip = first.ok ? first.trip : null;
+    assert.ok(trip && trip.cleared.length > 0 && trip.deferred.length > 0);
+    assert.equal(trip!.cleared.length + trip!.deferred.length, 200);
+    assert.deepEqual(trip!.deferred.map((entry) => entry.itemId), choices.slice(trip!.cleared.length).map((entry) => entry.itemId), 'the items after the run');
+    assert.equal((await items.get()).size, trip!.deferred.length);
+    assert.equal((await pantry.get()).size, trip!.cleared.length);
+    // A retry reports the same split.
+    const retry = await run('owner', 'trip-many-0001', 'putAwayAndClear', choices);
+    assert.equal(retry.ok && retry.trip.deferred.length, trip!.deferred.length);
+
+    // The rest go in another trip.
+    const rest = choices.slice(trip!.cleared.length);
+    const second = await run('owner', 'trip-many-0002', 'putAwayAndClear', rest);
+    assert.deepEqual(second.ok && { cleared: second.trip.cleared.length, deferred: second.trip.deferred.length }, { cleared: rest.length, deferred: 0 });
+    assert.equal((await items.get()).size, 0);
+    assert.equal((await pantry.get()).size, 200);
   });
 });
 

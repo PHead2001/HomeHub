@@ -474,12 +474,12 @@ describe('purchases above 10,000 packages are split, never clamped', () => {
     assert.equal(plans[0].kind === 'create' && plans[0].quantity, 15_000);
     assert.deepEqual(splitPackages(15_000), [10_000, 5_000]);
   });
-  test('the handoff writes split batches and refuses an oversized handoff before clearing', () => {
+  test('the handoff writes split batches and fits the trip to the write limit before clearing', () => {
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
     assert.match(writes, /tripPlanWrites\(plan, batch\)/);
     assert.match(writes, /for \(const packages of newBatches\) createBatch\(plan, packages\)/);
-    const refusal = writes.indexOf('> MAX_TRIP_WRITES');
-    assert.ok(refusal > 0 && refusal < writes.indexOf('for (const write of writes) write();'), 'the size check comes before any pantry write or clear is applied');
+    const refusal = writes.indexOf('<= MAX_TRIP_WRITES');
+    assert.ok(refusal > 0 && refusal < writes.indexOf('for (const write of writes) write();'), 'the trip is cut to what fits before any pantry write or clear is applied');
   });
 });
 

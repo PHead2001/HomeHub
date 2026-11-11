@@ -363,7 +363,14 @@ describe('pantry handoff credits only confirmed purchases', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
     const body = source.slice(source.indexOf('return db.runTransaction('), source.indexOf('const readEffects'));
     const firstWrite = Math.min(...['transaction.update', 'transaction.set', 'transaction.delete'].map((w) => body.indexOf(w)).filter((index) => index >= 0));
-    for (const step of ['transaction.getAll(...input.items', 'decideTripItems(input.items, read)', 'planTripPantry(credits, existing)', 'transaction.getAll(...targetPlans']) {
+    for (const step of [
+      'transaction.getAll(...input.items',
+      "trips.where('creditedPurchaseOpIds', 'array-contains-any'",
+      'decideTripItems(input.items, read, purchasesCreditedBy(',
+      'planTripPantry(creditsOf(eligible), existing)',
+      'transaction.getAll(...targetIds',
+      "transaction.getAll(...allUsualIds",
+    ]) {
       assert.ok(body.indexOf(step) >= 0 && body.indexOf(step) < firstWrite, `${step} happens before the first write`);
     }
   });

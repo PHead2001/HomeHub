@@ -42,6 +42,14 @@ async function finishTrip(page: Page) {
   return receipt;
 }
 
+/**
+ * Shows the Purchased section: it starts collapsed on every list open and
+ * reload. The cart button only ever opens it (the section header toggles).
+ */
+async function showPurchased(page: Page) {
+  await page.getByTestId('cart-indicator').click();
+}
+
 async function cleanup() {
   const [batches, tripDocs] = await Promise.all([
     pantry.where('name', 'in', [YOGURT, PEAS]).get(),
@@ -142,6 +150,8 @@ test.describe('shopping: put away and clear', () => {
     await expect.poll(async () => (await pantry.where('name', 'in', [YOGURT, PEAS]).get()).size).toBe(0);
     const [trip] = (await trips.where('listId', '==', LIST_ID).get()).docs;
     expect(trip.data().undoneAt).toBeTruthy();
+    // Back on the list as purchased; the Purchased section starts collapsed after the reload.
+    await showPurchased(page);
     await expect(page.locator('#item-purchased-yogurt')).toBeAttached();
   });
 
@@ -155,6 +165,7 @@ test.describe('shopping: put away and clear', () => {
     expect((await listRef.collection('items').get()).size).toBe(2);
 
     // Next trip: un-tick one item and finish again.
+    await showPurchased(page);
     await page.locator('#item-purchased-peas').click();
     await page.locator('#item-needed-peas').click();
     const next = page.getByRole('dialog', { name: 'Trip complete' });
