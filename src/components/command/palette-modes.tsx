@@ -13,7 +13,7 @@
  * - Chore: what needs doing, read like a typed chore, then the usual preview.
  * Without the permission a mode says why instead of offering a dead control.
  */
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { CheckSquare, Loader2, PawPrint, Search, ShoppingCart, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { FeedAgainDialog, useFeedAction } from '@/components/pets/use-feed-action';
@@ -37,7 +37,7 @@ const MODE_ICON: Record<PaletteMode, LucideIcon> = { feeding: PawPrint, item: Sh
 
 const fieldClass = 'h-[var(--target-min)] w-full min-w-0 rounded-md border border-input bg-background px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
-function ModeShell({ mode, onTypeInstead, children }: { mode: PaletteMode; onTypeInstead: () => void; children: ReactNode }) {
+function ModeShell({ mode, onTypeInstead, bodyRef, children }: { mode: PaletteMode; onTypeInstead: () => void; bodyRef?: Ref<HTMLDivElement>; children: ReactNode }) {
   const Icon = MODE_ICON[mode];
   return (
     <div className="p-4" data-testid={`palette-mode-${mode}`}>
@@ -45,7 +45,7 @@ function ModeShell({ mode, onTypeInstead, children }: { mode: PaletteMode; onTyp
         <Icon aria-hidden className="h-5 w-5 text-primary" />
         {MODE_COPY[mode].title}
       </h2>
-      <div className="mt-3">{children}</div>
+      <div ref={bodyRef} className="mt-3">{children}</div>
       <div className="mt-4 flex justify-end">
         <Button type="button" variant="ghost" onClick={onTypeInstead} data-testid="palette-mode-type-instead">
           <Search aria-hidden className="mr-2 h-4 w-4" />
@@ -71,7 +71,18 @@ function Notice({ children, tone = 'muted', onRetry }: { children: ReactNode; to
   );
 }
 
-/** Feeding mode: one large button per pet; no text field. */
+const FOCUSABLE = 'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Feeding mode: one large button per pet; no text field.
+ *
+ * Initial focus: the palette leaves it on the dialog while this mode opens
+ * (`onOpenAutoFocus` in command-palette.tsx). Once the pets have loaded it goes to the
+ * first enabled pet button, or with none (no permission, no pets, a failed read) to the
+ * explanation's first control ("Try again", else "Search or type instead"). Only once,
+ * and only while focus is still on the dialog (or outside it): it never takes focus the
+ * member has moved within the palette.
+ */
 export function FeedingMode({
   state,
   onRetry,
@@ -84,8 +95,22 @@ export function FeedingMode({
   onFed: () => void;
   onTypeInstead: () => void;
 }) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const focusPlaced = useRef(false);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (focusPlaced.current || state.status === 'loading' || !body) return;
+    focusPlaced.current = true;
+    const dialog = body.closest('[role="dialog"]');
+    const active = document.activeElement;
+    // Moved by the member already (to a control in the palette): leave it there.
+    if (active && active !== dialog && dialog?.contains(active)) return;
+    const target = body.querySelector<HTMLElement>('[data-testid^="palette-feed-"]:not([disabled])')
+      ?? (body.parentElement ?? body).querySelector<HTMLElement>(FOCUSABLE);
+    target?.focus();
+  }, [state.status]);
   return (
-    <ModeShell mode="feeding" onTypeInstead={onTypeInstead}>
+    <ModeShell mode="feeding" onTypeInstead={onTypeInstead} bodyRef={bodyRef}>
       {state.status === 'ready' ? (
         <ul className="grid max-h-[min(60vh,24rem)] gap-2 overflow-y-auto sm:grid-cols-2" aria-label="Pets">
           {state.pets.map((pet) => (
