@@ -135,7 +135,7 @@ export type ExpiryState = 'expired' | 'soon' | 'fresh' | 'none';
  * Days from `now` to the expiry date; negative once past. Null without a valid date.
  * With a `timeZone` (the household's, D-6), both "today" and a legacy ISO expiry are
  * read as days in that zone, so the label rolls over at household midnight
- * (SH-10b). Without one, device-local days are used (the dashboard).
+ * (SH-10b). Without one, device-local days are used.
  */
 export function daysUntilExpiry(expiryDate: string | null | undefined, now: Date = new Date(), timeZone?: string | null): number | null {
   if (!expiryDate) return null;
