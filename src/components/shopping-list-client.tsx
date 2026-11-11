@@ -77,7 +77,7 @@ import { ListCardsSkeleton } from './shopping/shopping-skeletons';
 import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { CategoriesDialog } from './shopping/categories-dialog';
 import { listSaveData, rejectedCreateView, shouldOpenCreatedList } from '@/lib/shopping/list-save';
-import { rejectedDraftRestore } from '@/lib/shopping/save-line';
+import { listDialogVisible, rejectedDraftRestore } from '@/lib/shopping/save-line';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
 import { ItemEditSheet } from './shopping/item-edit-sheet';
@@ -250,7 +250,7 @@ export function ShoppingListClient({
 
   // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
   // browser Back to `?tab=pantry`), so none stays on screen or traps focus there.
-  useOnTabDeactivate(() => {
+  const tabActive = useOnTabDeactivate(() => {
     setIsAddItemDialogOpen(false);
     setIsScannerOpen(false);
     setIsListDialogOpen(false);
@@ -385,13 +385,17 @@ export function ShoppingListClient({
       // still waiting) leaves that list for the overview, where its form returns.
       if (rejectedCreateView({ createdListId: id ? null : listId, openListId: selectedListIdRef.current }) === 'overview') onSelectList(null);
       const listGone = Boolean(id) && !listsRef.current.some((entry) => entry.id === id);
-      if (!rejectedDraftRestore({ dialogOpen: isListDialogOpenRef.current, listGone })) return;
+      const householdChanged = householdIdRef.current !== householdId;
+      if (!rejectedDraftRestore({ dialogOpen: isListDialogOpenRef.current, listGone, householdChanged })) return;
       setListToEdit(id ? listsRef.current.find((entry) => entry.id === id) ?? null : null);
       setListDraft(data);
       setIsListDialogOpen(true);
     };
+    // An edit is an update, so it fails on a list deleted meanwhile instead of
+    // re-creating a partial list document; a create is a merge on a fresh id.
+    const listRef = doc(listsCollection, listId);
     const tracked = await trackWrite(
-      setDoc(doc(listsCollection, listId), listSaveData(data, { isNew: !id, uid }), { merge: true }),
+      id ? updateDoc(listRef, listSaveData(data, { isNew: false, uid })) : setDoc(listRef, listSaveData(data, { isNew: true, uid }), { merge: true }),
       { kind: 'write', persistence: getLocalPersistence, offline: isBrowserOffline },
     );
     if (tracked.state === 'failed') {
@@ -1131,7 +1135,7 @@ export function ShoppingListClient({
   // rejected form can open again wherever the member is.
   const listDialog = (
     <ListDialog
-      isOpen={isListDialogOpen}
+      isOpen={listDialogVisible({ open: isListDialogOpen, tabActive })}
       onOpenChange={(open) => {
         setIsListDialogOpen(open);
         if (!open) setListDraft(null);
@@ -1292,6 +1296,8 @@ export function ShoppingListClient({
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
                         {householdId && (
                           <CategoriesDialog
+                            // One instance per list: a late answer for list A never fills list B's fields.
+                            key={`${householdId}/${selectedList.id}`}
                             householdId={householdId}
                             list={selectedList}
                             config={categoryConfig}

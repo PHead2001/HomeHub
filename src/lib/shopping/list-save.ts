@@ -1,5 +1,15 @@
 import type { ShoppingListType } from '@/lib/types';
 
+/** The list fields the Create and Edit form writes. */
+export type ListDocumentFields = {
+  name: string;
+  description: string;
+  icon: string;
+  type: ShoppingListType;
+  color: string;
+  createdByUid?: string;
+};
+
 /**
  * The list document written by the Create and Edit list form (SH-5a). Name and
  * description are trimmed, the type is kept as chosen (a custom list may be a
@@ -10,7 +20,7 @@ import type { ShoppingListType } from '@/lib/types';
 export function listSaveData(
   values: { name: string; description?: string; icon: string; type: ShoppingListType; color?: string },
   { isNew, uid }: { isNew: boolean; uid: string | null },
-): Record<string, unknown> {
+): ListDocumentFields {
   return {
     name: values.name.replace(/\s+/g, ' ').trim(),
     description: (values.description ?? '').trim(),

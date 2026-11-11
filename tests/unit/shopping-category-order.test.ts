@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  CategoryChangeDeclined,
+  declinedMessage,
+  seededChangeOutcome,
   MAX_LIST_CATEGORIES,
   MAX_STORE_AISLES,
   categoryKey,
@@ -27,7 +30,8 @@ import {
 import { groupItemsByAisle } from '../../src/lib/shopping/items';
 import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '../../src/lib/shopping-items';
 import { listSaveData, rejectedCreateView, shouldOpenCreatedList } from '../../src/lib/shopping/list-save';
-import { createSettledQueue, rejectedDraftRestore, rejectedInputRestore, saveLineText } from '../../src/lib/shopping/save-line';
+import { createSettledQueue, listDialogVisible, rejectedDraftRestore, rejectedInputRestore, saveLineText } from '../../src/lib/shopping/save-line';
+import { trackWrite } from '../../src/lib/shopping/save-status';
 
 const defaults = DEFAULT_SHOPPING_CATEGORIES;
 const WALK_DEFAULTS = ['Produce', 'Bakery', 'Meat', 'Dairy', 'Frozen', 'Pantry', 'Snacks', 'Drinks', 'Household', 'Other'];
@@ -413,5 +417,63 @@ describe('a new store made while the list follows another store', () => {
     const shown = listOrderAtStore(['Party', 'Dairy', 'Bakery'], listOrder);
     assert.deepEqual(initialAisleOrder(shown), ['Party', 'Dairy', 'Bakery']);
     assert.notDeepEqual(initialAisleOrder(shown), initialAisleOrder(listOrder));
+  });
+});
+
+describe('a seeded change that declines to write is never "saved"', () => {
+  // An older config with 199 categories and no `ordered`: two members each add one.
+  const names = Array.from({ length: MAX_LIST_CATEGORIES - 2 }, (_, index) => `C${index}`);
+  const legacy = { list: [...names, 'Other'] };
+
+  test('the first add writes, the second finds the list full and declines', () => {
+    const first = seededChangeOutcome({ data: legacy, exists: true }, defaults, { kind: 'add', name: 'Garden' });
+    assert.equal(first.kind, 'write');
+    const afterFirst = first.kind === 'write' ? first.plan : null;
+    assert.equal(afterFirst?.list.length, MAX_LIST_CATEGORIES);
+    assert.deepEqual(seededChangeOutcome({ data: afterFirst, exists: true }, defaults, { kind: 'add', name: 'Party' }), { kind: 'declined', reason: 'full' });
+    assert.equal(declinedMessage('full'), 'This list already has 200 categories. Remove one, then try again.');
+  });
+
+  test('a change someone else already made is done, not declined; one that no longer applies is stale', () => {
+    const stored = { list: ['Dairy', 'Garden', 'Other'], ordered: ['Garden', 'Dairy', 'Other'] };
+    assert.deepEqual(seededChangeOutcome({ data: stored, exists: true }, defaults, { kind: 'add', name: 'garden' }), { kind: 'done' });
+    assert.deepEqual(seededChangeOutcome({ data: stored, exists: true }, defaults, { kind: 'remove', category: 'Produce' }), { kind: 'done' });
+    assert.deepEqual(seededChangeOutcome({ data: stored, exists: true }, defaults, { kind: 'remove', category: 'Other' }), { kind: 'declined', reason: 'stale' });
+    assert.equal(declinedMessage('stale'), 'Changed by someone else. Try again.');
+  });
+
+  test('declined after the 4 s status wait: the late answer is a failure carrying the reason', async () => {
+    let decline: (error: unknown) => void = () => undefined;
+    const write = new Promise<void>((_, reject) => { decline = reject; });
+    let fire: () => void = () => undefined;
+    const tracked = await (async () => {
+      const pending = trackWrite(write, {
+        kind: 'transaction',
+        persistence: () => 'memory',
+        offline: () => false,
+        setTimer: (callback) => { fire = callback; return 1; },
+        clearTimer: () => undefined,
+      });
+      fire();
+      return pending;
+    })();
+    assert.equal(tracked.state, 'uncertain');
+    decline(new CategoryChangeDeclined('full'));
+    const final = await tracked.settled;
+    assert.equal(final.state, 'failed');
+    assert.ok(final.state === 'failed' && final.error instanceof CategoryChangeDeclined && final.error.reason === 'full');
+    // The caller then gives the name back only into an empty or unchanged field.
+    assert.deepEqual(rejectedInputRestore('', 'Party'), { value: 'Party', restored: true });
+  });
+});
+
+describe('a rejected list form while the member is elsewhere', () => {
+  test('is kept but shown only on the Shopping Lists tab, and dropped in another household', () => {
+    assert.equal(listDialogVisible({ open: true, tabActive: false }), false);
+    assert.equal(listDialogVisible({ open: true, tabActive: true }), true);
+    assert.equal(listDialogVisible({ open: false, tabActive: true }), false);
+    assert.equal(rejectedDraftRestore({ dialogOpen: false, listGone: false, householdChanged: true }), false);
+    // On the Pantry tab the list dialog is closed, so the draft is kept for the return.
+    assert.equal(rejectedDraftRestore({ dialogOpen: false, listGone: false, householdChanged: false }), true);
   });
 });

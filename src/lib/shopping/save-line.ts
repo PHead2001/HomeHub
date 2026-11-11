@@ -28,12 +28,30 @@ export function rejectedInputRestore(current: string, submitted: string): { valu
 }
 
 /**
- * Whether a rejected list form (create or edit) opens again with what was
- * submitted: only while the list dialog is closed, so a form opened since is
- * never replaced, and for an edit only while that list still exists.
+ * Whether a rejected list form (create or edit) is kept to open again with what
+ * was submitted: only while the list dialog is closed, so a form opened since is
+ * never replaced, only in the household it was submitted in, and for an edit
+ * only while that list still exists.
  */
-export function rejectedDraftRestore({ dialogOpen, listGone }: { dialogOpen: boolean; listGone: boolean }): boolean {
-  return !dialogOpen && !listGone;
+export function rejectedDraftRestore({
+  dialogOpen,
+  listGone,
+  householdChanged = false,
+}: {
+  dialogOpen: boolean;
+  listGone: boolean;
+  householdChanged?: boolean;
+}): boolean {
+  return !dialogOpen && !listGone && !householdChanged;
+}
+
+/**
+ * Whether the list form is on screen. A form restored after a rejection while
+ * the member is on the Pantry tab (both tabs stay mounted; dialogs render in a
+ * portal) waits, kept, until the Shopping Lists tab is shown again.
+ */
+export function listDialogVisible({ open, tabActive }: { open: boolean; tabActive: boolean }): boolean {
+  return open && tabActive;
 }
 
 /**

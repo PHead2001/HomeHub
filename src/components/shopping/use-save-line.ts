@@ -17,6 +17,8 @@ type Line = { id: number; state: SaveLineState; subject: string };
 export function useSaveLine(onFail: (error: unknown, title: string) => void) {
   const [line, setLine] = useState<Line | null>(null);
   const seq = useRef(0);
+  // Writes started up to here no longer touch the line (it was cleared: the dialog closed).
+  const clearedThrough = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -44,7 +46,8 @@ export function useSaveLine(onFail: (error: unknown, title: string) => void) {
   ): Promise<TrackedWrite<T>> => {
     const id = ++seq.current;
     const show = (state: SaveLineState) => {
-      if (mounted.current) setLine((current) => (current === null || current.id <= id ? { id, state, subject } : current));
+      if (!mounted.current || id <= clearedThrough.current) return;
+      setLine((current) => (current === null || current.id <= id ? { id, state, subject } : current));
     };
     show('waiting');
     const tracked = await trackWrite(write, { kind, persistence: getLocalPersistence, offline: isBrowserOffline, cacheReflectsWrite });
@@ -64,7 +67,10 @@ export function useSaveLine(onFail: (error: unknown, title: string) => void) {
     return tracked;
   }, [onFail]);
 
-  const clear = useCallback(() => setLine(null), []);
+  const clear = useCallback(() => {
+    clearedThrough.current = seq.current;
+    setLine(null);
+  }, []);
 
   return { text: line ? saveLineText(line.state, line.subject) : '', state: line?.state ?? null, track, clear };
 }

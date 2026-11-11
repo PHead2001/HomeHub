@@ -7,10 +7,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
-import { toastError } from '@/hooks/use-toast';
+import { toast, toastError } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import {
+  CategoryChangeDeclined,
   categoryKey,
+  declinedMessage,
   addNeedsCompaction,
   changeNeedsTransaction,
   checkStoreName,
@@ -27,7 +29,6 @@ import {
   createStoreForList,
   reorderListCategory,
   reorderStoreAisle,
-  TooManyAislesError,
   writeCategoryPlan,
   writeSeededCategoryChange,
 } from '@/lib/shopping/category-writes';
@@ -42,9 +43,11 @@ const NEW_STORE = '__new__';
 /** 44 px controls, 48 px on touch (D-2). */
 const ICON_CONTROL = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-ui hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-40 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12';
 
+// A write that ran but declined (list full, changed by someone else) says what to do;
+// anything else goes through toastError's plain-language mapping.
 const reportFailure = (error: unknown, title: string) => {
-  if (error instanceof TooManyAislesError) {
-    toastError(new Error('This store already has 200 aisles.'), title);
+  if (error instanceof CategoryChangeDeclined) {
+    toast({ variant: 'destructive', title, description: declinedMessage(error.reason) });
     return;
   }
   toastError(error, title);
@@ -99,6 +102,12 @@ export function CategoriesDialog({
 
   const order = store ? listOrderAtStore(store.aisleOrder, config.list) : config.list;
   const movable = order.filter((category) => !isOtherCategory(category));
+  // A queued move runs later: it reads the store and categories as they are then,
+  // not as they were when it was clicked.
+  const latest = useRef({ store, listOrder: config.list });
+  useEffect(() => {
+    latest.current = { store, listOrder: config.list };
+  }, [store, config.list]);
 
   // React may re-insert the moved row, which drops focus: put it back on the same
   // control once the new order is drawn, unless the member has moved on.
@@ -137,8 +146,9 @@ export function CategoriesDialog({
     const write: Promise<unknown> = seed
       ? writeSeededCategoryChange(householdId, list.id, { kind: 'add', name: result.name })
       : writeCategoryPlan(householdId, list.id, result.plan);
-    // A refused add (at once, or later when it was queued or slow) goes back into
-    // the field unless something newer was typed there; the toast names it.
+    // A refused or declined add (at once, or later when it was queued or slow)
+    // goes back into the field unless something newer was typed there; the toast
+    // names it and, for a declined transaction, says why (list full, changed).
     await save.track(write, {
       kind: seed ? 'transaction' : 'write',
       subject: `${result.name} added`,
@@ -169,16 +179,18 @@ export function CategoriesDialog({
     const where = direction === -1 ? 'up' : 'down';
     focusAfterMove.current = `Move ${category} ${where}`;
     const run = async () => {
-      const write = store
-        ? reorderStoreAisle(householdId, store.id, config.list, category, direction)
+      const now = latest.current;
+      // A move that can no longer apply (gone, already at the end, store removed)
+      // rejects with CategoryChangeDeclined and is reported, never shown as saved.
+      const write = now.store
+        ? reorderStoreAisle(householdId, now.store.id, now.listOrder, category, direction)
         : reorderListCategory(householdId, list.id, category, direction);
       const tracked = await save.track(write, {
         kind: 'transaction',
         subject: `${category} moved ${where}`,
         failTitle: `Could not move ${category}`,
       });
-      if (tracked.state === 'saved' && tracked.value === false) save.clear();
-      else if (tracked.state !== 'failed') setAnnouncement(`${category} moved ${where}, position ${target + 1} of ${movable.length}.`);
+      if (tracked.state !== 'failed') setAnnouncement(`${category} moved ${where}, position ${target + 1} of ${movable.length}.`);
       return tracked;
     };
     void enqueueMove(run);

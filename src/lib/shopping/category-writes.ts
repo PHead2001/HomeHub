@@ -17,8 +17,9 @@ import { arrayRemove, arrayUnion, collection, doc, runTransaction, serverTimesta
 import { db } from '@/lib/firebase';
 import { DEFAULT_SHOPPING_CATEGORIES } from '@/lib/shopping-items';
 import {
+  CategoryChangeDeclined,
   planListReorder,
-  planSeededChange,
+  seededChangeOutcome,
   type CategoryChange,
   planStoreReorder,
   type CategoryWritePlan,
@@ -44,44 +45,43 @@ export function writeCategoryPlan(householdId: string, listId: string, plan: Cat
 }
 
 /**
- * The first add or remove that introduces `ordered` (or the document), online:
- * a transaction that re-reads the document and writes `list` and `ordered` from
- * what is stored then. Resolves false when nothing was written.
+ * The first add or remove that introduces `ordered` (or the document), or an add
+ * that must compact a full `ordered`, online: a transaction that re-reads the
+ * document and writes `list` and `ordered` from what is stored then. Resolves
+ * when written, or when it was already so (someone else made the same change);
+ * rejects with `CategoryChangeDeclined` when the list is full or the change no
+ * longer applies, so the save path reports it (never "saved").
  */
-export function writeSeededCategoryChange(householdId: string, listId: string, change: CategoryChange): Promise<boolean> {
+export function writeSeededCategoryChange(householdId: string, listId: string, change: CategoryChange): Promise<void> {
   const ref = categoriesRef(householdId, listId);
   return runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(ref);
-    const plan = planSeededChange({ data: snapshot.data(), exists: snapshot.exists() }, DEFAULT_SHOPPING_CATEGORIES, change);
-    if (!plan) return false;
-    transaction.set(ref, plan, { merge: true });
-    return true;
+    const outcome = seededChangeOutcome({ data: snapshot.data(), exists: snapshot.exists() }, DEFAULT_SHOPPING_CATEGORIES, change);
+    if (outcome.kind === 'declined') throw new CategoryChangeDeclined(outcome.reason);
+    if (outcome.kind === 'write') transaction.set(ref, outcome.plan, { merge: true });
   });
 }
 
-/** Moves a category one step in the list's own order. Resolves false when nothing moved. */
-export function reorderListCategory(householdId: string, listId: string, category: string, direction: MoveDirection): Promise<boolean> {
+/**
+ * Moves a category one step in the list's own order. Rejects with
+ * `CategoryChangeDeclined('stale')` when it cannot move any more (gone, or
+ * already at that end after someone else's change).
+ */
+export function reorderListCategory(householdId: string, listId: string, category: string, direction: MoveDirection): Promise<void> {
   const ref = categoriesRef(householdId, listId);
   return runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(ref);
     const plan = planListReorder({ data: snapshot.data(), exists: snapshot.exists() }, DEFAULT_SHOPPING_CATEGORIES, category, direction);
-    if (!plan) return false;
+    if (!plan) throw new CategoryChangeDeclined('stale');
     transaction.set(ref, plan, { merge: true });
-    return true;
   });
-}
-
-export class TooManyAislesError extends Error {
-  constructor() {
-    super('too-many-aisles');
-    this.name = 'TooManyAislesError';
-  }
 }
 
 /**
  * Moves a category one step in a store's aisle order (re-read in the
- * transaction). Aisles this list does not use keep their places. Resolves false
- * when nothing moved or the store is gone.
+ * transaction). Aisles this list does not use keep their places. Rejects with
+ * `CategoryChangeDeclined`: 'stale' when the store is gone or the category cannot
+ * move any more, 'store-full' above 200 aisles.
  */
 export function reorderStoreAisle(
   householdId: string,
@@ -89,17 +89,16 @@ export function reorderStoreAisle(
   listOrder: readonly string[],
   category: string,
   direction: MoveDirection,
-): Promise<boolean> {
+): Promise<void> {
   const ref = doc(storesCollection(householdId), storeId);
   return runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(ref);
-    if (!snapshot.exists()) return false;
+    if (!snapshot.exists()) throw new CategoryChangeDeclined('stale');
     const stored = snapshot.data().aisleOrder;
     const next = planStoreReorder(Array.isArray(stored) ? stored : [], listOrder, category, direction);
-    if (next === 'too-many') throw new TooManyAislesError();
-    if (!next) return false;
+    if (next === 'too-many') throw new CategoryChangeDeclined('store-full');
+    if (!next) throw new CategoryChangeDeclined('stale');
     transaction.update(ref, { aisleOrder: next, updatedAt: serverTimestamp() });
-    return true;
   });
 }
 

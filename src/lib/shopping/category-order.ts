@@ -192,6 +192,63 @@ export function planSeededChange(
   return { list: next, ordered: next };
 }
 
+/** Why a category, aisle or list write declined to write anything. */
+export type DeclineReason = 'full' | 'store-full' | 'stale';
+
+/**
+ * A write that ran but declined to change anything, because the document as
+ * stored then does not allow it. It is thrown as an error, so the save path
+ * reports it like a refusal (a toast, the input given back), also when it
+ * arrives after the 4 s status wait.
+ */
+export class CategoryChangeDeclined extends Error {
+  readonly reason: DeclineReason;
+  constructor(reason: DeclineReason) {
+    super(`category-change-declined:${reason}`);
+    this.name = 'CategoryChangeDeclined';
+    this.reason = reason;
+  }
+}
+
+/** What the member is told when a write was declined (actionable, never "saved"). */
+export function declinedMessage(reason: DeclineReason): string {
+  switch (reason) {
+    case 'full': return `This list already has ${MAX_LIST_CATEGORIES} categories. Remove one, then try again.`;
+    case 'store-full': return `This store already has ${MAX_STORE_AISLES} aisles.`;
+    case 'stale': return 'Changed by someone else. Try again.';
+  }
+}
+
+export type SeededChangeOutcome =
+  | { kind: 'write'; plan: { list: string[]; ordered: string[] } }
+  /** Already as asked (added or removed by someone else): nothing to write, and nothing failed. */
+  | { kind: 'done' }
+  | { kind: 'declined'; reason: DeclineReason };
+
+/**
+ * The typed outcome of a seeded (transactional) add or remove, from the
+ * document as stored now: write it, nothing to do (already so), or declined
+ * (the list is full, or the change no longer makes sense).
+ */
+export function seededChangeOutcome(
+  server: { data: unknown; exists: boolean },
+  defaults: readonly string[],
+  change: CategoryChange,
+): SeededChangeOutcome {
+  const fresh = readCategoryConfig(server.data, server.exists, defaults);
+  if (change.kind === 'add') {
+    const name = cleanCategoryName(change.name);
+    if (!name || name.length > MAX_CATEGORY_NAME || isOtherCategory(name)) return { kind: 'declined', reason: 'stale' };
+    if (fresh.list.some((entry) => categoryKey(entry) === categoryKey(name))) return { kind: 'done' };
+    if (fresh.list.length >= MAX_LIST_CATEGORIES) return { kind: 'declined', reason: 'full' };
+  } else {
+    if (isOtherCategory(change.category)) return { kind: 'declined', reason: 'stale' };
+    if (!fresh.list.some((entry) => categoryKey(entry) === categoryKey(change.category))) return { kind: 'done' };
+  }
+  const plan = planSeededChange(server, defaults, change);
+  return plan ? { kind: 'write', plan } : { kind: 'declined', reason: 'stale' };
+}
+
 /**
  * A category write that never rewrites a whole list from a stale copy (SH-10c):
  * each field is an `arrayUnion` or an `arrayRemove` of these values. Two members
