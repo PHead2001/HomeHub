@@ -130,14 +130,14 @@ const noHorizontalOverflow = async (page: Page) => {
   expect(widths.scroll).toBeLessThanOrEqual(widths.client);
 };
 
-/** Closes any toasts (the headless camera's "Scan Error"): they sit over the top of the screen, where the list's header is. */
-async function dismissToasts(page: Page) {
-  const toasts = page.getByRole('region', { name: 'Notifications (F8)' }).getByRole('button', { name: 'Dismiss notification' });
-  for (let attempt = 0; attempt < 10 && await toasts.count() > 0; attempt += 1) {
-    await toasts.first().click({ force: true }).catch(() => undefined);
-    await page.waitForTimeout(100);
-  }
-  await expect(toasts).toHaveCount(0);
+/**
+ * Activates a control from the keyboard. Toasts sit over the top of the screen,
+ * where the list's header is (the headless camera's "Scan Error" among them), and
+ * would intercept a pointer click there; the keyboard path is the same control.
+ */
+async function press(page: Page, control: ReturnType<Page['locator']>) {
+  await control.focus();
+  await page.keyboard.press('Enter');
 }
 
 const wake = (page: Page) => page.evaluate(() => (window as unknown as { __wake: () => { requests: number; held: number } }).__wake());
@@ -273,15 +273,14 @@ test.describe('shopping trip mode: the open list in the store', () => {
       await a.page.keyboard.press('Escape');
       await expect(a.page.getByRole('dialog', { name: 'Scan to tick' })).toHaveCount(0);
       await expect(menuButton).toBeFocused();
-      await dismissToasts(a.page);
 
       // Add Item and the edit sheet are bottom sheets too.
-      await list.getByRole('button', { name: 'Add Item' }).click();
+      await press(a.page, list.getByRole('button', { name: 'Add Item' }));
       const add = a.page.getByRole('dialog', { name: 'Add Item to List' });
       await expect(add).toBeVisible();
       await expect.poll(async () => Math.round((await add.boundingBox())!.width)).toBe(PHONE.width);
       await a.page.keyboard.press('Escape');
-      await list.getByRole('button', { name: 'Edit E2E tm milk' }).click();
+      await press(a.page, list.getByRole('button', { name: 'Edit E2E tm milk' }));
       const sheet = a.page.getByTestId('item-edit-sheet');
       await expect(sheet).toBeVisible();
       await expect.poll(async () => { const box = (await sheet.boundingBox())!; return Math.round(box.y + box.height); }).toBe(PHONE.height);
