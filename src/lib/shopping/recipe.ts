@@ -112,6 +112,25 @@ export function planMissingAdds(
   return names;
 }
 
+/**
+ * Add states per destination list (by list id), each keyed by ingredient name
+ * key: an ingredient added to one Grocery list is still missing from another,
+ * so each list shows, and "Add all missing" plans from, its own states only.
+ */
+export type MissingAddStates = Readonly<Record<string, Readonly<Record<string, MissingAddState>>>>;
+
+const NO_STATES: Readonly<Record<string, MissingAddState>> = Object.freeze({});
+
+/** The ingredient states on one destination list (empty when nothing was added there). */
+export function missingAddStatesOn(states: MissingAddStates, listKey: string): Readonly<Record<string, MissingAddState>> {
+  return states[listKey] ?? NO_STATES;
+}
+
+/** `states` with one ingredient's state on one destination list replaced; other lists are untouched. */
+export function withMissingAddState(states: MissingAddStates, listKey: string, name: string, state: MissingAddState): MissingAddStates {
+  return { ...states, [listKey]: { ...missingAddStatesOn(states, listKey), [itemNameKey(name)]: state } };
+}
+
 export type MissingAddResult = {
   /** The ingredient's name as asked. */
   name: string;

@@ -10,7 +10,9 @@
  * a second entry, and each row shows its write's honest state.
  *
  * Mounted per recipe (the dialog keys it), so a new recipe starts with fresh
- * row states.
+ * row states. Row states are kept per destination list: switching the picker
+ * shows that list's own states, and a write that settles after the switch
+ * lands on the list it was started for.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, CloudOff, Loader2, Plus, RotateCcw, Salad } from 'lucide-react';
@@ -20,8 +22,8 @@ import { itemNameKey } from '@/lib/shopping/items';
 import { groceryListChoice, productSummary, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addAllToGroceryList, addToGroceryList, createGroceriesList, readShoppingLists } from '@/lib/shopping/pantry-batch-writes';
 import {
-  isMissingAdded, planMissingAdds, summarizeMissingAdds,
-  type MissingAddState, type RecipeIngredients as RecipeIngredientLists, type RecipeNeededIngredient,
+  isMissingAdded, missingAddStatesOn, planMissingAdds, summarizeMissingAdds, withMissingAddState,
+  type MissingAddState, type MissingAddStates, type RecipeIngredients as RecipeIngredientLists, type RecipeNeededIngredient,
 } from '@/lib/shopping/recipe';
 import { readRecentList, rememberRecentList } from '@/lib/shopping/recent-list';
 import { categorizationNotice, type SettledState } from '@/lib/shopping/save-status';
@@ -38,6 +40,16 @@ type Destination =
   | { kind: 'create' }
   | { kind: 'direct'; list: ListRef }
   | { kind: 'pick'; lists: ShoppingList[]; selectedId: string };
+
+/** Row states before the new "Groceries" list exists are kept under this key (never a document id). */
+const NEW_LIST_KEY = '\u0000new';
+
+/** The key the destination's row states live under, or null while there is none. */
+const destinationKey = (destination: Destination): string | null =>
+  destination.kind === 'direct' ? destination.list.id
+    : destination.kind === 'pick' ? destination.selectedId
+      : destination.kind === 'create' ? NEW_LIST_KEY
+        : null;
 
 /** 44 px, 48 px on coarse pointers. */
 const TOUCH = 'h-11 min-w-11 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:min-w-12';
@@ -69,12 +81,11 @@ export function RecipeIngredients({
   canEdit: boolean;
 }) {
   const { toast, toastError } = useToast();
-  const [states, setStates] = useState<Record<string, MissingAddState>>({});
+  const [states, setStates] = useState<MissingAddStates>({});
   // Read by the handlers (a tap and "Add all" may overlap); `setState` keeps it current.
   const statesRef = useRef(states);
-  const setState = useCallback((name: string, state: MissingAddState) => {
-    const key = itemNameKey(name);
-    statesRef.current = { ...statesRef.current, [key]: state };
+  const setState = useCallback((listKey: string, name: string, state: MissingAddState) => {
+    statesRef.current = withMissingAddState(statesRef.current, listKey, name, state);
     setStates(statesRef.current);
   }, []);
 
@@ -103,8 +114,8 @@ export function RecipeIngredients({
   }, [canEdit, householdId, hasNeeded, loadAttempt]);
 
   const creatingRef = useRef<Promise<ListRef> | null>(null);
-  const resolveList = useCallback(async (): Promise<ListRef | null> => {
-    const current = destinationRef.current;
+  // Resolves the destination captured when the add started, not whatever is selected by then.
+  const resolveList = useCallback(async (current: Destination): Promise<ListRef | null> => {
     if (current.kind === 'direct') return current.list;
     if (current.kind === 'pick') return current.lists.find((list) => list.id === current.selectedId) ?? null;
     if (current.kind !== 'create') return null;
@@ -122,8 +133,8 @@ export function RecipeIngredients({
   }, [householdId, toastError]);
 
   const active = useCallback((listId: string) => () => ({ householdId: auth.currentUser ? householdId : null, listId }), [householdId]);
-  const follow = useCallback((name: string, settled: Promise<SettledState>) => {
-    void settled.then((final) => setState(name, final));
+  const follow = useCallback((listKey: string, name: string, settled: Promise<SettledState>) => {
+    void settled.then((final) => setState(listKey, name, final));
   }, [setState]);
   const reportCategories = useCallback((categorization: Promise<{ unavailable: string[]; unconfirmed: string[] }>) => {
     void categorization.then((report) => {
@@ -133,14 +144,23 @@ export function RecipeIngredients({
   }, [toast]);
 
   const addOne = useCallback(async (entry: RecipeNeededIngredient) => {
-    const state = statesRef.current[itemNameKey(entry.name)];
-    if (!canEdit || !householdId || state === 'saving' || isMissingAdded(state)) return;
-    setState(entry.name, 'saving');
+    const target = destinationRef.current;
+    let listKey = destinationKey(target);
+    if (!canEdit || !householdId || listKey === null) return;
+    const state = missingAddStatesOn(statesRef.current, listKey)[itemNameKey(entry.name)];
+    if (state === 'saving' || isMissingAdded(state)) return;
+    setState(listKey, entry.name, 'saving');
     try {
-      const list = await resolveList();
+      const list = await resolveList(target);
       if (!list) {
-        setState(entry.name, 'idle');
+        setState(listKey, entry.name, 'idle');
         return;
+      }
+      if (list.id !== listKey) {
+        // The new Groceries list now exists: the row's state moves onto it.
+        setState(listKey, entry.name, 'idle');
+        listKey = list.id;
+        setState(listKey, entry.name, 'saving');
       }
       const result = await addToGroceryList({
         householdId,
@@ -151,9 +171,9 @@ export function RecipeIngredients({
         active: active(list.id),
         onLateError: (error) => toastError(error, `Could not sync ${entry.name}`),
       });
-      setState(entry.name, result.state);
+      setState(listKey, entry.name, result.state);
       if (result.state === 'failed') throw result.error ?? new Error('save-failed');
-      follow(entry.name, result.settled);
+      follow(listKey, entry.name, result.settled);
       rememberRecentList(householdId, list.id);
       toast(result.state === 'saved'
         ? {
@@ -165,23 +185,41 @@ export function RecipeIngredients({
           : { title: 'Still sending…', description: `${entry.name} has not reached ${list.name} yet. An error shows here if it fails.` });
       reportCategories(result.categorization);
     } catch (error) {
-      setState(entry.name, 'failed');
+      setState(listKey, entry.name, 'failed');
       toastError(error, `Could not add ${entry.name} to the list`);
     }
   }, [canEdit, householdId, uid, resolveList, active, follow, reportCategories, setState, toast, toastError]);
 
-  const [addingAll, setAddingAll] = useState(false);
+  // The destination keys an "Add all missing" is running for (each list on its own).
+  const [addingAllOn, setAddingAllOn] = useState<ReadonlySet<string>>(() => new Set());
+  const markAddingAll = useCallback((listKey: string, running: boolean) => {
+    setAddingAllOn((current) => {
+      const next = new Set(current);
+      if (running) next.add(listKey);
+      else next.delete(listKey);
+      return next;
+    });
+  }, []);
   const addAll = useCallback(async () => {
-    if (!canEdit || !householdId) return;
-    const names = planMissingAdds(ingredients.needed, statesRef.current);
+    const target = destinationRef.current;
+    const startKey = destinationKey(target);
+    if (!canEdit || !householdId || startKey === null) return;
+    let listKey = startKey;
+    const names = planMissingAdds(ingredients.needed, missingAddStatesOn(statesRef.current, listKey));
     if (names.length === 0) return;
-    setAddingAll(true);
-    for (const name of names) setState(name, 'saving');
+    markAddingAll(startKey, true);
+    for (const name of names) setState(listKey, name, 'saving');
     try {
-      const list = await resolveList();
+      const list = await resolveList(target);
       if (!list) {
-        for (const name of names) setState(name, 'idle');
+        for (const name of names) setState(listKey, name, 'idle');
         return;
+      }
+      if (list.id !== listKey) {
+        // The new Groceries list now exists: the rows' states move onto it.
+        for (const name of names) setState(listKey, name, 'idle');
+        listKey = list.id;
+        for (const name of names) setState(listKey, name, 'saving');
       }
       const result = await addAllToGroceryList({
         householdId,
@@ -192,20 +230,20 @@ export function RecipeIngredients({
         onLateError: (name, error) => toastError(error, `Could not sync ${name}`),
       });
       for (const entry of result.entries) {
-        setState(entry.asked, entry.state);
-        if (entry.state !== 'failed') follow(entry.asked, entry.settled);
+        setState(listKey, entry.asked, entry.state);
+        if (entry.state !== 'failed') follow(listKey, entry.asked, entry.settled);
       }
       if (result.entries.some((entry) => entry.state !== 'failed')) rememberRecentList(householdId, list.id);
       const summary = summarizeMissingAdds(result.entries.map((entry) => ({ name: entry.asked, state: entry.state, merged: entry.merged })), list.name);
       toast({ title: summary.title, description: summary.description, ...(summary.failed ? { variant: 'destructive' as const } : {}) });
       reportCategories(result.categorization);
     } catch (error) {
-      for (const name of names) setState(name, 'failed');
+      for (const name of names) setState(listKey, name, 'failed');
       toastError(error, 'Could not add the missing ingredients');
     } finally {
-      setAddingAll(false);
+      markAddingAll(startKey, false);
     }
-  }, [canEdit, householdId, uid, ingredients.needed, resolveList, active, follow, reportCategories, setState, toast, toastError]);
+  }, [canEdit, householdId, uid, ingredients.needed, resolveList, active, follow, reportCategories, setState, markAddingAll, toast, toastError]);
 
   // Amounts on hand come from the live pantry, by exact name (every shelf).
   const onHand = useMemo(() => {
@@ -220,7 +258,11 @@ export function RecipeIngredients({
     return byName;
   }, [products, today]);
 
-  const remaining = planMissingAdds(ingredients.needed, states).length;
+  // Everything below shows the selected destination's own states.
+  const shownKey = destinationKey(destination);
+  const shownStates = shownKey === null ? {} : missingAddStatesOn(states, shownKey);
+  const addingAll = shownKey !== null && addingAllOn.has(shownKey);
+  const remaining = planMissingAdds(ingredients.needed, shownStates).length;
   const listReady = destination.kind === 'direct' || destination.kind === 'pick' || destination.kind === 'create';
   const disabledReason = !canEdit
     ? 'You need permission to edit shopping lists to add these.'
@@ -300,7 +342,7 @@ export function RecipeIngredients({
           )}
           <ul className="space-y-1" aria-label="You might need">
             {ingredients.needed.map((entry) => {
-              const state = states[itemNameKey(entry.name)] ?? 'idle';
+              const state = shownStates[itemNameKey(entry.name)] ?? 'idle';
               const added = isMissingAdded(state);
               const status = STATUS_TEXT[state];
               return (

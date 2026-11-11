@@ -6,10 +6,12 @@ import { groupPantryBatches, RECIPE_MAX_ITEMS, usableRecipeItems, type PantryBat
 import {
   cleanRecipeText,
   isMissingAdded,
+  missingAddStatesOn,
   normalizeRecipeIngredients,
   planMissingAdds,
   recipeProductKeys,
   summarizeMissingAdds,
+  withMissingAddState,
   RECIPE_NEEDED_MAX,
 } from '../../src/lib/shopping/recipe';
 
@@ -231,5 +233,63 @@ describe('missing ingredients onto the Grocery list (SH-22c/d, SH-31b)', () => {
     assert.equal((card.match(/disabled=\{!canEdit \|\|/g) ?? []).length, 2);
     assert.match(card, /addAllToGroceryList\(\{/);
     assert.match(card, /addToGroceryList\(\{/);
+  });
+});
+
+describe('missing-ingredient add states are kept per destination Grocery list', () => {
+  const needed = [
+    { name: 'Salt', line: '1 tsp salt' },
+    { name: 'Pepper', line: 'pepper' },
+    { name: 'Basil', line: 'basil' },
+  ];
+
+  test('switching lists mid-save: the other list still shows the ingredient as missing', () => {
+    // Salt is being added to list A, then the picker moves to list B.
+    const states = withMissingAddState({}, 'list-a', 'Salt', 'saving');
+    assert.equal(missingAddStatesOn(states, 'list-a').salt, 'saving');
+    assert.equal(missingAddStatesOn(states, 'list-b').salt, undefined);
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-b')), ['Salt', 'Pepper', 'Basil']);
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-a')), ['Pepper', 'Basil']);
+  });
+
+  test('"Add all missing" for the second list includes what only reached the first', () => {
+    let states = withMissingAddState({}, 'list-a', 'Salt', 'saved');
+    states = withMissingAddState(states, 'list-a', 'Pepper', 'stored-locally');
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-a')), ['Basil']);
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-b')), ['Salt', 'Pepper', 'Basil']);
+    // After adding all to B, both lists are complete on their own.
+    for (const name of ['Salt', 'Pepper', 'Basil']) states = withMissingAddState(states, 'list-b', name, 'saved');
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-b')), []);
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-a')), ['Basil']);
+  });
+
+  test('a write that settles after the list changed lands on the list it was started for', () => {
+    let states = withMissingAddState({}, 'list-a', 'Salt', 'sending');
+    // The user selects list B and adds Salt there too, which fails.
+    states = withMissingAddState(states, 'list-b', 'salt', 'failed');
+    // List A's write now settles.
+    states = withMissingAddState(states, 'list-a', 'Salt', 'saved');
+    assert.equal(missingAddStatesOn(states, 'list-a').salt, 'saved');
+    assert.equal(missingAddStatesOn(states, 'list-b').salt, 'failed');
+    assert.deepEqual(planMissingAdds(needed, missingAddStatesOn(states, 'list-b')), ['Salt', 'Pepper', 'Basil']);
+  });
+
+  test('updates never mutate earlier snapshots', () => {
+    const first = withMissingAddState({}, 'list-a', 'Salt', 'saving');
+    const second = withMissingAddState(first, 'list-a', 'Salt', 'saved');
+    assert.equal(missingAddStatesOn(first, 'list-a').salt, 'saving');
+    assert.equal(missingAddStatesOn(second, 'list-a').salt, 'saved');
+    assert.deepEqual(missingAddStatesOn({}, 'list-a'), {});
+  });
+
+  test('the recipe card scopes row states, settle callbacks and the add-all flag to the destination the add started for', () => {
+    const card = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping', 'recipe-ingredients.tsx'), 'utf8');
+    assert.match(card, /settled\.then\(\(final\) => setState\(listKey, name, final\)\)/);
+    assert.match(card, /follow\(listKey, entry\.name, result\.settled\)/);
+    assert.match(card, /follow\(listKey, entry\.asked, entry\.settled\)/);
+    assert.equal((card.match(/await resolveList\(target\)/g) ?? []).length, 2);
+    assert.match(card, /planMissingAdds\(ingredients\.needed, missingAddStatesOn\(statesRef\.current, listKey\)\)/);
+    assert.match(card, /planMissingAdds\(ingredients\.needed, shownStates\)/);
+    assert.doesNotMatch(card, /statesRef\.current\[/);
   });
 });
