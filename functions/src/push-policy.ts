@@ -78,3 +78,41 @@ export const clampText = (
   if (!text) return fallback;
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 };
+
+/**
+ * Whether a newly created notification is pushed. Upkeep marks a document
+ * `silent` when the person was already told today (for example the overdue
+ * notification on a day the daily reminder carries the overdue count).
+ * Clients cannot set the field (it is not in the rules' create allow-list).
+ * @param {Record<string, unknown>} data The created document.
+ * @return {boolean} True to push.
+ */
+export const pushOnCreate = (data: Record<string, unknown>): boolean =>
+  data.silent !== true;
+
+type Instant = {seconds?: unknown; nanoseconds?: unknown};
+
+const sameInstant = (left: unknown, right: unknown): boolean => {
+  if (!left || !right || typeof left !== "object" ||
+      typeof right !== "object") {
+    return left === right;
+  }
+  const a = left as Instant;
+  const b = right as Instant;
+  return a.seconds === b.seconds && a.nanoseconds === b.nanoseconds;
+};
+
+/**
+ * Whether an updated notification is pushed again: only when upkeep moved its
+ * `renotifyAt` (the overdue notification gained a chore). Read, dismiss,
+ * refresh and resolve updates leave it alone; clients cannot write it (the
+ * rules let them change only their own read and dismiss entries).
+ * @param {Record<string, unknown>} before Document before the update.
+ * @param {Record<string, unknown>} after Document after the update.
+ * @return {boolean} True to push.
+ */
+export const pushOnUpdate = (
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): boolean => Boolean(after.renotifyAt) &&
+  !sameInstant(before.renotifyAt, after.renotifyAt) && !after.resolvedAt;
