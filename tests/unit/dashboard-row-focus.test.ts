@@ -43,7 +43,7 @@ describe('dashboard one-tap focus: the action once the row has left', () => {
 
 describe('dashboard one-tap focus: each frame after the press', () => {
   const frame = (overrides: Partial<RowFocusFrame>): RowFocusFrame => ({
-    connected: true, disabled: true, focusLost: true, wasDisabled: true, expired: false, ...overrides,
+    connected: true, disabled: true, focusLost: true, wasDisabled: true, expired: false, movedAway: false, superseded: false, ...overrides,
   });
 
   test('waits while the control is saving or done and still listed', () => {
@@ -58,7 +58,9 @@ describe('dashboard one-tap focus: each frame after the press', () => {
   });
 
   test('never moves focus the member has moved elsewhere', () => {
-    assert.equal(rowFocusStep(frame({ connected: false, focusLost: false })), 'stop');
+    assert.equal(rowFocusStep(frame({ connected: false, focusLost: false, movedAway: true })), 'stop');
+    assert.equal(rowFocusStep(frame({ disabled: false, focusLost: false, movedAway: true })), 'stop');
+    // Focus still on the pressed control (not moved away): keep watching.
     assert.equal(rowFocusStep(frame({ disabled: false, focusLost: false })), 'wait');
   });
 
@@ -71,5 +73,22 @@ describe('dashboard one-tap focus: each frame after the press', () => {
   test('stops when the wait is over and the control is still there', () => {
     assert.equal(rowFocusStep(frame({ expired: true })), 'stop');
     assert.equal(rowFocusStep(frame({ expired: true, disabled: false })), 'stop');
+  });
+
+  test('focus seen on another control ends the watch for good, even after it falls to the body', () => {
+    // The member tabbed to another Done (seen on it), then disabling that one dropped focus.
+    assert.equal(rowFocusStep(frame({ movedAway: true })), 'stop');
+    assert.equal(rowFocusStep(frame({ movedAway: true, connected: false })), 'stop');
+    assert.equal(rowFocusStep(frame({ movedAway: true, disabled: false })), 'stop');
+  });
+
+  test('two overlapping watches: only the newer one places focus', () => {
+    // A was pressed, then B; both controls have left and focus is on the body.
+    const older = rowFocusStep(frame({ connected: false, superseded: true }));
+    const newer = rowFocusStep(frame({ connected: false, superseded: false }));
+    assert.equal(older, 'stop');
+    assert.equal(newer, 'move');
+    // A coming back from a failure does not pull focus back either.
+    assert.equal(rowFocusStep(frame({ disabled: false, superseded: true })), 'stop');
   });
 });

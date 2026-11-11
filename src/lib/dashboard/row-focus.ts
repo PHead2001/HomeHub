@@ -44,6 +44,13 @@ export type RowFocusFrame = {
   wasDisabled: boolean;
   /** The wait is over. */
   expired: boolean;
+  /**
+   * Focus has been seen on another element (not the pressed control, not the page body)
+   * in this frame or any earlier one: the member moved on, so the watch is over for good.
+   */
+  movedAway: boolean;
+  /** A newer one-tap press (in this tile or another) started its own watch. */
+  superseded: boolean;
 };
 
 /**
@@ -53,9 +60,12 @@ export type RowFocusFrame = {
  * - `refocus`: the control is back from saving (it failed, was refused, or the row stays,
  *   as a pet fed once of twice a day does) and the disabling lost focus: back onto it;
  * - `wait`: still saving, or listed and working;
- * - `stop`: the member moved focus elsewhere, or the wait is over.
+ * - `stop`: focus was seen on another control since the press (even if it later fell
+ *   to the body), a newer press took over, or the wait is over. Only focus that stayed
+ *   on the pressed control or the body the whole time keeps the watch alive.
  */
 export function rowFocusStep(frame: RowFocusFrame): 'move' | 'refocus' | 'wait' | 'stop' {
+  if (frame.movedAway || frame.superseded) return 'stop';
   if (!frame.connected) return frame.focusLost ? 'move' : 'stop';
   if (frame.expired) return 'stop';
   if (!frame.disabled && frame.wasDisabled && frame.focusLost) return 'refocus';

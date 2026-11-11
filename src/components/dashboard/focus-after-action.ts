@@ -8,6 +8,9 @@ const ACTION_TILE_ATTR = 'data-action-tile';
 /** How long a pressed control is watched: a server completion and its snapshot can take a while. */
 const WATCH_MS = 10_000;
 
+/** The newest press's watch: a newer press supersedes every older watch. */
+let latestWatch = 0;
+
 /** The tile's action controls that are on screen (rows hidden beside the house are skipped), in order. */
 function visibleActions(tile: Element): HTMLButtonElement[] {
   return [...tile.querySelectorAll<HTMLButtonElement>('[data-action-key]')]
@@ -35,12 +38,16 @@ function focusTarget(tileId: string, candidates: readonly string[], position: nu
  * Keeps keyboard focus in the tile after a one-tap action (Done, Fed, Tick; SH-26a on the
  * dashboard). Call it as the focused control is pressed. Once the control has left (its
  * row left, or a fed pet's Fed went), focus goes to the next action in the tile, else the
- * previous one, else the action that took its place, else the tile link; if the control comes back from saving (failed,
- * refused, or still needed), focus returns to it. Only while focus is on the page body:
- * it never moves focus the member has moved elsewhere, and the Undo toast keeps its own
- * keyboard route (F8 or Tab into the notifications region).
+ * previous one, else the action that took its place, else the tile link; if the control
+ * comes back from saving (failed, refused, or still needed), focus returns to it.
+ * Only while focus has stayed on the pressed control or the page body since the press:
+ * once it has been seen on any other element the watch ends for good, and a newer press
+ * (in any tile) ends every older watch, so only the newest action places focus. The Undo
+ * toast keeps its own keyboard route (F8 or Tab into the notifications region).
  */
 export function keepFocusInTile(button: HTMLButtonElement) {
+  // Any newer press ends older watches, whether or not it starts one itself.
+  const watch = ++latestWatch;
   if (document.activeElement !== button) return;
   const tile = button.closest<HTMLElement>(`[${ACTION_TILE_ATTR}]`);
   const tileId = tile?.dataset.testid;
@@ -51,14 +58,18 @@ export function keepFocusInTile(button: HTMLButtonElement) {
   const position = keys.indexOf(key);
   const deadline = performance.now() + WATCH_MS;
   let wasDisabled = false;
+  let movedAway = false;
   const frame = () => {
     const active = document.activeElement;
+    movedAway ||= Boolean(active && active !== document.body && active !== button);
     const step = rowFocusStep({
       connected: button.isConnected,
       disabled: button.disabled,
       focusLost: !active || active === document.body,
       wasDisabled,
       expired: performance.now() > deadline,
+      movedAway,
+      superseded: watch !== latestWatch,
     });
     wasDisabled ||= button.disabled;
     if (step === 'move') {
