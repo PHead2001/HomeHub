@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import {
   alreadySavedCopy,
   barcodeToAdd,
+  capturedProduct,
   newProductData,
   productEdit,
   productName,
@@ -138,5 +139,28 @@ describe('photo deletes wait out the Undo window (BL-4)', () => {
     assert.deepEqual(restoredProductData({ name: 'Juice', ...photo, createdAt: '2026-01-01T00:00:00.000Z' }, 'u2', now, { photoGone: true }), {
       name: 'Juice', imageUrl: '', createdAt: '2026-01-01T00:00:00.000Z', createdByUid: 'u2',
     });
+  });
+});
+
+describe('delete captures the current product (BL-4)', () => {
+  test('the Undo restores what was deleted, not the older copy on the page', () => {
+    const pageCopy = { id: '1', name: 'Juice', imageUrl: 'https://example.test/old.jpg', imagePath: 'households/h/barcode-library/old.jpg', createdAt: '2026-01-01T00:00:00.000Z' };
+    const current = { name: 'Orange juice', imageUrl: 'https://example.test/new.jpg', imagePath: 'households/h/barcode-library/new.jpg', createdAt: pageCopy.createdAt, createdByUid: 'u1' };
+    const captured = capturedProduct('1', current);
+    assert.deepEqual(captured, { id: '1', name: 'Orange juice', imageUrl: current.imageUrl, imagePath: current.imagePath, createdAt: pageCopy.createdAt });
+    assert.deepEqual(restoredProductData(captured!, 'u2', now), {
+      name: 'Orange juice', imageUrl: current.imageUrl, imagePath: current.imagePath, createdAt: pageCopy.createdAt, createdByUid: 'u2',
+    });
+    // The delayed cleanup targets the deleted photo, never the edit's already-deleted old one.
+    assert.equal(managed(captured!), current.imagePath);
+  });
+
+  test('a product someone else removed meanwhile has nothing to undo', () => {
+    assert.equal(capturedProduct('1', null), null);
+    assert.equal(capturedProduct('1', undefined), null);
+  });
+
+  test('a captured product without a photo or date stays valid', () => {
+    assert.deepEqual(capturedProduct('1', { name: '' }), { id: '1', name: 'Saved product', imageUrl: '' });
   });
 });

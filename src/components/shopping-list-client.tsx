@@ -1315,7 +1315,7 @@ export function ShoppingListClient({
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
                         {householdId && <ManageCategoriesDialog categories={categories} householdId={householdId} listId={selectedList.id} />}
-                        {householdId && <ScanToTick householdId={householdId} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
+                        {householdId && <ScanToTick key={`${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>

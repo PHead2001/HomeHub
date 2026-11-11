@@ -63,6 +63,25 @@ export function restoredProductData(
   };
 }
 
+/**
+ * The product a delete removed, read in the same transaction as the delete (not
+ * the page's possibly older copy), so the Undo restores and the delayed photo
+ * cleanup targets what was actually deleted. Null when the product was already
+ * gone (nothing to undo).
+ */
+export function capturedProduct(id: string, data: Record<string, unknown> | null | undefined): {
+  id: string; name: string; imageUrl: string; imagePath?: string; createdAt?: string;
+} | null {
+  if (!data) return null;
+  return {
+    id,
+    name: typeof data.name === 'string' && data.name ? data.name : 'Saved product',
+    imageUrl: typeof data.imageUrl === 'string' ? data.imageUrl : '',
+    ...(typeof data.imagePath === 'string' && data.imagePath ? { imagePath: data.imagePath } : {}),
+    ...(typeof data.createdAt === 'string' ? { createdAt: data.createdAt } : {}),
+  };
+}
+
 export type PhotoChange = { kind: 'keep' } | { kind: 'remove' } | { kind: 'replace'; photo: ProductPhoto };
 
 export type ProductEdit = {

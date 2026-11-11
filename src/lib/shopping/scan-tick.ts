@@ -30,6 +30,19 @@ export function matchByBarcode<T extends TickCandidate>(items: readonly T[], bar
   return purchased ? { kind: 'in-cart', item: purchased } : null;
 }
 
+/** Which list a scan belongs to: the household and list it was started on. */
+export type ScanListIdentity = { householdId: string; listId: string };
+
+/**
+ * Whether a scan's lookup result may still act: only on the household and list
+ * it was started on. A result that comes back after the member opened another
+ * list (or left the list) is dropped, so one list's items are never ticked or
+ * added with another list's callbacks or path.
+ */
+export function scanStillApplies(started: ScanListIdentity, current: ScanListIdentity | null): boolean {
+  return current !== null && current.householdId === started.householdId && current.listId === started.listId;
+}
+
 /**
  * The copy of an item a tick or un-tick must act on: the latest one from the
  * list's listener. Null when the item's status has changed since `seen` was read

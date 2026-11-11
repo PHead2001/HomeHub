@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { currentItemForToggle, matchByBarcode, scanTickDecision, type TickCandidate } from '../../src/lib/shopping/scan-tick';
+import { currentItemForToggle, matchByBarcode, scanStillApplies, scanTickDecision, type TickCandidate } from '../../src/lib/shopping/scan-tick';
 import { rowPhoto, shownPhoto } from '../../src/lib/shopping/row-photo';
 import { productPhotoForName } from '../../src/lib/shopping/pantry';
 
@@ -98,5 +98,17 @@ describe('photos that fail to load fall back (rows and pantry tiles)', () => {
     assert.equal(productPhotoForName('oat milk', before), 'https://x.test/old.jpg');
     assert.equal(productPhotoForName('oat milk', [{ name: 'Oat milk', imageUrl: 'https://x.test/new.jpg' }]), 'https://x.test/new.jpg');
     assert.equal(productPhotoForName('oat milk', [{ name: 'Oat milk', imageUrl: '' }]), undefined);
+  });
+});
+
+describe('a scan result only acts on the list it started on', () => {
+  const started = { householdId: 'h', listId: 'a' };
+  test('same household and list: applies', () => {
+    assert.equal(scanStillApplies(started, { householdId: 'h', listId: 'a' }), true);
+  });
+  test('another list, another household, or the scanner gone: dropped', () => {
+    assert.equal(scanStillApplies(started, { householdId: 'h', listId: 'b' }), false);
+    assert.equal(scanStillApplies(started, { householdId: 'g', listId: 'a' }), false);
+    assert.equal(scanStillApplies(started, null), false);
   });
 });

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAuth } from '@/hooks/use-auth';
 import { db, storage } from '@/lib/firebase';
-import { collection, deleteField, doc, getDoc, getDocs, deleteDoc, query, orderBy, runTransaction, updateDoc, type CollectionReference } from 'firebase/firestore';
+import { collection, deleteField, doc, getDoc, onSnapshot, query, orderBy, runTransaction, updateDoc, type CollectionReference } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { toast as globalToast, useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
@@ -29,6 +29,7 @@ import { downscaleErrorCopy, downscaleImage, PRODUCT_PHOTO_MAX_BYTES } from '@/l
 import {
   alreadySavedCopy,
   barcodeToAdd,
+  capturedProduct,
   MAX_PRODUCT_NAME_LENGTH,
   newProductData,
   productEdit,
@@ -290,7 +291,9 @@ export function BarcodeLibraryClient() {
     return collection(db, 'households', householdId, 'barcode-library');
   }, [householdId]);
 
-  const fetchItems = useCallback(async () => {
+  // Live: another member's add, edit or delete shows at once, and Edit opens the
+  // current product.
+  useEffect(() => {
     const collectionRef = getLibraryCollectionRef();
     if (!collectionRef || !canView) {
       // Keep the skeleton until membership (and so permissions) has loaded.
@@ -298,21 +301,18 @@ export function BarcodeLibraryClient() {
       return;
     }
     setLoading(true);
-    try {
-      const q = query(collectionRef, orderBy('createdAt', 'desc'));
-      const snapshot = await getDocs(q);
-      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BarcodeLibraryItem));
-      setItems(itemsData);
-    } catch (error) {
-      toastError(error, 'Could not load the library');
-    } finally {
-      setLoading(false);
-    }
+    return onSnapshot(
+      query(collectionRef, orderBy('createdAt', 'desc')),
+      (snapshot) => {
+        setItems(snapshot.docs.map(document => ({ id: document.id, ...document.data() } as BarcodeLibraryItem)));
+        setLoading(false);
+      },
+      (error) => {
+        toastError(error, 'Could not load the library');
+        setLoading(false);
+      },
+    );
   }, [getLibraryCollectionRef, toastError, canView, householdLoading]);
-
-  useEffect(() => {
-    fetchItems();
-  }, [fetchItems]);
 
   // "Save to library" from a scan: open Add with the code, then drop it from the URL.
   useEffect(() => {
@@ -417,7 +417,6 @@ export function BarcodeLibraryClient() {
     if (!collectionRef) return { ok: false };
     try {
       const result = itemToEdit ? await handleEdit(collectionRef, itemToEdit, save) : await handleAdd(collectionRef, save);
-      if (result.ok) await fetchItems();
       return result;
     } catch (error) {
       toastError(error, 'Could not save the product');
@@ -425,7 +424,7 @@ export function BarcodeLibraryClient() {
     }
   };
 
-  const undoDelete = async (item: BarcodeLibraryItem) => {
+  const undoDelete = async (item: NonNullable<ReturnType<typeof capturedProduct>>) => {
     const collectionRef = getLibraryCollectionRef();
     const uid = currentUser?.uid;
     if (!collectionRef || !uid || !householdId) return;
@@ -436,25 +435,35 @@ export function BarcodeLibraryClient() {
     try {
       await createProduct(collectionRef, item.id, restoredProductData(item, uid, new Date(), { photoGone: !photoKept }));
       toast({ title: 'Item restored', description: `${item.name} is back in the library.` });
-      await fetchItems();
     } catch (error) {
       // Not restored: the photo is no longer needed.
       if (photoPath && photoKept) libraryPhotoDeletes.removeNow(photoPath);
       if (error instanceof AlreadySaved) {
         toast({ title: 'Not restored', description: `This barcode was saved again as ${error.existing.name} meanwhile.` });
-        await fetchItems();
         return;
       }
       toastError(error, `Could not restore ${item.name}`);
     }
   };
 
-  const handleDelete = async (item: BarcodeLibraryItem) => {
+  const handleDelete = async (shown: BarcodeLibraryItem) => {
     const collectionRef = getLibraryCollectionRef();
     if (!collectionRef) return;
     try {
-        await deleteDoc(doc(collectionRef, item.id));
-        setItems(prev => prev.filter(existingItem => existingItem.id !== item.id));
+        // Read and delete in one transaction: the Undo and the photo cleanup use
+        // what was actually deleted, never the page's possibly older copy.
+        const productRef = doc(collectionRef, shown.id);
+        const item = await runTransaction(db, async (transaction) => {
+          const snapshot = await transaction.get(productRef);
+          const current = capturedProduct(shown.id, snapshot.exists() ? snapshot.data() : null);
+          if (current) transaction.delete(productRef);
+          return current;
+        });
+        setItems(prev => prev.filter(existingItem => existingItem.id !== shown.id));
+        if (!item) {
+          toast({ title: 'Already deleted', description: `${shown.name} was already removed from the library.` });
+          return;
+        }
         const photoPath = managedPath(item);
         if (photoPath && householdId) libraryPhotoDeletes.schedule(photoDeleteKey(householdId, item.id), photoPath);
         toast({
@@ -467,7 +476,7 @@ export function BarcodeLibraryClient() {
             : undefined,
         });
     } catch (error) {
-        toastError(error, `Could not delete ${item.name}`);
+        toastError(error, `Could not delete ${shown.name}`);
     }
   };
 
