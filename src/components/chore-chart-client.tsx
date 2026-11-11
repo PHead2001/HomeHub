@@ -850,7 +850,7 @@ export function ChoreChartClient() {
         {groups.map(group => (
           <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
-              <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /> {group.name} (<NumberTicker value={group.entries.length} animateOnMount={false} />)</span>
+              <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /><span>{group.name} (<NumberTicker value={group.entries.length} animateOnMount={false} />)</span></span>
             </AccordionTrigger>
             <AccordionContent>
               <ChoreList entries={group.entries} {...listProps} />
@@ -1119,7 +1119,7 @@ export function ChoreChartClient() {
                 <div className="flex items-center justify-between">
                   <AccordionPrimitive.Header className="flex flex-1">
                     <AccordionPrimitive.Trigger asChild>
-                      <button className="flex flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
+                      <button className="flex min-h-[var(--target-min)] flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
                         <span>Future (<NumberTicker value={visibleFutureChores.length} animateOnMount={false} />)</span>
                         <ChevronDown aria-hidden className="h-4 w-4 shrink-0 transition-transform duration-200 md:h-5 md:w-5" />
                       </button>
@@ -1141,7 +1141,7 @@ export function ChoreChartClient() {
                 <div className="flex items-center justify-between">
                   <AccordionPrimitive.Header className="flex flex-1">
                     <AccordionPrimitive.Trigger asChild>
-                      <button className="flex flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
+                      <button className="flex min-h-[var(--target-min)] flex-1 items-center justify-between py-2 text-left font-headline text-base md:py-3 md:text-xl [&[data-state=open]>svg]:rotate-180">
                         <span>Completed (<NumberTicker value={visibleCompletedChores.length} animateOnMount={false} />)</span>
                         <ChevronDown aria-hidden className="h-4 w-4 shrink-0 transition-transform duration-200 md:h-5 md:w-5" />
                       </button>

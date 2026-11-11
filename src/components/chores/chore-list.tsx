@@ -105,7 +105,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
     >
       <div className="flex items-start gap-1 p-1 md:gap-2 md:p-1.5">
         {props.selectMode && !isCompleted ? (
-          <span className="grid h-10 w-10 shrink-0 place-items-center">
+          <span className="grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center">
             <Checkbox
               checked={props.selectedIds.has(chore.id)}
               onCheckedChange={() => props.onToggleSelect(chore)}
@@ -128,7 +128,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
           {hasDetails ? (
             <button
               type="button"
-              className="group flex w-full items-start gap-1 rounded-sm text-left"
+              className="group flex min-h-[var(--target-min)] w-full items-center gap-1 rounded-sm text-left"
               aria-expanded={isOpen}
               aria-controls={detailsId}
               onClick={() => props.onToggleOpen(chore.id)}
@@ -136,7 +136,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
               <span className={cn('line-clamp-2 min-w-0 flex-1 break-words text-sm font-medium md:text-base', isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
                 {chore.task}
               </span>
-              <ChevronDown aria-hidden className={cn('mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-150', isOpen && 'rotate-180')} />
+              <ChevronDown aria-hidden className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-150', isOpen && 'rotate-180')} />
               <span className="sr-only">{isOpen ? 'Hide details' : 'Show details'}</span>
             </button>
           ) : (
@@ -156,7 +156,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
                 {capabilities.canDelete && (
                   <button
                     type="button"
-                    className="rounded px-1 font-medium text-primary underline-offset-2 hover:underline"
+                    className="inline-flex min-h-[var(--target-min)] min-w-[var(--target-min)] items-center justify-center rounded px-1 font-medium text-primary underline-offset-2 hover:underline"
                     aria-label={`Clear ${missed.length} earlier missed ${chore.task}`}
                     onClick={() => props.onClearMissed(entry)}
                   >
@@ -174,7 +174,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent sm:px-2"
+                className="flex h-[var(--target-min)] min-w-[var(--target-min)] shrink-0 items-center justify-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent sm:px-2 coarse:text-sm"
                 aria-label={`Assigned to ${name}. Reassign ${chore.task}`}
               >
                 {avatar}
@@ -197,7 +197,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (
-          <span className="flex h-10 shrink-0 items-center gap-1.5 px-1.5 text-xs text-muted-foreground sm:px-2">
+          <span className="flex h-[var(--target-min)] shrink-0 items-center gap-1.5 px-1.5 text-xs text-muted-foreground sm:px-2 coarse:text-sm">
             {avatar}
             <span className="hidden max-w-[8rem] truncate sm:inline">{name}</span>
             <span className="sr-only sm:hidden">Assigned to {name}</span>
@@ -207,7 +207,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         {capabilities.canDelete && (
           <button
             type="button"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
+            className="grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
             aria-label={`Delete ${chore.task}`}
             onClick={() => props.onDelete(chore)}
           >
@@ -220,12 +220,13 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         <div id={detailsId} className="space-y-3 border-t px-4 pb-3 pt-2 md:pl-14">
           {chore.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{chore.notes}</p>}
           {total > 0 && (
-            <div className="space-y-1.5">
+            <div className="space-y-0.5">
               <h4 className="text-xs font-semibold text-foreground">Steps</h4>
               {chore.subTasks!.map(subTask => {
                 const id = `subtask-${chore.id}-${stableSlugify(subTask)}`;
                 return (
-                  <div key={subTask} className="flex items-center gap-2">
+                  // Each step is a target-tall row, so the checkboxes' hit areas never overlap (D-2).
+                  <div key={subTask} className="flex min-h-[var(--target-min)] items-center gap-3">
                     <Checkbox
                       id={id}
                       checked={(chore.completedSubTasks || []).includes(subTask)}

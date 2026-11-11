@@ -248,7 +248,17 @@
   .hit-slop-off::after {
     content: none;
   }
-
+  /* On a touch screen (coarse pointer) a small control grows to the target itself
+     (D-2, WT-28): neighbours a few px apart would otherwise share their invisible
+     `.hit-slop` areas, and the overlap steals taps. A fine pointer keeps the compact
+     look and gets its 44 px area from `.hit-slop`. min-* beats a caller's own
+     `h-*`/`w-*`, so a shrunken button still grows on touch. */
+  @media (pointer: coarse) {
+    .touch-target {
+      min-width: var(--target-min);
+      min-height: var(--target-min);
+    }
+  }
 
   /* The one scoped transition for interactive UI (replaces `transition-all`). */
   .transition-ui {
