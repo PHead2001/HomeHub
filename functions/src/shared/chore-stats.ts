@@ -123,6 +123,8 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
  * its assignee (`creditedPerson`).
  * @param {ChoreStatsDoc} stats Current stats.
  * @param {PurgedChore[]} chores Chores being deleted, all in that year.
+ * @param {CreditPerson[]} people Household members, to resolve uid-only
+ *   completers and assignees (see `creditedPerson`).
  * @return {ChoreStatsDoc} New stats.
  */
 export const addPurgedChores = (
