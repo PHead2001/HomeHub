@@ -443,6 +443,20 @@ describe('household upkeep', () => {
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
   });
 
+  test('a uid-only completion of someone who has left is purged under their uid key, not dropped', async () => {
+    const chores = house().collection('chores');
+    // Gil (uid g1) left: their membership and contact documents are gone. One completion was
+    // recorded without a completer (an older client), one with Gil as completer by uid only.
+    await chores.doc('gil-assigned').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToUid: 'g1', assignedToDisplayName: 'Gil' });
+    await chores.doc('gil-completed').set({ task: 'Older', isCompleted: true, completedAt: '2026-07-02T12:00:00.000Z', assignedToUid: 'o1', completedByUid: 'g1', completedByName: 'Gil' });
+    const result = await run(new Date('2026-11-05T15:00:00Z'));
+    assert.equal(result.purgedChores, 2);
+    const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats?.completed, 2);
+    assert.deepEqual(stats?.byAssignee, { [choreStatsMemberKey('g1')]: 2 }, 'both kept for Gil, none for the owner');
+    assert.deepEqual(stats?.names, { [choreStatsMemberKey('g1')]: 'Gil' });
+  });
+
   describe('pet medication reminders', () => {
     // Household time zone is America/Chicago (UTC-5 in November 2026).
     const meds = () => house().collection('notifications').where('sourceType', '==', 'pet_medication').get();
