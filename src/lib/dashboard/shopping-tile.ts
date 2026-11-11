@@ -28,21 +28,25 @@ export function shoppingTileRows(items: readonly ShoppingTileItem[], neededTotal
 }
 
 /**
- * Tick rows shown beside the house (HP-12d: the wide layout is one screen at 100% text),
- * by screen height in rem (the CSS in `dashboard.module.css` applies the same steps).
+ * Tick rows shown beside the house, by screen height in rem (the CSS in
+ * `dashboard.module.css` applies the same steps), on the height model of HP-12e: the
+ * panes are one screen tall, tile rows are as tall as their content and share what is
+ * left, and the inline detail rows of the other tiles show from 50rem (one) and 54rem
+ * (two).
  *
- * The first row takes the place of the old item chips: with a 48 px tick it keeps the
- * Shopping tile no taller than its row neighbour, the Chores tile with its Done row
- * (160 px at 1280x800, 154 px at 1024x768). Each further row adds 3.25rem (the 48 px
- * control and a 0.25rem gap) to that first tile row. The right pane gains every rem of
- * screen height above 50rem while the inline detail rows use at most 3rem of it (the
- * second detail row from 54rem), so a second tick row needs at least 56.25rem and a third
- * 59.5rem; the steps below keep a margin of 3.75rem and more.
+ * With tick rows the Shopping tile shows no item chips and no inline detail rows. Its
+ * first row (a 48 px tick) keeps the tile no taller than the Chores tile beside it (title,
+ * ring and Done row), so below 50rem, where the right pane has the least height to spare
+ * (about 60 px of shared slack at 1263x722 with the seed), one row costs nothing. From
+ * 50rem, where the detail rows start, a second row shows: two rows are about 30 px taller
+ * than the chips and list row the tile showed there before, against more than 70 px of
+ * slack from 800 px of height up. A third row adds another 3.25rem (the control and its
+ * 0.25rem gap) and shows from 60rem, with the second detail rows already placed.
  */
 export const WIDE_TICK_ROW_STEPS: ReadonlyArray<{ minHeightRem: number; rows: number }> = [
   { minHeightRem: 0, rows: 1 },
-  { minHeightRem: 60, rows: 2 },
-  { minHeightRem: 66, rows: 3 },
+  { minHeightRem: 50, rows: 2 },
+  { minHeightRem: 60, rows: 3 },
 ];
 
 export function wideTickRows(screenHeightPx: number, remPx = 16): number {

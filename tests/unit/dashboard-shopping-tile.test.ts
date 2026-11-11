@@ -38,13 +38,18 @@ describe('dashboard Shopping tile rows (HP-36a, HP-33c)', () => {
     assert.notEqual(shoppingRowKey(item('a')), shoppingRowKey(item('a', 'hardware')));
   });
 
-  test('beside the house: one tick row up to 60rem of screen height, two from 60rem, three from 66rem', () => {
+  test('beside the house: one tick row below 50rem of screen height, two from 50rem (with the detail rows), three from 60rem', () => {
+    assert.equal(wideTickRows(600), 1);
+    assert.equal(wideTickRows(722), 1); // wall tablet in Chrome
     assert.equal(wideTickRows(768), 1);
-    assert.equal(wideTickRows(800), 1);
-    assert.equal(wideTickRows(864), 1);
-    assert.equal(wideTickRows(959), 1);
-    assert.equal(wideTickRows(960), 2);
-    assert.equal(wideTickRows(1080), 3);
+    assert.equal(wideTickRows(799), 1);
+    assert.equal(wideTickRows(800), 2);
+    assert.equal(wideTickRows(818), 2); // wall tablet, installed (primary)
+    assert.equal(wideTickRows(843), 2); // wall tablet, fullscreen launcher
+    assert.equal(wideTickRows(864), 2);
+    assert.equal(wideTickRows(959), 2);
+    assert.equal(wideTickRows(960), 3);
+    assert.equal(wideTickRows(1024), 3);
   });
 
   test('the CSS applies the same height steps', () => {
