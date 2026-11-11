@@ -140,7 +140,9 @@ function Tile({
     return (
       <PeekCard peek={peek} className={cn('relative h-full min-w-0', className)}>
         <div data-testid={testId} className={cn(styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>
-          <Link href={href} data-testid={`${testId}-link`} className={cn(styles.tileLink, 'flex min-w-0 flex-col gap-2 rounded-md')}>
+          {/* D-2: with nothing but the title inside (Pets), the link's hit area is still 44 px
+              (48 px on touch), grown downward over the rows (the "+" and Fed sit above it). */}
+          <Link href={href} data-testid={`${testId}-link`} className={cn(styles.tileLink, styles.hitSlop, styles.hitSlopDown, 'flex min-w-0 flex-col gap-2 rounded-md')}>
             {body}
           </Link>
           {actions}

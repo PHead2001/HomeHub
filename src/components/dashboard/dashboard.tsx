@@ -8,8 +8,9 @@
  *
  * Layout (HP-12): stacked on phones, portrait and narrow screens (subtitle, house,
  * brief, tiles, footer); on every wide landscape screen two panes, the house on the
- * left and the brief and tiles on the right (dashboard.module.css `.page`). The DOM
- * order is the same in both, so focus order follows the reading order.
+ * left and the brief and tiles on the right (dashboard.module.css `.page`), one screen
+ * tall (HP-12e): the house card and the tile rows share the height the screen has. The
+ * DOM order is the same in both, so focus order follows the reading order.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Keyboard } from 'lucide-react';
@@ -43,7 +44,7 @@ export function Dashboard() {
   return (
     <div className={cn('container mx-auto px-4', styles.page)} data-testid="dashboard-page">
       <HouseCleanMoment open={houseClean.rooms !== null} rooms={houseClean.rooms ?? []} onDone={houseClean.close} />
-      <div className="min-w-0">
+      <div className={cn(styles.housePane, 'min-w-0')}>
         <div className={cn(styles.lead, 'mb-4 min-w-0')}>
           {/* HP-12c: visually hidden on wide landscape screens, kept for screen readers. */}
           <h1 className={cn(styles.wideSrOnly, 'font-headline text-3xl font-bold tracking-tight')}>Welcome Home</h1>
@@ -52,7 +53,7 @@ export function Dashboard() {
         <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} />
       </div>
 
-      <div className="min-w-0">
+      <div className={cn(styles.tilesPane, 'min-w-0')}>
         {/* Keyed by the context: a household or member change resets the brief and its AI
             rewrite; the household day rolling over does not (HP-4b). */}
         <div className={styles.briefSlot}>

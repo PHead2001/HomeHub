@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { floorPoint, houseColumns, layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor } from '../../src/lib/dashboard/house-layout';
+import { fitCellHeight, floorPoint, HOUSE_GEOMETRY, houseColumns, layoutHouse, MAX_CELL_H, MAX_HOUSE_ROOMS, placePets, roomNeighbor } from '../../src/lib/dashboard/house-layout';
 import { choresRoomHref, MAINTENANCE_OVERVIEW_HREF, roomMorphName } from '../../src/lib/dashboard/links';
 import { GENERAL_ROOM_ID, UNKNOWN_ROOM_ID } from '../../src/lib/dashboard/facts';
 import { sharedId } from '../../src/lib/motion';
@@ -60,6 +60,65 @@ describe('living house placement', () => {
     assert.equal(roomNeighbor(layout, 'room-0', 'End'), 'room-4');
     assert.equal(roomNeighbor(layout, 'room-4', 'ArrowRight'), null);
     assert.equal(roomNeighbor(layout, 'missing', 'ArrowRight'), null);
+  });
+});
+
+describe('the house filling a tall pane (HP-12e)', () => {
+  const base = HOUSE_GEOMETRY.cellH;
+  /** CSS px height of the scene drawn at `width` px wide. */
+  const drawnHeight = (layout: { width: number; height: number }, width: number) => layout.height * (width / layout.width);
+
+  it('keeps the default room height without a pane, or in a pane too short for it', () => {
+    assert.equal(fitCellHeight(3, { width: 0, height: 400 }), base);
+    assert.equal(fitCellHeight(3, { width: 560, height: 0 }), base);
+    assert.equal(fitCellHeight(3, { width: Number.NaN, height: 400 }), base);
+    // Four rooms (2x2) at 560 px wide want 495 px; a 300 px pane keeps the default.
+    assert.equal(fitCellHeight(4, { width: 560, height: 300 }), base);
+  });
+
+  it('grows the rooms so the scene meets the pane, never taller than the pane', () => {
+    // Three rooms in one floor in a 560 x 330 pane: wider than tall, so the rooms grow.
+    const cellH = fitCellHeight(3, { width: 560, height: 330 });
+    assert.ok(cellH > base && cellH < MAX_CELL_H, String(cellH));
+    const layout = layoutHouse(['a', 'b', 'c'], { cellH });
+    const height = drawnHeight(layout, 560);
+    assert.ok(height <= 330, `fits: ${height}`);
+    assert.ok(height > 330 - 3, `fills: ${height}`);
+    // Six rooms (two floors) share the extra height between the floors.
+    const six = fitCellHeight(6, { width: 560, height: 400 });
+    const sixLayout = layoutHouse(['a', 'b', 'c', 'd', 'e', 'f'], { cellH: six });
+    assert.ok(drawnHeight(sixLayout, 560) <= 400);
+    assert.equal(sixLayout.rooms[3].y, sixLayout.rooms[0].y + six);
+  });
+
+  it('stops at twice the default height, so a room stays a room', () => {
+    assert.equal(MAX_CELL_H, base * 2);
+    assert.equal(fitCellHeight(3, { width: 560, height: 2000 }), MAX_CELL_H);
+    assert.equal(layoutHouse(['a'], { cellH: 10_000 }).rooms[0].h, MAX_CELL_H);
+    assert.equal(layoutHouse(['a'], { cellH: 10 }).rooms[0].h, base);
+    assert.equal(layoutHouse(['a'], { cellH: Number.NaN }).rooms[0].h, base);
+  });
+
+  it('only the rooms grow: the width, roof and yard keep their size, and everything stays inside', () => {
+    for (let n = 1; n <= MAX_HOUSE_ROOMS; n += 1) {
+      const ids = Array.from({ length: n }, (_, i) => `room-${i}`);
+      const plain = layoutHouse(ids);
+      const tall = layoutHouse(ids, { cellH: 120 });
+      assert.equal(tall.width, plain.width);
+      assert.equal(tall.body.y, plain.body.y);
+      assert.equal(tall.height - tall.groundY, plain.height - plain.groundY, 'the yard');
+      assert.equal(tall.height - plain.height, (120 - base) * tall.floors);
+      for (const room of tall.rooms) {
+        assert.equal(room.h, 120);
+        assert.ok(room.y + room.h <= tall.groundY);
+        assert.ok(room.box.top + room.box.height <= 100.01);
+      }
+      for (const point of [...tall.roofFront, ...tall.roofSide, ...tall.sideWall]) {
+        assert.ok(point.y >= 0 && point.y <= tall.height);
+      }
+      const pets = placePets([{ id: 'p', fed: false }, { id: 'q', fed: true }], tall);
+      for (const pet of pets) assert.ok(pet.at.y <= tall.height && pet.at.y >= 0);
+    }
   });
 });
 
