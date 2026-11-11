@@ -88,6 +88,23 @@ export type ShoppingList = {
     icon: string; // Lucide icon name
     type: ShoppingListType;
     color?: string; // Hex color code
+    /** The store whose aisle order the open list follows (`stores/{storeId}`); null or absent: the list's own order. */
+    storeId?: string | null;
+    /** Who created the list (the signed-in uid at creation). Absent on lists made by older clients. */
+    createdByUid?: string;
+};
+
+/**
+ * A store the household shops at (`households/{householdId}/stores/{storeId}`),
+ * with the order its aisles are walked in (category names, at most 200). Lists
+ * that name it in `storeId` group their needed items in this order.
+ */
+export type ShoppingStore = {
+    id: string;
+    name: string;
+    aisleOrder: string[];
+    createdByUid?: string;
+    updatedAt?: unknown;
 };
 
 export type ShoppingListItem = {
