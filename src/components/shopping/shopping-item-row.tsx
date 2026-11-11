@@ -1,6 +1,7 @@
 'use client';
 
 import { formatPackageSize } from '@/lib/shopping/scan';
+import { shownPhoto } from '@/lib/shopping/row-photo';
 import { forwardRef, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Image from 'next/image';
 import { motion, useMotionValue, useTransform, type PanInfo } from 'motion/react';
@@ -79,6 +80,8 @@ type RowProps = {
   attribution?: string | null;
   /** Seconds: set on the rows of a freshly opened list for the staggered entrance (H12). */
   enterDelay?: number;
+  /** The photo to show (`rowPhoto`: the library's current one); undefined = the stored `imageUrl`, null = none. */
+  photoUrl?: string | null;
 };
 
 /**
@@ -93,9 +96,12 @@ type RowProps = {
  * from above. Reduced motion shows every end state at once (MotionConfig).
  */
 export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function ShoppingItemRow(
-  { item, canToggle, canOpenEditor, onToggle, onEdit, attribution, enterDelay },
+  { item, canToggle, canOpenEditor, onToggle, onEdit, attribution, enterDelay, photoUrl },
   ref,
 ) {
+  const photo = photoUrl === undefined ? item.imageUrl || null : photoUrl;
+  // A photo that fails to load (e.g. its object was deleted) is hidden, never shown broken.
+  const [failedPhoto, setFailedPhoto] = useState<string | null>(null);
   const purchased = item.status === 'purchased';
   const checkboxId = `item-${purchased ? 'purchased' : 'needed'}-${item.id}`;
   const coarse = useCoarsePointer();
@@ -161,13 +167,15 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
       {attribution && <span className="block text-xs text-muted-foreground" data-testid="item-attribution">{attribution}</span>}
     </span>
   );
-  const image = item.imageUrl && (
+  const shown = shownPhoto(photo, failedPhoto);
+  const image = shown && (
     <Image
-      src={item.imageUrl}
+      src={shown}
       alt=""
       width={40}
       height={40}
       sizes="40px"
+      onError={() => setFailedPhoto(shown)}
       className={cn('h-10 w-10 shrink-0 rounded-md object-cover', purchased && 'opacity-50')}
     />
   );

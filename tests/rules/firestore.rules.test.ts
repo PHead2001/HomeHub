@@ -2448,6 +2448,18 @@ describe('content shapes: barcode library', () => {
     await assertSucceeds(setDoc(item(users.member, '012345678905'), saved({ name: 'New photo', createdAt: '2026-07-25T15:00:00.000Z' })));
   });
 
+  test('an Undo of a deleted legacy product re-creates it without the legacy photo', async () => {
+    await assertSucceeds(deleteDoc(item(users.owner, '012345678905')));
+    // A create checks every field: the legacy URL is refused (kept only on edits)...
+    await assertFails(setDoc(item(users.owner, '012345678905'), {
+      name: 'Seeded', imageUrl: '/favicon.ico', createdAt: '2026-07-25T15:00:00.000Z', createdByUid: users.owner.uid,
+    }));
+    // ...so the restore leaves it out (library-writes.ts restoredProductData) and the product comes back.
+    await assertSucceeds(setDoc(item(users.owner, '012345678905'), {
+      name: 'Seeded', imageUrl: '', createdAt: '2026-07-25T15:00:00.000Z', createdByUid: users.owner.uid,
+    }));
+  });
+
   test('image URLs, paths and fields are restricted', async () => {
     await assertFails(setDoc(item(users.member, '201'), saved({ imageUrl: 'https://evil.example.test/pixel.gif' })));
     await assertFails(setDoc(item(users.member, '202'), saved({ imageUrl: storageUrl(householdB) })));

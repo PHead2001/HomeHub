@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { PANTRY_LOCATIONS, expiryLabelForDays, expiryStateForDays, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
 import { batchAmountLabel, daysUntilDay, productSummary, type PantryBatch, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { NumberTicker } from '@/components/motion/number-ticker';
+import { shownPhoto } from '@/lib/shopping/row-photo';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 
 const SHELF_ICON: Record<PantryItemLocation, LucideIcon> = { Pantry: Archive, Fridge: Refrigerator, Freezer: Snowflake };
@@ -59,6 +60,15 @@ export type PantryShelvesProps = {
   /** "Out of this": every package used up, then "Add to list?" (SH-29). */
   onOutOfThis: (item: PantryProduct) => void;
 };
+
+/** A tile's product photo; one that fails to load (e.g. its object was deleted) falls back to the emoji. */
+function TilePhoto({ src, fallback }: { src: string; fallback: string }) {
+  const [failed, setFailed] = useState<string | null>(null);
+  const shown = shownPhoto(src, failed);
+  return shown
+    ? <Image src={shown} alt="" width={56} height={56} unoptimized className="h-14 w-14 object-cover" onError={() => setFailed(shown)} />
+    : <>{fallback}</>;
+}
 
 /**
  * The pantry as real shelves (H08): Pantry, Fridge and Freezer are shelves of
@@ -244,7 +254,7 @@ export function PantryShelves({
                         >
                           <span className={cn('flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg text-4xl transition-transform duration-200 ease-out', state === 'expired' && 'opacity-60', lifted && '-translate-y-2')} aria-hidden>
                             {photo ? (
-                              <Image src={photo} alt="" width={56} height={56} unoptimized className="h-14 w-14 object-cover" />
+                              <TilePhoto src={photo} fallback={pantryEmoji(item.name, item.location)} />
                             ) : (
                               pantryEmoji(item.name, item.location)
                             )}
