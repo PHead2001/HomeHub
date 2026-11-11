@@ -105,14 +105,13 @@ describe('chore reminders', () => {
     { id: 'd', task: 'Someone else', assignedToEmail: 'alex@example.test', dueDate: '2026-11-01T05:00:00.000Z' },
   ];
 
-  test('nothing at night; overdue alert after 7am; daily reminder after the chosen time', () => {
+  test('nothing at night; no dated overdue alert; daily reminder after the chosen time counts overdue', () => {
     assert.deepEqual(choreNotificationsFor(person, chores, new Date('2026-11-05T08:00:00Z')), []); // 2am CST
-    const morning = choreNotificationsFor(person, chores, new Date('2026-11-05T14:00:00Z')); // 8am
-    assert.deepEqual(morning.map(n => n.id), ['u1-overdue-2026-11-05']);
-    assert.equal(morning[0].message, '"Trash" is overdue.');
+    // Overdue chores have one stable notification per person (overdueChoresFor), not one per day.
+    assert.deepEqual(choreNotificationsFor(person, chores, new Date('2026-11-05T14:00:00Z')), []); // 8am
     const evening = choreNotificationsFor(person, chores, new Date('2026-11-05T23:30:00Z')); // 5:30pm
-    assert.deepEqual(evening.map(n => n.id), ['u1-overdue-2026-11-05', 'u1-reminder-2026-11-05']);
-    assert.equal(evening[1].message, '1 chore due today and 1 overdue.');
+    assert.deepEqual(evening.map(n => n.id), ['u1-reminder-2026-11-05']);
+    assert.equal(evening[0].message, '1 chore due today and 1 overdue.');
   });
 
   test('a reminder time after the last hourly run still fires exactly once', () => {
