@@ -9,9 +9,13 @@ import type {
   Timestamp as FirestoreTimestamp,
 } from "firebase-admin/firestore";
 import {
-  addDays, localDay, safeTimeZone, zonedMidnightIso,
+  addDays, localDay, localMinutes, safeTimeZone, zonedMidnightIso,
 } from "./shared/calendar";
-import {choreNotificationsFor, type ChoreInput} from "./shared/chore-reminders";
+import {
+  choreNotificationsFor, overdueChoresFor, UPKEEP_INTERVAL_MS,
+  type ChoreInput,
+} from "./shared/chore-reminders";
+import {syncOverdueNotification} from "./overdue-chores";
 import {
   addPurgedChores, choreStatsDocId, completionYear, readChoreStats,
   type PurgedChore,
@@ -63,18 +67,43 @@ export type HouseholdRunResult = {
   reopenedNotifications: number;
 };
 
+/** A Firestore server instant (a Timestamp's exact parts). */
+export type ServerInstant = {seconds: number; nanoseconds: number};
+
+/**
+ * The earliest server read time of these snapshots: every read at or after it
+ * reflects all writes committed at or before it. Snapshots without a read time
+ * are ignored; with none at all the result is undefined.
+ * @param {Array} snaps Query or document snapshots.
+ * @return {ServerInstant | undefined} Earliest read time.
+ */
+export const earliestReadTime = (
+  snaps: Array<{readTime?: ServerInstant}>,
+): ServerInstant | undefined => snaps
+  .map((snap) => snap.readTime)
+  .filter((time): time is ServerInstant => time !== undefined)
+  .reduce<ServerInstant | undefined>((earliest, time) =>
+    earliest === undefined || time.seconds < earliest.seconds ||
+      (time.seconds === earliest.seconds &&
+        time.nanoseconds < earliest.nanoseconds) ? time : earliest,
+  undefined);
+
 /**
  * Whether a resolved reminder that is actionable again may be reopened: only
- * when its last write (the resolution) happened before the run started reading
- * the data that says it is actionable.
- * @param {number | undefined} lastWriteMs Notification update time.
- * @param {number} sourcesReadFromMs When the run started its source reads.
+ * when its last write (the resolution) was already visible to the run's
+ * source reads, that is, committed at or before their earliest read time.
+ * Both are Firestore server timestamps, compared exactly (no wall clock).
+ * @param {ServerInstant | undefined} lastWrite Notification update time.
+ * @param {ServerInstant | undefined} sourcesReadAt Earliest source read time.
  * @return {boolean} True to reopen.
  */
 export const shouldReopen = (
-  lastWriteMs: number | undefined,
-  sourcesReadFromMs: number,
-): boolean => lastWriteMs !== undefined && lastWriteMs < sourcesReadFromMs;
+  lastWrite: ServerInstant | undefined,
+  sourcesReadAt: ServerInstant | undefined,
+): boolean => lastWrite !== undefined && sourcesReadAt !== undefined &&
+  (lastWrite.seconds < sourcesReadAt.seconds ||
+    (lastWrite.seconds === sourcesReadAt.seconds &&
+      lastWrite.nanoseconds <= sourcesReadAt.nanoseconds));
 
 const notificationBody = (
   householdId: string,
@@ -238,19 +267,21 @@ export const runHouseholdReminders = async (
   const timeZone = safeTimeZone(houseSnap.get("timeZone"));
   const today = localDay(now, timeZone);
 
-  // Wall-clock start of this run's source reads (Firestore update times are
-  // wall-clock too, unlike the injectable `now`). A resolved reminder is
-  // reopened only if it was resolved before this instant, so every read below
-  // already reflects whatever change resolved it.
-  const sourcesReadFrom = Date.now();
+  const sourceSnaps = await Promise.all([
+    house.collection("members").get(),
+    house.collection("chores").get(),
+    house.collection("chore-templates").get(),
+    house.collection("home-assets").get(),
+    house.collection("vehicles").get(),
+  ]);
   const [membersSnap, choresSnap, templatesSnap, assetsSnap, vehiclesSnap] =
-    await Promise.all([
-      house.collection("members").get(),
-      house.collection("chores").get(),
-      house.collection("chore-templates").get(),
-      house.collection("home-assets").get(),
-      house.collection("vehicles").get(),
-    ]);
+    sourceSnaps;
+  // Server read time of this run's source reads (every later read is at or
+  // after it). A resolved reminder is reopened only if its resolution was
+  // committed at or before this instant, so the reads already reflect
+  // whatever change resolved it. Server time against server time: the
+  // injectable `now` and the Functions wall clock play no part.
+  const sourcesReadAt = earliestReadTime(sourceSnaps);
 
   const approvedRecords = membersSnap.docs
     .map((d) => ({uid: d.id, ...d.data()}))
@@ -353,7 +384,8 @@ export const runHouseholdReminders = async (
     result.purgedChores = done.purged;
   }
 
-  // Returns false when the household disappeared or started deleting.
+  // Returns false when the household disappeared or started deleting,
+  // otherwise what was written.
   const ensure = async (id: string, fields: Record<string, unknown>) => {
     const ref = house.collection("notifications").doc(id);
     const created = await db.runTransaction(async (tx) => {
@@ -377,7 +409,7 @@ export const runHouseholdReminders = async (
       // already had one for this same reminder, and it is visible in the
       // bell again. Read and dismissed state is kept, as on refresh.
       if (snap.get("resolvedAt")) {
-        if (!shouldReopen(snap.updateTime?.toMillis(), sourcesReadFrom)) {
+        if (!shouldReopen(snap.updateTime, sourcesReadAt)) {
           return "unchanged";
         }
         tx.update(ref, {
@@ -414,7 +446,7 @@ export const runHouseholdReminders = async (
     if (created === "created") result.createdNotifications++;
     if (created === "refreshed") result.refreshedNotifications++;
     if (created === "reopened") result.reopenedNotifications++;
-    return created !== "stopped";
+    return created === "stopped" ? false : created;
   };
 
   // Maintenance reminders (household-wide).
@@ -508,6 +540,7 @@ export const runHouseholdReminders = async (
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
+  const choreIdSet = new Set(choreDocs.map((d) => d.id));
   // Reminder settings live on the email-keyed profile, so members with no
   // email in either their contact document or their record are skipped.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
@@ -517,14 +550,16 @@ export const runHouseholdReminders = async (
   for (const [index, member] of reachable.entries()) {
     const profile = profiles[index].data() || {};
     const settings = profile.choreSettings || {};
-    const notes = choreNotificationsFor({
+    const person = {
       uid: member.uid,
       email: member.email,
       timeZone: safeTimeZone(profile.timeZone || timeZone),
       householdTimeZone: timeZone,
       reminderEnabled: Boolean(settings.reminderEnabled),
       reminderTime: settings.reminderTime,
-    }, chores, now);
+    };
+    const notes = choreNotificationsFor(person, chores, now);
+    let reminderSent = false;
     for (const note of notes) {
       const kept = await ensure(note.id, {
         category: "chores",
@@ -536,7 +571,34 @@ export const runHouseholdReminders = async (
         targetUserUid: note.targetUserUid,
       });
       if (!kept) return result;
+      if (kept === "created") reminderSent = true;
     }
+    // One overdue notification per person, updated in place
+    // (./overdue-chores.ts). A daily reminder sent in this run (at any hour),
+    // or still to come today, states the overdue count, so it carries the
+    // push; the overdue document records that the same run.
+    const overdue = overdueChoresFor(person, chores, now);
+    const status = await syncOverdueNotification({
+      db, house, now, ts,
+      newBody: (fields) => notificationBody(householdId, now, ts, fields),
+      freshExpiry: () => ts(new Date(now.getTime() +
+        NOTIFICATION_TTL_DAYS * 86400000)),
+      nearExpiry: (expiresAt) => Boolean(expiresAt &&
+        expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS),
+      seenByRun: (updateTime) => shouldReopen(updateTime, sourcesReadAt),
+    }, member.uid, overdue, {
+      reminderSentNow: reminderSent,
+      reminderPending: overdue.dailyReminderPending,
+      // Dated documents from earlier versions: swept in the first hour of
+      // the person's day, and whenever the notification is written.
+      sweepLegacy:
+        localMinutes(now, person.timeZone) < UPKEEP_INTERVAL_MS / 60000,
+      existingChoreIds: choreIdSet,
+    });
+    if (status === "stopped") return result;
+    if (status === "created") result.createdNotifications++;
+    if (status === "reopened") result.reopenedNotifications++;
+    if (status === "resolved") result.resolvedNotifications++;
   }
   return result;
 };

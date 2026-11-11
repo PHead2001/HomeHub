@@ -10,7 +10,7 @@
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
 import { knownFoodType, newestFirst, parsePortion } from '../pets/care';
 import type { FoodType, PortionUnit } from '../pets/types';
-import { parseQuickAdd as parseShoppingEntries, splitSettled, type QuickAddEntry } from '../shopping/items';
+import { parseQuickAdd as parseShoppingEntries, type QuickAddEntry } from '../shopping/items';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Matches `value` only as whole words (a letter or digit on either side does not count). */
@@ -440,7 +440,28 @@ function parseShopping(text: string, context: QuickAddContext): ShoppingIntent |
   return { kind: 'shopping', items, list: list ?? defaultList(context.lists), explicit: Boolean(verb) || explicitList };
 }
 
-function parseChore(text: string, context: QuickAddContext): ChoreIntent | null {
+/** What a command verb asks for: a feeding, a shopping item or a chore. */
+export type CommandVerbKind = 'feeding' | 'item' | 'chore';
+const BARE_VERBS: Array<[RegExp, CommandVerbKind]> = [
+  [/^(?:i\s+)?(?:fed|feed|fed up|feeding)$/i, 'feeding'],
+  [/^(?:please\s+)?(?:add|buy|get|grab|pick up|need|we need|i need|we're out of|out of)$/i, 'item'],
+  [/^(?:chore|task|todo|to do|remind (?:me|us)(?: to)?)$/i, 'chore'],
+];
+/**
+ * The command verbs on their own, with nothing to act on ("fed", "feed", "add",
+ * "buy", "chore"), after trimming, collapsing spaces and dropping end punctuation.
+ * Returns the kind of entry the verb asks for, or null when the text says more
+ * than a verb. A bare verb is never an entry itself (QA-1): "Add" or "Fed" is not
+ * a grocery item.
+ */
+export function bareCommandVerb(input: string): CommandVerbKind | null {
+  const text = collapse(input).replace(/[.!?:]+$/, '').trim();
+  for (const [pattern, kind] of BARE_VERBS) if (pattern.test(text)) return kind;
+  return null;
+}
+
+/** A chore sentence ("vacuum Friday for Sam"; "chore …" also works). Exported for the palette's Chore mode. */
+export function parseChore(text: string, context: QuickAddContext): ChoreIntent | null {
   const explicit = /^(?:chore|task|todo|to do|remind (?:me|us) to)[:\s]+(.+)$/i.exec(text);
   let body = explicit ? explicit[1] : text;
   const repeat = findRepeat(body, context.now);
@@ -479,6 +500,8 @@ function parseChore(text: string, context: QuickAddContext): ChoreIntent | null 
 export function parseQuickAdd(input: string, context: QuickAddContext): QuickAddIntent | null {
   const text = collapse(input).replace(/[.!?]+$/, '');
   if (text.length < 2 || text.length > 200) return null;
+  // A verb alone ("fed", "add ") names nothing to add: never a grocery item (QA-1).
+  if (bareCommandVerb(text)) return null;
 
   const feeding = parseFeeding(text, context);
   if (feeding) return feeding;
@@ -539,27 +562,87 @@ export function resolveChoreAssignee(
   return { assignee: fallback, restricted: Boolean(requested && fallback && requested.uid !== fallback.uid) };
 }
 
+/** Shopping's save states (src/lib/shopping/save-status.ts), repeated here so this module stays Firebase-free. */
+export type ShoppingEntryState = 'saved' | 'stored-locally' | 'sending' | 'uncertain' | 'failed';
+
 export type ShoppingAddOutcome = {
+  /** Confirmed: the server answered, or the durable cache on this device holds them. */
   saved: QuickAddEntry[];
   failed: QuickAddEntry[];
-  /** True when at least one saved entry is only queued (offline). */
+  /**
+   * Not confirmed yet (`sending`: queued but not known to survive a reload;
+   * `uncertain`: a merge transaction with no answer). They stay in the palette's
+   * retry state until they settle.
+   */
+  unconfirmed: QuickAddEntry[];
+  /** "Checking…" when any unconfirmed entry is an unanswered transaction, else "Still sending…"; null without any. */
+  unconfirmedLabel: string | null;
+  /** True when at least one saved entry is only stored on this device (`stored-locally`). */
   queued: boolean;
   firstError?: unknown;
 };
 
 /**
- * Per-entry outcome of a quick-add shopping submission, with Shopping's
- * `splitSettled`: which entries were saved (or queued offline) and which failed.
- * The palette keeps only the failed ones in the preview for a retry.
+ * Per-entry outcome of a quick-add shopping submission: which entries are
+ * confirmed (saved, or stored durably on this device), which are not confirmed
+ * yet, and which failed. Only `stored-locally` counts as "saved on this device";
+ * `sending` and `uncertain` never do. The palette keeps unconfirmed and failed
+ * entries in the preview, so a retry never loses or repeats one.
  */
 export function shoppingAddOutcome(
   entries: readonly QuickAddEntry[],
-  settled: readonly PromiseSettledResult<'saved' | 'queued'>[],
+  results: readonly { state: ShoppingEntryState; error?: unknown }[],
 ): ShoppingAddOutcome {
-  const { failed, firstError } = splitSettled(entries, settled);
-  const saved = entries.filter((_, index) => settled[index]?.status === 'fulfilled');
-  const queued = settled.some((result) => result.status === 'fulfilled' && result.value === 'queued');
-  return firstError === undefined ? { saved, failed, queued } : { saved, failed, queued, firstError };
+  const pick = (states: readonly ShoppingEntryState[]) => entries.filter((_, index) => states.includes(results[index]?.state ?? 'failed'));
+  const saved = pick(['saved', 'stored-locally']);
+  const unconfirmed = pick(['sending', 'uncertain']);
+  const failed = pick(['failed']);
+  const states = results.map((result) => result.state);
+  const unconfirmedLabel = unconfirmed.length === 0 ? null : states.includes('uncertain') ? 'Checking…' : 'Still sending…';
+  const queued = states.includes('stored-locally');
+  const failedIndex = entries.findIndex((_, index) => (results[index]?.state ?? 'failed') === 'failed');
+  const outcome: ShoppingAddOutcome = { saved, failed, unconfirmed, unconfirmedLabel, queued };
+  if (failedIndex >= 0) outcome.firstError = results[failedIndex]?.error ?? new Error('save-failed');
+  return outcome;
+}
+
+/** Status line while entries are unconfirmed: "Still sending… Milk, Eggs". */
+export function unconfirmedShoppingMessage(outcome: Pick<ShoppingAddOutcome, 'unconfirmed' | 'unconfirmedLabel'>): string | null {
+  if (outcome.unconfirmed.length === 0 || !outcome.unconfirmedLabel) return null;
+  return `${outcome.unconfirmedLabel} ${outcome.unconfirmed.map((entry) => entry.name).join(', ')} not confirmed yet. Keep this open; it updates when they are.`;
+}
+
+/**
+ * Ties each wait for unconfirmed shopping entries to the palette preview that
+ * started it. `begin` hands out a token; `invalidate` (Back, the palette closing
+ * or unmounting) makes every earlier token stale, so a late settlement can no
+ * longer touch a preview the member left, or close a palette opened since.
+ */
+export function createSettlementGuard() {
+  let current = 0;
+  return {
+    begin: () => ++current,
+    invalidate: () => {
+      current += 1;
+    },
+    isActive: (token: number) => token === current,
+  };
+}
+
+export type UnconfirmedSettlement<T> = {
+  /** Entries that reached the server late: always announced (toast, data-changed), even after the palette closed. */
+  confirmed: T[];
+  /** Entries still to retry: the late failures, then the ones that failed at once. */
+  remaining: T[];
+  /** What the preview does: nothing when it is no longer the active one, else close or offer a retry. */
+  next: 'ignore' | 'close' | 'retry';
+};
+
+/** Plans what a late settlement of unconfirmed shopping entries does (see `createSettlementGuard`). */
+export function planUnconfirmedSettlement<T>(unconfirmed: readonly T[], failed: readonly T[], lateFailed: readonly T[], active: boolean): UnconfirmedSettlement<T> {
+  const confirmed = unconfirmed.filter((entry) => !lateFailed.includes(entry));
+  const remaining = [...lateFailed, ...failed];
+  return { confirmed, remaining, next: !active ? 'ignore' : remaining.length === 0 ? 'close' : 'retry' };
 }
 
 /** Inline message for entries that could not be added; they stay in the preview. */

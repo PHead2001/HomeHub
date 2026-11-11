@@ -105,3 +105,66 @@ test.describe('chores: ?room= filter', () => {
     await expect(page.getByRole('main').getByText(KITCHEN_TASK).first()).toBeVisible();
   });
 });
+
+// GOAL-filters (HP-25): `?due=overdue` and `?who=me` filter the page like `?room=`, stay in
+// the URL when changed on the page, combine with the room filter and survive reload and Back.
+test.describe('chores: ?due= and ?who= filters', () => {
+  const MINE_OVERDUE = 'Filter mine overdue';
+  const MINE_TODAY = 'Filter mine today';
+  const SAM_OVERDUE = 'Filter Sam overdue';
+  const FILTER_CHORES = [
+    ['filter-mine-overdue', MINE_OVERDUE, ownerEmail, 'Alex E2E', '2026-07-20', 'kitchen'],
+    ['filter-mine-today', MINE_TODAY, ownerEmail, 'Alex E2E', '2026-08-01', 'kitchen'],
+    ['filter-sam-overdue', SAM_OVERDUE, 'sam.member@example.test', 'Sam Member', '2026-07-20', 'living-room'],
+  ] as const;
+  test.beforeEach(async ({}, testInfo) => {
+    if (testInfo.project.name !== 'desktop-chromium') return;
+    await Promise.all(FILTER_CHORES.map(([id, task, email, name, day, room]) => household.collection('chores').doc(id).set({
+      task, assignedToEmail: email, assignedToDisplayName: name, dueDate: day, originalDueDate: day, isCompleted: false, roomIds: [room],
+    })));
+  });
+  test.afterEach(async ({}, testInfo) => {
+    if (testInfo.project.name !== 'desktop-chromium') return;
+    await Promise.all(FILTER_CHORES.map(([id]) => household.collection('chores').doc(id).delete()));
+  });
+
+  test('opens filtered to your overdue chores and keeps the filters in the URL', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/chores?due=overdue&who=me');
+    const main = page.getByRole('main');
+    await expect(main.getByText(MINE_OVERDUE).first()).toBeVisible();
+    await expect(main.getByText(MINE_TODAY)).toHaveCount(0);
+    await expect(main.getByText(SAM_OVERDUE)).toHaveCount(0);
+    const overdue = page.getByTestId('chores-filter-overdue');
+    const mine = page.getByTestId('chores-filter-mine');
+    await expect(overdue).toHaveAttribute('aria-pressed', 'true');
+    await expect(mine).toHaveAttribute('aria-pressed', 'true');
+    // Static labels: the state is announced by aria-pressed, not by the text (HP-28a).
+    await expect(overdue).toHaveText('Overdue');
+
+    // Everyone's overdue work.
+    await mine.click();
+    await expect(page).toHaveURL(/\/chores\?due=overdue$/);
+    await expect(main.getByText(SAM_OVERDUE).first()).toBeVisible();
+    await expect(main.getByText(MINE_TODAY)).toHaveCount(0);
+
+    // Reload keeps it.
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Chore Chart', exact: true })).toBeVisible();
+    await expect(page.getByTestId('chores-filter-overdue')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('chores-filter-mine')).toHaveAttribute('aria-pressed', 'false');
+    await expect(main.getByText(SAM_OVERDUE).first()).toBeVisible();
+
+    // The room filter combines with it and keeps it.
+    await filterButton(page).click();
+    await page.getByRole('menuitemradio', { name: 'Kitchen' }).click();
+    await expect(page).toHaveURL(/\/chores\?room=kitchen&due=overdue$/);
+    await expect(main.getByText(MINE_OVERDUE).first()).toBeVisible();
+    await expect(main.getByText(SAM_OVERDUE)).toHaveCount(0);
+
+    // Clearing the overdue filter shows today's work again.
+    await page.getByTestId('chores-filter-overdue').click();
+    await expect(page).toHaveURL(/\/chores\?room=kitchen$/);
+    await expect(main.getByText(MINE_TODAY).first()).toBeVisible();
+  });
+});

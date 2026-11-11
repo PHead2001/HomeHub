@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { foodTypeFromLatest, assignableMembers, describeRepeat, findDate, findList, parseQuickAdd, quickAddRetryMessage, resolveChoreAssignee, shoppingAddOutcome, splitItems, unconfirmedShoppingMessage, createSettlementGuard, planUnconfirmedSettlement, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { isComposingKey, matchShortcut, isTypingTarget, konamiStep, KONAMI } from '../../src/lib/dashboard/shortcuts';
 import { dayKey } from '../../src/lib/dashboard/dates';
 
@@ -156,18 +156,72 @@ describe('shopping quick-add outcomes', () => {
     const entries = [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 2 }, { name: 'Bread', quantity: 1 }];
     const error = new Error('offline');
     const outcome = shoppingAddOutcome(entries, [
-      { status: 'fulfilled', value: 'saved' },
-      { status: 'rejected', reason: error },
-      { status: 'fulfilled', value: 'queued' },
+      { state: 'saved' },
+      { state: 'failed', error },
+      { state: 'stored-locally' },
     ]);
     assert.deepEqual(outcome.saved.map((entry) => entry.name), ['Milk', 'Bread']);
     assert.deepEqual(outcome.failed, [{ name: 'Eggs', quantity: 2 }]);
-    assert.equal(outcome.queued, true);
+    assert.deepEqual(outcome.unconfirmed, []);
+    assert.equal(outcome.unconfirmedLabel, null);
+    assert.equal(outcome.queued, true, 'only stored-locally counts as saved on this device');
     assert.equal(outcome.firstError, error);
     assert.equal(quickAddRetryMessage(outcome.failed), "Couldn't add Eggs. It is still here; press Confirm to try again.");
     assert.equal(quickAddRetryMessage([]), null);
-    const allSaved = shoppingAddOutcome(entries.slice(0, 1), [{ status: 'fulfilled', value: 'saved' }]);
-    assert.deepEqual(allSaved, { saved: [entries[0]], failed: [], queued: false });
+    const allSaved = shoppingAddOutcome(entries.slice(0, 1), [{ state: 'saved' }]);
+    assert.deepEqual(allSaved, { saved: [entries[0]], failed: [], unconfirmed: [], unconfirmedLabel: null, queued: false });
+  });
+
+  it('keeps sending and uncertain entries unconfirmed, never "saved on this device"', () => {
+    const entries = [{ name: 'Milk', quantity: 1 }, { name: 'Eggs', quantity: 2 }, { name: 'Bread', quantity: 1 }];
+    const sending = shoppingAddOutcome(entries, [{ state: 'sending' }, { state: 'saved' }, { state: 'sending' }]);
+    assert.deepEqual(sending.saved, [entries[1]]);
+    assert.deepEqual(sending.unconfirmed, [entries[0], entries[2]]);
+    assert.equal(sending.unconfirmedLabel, 'Still sending…');
+    assert.equal(sending.queued, false);
+    assert.equal('firstError' in sending, false);
+    assert.match(unconfirmedShoppingMessage(sending)!, /^Still sending… Milk, Bread not confirmed yet/);
+
+    const checking = shoppingAddOutcome(entries.slice(0, 2), [{ state: 'uncertain' }, { state: 'sending' }]);
+    assert.equal(checking.unconfirmedLabel, 'Checking…', 'an unanswered merge transaction is not queued');
+    assert.equal(checking.queued, false);
+    assert.equal(unconfirmedShoppingMessage(shoppingAddOutcome(entries.slice(0, 1), [{ state: 'saved' }])), null);
+  });
+});
+
+describe('late settlement of unconfirmed shopping entries (review finding on #122)', () => {
+  const milk = { name: 'Milk', quantity: 1 };
+  const eggs = { name: 'Eggs', quantity: 2 };
+  const bread = { name: 'Bread', quantity: 1 };
+
+  it('an instance closed or unmounted before the write settles never acts on the palette', () => {
+    const guard = createSettlementGuard();
+    const token = guard.begin();
+    assert.equal(guard.isActive(token), true);
+    guard.invalidate(); // dismissed (open -> false) or unmounted (reopen bumps the key)
+    assert.equal(guard.isActive(token), false);
+    const plan = planUnconfirmedSettlement([milk, eggs], [], [], guard.isActive(token));
+    assert.equal(plan.next, 'ignore', 'a stale settlement must not call close() on the shared open state');
+    assert.deepEqual(plan.confirmed, [milk, eggs], 'the late "Added to the list" toast is still delivered');
+  });
+
+  it('Back or a newer Confirm makes an earlier wait stale; only the latest one is active', () => {
+    const guard = createSettlementGuard();
+    const first = guard.begin();
+    const second = guard.begin();
+    assert.equal(guard.isActive(first), false);
+    assert.equal(guard.isActive(second), true);
+    guard.invalidate();
+    assert.equal(guard.isActive(second), false);
+    // A new instance (remount) has its own guard, unaffected by the old one.
+    const fresh = createSettlementGuard();
+    assert.equal(fresh.isActive(fresh.begin()), true);
+  });
+
+  it('the active preview closes when everything landed, else keeps what failed for a retry', () => {
+    assert.deepEqual(planUnconfirmedSettlement([milk, eggs], [], [], true), { confirmed: [milk, eggs], remaining: [], next: 'close' });
+    assert.deepEqual(planUnconfirmedSettlement([milk, eggs], [bread], [eggs], true), { confirmed: [milk], remaining: [eggs, bread], next: 'retry' });
+    assert.deepEqual(planUnconfirmedSettlement([milk, eggs], [bread], [eggs], false), { confirmed: [milk], remaining: [eggs, bread], next: 'ignore' });
   });
 });
 
@@ -223,9 +277,9 @@ describe('keyboard shortcuts', () => {
     assert.deepEqual(matchShortcut({ key: 'h' }, true, none).action, { type: 'go', href: '/' });
   });
 
-  it('maps N, A and F to quick add with permission checks', () => {
-    assert.deepEqual(matchShortcut({ key: 'n' }, false, all).action, { type: 'quick-add', prefix: 'chore ' });
-    assert.deepEqual(matchShortcut({ key: 'a' }, false, all).action, { type: 'quick-add', prefix: 'add ' });
+  it('maps N, A and F to palette modes with permission checks (QA-15)', () => {
+    assert.deepEqual(matchShortcut({ key: 'n' }, false, all).action, { type: 'quick-add', mode: 'chore' });
+    assert.deepEqual(matchShortcut({ key: 'a' }, false, all).action, { type: 'quick-add', mode: 'item' });
     assert.equal(matchShortcut({ key: 'f' }, false, none).action, null);
     assert.deepEqual(matchShortcut({ key: '?', shiftKey: true }, false, all).action, { type: 'help' });
     assert.equal(matchShortcut({ key: 'n', altKey: true }, false, all).action, null);

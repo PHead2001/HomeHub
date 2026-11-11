@@ -17,6 +17,7 @@
  * (or nothing, under reduced motion).
  */
 import { ROUTE_TRANSITION } from '@/lib/motion';
+import { settleViewTransition } from '@/lib/view-transition';
 
 type ViewTransitionLike = { ready: Promise<void>; finished: Promise<void>; updateCallbackDone?: Promise<void> };
 type ViewTransitionDocument = Document & {
@@ -103,7 +104,9 @@ export function runRouteTransition(href: string, navigate: (() => void) | null, 
   };
 
   try {
-    const transition = doc.startViewTransition(() => new Promise<void>((resolve) => {
+    // settleViewTransition handles ready, finished and updateCallbackDone, so a
+    // skipped or timed-out transition never reaches the console (SH-10i).
+    const transition = settleViewTransition(doc.startViewTransition(() => new Promise<void>((resolve) => {
       const startedAt = Date.now();
       // setTimeout, not requestAnimationFrame: rendering (and rAF) is paused while
       // the browser holds the old snapshot.
@@ -113,9 +116,7 @@ export function runRouteTransition(href: string, navigate: (() => void) | null, 
       };
       navigate?.();
       check();
-    }));
-    // A transition skipped by another one (a theme change) rejects `ready`; that is fine.
-    transition.ready.catch(() => undefined);
+    })));
     transition.finished.then(cleanup, cleanup);
     return true;
   } catch {

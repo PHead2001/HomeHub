@@ -18,12 +18,12 @@ import {
   canMergeInto,
   isStillPurchased,
   isTripComplete,
+  restoreItemData,
 } from '../../src/lib/shopping/items';
 import {
   daysUntilExpiry,
   expiryLabel,
   expiryState,
-  matchRecipeIngredients,
   pantryEmoji,
   pantryLocationForCategory,
   planPantryHandoff,
@@ -167,7 +167,7 @@ describe('pantry handoff is concurrency-safe', () => {
 
   test('the writer applies increments with Firestore increment(), which also queues offline', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    assert.match(source, /quantity: increment\(plan\.add\)/);
+    assert.match(source, /quantity: increment\(toTarget\)/);
   });
 });
 
@@ -203,10 +203,15 @@ describe('clearing purchased items', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
     const clear = source.slice(source.indexOf('const clearPurchasedItems'), source.indexOf('const sendToPantry'));
     assert.match(clear, /deleteStillPurchasedItems\(/);
-    assert.match(clear, /withoutIds\(prev, deleted\)/);
     assert.match(clear, /isBrowserOffline\(\)/);
-    assert.match(clear, /const confirmed = await fetchItemsAndCategories/);
+    // "Empty" comes from the server (a count query), not from the live list on screen.
+    assert.match(clear, /const remaining = await countAllOnServer\(/);
     assert.doesNotMatch(clear, /status === '(?:needed|purchased)'/);
+    // The ids cleared are the ones captured when Clear was pressed.
+    const openClear = source.slice(source.indexOf('const openClear'), source.indexOf('const adjustQuantity'));
+    assert.match(openClear, /setClearTarget\(/);
+    assert.match(source, /clearPurchasedItems\(clearTarget\)/);
+    assert.match(clear, /clearIdsFor\(target, householdId, selectedList\.id\)/);
   });
 });
 
@@ -239,9 +244,10 @@ describe('decisions from confirmed (re-read) state, not the cached list', () => 
   });
 
   test('the merge is a transaction online and never happens offline', () => {
-    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
-    assert.match(source, /const target = offline \? undefined : findMergeTarget\(/);
-    assert.match(source, /await mergeIntoNeededItem\(/);
+    // The shared save path (add-items.ts) used by the list, palette, pantry and share target.
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'add-items.ts'), 'utf8');
+    assert.match(source, /const target = allowMerge && !offline \? findMergeTarget\(/);
+    assert.match(source, /trackWrite\(mergeIntoNeededItem\(/);
     const tx = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'item-transactions.ts'), 'utf8');
     assert.match(tx, /runTransaction\(db, async \(transaction\) => \{\s*const snapshot = await transaction\.get\(itemRef\);\s*if \(!canMergeInto/);
     const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
@@ -302,7 +308,7 @@ describe('quick-add partial failures', () => {
   });
 
   test('every multi-write path is per-entry or atomic', () => {
-    const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
+    const client = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'add-items.ts'), 'utf8');
     assert.match(client, /Promise\.allSettled\(entries\.map/);
     assert.doesNotMatch(client, /Promise\.all\(entries\.map/);
     const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
@@ -416,20 +422,6 @@ describe('pantry shelves', () => {
     assert.equal(pantryEmoji('Something odd', 'Freezer'), '🧊');
   });
 
-  test('matches recipe ingredient lines back to pantry items', () => {
-    const items = [
-      { id: 'rice', name: 'Jasmine rice' },
-      { id: 'yogurt', name: 'Greek yogurt' },
-      { id: 'berries', name: 'Frozen berries' },
-      { id: 'oil', name: 'Olive oil' },
-    ];
-    assert.deepEqual(
-      matchRecipeIngredients(['2 cups rice', '1 cup Greek yogurt', 'A handful of berries'], items).sort(),
-      ['berries', 'rice', 'yogurt'],
-    );
-    assert.deepEqual(matchRecipeIngredients([], items), []);
-  });
-
   test('finds a product photo by exact name only', () => {
     const library = [{ name: 'E2E Oat Cereal', imageUrl: '/favicon.ico' }, { name: 'No photo', imageUrl: '' }];
     assert.equal(productPhotoForName('e2e oat cereal', library), '/favicon.ico');
@@ -476,4 +468,16 @@ describe('shopping UI uses tokens only (D14)', () => {
       assert.doesNotMatch(source, /style=\{\{\s*(?:color|backgroundColor):\s*\w*\.?color/, 'stored list color as inline style');
     });
   }
+});
+
+describe('undo after delete keeps attribution', () => {
+  test('the restore keeps addedByUid and names the restorer', () => {
+    const snapshot = { name: 'Milk', quantity: 1, status: 'needed', addedByUid: 'sam' };
+    assert.deepEqual(restoreItemData(snapshot, 'alex'), { ...snapshot, restoredByUid: 'alex' });
+    assert.deepEqual(restoreItemData(snapshot, 'sam'), { ...snapshot, restoredByUid: 'sam' });
+    const legacy = { name: 'Eggs', quantity: 2, status: 'needed' };
+    assert.deepEqual(restoreItemData(legacy, 'alex'), { ...legacy, restoredByUid: 'alex' });
+    assert.deepEqual(restoreItemData(snapshot, null), snapshot);
+    assert.notEqual(restoreItemData(snapshot, null), snapshot, 'a copy, never the cached object');
+  });
 });

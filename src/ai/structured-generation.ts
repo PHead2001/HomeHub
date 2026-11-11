@@ -5,7 +5,7 @@ import { getOpenAiClient } from '@/ai/openai-client';
 import { toStrictOutputSchema } from '@/ai/strict-output-schema';
 import { buildUntrustedDataPrompt, HOMEHUB_AI_SYSTEM_INSTRUCTION } from '@/ai/system-instruction';
 
-export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary' | 'overview' | 'command-parse';
+export type ModelBackedFlowName = 'categorization' | 'categorization-batch' | 'recipe' | 'maintenance-summary' | 'overview' | 'command-parse';
 export type AiReasoningEffort = 'low' | 'medium' | 'high';
 
 export type AiGenerationUsage = {
@@ -73,6 +73,23 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
   throwDeterministicFailure(scenario);
   if (scenario === 'malformed') return { malformed: true };
 
+  if (flowName === 'categorization-batch') {
+    // Same choice per name as single categorization; names carrying their own
+    // `ai-test:` scenario fail the whole batch through getScenario above.
+    const batchInput = input as { itemNames: string[]; categories: string[] };
+    return {
+      results: batchInput.itemNames.map((name, index) => {
+        const lower = name.toLowerCase();
+        const preferred = lower.includes('milk') ? 'Dairy'
+          : lower.includes('apple') ? 'Produce'
+            : batchInput.categories.find(category => category !== 'Other');
+        const category = scenario === 'outside-category' ? 'Not A Supplied Category'
+          : preferred && batchInput.categories.includes(preferred) ? preferred : 'Other';
+        return { index, category };
+      }),
+    };
+  }
+
   if (flowName === 'categorization') {
     const categoryInput = input as { itemName: string; categories: string[] };
     if (scenario === 'outside-category') return { category: 'Not A Supplied Category' };
@@ -84,15 +101,26 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
   }
 
   if (flowName === 'recipe') {
-    const recipeInput = input as { items: Array<{ name: string }> };
-    const first = recipeInput.items[0]?.name || 'Pantry ingredient';
-    const second = recipeInput.items[1]?.name || 'Kitchen staple';
+    // Uses the first two supplied items (the client sends the soonest expiry first)
+    // and claims one item the pantry does not have, so tests see it moved to needed.
+    const recipeInput = input as { items: Array<{ name: string; quantity: number; unit: string }> };
+    const [first, second] = recipeInput.items;
+    const firstName = first?.name || 'Pantry ingredient';
+    const secondName = second?.name || 'Kitchen staple';
     return {
-      recipeTitle: `${first} and ${second} Skillet`,
-      description: `A simple skillet meal built around ${first} and ${second}.`,
+      recipeTitle: `${firstName} and ${secondName} Skillet`,
+      description: `A simple skillet meal built around ${firstName} and ${secondName}.`,
       ingredients: {
-        used: [first, second],
-        needed: ['Salt', 'Pepper', 'Cooking oil'],
+        used: [
+          { pantryItem: firstName, line: `${first?.quantity ?? 1} ${first?.unit ?? ''} ${firstName}`.replace(/\s+/g, ' ') },
+          { pantryItem: secondName, line: `${second?.quantity ?? 1} ${second?.unit ?? ''} ${secondName}`.replace(/\s+/g, ' ') },
+          { pantryItem: 'Fresh basil', line: 'A handful of fresh basil' },
+        ],
+        needed: [
+          { name: 'Salt', line: '1 tsp salt' },
+          { name: 'Pepper', line: 'Black pepper to taste' },
+          { name: 'Cooking oil', line: '2 tbsp cooking oil' },
+        ],
       },
       instructions: [
         'Prepare the pantry ingredients.',

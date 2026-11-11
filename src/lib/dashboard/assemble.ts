@@ -110,7 +110,7 @@ export function assembleDashboardFacts(
     // (computeChoreFacts then reads its completion with `completionInstant`).
     const merged = new Map<string, RawDoc>();
     [...raw.openChores!, ...raw.todayChores!, ...raw.doneToday!, ...raw.doneTodayServer!].forEach((chore) => merged.set(chore.id, chore));
-    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone);
+    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone, raw.members ?? []);
   });
 
   const listsReady = Boolean(raw.lists && raw.lists.every((list) => raw.items?.[list.id] !== undefined));
@@ -119,7 +119,7 @@ export function assembleDashboardFacts(
   });
 
   section('pantry', raw.pantry !== undefined, () => {
-    facts.pantry = computePantryFacts(raw.pantry!, context.now);
+    facts.pantry = computePantryFacts(raw.pantry!, context.now, zone);
   });
 
   section('maintenance', Boolean(raw.assets && raw.vehicles), () => {
@@ -133,7 +133,7 @@ export function assembleDashboardFacts(
       if (failed.has(feedingFailureKey(pet.id)) || !shapes?.timestamp || !shapes.string) return [pet.id, null];
       return [pet.id, newestFirst([shapes.timestamp, shapes.string] as Array<Array<RawDoc & { date: unknown }>>, context.recentFeedings)];
     }));
-    facts.pets = computePetFacts(raw.pets!, feedings, context.now);
+    facts.pets = computePetFacts(raw.pets!, feedings, context.now, zone);
     // A feeding history still loading (not failed) keeps the brief waiting.
     if (raw.pets!.some((pet) => !failed.has(feedingFailureKey(pet.id)) && !(raw.feedings?.[pet.id]?.timestamp && raw.feedings?.[pet.id]?.string))) loading = true;
   });

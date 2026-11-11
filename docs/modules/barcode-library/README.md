@@ -25,19 +25,21 @@ This module owns camera/manual barcode capture, household product mappings, prod
 
 ## Architecture and Data Flow
 
-`BarcodeScanner` uses the device camera through `react-zxing` and returns a decoded value to its host form. `lookupBarcode` first attempts the household Firestore mapping and then calls Open Food Facts. The library client manages mappings and uploads images to household-scoped Storage before writing Firestore metadata.
+`BarcodeScanner` uses the device camera through `react-zxing` and returns a decoded value to its host form. The camera runs only while the scanner is mounted: on unmount (its dialog closed, or the Shopping Center tab that owns it hidden, see [Shopping](../shopping/README.md)) react-zxing resets its reader and `BarcodeScanner` also stops every track of the video's `MediaStream` and clears `srcObject`, so no host can leave the camera on behind a closed or hidden dialog. `lookupBarcode` first attempts the household Firestore mapping and then calls Open Food Facts. The library client manages mappings and uploads images to household-scoped Storage before writing Firestore metadata.
 
 Lookup is an authenticated server action but does not invoke OpenAI generation, does not need `OPENAI_API_KEY`, and remains usable when model configuration is absent. It verifies the Firebase ID token, household membership, and `shopping.view`, then uses Firebase Admin for `households/{householdId}/barcode-library/{barcode}`.
 
 Lookup precedence is household library, Open Food Facts v3, then not found. A household hit prevents any public request. The v3 request asks only for product name, package quantity, normalized quantity/unit, and front image, uses a five-second timeout and HomeHub User-Agent, and treats community data as optional. Tests use emulator-only fixtures and never call production Open Food Facts.
 
-Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill pantry quantity/unit. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
+Scanning into a shopping list adds ONE package (BL-1, audit 17.3): `scanToShoppingEntry` (`src/lib/shopping/scan.ts`) maps the lookup to quantity 1 and keeps the package size and unit separately as the item's `size`/`sizeUnit` (only when the size is above 0 and at most 100000 and the unit at most 16 characters), shown as a note on the row ("450 g"). A scan of a name already needed on the list merges and adds 1. The package size is never the count (the e2e fixtures 128 fl oz and 450 g used to become x128 and x450).
+
+Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill the pantry unit and, for weights and volumes, the size of one package (one package), or for count units the package count. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
 
 ## Data Model and Persistence
 
 - Firestore: `households/{householdId}/barcode-library/{barcode}`.
 - Storage: `households/{householdId}/barcode-library/{uuid}.{extension}`.
-- `BarcodeLibraryItem` contains barcode `id`, `name`, `imageUrl`, optional managed `imagePath`, and ISO `createdAt`.
+- `BarcodeLibraryItem` contains barcode `id`, `name`, `imageUrl`, optional managed `imagePath`, ISO `createdAt`, and `createdByUid` (accepted by the rules and fixed once stored; the library page does not set it on a new product yet, and an edit, which replaces the document, writes a stored creator back so the product stays editable).
 - The barcode value is the Firestore document ID.
 
 Deleting a mapping removes Firestore metadata first. Storage cleanup runs only for a recognized household barcode path and is best effort; external URLs and empty image values are not passed to Firebase Storage.
@@ -50,7 +52,7 @@ The server-action lookup receives `householdId` and an ID token from its caller,
 
 The library UI follows the same permissions: Add Item and Edit appear with `shopping.edit`, Delete with `shopping.delete`, and without `shopping.view` the page explains that the library is not shared (after membership has loaded, so it never flashes). The Shopping Center hides its Barcode Library link without `shopping.view`.
 
-Firestore rules also validate product shapes (QA-8, BL-17): a product may only set `name` (1 to 200 characters), `imageUrl`, `imagePath` and `createdAt`, and the barcode ID is at most 128 characters on create. A written `imageUrl` must be empty, a Firebase Storage download URL for this household's `barcode-library/` folder in this project's bucket (`homehub-j91jb.appspot.com` or `homehub-j91jb.firebasestorage.app`, or the Storage emulator for `demo-` projects), or an Open Food Facts image (`images.` or `static.openfoodfacts.org`/`.net`); `imagePath` must be `households/{householdId}/barcode-library/<file>`. Only changed keys are checked on update, so an existing product whose stored `imageUrl` predates the rule can still be renamed while its image stays as is.
+Firestore rules also validate product shapes (QA-8, BL-17): a product may only set `name` (1 to 200 characters), `imageUrl`, `imagePath`, `createdAt` and `createdByUid`, and the barcode ID is at most 128 characters on create. `createdAt` and `createdByUid` (the writer; optional, so older clients still create products) are set on create only: an update may neither change nor remove them (BL-3). An edit writes the product's own `createdAt` back and passes; an Add over a barcode that is already saved carries a new `createdAt` and is refused, so it cannot silently replace another member's product (the current UI then shows its save-error toast). A written `imageUrl` must be empty, a Firebase Storage download URL for this household's `barcode-library/` folder in this project's bucket (`homehub-j91jb.appspot.com` or `homehub-j91jb.firebasestorage.app`, or the Storage emulator for `demo-` projects), or an Open Food Facts image (`images.` or `static.openfoodfacts.org`/`.net`); `imagePath` must be `households/{householdId}/barcode-library/<file>`. Only changed keys are checked on update, so an existing product whose stored `imageUrl` predates the rule can still be renamed while its image stays as is.
 
 Storage rules accept barcode-image creates and updates only when the object is 5 MB or smaller and its content type is `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/heic`, `image/heif`, or `image/avif`. The shared upload UI also validates images client-side.
 
@@ -64,7 +66,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 
 ## Cross-Module Dependencies
 
-- [Shopping](../shopping/README.md) consumes lookup results for list items.
+- [Shopping](../shopping/README.md) consumes lookup results for list items (one package per scan, size kept as `size`/`sizeUnit`).
 - [Pantry Inventory and Recipes](../pantry-recipes/README.md) consumes lookup results for inventory and product photos for its shelf tiles.
 - [Application Shell](../application-shell/README.md) supplies `EmptyState`, `FieldError` and `toastError`.
 - [AI and OpenAI](../ai-genkit/README.md) supplies shared server authorization and sanitized action errors; barcode lookup itself is model-free.
@@ -90,6 +92,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
 - `tests/e2e/shopping-trip.spec.ts` covers the product count wording, product photos and the missing-photo placeholder, search, and the inline missing-photo error; `tests/e2e/verification-findings.spec.ts` keeps covering prompt deletes and the add dialog.
 - Manually test camera denial, manual entry, local-library precedence, public fallback, unknown barcodes, and mapping CRUD.
+- Camera release: open a scanner (Pantry > Add Item > Scan Barcode, list Add Item > Scan Barcode, the library), then close it, press Escape, or use browser Back to switch Shopping tabs: the browser's camera-in-use indicator turns off at once, and `chrome://media-internals` (or DevTools > Media) shows the video track ended. `tests/unit/shopping-live.test.ts` checks the scanner stops its tracks and that nested scanners close with their dialog and tab.
 - Verify image upload/delete behavior for an existing object, missing object, external URL, no image, and unavailable Storage; metadata deletion must remain prompt.
 - Runtime-test the server action while authenticated before claiming the private library lookup always succeeds.
 
