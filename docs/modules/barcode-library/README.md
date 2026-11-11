@@ -33,7 +33,7 @@ Lookup precedence is household library, Open Food Facts v3, then not found. A ho
 
 Scanning into a shopping list adds ONE package (BL-1, audit 17.3): `scanToShoppingEntry` (`src/lib/shopping/scan.ts`) maps the lookup to quantity 1 and keeps the package size and unit separately as the item's `size`/`sizeUnit` (only when the size is above 0 and at most 100000 and the unit at most 16 characters), shown as a note on the row ("450 g"). A scan of a name already needed on the list merges and adds 1. The package size is never the count (the e2e fixtures 128 fl oz and 450 g used to become x128 and x450).
 
-Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill pantry quantity/unit. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
+Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and unambiguous count units) prefill the pantry unit and, for weights and volumes, the size of one package (one package), or for count units the package count. Compound text uses normalized quantity/unit only when both are supported. Serving sizes, unknown measurements, and ambiguous values are not converted; the product name can still prefill and all values remain editable.
 
 ## Data Model and Persistence
 

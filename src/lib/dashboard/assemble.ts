@@ -119,7 +119,7 @@ export function assembleDashboardFacts(
   });
 
   section('pantry', raw.pantry !== undefined, () => {
-    facts.pantry = computePantryFacts(raw.pantry!, context.now);
+    facts.pantry = computePantryFacts(raw.pantry!, context.now, zone);
   });
 
   section('maintenance', Boolean(raw.assets && raw.vehicles), () => {

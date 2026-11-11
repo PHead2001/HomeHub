@@ -196,10 +196,13 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     await scanner.getByLabel('Barcode number').fill('008500001280');
     await scanner.getByRole('button', { name: 'Use barcode' }).click();
     await expect(itemDialog.getByLabel('Item Name')).toHaveValue('E2E Family Juice');
-    await expect(itemDialog.getByRole('spinbutton', { name: 'Quantity' })).toHaveValue('128');
+    // Pantry v2 (BL-1): a scanned volume is ONE package of that size, never 128 packages.
     await expect(itemDialog.getByRole('combobox', { name: 'Unit' })).toHaveText(/fl oz/i);
-    await itemDialog.getByRole('spinbutton', { name: 'Quantity' }).fill('64');
-    await expect(itemDialog.getByRole('spinbutton', { name: 'Quantity' })).toHaveValue('64');
+    await expect(itemDialog.getByRole('spinbutton', { name: 'Packages' })).toHaveValue('1');
+    const packageSize = itemDialog.getByRole('spinbutton', { name: /^Size of one package/ });
+    await expect(packageSize).toHaveValue('128');
+    await packageSize.fill('64');
+    await expect(packageSize).toHaveValue('64');
     await itemDialog.getByRole('button', { name: 'Close' }).click();
     await expect(itemDialog).toBeHidden();
 
@@ -210,7 +213,12 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     await scanner.getByLabel('Barcode number').fill('007700000006');
     await scanner.getByRole('button', { name: 'Use barcode' }).click();
     await expect(itemDialog.getByLabel('Item Name')).toHaveValue('E2E Odd Measure');
-    await expect(itemDialog.getByRole('spinbutton', { name: 'Quantity' })).toHaveValue('1');
+    // No supported amount: the counted default (1 item) stays, editable, with no package size.
     await expect(itemDialog.getByRole('combobox', { name: 'Unit' })).toHaveText(/items/i);
+    const howMany = itemDialog.getByRole('spinbutton', { name: 'How many' });
+    await expect(howMany).toHaveValue('1');
+    await expect(itemDialog.getByRole('spinbutton', { name: /^Size of one package/ })).toHaveCount(0);
+    await howMany.fill('3');
+    await expect(howMany).toHaveValue('3');
   });
 });
