@@ -167,14 +167,14 @@ function EventChip({
               onDragStart(event);
             } : undefined}
             className={cn(
-              'flex w-full min-w-0 items-center gap-1 rounded-md border-l-[3px] px-1.5 py-1 text-left text-xs font-medium',
+              'flex min-h-[var(--target-min)] w-full min-w-0 items-center gap-1.5 rounded-md border-l-[3px] px-1.5 py-1 text-left text-sm font-medium',
               chipClasses(event, color),
               event.planned && 'border-dashed',
               movable && 'cursor-grab active:cursor-grabbing',
             )}
             aria-label={`${kindLabel(event)}: ${event.title}, ${event.subtitle}${event.medicationDue ? `, ${event.medicationDue.label.toLowerCase()}` : event.overdue ? ', overdue' : ''}${event.completed && event.kind === 'chore' ? ', done' : ''}`}
           >
-            <Icon aria-hidden className="h-3 w-3 shrink-0" />
+            <Icon aria-hidden className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{event.title}</span>
           </button>
         </PopoverTrigger>
@@ -510,7 +510,7 @@ export function HouseholdCalendar() {
           <aside aria-labelledby="overdue-rail-title" className="space-y-4">
             <section className="rounded-xl border border-l-4 border-l-destructive bg-card p-3 shadow-raised">
               <h2 id="overdue-rail-title" className="mb-2 flex items-center gap-2 font-headline text-base font-semibold text-foreground">
-                <AlertTriangle aria-hidden className="h-4 w-4 text-destructive" /> Overdue (<NumberTicker value={rail.length} animateOnMount={false} />)
+                <AlertTriangle aria-hidden className="h-4 w-4 text-destructive" /> <span>Overdue (<NumberTicker value={rail.length} animateOnMount={false} />)</span>
               </h2>
               {rail.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Nothing is overdue.</p>
@@ -606,11 +606,11 @@ export function HouseholdCalendar() {
                       const dayEvents = byDay.get(day) || [];
                       return (
                         <li key={day} className={cn(dayCellClass(day), 'flex min-h-[4.5rem] flex-col gap-1 p-2 md:min-h-[14rem]')} {...dropProps(day)}>
-                          <p className={cn('flex items-baseline gap-1 text-xs font-semibold', day === today ? 'text-primary' : 'text-muted-foreground')}>
+                          <p className={cn('flex items-baseline gap-1 text-sm font-semibold', day === today ? 'text-primary' : 'text-muted-foreground')}>
                             <span className="sr-only">{format(dayFromKey(day), 'EEEE, MMMM d')}</span>
                             <span aria-hidden>{WEEKDAY_LABELS[i]}</span>
                             <span aria-hidden className="text-base text-foreground">{format(dayFromKey(day), 'd')}</span>
-                            {day === today && <span className="ml-auto rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">Today</span>}
+                            {day === today && <span className="ml-auto rounded-full bg-primary px-1.5 text-xs text-primary-foreground">Today</span>}
                           </p>
                           <div className="flex flex-col gap-1">
                             {dayEvents.map(e => chip(e, true))}
@@ -623,7 +623,7 @@ export function HouseholdCalendar() {
                 ) : (
                   <div>
                     <div className="grid grid-cols-7 gap-1 pb-1" aria-hidden>
-                      {WEEKDAY_LABELS.map(label => <span key={label} className="text-center text-xs font-semibold text-muted-foreground">{label}</span>)}
+                      {WEEKDAY_LABELS.map(label => <span key={label} className="text-center text-sm font-semibold text-muted-foreground">{label}</span>)}
                     </div>
                     <div className="grid grid-cols-7 gap-1">
                       {monthGrid(anchor).flat().map(day => {
@@ -637,7 +637,7 @@ export function HouseholdCalendar() {
                               onClick={() => setSelectedDay(day)}
                               aria-pressed={selectedDay === day}
                               aria-label={`${format(dayFromKey(day), 'EEEE, MMMM d')}${day === today ? ', today' : ''}, ${dayEvents.length} item${dayEvents.length === 1 ? '' : 's'}`}
-                              className={cn('flex items-center justify-between rounded px-1 text-xs font-semibold', day === today ? 'text-primary' : inMonth ? 'text-foreground' : 'text-muted-foreground')}
+                              className={cn('flex min-h-[var(--target-min)] items-center justify-between rounded px-1 text-sm font-semibold', day === today ? 'text-primary' : inMonth ? 'text-foreground' : 'text-muted-foreground')}
                             >
                               {format(dayFromKey(day), 'd')}
                               {dayEvents.length > 0 && (
@@ -651,7 +651,7 @@ export function HouseholdCalendar() {
                             <div className="hidden flex-col gap-1 md:flex">
                               {dayEvents.slice(0, 3).map(e => chip(e, true))}
                               {hidden > 0 && (
-                                <button type="button" className="rounded px-1 text-left text-xs font-medium text-primary hover:underline" onClick={() => setSelectedDay(day)}>
+                                <button type="button" className="min-h-[var(--target-min)] rounded px-1 text-left text-sm font-medium text-primary hover:underline" onClick={() => setSelectedDay(day)}>
                                   +{hidden} more
                                 </button>
                               )}

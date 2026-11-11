@@ -174,20 +174,20 @@ function Tile({
 }
 
 /**
- * Opens the palette with the same prefix as the keyboard shortcut (H28), so the
+ * Opens the palette in the same mode as the keyboard shortcut (H28, QA-15), so the
  * button and its key hint come from one binding. A sibling of the tile link (never
  * nested in it) in the tile's corner; the link box underneath does not move.
  */
 function TileQuickAdd({ shortcut, label }: { shortcut: ShortcutId; label: string }) {
   const { action } = shortcutById(shortcut);
-  const prefix = action.type === 'quick-add' ? action.prefix : '';
+  const mode = action.type === 'quick-add' ? action.mode : undefined;
   return (
     <ShortcutHint shortcut={shortcut} label={label} side="left">
       <button
         type="button"
         aria-label={label}
         data-testid={`tile-quick-add-${shortcut}`}
-        onClick={() => openCommandPalette({ text: prefix })}
+        onClick={() => openCommandPalette({ mode })}
         className={cn(styles.target, 'absolute right-1 top-1 z-10 inline-flex items-center justify-center rounded-md text-muted-foreground transition-ui hover:bg-muted hover:text-foreground')}
       >
         <Plus aria-hidden className="h-4 w-4" />
