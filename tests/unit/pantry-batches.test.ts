@@ -302,10 +302,11 @@ describe('every v2 update carries the attribution the rules check', () => {
     for (const line of writes.split('\n').filter((entry) => /updateDoc\(|batch\.update\(|packages: increment/.test(entry))) {
       assert.match(line, /touched\(uid\)|packageChange\(/, line.trim());
     }
-    const handoff = read('pantry-writes.ts');
-    assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
+    // The put-away trip (server, Admin SDK) stamps the same attribution.
+    const handoff = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: FieldValue\.serverTimestamp\(\) \}\)/);
     assert.match(handoff, /planLegacyUpgrade\(batch, toTarget\)\.fields, \.\.\.stamp\(\)/);
-    assert.match(handoff, /quantity: increment\(toTarget\), \.\.\.stamp\(\)/);
+    assert.match(handoff, /quantity: FieldValue\.increment\(toTarget\), \.\.\.stamp\(\)/);
   });
 });
 
@@ -474,12 +475,11 @@ describe('purchases above 10,000 packages are split, never clamped', () => {
     assert.deepEqual(splitPackages(15_000), [10_000, 5_000]);
   });
   test('the handoff writes split batches and refuses an oversized handoff before clearing', () => {
-    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    assert.match(writes, /fillBatch\(plan\.add, batch\.packages\)/);
-    assert.match(writes, /for \(const packages of splitPackages\(total\)\)/);
-    const refusal = writes.indexOf('> MAX_HANDOFF_WRITES');
-    assert.ok(refusal > 0 && refusal < writes.indexOf('transaction.delete(itemRef(id))'), 'the size check comes before any clear');
-    assert.ok(refusal < writes.indexOf('for (const write of writes) write();'), 'and before any pantry write is applied');
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    assert.match(writes, /tripPlanWrites\(plan, batch\)/);
+    assert.match(writes, /for \(const packages of newBatches\) createBatch\(plan, packages\)/);
+    const refusal = writes.indexOf('> MAX_TRIP_WRITES');
+    assert.ok(refusal > 0 && refusal < writes.indexOf('for (const write of writes) write();'), 'the size check comes before any pantry write or clear is applied');
   });
 });
 

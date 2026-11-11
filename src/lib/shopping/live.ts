@@ -45,10 +45,10 @@ import {
  * list's data.
  */
 
-type Listen<T> = (next: (value: T, metadata: LiveMetadata) => void, fail: (error: unknown) => void) => Unsubscribe;
+export type Listen<T> = (next: (value: T, metadata: LiveMetadata) => void, fail: (error: unknown) => void) => Unsubscribe;
 
 /** One kept-alive listener as React state, scoped to `key` (null: nothing to listen to). */
-function useLive<T>(key: string | null, empty: T, listen: Listen<T>): LiveState<T> {
+export function useLive<T>(key: string | null, empty: T, listen: Listen<T>): LiveState<T> {
   const [state, setState] = useState<LiveState<T>>(() => loadingState(key ?? '', empty));
   const listenRef = useRef(listen);
   const emptyRef = useRef(empty);
