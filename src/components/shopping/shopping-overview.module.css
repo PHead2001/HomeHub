@@ -1,0 +1,84 @@
+/*
+ * The Shopping overview (S8a, SH-11a). Laid out by the width it actually has
+ * (container queries), not by device: one column on a phone, the Grocery section
+ * beside a rail of expiring chips and list cards once there is room, and the
+ * needed items in as many columns of at least 16rem as fit (at most three).
+ * rem-based, so the 115/130% text scales reflow instead of clipping.
+ */
+
+.root {
+  container: shopping-overview / inline-size;
+  min-width: 0;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.grocery {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Narrow (a phone): the quick-add dock comes after the items and sticks above the
+   tab bar, within reach of the thumb. */
+.quickAdd {
+  order: 3;
+  position: sticky;
+  bottom: calc(4rem + env(safe-area-inset-bottom));
+  z-index: 10;
+  margin-top: 1rem;
+}
+
+.items {
+  order: 2;
+  min-width: 0;
+}
+
+.columns {
+  columns: 16rem 3;
+  column-gap: 1.5rem;
+}
+
+.group {
+  break-inside: avoid;
+  padding-bottom: 0.75rem;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem;
+}
+
+/* Wide enough for the field above the items: it stays in place at the top. */
+@container shopping-overview (min-width: 40rem) {
+  .quickAdd {
+    order: 1;
+    position: static;
+    margin-top: 0;
+    margin-bottom: 1rem;
+  }
+}
+
+/* Wide (the wall tablet, a desktop): the Grocery section beside a rail. */
+@container shopping-overview (min-width: 56rem) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 20rem);
+  }
+
+  .cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

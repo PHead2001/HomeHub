@@ -51,6 +51,18 @@ describe('shared Shopping tick (HP-33c)', () => {
     assert.equal((await started.track()).state, 'saved');
   });
 
+  test("every tick (the list's, the overview's, the dashboard tile's) is recorded as this device's own (SH-28c)", () => {
+    const recorded: Array<[ItemPath, string]> = [];
+    const { io } = fakeIO();
+    const withRecord: TickIO = { ...io, recordLocal: (p, opId) => void recorded.push([p, opId]) };
+    tickShoppingItem(withRecord, { path, uid: 'u1', current: { status: 'needed' } });
+    assert.deepEqual(recorded, [[path, 'op-1']]);
+    // Nothing is recorded when no tick is written.
+    tickShoppingItem(withRecord, { path, uid: 'u1', current: { status: 'purchased' } });
+    tickShoppingItem(withRecord, { path, uid: 'u1', current: null });
+    assert.equal(recorded.length, 1);
+  });
+
   test('never re-ticks an item the live list shows as purchased, and never writes for a gone item', () => {
     const { io, calls } = fakeIO();
     assert.deepEqual(tickShoppingItem(io, { path, uid: 'u1', current: { status: 'purchased' } }), { status: 'already-purchased' });

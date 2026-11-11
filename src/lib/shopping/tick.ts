@@ -32,6 +32,11 @@ export type TickIO = {
   cachedStatusIs: (path: ItemPath, status: 'needed' | 'purchased') => Promise<boolean>;
   /** A fresh op id (tests inject one). */
   opId?: () => string;
+  /**
+   * Remembers a tick made on this device (SH-28c: the overview's "is shopping" never
+   * counts this device's own ticks), called once per tick, before the write's answer.
+   */
+  recordLocal?: (path: ItemPath, opId: string) => void;
 };
 
 /** The item as the caller's live list shows it right now; `null` = not in the list (deleted). */
@@ -73,6 +78,7 @@ export function tickShoppingItem(io: TickIO, { path, uid, current }: { path: Ite
   const plan = planTick(current);
   if (plan !== 'tick') return { status: plan };
   const opId = (io.opId ?? newOpId)();
+  io.recordLocal?.(path, opId);
   const offline = io.offline();
   const write = io.update(path, tickUpdate(uid, opId));
   const storedLocally = async () => {

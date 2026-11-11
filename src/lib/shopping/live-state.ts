@@ -181,13 +181,16 @@ export type QuickAddDecision =
   | { kind: 'wait' }
   | { kind: 'open'; listId: string }
   | { kind: 'choose' }
-  | { kind: 'none' };
+  | { kind: 'empty' }
+  | { kind: 'read-only' };
 
 /**
  * What the `?quickAdd=1` shortcut does with the lists: wait for confirmed lists;
  * then open the add dialog on the only list, or else the first Grocery list; ask
- * the member to choose when there are lists but no such target; nothing for a
- * member who cannot edit or a household with no lists.
+ * the member to choose when there are lists but no such target. A household
+ * with no lists is `empty` (the screen explains and offers a Groceries list,
+ * SH-10h) and a member who cannot edit is `read-only` (the screen says so):
+ * the shortcut is never a silent no-op.
  */
 export const quickAddDecision = ({
   requested,
@@ -202,10 +205,10 @@ export const quickAddDecision = ({
 }): QuickAddDecision | null => {
   if (!requested) return null;
   if (!confirmed) return { kind: 'wait' };
-  if (!canEdit) return { kind: 'none' };
+  if (!canEdit) return { kind: 'read-only' };
   const target = lists.length === 1 ? lists[0] : lists.find((list) => list.type === 'Grocery');
   if (target) return { kind: 'open', listId: target.id };
-  return lists.length > 0 ? { kind: 'choose' } : { kind: 'none' };
+  return lists.length > 0 ? { kind: 'choose' } : { kind: 'empty' };
 };
 
 /**
