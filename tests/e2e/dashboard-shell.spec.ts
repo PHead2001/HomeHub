@@ -374,7 +374,7 @@ test.describe('H7: dashboard one-tap actions', () => {
       const fedBox = (await fed.boundingBox())!;
       expect(fedBox.height).toBeGreaterThanOrEqual(48);
       // HP-33c: the Shopping tile's tick is a real 48 px button beside the tile link.
-      const tick = page.getByTestId('dashboard-tile-shopping').locator('[data-tick-key]').first();
+      const tick = page.getByTestId('dashboard-tile-shopping').locator('[data-action-key]').first();
       await expect(tick).toBeVisible();
       const tickBox = (await tick.boundingBox())!;
       expect(tickBox.height).toBeGreaterThanOrEqual(48);
@@ -491,6 +491,79 @@ test.describe('H7: dashboard one-tap actions', () => {
     }
   });
 
+  /** The focused element is inside the tile (never the page body). */
+  const focusInTile = (page: Page, tileId: string) => page.evaluate((id) => {
+    const active = document.activeElement;
+    return Boolean(active && active !== document.body && active.closest(`[data-testid="${id}"]`));
+  }, tileId);
+
+  test('Done from the keyboard leaves focus on the next row\'s Done in the Chores tile, and Undo stays reachable', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Not beside the house, so the tile lists several rows with their Done.
+    await page.setViewportSize({ width: 900, height: 1000 });
+    const first = 'dashboard-keyboard-done-1';
+    const second = 'dashboard-keyboard-done-2';
+    const firstRef = household.collection('chores').doc(first);
+    const secondRef = household.collection('chores').doc(second);
+    // The most overdue chores, so they are the tile's first two rows.
+    await seedChore(first, { task: 'Keyboard done first', dueDate: '2026-05-01', originalDueDate: '2026-05-01' });
+    await seedChore(second, { task: 'Keyboard done second', dueDate: '2026-05-02', originalDueDate: '2026-05-02' });
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-chores');
+      const done = tile.getByTestId(`chore-done-${first}`);
+      await expect(done).toBeEnabled();
+      await done.focus();
+      await done.press('Enter');
+      await expect.poll(async () => (await firstRef.get()).data()?.isCompleted).toBe(true);
+      await expect(tile.getByTestId(`household-chore-${first}`)).toHaveCount(0);
+      // The next row's Done takes focus; it never falls to the page body.
+      await expect(tile.getByTestId(`chore-done-${second}`)).toBeFocused();
+      expect(await focusInTile(page, 'dashboard-tile-chores')).toBe(true);
+      // The Undo toast is still there for the keyboard.
+      const undo = page.getByRole('button', { name: 'Undo', exact: true });
+      await expect(undo).toBeEnabled();
+      await undo.focus();
+      await undo.press('Enter');
+      await expect.poll(async () => (await firstRef.get()).data()?.isCompleted).toBe(false);
+    } finally {
+      await firstRef.delete();
+      await secondRef.delete();
+    }
+  });
+
+  test('Fed from the keyboard leaves focus in the Pets tile once the pet is fed for today', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Not beside the house: the tile's rows carry Fed there (beside it the house's chips do).
+    await page.setViewportSize({ width: 900, height: 1000 });
+    // Feedings carry the emulator's server time, so this test runs the browser at the real time.
+    const petId = 'dashboard-keyboard-fed';
+    const pet = household.collection('pets').doc(petId);
+    // First by name, and fed once a day: one feeding makes it fed and its Fed leaves.
+    await pet.set({ name: 'Acorn', type: 'Dog', foodSchedule: '1 cup once daily' });
+    const logs = () => pet.collection('feeding-logs').get();
+    try {
+      await page.goto('/');
+      await expect(page.getByTestId('header-search')).toBeVisible();
+      const tile = page.getByTestId('dashboard-tile-pets');
+      const fed = tile.getByTestId(`pet-fed-${petId}`);
+      await expect(fed).toBeEnabled();
+      await fed.focus();
+      await fed.press('Enter');
+      await expect.poll(async () => (await logs()).size).toBe(1);
+      await expect(fed).toHaveCount(0);
+      // The next hungry pet's Fed, else the tile link: never the page body.
+      await expect.poll(() => focusInTile(page, 'dashboard-tile-pets')).toBe(true);
+      await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
+    } finally {
+      const all = await logs();
+      await Promise.all(all.docs.map((entry) => entry.ref.delete()));
+      const state = await pet.collection('feeding-state').get();
+      await Promise.all(state.docs.map((entry) => entry.ref.delete()));
+      await pet.delete();
+    }
+  });
+
   test('HP-33a: Fed on a hungry pet logs through the shared feed operation, asks before a repeat, and Undo removes it', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     // Feedings carry the emulator's server time, so this test runs the browser at the real time.
@@ -556,6 +629,11 @@ test.describe('QA-15 / QA-1: palette modes instead of typed prefixes', () => {
       await expect(palette.locator('input, textarea')).toHaveCount(0);
       const button = mode.getByTestId(`palette-feed-${petId}`);
       await expect(button).toContainText('Feed Waffle');
+      // No field to focus: the first pet button takes focus once the pets have loaded,
+      // not "Search or type instead".
+      const petButtons = mode.locator('[data-testid^="palette-feed-"]');
+      await expect(petButtons.first()).toBeFocused();
+      await expect(palette.getByTestId('palette-mode-type-instead')).not.toBeFocused();
       const box = (await button.boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(48);
 
@@ -572,6 +650,7 @@ test.describe('QA-15 / QA-1: palette modes instead of typed prefixes', () => {
       await page.keyboard.press('f');
       await expect(palette.getByTestId('palette-mode-feeding')).toBeVisible();
       await expect(palette.getByRole('combobox')).toHaveCount(0);
+      await expect(palette.locator('[data-testid^="palette-feed-"]').first()).toBeFocused();
     } finally {
       const all = await logs();
       await Promise.all(all.docs.map((entry) => entry.ref.delete()));

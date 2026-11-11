@@ -88,11 +88,15 @@ export function formerEvidence(records, current) {
 /**
  * The identity proposed for a departed person's email (see the module comment).
  * @param {string} email Lower-cased email.
- * @param {ReturnType<typeof formerEvidence>} evidence
+ * @param {ReturnType<typeof formerEvidence> & { aliasUids?: Map<string, string> }} evidence
+ *   `aliasUids`: email -> uid from the departure aliases in the yearly stats.
  * @param {string} secret The household's secret.
  * @returns {string} Their uid, or their former-member key.
  */
 export function proposeFormerIdentity(email, evidence, secret) {
+  // The departure recorded who this was (release C's stats alias): that uid.
+  const aliased = evidence.aliasUids?.get(email);
+  if (aliased) return aliased;
   const uids = evidence.uidsByEmail.get(email);
   if (uids?.size === 1) {
     const [uid] = uids;

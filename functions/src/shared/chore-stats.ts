@@ -16,6 +16,14 @@ export type ChoreStatsDoc = {
   byAssignee: Record<string, number>;
   /** Display name per assignee key, for labels only. */
   names: Record<string, string>;
+  /**
+   * For people who have left: their uid -> the legacy key their completions
+   * were counted under while they were members (`choreStatsAssigneeKey` of
+   * their email), written by the departure (leave or removal; no email).
+   * `foldLegacyStatsKeys` moves that key to their uid key. Present only when
+   * the document has one.
+   */
+  aliases?: Record<string, string>;
 };
 
 export type PurgedChore = {
@@ -125,12 +133,14 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
       value && typeof value === "object" ? value : {})
       .filter(([, s]) => typeof s === "string")
       .map(([key, s]) => [key, s as string]));
+  const aliases = strings(raw.aliases);
   return {
     year,
     completed: typeof raw.completed === "number" && raw.completed > 0 ?
       raw.completed : 0,
     byAssignee: numbers(raw.byAssignee),
     names: strings(raw.names),
+    ...(Object.keys(aliases).length > 0 ? {aliases} : {}),
   };
 };
 
@@ -171,7 +181,8 @@ export const purgeMustWait = (
 /**
  * Moves the counts and labels kept under a legacy email-derived key
  * (`choreStatsAssigneeKey(email)`) to the member's uid key, for every person
- * whose email the reader knows. Legacy keys of anyone else are left as they
+ * whose email the reader knows and every person who has left with a
+ * departure alias (`aliases`). Legacy keys of anyone else are left as they
  * are (scripts/ops/rekey-chore-stats.mjs replaces them).
  * @param {ChoreStatsDoc} stats Stats as read.
  * @param {CreditPerson[]} people Household members (emails where known).
@@ -183,10 +194,18 @@ export const foldLegacyStatsKeys = (
 ): ChoreStatsDoc => {
   const byAssignee = {...stats.byAssignee};
   const names = {...stats.names};
-  for (const person of people) {
-    if (!filled(person.email) || !filled(person.uid)) continue;
-    const legacy = choreStatsAssigneeKey(person.email);
-    const key = choreStatsMemberKey(person.uid);
+  // Current members by email; people who have left by their departure alias.
+  const pairs: Array<[string, string]> = [
+    ...people.flatMap((person): Array<[string, string]> =>
+      filled(person.email) && filled(person.uid) ?
+        [[choreStatsAssigneeKey(person.email),
+          choreStatsMemberKey(person.uid)]] : []),
+    ...Object.entries(stats.aliases ?? {}).flatMap(
+      ([uid, legacy]): Array<[string, string]> =>
+        filled(uid) && filled(legacy) ?
+          [[legacy, choreStatsMemberKey(uid)]] : []),
+  ];
+  for (const [legacy, key] of pairs) {
     if (legacy === key) continue;
     if (legacy in byAssignee) {
       byAssignee[key] = (byAssignee[key] ?? 0) + byAssignee[legacy];
@@ -234,5 +253,6 @@ export const addPurgedChores = (
     completed: stats.completed + chores.length,
     byAssignee,
     names,
+    ...(stats.aliases ? {aliases: stats.aliases} : {}),
   };
 };
