@@ -60,7 +60,7 @@ import {
 } from '@/lib/shopping/undo';
 import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
-import type { ItemEditChanges } from '@/lib/shopping/edit';
+import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveStores } from '@/lib/shopping/live';
 import { groupingOrder, storeForList } from '@/lib/shopping/category-order';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
@@ -931,12 +931,29 @@ export function ShoppingListClient({
   };
 
   // An edit from the sheet (SH-8a): only the changed fields, signed with
-  // editedByUid and the server's editedAt. Closes once sent (it queues offline).
-  const saveItemEdit = async (item: ShoppingListItem, changes: ItemEditChanges): Promise<boolean> => {
+  // editedByUid and the server's editedAt. The sheet closes only once the edit is
+  // acknowledged or verified in the durable cache (`stored-locally`); otherwise it
+  // keeps the draft until the final answer. A rejection, now or later, is a toast.
+  const saveItemEdit = async (item: ShoppingListItem, changes: ItemEditChanges): Promise<ItemSaveResult> => {
     const list = selectedList;
-    if (!householdId || !list || !uid) return false;
+    if (!householdId || !list || !uid) return { state: 'failed', settled: Promise.resolve('failed') };
     const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
-    return sendWrite(updateDoc(itemRef, editUpdate(uid, changes)), (error) => toastError(error, `Could not save ${changes.name ?? item.name}`));
+    const label = `Could not save ${changes.name ?? item.name}`;
+    const tracked = await trackWrite(updateDoc(itemRef, editUpdate(uid, changes)), {
+      kind: 'write',
+      persistence: getLocalPersistence,
+      offline: isBrowserOffline,
+      cacheReflectsWrite: async () => {
+        const cached = await getDocFromCache(itemRef);
+        return cached.exists() && Object.entries(changes).every(([key, value]) => cached.get(key) === value);
+      },
+    });
+    if (tracked.state === 'failed') toastError(tracked.error, label);
+    const settled = tracked.settled.then((final) => {
+      if (final.state === 'failed' && tracked.state !== 'failed') toastError(final.error, label);
+      return final.state;
+    });
+    return { state: tracked.state, settled };
   };
 
   const openEditor = (item: ShoppingListItem) => {
