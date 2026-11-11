@@ -272,6 +272,15 @@
   50% { opacity: 0; }
 }
 
+/*
+ * The Chores tile's progress ring: its own class, never the bell's `.ring` (that one
+ * swings from a pivot near the top, which would lift a rotated ring over the tile title).
+ * Rotated about its centre so the arc starts at 12 o'clock and stays in flow.
+ */
+.progressRing {
+  transform-origin: 50% 50%;
+}
+
 /* ---------- Bell ring and badge pop (H11) ---------- */
 .ring {
   animation: ring 600ms ease-in-out 1;
@@ -419,7 +428,7 @@
  * HP-12e (wall tablet): the two panes are one screen tall. The page's minimum height is
  * the dynamic viewport under the header, its single grid row stretches to it, and each
  * pane is a column that hands its free height on: on the left to the house card, whose
- * stage pane is a size container the rooms grow to fill (`fitCellHeight`), on the right
+ * stage pane is a size container the rooms and roof grow to fill (`fitHouse`), on the right
  * to the tile grid, whose rows are content-sized and share what is left. Spacing follows
  * the screen height (`--wall-space`), so short screens get tighter gaps instead of a
  * scroll. Nothing has a fixed height: when the content is taller than the screen (large
@@ -630,7 +639,7 @@
   .tileGrid .tileSkeleton {
     min-height: 6rem;
   }
-  .tileGrid .ring {
+  .tileGrid .progressRing {
     width: 4rem;
     height: 4rem;
   }
@@ -820,7 +829,7 @@
  * height of the headline and summary beside it (3.25rem).
  */
 @media (min-width: 1024px) and (orientation: landscape) and (max-height: 53.99rem) {
-  .tileGrid .choresHeadline .ring {
+  .tileGrid .choresHeadline .progressRing {
     width: 3.25rem;
     height: 3.25rem;
   }

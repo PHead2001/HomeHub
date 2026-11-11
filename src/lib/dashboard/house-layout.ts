@@ -59,6 +59,8 @@ export type HouseLayout = {
   roofSide: Point[];
   sideWall: Point[];
   apex: Point;
+  /** Height of the roof's front gable above the eaves (`HOUSE_GEOMETRY.roofH` by default). */
+  roofH: number;
 };
 
 /** Columns for `n` rooms: one floor up to 3 rooms, 2×2 for four, else 3 wide. */
@@ -72,10 +74,16 @@ export function houseColumns(n: number): number {
 const pct = (value: number, total: number) => Math.round((value / total) * 10_000) / 100;
 
 /**
- * The tallest a room may grow when the house fills a tall pane (`fitCellHeight`): twice
- * the default, so a room stays a room (120 × 156 units) rather than a tall slot.
+ * The tallest a room may grow when the house fills a tall pane (`fitHouse`): twice the
+ * default, so a room stays a room (120 × 156 units) rather than a tall slot.
  */
 export const MAX_CELL_H = HOUSE_GEOMETRY.cellH * 2;
+
+/**
+ * The tallest the roof may grow once the rooms are at `MAX_CELL_H`: twice the default
+ * (a pitch of about 32 degrees on a three-room house instead of 17), never a spire.
+ */
+export const MAX_ROOF_H = HOUSE_GEOMETRY.roofH * 2;
 
 /** Units of the scene's height that do not scale with the rooms: roof, eaves and yard. */
 const FIXED_HEIGHT = HOUSE_GEOMETRY.padTop + HOUSE_GEOMETRY.roofH + HOUSE_GEOMETRY.depthY + HOUSE_GEOMETRY.groundH;
@@ -83,37 +91,48 @@ const FIXED_HEIGHT = HOUSE_GEOMETRY.padTop + HOUSE_GEOMETRY.roofH + HOUSE_GEOMET
 /** ViewBox width of a house `cols` rooms wide. */
 const sceneWidth = (cols: number) => HOUSE_GEOMETRY.padX * 2 + cols * HOUSE_GEOMETRY.cellW + HOUSE_GEOMETRY.depthX + 6;
 
+export type HouseFit = { cellH: number; roofH: number };
+
 /**
- * Room height (SVG units) that lets the house fill a pane of `box` CSS pixels on the
- * wide layout (wall tablet): the scene keeps its width (it scales to the pane's width)
- * and the rooms grow taller until the scene's height meets the pane's, between the
- * default `cellH` and `MAX_CELL_H`. A pane that is too short for the default house
- * keeps the default (the stage then shrinks to the pane's height instead). Whole units,
- * rounded down, so the scene never ends up taller than the pane.
+ * Room and roof heights (SVG units) that let the house fill a pane of `box` CSS pixels
+ * on the wide layout (wall tablet). The scene keeps its width (it scales to the pane's
+ * width) and grows taller until its height meets the pane's: first the rooms, from the
+ * default `cellH` to `MAX_CELL_H`, then, with the rooms at their tallest, the roof, from
+ * the default `roofH` to `MAX_ROOF_H` (a steeper pitch, nothing stretched). A pane too
+ * short for the default house keeps the defaults (the stage then shrinks to the pane's
+ * height instead). Whole units, rounded down, so the scene never ends up taller than the
+ * pane; whatever is still left over stays sky above the roof.
  */
-export function fitCellHeight(roomCount: number, box: { width: number; height: number }): number {
-  const base = HOUSE_GEOMETRY.cellH;
-  if (!(box.width > 0) || !(box.height > 0)) return base;
+export function fitHouse(roomCount: number, box: { width: number; height: number }): HouseFit {
+  const g = HOUSE_GEOMETRY;
+  const fit: HouseFit = { cellH: g.cellH, roofH: g.roofH };
+  if (!(box.width > 0) || !(box.height > 0)) return fit;
   const cols = houseColumns(roomCount);
   const floors = Math.max(1, Math.ceil(roomCount / cols));
   const unitsTall = box.height * (sceneWidth(cols) / box.width);
-  const cellH = Math.floor((unitsTall - FIXED_HEIGHT) / floors);
-  return Math.min(MAX_CELL_H, Math.max(base, cellH));
+  fit.cellH = Math.min(MAX_CELL_H, Math.max(g.cellH, Math.floor((unitsTall - FIXED_HEIGHT) / floors)));
+  const spare = Math.floor(unitsTall - FIXED_HEIGHT - fit.cellH * floors);
+  if (spare > 0) fit.roofH = Math.min(MAX_ROOF_H, g.roofH + spare);
+  return fit;
 }
+
+const clampUnits = (value: number | undefined, min: number, max: number) =>
+  Math.min(max, Math.max(min, value !== undefined && Number.isFinite(value) ? Math.round(value) : min));
 
 /**
  * Lays the rooms out on the front face. `cellH` (default `HOUSE_GEOMETRY.cellH`, at most
- * `MAX_CELL_H`) makes every room taller: the wide layout passes `fitCellHeight` so the
- * house fills its pane; everything else (roof, yard, windows, pets) keeps its size.
+ * `MAX_CELL_H`) makes every room taller and `roofH` (default `HOUSE_GEOMETRY.roofH`, at
+ * most `MAX_ROOF_H`) the roof steeper: the wide layout passes `fitHouse` so the house
+ * fills its pane; everything else (yard, windows, pets) keeps its size.
  */
-export function layoutHouse(roomIds: readonly string[], options: { cellH?: number } = {}): HouseLayout {
+export function layoutHouse(roomIds: readonly string[], options: Partial<HouseFit> = {}): HouseLayout {
   const g = HOUSE_GEOMETRY;
-  const wanted = options.cellH !== undefined && Number.isFinite(options.cellH) ? Math.round(options.cellH) : g.cellH;
-  const cellH = Math.min(MAX_CELL_H, Math.max(g.cellH, wanted));
+  const cellH = clampUnits(options.cellH, g.cellH, MAX_CELL_H);
+  const roofH = clampUnits(options.roofH, g.roofH, MAX_ROOF_H);
   const n = roomIds.length;
   const cols = houseColumns(n);
   const floors = Math.max(1, Math.ceil(n / cols));
-  const body = { x: g.padX, y: g.padTop + g.roofH + g.depthY, w: cols * g.cellW, h: floors * cellH };
+  const body = { x: g.padX, y: g.padTop + roofH + g.depthY, w: cols * g.cellW, h: floors * cellH };
   const width = sceneWidth(cols);
   const groundY = body.y + body.h;
   const height = groundY + g.groundH;
@@ -143,7 +162,7 @@ export function layoutHouse(roomIds: readonly string[], options: { cellH?: numbe
   }
 
   const right = body.x + body.w;
-  const apex = { x: body.x + body.w / 2, y: body.y - g.roofH };
+  const apex = { x: body.x + body.w / 2, y: body.y - roofH };
   const back = (p: Point): Point => ({ x: p.x + g.depthX, y: p.y - g.depthY });
   const eaveLeft = { x: body.x - 6, y: body.y };
   const eaveRight = { x: right + 6, y: body.y };
@@ -161,6 +180,7 @@ export function layoutHouse(roomIds: readonly string[], options: { cellH?: numbe
     roofSide: [apex, back(apex), back(eaveRight), eaveRight],
     sideWall: [{ x: right, y: body.y }, back({ x: right, y: body.y }), back({ x: right, y: groundY }), { x: right, y: groundY }],
     apex,
+    roofH,
   };
 }
 

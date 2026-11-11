@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { fitCellHeight, floorPoint, HOUSE_GEOMETRY, houseColumns, layoutHouse, MAX_CELL_H, MAX_HOUSE_ROOMS, placePets, roomNeighbor } from '../../src/lib/dashboard/house-layout';
+import { fitHouse, floorPoint, HOUSE_GEOMETRY, houseColumns, layoutHouse, MAX_CELL_H, MAX_HOUSE_ROOMS, MAX_ROOF_H, placePets, roomNeighbor } from '../../src/lib/dashboard/house-layout';
 import { choresRoomHref, MAINTENANCE_OVERVIEW_HREF, roomMorphName } from '../../src/lib/dashboard/links';
 import { GENERAL_ROOM_ID, UNKNOWN_ROOM_ID } from '../../src/lib/dashboard/facts';
 import { sharedId } from '../../src/lib/motion';
@@ -64,50 +64,64 @@ describe('living house placement', () => {
 });
 
 describe('the house filling a tall pane (HP-12e)', () => {
-  const base = HOUSE_GEOMETRY.cellH;
+  const base = { cellH: HOUSE_GEOMETRY.cellH, roofH: HOUSE_GEOMETRY.roofH };
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `room-${i}`);
   /** CSS px height of the scene drawn at `width` px wide. */
   const drawnHeight = (layout: { width: number; height: number }, width: number) => layout.height * (width / layout.width);
 
-  it('keeps the default room height without a pane, or in a pane too short for it', () => {
-    assert.equal(fitCellHeight(3, { width: 0, height: 400 }), base);
-    assert.equal(fitCellHeight(3, { width: 560, height: 0 }), base);
-    assert.equal(fitCellHeight(3, { width: Number.NaN, height: 400 }), base);
+  it('keeps the default house without a pane, or in a pane too short for it', () => {
+    assert.deepEqual(fitHouse(3, { width: 0, height: 400 }), base);
+    assert.deepEqual(fitHouse(3, { width: 560, height: 0 }), base);
+    assert.deepEqual(fitHouse(3, { width: Number.NaN, height: 400 }), base);
     // Four rooms (2x2) at 560 px wide want 495 px; a 300 px pane keeps the default.
-    assert.equal(fitCellHeight(4, { width: 560, height: 300 }), base);
+    assert.deepEqual(fitHouse(4, { width: 560, height: 300 }), base);
   });
 
-  it('grows the rooms so the scene meets the pane, never taller than the pane', () => {
+  it('grows the rooms first, so the scene meets the pane without exceeding it', () => {
     // Three rooms in one floor in a 560 x 330 pane: wider than tall, so the rooms grow.
-    const cellH = fitCellHeight(3, { width: 560, height: 330 });
-    assert.ok(cellH > base && cellH < MAX_CELL_H, String(cellH));
-    const layout = layoutHouse(['a', 'b', 'c'], { cellH });
-    const height = drawnHeight(layout, 560);
+    const fit = fitHouse(3, { width: 560, height: 330 });
+    assert.ok(fit.cellH > base.cellH && fit.cellH < MAX_CELL_H, String(fit.cellH));
+    assert.ok(fit.roofH - base.roofH <= 1, 'the roof waits for the rooms');
+    const height = drawnHeight(layoutHouse(ids(3), fit), 560);
     assert.ok(height <= 330, `fits: ${height}`);
     assert.ok(height > 330 - 3, `fills: ${height}`);
     // Six rooms (two floors) share the extra height between the floors.
-    const six = fitCellHeight(6, { width: 560, height: 400 });
-    const sixLayout = layoutHouse(['a', 'b', 'c', 'd', 'e', 'f'], { cellH: six });
+    const six = fitHouse(6, { width: 560, height: 400 });
+    const sixLayout = layoutHouse(ids(6), six);
     assert.ok(drawnHeight(sixLayout, 560) <= 400);
-    assert.equal(sixLayout.rooms[3].y, sixLayout.rooms[0].y + six);
+    assert.equal(sixLayout.rooms[3].y, sixLayout.rooms[0].y + six.cellH);
   });
 
-  it('stops at twice the default height, so a room stays a room', () => {
-    assert.equal(MAX_CELL_H, base * 2);
-    assert.equal(fitCellHeight(3, { width: 560, height: 2000 }), MAX_CELL_H);
+  it('with the rooms at their tallest, steepens the roof, up to twice the default', () => {
+    // 1263x818 wall tablet: three rooms, a pane about 556 x 570 px.
+    const fit = fitHouse(3, { width: 556, height: 570 });
+    assert.equal(fit.cellH, MAX_CELL_H);
+    assert.ok(fit.roofH > base.roofH && fit.roofH <= MAX_ROOF_H, String(fit.roofH));
+    assert.ok(drawnHeight(layoutHouse(ids(3), fit), 556) <= 570);
+    // A very tall pane: both at their caps, the rest stays sky.
+    assert.deepEqual(fitHouse(3, { width: 560, height: 2000 }), { cellH: MAX_CELL_H, roofH: MAX_ROOF_H });
+    assert.equal(MAX_CELL_H, base.cellH * 2);
+    assert.equal(MAX_ROOF_H, base.roofH * 2);
+  });
+
+  it('clamps the options to the defaults and the caps', () => {
     assert.equal(layoutHouse(['a'], { cellH: 10_000 }).rooms[0].h, MAX_CELL_H);
-    assert.equal(layoutHouse(['a'], { cellH: 10 }).rooms[0].h, base);
-    assert.equal(layoutHouse(['a'], { cellH: Number.NaN }).rooms[0].h, base);
+    assert.equal(layoutHouse(['a'], { cellH: 10 }).rooms[0].h, base.cellH);
+    assert.equal(layoutHouse(['a'], { cellH: Number.NaN }).rooms[0].h, base.cellH);
+    assert.equal(layoutHouse(['a'], { roofH: 10_000 }).roofH, MAX_ROOF_H);
+    assert.equal(layoutHouse(['a'], { roofH: 1 }).roofH, base.roofH);
+    assert.equal(layoutHouse(['a']).roofH, base.roofH);
   });
 
-  it('only the rooms grow: the width, roof and yard keep their size, and everything stays inside', () => {
+  it('only the rooms and the roof grow: the width and yard keep their size, and everything stays inside', () => {
     for (let n = 1; n <= MAX_HOUSE_ROOMS; n += 1) {
-      const ids = Array.from({ length: n }, (_, i) => `room-${i}`);
-      const plain = layoutHouse(ids);
-      const tall = layoutHouse(ids, { cellH: 120 });
+      const plain = layoutHouse(ids(n));
+      const tall = layoutHouse(ids(n), { cellH: 120, roofH: 90 });
       assert.equal(tall.width, plain.width);
-      assert.equal(tall.body.y, plain.body.y);
+      assert.equal(tall.body.y, plain.body.y + 32, 'the roof is 32 units taller');
+      assert.equal(tall.apex.y, plain.apex.y, 'the roof grows down from the same apex height');
       assert.equal(tall.height - tall.groundY, plain.height - plain.groundY, 'the yard');
-      assert.equal(tall.height - plain.height, (120 - base) * tall.floors);
+      assert.equal(tall.height - plain.height, (120 - base.cellH) * tall.floors + 32);
       for (const room of tall.rooms) {
         assert.equal(room.h, 120);
         assert.ok(room.y + room.h <= tall.groundY);

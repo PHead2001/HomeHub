@@ -105,6 +105,15 @@ async function expectActionsOwnTheirTaps(page: Page) {
   for (const hit of hits) expect(hit, `${hit.tile}: the first action button takes its own taps`).toEqual({ tile: hit.tile, centre: true, top: true });
 }
 
+/** The Chores tile's progress ring sits in flow beside the count, never over the tile's title. */
+async function expectRingClearOfTitle(page: Page) {
+  const grid = page.getByTestId('dashboard-grid');
+  const title = (await grid.getByText("Today's chores", { exact: true }).first().boundingBox())!;
+  const ring = (await grid.locator('svg[viewBox="0 0 72 72"]').first().boundingBox())!;
+  expect(overlaps(title, ring), 'the chores ring and the tile title do not intersect').toBe(false);
+  expect(ring.y, 'the ring sits below the title').toBeGreaterThanOrEqual(title.y + title.height - 1);
+}
+
 async function tileBoxes(page: Page): Promise<Box[]> {
   return page.getByTestId('dashboard-grid').locator(':scope > [data-tile]').evaluateAll((cells) => cells.map((cell) => {
     const rect = cell.getBoundingClientRect();
@@ -151,7 +160,8 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         if (viewport.fits) expect(size.innerHeight - (house.y + house.height), 'the house reaches the screen bottom').toBeLessThanOrEqual(24);
         // HP-12e: a room's name never runs over its lamp window.
         const rooms = await roomNameAndWindow(page);
-        expect(rooms.length).toBeGreaterThanOrEqual(4);
+        // The seed household's chores use three rooms (Garage, Kitchen, Living Room).
+        expect(rooms.length).toBeGreaterThanOrEqual(3);
         for (const room of rooms) {
           expect(room.lamp, `${room.id} has a lamp`).not.toBeNull();
           expect(overlaps(room.name, room.lamp!), `${room.id}: name and lamp`).toBe(false);
@@ -175,6 +185,7 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
           for (let j = i + 1; j < tiles.length; j += 1) expect(overlaps(tiles[i], tiles[j]), `tiles ${i} and ${j}`).toBe(false);
         }
         await expectActionsOwnTheirTaps(page);
+        await expectRingClearOfTitle(page);
         // Nothing inside a tile is clipped by it.
         const clipped = await page.getByTestId('dashboard-grid').locator(':scope > [data-tile]').evaluateAll((cells) => cells
           .filter((cell) => cell.scrollHeight > cell.clientHeight + 1 || cell.scrollWidth > cell.clientWidth + 1)
@@ -195,6 +206,7 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         const house = (await page.getByTestId('living-house').boundingBox())!;
         const grid = (await page.getByTestId('dashboard-grid').boundingBox())!;
         expect(overlaps(house, grid)).toBe(false);
+        await expectRingClearOfTitle(page);
         // HP-20c: the subtitle stays in the left pane; its fields wrap rather than overflow.
         const brief = (await page.getByTestId('morning-brief-block').boundingBox())!;
         const fields = await page.getByTestId('dashboard-household-line').locator(':scope > span').evaluateAll((spans) => spans.map((span) => span.getBoundingClientRect().right));

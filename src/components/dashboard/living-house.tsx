@@ -46,7 +46,7 @@ import { seasonFor, type Season } from '@/lib/dashboard/ambience';
 import { isComposingKey, isTypingTarget, konamiStep } from '@/lib/dashboard/shortcuts';
 import { roomSummary, type DashboardFacts, type PetState, type RoomState } from '@/lib/dashboard/facts';
 import { choresRoomHref, roomMorphName, MAINTENANCE_OVERVIEW_HREF, MAINTENANCE_REMINDERS_HREF, PANTRY_HREF, petFeedingHref } from '@/lib/dashboard/links';
-import { fitCellHeight, layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout, type NavKey, type PetPlacement, type RoomPlacement } from '@/lib/dashboard/house-layout';
+import { fitHouse, layoutHouse, MAX_HOUSE_ROOMS, placePets, roomNeighbor, type HouseLayout, type NavKey, type PetPlacement, type RoomPlacement } from '@/lib/dashboard/house-layout';
 import { healthSummaryText, type HealthResult } from '@/lib/maintenance/health';
 import { playPetSound } from '@/lib/dashboard/pet-sound';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
@@ -155,11 +155,12 @@ function Scenery({ layout, season, golden, lit }: { layout: HouseLayout; season:
       <rect x="0" y={groundY} width={width} height={height - groundY} className="fill-secondary/70" />
       <line x1="0" x2={width} y1={groundY} y2={groundY} className="stroke-border" strokeWidth="1.5" />
       <polygon points={points(layout.sideWall)} className="fill-muted stroke-border" strokeWidth="1.5" strokeLinejoin="round" />
-      <rect x={apex.x + body.w / 4} y={body.y - 50} width="16" height="30" rx="2" className="fill-muted stroke-border" strokeWidth="1.5" />
+      {/* The chimney and the attic window keep their place on a steeper roof (HP-12e). */}
+      <rect x={apex.x + body.w / 4} y={body.y - Math.round(layout.roofH * 0.86)} width="16" height={Math.round(layout.roofH * 0.52)} rx="2" className="fill-muted stroke-border" strokeWidth="1.5" />
       <polygon points={points(layout.roofSide)} className={cn(golden ? 'fill-warning/60' : 'fill-muted', 'stroke-border')} strokeWidth="1.5" strokeLinejoin="round" />
       <polygon points={points(layout.roofFront)} className={cn(golden ? 'fill-warning/80 stroke-warning' : 'fill-secondary stroke-border')} strokeWidth="2" strokeLinejoin="round" />
-      <circle cx={apex.x} cy={body.y - 22} r="10" className="fill-background stroke-border" strokeWidth="2" />
-      <circle cx={apex.x} cy={body.y - 22} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.85 : 0 } as CSSProperties} />
+      <circle cx={apex.x} cy={body.y - Math.round(layout.roofH * 0.38)} r="10" className="fill-background stroke-border" strokeWidth="2" />
+      <circle cx={apex.x} cy={body.y - Math.round(layout.roofH * 0.38)} r="7" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.85 : 0 } as CSSProperties} />
       <rect x={body.x} y={body.y} width={body.w} height={body.h} className="fill-background/40 stroke-border" strokeWidth="2" />
       {layout.emptyCells.map((cell) => (
         <g key={`${cell.x}-${cell.y}`}>
@@ -583,10 +584,12 @@ export function LivingHouse({
     () => (choresLoading && shownRooms.length === 0 ? OUTLINE_IDS.map((id) => placeholderRoom(id, '')) : shownRooms),
     [choresLoading, shownRooms],
   );
-  // Wall tablet (HP-12e): on the wide layout the rooms grow taller to fill the house's
-  // pane; the default geometry's aspect sizes the pane's width (dashboard.module.css).
-  const cellH = stageBox ? fitCellHeight(drawnRooms.length, stageBox) : undefined;
-  const layout = useMemo(() => layoutHouse(drawnRooms.map((room) => room.id), { cellH }), [drawnRooms, cellH]);
+  // Wall tablet (HP-12e): on the wide layout the rooms grow taller, then the roof steeper,
+  // to fill the house's pane; the default geometry's aspect sizes the pane's width.
+  const fit = stageBox ? fitHouse(drawnRooms.length, stageBox) : null;
+  const cellH = fit?.cellH;
+  const roofH = fit?.roofH;
+  const layout = useMemo(() => layoutHouse(drawnRooms.map((room) => room.id), { cellH, roofH }), [drawnRooms, cellH, roofH]);
   const baseAspect = useMemo(() => {
     const base = layoutHouse(drawnRooms.map((room) => room.id));
     return base.width / base.height;

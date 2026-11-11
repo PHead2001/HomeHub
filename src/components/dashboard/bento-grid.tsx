@@ -242,7 +242,7 @@ function ProgressRing({ done, total, settled }: { done: number; total: number; s
   const circumference = 2 * Math.PI * radius;
   const ratio = total > 0 ? Math.min(1, done / total) : 0;
   return (
-    <svg viewBox="0 0 72 72" className={cn(styles.ring, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
+    <svg viewBox="0 0 72 72" className={cn(styles.progressRing, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
       <circle cx="36" cy="36" r={radius} fill="none" strokeWidth="7" className="stroke-muted" />
       <circle
         cx="36"
