@@ -241,7 +241,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await stores.doc(OTHER_STORE_ID).set({ name: NEW_STORE_NAME, aisleOrder: [], createdByUid: OWNER_UID, updatedAt: fixedNow });
     await open(page, `/shopping?list=${LIST_ID}`);
     await expect(page.getByTestId('list-store')).toHaveText(`Sorted for ${STORE_NAME}`);
-    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    await listAction(page, 'Manage Categories');
     const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
     await expectTarget(dialog, dialog.getByRole('button', { name: 'Rename store' }));
     await dialog.getByRole('button', { name: 'Rename store' }).click();
@@ -278,7 +278,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await secondListRef.set({ name: 'E2E Aisles Two', description: '', icon: 'ShoppingCart', type: 'Grocery', color: 'tint-3', storeId: STORE_ID });
     await open(page, `/shopping?list=${LIST_ID}`);
     await expectAisleOrder(page, 'Party', 'Bakery');
-    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    await listAction(page, 'Manage Categories');
     const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
     const status = dialog.getByTestId('categories-save-status');
 
