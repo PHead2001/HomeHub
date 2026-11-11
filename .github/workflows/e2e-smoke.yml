@@ -43,7 +43,16 @@ jobs:
         run: npm ci
 
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        shell: bash
+        run: |
+          # The system packages (mostly fonts) come from the Ubuntu archives. When the runner cannot
+          # reach them the install hangs on retries and fails, so it gets five minutes; after that the
+          # browser alone is installed (the runner image already has the libraries Chromium needs).
+          if timeout 300 npx playwright install --with-deps chromium; then
+            exit 0
+          fi
+          echo "::warning::Playwright system packages could not be installed; installing the browser only."
+          npx playwright install chromium
 
       - name: Load demo emulator environment
         shell: bash
@@ -92,6 +101,73 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: e2e-smoke-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+            firebase-debug.log
+            firestore-debug.log
+            ui-debug.log
+          if-no-files-found: ignore
+          retention-days: 10
+
+  extended-e2e:
+    # Every tests/e2e spec outside the smoke list (scripts/e2e/spec-sets.mjs), so no spec is outside CI.
+    name: Extended E2E (specs outside the smoke list)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          # The system packages (mostly fonts) come from the Ubuntu archives. When the runner cannot
+          # reach them the install hangs on retries and fails, so it gets five minutes; after that the
+          # browser alone is installed (the runner image already has the libraries Chromium needs).
+          if timeout 300 npx playwright install --with-deps chromium; then
+            exit 0
+          fi
+          echo "::warning::Playwright system packages could not be installed; installing the browser only."
+          npx playwright install chromium
+
+      - name: Load demo emulator environment
+        shell: bash
+        run: |
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "$line" >> "$GITHUB_ENV"
+            fi
+          done < .env.e2e.example
+
+      - name: Run extended E2E tests
+        run: npm run test:e2e:extended:ci
+
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-extended-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             playwright-report/
             test-results/

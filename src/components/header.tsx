@@ -40,7 +40,7 @@ const HeaderNavUnderline = dynamic(() => import('./header-nav-underline').then((
 
 const NotificationBell = dynamic(() => import('./notification-bell').then((mod) => mod.NotificationBell), {
   ssr: false,
-  loading: () => <span aria-hidden className="inline-block h-10 w-10" />,
+  loading: () => <span aria-hidden className="touch-target inline-block h-10 w-10" />,
 });
 
 

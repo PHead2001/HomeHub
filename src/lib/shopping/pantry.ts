@@ -1,13 +1,13 @@
 /**
  * Pure pantry helpers: where a purchased item is stored, how a batch of purchases
- * merges into the pantry, expiry states for the shelves, tile emoji, and matching
- * recipe ingredients back to pantry items. Unit tested in
+ * merges into the pantry, expiry states for the shelves, tile emoji and product
+ * photos. Unit tested in
  * tests/unit/shopping-logic.test.ts.
  */
 
 import type { PantryItem, PantryItemLocation, ShoppingListItem } from '@/lib/types';
 import { itemNameKey } from './items';
-import { daysUntilDay, householdToday, pantryMergeKey, readPantryBatch } from './pantry-batches';
+import { clampPantryName, daysUntilDay, householdToday, pantryMergeKey, readPantryBatch } from './pantry-batches';
 
 export const PANTRY_LOCATIONS: readonly PantryItemLocation[] = ['Pantry', 'Fridge', 'Freezer'];
 
@@ -74,9 +74,9 @@ export type PantryWritePlan =
   | { kind: 'increment'; id: string; name: string; add: number; location: PantryItemLocation }
   | { kind: 'create'; name: string; quantity: number; location: PantryItemLocation };
 
-/** The batch a purchase becomes: counted in `items`, no package size, no expiry (Pantry v2 merge key). */
+/** The batch a purchase becomes: counted in `items`, no package size, no expiry (Pantry v2 merge key), named as the pantry stores it. */
 const purchaseKey = (name: string, location: PantryItemLocation) =>
-  pantryMergeKey({ nameKey: itemNameKey(name), location, packageSize: null, unit: 'items', expiryDate: null });
+  pantryMergeKey({ nameKey: itemNameKey(clampPantryName(name)), location, packageSize: null, unit: 'items', expiryDate: null });
 
 /**
  * Plans the pantry writes for a batch of purchased items. A purchase is a batch
@@ -92,7 +92,7 @@ export function planPantryHandoff(
 ): PantryWritePlan[] {
   const combined = new Map<string, { name: string; quantity: number; location: PantryItemLocation }>();
   for (const { item, location } of choices) {
-    const name = item.name.trim();
+    const name = clampPantryName(item.name);
     if (!name) continue;
     const quantity = Math.max(1, Math.round(Number(item.quantity) || 1));
     const key = `${itemNameKey(name)}|${location}`;
@@ -232,29 +232,6 @@ export function pantryEmoji(name: string, location: PantryItemLocation): string 
     if (pattern.test(key)) return emoji;
   }
   return LOCATION_EMOJI[location] ?? '🫙';
-}
-
-/**
- * Pantry item ids a recipe uses. The model returns free-text ingredient lines
- * ("2 cups jasmine rice"), so an item matches when its whole name, or the last
- * word of three or more letters in it, appears in one ingredient line.
- */
-export function matchRecipeIngredients(
-  usedIngredients: readonly string[],
-  items: readonly Pick<PantryItem, 'id' | 'name'>[],
-): string[] {
-  const lines = usedIngredients.map((line) => ` ${line.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ')} `);
-  const matched: string[] = [];
-  for (const item of items) {
-    const name = item.name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-    if (!name) continue;
-    // The last word is usually the food itself ("jasmine rice" -> rice, "frozen berries" -> berries).
-    const head = name.split(' ').filter((word) => word.length >= 3).at(-1);
-    const hit = lines.some((line) => line.includes(` ${name} `)
-      || (head !== undefined && (line.includes(` ${head} `) || line.includes(` ${head}s `))));
-    if (hit) matched.push(item.id);
-  }
-  return matched;
 }
 
 /** Finds a barcode-library product photo for a pantry item by exact (case-insensitive) name. */

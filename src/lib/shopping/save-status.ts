@@ -75,6 +75,11 @@ export function saveStateLabel(state: SaveState): string {
   }
 }
 
+/** The status line of an entry still waiting for an answer: "Still sending… Milk is not confirmed yet." */
+export function pendingSaveStatus(state: SaveState, name: string): string {
+  return `${saveStateLabel(state)} ${name} is not confirmed yet.`;
+}
+
 /**
  * Worst state of several entries, for one summary line: failed > uncertain >
  * sending > stored-locally > saved.

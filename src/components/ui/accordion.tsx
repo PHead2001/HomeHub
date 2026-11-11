@@ -20,6 +20,12 @@ const AccordionItem = React.forwardRef<
 ))
 AccordionItem.displayName = "AccordionItem"
 
+/**
+ * The label (children) is wrapped in one span, so it is a single flex item: bare
+ * text plus an inline element (a live `NumberTicker` count, "To Do (3)") would
+ * otherwise become separate flex items, spread apart by `justify-between`. At
+ * least the touch target tall (D-2), however a caller trims its padding.
+ */
 const AccordionTrigger = React.forwardRef<
   React.ElementRef<typeof AccordionPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Trigger>
@@ -28,12 +34,12 @@ const AccordionTrigger = React.forwardRef<
     <AccordionPrimitive.Trigger
       ref={ref}
       className={cn(
-        "flex flex-1 items-center justify-between py-4 font-medium transition-ui",
+        "flex min-h-[var(--target-min)] flex-1 items-center justify-between gap-2 py-4 font-medium transition-ui",
         className
       )}
       {...props}
     >
-      {children}
+      <span className="min-w-0 text-left">{children}</span>
       <ChevronDown className="h-4 w-4 shrink-0 transition-transform duration-200" />
     </AccordionPrimitive.Trigger>
   </AccordionPrimitive.Header>

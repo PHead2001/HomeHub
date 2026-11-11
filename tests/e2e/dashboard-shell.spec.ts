@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore, type QuerySnapshot } from 'firebase-admin/firestore';
+import { getFirestore, type DocumentReference, type QuerySnapshot } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 import { computeChoreFacts, computePetFacts, recurringTemplateIdsFrom, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
 import { dayKey } from '../../src/lib/dashboard/dates';
@@ -212,7 +212,9 @@ test.describe('dashboard, shell and notifications', () => {
     await expect(menu.getByRole('menuitem', { name: 'Add chore' })).toBeVisible();
     await menu.getByRole('menuitem', { name: 'Add shopping item' }).click();
     const palette = page.getByRole('dialog', { name: 'Search or quick add' });
-    await expect(palette.getByRole('combobox')).toHaveValue('add ');
+    // Item mode, never a typed "add " prefix (QA-15).
+    await expect(palette.getByTestId('palette-mode-item')).toBeVisible();
+    await expect(palette.getByRole('combobox')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
     await tabs.getByRole('button', { name: 'More' }).click();
@@ -371,8 +373,121 @@ test.describe('H7: dashboard one-tap actions', () => {
       await expect(fed).toBeVisible();
       const fedBox = (await fed.boundingBox())!;
       expect(fedBox.height).toBeGreaterThanOrEqual(48);
+      // HP-33c: the Shopping tile's tick is a real 48 px button beside the tile link.
+      const tick = page.getByTestId('dashboard-tile-shopping').locator('[data-tick-key]').first();
+      await expect(tick).toBeVisible();
+      const tickBox = (await tick.boundingBox())!;
+      expect(tickBox.height).toBeGreaterThanOrEqual(48);
+      expect(tickBox.width).toBeGreaterThanOrEqual(48);
+      expect(await tick.evaluate((button) => button.closest('a') === null)).toBe(true);
     } finally {
       await ref.delete();
+    }
+  });
+
+  // The oldest needed item of the first list by name (Hardware Run), so it is the tile's
+  // first row: the one shown beside the house on the desktop project's wide screen.
+  const seedShoppingItem = (id: string, name: string) => {
+    const ref = household.collection('shopping-lists').doc('hardware-run').collection('items').doc(id);
+    return ref.set({ name, quantity: 1, category: 'Other', status: 'needed', createdAt: new Date('2026-07-01T12:00:00.000Z') }).then(() => ref);
+  };
+
+  test('HP-33c: Tick on the Shopping tile buys the item as the reader through the shared tick, and Undo puts it back', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const ref = await seedShoppingItem('dashboard-tick', 'Dashboard tick');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const row = tile.getByTestId('dashboard-shopping-item-hardware-run-dashboard-tick');
+      const tick = row.getByRole('button', { name: 'Tick Dashboard tick', exact: true });
+      await expect(tick).toBeVisible();
+      // A real button beside the tile link, never inside it.
+      expect(await tick.evaluate((button) => button.closest('a') === null)).toBe(true);
+      await tick.focus();
+      await tick.press('Enter');
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('purchased');
+      const bought = (await ref.get()).data()!;
+      expect(bought.purchasedByUid, 'the reader is the buyer').toBe('e2e-owner-uid');
+      expect(bought.purchasedAt).toBeTruthy();
+      expect(bought.purchaseOpId).toBeTruthy();
+      await expect(row).toHaveCount(0);
+      // Focus stays in the tile (the next row's tick, else the tile link), never on the page.
+      await expect.poll(() => page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="dashboard-tile-shopping"]')))).toBe(true);
+      await expect(page.getByText('Dashboard tick is in the cart').first()).toBeVisible();
+
+      await page.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('needed');
+      const undone = (await ref.get()).data()!;
+      expect(undone.undoOpId, 'the Undo names the tick it undoes').toBe(bought.purchaseOpId);
+      expect(undone.purchasedByUid).toBeNull();
+      await expect(tick).toBeEnabled();
+    } finally {
+      await ref.delete();
+    }
+  });
+
+  test('HP-33c: the tile follows ticks made elsewhere, and an Undo after someone else bought it again is refused', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const ref = await seedShoppingItem('dashboard-tick-elsewhere', 'Dashboard elsewhere');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const row = tile.getByTestId('dashboard-shopping-item-hardware-run-dashboard-tick-elsewhere');
+      const tick = row.getByRole('button', { name: 'Tick Dashboard elsewhere', exact: true });
+      await expect(tick).toBeEnabled();
+
+      // Bought on another device: the row leaves the tile.
+      await ref.update({ status: 'purchased', purchasedByUid: 'e2e-member-uid', purchaseOpId: 'elsewhere-1' });
+      await expect(row).toHaveCount(0);
+      // Un-ticked there: back, with a working tick.
+      await ref.update({ status: 'needed', purchasedByUid: null, purchasedAt: null });
+      await expect(tick).toBeEnabled();
+
+      // Ticked here, then un-ticked elsewhere: the control is enabled again (not stuck as done).
+      await tick.click();
+      await expect.poll(async () => (await ref.get()).data()?.purchasedByUid).toBe('e2e-owner-uid');
+      await expect(row).toHaveCount(0);
+      await ref.update({ status: 'needed', purchasedByUid: null, purchasedAt: null });
+      await expect(tick).toBeEnabled();
+
+      // Ticked here, then bought again by someone else before Undo: their purchase stays.
+      await tick.click();
+      await expect.poll(async () => (await ref.get()).data()?.purchasedByUid).toBe('e2e-owner-uid');
+      await ref.update({ purchasedByUid: 'e2e-member-uid', purchaseOpId: 'elsewhere-2' });
+      await page.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(page.getByText('Changed by someone else — not undone').first()).toBeVisible();
+      const kept = (await ref.get()).data()!;
+      expect(kept.status).toBe('purchased');
+      expect(kept.purchaseOpId).toBe('elsewhere-2');
+      expect(kept.purchasedByUid).toBe('e2e-member-uid');
+    } finally {
+      await ref.delete();
+    }
+  });
+
+  test('HP-33c: ticking the last needed item from the keyboard leaves focus on the Shopping tile (review finding on #150)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // One needed item in the household: the seeded ones are parked as purchased and restored after.
+    const parked: DocumentReference[] = [];
+    for (const list of (await household.collection('shopping-lists').get()).docs) {
+      parked.push(...(await list.ref.collection('items').where('status', '==', 'needed').get()).docs.map((doc) => doc.ref));
+    }
+    await Promise.all(parked.map((doc) => doc.update({ status: 'purchased' })));
+    const ref = await seedShoppingItem('dashboard-last-tick', 'Dashboard last tick');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const tick = tile.getByRole('button', { name: 'Tick Dashboard last tick', exact: true });
+      await expect(tick).toBeEnabled();
+      await tick.focus();
+      await tick.press('Enter');
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('purchased');
+      // The last row's departure re-mounts the tile as a plain link: focus moves to it.
+      await expect(tile.getByText('Lists are empty. Nice.')).toBeVisible();
+      await expect(tile).toBeFocused();
+    } finally {
+      await ref.delete();
+      await Promise.all(parked.map((doc) => doc.update({ status: 'needed' })));
     }
   });
 
@@ -414,6 +529,130 @@ test.describe('H7: dashboard one-tap actions', () => {
       const state = await pet.collection('feeding-state').get();
       await Promise.all(state.docs.map((entry) => entry.ref.delete()));
       await pet.delete();
+    }
+  });
+});
+
+test.describe('QA-15 / QA-1: palette modes instead of typed prefixes', () => {
+  const groceries = household.collection('shopping-lists').doc('weekly-groceries');
+  const namedItems = (list: typeof groceries, name: string) => list.collection('items').where('name', '==', name).get();
+
+  test('Pets "+" opens Feeding mode with pet buttons and no text field; one tap logs a feeding with Undo', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Feedings carry the emulator's server time, so this test runs the browser at the real time.
+    const petId = 'palette-mode-pet';
+    const pet = household.collection('pets').doc(petId);
+    await pet.set({ name: 'Waffle', type: 'Dog', foodSchedule: '1 cup twice daily' });
+    const logs = () => pet.collection('feeding-logs').get();
+    try {
+      await page.goto('/');
+      await expect(page.getByTestId('header-search')).toBeVisible();
+      await page.getByTestId('tile-quick-add-log-feeding').click();
+      const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+      const mode = palette.getByTestId('palette-mode-feeding');
+      await expect(mode).toBeVisible();
+      // No typing: no text field at all, so nothing can raise a touch keyboard.
+      await expect(palette.getByRole('combobox')).toHaveCount(0);
+      await expect(palette.locator('input, textarea')).toHaveCount(0);
+      const button = mode.getByTestId(`palette-feed-${petId}`);
+      await expect(button).toContainText('Feed Waffle');
+      const box = (await button.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(48);
+
+      await button.click();
+      await expect.poll(async () => (await logs()).size).toBe(1);
+      const log = (await logs()).docs[0].data();
+      expect(log.loggedByUid).toBe('e2e-owner-uid');
+      expect(log.foodType).toBe('Dry');
+      await expect(palette).toHaveCount(0);
+      await page.getByRole('button', { name: 'Undo' }).click();
+      await expect.poll(async () => (await logs()).size).toBe(0);
+
+      // The F shortcut opens the same mode.
+      await page.keyboard.press('f');
+      await expect(palette.getByTestId('palette-mode-feeding')).toBeVisible();
+      await expect(palette.getByRole('combobox')).toHaveCount(0);
+    } finally {
+      const all = await logs();
+      await Promise.all(all.docs.map((entry) => entry.ref.delete()));
+      const state = await pet.collection('feeding-state').get();
+      await Promise.all(state.docs.map((entry) => entry.ref.delete()));
+      await pet.delete();
+    }
+  });
+
+  test('typing a bare "fed" or "add" and Enter never saves "Fed" or "Add" as a shopping item', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await openDashboard(page);
+    const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+    const input = palette.getByRole('combobox', { name: 'Search or quick add' });
+
+    await page.keyboard.press('Control+k');
+    await input.fill('fed ');
+    // The pets are offered as choices; no grocery suggestion.
+    await expect(palette.getByRole('option', { name: /Log a meal for Maple/ })).toBeVisible();
+    await expect(palette.getByRole('option', { name: /Add Fed/ })).toHaveCount(0);
+    await expect(palette.getByTestId('palette-quick-add')).toHaveCount(0);
+    await input.press('Enter');
+    await expect(palette.getByTestId('quick-add-preview')).toContainText('Log a meal for');
+    await page.keyboard.press('Escape');
+    await expect(palette).toHaveCount(0);
+
+    await page.keyboard.press('Control+k');
+    await input.fill('add');
+    await expect(palette.getByRole('option', { name: /Add a shopping item/ })).toBeVisible();
+    await expect(palette.getByRole('option', { name: /Add Add/ })).toHaveCount(0);
+    await input.press('Enter');
+    await expect(palette.getByTestId('palette-mode-item')).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    expect((await namedItems(groceries, 'Fed')).size).toBe(0);
+    expect((await namedItems(groceries, 'Add')).size).toBe(0);
+  });
+
+  test('Shopping "+" opens Item mode with a list picker; Enter saves to the chosen list', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const second = household.collection('shopping-lists').doc('palette-mode-list');
+    await second.set({ name: 'E2E Mode Groceries', description: '', icon: 'ShoppingCart', type: 'Grocery', color: 'tint-3' });
+    try {
+      await openDashboard(page);
+      await page.getByTestId('tile-quick-add-add-item').click();
+      const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+      const mode = palette.getByTestId('palette-mode-item');
+      await expect(mode).toBeVisible();
+      await expect(palette.getByRole('combobox')).toHaveCount(0);
+      const field = mode.getByTestId('palette-item-input');
+      // Item mode needs typing, so its field has focus.
+      await expect(field).toBeFocused();
+      const picker = mode.getByRole('radiogroup', { name: 'Add to' });
+      await expect(picker.getByRole('radio', { name: 'Weekly Groceries' })).toBeVisible();
+      await picker.getByRole('radio', { name: 'E2E Mode Groceries' }).click();
+      await expect(picker.getByRole('radio', { name: 'E2E Mode Groceries' })).toHaveAttribute('aria-checked', 'true');
+      // The pick is kept by the palette, not the Item panel: leaving the mode
+      // (as the preview does after a failed save) and coming back keeps it.
+      await mode.getByTestId('palette-mode-type-instead').click();
+      await expect(mode).toHaveCount(0);
+      const input = palette.getByRole('combobox', { name: 'Search or quick add' });
+      await input.fill('add');
+      await palette.getByRole('option', { name: /Add a shopping item/ }).click();
+      await expect(picker.getByRole('radio', { name: 'E2E Mode Groceries' })).toHaveAttribute('aria-checked', 'true');
+      await field.fill('e2e mode towels');
+      await field.press('Enter');
+      await expect.poll(async () => (await namedItems(second, 'E2e mode towels')).size).toBe(1);
+      expect((await namedItems(groceries, 'E2e mode towels')).size).toBe(0);
+      await expect(palette).toHaveCount(0);
+
+      // A bare verb in Item mode is refused inline, never saved.
+      await page.keyboard.press('a');
+      await expect(mode).toBeVisible();
+      await mode.getByTestId('palette-item-input').fill('add');
+      await mode.getByTestId('palette-item-input').press('Enter');
+      await expect(mode).toContainText('Type what to add');
+      expect((await namedItems(groceries, 'Add')).size).toBe(0);
+    } finally {
+      const items = await second.collection('items').get();
+      await Promise.all(items.docs.map((item) => item.ref.delete()));
+      await second.delete();
     }
   });
 });

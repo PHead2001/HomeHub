@@ -144,6 +144,9 @@ export type ShoppingListItem = {
   /** Who last edited it in the item sheet (the writer's uid) and when (server time) (SH-8a/b). */
   editedByUid?: string;
   editedAt?: unknown;
+  /** Server-only (S5): when a "Put away" trip credited this purchase to the pantry, and that trip's id. */
+  pantryCreditedAt?: unknown;
+  creditTripId?: string;
 };
 
 export type ShoppingListCategory = string;
@@ -450,7 +453,7 @@ export type BarcodeLibraryItem = {
   imageUrl: string;
   imagePath?: string;
   createdAt: string; // ISO String
-  /** Who added the product (written on create by newer builds; fixed afterwards by the rules). */
+  /** Who saved the product (the writer of the create; immutable). Absent on older products. */
   createdByUid?: string;
 };
 

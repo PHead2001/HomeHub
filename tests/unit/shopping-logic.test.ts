@@ -24,7 +24,6 @@ import {
   daysUntilExpiry,
   expiryLabel,
   expiryState,
-  matchRecipeIngredients,
   pantryEmoji,
   pantryLocationForCategory,
   planPantryHandoff,
@@ -167,8 +166,8 @@ describe('pantry handoff is concurrency-safe', () => {
   });
 
   test('the writer applies increments with Firestore increment(), which also queues offline', () => {
-    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    assert.match(source, /quantity: increment\(toTarget\)/);
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    assert.match(source, /quantity: FieldValue\.increment\(toTarget\)/);
   });
 });
 
@@ -180,7 +179,7 @@ describe('shopping quantity merges are atomic', () => {
   });
 
   test('no shopping code writes a quantity total computed from a read', () => {
-    const files = ['components/shopping-list-client.tsx', 'components/pantry-inventory-client.tsx', 'components/share-target-client.tsx', 'lib/shopping/pantry-writes.ts'];
+    const files = ['components/shopping-list-client.tsx', 'components/pantry-inventory-client.tsx', 'components/share-target-client.tsx', 'lib/server/shopping-trips.ts'];
     for (const file of files) {
       const source = readFileSync(join(__dirname, '..', '..', 'src', ...file.split('/')), 'utf8');
       assert.doesNotMatch(source, /quantity\)\s*\|\|\s*0\)\s*\+/, `${file} adds to a read quantity`);
@@ -202,7 +201,7 @@ describe('clearing purchased items', () => {
 
   test('clear and the empty-list prompt never derive from a local status filter', () => {
     const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping-list-client.tsx'), 'utf8');
-    const clear = source.slice(source.indexOf('const clearPurchasedItems'), source.indexOf('const sendToPantry'));
+    const clear = source.slice(source.indexOf('const clearPurchasedItems'), source.indexOf('const archiveList'));
     assert.match(clear, /deleteStillPurchasedItems\(/);
     assert.match(clear, /isBrowserOffline\(\)/);
     // "Empty" comes from the server (a count query), not from the live list on screen.
@@ -251,9 +250,9 @@ describe('decisions from confirmed (re-read) state, not the cached list', () => 
     assert.match(source, /trackWrite\(mergeIntoNeededItem\(/);
     const tx = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'item-transactions.ts'), 'utf8');
     assert.match(tx, /runTransaction\(db, async \(transaction\) => \{\s*const snapshot = await transaction\.get\(itemRef\);\s*if \(!canMergeInto/);
-    const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
+    const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
     assert.match(pantry, /runTransaction\(/);
-    assert.match(pantry, /pantryMergeStillValid\(/);
+    assert.match(pantry, /tripTargetStillValid\(/);
   });
 });
 
@@ -312,10 +311,9 @@ describe('quick-add partial failures', () => {
     const client = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'add-items.ts'), 'utf8');
     assert.match(client, /Promise\.allSettled\(entries\.map/);
     assert.doesNotMatch(client, /Promise\.all\(entries\.map/);
-    const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    // Add to pantry, then clear: one transaction for both.
-    assert.match(pantry, /\{ clearItemIds = \[\] \}/);
-    assert.match(pantry, /transaction\.delete\(itemRef\(id\)\)/);
+    const pantry = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    // Put away & clear: one transaction for the pantry credit, the clear and the trip.
+    assert.match(pantry, /transaction\.delete\(itemRef\(record\.itemId\)\)/);
   });
 });
 
@@ -361,10 +359,17 @@ describe('pantry handoff credits only confirmed purchases', () => {
   });
 
   test('the transaction reads every shopping item before planning or writing', () => {
-    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    const body = source.slice(source.indexOf('return runTransaction('));
-    const firstWrite = Math.min(...['transaction.update', 'transaction.set', 'transaction.delete'].map((w) => body.indexOf(w)));
-    for (const step of ['transaction.get(itemRef(id))', 'confirmedHandoffChoices(choices, confirmed)', 'planPantryHandoff(credited, existing)', 'transaction.get(doc(pantry, plan.id))']) {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    const body = source.slice(source.indexOf('return db.runTransaction('), source.indexOf('const readEffects'));
+    const firstWrite = Math.min(...['transaction.update', 'transaction.set', 'transaction.delete'].map((w) => body.indexOf(w)).filter((index) => index >= 0));
+    for (const step of [
+      'transaction.getAll(...input.items',
+      "trips.where('creditedPurchaseOpIds', 'array-contains-any'",
+      'decideTripItems(input.items, read, purchasesCreditedBy(',
+      'planTripPantry(creditsOf(eligible), existing, timeZone)',
+      'transaction.getAll(...targetIds',
+      "transaction.getAll(...allUsualIds",
+    ]) {
       assert.ok(body.indexOf(step) >= 0 && body.indexOf(step) < firstWrite, `${step} happens before the first write`);
     }
   });
@@ -421,20 +426,6 @@ describe('pantry shelves', () => {
     assert.equal(pantryEmoji('Greek yogurt', 'Fridge'), '🥣');
     assert.equal(pantryEmoji('Jasmine rice', 'Pantry'), '🍚');
     assert.equal(pantryEmoji('Something odd', 'Freezer'), '🧊');
-  });
-
-  test('matches recipe ingredient lines back to pantry items', () => {
-    const items = [
-      { id: 'rice', name: 'Jasmine rice' },
-      { id: 'yogurt', name: 'Greek yogurt' },
-      { id: 'berries', name: 'Frozen berries' },
-      { id: 'oil', name: 'Olive oil' },
-    ];
-    assert.deepEqual(
-      matchRecipeIngredients(['2 cups rice', '1 cup Greek yogurt', 'A handful of berries'], items).sort(),
-      ['berries', 'rice', 'yogurt'],
-    );
-    assert.deepEqual(matchRecipeIngredients([], items), []);
   });
 
   test('finds a product photo by exact name only', () => {

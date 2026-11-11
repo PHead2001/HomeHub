@@ -6,18 +6,20 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
-import type { BarcodeLibraryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
+import type { PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
-import { auth, db } from '@/lib/firebase';
-import { collection, query } from 'firebase/firestore';
-import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { auth } from '@/lib/firebase';
+import { isBrowserOffline } from '@/lib/firestore-offline';
 import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, editPackagesLimit, planAddOne, stepPackages, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { categorizationNotice } from '@/lib/shopping/save-status';
-import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
+import { expiryStateForDays, productPhotoForName } from '@/lib/shopping/pantry';
+import { recipeProductKeys } from '@/lib/shopping/recipe';
+import { readRecentList, rememberRecentList } from '@/lib/shopping/recent-list';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
+import { pantryScanPrefill } from '@/lib/shopping/pantry-scan';
 import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { justOpened } from '@/lib/shopping/live-state';
@@ -63,14 +65,19 @@ import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { cn } from '@/lib/utils';
-import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check, LayoutGrid, List as ListIcon, X } from 'lucide-react';
+import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, LayoutGrid, List as ListIcon, X } from 'lucide-react';
 import { buttonVariants } from './ui/button';
 import { BarcodeScanner } from './barcode-scanner';
+import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
+import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Checkbox } from './ui/checkbox';
 import { EmptyState } from './empty-state';
 import { PantryShelves } from './shopping/pantry-shelves';
+import { RecipeIngredients } from './shopping/recipe-ingredients';
 
 /** AI failures already carry a public message; anything else goes through friendlyError. */
 const recipeErrorMessage = (error: unknown) =>
@@ -150,8 +157,13 @@ function PantryItemDialog({
   if (!isOpen && isScannerOpen) setIsScannerOpen(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
-  const { toast, toastError } = useToast();
-  const { currentUser } = useAuth();
+  const { toast } = useToast();
+  const { currentUser, permissions } = useAuth();
+  const lookupFeedback = useLookupFeedback();
+  // A miss is shown inside this modal dialog (a toast's action would be unreachable).
+  const scanMiss = useScanMiss();
+  const scanOptions = { fallback: 'type the name instead', canSave: Boolean(permissions['shopping.edit']) };
+  const scanSessionRef = useRef(0);
 
   const packagesLimit = editPackagesLimit(itemToEdit);
   const resolver = useMemo(() => zodResolver(pantryItemSchemaFor(packagesLimit)), [packagesLimit]);
@@ -168,6 +180,9 @@ function PantryItemDialog({
   // Effect to sync category when form's unit changes (e.g., when editing an item)
   useEffect(() => {
     pendingScannedUnit.current = null;
+    // A lookup still running belongs to the previous opening: its answer is dropped.
+    scanSessionRef.current += 1;
+    scanMiss.clear();
     if (itemToEdit) {
       // A batch that needs repair starts at 1 package with a suggested size, never 0 (stock kept).
       const start = itemToEdit.needsRepair ? repairEditPrefill(itemToEdit) : itemToEdit;
@@ -216,6 +231,8 @@ function PantryItemDialog({
   };
 
   const handleBarcodeScan = async (barcode: string) => {
+    const session = scanSessionRef.current;
+    scanMiss.clear();
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
     try {
@@ -226,37 +243,39 @@ function PantryItemDialog({
           { barcode },
           await getAiActionContext(currentUser.householdId)
         ));
-        const { productName } = result;
-        if (productName) {
-            if (!form.formState.dirtyFields.name) form.setValue('name', productName);
+        // The dialog closed or opened for another item meanwhile: never fill that form.
+        if (session !== scanSessionRef.current) return;
+        const miss = result.libraryItem ? null : lookupMiss(result);
+        const prefill = miss ? null : pantryScanPrefill(result);
+        if (prefill) {
+            if (!form.formState.dirtyFields.name) form.setValue('name', prefill.name, { shouldValidate: true });
             form.setValue('barcode', barcode);
-            // The scanned amount is the size of ONE package for weights and volumes
-            // (a 450 g bag is 1 package of 450 g, never 450 packages: BL-1, 17.3).
-            if (result.quantity && result.unit
+            // One package of the scanned size for weights and volumes (BL-1), the
+            // count for counted units (`pantryScanPrefill`); never over a typed amount.
+            const { amount } = prefill;
+            if (amount
               && !form.formState.dirtyFields.packages
               && !form.formState.dirtyFields.packageSize
               && !form.formState.dirtyFields.unit) {
-              if (isCountUnit(result.unit)) {
-                form.setValue('packages', Math.max(1, Math.round(result.quantity)));
-                form.setValue('packageSize', '');
-              } else {
-                form.setValue('packages', 1);
-                form.setValue('packageSize', String(result.quantity));
-              }
-              pendingScannedUnit.current = result.unit;
-              setUnitCategory(getCategoryFromUnit(result.unit));
+              form.setValue('packages', amount.packages);
+              form.setValue('packageSize', amount.packageSize);
+              pendingScannedUnit.current = amount.unit;
+              setUnitCategory(getCategoryFromUnit(amount.unit));
             }
             toast({
               title: "Product Found!",
-              description: result.quantity && result.unit
-                ? `${productName}, ${result.quantity} ${result.unit}, has been filled in.`
-                : `${productName} has been filled in. Enter the package size yourself.`,
+              description: amount
+                ? `${prefill.name}, ${result.quantity} ${amount.unit}, has been filled in.`
+                : `${prefill.name} has been filled in. Enter the package size yourself.`,
             });
         } else {
-            toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. Type the name instead.' });
+            // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
+            scanMiss.reportMiss(miss ?? { kind: 'not-found' }, barcode);
         }
     } catch (error) {
-        toastError(error, 'Barcode lookup failed');
+        // Inline only in the same opening; otherwise a toast (the dialog is gone).
+        if (session === scanSessionRef.current) scanMiss.reportError(error, barcode);
+        else lookupFeedback.reportError(error, barcode, scanOptions);
     }
   };
 
@@ -464,6 +483,7 @@ function PantryItemDialog({
                 {form.formState.isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Save Item'}
               </Button>
             </DialogFooter>
+            <LookupMissNotice scanMiss={scanMiss.scanMiss} fallback="type the name instead" canSave={scanOptions.canSave} />
           </form>
         </Form>
       </DialogContent>
@@ -481,12 +501,22 @@ function RecipeGeneratorDialog({
     recipeItems,
     householdId,
     onRecipe,
+    products,
+    today,
+    uid,
+    canEdit,
 }: {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    /** Usable stock only (SH-27e): products with packages left, expired batches left out. */
+    /** Usable stock only (SH-27e, SH-31a): soonest expiry first, used-up, needs-repair and expired batches left out. */
     recipeItems: RecipeStockItem[];
     householdId: string;
+    /** The live pantry, for the amounts on hand next to each pantry ingredient. */
+    products: readonly PantryProduct[];
+    today: string;
+    uid: string | null;
+    /** `shopping.edit`: adding missing ingredients to a list needs it. */
+    canEdit: boolean;
     /**
      * Receives each generated recipe so the shelves can lift the items it uses;
      * returns how many lifted tiles are on screen (0 in the list view).
@@ -497,6 +527,8 @@ function RecipeGeneratorDialog({
     const reduced = useReducedMotion();
     const [isLoading, setIsLoading] = useState(false);
     const [recipe, setRecipe] = useState<GenerateRecipeOutput | null>(null);
+    // Keys the ingredients per recipe, so a new one starts with fresh add states.
+    const [recipeId, setRecipeId] = useState(0);
     // 'lifting': the dialog and its scrim step aside so the lifted tiles are seen,
     // then 'shown': the dialog returns and the recipe card flips in.
     const [phase, setPhase] = useState<'shown' | 'lifting'>('shown');
@@ -525,6 +557,7 @@ function RecipeGeneratorDialog({
             const liftedOnScreen = onRecipe?.(result) ?? 0;
             setPhase(!reduced && liftedOnScreen > 0 ? 'lifting' : 'shown');
             setRecipe(result);
+            setRecipeId((id) => id + 1);
         } catch (error) {
             const message = recipeErrorMessage(error);
             console.error('Recipe generation failed', error instanceof Error ? error : String(error));
@@ -624,31 +657,15 @@ function RecipeGeneratorDialog({
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-3">
-                                <h3 className="font-headline text-lg font-semibold flex items-center gap-2"><Salad /> Ingredients</h3>
-                                <div className="p-4 bg-secondary/50 rounded-lg">
-                                    <h4 className="font-semibold mb-2">From Your Pantry</h4>
-                                    <ul className="space-y-1">
-                                    {recipe.ingredients.used.map(ing => (
-                                        <li key={ing} className="flex items-center gap-2">
-                                            <Check className="h-4 w-4 text-success" /> <span>{ing}</span>
-                                        </li>
-                                    ))}
-                                    </ul>
-                                </div>
-                                {recipe.ingredients.needed.length > 0 && (
-                                    <div className="p-4 bg-warning/10 rounded-lg">
-                                        <h4 className="font-semibold mb-2">You Might Need</h4>
-                                        <ul className="space-y-1">
-                                        {recipe.ingredients.needed.map(ing => (
-                                            <li key={ing} className="flex items-center gap-2">
-                                                <PlusCircle className="h-4 w-4 text-warning"/> <span>{ing}</span>
-                                            </li>
-                                        ))}
-                                        </ul>
-                                    </div>
-                                )}
-                            </div>
+                            <RecipeIngredients
+                                key={recipeId}
+                                ingredients={recipe.ingredients}
+                                products={products}
+                                today={today}
+                                householdId={householdId}
+                                uid={uid}
+                                canEdit={canEdit}
+                            />
 
                             <div className="space-y-3">
                                  <h3 className="font-headline text-lg font-semibold">Instructions</h3>
@@ -787,23 +804,6 @@ function AddToListDialog({
   );
 }
 
-/** Per-device memory of the Grocery list the pantry last added to (a convenience; storage may be blocked). */
-const recentListKey = (householdId: string) => `homehub.pantry.recentList.${householdId}`;
-const readRecentList = (householdId: string): string | null => {
-  try {
-    return window.localStorage.getItem(recentListKey(householdId));
-  } catch {
-    return null;
-  }
-};
-const rememberRecentList = (householdId: string, listId: string) => {
-  try {
-    window.localStorage.setItem(recentListKey(householdId), listId);
-  } catch {
-    // Storage blocked: the default list is preselected next time.
-  }
-};
-
 const PANTRY_VIEW_KEY = 'homehub.pantry.view';
 type PantryView = 'shelves' | 'list';
 
@@ -834,7 +834,7 @@ export function PantryInventoryClient() {
   const batches = useMemo(() => items.map((item) => readPantryBatch(item.id, item, timeZone)), [items, timeZone]);
   const products = useMemo(() => groupPantryBatches(batches), [batches]);
   const visibleBatches = useMemo(() => products.flatMap((product) => product.batches), [products]);
-  // SH-27e: recipes get only usable stock (packages left, not expired).
+  // SH-27e / SH-31a: recipes get only usable stock (packages left, not expired), soonest expiry first.
   const recipeItems = useMemo(() => usableRecipeItems(products, today), [products, today]);
 
   // The chosen view is a per-device convenience (this tab only renders client-side, after sign-in).
@@ -845,7 +845,9 @@ export function PantryInventoryClient() {
       return 'shelves';
     }
   });
-  const [library, setLibrary] = useState<BarcodeLibraryItem[]>([]);
+  // Product photos for tiles: the live Barcode Library (matched by name), the same source as shopping rows.
+  const libraryPhotos = useLibraryPhotos(currentUser?.householdId ?? null);
+  const library = useMemo(() => (libraryPhotos ? [...libraryPhotos.values()] : []), [libraryPhotos]);
   const [liftedIds, setLiftedIds] = useState<ReadonlySet<string>>(new Set());
 
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
@@ -927,21 +929,6 @@ export function PantryInventoryClient() {
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [batches, householdId, canDelete, timeZone]);
 
-  // Product photos for tiles come from the household's barcode library (matched by name).
-  const fetchLibrary = useCallback(async () => {
-    if (!householdId) return;
-    try {
-      const snapshot = await getDocsOfflineAware(query(collection(db, 'households', householdId, 'barcode-library')));
-      setLibrary(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BarcodeLibraryItem)));
-    } catch {
-      // Photos are decoration; tiles fall back to emoji.
-    }
-  }, [householdId]);
-
-  // The photo library is read once per household.
-  useEffect(() => {
-    if (householdId) fetchLibrary();
-  }, [householdId, fetchLibrary]);
 
   const photos = useMemo(() => Object.fromEntries(products.map(product => [product.key, productPhotoForName(product.name, library)])), [products, library]);
 
@@ -957,7 +944,8 @@ export function PantryInventoryClient() {
   // H08: the used tiles lift first (the dialog steps aside while they do), then
   // the recipe card flips in. Returns how many lifted tiles are on screen.
   const handleRecipe = useCallback((recipe: GenerateRecipeOutput | null) => {
-    const ids = recipe ? matchRecipeIngredients(recipe.ingredients.used, productsRef.current.map((product) => ({ id: product.key, name: product.name }))) : [];
+    // The pantry items the recipe names exactly (normalised on the server against the stock sent).
+    const ids = recipe ? recipeProductKeys(recipe.ingredients.used, productsRef.current) : [];
     setLiftedIds(new Set(ids));
     if (ids.length === 0 || viewRef.current !== 'shelves') return 0;
     requestAnimationFrame(() => {
@@ -1276,6 +1264,10 @@ export function PantryInventoryClient() {
         recipeItems={recipeItems}
         householdId={householdId || ''}
         onRecipe={handleRecipe}
+        products={products}
+        today={today}
+        uid={uid}
+        canEdit={canEdit}
       />
       <AddToListDialog
         key={listPick ? `pick:${listPick.name}:${listPick.preselectId}` : 'closed'}
