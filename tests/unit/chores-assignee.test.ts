@@ -8,9 +8,9 @@ import {
   unassignedChoreFields,
 } from '../../functions/src/shared/assignee';
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
-import { addPurgedChores, creditedPerson, readChoreStats } from '../../functions/src/shared/chore-stats';
+import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
-import { choreStatsAssigneeKey, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
 import { occurrenceIds } from '../../src/lib/chores/calendar';
 import { computeChoreStats } from '../../src/lib/chores/stats';
@@ -201,30 +201,62 @@ describe('chore assignee (uid with email fallback)', () => {
   });
 });
 
-describe('yearly stats credit for uid-only chores (review finding on #140)', () => {
+describe('yearly stats are keyed by uid (member privacy release D)', () => {
   const people = [{ uid: 'uid-sam', email: 'Sam@example.test' }, { uid: 'uid-ana', email: 'ana@example.test' }];
   const at = '2026-03-01T12:00:00Z';
   // Written by uid only (release C, or scrubbed while open), then completed by a cached
   // older client that records no completer.
   const uidOnly = { assignedToUid: 'uid-sam', assignedToDisplayName: 'Sam', isCompleted: true, completedAt: at };
 
-  test('the assignee uid is credited through the member, under the same key as the email', () => {
-    assert.deepEqual(creditedPerson(uidOnly, people), { email: 'Sam@example.test', name: 'Sam' });
+  test('every shape of the same member gets one uid key, with or without emails', () => {
+    assert.deepEqual(creditedPerson(uidOnly, people), { uid: 'uid-sam', name: 'Sam' });
+    assert.deepEqual(creditedPerson(uidOnly), { uid: 'uid-sam', name: 'Sam' }, 'no emails needed');
     const byUid = addPurgedChores(readChoreStats(undefined, 2026), [uidOnly], people);
-    const byEmail = addPurgedChores(readChoreStats(undefined, 2026), [{ assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: at }]);
+    const byEmail = addPurgedChores(readChoreStats(undefined, 2026), [{ assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: at }], people);
     assert.deepEqual(byUid.byAssignee, byEmail.byAssignee);
-    assert.deepEqual(byUid.byAssignee, { [choreStatsAssigneeKey('sam@example.test')]: 1 });
-    // Home Wrapped counts it for Sam too.
-    assert.deepEqual(summarizeChores([{ id: 'c1', ...uidOnly }], 2026, { timeZone: 'UTC', people }).champion, { name: 'Sam', count: 1 });
+    assert.deepEqual(byUid.byAssignee, { [choreStatsMemberKey('uid-sam')]: 1 });
+    assert.ok(!JSON.stringify(byEmail).includes('example') && !JSON.stringify(byEmail).includes('@'), 'nothing derived from the email');
+    // Home Wrapped counts it for Sam too, without knowing any email.
+    assert.deepEqual(summarizeChores([{ id: 'c1', ...uidOnly }], 2026, { timeZone: 'UTC', people: [{ uid: 'uid-sam' }], names: new Map([['uid-sam', 'Sam Member']]) }).champion, { name: 'Sam', count: 1 });
   });
 
-  test('a completer recorded by uid wins over the assignee; unknown uids credit nobody', () => {
-    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-ana', completedByName: 'Ana' }, people), { email: 'ana@example.test', name: 'Ana' });
-    // A recorded completer who left is not replaced by the assignee.
-    assert.equal(creditedPerson({ ...uidOnly, completedByUid: 'uid-gone' }, people), null);
-    assert.equal(creditedPerson({ ...uidOnly, assignedToUid: 'uid-gone' }, people), null);
-    // Without the member list nothing can be resolved (as before).
-    assert.equal(creditedPerson(uidOnly), null);
+  test('a completer recorded by uid wins over the assignee, members or not', () => {
+    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-ana', completedByName: 'Ana' }, people), { uid: 'uid-ana', name: 'Ana' });
+    // A recorded completer who left keeps the credit (never the assignee).
+    assert.deepEqual(creditedPerson({ ...uidOnly, completedByUid: 'uid-gone' }, people), { uid: 'uid-gone', name: undefined });
+    // An older completedByEmail is matched through the members; someone who left gets nothing.
+    assert.deepEqual(creditedPerson({ ...uidOnly, completedByEmail: 'ANA@example.test' }, people), { uid: 'uid-ana', name: undefined });
+    assert.equal(creditedPerson({ ...uidOnly, completedByEmail: 'gone@example.test' }, people), null);
+  });
+
+  test('the assignee: a matching email wins, a contradicted uid credits nobody', () => {
+    assert.deepEqual(creditedPerson({ ...uidOnly, assignedToEmail: 'ana@example.test' }, people), { uid: 'uid-ana', name: 'Sam' });
+    // An older build reassigned by email to someone who left: the stale uid is not credited.
+    assert.equal(creditedPerson({ ...uidOnly, assignedToEmail: 'gone@example.test' }, people), null);
+    // A reader without emails credits the uid.
+    assert.deepEqual(creditedPerson({ ...uidOnly, assignedToEmail: 'gone@example.test' }, [{ uid: 'uid-sam' }]), { uid: 'uid-sam', name: 'Sam' });
+    assert.equal(creditedPerson({ assignedToEmail: 'gone@example.test' }, people), null);
+  });
+
+  test('legacy email-derived keys of known members fold into their uid key', () => {
+    const legacy = choreStatsAssigneeKey('sam@example.test');
+    const stats = { year: 2026, completed: 7, byAssignee: { [legacy]: 4, [choreStatsMemberKey('uid-sam')]: 1, other_1x: 2 }, names: { [legacy]: 'Sam M', other_1x: 'Lee' } };
+    assert.deepEqual(foldLegacyStatsKeys(stats, people), {
+      year: 2026, completed: 7,
+      byAssignee: { [choreStatsMemberKey('uid-sam')]: 5, other_1x: 2 },
+      names: { [choreStatsMemberKey('uid-sam')]: 'Sam M', other_1x: 'Lee' },
+    });
+    assert.deepEqual(foldLegacyStatsKeys(stats, [{ uid: 'uid-sam' }]), stats, 'without the email nothing moves');
+    // Upkeep folds them whenever it adds to a document.
+    const next = addPurgedChores(stats, [uidOnly], people);
+    assert.deepEqual(next.byAssignee, { [choreStatsMemberKey('uid-sam')]: 6, other_1x: 2 });
+    assert.equal(next.completed, 8);
+  });
+
+  test('uid keys are field-path safe and never collide with legacy keys', () => {
+    assert.equal(choreStatsMemberKey('AbC123xyz'), 'uid-AbC123xyz');
+    assert.equal(choreStatsMemberKey('we.ird/uid'), 'uid-we_ird_uid');
+    assert.doesNotMatch(choreStatsAssigneeKey('uid-x@example.test'), /-/);
   });
 });
 
@@ -261,7 +293,7 @@ describe('public member data', () => {
 
   test('a pending person sees the household name from their own record', () => {
     assert.deepEqual(pendingHouseholdView('h1', { role: 'newuser', status: 'pending', householdName: ' Maple House ' }), { id: 'h1', name: 'Maple House' });
-    assert.equal(pendingHouseholdView('h1', { role: 'newuser', status: 'pending' }), null, 'older record: read the household');
+    assert.deepEqual(pendingHouseholdView('h1', { role: 'newuser', status: 'pending' }), { id: 'h1', name: '' }, 'older record: generic waiting text, no household read');
     assert.equal(pendingHouseholdView('h1', { role: 'member', status: 'active', householdName: 'Maple House' }), null);
   });
 

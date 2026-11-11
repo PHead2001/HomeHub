@@ -13,7 +13,7 @@ import {
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import { countInYear, maintenanceSpend, readConsistentChoreTotals, statsSignature, summarizeChores, topPurchasedItem, firstNameOnly, yearBounds, yearIn } from '../../src/lib/dashboard/wrapped';
-import { choreStatsAssigneeKey } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey } from '../../functions/src/shared/ids';
 import { addPurgedChores, choreStatsDocId, completionYear, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { dayKey, daysBetween, toDateValue } from '../../src/lib/dashboard/dates';
 
@@ -351,10 +351,10 @@ describe('buildMorningBrief', () => {
 describe('Home Wrapped aggregation', () => {
   it('counts chores in the year and names the champion by first name only', () => {
     const summary = summarizeChores([
-      { id: '1', isCompleted: true, completedAt: '2026-03-01T10:00:00Z', assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam Member' },
-      { id: '2', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam Member' },
-      { id: '3', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToEmail: 'morgan.admin@example.test' },
-      { id: '4', isCompleted: true, completedAt: '2025-12-30T10:00:00Z', assignedToEmail: 'old@example.test', assignedToDisplayName: 'Old Year' },
+      { id: '1', isCompleted: true, completedAt: '2026-03-01T10:00:00Z', assignedToUid: 'u-sam', assignedToDisplayName: 'Sam Member' },
+      { id: '2', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToUid: 'u-sam', assignedToDisplayName: 'Sam Member' },
+      { id: '3', isCompleted: true, completedAt: '2026-04-01T10:00:00Z', assignedToUid: 'u-morgan' },
+      { id: '4', isCompleted: true, completedAt: '2025-12-30T10:00:00Z', assignedToUid: 'u-old', assignedToDisplayName: 'Old Year' },
     ], 2026, { timeZone: 'UTC' });
     assert.equal(summary.choresDone, 3);
     assert.equal(summary.choresWindow, 'last90days', 'no stats document: only retained chores');
@@ -363,36 +363,49 @@ describe('Home Wrapped aggregation', () => {
   });
 
   it('scores members by identity, so two people with one first name never pool chores', () => {
-    const done = (id: string, email: string, name: string) => ({ id, isCompleted: true, completedAt: '2026-05-01T10:00:00Z', assignedToEmail: email, assignedToDisplayName: name });
+    const done = (id: string, uid: string, name: string) => ({ id, isCompleted: true, completedAt: '2026-05-01T10:00:00Z', assignedToUid: uid, assignedToDisplayName: name });
     const summary = summarizeChores([
-      ...['a', 'b', 'c'].map((id) => done(`s1${id}`, 'sam.one@example.test', 'Sam One')),
-      ...['a', 'b', 'c'].map((id) => done(`s2${id}`, 'sam.two@example.test', 'Sam Two')),
-      ...['a', 'b', 'c', 'd', 'e'].map((id) => done(`al${id}`, 'alex@example.test', 'Alex')),
-    ], 2026, { names: new Map([['alex@example.test', 'Alex Owner']]), timeZone: 'UTC' });
+      ...['a', 'b', 'c'].map((id) => done(`s1${id}`, 'u-sam-1', 'Sam One')),
+      ...['a', 'b', 'c'].map((id) => done(`s2${id}`, 'u-sam-2', 'Sam Two')),
+      ...['a', 'b', 'c', 'd', 'e'].map((id) => done(`al${id}`, 'u-alex', 'Alex')),
+    ], 2026, { names: new Map([['u-alex', 'Alex Owner']]), timeZone: 'UTC' });
     assert.deepEqual(summary.champion, { name: 'Alex', count: 5 });
     // A renamed member keeps one score.
-    const renamed = summarizeChores([done('1', 'jo@example.test', 'Jo'), done('2', 'jo@example.test', 'Joanna')], 2026, { timeZone: 'UTC' });
+    const renamed = summarizeChores([done('1', 'u-jo', 'Jo'), done('2', 'u-jo', 'Joanna')], 2026, { timeZone: 'UTC' });
     assert.deepEqual(renamed.champion, { name: 'Jo', count: 2 });
   });
 
   it('adds chores upkeep already removed (yearly stats) to the retained ones, with no double counting', () => {
-    const sam = choreStatsAssigneeKey('sam@example.test');
-    const alex = choreStatsAssigneeKey('alex@example.test');
+    const sam = choreStatsMemberKey('u-sam');
+    const alex = choreStatsMemberKey('u-alex');
     // Upkeep removed 40 of Sam's and 2 of Alex's completions earlier in the year.
     const stats = { year: 2026, completed: 42, byAssignee: { [sam]: 40, [alex]: 2 }, names: { [sam]: 'Sam Member', [alex]: 'Alex Owner' } };
     const retained = [
-      ...Array.from({ length: 5 }, (_, i) => ({ id: `a${i}`, isCompleted: true, completedAt: '2026-10-01T10:00:00Z', assignedToEmail: 'alex@example.test', assignedToDisplayName: 'Alex Owner' })),
-      { id: 's1', isCompleted: true, completedAt: '2026-10-02T10:00:00Z', assignedToEmail: 'Sam@Example.test', assignedToDisplayName: 'Sam Member' },
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `a${i}`, isCompleted: true, completedAt: '2026-10-01T10:00:00Z', assignedToUid: 'u-alex', assignedToDisplayName: 'Alex Owner' })),
+      { id: 's1', isCompleted: true, completedAt: '2026-10-02T10:00:00Z', assignedToUid: 'u-sam', assignedToDisplayName: 'Sam Member' },
     ];
     const summary = summarizeChores(retained, 2026, { stats, timeZone: 'UTC' });
     assert.equal(summary.choresWindow, 'year');
     assert.equal(summary.choresDone, 48, '42 removed + 6 retained');
-    assert.deepEqual(summary.champion, { name: 'Sam', count: 41 }, 'merged per assignee key, case-insensitive email');
+    assert.deepEqual(summary.champion, { name: 'Sam', count: 41 }, 'merged per member uid key');
+  });
+
+  it('reads legacy email-derived stats keys during the move: folded when the email is known, else on their own', () => {
+    const legacySam = choreStatsAssigneeKey('sam@example.test');
+    const stats = { year: 2026, completed: 6, byAssignee: { [legacySam]: 3, gone_1x: 2, [choreStatsMemberKey('u-alex')]: 1 }, names: { [legacySam]: 'Sam Member', gone_1x: 'Lee' } };
+    const retained = [{ id: 'r', isCompleted: true, completedAt: '2026-10-02T10:00:00Z', assignedToUid: 'u-sam' }];
+    // The viewer is Sam: their own email folds their legacy key into their uid key.
+    const own = summarizeChores(retained, 2026, { stats, timeZone: 'UTC', people: [{ uid: 'u-sam', email: 'Sam@Example.test' }, { uid: 'u-alex' }] });
+    assert.deepEqual(own.champion, { name: 'Sam', count: 4 });
+    assert.equal(own.choresDone, 7);
+    // Without the email, the legacy count stays on its own key (still labelled from the stats).
+    const other = summarizeChores(retained, 2026, { stats, timeZone: 'UTC', people: [{ uid: 'u-sam' }, { uid: 'u-alex' }] });
+    assert.deepEqual(other.champion, { name: 'Sam', count: 3 });
   });
 
   it('counts a completion in the household’s year, like the stats', () => {
     // 03:00 UTC on Jan 1 is still Dec 31 in Chicago.
-    const chore = { id: 'ny', isCompleted: true, completedAt: '2026-01-01T03:00:00Z', assignedToEmail: 'sam@example.test' };
+    const chore = { id: 'ny', isCompleted: true, completedAt: '2026-01-01T03:00:00Z', assignedToUid: 'u-sam' };
     assert.equal(summarizeChores([chore], 2025, { timeZone: 'America/Chicago' }).choresDone, 1);
     assert.equal(summarizeChores([chore], 2026, { timeZone: 'America/Chicago' }).choresDone, 0);
   });
@@ -407,10 +420,10 @@ describe('Home Wrapped aggregation', () => {
     assert.equal(completionYear({ isCompleted: true, completedAt: '2025-12-31T12:00:00.000Z', completedAtServer: { toDate: () => new Date('2026-01-02T12:00:00.000Z') } }, 'America/Chicago'), 2026);
     assert.equal(completionYear({ isCompleted: true, completedAt: '2025-12-31T12:00:00.000Z', completedAtServer: { seconds: Date.parse('2026-01-02T12:00:00.000Z') / 1000 } }, 'UTC'), 2026);
     const next = addPurgedChores(readChoreStats({ completed: 'x', byAssignee: { bad: -1 } }, 2026), [
-      { assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam', completedAt: '2026-02-01T00:00:00Z' },
+      { assignedToUid: 'u-sam', assignedToDisplayName: 'Sam', completedAt: '2026-02-01T00:00:00Z' },
       { completedAt: '2026-02-01T00:00:00Z' },
     ]);
-    assert.deepEqual(next, { year: 2026, completed: 2, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 1 }, names: { [choreStatsAssigneeKey('sam@example.test')]: 'Sam' } });
+    assert.deepEqual(next, { year: 2026, completed: 2, byAssignee: { [choreStatsMemberKey('u-sam')]: 1 }, names: { [choreStatsMemberKey('u-sam')]: 'Sam' } });
   });
 
   it('buckets feedings and upkeep by their own dates, in the household year, in either shape', () => {
@@ -438,13 +451,13 @@ describe('Home Wrapped aggregation', () => {
 
   it('reads yearly stats and retained chores as one snapshot, retrying when a purge lands in between', async () => {
     // A fake household: 3 retained completions this year, 10 already archived.
-    const chore = (id: string) => ({ id, isCompleted: true, completedAt: '2026-10-01T10:00:00Z', assignedToEmail: 'sam@example.test' });
+    const chore = (id: string) => ({ id, isCompleted: true, completedAt: '2026-10-01T10:00:00Z', assignedToUid: 'u-sam' });
     let retained = [chore('a'), chore('b'), chore('c')];
-    let stats: Record<string, unknown> = { year: 2026, completed: 10, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 10 }, updatedAt: new Date('2026-11-01T00:00:00Z') };
+    let stats: Record<string, unknown> = { year: 2026, completed: 10, byAssignee: { [choreStatsMemberKey('u-sam')]: 10 }, updatedAt: new Date('2026-11-01T00:00:00Z') };
     // Upkeep's purge: archive chore "a" into the stats and delete it, atomically.
     const purge = () => {
       retained = retained.filter((entry) => entry.id !== 'a');
-      stats = { ...stats, completed: 11, byAssignee: { [choreStatsAssigneeKey('sam@example.test')]: 11 }, updatedAt: new Date('2026-11-06T00:00:00Z') };
+      stats = { ...stats, completed: 11, byAssignee: { [choreStatsMemberKey('u-sam')]: 11 }, updatedAt: new Date('2026-11-06T00:00:00Z') };
     };
     let statsReads = 0;
     let purged = false;
@@ -468,7 +481,7 @@ describe('Home Wrapped aggregation', () => {
     assert.equal(totals.attempts, 2, 'the first, torn snapshot was retried');
     assert.equal(statsReads, 4);
     // Names come from member records (never derived from the email).
-    const summary = summarizeChores(totals.retained, 2026, { names: new Map([['sam@example.test', 'Sam Member']]), stats: totals.consistent ? totals.stats : undefined, timeZone: 'UTC' });
+    const summary = summarizeChores(totals.retained, 2026, { names: new Map([['u-sam', 'Sam Member']]), stats: totals.consistent ? totals.stats : undefined, timeZone: 'UTC' });
     assert.equal(summary.choresDone, 13, 'chore "a" counted once: 11 archived + 2 retained, not 11 + 3');
     assert.equal(summary.champion?.count, 13);
 

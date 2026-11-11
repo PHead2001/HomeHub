@@ -362,7 +362,13 @@ export type HouseholdMemberStatus = 'active' | 'pending' | 'deleting';
 
 export type HouseholdMember = {
   uid: string;
-  email: string;
+  /**
+   * Not stored on membership records: the email lives in the protected contact
+   * document (`members/{uid}/private/contact`). Filled in for member managers from
+   * that document and for the viewer's own record; older records may still carry it
+   * until scripts/ops/scrub-member-emails.mjs removes it.
+   */
+  email?: string;
   displayName?: string;
   avatarUrl?: string | null;
   role: HouseholdRole;

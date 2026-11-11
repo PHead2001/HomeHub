@@ -295,7 +295,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       // A pending person knows the household's name from their own record (written
       // when the invite was redeemed) and never reads the household document, which
-      // lists every member's email. Older pending records without it still read it.
+      // only approved members may read. Older pending records without a name get the
+      // waiting screen's generic text.
       let householdData: Household;
       const pendingView = pendingHouseholdView(householdId, normalizedMember);
       if (pendingView) {

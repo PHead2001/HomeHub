@@ -193,7 +193,7 @@ export function ProfileClient() {
                       <p className="break-words font-semibold">{shownName}</p>
                       {household && currentMember && (
                         <p className="break-words text-sm text-muted-foreground">
-                          {roleLabel(currentMember.role)} · {household.name}
+                          {roleLabel(currentMember.role)}{household.name ? ` · ${household.name}` : ''}
                         </p>
                       )}
                     </div>

@@ -79,12 +79,15 @@ export function canSeeMemberEmails(permissions: Partial<Record<HouseholdPermissi
 
 /**
  * The household as a pending person sees it: id and name from their own membership
- * record. Null for approved members, and for older pending records without a name.
+ * record. Pending people cannot read the household document, so an older pending
+ * record without a name gets an empty name (the waiting screen then shows its
+ * generic text). Null for approved members, who read the household document.
  */
 export function pendingHouseholdView(householdId: string, member: Pick<HouseholdMember, 'role' | 'status' | 'householdName'>): Household | null {
   const pending = member.role === 'newuser' || member.status === 'pending';
+  if (!pending) return null;
   const name = typeof member.householdName === 'string' ? member.householdName.trim() : '';
-  return pending && name ? { id: householdId, name } : null;
+  return { id: householdId, name };
 }
 
 /** Whether the profile's name or photo differ from the public member data. */

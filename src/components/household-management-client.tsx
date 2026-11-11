@@ -125,6 +125,7 @@ export function HouseholdManagementClient() {
     canReadAudit,
     canViewChores: Boolean(permissions['chores.view']),
     canManageMembers: canSeeMemberEmails(permissions),
+    ownEmail: currentUser?.email ?? null,
   });
   const { members, auditLogs, choreStats, choreStatsReady } = live;
   // Someone who may manage invites but cannot list them under the current rules

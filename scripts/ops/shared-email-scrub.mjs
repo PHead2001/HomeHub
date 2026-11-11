@@ -31,6 +31,9 @@ export function householdUidsByEmail(members) {
  * What the scrub does with one chore or chore template.
  * @param {Record<string, unknown> | null | undefined} data Document data.
  * @param {Map<string, string>} uidByEmail From householdUidsByEmail.
+ * @param {{ keepForStats?: boolean }} [options] `keepForStats: false` (release D,
+ *   whose yearly stats credit by uid) scrubs completed chores without a recorded
+ *   completer too, so `credit` is never returned.
  * @returns {{ kind: 'clean' | 'credit' } | { kind: 'scrub' | 'repaired' | 'cleared', remove: string[][], set: Record<string, string> }}
  *   - `clean`: no assignee email stored (an empty one is left alone);
  *   - `credit`: a completed chore without a recorded completer: the yearly chore
@@ -46,10 +49,10 @@ export function householdUidsByEmail(members) {
  *     former member and the uid next to it is a current member's leftover, which
  *     must not become that member's chore once the email is gone.
  */
-export function choreEmailScrubPlan(data, uidByEmail) {
+export function choreEmailScrubPlan(data, uidByEmail, { keepForStats = true } = {}) {
   if (!assigneeEmailOfJs(data)) return { kind: 'clean' };
   const completedWithoutCompleter = data?.isCompleted === true && !text(data?.completedByEmail);
-  if (completedWithoutCompleter) return { kind: 'credit' };
+  if (keepForStats && completedWithoutCompleter) return { kind: 'credit' };
   const remove = [];
   if (data && 'assignedToEmail' in data) remove.push(['assignedToEmail']);
   if (isMap(data?.recurrence) && 'assignedToEmail' in data.recurrence) remove.push(['recurrence', 'assignedToEmail']);
