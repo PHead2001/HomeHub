@@ -259,6 +259,19 @@ describe('yearly chore stats re-key', () => {
     assert.equal(partial.unknown, 0);
   });
 
+  test('a departure alias (release C) sends the legacy key of that person to their uid key, in the re-key and the scrub', () => {
+    const gone = choreStatsAssigneeKey('gone@example.test');
+    const data = { byAssignee: { [gone]: 6 }, names: { [gone]: 'Gil' }, aliases: { 'uid-gil': gone } };
+    assert.deepEqual(statsRekeyPlan(data, new Map(), k => unknownLegacyKey('s', k)), {
+      kind: 'rekey', byAssignee: { [choreStatsMemberKey('uid-gil')]: 6 }, names: { [choreStatsMemberKey('uid-gil')]: 'Gil' }, moved: 1, unknown: 0,
+    });
+    // Upkeep and Home Wrapped fold it the same way.
+    assert.deepEqual(foldLegacyStatsKeys(readChoreStats(data, 2026)).byAssignee, { [choreStatsMemberKey('uid-gil')]: 6 });
+    // The scrub's identity for that email is the aliased uid, over any other evidence.
+    const evidence = formerEvidence([{ assignedToEmail: 'gone@example.test', assignedToUid: 'uid-other' }], { uids: new Set(), emails: new Set() });
+    assert.equal(proposeFormerIdentity('gone@example.test', { ...evidence, aliasUids: new Map([['gone@example.test', 'uid-gil']]) }, 's'), 'uid-gil');
+  });
+
   test('a stats document already keyed by uid, or empty, is clean', () => {
     assert.deepEqual(statsRekeyPlan({ byAssignee: { [choreStatsMemberKey('u')]: 1 }, names: {} }, new Map()), { kind: 'clean' });
     assert.deepEqual(statsRekeyPlan(undefined, new Map()), { kind: 'clean' });

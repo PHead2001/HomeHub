@@ -261,6 +261,7 @@ describe('one actionable row per chore', () => {
     const list = readFileSync(resolve(process.cwd(), 'src/components/chores/chore-list.tsx'), 'utf8');
     assert.match(list, /const leaving = !useIsPresent\(\)/);
     assert.match(list, /aria-hidden=\{leaving \|\| undefined\}/);
-    assert.match(list, /leaving \? \{ inert: '' as unknown as boolean \}/);
+    // Through the shared helper, which sets the attribute under React 18 and 19 (tests/unit/inert.test.ts).
+    assert.match(list, /\{\.\.\.inertProps\(leaving\)\}/);
   });
 });

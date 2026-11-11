@@ -587,6 +587,13 @@ export function CommandPalette({
         hideClose
         className="top-[12%] max-w-lg translate-y-0 gap-0 overflow-hidden p-0 sm:top-[15%]"
         data-testid="command-palette"
+        // Feeding mode has no field: focus waits on the dialog until its pets have loaded,
+        // and FeedingMode then puts it on the first pet (never on "Search or type instead").
+        onOpenAutoFocus={(event) => {
+          if (mode !== 'feeding' || pending) return;
+          event.preventDefault();
+          (event.currentTarget as HTMLElement | null)?.focus();
+        }}
         // Escape during IME composition cancels the composition, not the palette.
         onEscapeKeyDown={(event) => {
           if (isComposingKey(event)) event.preventDefault();

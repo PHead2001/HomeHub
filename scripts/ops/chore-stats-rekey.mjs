@@ -92,6 +92,9 @@ export function addFormerLegacyKeys(byLegacy, emails, identityOf) {
  * @param {Record<string, unknown> | null | undefined} data Stats data.
  * @param {Map<string, string>} byLegacy Legacy key to stats key: current members
  *   (legacyKeyMap) and departed people still named on chores (addFormerLegacyKeys).
+ *   A legacy key not in it whose departure alias the document holds
+ *   (`aliases.<uid>`, written by leaving and removal since release C) goes to that
+ *   uid's key.
  * @param {(legacyKey: string) => string} [unknownKeyOf] Identity for any other
  *   legacy key (`unknownLegacyKey`); without it such keys are left in place.
  * @returns {{ kind: 'clean' } | { kind: 'rekey', byAssignee: Record<string, number>, names: Record<string, string>, moved: number, unknown: number }}
@@ -104,8 +107,12 @@ export function addFormerLegacyKeys(byLegacy, emails, identityOf) {
 export function statsRekeyPlan(data, byLegacy, unknownKeyOf) {
   const counts = isMap(data?.byAssignee) ? data.byAssignee : {};
   const labels = isMap(data?.names) ? data.names : {};
+  const aliasOf = new Map(Object.entries(isMap(data?.aliases) ? data.aliases : {})
+    .filter(([uid, legacyKey]) => text(uid) && typeof legacyKey === 'string' && legacyKey)
+    .map(([uid, legacyKey]) => [legacyKey, choreStatsMemberKeyJs(uid)]));
   const targetOf = key => {
     if (byLegacy.has(key)) return byLegacy.get(key);
+    if (aliasOf.has(key)) return aliasOf.get(key);
     const identity = unknownKeyOf ? unknownKeyOf(key) : '';
     return identity ? choreStatsMemberKeyJs(identity) : '';
   };
@@ -119,7 +126,7 @@ export function statsRekeyPlan(data, byLegacy, unknownKeyOf) {
   let unknown = 0;
   for (const key of legacy) {
     const target = targetOf(key);
-    if (byLegacy.has(key)) moved += 1;
+    if (byLegacy.has(key) || aliasOf.has(key)) moved += 1;
     else unknown += 1;
     if (typeof counts[key] === 'number') byAssignee[target] = (byAssignee[target] ?? 0) + counts[key];
     if (typeof labels[key] === 'string' && !(target in names)) names[target] = labels[key];
