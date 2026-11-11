@@ -113,7 +113,7 @@ export function PutAwayDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
-      <DialogContent>
+      <DialogContent phoneSheet>
         <DialogHeader>
           <DialogTitle className="font-headline">Put away</DialogTitle>
           <DialogDescription>

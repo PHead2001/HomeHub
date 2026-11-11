@@ -4,9 +4,9 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence } from 'motion/react';
 import { collection, doc, getDocFromCache, updateDoc, deleteDoc, setDoc, type DocumentReference } from 'firebase/firestore';
-import { ArchiveX, ArrowLeft, Loader2, Minus, Plus, PlusCircle, ScanBarcode } from 'lucide-react';
+import { ArchiveX, ArrowLeft, History as HistoryIcon, Loader2, Minus, Plus, PlusCircle, ScanBarcode, ScanLine, Settings } from 'lucide-react';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -26,13 +26,13 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { EmptyState } from '@/components/empty-state';
 import { ToastAction } from '@/components/ui/toast';
+import { EmptyState } from '@/components/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
 import { db, getLocalPersistence } from '@/lib/firebase';
-import { slugify, cn } from '@/lib/utils';
+import { slugify } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
@@ -44,6 +44,11 @@ import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
 import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
 import { ScanToTick } from './shopping/scan-to-tick';
+import { TripHeader } from './shopping/trip-header';
+import { TripNeededGroups } from './shopping/trip-needed-groups';
+import { useTripMode } from './shopping/use-trip-mode';
+import { neededFocusOrder, scopeToList, withSectionOpen, type ListScoped } from '@/lib/shopping/trip-mode';
+import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { rowPhoto } from '@/lib/shopping/row-photo';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
@@ -315,6 +320,25 @@ export function ShoppingListClient({
     setEditingItemId(null);
   });
 
+  // Dialogs and sheets of the open list belong to that opening of it: leaving it
+  // (Back to all lists, browser Back with one open, another list) closes them all,
+  // so none reopens when a list opens next. Their state lives here, above the open
+  // list, so it is reset in the render that sees the change. The one exception is
+  // Add Item opened by the quick-add shortcut for the list being opened
+  // (`addItemFor`), which must survive that list's arrival.
+  const [shownListId, setShownListId] = useState(selectedListId);
+  const [addItemFor, setAddItemFor] = useState<string | null>(null);
+  if (shownListId !== selectedListId) {
+    setShownListId(selectedListId);
+    if (addItemFor !== selectedListId || selectedListId === null) setIsAddItemDialogOpen(false);
+    setAddItemFor(null);
+    setIsScannerOpen(false);
+    setIsClearAlertOpen(false);
+    setEmptyList(null);
+    setIsReceiptOpen(false);
+    setEditingItemId(null);
+  }
+
   // The Add Item scanner is nested in the Add Item dialog: it never outlives it
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
@@ -457,6 +481,7 @@ export function ShoppingListClient({
     if (!quickAddKind || quickAddKind === 'wait') return;
     onQuickAddHandled?.(quickAddListId ?? selectedListId);
     if (quickAddKind === 'open') {
+      setAddItemFor(quickAddListId);
       setIsAddItemDialogOpen(true);
     } else if (quickAddKind === 'choose') {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
@@ -942,7 +967,16 @@ export function ShoppingListClient({
         focusRowWhenShown(checkboxId, attempts - 1);
         return;
       }
-      if (!checkboxId) document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"], [data-testid="grocery-overview"] [data-overview-focus]')?.focus({ preventScroll: true });
+      if (checkboxId) return;
+      // No row left to focus. While the open list's find field holds text (a filter
+      // whose last match was just ticked), back to that field; otherwise the cart
+      // (or the overview's focus target).
+      const findField = document.querySelector<HTMLInputElement>('[data-testid="open-list"] form[aria-label^="Quick add to "] input');
+      if (findField?.value.trim()) {
+        findField.focus({ preventScroll: true });
+        return;
+      }
+      document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"], [data-testid="grocery-overview"] [data-overview-focus]')?.focus({ preventScroll: true });
     });
   };
   const nextRowFocusId = (item: ShoppingListItem) => {
@@ -1197,6 +1231,15 @@ export function ShoppingListClient({
     now,
   });
 
+  // The dialogs the open list's actions menu opens have no trigger of their own:
+  // when one closes, focus goes back to the menu button (S8b), never to the page.
+  const focusListMenu = (event: Event) => {
+    const button = document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="list-actions-menu"]');
+    if (!button) return;
+    event.preventDefault();
+    button.focus({ preventScroll: true });
+  };
+
   // After-trip flow (S5): receipt choice, put away, trip Undo, usual chips, history.
   const tripFlow = useTripFlow({
     householdId,
@@ -1219,6 +1262,7 @@ export function ShoppingListClient({
     onOpenPantry,
     onQuickAdd,
     closeReceipt: () => setIsReceiptOpen(false),
+    historyCloseAutoFocus: (event) => focusListMenu(event),
   });
 
   const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-trip'
@@ -1316,6 +1360,24 @@ export function ShoppingListClient({
     requestAnimationFrame(() => purchasedSectionRef.current?.scrollIntoView({ block: 'nearest' }));
   };
 
+  // Trip mode on the open list (S8b): the compact header's "n left" and aisle
+  // chips, find-or-add, the wake lock on phones; the menu opens these dialogs.
+  const trip = useTripMode({
+    listId: selectedList?.id ?? null,
+    active: tabActive,
+    items: listItems,
+    config: categoryConfig,
+    store: selectedList ? assignedStore(selectedList.storeId, storesState).store : null,
+  });
+  // The dialog the actions menu opened, for this opening of this list only: going
+  // back to all lists (also by browser Back) or to another list drops it, so it
+  // never reopens on the next list (nor restarts the camera).
+  const [listDialogState, setListDialogState] = useState<ListScoped<'scan' | 'categories' | null>>({ listId: selectedListId, value: null });
+  const scopedListDialog = scopeToList(listDialogState, selectedListId, null);
+  if (scopedListDialog !== listDialogState) setListDialogState(scopedListDialog);
+  const listDialogOpen = scopedListDialog.value;
+  const setListDialogOpen = (value: 'scan' | 'categories' | null) => setListDialogState({ listId: selectedListId, value });
+
   // --- Render Logic ---
 
   // The same skeleton as the route and the page (SH-25a); later snapshots never
@@ -1381,8 +1443,9 @@ export function ShoppingListClient({
     // Until the stores listener has answered, a named store is "loading", never "no store".
     const assigned = assignedStore(selectedList.storeId, storesState);
     const store = assigned.store;
-    const groups = neededAisleGroups(listItems, categoryConfig, store);
-    rowOrderRef.current = { needed: groups.flatMap((group) => group.items.map((item) => item.id)), purchased: purchasedItems.map((item) => item.id) };
+    const groups = trip.groups;
+    // Focus after a tick follows the rows on screen: with a find filter, only the matches.
+    rowOrderRef.current = { needed: neededFocusOrder(trip.shownGroups), purchased: purchasedItems.map((item) => item.id) };
     const tint = listTint(selectedList);
     const canHandoff = selectedList.type === 'Grocery' && canEdit && online;
 
@@ -1467,51 +1530,36 @@ export function ShoppingListClient({
             />
             {tripFlow.dialog}
             <div
-              className="rounded-xl border bg-card text-card-foreground shadow-raised"
+              className={`${tripStyles.list} rounded-xl border bg-card text-card-foreground shadow-raised`}
               data-testid="open-list"
               data-from-cache={itemsState.fromCache ? 'true' : 'false'}
               data-pending-writes={itemsState.hasPendingWrites ? 'true' : 'false'}
               style={morphStyle(listMorph.morphName === listMorphName ? listMorphName : null)}
             >
-                <div className="flex flex-col items-stretch gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-                    <div className="min-w-0">
-                        <Button variant="ghost" onClick={(event) => listMorph.run(listMorphName, () => onSelectList(null), { event })} className="mb-3 pl-1">
-                           <ArrowLeft className="mr-2" aria-hidden /> Back to all lists
-                        </Button>
-                        <div className="flex items-center gap-3">
-                          <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-xl', tint.classes.softChip)}>
-                            {renderListIcon(selectedList, { className: 'h-5 w-5' })}
-                          </span>
-                          <h2 className="min-w-0 break-words font-headline text-2xl font-semibold leading-tight">{selectedList.name}</h2>
-                          <CartIndicator ref={cartFlight.cartRef} count={purchasedItems.length} inFlight={cartFlight.inFlight} onClick={openPurchased} className="ml-auto sm:ml-2" />
-                        </div>
-                        {store && <p className="mt-1 text-sm text-muted-foreground" data-testid="list-store">Sorted for {store.name}</p>}
-                    </div>
-                    {canEdit && (
-                    <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
-                        {tripFlow.history}
-                        {householdId && (
-                          <CategoriesDialog
-                            // One instance per list: a late answer for list A never fills list B's fields.
-                            key={`${householdId}/${selectedList.id}`}
-                            householdId={householdId}
-                            list={selectedList}
-                            config={categoryConfig}
-                            stores={storesState.value}
-                            assigned={assigned}
-                            storesListed={storesListed(storesState)}
-                            uid={uid}
-                            online={online}
-                          />
-                        )}
-                        {householdId && <ScanToTick key={`scan:${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
-                        <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
+                <TripHeader
+                  icon={renderListIcon(selectedList, { className: 'h-5 w-5' })}
+                  iconClass={tint.classes.softChip}
+                  name={selectedList.name}
+                  storeName={store?.name ?? null}
+                  left={loadingItems ? null : trip.left}
+                  chips={loadingItems ? [] : trip.chips}
+                  onOpenNeeded={() => setOpenSections((current) => withSectionOpen(current, 'needed'))}
+                  scopeKey={`${householdId ?? ''}/${selectedList.id}`}
+                  onBack={(event) => listMorph.run(listMorphName, () => onSelectList(null), { event })}
+                  cart={<CartIndicator ref={cartFlight.cartRef} count={purchasedItems.length} inFlight={cartFlight.inFlight} onClick={openPurchased} />}
+                  actions={canEdit ? [
+                    ...(householdId ? [{ key: 'scan', label: 'Scan to tick', icon: ScanLine, onSelect: () => setListDialogOpen('scan') }] : []),
+                    ...(tripFlow.openHistory ? [{ key: 'trips', label: 'Trips', icon: HistoryIcon, onSelect: tripFlow.openHistory }] : []),
+                    ...(householdId ? [{ key: 'categories', label: 'Manage Categories', icon: Settings, onSelect: () => setListDialogOpen('categories') }] : []),
+                  ] : []}
+                  addItem={canEdit ? (
+                    <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
-                            <Button className="w-full sm:w-auto"><PlusCircle className="mr-2" aria-hidden /> Add Item</Button>
+                            <Button variant="ghost" size="icon" aria-label="Add Item" className="h-11 w-11 shrink-0"><PlusCircle className="h-5 w-5" aria-hidden /></Button>
                         </DialogTrigger>
                         </ShortcutHint>
-                        <DialogContent>
+                        <DialogContent phoneSheet>
                             <DialogHeader>
                                 <DialogTitle className="font-headline">Add Item to List</DialogTitle>
                                 <DialogDescription>Enter an item name or scan a barcode. Names already on the list raise its quantity.</DialogDescription>
@@ -1581,7 +1629,7 @@ export function ShoppingListClient({
                                         <DialogTrigger asChild>
                                            <Button type="button" variant="outline"><ScanBarcode className="mr-2" aria-hidden /> Scan Barcode</Button>
                                         </DialogTrigger>
-                                        <DialogContent>
+                                        <DialogContent phoneSheet>
                                             <DialogHeader>
                                                 <DialogTitle>Scan Barcode</DialogTitle>
                                                 <DialogDescription>Scan a product barcode to add it to this shopping list.</DialogDescription>
@@ -1599,11 +1647,44 @@ export function ShoppingListClient({
                                 </form>
                             </Form>
                         </DialogContent>
-                        </Dialog>
-                    </div>
-                    )}
-                </div>
-                <div className="px-4 pb-4 sm:px-6 sm:pb-6">
+                    </Dialog>
+                  ) : null}
+                />
+                {canEdit && tripFlow.history}
+                {canEdit && householdId && (
+                  <CategoriesDialog
+                    // One instance per list: a late answer for list A never fills list B's fields.
+                    key={`${householdId}/${selectedList.id}`}
+                    householdId={householdId}
+                    list={selectedList}
+                    config={categoryConfig}
+                    stores={storesState.value}
+                    assigned={assigned}
+                    storesListed={storesListed(storesState)}
+                    uid={uid}
+                    online={online}
+                    showTrigger={false}
+                    open={listDialogOpen === 'categories'}
+                    onOpenChange={(open) => setListDialogOpen(open ? 'categories' : null)}
+                    onCloseAutoFocus={focusListMenu}
+                  />
+                )}
+                {canEdit && householdId && (
+                  <ScanToTick
+                    // Distinct from the sibling CategoriesDialog's key (siblings never share a key).
+                    key={`scan:${householdId}/${selectedList.id}`}
+                    householdId={householdId}
+                    listId={selectedList.id}
+                    items={listItems}
+                    onTick={toggleItemStatus}
+                    onAdd={addScannedEntry}
+                    showTrigger={false}
+                    open={listDialogOpen === 'scan'}
+                    onOpenChange={(open) => setListDialogOpen(open ? 'scan' : null)}
+                    onCloseAutoFocus={focusListMenu}
+                  />
+                )}
+                <div className="px-3 pb-4 sm:px-6 sm:pb-6">
                     {loadingItems || assigned.waitForStore ? (
                       <div className="space-y-2" role="status" aria-label="Loading items">
                         <Skeleton className="h-6 w-32" />
@@ -1614,40 +1695,26 @@ export function ShoppingListClient({
                     ) : (
                       <>
                          <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full">
-                            <AccordionItem value="needed">
+                            <AccordionItem value="needed" className={tripStyles.needed}>
                             <AccordionTrigger className="font-headline text-lg"><span>Needed (<NumberTicker value={neededItems.length} animateOnMount={false} />)</span></AccordionTrigger>
                             <AccordionContent>
                                 {neededItems.length === 0 ? (
                                   // One message (SH-10g): never "empty" and "in the cart" together.
-                                  <EmptyState compact kind="lists" headingLevel={3} {...neededEmptyCopy({ total: listItems.length, canEdit })} />
+                                  <EmptyState compact kind="lists" headingLevel={4} {...neededEmptyCopy({ total: listItems.length, canEdit })} />
+                                ) : trip.shownGroups.length === 0 ? (
+                                  <p className="px-2 py-4 text-sm text-muted-foreground" data-testid="trip-no-match">No needed item matches what you typed. Press Enter to add it.</p>
                                 ) : (
-                                <div>
-                                  <AnimatePresence initial={false}>
-                                    {groups.flatMap((group, groupIndex) => [
-                                      <motion.h3
-                                        key={`aisle:${group.category}`}
-                                        layout="position"
-                                        exit={{ opacity: 0, transition: { duration: 0.12, delay: 0.15 } }}
-                                        className={cn('mb-1 mt-4 px-2 text-sm font-semibold uppercase tracking-wide first:mt-0', tint.classes.text)}
-                                      >
-                                        {group.category}
-                                      </motion.h3>,
-                                      ...group.items.map((item, itemIndex) => (
-                                        <ShoppingItemRow
-                                          key={`item:${item.id}`}
-                                          enterDelay={staggerRows ? rowDelay(groups, groupIndex, itemIndex, neededItems.length) : undefined}
-                                          item={item}
-                                          canToggle={canEdit}
-                                          canOpenEditor={canEdit || canDelete}
-                                          onToggle={toggleItemStatus}
-                                          onEdit={openEditor}
-                                          attribution={attributionFor(item)}
-                                          photoUrl={photoFor(item)}
-                                        />
-                                      )),
-                                    ])}
-                                  </AnimatePresence>
-                                </div>
+                                  <TripNeededGroups
+                                    groups={trip.shownGroups}
+                                    headingClass={tint.classes.text}
+                                    canToggle={canEdit}
+                                    canOpenEditor={canEdit || canDelete}
+                                    onToggle={toggleItemStatus}
+                                    onEdit={openEditor}
+                                    attributionFor={attributionFor}
+                                    photoFor={photoFor}
+                                    enterDelayFor={(groupIndex, itemIndex) => (staggerRows && !trip.filtering ? rowDelay(groups, groupIndex, itemIndex, neededItems.length) : undefined)}
+                                  />
                                 )}
                             </AccordionContent>
                             </AccordionItem>
@@ -1670,6 +1737,7 @@ export function ShoppingListClient({
                                 <AnimatePresence initial={false}>
                                 {purchasedItems.map((item) => (
                                     <ShoppingItemRow
+                                      trip
                                       key={item.id}
                                       item={item}
                                       canToggle={canEdit}
@@ -1692,6 +1760,10 @@ export function ShoppingListClient({
                             key={selectedList.id}
                             listName={selectedList.name}
                             onAdd={onQuickAdd}
+                            // Find or add (SH-18c): one typed name filters the needed items; Enter adds it.
+                            placeholder="Type to find or add"
+                            onTextChange={trip.setFindText}
+                            hint={trip.hint}
                             // Waits (with why) while the items are unknown: a listener that failed before its first snapshot.
                             loading={writeWaitFor(selectedList.id) !== null}
                             loadingText={writeWaitFor(selectedList.id) ? writeWaitText(writeWaitFor(selectedList.id)!, selectedList.name) : undefined}

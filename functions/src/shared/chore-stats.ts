@@ -160,12 +160,15 @@ export const purgeNeedsMemberEmails = (
 
 /**
  * Whether upkeep must leave a completed chore for a later run rather than
- * purge it now: its credit depends on members' emails
- * (`purgeNeedsMemberEmails`) and either the contact documents could not be
- * read, or the email names nobody in `people`, so `creditedPerson` finds no
- * one (a person who has left, known only by email). Such a chore waits for
- * scripts/ops/scrub-member-emails.mjs, which gives it an opaque
- * former-member identity, so the person's credit is never dropped.
+ * purge it now: its credit depends on an email (`purgeNeedsMemberEmails`: no
+ * `completedByUid`, and a `completedByEmail` or `assignedToEmail`) and that
+ * email (the completer's, else the assignee's) does not name a current member
+ * whose contact document upkeep read (the read failed, or the person has left).
+ * A uid stored next to such an email is not trusted for the credit: an older
+ * build's email-only reassignment can leave someone else's uid there. The
+ * chore waits for scripts/ops/scrub-member-emails.mjs (a step of member
+ * privacy release D), which replaces the email by the person's settled
+ * identity; then it is purged and credited to that identity.
  * @param {object} chore Chore fields.
  * @param {CreditPerson[]} people Household members (emails where known).
  * @param {boolean} emailsKnown Whether the contact documents were read.
@@ -175,8 +178,14 @@ export const purgeMustWait = (
   chore: Omit<PurgedChore, "completedAt">,
   people: readonly CreditPerson[],
   emailsKnown: boolean,
-): boolean => purgeNeedsMemberEmails(chore) &&
-  (!emailsKnown || creditedPerson(chore, people) === null);
+): boolean => {
+  if (!purgeNeedsMemberEmails(chore)) return false;
+  if (!emailsKnown) return true;
+  const email = filled(chore.completedByEmail) ?
+    chore.completedByEmail : chore.assignedToEmail;
+  return !people.some((person) =>
+    filled(person.email) && lower(person.email) === lower(email));
+};
 
 /**
  * Moves the counts and labels kept under a legacy email-derived key

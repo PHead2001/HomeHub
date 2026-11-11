@@ -26,6 +26,11 @@ export type HouseholdLiveData = {
 
 type Options = {
   householdId: string | undefined;
+  /**
+   * False when the viewer lacks `household.view`: the page is not shown, so no
+   * listener at all is opened (see `householdManagerReads`). Defaults to true.
+   */
+  enabled?: boolean;
   currentMember: HouseholdMember | null;
   canListInvites: boolean;
   canReadAudit: boolean;
@@ -48,7 +53,8 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
  * role can read that path under the rules, and each fails independently, so a
  * denied invite or audit read never blanks the member list.
  */
-export function useHouseholdLiveData({ householdId, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null }: Options): HouseholdLiveData {
+export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null }: Options): HouseholdLiveData {
+  const householdId = enabled ? requestedHouseholdId : undefined;
   const [rawMembers, setRawMembers] = useState<HouseholdMember[] | null>(null);
   const [membersFailed, setMembersFailed] = useState(false);
   const [invites, setInvites] = useState<InviteCode[]>([]);

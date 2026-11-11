@@ -64,6 +64,7 @@ export function useTripFlow({
   onOpenPantry,
   onQuickAdd,
   closeReceipt,
+  historyCloseAutoFocus,
 }: {
   householdId: string | null;
   uid: string | null;
@@ -82,6 +83,8 @@ export function useTripFlow({
   onOpenPantry?: () => void;
   onQuickAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
   closeReceipt: () => void;
+  /** Where focus goes when the trip history closes (it opens from the list's menu). */
+  historyCloseAutoFocus?: (event: Event) => void;
 }) {
   const { household } = useAuth();
   const { toast, toastError } = useToast();
@@ -90,6 +93,8 @@ export function useTripFlow({
   const afterTrip = useAfterTripPreference(householdId);
   const usuals = useShoppingUsuals(isGrocery && canEdit ? householdId : null);
   const [putAway, setPutAway] = useState<PutAwayTarget | null>(null);
+  // The trip history, opened from the open list's overflow menu (S8b).
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Openings that wait for a lookup: leaving the tab (or a newer opening) makes a pending one stale.
   const [openGate] = useState(createRequestGate);
   // The put-away dialog is portaled outside the tab panel: it closes with the tab,
@@ -107,6 +112,8 @@ export function useTripFlow({
   if (shownScope !== scope) {
     setShownScope(scope);
     setPutAway(null);
+    // The trip history too: opened from one list's menu, it never reopens on the next list.
+    setHistoryOpen(false);
   }
   useLayoutEffect(() => {
     openGate.setScope(scope);
@@ -259,6 +266,10 @@ export function useTripFlow({
 
   const history: ReactNode = householdId && isGrocery ? (
     <TripHistoryButton
+      showTrigger={false}
+      open={historyOpen}
+      onOpenChange={setHistoryOpen}
+      onCloseAutoFocus={historyCloseAutoFocus}
       householdId={householdId}
       memberNames={memberNames}
       currentUid={uid}
@@ -287,6 +298,9 @@ export function useTripFlow({
     snackbarEntry,
     chips,
     dialog,
+    /** The trip history dialog (rendered with the list; no button of its own). */
     history,
+    /** Opens the trip history (Grocery lists), or null where there is none. */
+    openHistory: history ? () => setHistoryOpen(true) : null,
   };
 }
