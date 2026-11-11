@@ -116,16 +116,32 @@ describe('OpenAI provider request', () => {
     handler = () => completion({ content: JSON.stringify({
       recipeTitle: 'Rice and Beans',
       description: 'Simple.',
-      ingredients: { used: ['rice', 'beans'], needed: [] },
+      ingredients: {
+        used: [{ pantryItem: 'rice', line: '1 cup rice' }, { pantryItem: 'Pork', line: '200 g pork' }],
+        needed: [{ name: 'BEANS', line: '1 can beans' }, { name: 'Salt', line: 'a pinch of salt' }],
+      },
       instructions: ['Cook.'],
       prepTime: '5 minutes',
       cookTime: '20 minutes',
     }) });
-    await recipe.generateRecipeFlow({
-      items: [{ name: 'rice', quantity: 1, unit: 'cup' }, { name: 'beans', quantity: 1, unit: 'can' }],
+    const output = await recipe.generateRecipeFlow({
+      items: [
+        { name: 'Rice', quantity: 1, unit: 'cup', expiresOn: '2026-11-11', expiresInDays: 1 },
+        { name: 'Beans', quantity: 1, unit: 'can', expiresOn: null, expiresInDays: null },
+      ],
     });
     assert.equal(requests[0].body.model, 'gpt-6.1-terra');
     assert.equal(requests[0].body.max_completion_tokens, 1_600);
+    // SH-31a: the expiry reaches the model, and the instruction asks to use what goes off first.
+    const messages = requests[0].body.messages as Array<{ role: string; content: string }>;
+    const user = messages.find((message) => message.role === 'user')!.content;
+    assert.match(user, /"expiresInDays":1/);
+    assert.match(user, /fewest days left first/);
+    // The model is untrusted: pantry claims must be supplied stock (HomeHub's spelling), the rest is missing.
+    assert.deepEqual(output.ingredients, {
+      used: [{ pantryItem: 'Rice', line: '1 cup rice' }, { pantryItem: 'Beans', line: '1 can beans' }],
+      needed: [{ name: 'Pork', line: '200 g pork' }, { name: 'Salt', line: 'a pinch of salt' }],
+    });
 
     handler = () => completion({ content: JSON.stringify({
       headline: 'Your home',
