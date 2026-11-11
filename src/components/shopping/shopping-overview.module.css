@@ -25,11 +25,17 @@
 }
 
 /* Narrow (a phone): the quick-add dock comes after the items and sticks above the
-   tab bar, within reach of the thumb. */
+   tab bar, within reach of the thumb. `--dock-clearance` clears the tab bar (4rem)
+   and its raised centre button (1.25rem above the bar plus its 4 px ring), so the
+   button never covers the field. */
+.root {
+  --dock-clearance: calc(5.75rem + env(safe-area-inset-bottom));
+}
+
 .quickAdd {
   order: 3;
   position: sticky;
-  bottom: calc(4rem + env(safe-area-inset-bottom));
+  bottom: var(--dock-clearance);
   z-index: 10;
   margin-top: 1rem;
 }
@@ -37,6 +43,13 @@
 .items {
   order: 2;
   min-width: 0;
+}
+
+/* A row brought into view (keyboard focus after a tick, scrollIntoView) stops above
+   the sticky dock (about 4.5rem tall, more with the Undo snackbar in it) instead of
+   behind it. */
+.items [data-row-id] {
+  scroll-margin-bottom: calc(var(--dock-clearance) + 9rem);
 }
 
 .columns {
@@ -64,6 +77,10 @@
 
 /* Wide enough for the field above the items: it stays in place at the top. */
 @container shopping-overview (min-width: 40rem) {
+  .items [data-row-id] {
+    scroll-margin-bottom: 0;
+  }
+
   .quickAdd {
     order: 1;
     position: static;

@@ -210,10 +210,21 @@ test.describe('shopping overview: the Grocery list on the overview', () => {
       await expect(chip).not.toContainText('expired');
       await chip.click();
       await expect(a.page).toHaveURL(/[?&]tab=pantry/);
+      // The soonest batch's edit dialog (as a tile tap opens it). While this modal is open
+      // the page behind it is aria-hidden, so the tabs are checked once it is closed.
+      const dialog = a.page.getByRole('dialog', { name: 'Edit Item' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel('Item Name')).toHaveValue('E2E ov spinach');
+      await a.page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
       await expect(a.page.getByRole('tab', { name: 'Pantry Inventory' })).toHaveAttribute('aria-selected', 'true');
-      // The soonest batch's edit dialog (as a tile tap opens it).
-      await expect(a.page.getByRole('dialog', { name: 'Edit Item' })).toBeVisible();
-      await expect(a.page.getByRole('dialog', { name: 'Edit Item' }).getByLabel('Item Name')).toHaveValue('E2E ov spinach');
+      await expect(a.page.getByRole('tabpanel', { name: 'Pantry Inventory' })).toBeVisible();
+      // The chip was a step forward: Back returns to the overview, and the dialog stays closed.
+      await a.page.goBack();
+      await expect(a.page).not.toHaveURL(/[?&]tab=pantry/);
+      await expect(a.page.getByRole('tab', { name: 'Shopping Lists' })).toHaveAttribute('aria-selected', 'true');
+      await expect(a.page.getByTestId('grocery-overview')).toBeVisible();
+      await expect(dialog).toHaveCount(0);
     } finally {
       await a.context.close();
     }
@@ -234,11 +245,12 @@ test.describe('shopping overview: the Grocery list on the overview', () => {
       const sectionBox = (await section.boundingBox())!;
       const cardBox = (await a.page.getByTestId(`list-card-${LIST_ID}`).boundingBox())!;
       expect(cardBox.x).toBeGreaterThanOrEqual(sectionBox.x + sectionBox.width - 1);
-      // 48 px rows on a touch screen.
-      if (await a.page.evaluate(() => window.matchMedia('(pointer: coarse)').matches)) {
-        const row = (await section.locator('label[for="item-needed-ov-milk"]').boundingBox())!;
-        expect(row.height).toBeGreaterThanOrEqual(48);
-      }
+      // Rows are at least 44 px, 48 px on a coarse pointer. Whether Chromium reports
+      // `(pointer: coarse)` under `hasTouch` is recorded, so a run shows which check ran.
+      const coarse = await a.page.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
+      testInfo.annotations.push({ type: 'pointer', description: coarse ? 'coarse: 48 px row check ran' : 'fine: only the 44 px row check ran' });
+      const row = (await section.locator('label[for="item-needed-ov-milk"]').boundingBox())!;
+      expect(row.height).toBeGreaterThanOrEqual(coarse ? 48 : 44);
       // The other tablet sizes: Chrome with its URL bar, and the fullscreen upper bound.
       for (const size of [{ width: 1263, height: 722 }, { width: 1264, height: 843 }, { width: 1024, height: 768 }]) {
         await a.page.setViewportSize(size);
@@ -249,21 +261,68 @@ test.describe('shopping overview: the Grocery list on the overview', () => {
     }
   });
 
-  test('phone (390 × 844): one column, no overflow, the quick-add field in reach', async ({ browser }, testInfo) => {
+  test('phone (390 × 844): one column, no overflow, every row reachable above the dock, the dock and Undo uncovered', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);
     const a = await session(browser, { viewport: { width: 390, height: 844 }, hasTouch: true });
     try {
+      // More rows than fit, so the dock is pinned above the tab bar while rows pass under it.
+      for (let index = 0; index < 8; index += 1) {
+        await items.doc(`ov-extra-${index}`).set({ name: `E2E ov extra ${index}`, quantity: 1, category: 'Snacks', status: 'needed', createdAt: fixedNow });
+      }
       const section = await openOverview(a.page);
+      await expect(section.locator('[data-row-id]')).toHaveCount(SEED.length + 8);
       const widths = await a.page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
       expect(widths.scroll).toBeLessThanOrEqual(widths.client);
       const groupXs = await section.getByTestId('overview-aisle').evaluateAll((groups) => [...new Set(groups.map((group) => Math.round(group.getBoundingClientRect().left)))]);
       expect(groupXs).toHaveLength(1);
-      // The field comes after the items and stays on screen above the tab bar.
+
       const form = a.page.getByRole('form', { name: `Quick add to ${LIST_NAME}` });
-      await form.scrollIntoViewIfNeeded();
-      const formBox = (await form.boundingBox())!;
-      const lastRow = (await section.locator('[data-row-id]').last().boundingBox())!;
-      expect(formBox.y).toBeGreaterThan(lastRow.y);
+      const field = a.page.getByLabel(`Items to add to ${LIST_NAME}`);
+      const viewport = a.page.viewportSize()!;
+      /** Whether the centre of `selector`'s first match hit-tests to that element (nothing covers it). */
+      const uncovered = (selector: string) => a.page.evaluate((target) => {
+        const element = document.querySelector(target);
+        if (!element) return false;
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return Boolean(hit && (hit === element || element.contains(hit)));
+      }, selector);
+
+      // Without scrolling, the dock is on screen, inside the viewport, and the tab bar's
+      // raised button does not cover its field or its Add button.
+      const dockAtStart = (await form.boundingBox())!;
+      expect(dockAtStart.y + dockAtStart.height).toBeLessThanOrEqual(viewport.height);
+      expect(await uncovered(`form[aria-label="Quick add to ${LIST_NAME}"] input`)).toBe(true);
+      expect(await uncovered(`form[aria-label="Quick add to ${LIST_NAME}"] button[type="submit"]`)).toBe(true);
+
+      // Every row, the last one included, can be brought fully into view above the dock.
+      const ids = await section.locator('[data-row-id]').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-row-id')!));
+      for (const id of [ids[0], ids[Math.floor(ids.length / 2)], ids[ids.length - 1]]) {
+        const rowSelector = `[data-testid="grocery-overview"] [data-row-id="${id}"]`;
+        // As far as scrolling to the row allows (`block: 'end'` honours the rows' scroll margin).
+        await a.page.locator(rowSelector).evaluate((row) => row.scrollIntoView({ block: 'end' }));
+        const rowBox = (await a.page.locator(rowSelector).boundingBox())!;
+        const dockBox = (await form.boundingBox())!;
+        expect(rowBox.y, id).toBeGreaterThanOrEqual(0);
+        expect(rowBox.y + rowBox.height, id).toBeLessThanOrEqual(dockBox.y + 1);
+        expect(await uncovered(`${rowSelector} label`), id).toBe(true);
+      }
+
+      // A tick's Undo sits in the dock above the field, uncovered, and the dock stays in view.
+      const last = ids[ids.length - 1];
+      await section.locator(`[data-row-id="${last}"]`).evaluate((row) => row.scrollIntoView({ block: 'end' }));
+      await section.locator(`[data-row-id="${last}"] label`).click();
+      const undo = a.page.getByRole('button', { name: /^Undo ticking E2E ov/ });
+      await expect(undo).toBeVisible();
+      const undoBox = (await undo.boundingBox())!;
+      const dockBox = (await form.boundingBox())!;
+      expect(undoBox.y + undoBox.height).toBeLessThanOrEqual(dockBox.y + 1);
+      expect(undoBox.y).toBeGreaterThanOrEqual(0);
+      expect(await uncovered('[data-testid="undo-snackbar"] button[aria-label^="Undo ticking"]')).toBe(true);
+      expect(dockBox.y + dockBox.height).toBeLessThanOrEqual(viewport.height);
+      await undo.click();
+      await expect(a.page.locator(`#item-needed-${last}`)).toBeAttached();
+      await expect(field).toBeVisible();
     } finally {
       await a.context.close();
     }
