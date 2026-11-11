@@ -6,7 +6,8 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 ## User-Facing Capabilities
 
-- Use the Pantry Inventory tab on `/shopping` (linkable as `/shopping?tab=pantry`).
+- Use the Pantry Inventory tab on `/shopping` (linkable as `/shopping?tab=pantry`). The tab stays mounted while the Shopping Lists tab is shown, so switching back re-reads nothing.
+- The pantry is live (SH-1c): another member's additions, edits, moves and deletions show without a reload.
 - See the pantry as shelves (default): Pantry, Fridge and Freezer are shelves of item tiles showing a product photo from the barcode library (matched by exact name) or a food emoji. Items expiring within three days glow amber, expired items fade and tilt, freezer tiles have a frost edge, and the header counts what is expiring soon or expired.
 - Move an item to another shelf by dragging its handle (mouse or touch), by keyboard (focus the handle, Enter or Space to pick up, arrow keys to choose a shelf, Enter or Space to drop, Escape to cancel), by tapping the handle and then **Move here** on a shelf, or from the tile's ⋯ menu.
 - Switch to the list view (the previous table on wider screens and stacked rows on phones); the choice is remembered per device in `localStorage["homehub.pantry.view"]`.
@@ -14,7 +15,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 - Track quantity, unit, storage location, and an optional expiration date.
 - Start an inventory item from a barcode scan.
 - Move a deleted inventory item back to a selected shopping list.
-- Generate a recipe suggestion from the currently loaded inventory (H08 recipe reveal). The dialog opens with a loading state; when the recipe arrives in the shelves view and it uses tiles, the dialog and its scrim fade out (150 ms) so the shelves are visible, the used tiles lift off their shelves (the tile card and picture rise 8 px in 200 ms; the controls' hit areas stay put) with an "In the recipe" marker, the first lifted tile is scrolled into view, and after 450 ms (or at once on any key or pointer press) the dialog returns and the recipe card flips in (220 ms). In the list view, with no matching tiles, or under reduced motion, the tiles are marked and the card shows at once with no flip. Screen readers hear a short "Lifting the items…" status, and focus stays in the dialog throughout. The marker stays until the next generation.
+- Generate a recipe suggestion from the currently loaded inventory (H08 recipe reveal). It is requested once when the dialog opens (and again only with Try again), from the pantry as it is at that moment; live pantry updates while the dialog is open neither clear the recipe nor make another AI request. The dialog opens with a loading state; when the recipe arrives in the shelves view and it uses tiles, the dialog and its scrim fade out (150 ms) so the shelves are visible, the used tiles lift off their shelves (the tile card and picture rise 8 px in 200 ms; the controls' hit areas stay put) with an "In the recipe" marker, the first lifted tile is scrolled into view, and after 450 ms (or at once on any key or pointer press) the dialog returns and the recipe card flips in (220 ms). In the list view, with no matching tiles, or under reduced motion, the tiles are marked and the card shows at once with no flip. Screen readers hear a short "Lifting the items…" status, and focus stays in the dialog throughout. The marker stays until the next generation.
 - Shelf item counts, the expiring/expired header counts and the list view's shelf counts tick with the shared `NumberTicker` (`animateOnMount={false}`; one text node holding the final value, so "Pantry (3)" always reads exactly that), and each shelf's tiles enter with the shared `Stagger` (instant under reduced motion).
 - Receive purchased grocery items in one batch from the shopping trip (see [Shopping](../shopping/README.md)); there is no longer a per-item pantry form after ticking.
 
@@ -26,6 +27,7 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 - `src/components/shopping/pantry-shelves.tsx`
 - `src/lib/shopping/pantry.ts` (shelf, expiry, emoji, recipe-matching and handoff planning helpers)
 - `src/lib/shopping/pantry-writes.ts` (batch handoff writer)
+- `src/lib/shopping/live.ts` (`useLivePantry`, the shared live-listener helpers)
 - `src/ai/flows/generate-recipe-flow.ts`
 - Shared types in `src/lib/types.ts`
 
@@ -35,11 +37,11 @@ This module owns household pantry, refrigerator, and freezer inventory plus reci
 
 The dashboard overview uses the same verified `shopping.view` boundary to calculate inventory and expiration counts server-side. It sends only bounded labels/dates and counts to the optional narrative, not full inventory documents.
 
-Inventory reads use `getDocsOfflineAware`. The shelves view renders `PantryShelves`; moving a tile updates only `location` (optimistic, through Firestore's queue; a rejected write shows a `toastError` and re-reads). Product photos come from one read of `barcode-library`; a failure there only drops photos. The recipe dialog composes the shared dialog parts (`DialogPortal`, `DialogOverlay`, Radix `Content`) itself, only so the scrim can step aside during the lift; it keeps the standard dialog markup, focus trap, Escape and close button. Recipe matching (`matchRecipeIngredients`) marks an item as used when its full name, or the last word of three or more letters in it, appears in one of the recipe's "from your pantry" lines.
+The inventory is one `onSnapshot` listener ordered by name (`useLivePantry`, with metadata changes, bounded-backoff retry reset only by a server-confirmed snapshot, one toast per failure code, and resubscribe on `online`/visibility; see [Shopping](../shopping/README.md) for `keepListening`). It serves the cache offline. Firestore applies this device's writes to the listener at once and rolls a rejected one back there, so saves, moves and deletes never re-read the pantry. The shelves view renders `PantryShelves`; moving a tile updates only `location` (shown at once through the listener and Firestore's queue; a rejected write shows a `toastError` and the tile moves back). The shopping lists for "Put on a shopping list" are read on demand when that is chosen. If the Pantry tab is hidden before that read finishes, the request is dropped, and the list picker only shows while the tab is shown. Product photos come from one read of `barcode-library`; a failure there only drops photos. The recipe dialog composes the shared dialog parts (`DialogPortal`, `DialogOverlay`, Radix `Content`) itself, only so the scrim can step aside during the lift; it keeps the standard dialog markup, focus trap, Escape and close button. Recipe matching (`matchRecipeIngredients`) marks an item as used when its full name, or the last word of three or more letters in it, appears in one of the recipe's "from your pantry" lines.
 
 In the list view, inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
 
-Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins.
+Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins. The shopping write is refused by the rules if that list was deleted meanwhile (items may only be written to a list document that exists).
 
 ## Data Model and Persistence
 

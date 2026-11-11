@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { settleViewTransition } from '@/lib/view-transition';
 
 type ViewTransitionDocument = Document & {
-  startViewTransition?: (update: () => Promise<void> | void) => { finished: Promise<void> };
+  startViewTransition?: (update: () => Promise<void> | void) => { ready?: Promise<void>; finished: Promise<void>; updateCallbackDone?: Promise<void> };
 };
 
 /** Longest the old snapshot is held while the new view renders. */
@@ -43,7 +44,8 @@ export function useInPageMorph() {
     }
     pending.current?.();
     flushSync(() => setMorphName(name));
-    const transition = doc.startViewTransition(() => {
+    // Every promise handled (SH-10i): a skipped or timed-out morph never reaches the console.
+    const transition = settleViewTransition(doc.startViewTransition(() => {
       if (options.sync) {
         flushSync(update);
         return;
@@ -53,13 +55,15 @@ export function useInPageMorph() {
         function done() {
           window.clearTimeout(timeout);
           if (pending.current === done) pending.current = null;
-          // Let the new view paint before the browser captures it.
-          requestAnimationFrame(() => resolve());
+          // A task, not requestAnimationFrame: rendering (and rAF) is paused while the
+          // browser holds the old snapshot, so a rAF here would only run once the
+          // update callback timed out. React has committed the new view by now.
+          window.setTimeout(resolve, 0);
         }
         pending.current = done;
         update();
       });
-    });
+    }));
     void transition.finished
       .catch(() => undefined)
       .finally(() => setMorphName((current) => (current === name ? null : current)));
