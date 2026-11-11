@@ -61,6 +61,7 @@ import {
   INVITE_STATE_LABELS,
   describeAuditAction,
   householdManagerReads,
+  memberStat,
   householdNameError,
   inviteState,
   isActiveInvite,
@@ -408,13 +409,15 @@ export function HouseholdManagementClient() {
     );
   }
 
-  const memberStatText = pendingMembers.length > 0
-    ? `${approvedMembers.length} · ${pendingMembers.length} pending`
-    : String(approvedMembers.length);
+  // Pending requests are shown to member managers only (HO-10b): the count, the banners
+  // and the cards. Everyone else sees the approved members.
+  const stat = memberStat(approvedMembers.length, pendingMembers.length, Boolean(canManageMembers));
+  const memberStatText = stat.text;
   // Counts tick in (H12); the text form is the card's title.
-  const memberStatValue = pendingMembers.length > 0
-    ? <><NumberTicker value={approvedMembers.length} /> · <NumberTicker value={pendingMembers.length} /> pending</>
-    : <NumberTicker value={approvedMembers.length} />;
+  const memberStatValue = stat.pending !== null
+    ? <><NumberTicker value={stat.approved} /> · <NumberTicker value={stat.pending} /> pending</>
+    : <NumberTicker value={stat.approved} />;
+  const shownPending = canManageMembers ? pendingMembers : [];
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -607,7 +610,7 @@ export function HouseholdManagementClient() {
                 })}
               </AnimatePresence>
             )}
-            {approvedMembers.length <= 1 && pendingMembers.length === 0 ? (
+            {approvedMembers.length <= 1 && shownPending.length === 0 ? (
               <>
                 {approvedMembers.map((member) => (
                   <MemberCard
@@ -636,7 +639,7 @@ export function HouseholdManagementClient() {
               </>
             ) : (
               <Stagger className="grid gap-3 md:grid-cols-2" data-testid="household-member-list">
-                {(canManageMembers ? approvedMembers : members).map((member) => (
+                {approvedMembers.map((member) => (
                   <MemberCard
                     key={member.uid}
                     member={member}

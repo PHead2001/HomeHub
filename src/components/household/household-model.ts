@@ -362,6 +362,17 @@ export type HouseholdManagerReads = {
  * as their own permission, so no listener is opened that the rules would deny.
  * Without `household.view` the page reads nothing.
  */
+/**
+ * The Members stat on the Household overview (HO-10b): the approved count, and for
+ * holders of `household.manageMembers` only, how many requests are pending
+ * ("3 · 1 pending"). Everyone else never learns that anyone is waiting.
+ * @returns {{ approved: number, pending: number | null, text: string }} `pending` is null when not shown.
+ */
+export function memberStat(approvedCount: number, pendingCount: number, canManageMembers: boolean) {
+  const pending = canManageMembers && pendingCount > 0 ? pendingCount : null;
+  return { approved: approvedCount, pending, text: pending === null ? String(approvedCount) : `${approvedCount} · ${pending} pending` };
+}
+
 export function householdManagerReads(permissions: Partial<Record<HouseholdPermission, boolean>> | null | undefined): HouseholdManagerReads {
   const page = Boolean(permissions?.['household.view']);
   const manageMembers = page && Boolean(permissions?.['household.manageMembers']);
