@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AnimatePresence, motion } from 'motion/react';
 import { collection, doc, getDocFromCache, updateDoc, deleteDoc, setDoc, type DocumentReference } from 'firebase/firestore';
-import { ArchiveX, ArrowLeft, Loader2, Minus, Plus, PlusCircle, ScanBarcode, Settings, X } from 'lucide-react';
+import { ArchiveX, ArrowLeft, Loader2, Minus, Plus, PlusCircle, ScanBarcode } from 'lucide-react';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -28,7 +28,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton';
 import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
-import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
@@ -71,7 +70,9 @@ import {
 import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
-import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
+import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveStores } from '@/lib/shopping/live';
+import { groupingOrder } from '@/lib/shopping/category-order';
+import { assignedStore, storesListed } from '@/lib/shopping/assigned-store';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
@@ -79,11 +80,14 @@ import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
 import { deleteStillPurchasedItems } from '@/lib/shopping/item-transactions';
-import type { ShoppingListItem, ShoppingListCategory, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
+import type { ShoppingListItem, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
 import { ListCard } from './shopping/list-card';
 import { ListCardsSkeleton } from './shopping/shopping-skeletons';
 import { ListDialog, type ListFormValues } from './shopping/list-dialog';
+import { CategoriesDialog } from './shopping/categories-dialog';
+import { listSaveData, rejectedCreateView, shouldOpenCreatedList } from '@/lib/shopping/list-save';
+import { listDialogVisible, rejectedDraftRestore } from '@/lib/shopping/save-line';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
 import { ItemEditSheet } from './shopping/item-edit-sheet';
@@ -121,102 +125,6 @@ function useOnline() {
   }, []);
   return online;
 }
-
-/** The open list's categories (live: the listener shows a save at once, and another member's edits as they land). */
-function ManageCategoriesDialog({ categories, householdId, listId }: { categories: ShoppingListCategory[], householdId: string, listId: string }) {
-  const { toastError } = useToast();
-  const [newCategory, setNewCategory] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
-  // Closed when the Shopping Lists tab is hidden (its portal is outside the panel).
-  useOnTabDeactivate(() => setIsCategoryDialogOpen(false));
-
-  const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
-
-  const addCategory = async () => {
-    const name = newCategory.replace(/\s+/g, ' ').trim();
-    if (!name) {
-      setError('Type a category name.');
-      return;
-    }
-    if (name.length > 40) {
-      setError('Keep the name under 40 characters.');
-      return;
-    }
-    if (categories.some(c => c.toLowerCase() === name.toLowerCase())) {
-      setError(`${name} is already a category.`);
-      return;
-    }
-    setError(null);
-    const updatedCategories = [...categories, name].sort((a, b) => a.localeCompare(b));
-    try {
-      await setDoc(categoriesDocRef, { list: updatedCategories });
-      setNewCategory('');
-    } catch (cause) {
-      toastError(cause, 'Could not add the category');
-    }
-  };
-
-  const removeCategory = async (categoryToRemove: string) => {
-    if (categoryToRemove === 'Other') return;
-    const updatedCategories = categories.filter(c => c !== categoryToRemove);
-    try {
-      await setDoc(categoriesDocRef, { list: updatedCategories });
-    } catch (cause) {
-      toastError(cause, 'Could not remove the category');
-    }
-  };
-
-  return (
-    <Dialog open={isCategoryDialogOpen} onOpenChange={(open) => { setIsCategoryDialogOpen(open); if (!open) setError(null); }}>
-      <DialogTrigger asChild>
-        <Button variant="outline" className="w-full sm:w-auto"><Settings className="mr-2 h-4 w-4" aria-hidden /> Manage Categories</Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle className="font-headline">Manage Categories</DialogTitle>
-          <DialogDescription>Items are grouped by category in the order you walk a store. &apos;Other&apos; cannot be removed.</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
-            <label htmlFor="new-category" className="sr-only">New category name</label>
-            <div className="flex gap-2">
-              <Input
-                value={newCategory}
-                onChange={(e) => { setNewCategory(e.target.value); if (error) setError(null); }}
-                placeholder="New category name"
-                maxLength={40}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void addCategory(); } }}
-                {...fieldErrorProps('new-category', error)}
-              />
-              <Button onClick={() => void addCategory()}>Add</Button>
-            </div>
-            <FieldError id="new-category">{error}</FieldError>
-          </div>
-          <div className="space-y-2">
-            <h3 className="font-medium">Existing Categories</h3>
-            <ul className="flex flex-wrap gap-2">
-              {categories.map(category => (
-                <li key={category} className="flex items-center gap-1 rounded-full bg-secondary px-3 py-1 text-sm text-secondary-foreground">
-                  {category}
-                  {category !== 'Other' && (
-                    <button aria-label={`Remove ${category} category`} onClick={() => void removeCategory(category)} className="-my-2 -mr-2 ml-0.5 flex h-11 w-11 items-center justify-center rounded-full hover:bg-muted [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12">
-                      <X className="h-4 w-4" aria-hidden />
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="secondary" onClick={() => setIsCategoryDialogOpen(false)}>Done</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 
 /** Entrance delay of one needed row, in walk order across the aisle groups (≤ 30 ms each, ≤ 400 ms total). */
 const rowDelay = (groups: Array<{ items: unknown[] }>, groupIndex: number, itemIndex: number, total: number) => {
@@ -277,9 +185,11 @@ export function ShoppingListClient({
   const lists = listsState.value;
   const loading = listsState.status !== 'ready';
   const itemsState = useLiveListItems(householdId, selectedListId);
-  const categoriesState = useLiveListCategories(householdId, selectedListId);
+  const categoriesState = useLiveCategoryConfig(householdId, selectedListId);
+  const storesState = useLiveStores(householdId);
   const listItems = itemsState.value;
-  const categories = categoriesState.value;
+  const categoryConfig = categoriesState.value;
+  const categories = categoryConfig.list;
   const loadingItems = Boolean(selectedListId) && (itemsState.status === 'loading' || categoriesState.status === 'loading');
   const counts = useLiveListCounts(householdId, lists.map((list) => list.id), selectedListId ?? '');
   // Rows show the Barcode Library's current photo for scanned items (one source of truth).
@@ -294,6 +204,15 @@ export function ShoppingListClient({
   const [scanStatus, setScanStatus] = useState<{ key: string; text: string } | null>(null);
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
   const [listToEdit, setListToEdit] = useState<ShoppingList | null>(null);
+  // A list form whose save was rejected, shown again (`rejectedDraftRestore`).
+  const [listDraft, setListDraft] = useState<ListFormValues | null>(null);
+  const isListDialogOpenRef = useRef(false);
+  isListDialogOpenRef.current = isListDialogOpen;
+  // The lists as shown now (read when a list save is rejected later).
+  const listsRef = useRef<ShoppingList[]>([]);
+  // Counts list creations; only the latest one opens its list when saved.
+  const createRequestRef = useRef(0);
+  listsRef.current = lists;
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
   const [isArchiveAlertOpen, setIsArchiveAlertOpen] = useState(false);
@@ -352,7 +271,7 @@ export function ShoppingListClient({
 
   // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
   // browser Back to `?tab=pantry`), so none stays on screen or traps focus there.
-  useOnTabDeactivate(() => {
+  const tabActive = useOnTabDeactivate(() => {
     setIsAddItemDialogOpen(false);
     setIsScannerOpen(false);
     setIsListDialogOpen(false);
@@ -417,11 +336,11 @@ export function ShoppingListClient({
   // A listener that cannot load says so once (it keeps retrying with backoff).
   const reportedErrorRef = useRef<unknown>(null);
   useEffect(() => {
-    const error = listsState.error ?? itemsState.error ?? categoriesState.error;
+    const error = listsState.error ?? itemsState.error ?? categoriesState.error ?? storesState.error;
     if (!error || reportedErrorRef.current === error) return;
     reportedErrorRef.current = error;
-    toastError(error, listsState.error ? 'Could not load shopping lists' : 'Could not load list items');
-  }, [listsState.error, itemsState.error, categoriesState.error, toastError]);
+    toastError(error, listsState.error ? 'Could not load shopping lists' : storesState.error && error === storesState.error ? 'Could not load stores' : 'Could not load list items');
+  }, [listsState.error, itemsState.error, categoriesState.error, storesState.error, toastError]);
 
   useEffect(() => {
     setOpenSections(['needed']);
@@ -470,16 +389,57 @@ export function ShoppingListClient({
 
   // --- List CRUD ---
 
+  // Creating a list opens it (SH-20a) once the write is saved, or queued and still
+  // on its way; a refused write opens nothing. The toast says which (S2 save path).
   const handleSaveList = async (data: ListFormValues, id?: string) => {
     const listsCollection = getListsCollectionRef();
     if (!listsCollection) return;
     const listId = id || slugify(data.name);
-    try {
-      await setDoc(doc(listsCollection, listId), { ...data, name: data.name.trim() }, { merge: true });
-      toast({ title: id ? 'List updated' : 'List created' });
-    } catch (error) {
-      toastError(error, 'Could not save the list');
+    const failTitle = id ? `Could not save ${data.name.trim()}` : `Could not create ${data.name.trim()}`;
+    // What was on screen at submit, so a slow save never pulls the member away
+    // from a list they opened meanwhile, and only the latest creation opens.
+    const request = id ? 0 : ++createRequestRef.current;
+    const selectionAtSubmit = selectedListIdRef.current;
+    // A rejected form (at once, or later when it was queued or slow) opens again
+    // with what was submitted, unless the list dialog is in use again by then.
+    const rejected = (error: unknown) => {
+      toastError(error, failTitle);
+      // A refused creation whose list is open (it was opened while the save was
+      // still waiting) leaves that list for the overview, where its form returns.
+      if (rejectedCreateView({ createdListId: id ? null : listId, openListId: selectedListIdRef.current }) === 'overview') onSelectList(null);
+      const listGone = Boolean(id) && !listsRef.current.some((entry) => entry.id === id);
+      const householdChanged = householdIdRef.current !== householdId;
+      if (!rejectedDraftRestore({ dialogOpen: isListDialogOpenRef.current, listGone, householdChanged })) return;
+      setListToEdit(id ? listsRef.current.find((entry) => entry.id === id) ?? null : null);
+      setListDraft(data);
+      setIsListDialogOpen(true);
+    };
+    // An edit is an update, so it fails on a list deleted meanwhile instead of
+    // re-creating a partial list document; a create is a merge on a fresh id.
+    const listRef = doc(listsCollection, listId);
+    const tracked = await trackWrite(
+      id ? updateDoc(listRef, listSaveData(data, { isNew: false, uid })) : setDoc(listRef, listSaveData(data, { isNew: true, uid }), { merge: true }),
+      { kind: 'write', persistence: getLocalPersistence, offline: isBrowserOffline },
+    );
+    if (tracked.state === 'failed') {
+      rejected(tracked.error);
+      return;
     }
+    const done = id ? 'List updated' : 'List created';
+    toast({ title: tracked.state === 'saved' ? done : `${done}: ${saveStateLabel(tracked.state)}` });
+    if (tracked.state !== 'saved') {
+      void tracked.settled.then((final) => {
+        if (final.state === 'failed') rejected(final.error);
+      });
+    }
+    if (!id && shouldOpenCreatedList({
+      request,
+      latestRequest: createRequestRef.current,
+      selectionAtSubmit,
+      selectionNow: selectedListIdRef.current,
+      householdAtSubmit: householdId,
+      householdNow: householdIdRef.current,
+    })) onSelectList(listId);
   };
 
   /**
@@ -1255,9 +1215,28 @@ export function ShoppingListClient({
     );
   }
 
+  // The list form (create and edit) is rendered on every screen below, so a
+  // rejected form can open again wherever the member is.
+  const listDialog = (
+    <ListDialog
+      isOpen={listDialogVisible({ open: isListDialogOpen, tabActive })}
+      onOpenChange={(open) => {
+        setIsListDialogOpen(open);
+        if (!open) setListDraft(null);
+      }}
+      draft={listDraft}
+      onSave={handleSaveList}
+      listToEdit={listToEdit}
+      lists={lists}
+      onOpenList={(listId) => onSelectList(listId)}
+    />
+  );
+
   // The open list was deleted elsewhere: say so, with the way back and nothing to write with.
   if (deletedList) {
     return (
+      <>
+      {listDialog}
       <div className="rounded-xl border bg-card text-card-foreground shadow-raised" data-testid="open-list" data-list-deleted="true">
         <div className="p-4 sm:p-6">
           <Button variant="ghost" onClick={() => onSelectList(null)} className="mb-3 pl-1">
@@ -1275,6 +1254,7 @@ export function ShoppingListClient({
         </div>
         {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
       </div>
+      </>
     );
   }
 
@@ -1284,7 +1264,11 @@ export function ShoppingListClient({
     const staggerRows = !reduced && !loadingItems && enteredRowsRef.current !== selectedList.id;
     const neededItems = listItems.filter(i => i.status === 'needed');
     const purchasedItems = listItems.filter(i => i.status === 'purchased').sort((a, b) => a.name.localeCompare(b.name));
-    const groups = groupItemsByAisle(neededItems, categories);
+    // A list at a store follows the store's aisle order; a reordered list its own order (S6).
+    // Until the stores listener has answered, a named store is "loading", never "no store".
+    const assigned = assignedStore(selectedList.storeId, storesState);
+    const store = assigned.store;
+    const groups = groupItemsByAisle(neededItems, categories, store || categoryConfig.ordered ? { order: groupingOrder(categories, store) } : {});
     rowOrderRef.current = { needed: groups.flatMap((group) => group.items.map((item) => item.id)), purchased: purchasedItems.map((item) => item.id) };
     const tint = listTint(selectedList);
     const canHandoff = selectedList.type === 'Grocery' && canEdit && online;
@@ -1292,6 +1276,7 @@ export function ShoppingListClient({
     return (
         <>
             {cartFlight.layer}
+            {listDialog}
             <AlertDialog open={isClearAlertOpen} onOpenChange={setIsClearAlertOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
@@ -1391,10 +1376,24 @@ export function ShoppingListClient({
                           <h2 className="min-w-0 break-words font-headline text-2xl font-semibold leading-tight">{selectedList.name}</h2>
                           <CartIndicator ref={cartFlight.cartRef} count={purchasedItems.length} inFlight={cartFlight.inFlight} onClick={openPurchased} className="ml-auto sm:ml-2" />
                         </div>
+                        {store && <p className="mt-1 text-sm text-muted-foreground" data-testid="list-store">Sorted for {store.name}</p>}
                     </div>
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
-                        {householdId && <ManageCategoriesDialog categories={categories} householdId={householdId} listId={selectedList.id} />}
+                        {householdId && (
+                          <CategoriesDialog
+                            // One instance per list: a late answer for list A never fills list B's fields.
+                            key={`${householdId}/${selectedList.id}`}
+                            householdId={householdId}
+                            list={selectedList}
+                            config={categoryConfig}
+                            stores={storesState.value}
+                            assigned={assigned}
+                            storesListed={storesListed(storesState)}
+                            uid={uid}
+                            online={online}
+                          />
+                        )}
                         {householdId && <ScanToTick key={`${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
@@ -1495,7 +1494,7 @@ export function ShoppingListClient({
                     )}
                 </div>
                 <div className="px-4 pb-4 sm:px-6 sm:pb-6">
-                    {loadingItems ? (
+                    {loadingItems || assigned.waitForStore ? (
                       <div className="space-y-2" role="status" aria-label="Loading items">
                         <Skeleton className="h-6 w-32" />
                         <Skeleton className="h-11 w-full" />
@@ -1604,12 +1603,7 @@ export function ShoppingListClient({
     <>
       {/* An Undo from a list that was open a moment ago stays reachable here. */}
       {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
-      <ListDialog
-        isOpen={isListDialogOpen}
-        onOpenChange={setIsListDialogOpen}
-        onSave={handleSaveList}
-        listToEdit={listToEdit}
-      />
+      {listDialog}
       <AlertDialog open={!!listToDelete} onOpenChange={(open) => !open && setListToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
