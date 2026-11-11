@@ -99,8 +99,8 @@ export type DownscaleResult =
 export function downscaleErrorCopy(reason: 'too-large' | 'unreadable', maxBytes = PRODUCT_PHOTO_MAX_BYTES): string {
   const limit = `${Math.round(maxBytes / (1024 * 1024))} MB`;
   return reason === 'too-large'
-    ? `This photo is still larger than ${limit} after shrinking it. Choose a smaller photo.`
-    : `This photo could not be read and is larger than ${limit}. Choose a JPEG or PNG photo.`;
+    ? `This photo is still larger than ${limit} after shrinking it. Remove it or choose a smaller photo.`
+    : `This photo could not be read and is larger than ${limit}. Remove it or choose a JPEG or PNG photo.`;
 }
 
 const renamed = (name: string, type: OutputType) => {

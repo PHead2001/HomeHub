@@ -119,6 +119,7 @@ function PantryItemDialog({
   const { currentUser, permissions } = useAuth();
   const lookupFeedback = useLookupFeedback();
   const scanOptions = { fallback: 'type the name instead', canSave: Boolean(permissions['shopping.edit']) };
+  const scanSessionRef = useRef(0);
   
   const form = useForm<PantryItemFormValues>({
     resolver: zodResolver(pantryItemSchema),
@@ -148,6 +149,8 @@ function PantryItemDialog({
   // Effect to sync category when form's unit changes (e.g., when editing an item)
   useEffect(() => {
     pendingScannedUnit.current = null;
+    // A lookup still running belongs to the previous opening: its answer is dropped.
+    scanSessionRef.current += 1;
     if (itemToEdit) {
       const category = getCategoryFromUnit(itemToEdit.unit);
       setUnitCategory(category);
@@ -194,6 +197,7 @@ function PantryItemDialog({
   };
   
   const handleBarcodeScan = async (barcode: string) => {
+    const session = scanSessionRef.current;
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
     try {
@@ -204,6 +208,8 @@ function PantryItemDialog({
           { barcode },
           await getAiActionContext(currentUser.householdId)
         ));
+        // The dialog closed or opened for another item meanwhile: never fill that form.
+        if (session !== scanSessionRef.current) return;
         const { productName } = result;
         const miss = result.libraryItem ? null : lookupMiss(result);
         if (productName && !miss) {

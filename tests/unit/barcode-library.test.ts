@@ -7,6 +7,7 @@ import {
   newProductData,
   productEdit,
   productName,
+  productSubmitBlock,
   restoredProductData,
   saveToLibraryHref,
   staleProductPhoto,
@@ -162,5 +163,13 @@ describe('delete captures the current product (BL-4)', () => {
 
   test('a captured product without a photo or date stays valid', () => {
     assert.deepEqual(capturedProduct('1', { name: '' }), { id: '1', name: 'Saved product', imageUrl: '' });
+  });
+});
+
+describe('Save is blocked while the shown photo is not the one that would be saved', () => {
+  test('a photo being shrunk waits; a rejected photo blocks; otherwise Save runs', () => {
+    assert.equal(productSubmitBlock({ photoBusy: true, photoError: null }), 'busy');
+    assert.equal(productSubmitBlock({ photoBusy: false, photoError: 'This photo is still larger than 5 MB after shrinking it.' }), 'photo-rejected');
+    assert.equal(productSubmitBlock({ photoBusy: false, photoError: null }), null);
   });
 });

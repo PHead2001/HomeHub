@@ -129,6 +129,17 @@ export function staleProductPhoto(
   return previous;
 }
 
+/**
+ * Whether Save may run. A photo still being shrunk waits; a rejected photo (too
+ * large, unreadable) blocks until the member removes it or picks a valid one, so
+ * a product is never saved without, or with the old instead of, the photo shown.
+ */
+export function productSubmitBlock({ photoBusy, photoError }: { photoBusy: boolean; photoError: string | null }): 'busy' | 'photo-rejected' | null {
+  if (photoBusy) return 'busy';
+  if (photoError) return 'photo-rejected';
+  return null;
+}
+
 /** Inline copy when Add finds the code already saved (BL-3). */
 export function alreadySavedCopy(name: string): string {
   return `This barcode is already saved as ${name}. Edit it instead?`;

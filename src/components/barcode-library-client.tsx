@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAuth } from '@/hooks/use-auth';
 import { db, storage } from '@/lib/firebase';
-import { collection, deleteField, doc, getDoc, onSnapshot, query, orderBy, runTransaction, updateDoc, type CollectionReference } from 'firebase/firestore';
+import { collection, deleteField, doc, getDoc, onSnapshot, query, orderBy, runTransaction, type CollectionReference } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { toast as globalToast, useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
@@ -25,6 +25,7 @@ import { FieldError } from './field-error';
 import { ProductCard } from './shopping/product-card';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { pluralize } from '@/lib/shopping/items';
+import { cn } from '@/lib/utils';
 import { downscaleErrorCopy, downscaleImage, PRODUCT_PHOTO_MAX_BYTES } from '@/lib/images/downscale';
 import {
   alreadySavedCopy,
@@ -34,6 +35,7 @@ import {
   newProductData,
   productEdit,
   productName,
+  productSubmitBlock,
   restoredProductData,
   staleProductPhoto,
   type NewProductData,
@@ -82,6 +84,9 @@ function LibraryItemDialog({
   const [existing, setExisting] = useState<BarcodeLibraryItem | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const pickRef = useRef(0);
+  // Which opening (or item) of the dialog a pending save belongs to.
+  const sessionRef = useRef(0);
+  const photoGroupRef = useRef<HTMLDivElement>(null);
 
   const form = useForm<LibraryForm>({
     resolver: zodResolver(libraryItemSchema),
@@ -96,6 +101,7 @@ function LibraryItemDialog({
       reset({ id: prefillBarcode ?? '', name: '' });
     }
     pickRef.current += 1;
+    sessionRef.current += 1;
     setPhoto({ kind: 'keep' });
     setPhotoError(null);
     setPhotoBusy(false);
@@ -131,11 +137,20 @@ function LibraryItemDialog({
   };
 
   const handleSubmit = async (values: LibraryForm) => {
-    if (photoBusy) return;
+    const block = productSubmitBlock({ photoBusy, photoError });
+    if (block === 'photo-rejected') {
+      // The rejected photo is still shown: point at it instead of saving without it.
+      photoGroupRef.current?.focus();
+      return;
+    }
+    if (block) return;
+    const session = sessionRef.current;
     setIsSaving(true);
     setExisting(null);
     const result = await onSave({ values, photo });
     setIsSaving(false);
+    // A dialog closed or switched to another item meanwhile is left alone.
+    if (session !== sessionRef.current) return;
     if (result.ok) onOpenChange(false);
     else if (result.existing) setExisting(result.existing);
   };
@@ -158,7 +173,7 @@ function LibraryItemDialog({
             <DialogDescription>{itemToEdit ? `Update ${itemToEdit.name}.` : 'Save a barcode and a product name. A photo is optional.'}</DialogDescription>
           </DialogHeader>
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4 py-4">
+            <form onSubmit={(event) => void form.handleSubmit(handleSubmit)(event)} className="space-y-4 py-4">
               <FormField
                 control={form.control}
                 name="id"
@@ -212,8 +227,16 @@ function LibraryItemDialog({
               />
               <div className="space-y-2">
                 <p className="text-sm font-medium" id="library-photo-label">Product Image (optional)</p>
-                <div role="group" aria-labelledby="library-photo-label" aria-describedby={photoError ? 'library-photo-error' : undefined}>
+                <div
+                  ref={photoGroupRef}
+                  tabIndex={-1}
+                  role="group"
+                  aria-labelledby="library-photo-label"
+                  aria-describedby={photoError ? 'library-photo-error' : undefined}
+                  className={cn('rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring', photoError && 'ring-2 ring-destructive')}
+                >
                   <ImageUpload
+                    key={itemToEdit?.id ?? 'new'}
                     onFileChange={(file) => void handlePhoto(file)}
                     existingImageUrl={itemToEdit?.imageUrl}
                     previewAlt="Product image preview"
@@ -393,22 +416,38 @@ export function BarcodeLibraryClient() {
   const handleEdit = async (collectionRef: CollectionReference, existing: BarcodeLibraryItem, save: LibrarySave): Promise<SaveResult> => {
     const uploaded = save.photo.kind === 'replace' ? await uploadPhoto(save.photo.file) : null;
     const change: PhotoChange = uploaded ? { kind: 'replace', photo: uploaded } : save.photo.kind === 'remove' ? { kind: 'remove' } : { kind: 'keep' };
-    const edit = productEdit(existing, { name: save.values.name, photo: change });
-    if (edit.changed) {
-      try {
-        await updateDoc(doc(collectionRef, existing.id), {
-          ...edit.set,
-          ...(edit.removeImagePath ? { imagePath: deleteField() } : {}),
-        });
-      } catch (error) {
-        if (uploaded?.imagePath) removePhoto(uploaded.imagePath, 'Image cleanup pending');
-        throw error;
-      }
+    // The edit is computed against the product as it is NOW (read in the same
+    // transaction), so another member's newer photo is neither overwritten
+    // unknowingly nor left orphaned, and only fields this member changed are written.
+    const productRef = doc(collectionRef, existing.id);
+    let outcome: { saved: BarcodeLibraryItem | null; changed: boolean };
+    try {
+      outcome = await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(productRef);
+        const current = snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as BarcodeLibraryItem) : null;
+        if (!current) return { saved: null, changed: false };
+        const edit = productEdit(current, { name: save.values.name, photo: change });
+        if (edit.changed) {
+          transaction.update(productRef, { ...edit.set, ...(edit.removeImagePath ? { imagePath: deleteField() } : {}) });
+        }
+        return { saved: current, changed: edit.changed };
+      });
+    } catch (error) {
+      if (uploaded?.imagePath) removePhoto(uploaded.imagePath, 'Image cleanup pending');
+      throw error;
+    }
+    const { saved, changed } = outcome;
+    if (!saved) {
+      if (uploaded?.imagePath) removePhoto(uploaded.imagePath, 'Image cleanup pending');
+      toast({ variant: 'destructive', title: 'Not saved', description: `${existing.name} was deleted meanwhile.` });
+      return { ok: true };
+    }
+    if (changed) {
       // The photo the edit replaced or removed is no longer used.
-      const stale = staleProductPhoto(existing, change, managedPath);
+      const stale = staleProductPhoto(saved, change, managedPath);
       if (stale) removePhoto(stale, 'Item saved; image cleanup pending');
     }
-    toast({ title: 'Item Saved', description: `${productName(save.values.name) || existing.name} has been saved.` });
+    toast({ title: 'Item Saved', description: `${productName(save.values.name) || saved.name} has been saved.` });
     return { ok: true };
   };
 
@@ -424,13 +463,15 @@ export function BarcodeLibraryClient() {
     }
   };
 
-  const undoDelete = async (item: NonNullable<ReturnType<typeof capturedProduct>>) => {
-    const collectionRef = getLibraryCollectionRef();
+  // The Undo restores into the household the product was deleted from, even if
+  // the member has switched households since.
+  const undoDelete = async (item: NonNullable<ReturnType<typeof capturedProduct>>, deletedFrom: { householdId: string; collectionRef: CollectionReference }) => {
+    const { householdId, collectionRef } = deletedFrom;
     const uid = currentUser?.uid;
-    if (!collectionRef || !uid || !householdId) return;
+    if (!uid) return;
     // Stop the photo's delayed delete first. If it already ran (the toast was held
     // open past the window), the product comes back without a photo.
-    const photoPath = managedPath(item);
+    const photoPath = getManagedBarcodeImagePath({ householdId, imagePath: item.imagePath, imageUrl: item.imageUrl });
     const photoKept = !photoPath || libraryPhotoDeletes.cancel(photoDeleteKey(householdId, item.id)) === photoPath;
     try {
       await createProduct(collectionRef, item.id, restoredProductData(item, uid, new Date(), { photoGone: !photoKept }));
@@ -448,7 +489,8 @@ export function BarcodeLibraryClient() {
 
   const handleDelete = async (shown: BarcodeLibraryItem) => {
     const collectionRef = getLibraryCollectionRef();
-    if (!collectionRef) return;
+    if (!collectionRef || !householdId) return;
+    const deletedFrom = { householdId, collectionRef };
     try {
         // Read and delete in one transaction: the Undo and the photo cleanup use
         // what was actually deleted, never the page's possibly older copy.
@@ -465,14 +507,14 @@ export function BarcodeLibraryClient() {
           return;
         }
         const photoPath = managedPath(item);
-        if (photoPath && householdId) libraryPhotoDeletes.schedule(photoDeleteKey(householdId, item.id), photoPath);
+        if (photoPath) libraryPhotoDeletes.schedule(photoDeleteKey(householdId, item.id), photoPath);
         toast({
           title: 'Item Deleted',
           description: `${item.name} was removed from the library.`,
           duration: UNDO_WINDOW_MS,
           group: 'barcode-library-delete',
           action: canEdit
-            ? <ToastAction altText={`Undo deleting ${item.name}`} onClick={() => void undoDelete(item)}>Undo</ToastAction>
+            ? <ToastAction altText={`Undo deleting ${item.name}`} onClick={() => void undoDelete(item, deletedFrom)}>Undo</ToastAction>
             : undefined,
         });
     } catch (error) {

@@ -40,6 +40,7 @@ import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOut
 import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry, type ScanEntry } from '@/lib/shopping/scan';
 import { currentItemForToggle } from '@/lib/shopping/scan-tick';
+import { addScannedProduct, dialogAfterScan } from '@/lib/shopping/scan-add';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
 import { ScanToTick } from './shopping/scan-to-tick';
@@ -687,8 +688,13 @@ export function ShoppingListClient({
   };
 
   // A scan adds ONE package (BL-1): the package size is a note on the row, never the count.
+  // It is its own submission: it uses the category chosen when the scan started,
+  // never consumes or resets the typed draft, and closes only that same opening
+  // of Add Item (`dialogAfterScan`).
   const handleBarcodeScan = async (barcode: string) => {
     if (!currentUser?.householdId) return;
+    const started = currentDialogDraft();
+    const category = getValues('category');
     setIsScannerOpen(false);
     toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
     try {
@@ -699,7 +705,10 @@ export function ShoppingListClient({
       const entry = scanToShoppingEntry(result);
       const miss = result.libraryItem ? null : lookupMiss(result);
       if (entry && !miss) {
-        await addScannedEntry(entry, { libraryItem: result.libraryItem, barcode });
+        const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, scanAddDeps);
+        if (final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close) {
+          setIsAddItemDialogOpen(false);
+        }
       } else {
         // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
         lookupFeedback.reportMiss(miss ?? { kind: 'not-found' }, barcode, { fallback: 'type the name instead', canSave: canEdit });
@@ -708,10 +717,14 @@ export function ShoppingListClient({
       lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit });
     }
   };
-  const addScannedEntry = (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) => onAddItemSubmit(
-    { name: entry.name, quantity: entry.quantity, category: getValues('category') },
-    { ...extras, size: entry.size, sizeUnit: entry.sizeUnit },
-  );
+  const scanAddDeps = {
+    add: addEntries,
+    report: reportAddResults,
+    fail: (error: unknown) => toastError(error, 'Could not add the item'),
+  };
+  // Scan to tick's "Add": outside the Add Item form entirely (no draft, no category from it).
+  const addScannedEntry = (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) =>
+    addScannedProduct(entry, extras, scanAddDeps).then(() => undefined, (error: unknown) => { toastError(error, 'Could not add the item'); });
 
   // --- Undo (S3: SH-15a/b, UNDO-10s) ---
   // One 10 s Undo per group (the latest tick, the latest delete), shown in the
