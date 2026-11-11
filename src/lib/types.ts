@@ -399,6 +399,8 @@ export type BarcodeLibraryItem = {
   imageUrl: string;
   imagePath?: string;
   createdAt: string; // ISO String
+  /** Who added the product (written on create by newer builds; fixed afterwards by the rules). */
+  createdByUid?: string;
 };
 
 
