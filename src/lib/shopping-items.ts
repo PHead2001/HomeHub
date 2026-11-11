@@ -1,17 +1,23 @@
 import type { ShoppingListItem } from '@/lib/types';
 import { slugify } from '@/lib/utils';
+import { dedupeCategories, isOtherCategory } from '@/lib/shopping/category-order';
 import { itemNameKey } from '@/lib/shopping/items';
 import type { CategorySource } from '@/lib/shopping/local-categories';
 import { packageSize } from '@/lib/shopping/scan';
 
 export const DEFAULT_SHOPPING_CATEGORIES = ['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other'];
 
-/** Categories stored at `config/categories`, always including `Other` (the AI fallback). */
+/**
+ * Categories stored at `config/categories`, always including `Other` (the AI
+ * fallback): the aisle order (`ordered`, S6) first, then any name only the older
+ * `list` holds. Spellings that differ only in case or spacing are one category
+ * ("dairy" and "Dairy", SH-10d): the first one is kept.
+ */
 export function normalizeStoredCategories(value: unknown): string[] | null {
-  if (!value || typeof value !== 'object' || !('list' in value)) return null;
-  const list = (value as { list: unknown }).list;
-  const stored = Array.isArray(list) ? list.filter((category: unknown): category is string => typeof category === 'string') : [];
-  return stored.includes('Other') ? stored : [...stored, 'Other'];
+  if (!value || typeof value !== 'object' || !('list' in value || 'ordered' in value)) return null;
+  const { list, ordered } = value as { list?: unknown; ordered?: unknown };
+  const stored = dedupeCategories([...(Array.isArray(ordered) ? ordered : []), ...(Array.isArray(list) ? list : [])]);
+  return stored.some(isOtherCategory) ? stored : [...stored, 'Other'];
 }
 
 /** Accepts only absolute http(s) URLs of a sane length; anything else is dropped. */
