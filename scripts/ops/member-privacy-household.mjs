@@ -79,8 +79,9 @@ export async function householdStats(householdRef) {
   return (await householdRef.collection('stats').get()).docs.filter(doc => STATS_ID.test(doc.id));
 }
 
-/** Whether any stats document still holds a legacy (email-derived) key. */
+/** Whether any stats document still holds a legacy (email-derived) key, in its counts, labels or departure aliases. */
 export const hasLegacyKeys = statsDocs => statsDocs.some(doc =>
+  doc.get('aliases') !== undefined ||
   [...Object.keys(doc.get('byAssignee') ?? {}), ...Object.keys(doc.get('names') ?? {})].some(isLegacyStatsKey));
 
 /**
@@ -93,19 +94,26 @@ export const hasLegacyKeys = statsDocs => statsDocs.some(doc =>
  * @returns {Promise<{ documents: number, clean: number, rekey: number, moved: number, unknown: number, written: number }>}
  */
 export async function rekeyHouseholdStats(db, statsDocs, { apply, byLegacy, unknownKeyOf }) {
-  const counts = { documents: 0, clean: 0, rekey: 0, moved: 0, unknown: 0, written: 0 };
+  const counts = { documents: 0, clean: 0, rekey: 0, moved: 0, unknown: 0, aliases: 0, written: 0 };
   for (const statsDoc of statsDocs) {
     counts.documents += 1;
     const plan = await db.runTransaction(async tx => {
       const fresh = await tx.get(statsDoc.ref);
       const decision = statsRekeyPlan(fresh.exists ? fresh.data() : null, byLegacy, unknownKeyOf);
-      if (apply && decision.kind === 'rekey') tx.update(statsDoc.ref, { byAssignee: decision.byAssignee, names: decision.names });
+      if (apply && decision.kind === 'rekey') {
+        tx.update(statsDoc.ref, {
+          byAssignee: decision.byAssignee,
+          names: decision.names,
+          ...(decision.removeAliases ? { aliases: FieldValue.delete() } : {}),
+        });
+      }
       return decision;
     });
     counts[plan.kind] += 1;
     if (plan.kind === 'rekey') {
       counts.moved += plan.moved;
       counts.unknown += plan.unknown;
+      if (plan.removeAliases) counts.aliases += 1;
       if (apply) counts.written += 1;
     }
   }

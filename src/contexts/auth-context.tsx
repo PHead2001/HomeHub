@@ -268,19 +268,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // A newer run supersedes this one (the profile changed or was confirmed, or the provider
     // unmounted): from then on this run neither updates state nor writes to the profile.
     let active = true;
-    const cleanupLegacyInviteCode = async (householdData: Household, role: HouseholdMember['role']) => {
-      if (role !== 'owner' || !householdData.inviteCode) return;
-      try {
-        const { db, doc, updateDoc, deleteField } = await loadData();
-        await updateDoc(doc(db, 'households', householdData.id), {
-          inviteCode: deleteField(),
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (error) {
-        console.warn("Legacy permanent invite code could not be removed automatically.", error);
-      }
-    };
-
     // households/{id}/members/{uid} is the only authority. A profile that points at
     // a household without a membership record is stale: clear it, grant nothing.
     const loadMembership = async (householdId: string) => {
@@ -323,7 +310,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           permissions: normalizedMember.permissions,
         } : prev);
       }
-      await cleanupLegacyInviteCode(householdData, normalizedMember.role);
       // Heal drift between the profile and the public member data (name, photo).
       if (memberProfileDiffers(normalizedMember, { displayName: currentUser.displayName, avatarUrl: currentUser.avatarUrl })) void syncMemberProfile(householdId);
       return normalizedMember;

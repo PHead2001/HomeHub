@@ -27,6 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/empty-state';
+import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
@@ -46,10 +47,10 @@ import { ScanToTick } from './shopping/scan-to-tick';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { rowPhoto } from '@/lib/shopping/row-photo';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
-import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
+import { normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { editUpdate, restoreDocument, restoreIfAbsent, untickUpdate } from '@/lib/shopping/item-writes';
 import { notUndoneNotice, planTick, tickShoppingItem, undoShoppingTick, type TickCurrent } from '@/lib/shopping/tick';
-import { shoppingTickIO } from '@/lib/shopping/tick-firestore';
+import { localTicksWriteFailed, shoppingTickIO } from '@/lib/shopping/tick-firestore';
 import {
   browserJournalStorage,
   dropJournal,
@@ -68,8 +69,8 @@ import {
 import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
-import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveStores } from '@/lib/shopping/live';
-import { groupingOrder } from '@/lib/shopping/category-order';
+import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveShoppingPreferences, useLiveStores } from '@/lib/shopping/live';
+import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, preferencesKnown, writeWait, writeWaitText, readLocalTicks, readRecentGrocery, rememberRecentGrocery, syncLocalTicks } from '@/lib/shopping/overview';
 import { assignedStore, storesListed } from '@/lib/shopping/assigned-store';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
@@ -77,11 +78,13 @@ import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
 import { offerEmptyListDelete } from '@/lib/shopping/trip-plan';
 import { deleteStillPurchasedItems } from '@/lib/shopping/item-transactions';
-import type { ShoppingListItem, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
+import type { ShoppingListItem, ShoppingList, BarcodeLibraryItem, PantryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
 import { ListCard } from './shopping/list-card';
 import { ListCardsSkeleton } from './shopping/shopping-skeletons';
-import { ListDialog, type ListFormValues } from './shopping/list-dialog';
+import { ListDialog, groceriesTemplateValues, type ListFormValues } from './shopping/list-dialog';
+import { ShoppingOverview } from './shopping/shopping-overview';
+import { ExpiringChips } from './shopping/expiring-chips';
 import { CategoriesDialog } from './shopping/categories-dialog';
 import { listSaveData, rejectedCreateView, shouldOpenCreatedList } from '@/lib/shopping/list-save';
 import { listDialogVisible, rejectedDraftRestore } from '@/lib/shopping/save-line';
@@ -96,7 +99,7 @@ import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
 import { useTripFlow } from './shopping/use-trip-flow';
 import { useInPageMorph } from './shopping/use-in-page-morph';
 import { NumberTicker } from '@/components/motion/number-ticker';
-import { Stagger, StaggerItem } from '@/components/motion/stagger';
+import { StaggerItem } from '@/components/motion/stagger';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { morphStyle, sharedId, staggerDelay } from '@/lib/motion';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
@@ -143,6 +146,8 @@ export function ShoppingListClient({
   onOpenPantry,
   quickAddRequested = false,
   onQuickAddHandled,
+  pantryItems,
+  onOpenPantryItem,
 }: {
   /** The open list's id (from `?list=`), or null for the overview. */
   selectedListId: string | null;
@@ -153,6 +158,10 @@ export function ShoppingListClient({
   quickAddRequested?: boolean;
   /** Consumes the quick-add request (removes it from the URL), opening `listId` if given. */
   onQuickAddHandled?: (listId: string | null) => void;
+  /** The pantry (the page's pantry listener), for the overview's expiring chips (SH-11c). */
+  pantryItems?: readonly PantryItem[];
+  /** Opens the Pantry Inventory tab on one item (an expiring chip). */
+  onOpenPantryItem?: (itemId: string) => void;
 }) {
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
@@ -181,8 +190,33 @@ export function ShoppingListClient({
   const listsState = useLiveShoppingLists(householdId);
   const lists = listsState.value;
   const loading = listsState.status !== 'ready';
-  const itemsState = useLiveListItems(householdId, selectedListId);
-  const categoriesState = useLiveCategoryConfig(householdId, selectedListId);
+  // The overview shows the household's Grocery list inline (S8a, SH-11a): the
+  // default from the shopping preferences, else the only Grocery list, else the
+  // one this device used last; a switcher pick wins for this visit. The page's
+  // one items and categories listener follows the open list, or on the overview
+  // that Grocery list (so opening it from the overview re-reads nothing).
+  const preferencesState = useLiveShoppingPreferences(householdId);
+  const [pickedGrocery, setPickedGrocery] = useState<{ householdId: string; listId: string } | null>(null);
+  const [recentGroceryId, setRecentGroceryId] = useState<string | null>(null);
+  useEffect(() => {
+    setRecentGroceryId(readRecentGrocery(browserStorage(), householdId));
+  }, [householdId]);
+  const overviewChoice = chooseOverviewList({
+    lists,
+    defaultListId: preferencesState.value.defaultGroceryListId,
+    defaultKnown: preferencesKnown({
+      status: preferencesState.status,
+      fromCache: preferencesState.fromCache,
+      offline: isBrowserOffline(),
+      defaultListId: preferencesState.value.defaultGroceryListId,
+    }),
+    pickedId: pickedGrocery?.householdId === householdId ? pickedGrocery.listId : null,
+    recentId: recentGroceryId,
+  });
+  const overviewList = selectedListId ? null : overviewChoice.list;
+  const itemsListId = selectedListId ?? overviewList?.id ?? null;
+  const itemsState = useLiveListItems(householdId, itemsListId);
+  const categoriesState = useLiveCategoryConfig(householdId, itemsListId);
   const storesState = useLiveStores(householdId);
   const listItems = itemsState.value;
   const categoryConfig = categoriesState.value;
@@ -209,6 +243,8 @@ export function ShoppingListClient({
   const listsRef = useRef<ShoppingList[]>([]);
   // Counts list creations; only the latest one opens its list when saved.
   const createRequestRef = useRef(0);
+  // The list save, for the quick-add shortcut's "Create Groceries" toast action (SH-10h).
+  const handleSaveListRef = useRef<((data: ListFormValues, id?: string) => Promise<void>) | null>(null);
   listsRef.current = lists;
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
@@ -287,11 +323,55 @@ export function ShoppingListClient({
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
+  // The list the items listener follows: the open list, or the overview's Grocery list.
+  const itemsListIdRef = useRef<string | null>(null);
+  itemsListIdRef.current = itemsListId;
+  // Ticks made on this device: they are never "someone is shopping" (SH-28c).
+  // Kept in device storage for the activity window, so a reload or a return to
+  // /shopping still knows them (`shoppingTickIO` records every tick of the shared path,
+  // the dashboard tile's too).
+  const localPurchaseOpsRef = useRef<Set<string>>(new Set());
+  const [localTicksVersion, setLocalTicksVersion] = useState(0);
+  // Re-read on a list switch, every minute (pruning) and after each own tick.
+  const localTicks = useMemo(
+    () => readLocalTicks(browserStorage(), householdId, itemsListId, now),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [householdId, itemsListId, now, localTicksVersion],
+  );
+  // Each items snapshot settles this device's own ticks on that list: a pending one
+  // whose server purchasedAt has arrived starts ageing (also after a reload, when no
+  // write promise is left), and one whose purchase is gone is dropped (`syncLocalTicks`).
+  const itemsForSync = itemsState.status === 'ready' ? itemsState.value : null;
+  useEffect(() => {
+    if (!itemsForSync) return;
+    if (syncLocalTicks(browserStorage(), householdId, itemsListId, itemsForSync, Date.now())) setLocalTicksVersion((version) => version + 1);
+  }, [itemsForSync, householdId, itemsListId]);
+  // Overview writes wait until the listener follows the target list and has answered (`overviewWriteReady`).
+  const itemsStatusRef = useRef(itemsState.status);
+  itemsStatusRef.current = itemsState.status;
+  const categoriesStatusRef = useRef(categoriesState.status);
+  categoriesStatusRef.current = categoriesState.status;
+  const writeWaitFor = (listId: string | null | undefined) => writeWait({
+    targetListId: listId,
+    itemsListId: itemsListIdRef.current,
+    itemsStatus: itemsStatusRef.current,
+    categoriesStatus: categoriesStatusRef.current,
+  });
+  // Adds and ticks need the items from a snapshot: a listener that failed before
+  // its first one leaves them unknown, and merges would be missed (duplicates).
+  const writeReadyFor = (listId: string | null | undefined) => writeWaitFor(listId) === null;
   const householdIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
 
   const selectedList = useMemo(() => lists.find((list) => list.id === selectedListId) ?? null, [lists, selectedListId]);
+  // Opening a Grocery list makes it this device's most recently used one (the overview's fallback).
+  const openGroceryId = selectedList?.type === 'Grocery' ? selectedList.id : null;
+  useEffect(() => {
+    if (!openGroceryId || !householdId) return;
+    rememberRecentGrocery(browserStorage(), householdId, openGroceryId);
+    setRecentGroceryId(openGroceryId);
+  }, [openGroceryId, householdId]);
   if (selectedList && householdId && (seen?.list !== selectedList || seen.householdId !== householdId)) setSeen({ householdId, list: selectedList });
   const seenList = seen && seen.householdId === householdId ? seen.list : null;
   const listIds = useMemo(() => lists.map((list) => list.id), [lists]);
@@ -380,6 +460,15 @@ export function ShoppingListClient({
       setIsAddItemDialogOpen(true);
     } else if (quickAddKind === 'choose') {
       toast({ title: 'Choose a list', description: 'Open the list you want, then tap Add Item.' });
+    } else if (quickAddKind === 'empty') {
+      // SH-10h: never a silent no-op. One tap creates a Groceries list and opens it.
+      toast({
+        title: 'No shopping lists yet',
+        description: 'Create a Groceries list to add items to.',
+        action: <ToastAction altText="Create a Groceries list" onClick={() => void handleSaveListRef.current?.(groceriesTemplateValues())}>Create Groceries</ToastAction>,
+      });
+    } else if (quickAddKind === 'read-only') {
+      toast({ title: 'You can view the lists only', description: 'Ask a household admin for permission to edit shopping lists.' });
     }
   }, [quickAddKind, quickAddListId, onQuickAddHandled, selectedListId, toast]);
 
@@ -437,6 +526,7 @@ export function ShoppingListClient({
       householdNow: householdIdRef.current,
     })) onSelectList(listId);
   };
+  handleSaveListRef.current = handleSaveList;
 
   /**
    * Deletes a list for real (SH-9): the server action removes the list document,
@@ -521,9 +611,13 @@ export function ShoppingListClient({
   const addEntries = async (
     entries: AddEntry[],
     { selectedCategory, libraryItem, barcode }: { selectedCategory?: string; libraryItem?: BarcodeLibraryItem | null; barcode?: string } = {},
+    // The open list, or the overview's Grocery list (S8a, SH-11b).
+    target: ShoppingList | null = selectedList,
   ): Promise<EntryOutcome[] | null> => {
-    const list = selectedList;
+    const list = target;
     if (!householdId || !list) return null;
+    // Merges look only at the known items: never add against an unloaded or another list's items.
+    if (!writeReadyFor(list.id)) return null;
     const { outcomes, categorization } = await addItemsToList({
       householdId,
       listId: list.id,
@@ -534,7 +628,7 @@ export function ShoppingListClient({
       selectedCategory,
       imageUrl: libraryItem?.imageUrl,
       barcode,
-      active: () => ({ householdId: householdIdRef.current, listId: selectedListIdRef.current }),
+      active: () => ({ householdId: householdIdRef.current, listId: itemsListIdRef.current }),
       onLateError: reportLateFailure,
     });
     if (outcomes.some((outcome) => outcome.state !== 'failed')) playFeedback('add');
@@ -575,6 +669,13 @@ export function ShoppingListClient({
     }
   };
 
+  // An add the open list refused because its items are not known yet (`writeWait`) says so.
+  const sayWriteWait = () => {
+    const list = selectedList;
+    const wait = list ? writeWaitFor(list.id) : null;
+    if (wait && list) toast({ title: 'Not added yet', description: writeWaitText(wait, list.name) });
+  };
+
   const onAddItemSubmit = async (
     values: z.infer<typeof itemSchema>,
     extras: { libraryItem?: BarcodeLibraryItem | null; barcode?: string; size?: number; sizeUnit?: string } = {},
@@ -590,7 +691,11 @@ export function ShoppingListClient({
         [{ name, quantity: values.quantity, size: extras.size, sizeUnit: extras.sizeUnit }],
         { selectedCategory: values.category, libraryItem: extras.libraryItem, barcode: extras.barcode },
       );
-      if (!outcomes) return;
+      if (!outcomes) {
+        // Not a silent no-op: the dialog keeps its values and says why.
+        sayWriteWait();
+        return;
+      }
       const [outcome] = outcomes;
       if (outcome.state === 'failed') {
         // Nothing was saved: keep the dialog and its values for a retry.
@@ -628,9 +733,9 @@ export function ShoppingListClient({
   // Saved entries are reported; failed ones go back into the field with an inline
   // message naming them (QuickAddBar), so a retry only adds what is missing.
   // Entries without an answer yet stay in a "Still sending" chip until they settle.
-  const onQuickAdd = async (entries: QuickAddEntry[]): Promise<QuickAddOutcome> => {
+  const onQuickAdd = async (entries: QuickAddEntry[], target: ShoppingList | null = selectedList): Promise<QuickAddOutcome> => {
     try {
-      const outcomes = await addEntries(entries);
+      const outcomes = await addEntries(entries, {}, target);
       if (!outcomes) return null;
       reportAddResults(outcomes);
       const failed = outcomes.filter((outcome) => outcome.state === 'failed').map((outcome) => outcome.entry);
@@ -714,7 +819,11 @@ export function ShoppingListClient({
     }, showStatus);
   };
   const scanAddDeps = {
-    add: addEntries,
+    add: async (...args: Parameters<typeof addEntries>) => {
+      const outcomes = await addEntries(...args);
+      if (!outcomes) sayWriteWait();
+      return outcomes;
+    },
     report: reportAddResults,
     fail: (error: unknown) => toastError(error, 'Could not add the item'),
   };
@@ -750,7 +859,7 @@ export function ShoppingListClient({
   // What this screen knows about an Undo's item: from the open list's listener when
   // it is that list (null = gone), otherwise unknown (the rules decide).
   const knownItem = (entry: UndoEntry): KnownItem => {
-    if (entry.householdId !== householdIdRef.current || entry.listId !== selectedListIdRef.current || !itemsReadyRef.current) return undefined;
+    if (entry.householdId !== householdIdRef.current || entry.listId !== itemsListIdRef.current || !itemsReadyRef.current) return undefined;
     return listItemsRef.current.find((listItem) => listItem.id === entry.itemId) ?? null;
   };
 
@@ -833,7 +942,7 @@ export function ShoppingListClient({
         focusRowWhenShown(checkboxId, attempts - 1);
         return;
       }
-      if (!checkboxId) document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"]')?.focus({ preventScroll: true });
+      if (!checkboxId) document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="cart-indicator"], [data-testid="grocery-overview"] [data-overview-focus]')?.focus({ preventScroll: true });
     });
   };
   const nextRowFocusId = (item: ShoppingListItem) => {
@@ -850,8 +959,9 @@ export function ShoppingListClient({
     focusRowWhenShown(nextRowFocusId(item));
   };
 
-  const toggleItemStatus = async (staleItem: ShoppingListItem) => {
-      if (!householdId || !selectedList) return;
+  // `target`: the open list, or the overview's Grocery list (S8a: the same tick and Undo).
+  const toggleItemStatus = async (staleItem: ShoppingListItem, target: ShoppingList | null = selectedList) => {
+      if (!householdId || !target) return;
       // Decide from the listener's latest copy, never a stale one (a scan's lookup,
       // an old render): ticking an item someone else already bought would overwrite
       // their purchasedByUid, time and purchaseOpId (and void their Undo).
@@ -860,13 +970,14 @@ export function ShoppingListClient({
 
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
-      const list = selectedList;
+      const list = target;
       // The write always targets the item's own list; the screen is only touched while
       // that list is still the open one.
       const isListOpen = () => selectedListIdRef.current === list.id;
       // The item as the open list's listener shows it now (not as the row last rendered
       // it): a tick never lands on an item already purchased (or deleted) meanwhile.
-      const current: TickCurrent = isListOpen() && itemsReadyRef.current
+      // (On the overview the listener follows the overview's Grocery list.)
+      const current: TickCurrent = itemsListIdRef.current === list.id && itemsReadyRef.current
         ? listItemsRef.current.find((listItem) => listItem.id === item.id) ?? null
         : item;
       if (isCheckingOff && planTick(current) !== 'tick') return;
@@ -894,12 +1005,17 @@ export function ShoppingListClient({
       // the server's time and a fresh purchaseOpId (the one its Undo must match);
       // un-ticking from Purchased clears the purchase. The listener shows the write at
       // once; offline it waits in Firestore's queue and syncs when the connection returns.
+      // `shoppingTickIO` also records the tick in this device's local-ticks store (SH-28c).
       const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
       const ticked = isCheckingOff
         ? tickShoppingItem(shoppingTickIO, { path: { householdId, listId: list.id, itemId: item.id }, uid, current })
         : null;
       if (ticked && ticked.status !== 'ticked') return;
       const purchaseOpId = ticked ? ticked.opId : null;
+      if (purchaseOpId) {
+        localPurchaseOpsRef.current.add(purchaseOpId);
+        setLocalTicksVersion((version) => version + 1);
+      }
       const write = ticked ? ticked.write : updateDoc(itemRef, untickUpdate());
 
       // Ticking never leaves the list: the pantry is offered at the end of the trip
@@ -1265,7 +1381,7 @@ export function ShoppingListClient({
     // Until the stores listener has answered, a named store is "loading", never "no store".
     const assigned = assignedStore(selectedList.storeId, storesState);
     const store = assigned.store;
-    const groups = groupItemsByAisle(neededItems, categories, store || categoryConfig.ordered ? { order: groupingOrder(categories, store) } : {});
+    const groups = neededAisleGroups(listItems, categoryConfig, store);
     rowOrderRef.current = { needed: groups.flatMap((group) => group.items.map((item) => item.id)), purchased: purchasedItems.map((item) => item.id) };
     const tint = listTint(selectedList);
     const canHandoff = selectedList.type === 'Grocery' && canEdit && online;
@@ -1502,13 +1618,8 @@ export function ShoppingListClient({
                             <AccordionTrigger className="font-headline text-lg"><span>Needed (<NumberTicker value={neededItems.length} animateOnMount={false} />)</span></AccordionTrigger>
                             <AccordionContent>
                                 {neededItems.length === 0 ? (
-                                  <EmptyState
-                                    compact
-                                    kind="lists"
-                                    headingLevel={3}
-                                    title={listItems.length === 0 ? 'This list is empty' : 'Nothing left to buy'}
-                                    description={canEdit ? 'Type items into the field below, like "milk, eggs, 2 bread".' : 'Everything on this list is in the cart.'}
-                                  />
+                                  // One message (SH-10g): never "empty" and "in the cart" together.
+                                  <EmptyState compact kind="lists" headingLevel={3} {...neededEmptyCopy({ total: listItems.length, canEdit })} />
                                 ) : (
                                 <div>
                                   <AnimatePresence initial={false}>
@@ -1581,6 +1692,9 @@ export function ShoppingListClient({
                             key={selectedList.id}
                             listName={selectedList.name}
                             onAdd={onQuickAdd}
+                            // Waits (with why) while the items are unknown: a listener that failed before its first snapshot.
+                            loading={writeWaitFor(selectedList.id) !== null}
+                            loadingText={writeWaitFor(selectedList.id) ? writeWaitText(writeWaitFor(selectedList.id)!, selectedList.name) : undefined}
                             above={tripFlow.chips || snackbarEntries.length > 0 ? (
                               <>
                                 {tripFlow.chips}
@@ -1597,11 +1711,18 @@ export function ShoppingListClient({
     );
   }
 
-  // Main view for showing all lists
+  // The overview (S8a: SH-11a–c, SH-28c): the household's Grocery list inline
+  // (ticks and adds go through the same tick, Undo and save paths as the open
+  // list), the pantry's expiring chips and every list as a card.
+  const overviewAssigned = overviewList ? assignedStore(overviewList.storeId, storesState) : null;
+  const overviewGroups = overviewList ? neededAisleGroups(listItems, categoryConfig, overviewAssigned?.store ?? null) : [];
+  rowOrderRef.current = { needed: overviewGroups.flatMap((group) => group.items.map((item) => item.id)), purchased: [] };
+  const openCreateList = () => {
+    setListToEdit(null);
+    setIsListDialogOpen(true);
+  };
   return (
     <>
-      {/* An Undo from a list that was open a moment ago stays reachable here. */}
-      {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
       {listDialog}
       <AlertDialog open={!!listToDelete} onOpenChange={(open) => !open && setListToDelete(null)}>
         <AlertDialogContent>
@@ -1621,43 +1742,64 @@ export function ShoppingListClient({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {lists.length === 0 ? (
-        <EmptyState
-          kind="lists"
-          title="No shopping lists yet"
-          description={canEdit ? 'Start with groceries, a hardware run or anything else you shop for.' : 'Lists your household creates will show up here.'}
-          action={canEdit ? { label: 'Create a list', icon: <PlusCircle className="mr-2 h-4 w-4" aria-hidden />, onClick: () => { setListToEdit(null); setIsListDialogOpen(true); } } : undefined}
-          className="rounded-xl border border-dashed"
-        />
-      ) : (
-        <>
-          {canEdit && (
-            <div className="mb-4 flex justify-end">
-              <Button onClick={() => { setListToEdit(null); setIsListDialogOpen(true); }}>
-                <PlusCircle className="mr-2" aria-hidden /> Create New List
-              </Button>
-            </div>
-          )}
-          <Stagger className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {lists.map(list => {
-              const morph = sharedId('list', list.id);
-              return (
-                <StaggerItem key={list.id}>
-                  <ListCard
-                    list={list}
-                    counts={counts[list.id]}
-                    style={morphStyle(listMorph.morphName === morph ? morph : null)}
-                    onSelect={(event) => listMorph.run(morph, () => onSelectList(list.id), { event })}
-                    onEdit={canEdit ? () => { setListToEdit(list); setIsListDialogOpen(true); } : undefined}
-                    onDelete={canDelete ? () => setListToDelete(list) : undefined}
-                  />
-                </StaggerItem>
-              );
-            })}
-          </Stagger>
-        </>
-      )}
+      {/* An Undo from a list that was open a moment ago stays reachable here (the overview places it). */}
+      <ShoppingOverview
+        lists={lists}
+        canEdit={canEdit}
+        grocery={overviewList ? {
+          list: overviewList,
+          groceries: overviewChoice.groceries,
+          onPick: (listId) => {
+            if (!householdId) return;
+            setPickedGrocery({ householdId, listId });
+            rememberRecentGrocery(browserStorage(), householdId, listId);
+            setRecentGroceryId(listId);
+          },
+          items: listItems,
+          groups: overviewGroups,
+          loading: itemsState.status === 'loading' || categoriesState.status === 'loading' || Boolean(overviewAssigned?.waitForStore),
+          fromCache: itemsState.fromCache,
+          hasPendingWrites: itemsState.hasPendingWrites,
+          store: overviewAssigned?.store ?? null,
+          attributionFor,
+          // The page's one Barcode Library listener, as the open list's rows use it.
+          photoFor,
+          // Rows show only once loaded; a click racing a list switch is dropped.
+          onToggle: (item) => {
+            if (writeReadyFor(overviewList.id) && listItemsRef.current.some((entry) => entry.id === item.id)) void toggleItemStatus(item, overviewList);
+          },
+          writeWait: writeWaitFor(overviewList.id),
+          onQuickAdd: (entries) => onQuickAdd(entries, overviewList),
+          onOpen: () => onSelectList(overviewList.id),
+        } : null}
+        groceryWaiting={overviewChoice.waiting}
+        uid={uid}
+        memberNames={memberNames}
+        localOpIds={new Set([...localTicks.opIds, ...localPurchaseOpsRef.current, ...undoEntries.map((entry) => entry.opId)])}
+        selfKnown={localTicks.reliable && !localTicksWriteFailed()}
+        now={now}
+        expiring={pantryItems && onOpenPantryItem && onOpenPantry
+          ? <ExpiringChips items={pantryItems} onOpenItem={onOpenPantryItem} onOpenPantry={onOpenPantry} />
+          : undefined}
+        snackbarEntries={snackbarEntries}
+        onCreateList={openCreateList}
+        renderListCard={(list, { compact }) => {
+          const morph = sharedId('list', list.id);
+          return (
+            <StaggerItem key={list.id}>
+              <ListCard
+                list={list}
+                compact={compact}
+                counts={counts[list.id]}
+                style={morphStyle(listMorph.morphName === morph ? morph : null)}
+                onSelect={(event) => listMorph.run(morph, () => onSelectList(list.id), { event })}
+                onEdit={canEdit ? () => { setListToEdit(list); setIsListDialogOpen(true); } : undefined}
+                onDelete={canDelete ? () => setListToDelete(list) : undefined}
+              />
+            </StaggerItem>
+          );
+        }}
+      />
     </>
   );
 }

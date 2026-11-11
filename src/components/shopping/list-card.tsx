@@ -28,6 +28,7 @@ export function ListCard({
   onEdit,
   onDelete,
   style,
+  compact = false,
 }: {
   list: ShoppingList;
   counts?: ListCounts;
@@ -35,6 +36,8 @@ export function ListCard({
   onEdit?: () => void;
   onDelete?: () => void;
   style?: CSSProperties;
+  /** The overview's rail (S8a): tighter, one line of description (all of it in the peek). */
+  compact?: boolean;
 }) {
   const tint = listTint(list);
   // Overlays close (the menu) or are not offered (the peek) while the tab is hidden.
@@ -67,7 +70,7 @@ export function ListCard({
   );
 
   return (
-    <div style={style} data-testid={`list-card-${list.id}`} className="glow-card flex h-full flex-col justify-between gap-4 rounded-xl border bg-card p-5 text-card-foreground shadow-raised">
+    <div style={style} data-testid={`list-card-${list.id}`} className={cn('glow-card flex h-full flex-col justify-between rounded-xl border bg-card text-card-foreground shadow-raised', compact ? 'gap-3 p-4' : 'gap-4 p-5')}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl', tint.classes.softChip)}>
@@ -75,7 +78,7 @@ export function ListCard({
           </span>
           <div className="min-w-0">
             <h2 className="break-words font-headline text-lg font-semibold leading-tight">{list.name}</h2>
-            {list.description && <p className="mt-0.5 line-clamp-2 text-sm text-muted-foreground">{list.description}</p>}
+            {list.description && <p className={cn('mt-0.5 text-sm text-muted-foreground', compact ? 'line-clamp-1' : 'line-clamp-2')}>{list.description}</p>}
           </div>
         </div>
         {(onEdit || onDelete) && (

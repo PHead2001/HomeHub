@@ -248,6 +248,7 @@ describe('yearly chore stats re-key', () => {
       names: { [choreStatsMemberKey('uid-sam')]: 'Sam Member', [choreStatsMemberKey(leeIdentity)]: 'Lee', [goneKey]: 'Gil' },
       moved: 2,
       unknown: 1,
+      removeAliases: false,
     });
     // Nothing left that is derived from an email, and a second run does nothing.
     const after = { ...data, byAssignee: (plan as { byAssignee: Record<string, number> }).byAssignee, names: (plan as { names: Record<string, string> }).names };
@@ -263,8 +264,11 @@ describe('yearly chore stats re-key', () => {
     const gone = choreStatsAssigneeKey('gone@example.test');
     const data = { byAssignee: { [gone]: 6 }, names: { [gone]: 'Gil' }, aliases: { 'uid-gil': gone } };
     assert.deepEqual(statsRekeyPlan(data, new Map(), k => unknownLegacyKey('s', k)), {
-      kind: 'rekey', byAssignee: { [choreStatsMemberKey('uid-gil')]: 6 }, names: { [choreStatsMemberKey('uid-gil')]: 'Gil' }, moved: 1, unknown: 0,
+      kind: 'rekey', byAssignee: { [choreStatsMemberKey('uid-gil')]: 6 }, names: { [choreStatsMemberKey('uid-gil')]: 'Gil' }, moved: 1, unknown: 0, removeAliases: true,
     });
+    // The alias itself is removed with it; an alias-only document is not clean either, and a re-run is.
+    assert.deepEqual(statsRekeyPlan({ aliases: { 'uid-gil': gone } }, new Map()), { kind: 'rekey', byAssignee: {}, names: {}, moved: 0, unknown: 0, removeAliases: true });
+    assert.deepEqual(statsRekeyPlan({ byAssignee: { [choreStatsMemberKey('uid-gil')]: 6 }, names: {} }, new Map()), { kind: 'clean' });
     // Upkeep and Home Wrapped fold it the same way.
     assert.deepEqual(foldLegacyStatsKeys(readChoreStats(data, 2026)).byAssignee, { [choreStatsMemberKey('uid-gil')]: 6 });
     // The scrub's identity for that email is the aliased uid, over any other evidence.
@@ -278,7 +282,7 @@ describe('yearly chore stats re-key', () => {
     // A label without a count still moves.
     const legacy = choreStatsAssigneeKey('sam@example.test');
     const key = choreStatsMemberKey(unknownLegacyKey('s', legacy));
-    assert.deepEqual(statsRekeyPlan({ names: { [legacy]: 'Sam' } }, new Map(), k => unknownLegacyKey('s', k)), { kind: 'rekey', byAssignee: {}, names: { [key]: 'Sam' }, moved: 0, unknown: 1 });
+    assert.deepEqual(statsRekeyPlan({ names: { [legacy]: 'Sam' } }, new Map(), k => unknownLegacyKey('s', k)), { kind: 'rekey', byAssignee: {}, names: { [key]: 'Sam' }, moved: 0, unknown: 1, removeAliases: false });
   });
 
   test('the script and upkeep fold a member the same way', () => {

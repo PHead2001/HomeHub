@@ -97,11 +97,13 @@ export function addFormerLegacyKeys(byLegacy, emails, identityOf) {
  *   uid's key.
  * @param {(legacyKey: string) => string} [unknownKeyOf] Identity for any other
  *   legacy key (`unknownLegacyKey`); without it such keys are left in place.
- * @returns {{ kind: 'clean' } | { kind: 'rekey', byAssignee: Record<string, number>, names: Record<string, string>, moved: number, unknown: number }}
- *   - `clean`: no legacy key that this call moves;
+ * @returns {{ kind: 'clean' } | { kind: 'rekey', byAssignee: Record<string, number>, names: Record<string, string>, moved: number, unknown: number, removeAliases: boolean }}
+ *   - `clean`: no legacy key that this call moves and no `aliases` field;
  *   - `rekey`: the new `byAssignee` and `names` maps: each moved legacy key's
  *     count is added to its target key and its label kept unless the target has
- *     one. `moved` counts keys moved through `byLegacy`, `unknown` the others.
+ *     one. `moved` counts keys moved through `byLegacy` or an alias, `unknown` the
+ *     others; `removeAliases`: the document's `aliases` field (email-derived keys,
+ *     readable by everyone who sees chores) is deleted in the same write.
  *   Running it again on its own output finds nothing to do.
  */
 export function statsRekeyPlan(data, byLegacy, unknownKeyOf) {
@@ -118,7 +120,9 @@ export function statsRekeyPlan(data, byLegacy, unknownKeyOf) {
   };
   const legacy = [...new Set([...Object.keys(counts), ...Object.keys(labels)])]
     .filter(key => isLegacyStatsKey(key) && targetOf(key)).sort();
-  if (legacy.length === 0) return { kind: 'clean' };
+  // A departure alias holds an email-derived key: once its bucket is folded it is removed.
+  const removeAliases = Boolean(data && 'aliases' in data);
+  if (legacy.length === 0 && !removeAliases) return { kind: 'clean' };
   const moving = new Set(legacy);
   const byAssignee = Object.fromEntries(Object.entries(counts).filter(([key]) => !moving.has(key)));
   const names = Object.fromEntries(Object.entries(labels).filter(([key]) => !moving.has(key)));
@@ -131,5 +135,5 @@ export function statsRekeyPlan(data, byLegacy, unknownKeyOf) {
     if (typeof counts[key] === 'number') byAssignee[target] = (byAssignee[target] ?? 0) + counts[key];
     if (typeof labels[key] === 'string' && !(target in names)) names[target] = labels[key];
   }
-  return { kind: 'rekey', byAssignee, names, moved, unknown };
+  return { kind: 'rekey', byAssignee, names, moved, unknown, removeAliases };
 }

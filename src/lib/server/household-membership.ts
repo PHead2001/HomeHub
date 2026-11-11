@@ -4,9 +4,7 @@ import { randomInt } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { normalizeInviteCode } from '@/lib/invite-codes';
-import { choreStatsAssigneeKey } from '@functions/shared/ids';
-import { choreStatsDocId } from '@functions/shared/chore-stats';
-import { localDay, safeTimeZone } from '@functions/shared/calendar';
+import { foldLegacyStatsKeys, readChoreStats } from '@functions/shared/chore-stats';
 import {
   canAssignRole,
   canEditPermissions,
@@ -323,31 +321,32 @@ const unassignChoreFields = (): FirebaseFirestore.UpdateData<FirebaseFirestore.D
 });
 
 /**
- * A departing person's yearly chore stats identity: their completions were
- * counted under `choreStatsAssigneeKey(email)` while they were a member, and
- * once their membership and contact documents are gone their uid can no longer
- * be resolved to that email. `aliases.<uid>` in the stats documents of this
- * and last year keeps crediting it to the same key (`creditedStatsKey`), so
- * their score is one bucket before and after they leave. The alias holds no
- * email. The years are the household's (`timeZone`, defaulted by
- * `safeTimeZone` exactly as upkeep's `completionYear` and Home Wrapped
- * do): a completion of theirs still stored is in the past and at most 90 days
- * old, so its stats year is this local year or the one before; next year can
- * receive none of theirs (they no longer complete chores here).
+ * A departing person's yearly chore stats: stats documents written before
+ * member privacy release D may still count them under their email-derived
+ * legacy key (`choreStatsAssigneeKey(email)`). Once their membership and
+ * contact documents are gone no one can match that key to them any more, so
+ * the departure folds it into their uid key (`choreStatsMemberKey(uid)`,
+ * `foldLegacyStatsKeys`) in every stats document of the household, in the
+ * same transaction. Their completions still stored are credited by uid
+ * (`creditedPerson`), so they stay one score. Nothing derived from the email
+ * is written (no departure alias, unlike release C).
+ * @param statsSnap The household's stats documents, read in this transaction.
  */
-const keepStatsIdentity = (
+const foldDepartingStatsKey = (
   transaction: FirebaseFirestore.Transaction,
-  householdRef: FirebaseFirestore.DocumentReference,
+  statsSnap: FirebaseFirestore.QuerySnapshot,
   uid: string,
   email: string | null | undefined,
-  now: Date,
-  timeZone: unknown,
 ) => {
   if (!uid || typeof email !== 'string' || !email.trim()) return;
-  const key = choreStatsAssigneeKey(email);
-  const year = Number(localDay(now, safeTimeZone(typeof timeZone === 'string' ? timeZone : undefined)).slice(0, 4));
-  for (const statsYear of [year - 1, year]) {
-    transaction.set(householdRef.collection('stats').doc(choreStatsDocId(statsYear)), { aliases: { [uid]: key } }, { merge: true });
+  for (const statsDoc of statsSnap.docs) {
+    const year = Number(statsDoc.id.replace(/^chores-/, ''));
+    if (!/^chores-\d{4}$/.test(statsDoc.id)) continue;
+    const before = readChoreStats(statsDoc.data(), year);
+    const after = foldLegacyStatsKeys({ ...before, aliases: undefined }, [{ uid, email }]);
+    if (JSON.stringify(after.byAssignee) === JSON.stringify(before.byAssignee) &&
+      JSON.stringify(after.names) === JSON.stringify(before.names)) continue;
+    transaction.update(statsDoc.ref, { byAssignee: after.byAssignee, names: after.names });
   }
 };
 
@@ -369,7 +368,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
   const householdRef = adminDb.collection('households').doc(householdId);
   const memberRef = householdRef.collection('members').doc(caller.uid);
   await adminDb.runTransaction(async transaction => {
-    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers] = await Promise.all([
+    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
       transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email)),
@@ -377,6 +376,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
       transaction.get(householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', caller.uid)),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
+      transaction.get(householdRef.collection('stats')),
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, caller.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, caller.email);
@@ -388,7 +388,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
-    keepStatsIdentity(transaction, householdRef, caller.uid, caller.email, now, householdSnap.get('timeZone'));
+    foldDepartingStatsKey(transaction, statsSnap, caller.uid, caller.email);
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
@@ -916,13 +916,14 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
       : Promise.resolve(null);
     const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
-    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap] = await Promise.all([
+    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap, statsSnap] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
       byEmail('chores'),
       byUid('chores'),
       byEmail('chore-templates'),
       byUid('chore-templates'),
       transaction.get(memberContactRef(context.householdRef, target.uid)),
+      transaction.get(context.householdRef.collection('stats')),
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, target.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
@@ -932,7 +933,7 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
     // The email upkeep credited them by: the contact document's, else the record's.
-    if (!denied) keepStatsIdentity(transaction, context.householdRef, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email, now, context.household.timeZone);
+    if (!denied) foldDepartingStatsKey(transaction, statsSnap, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email);
     transaction.update(context.householdRef, {
       ...legacyMemberEmailRemoval(context.household, target.email),
       updatedAt: iso,
