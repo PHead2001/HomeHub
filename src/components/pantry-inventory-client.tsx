@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
-import type { PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
+import type { PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { auth } from '@/lib/firebase';
@@ -18,11 +18,10 @@ import { expiryStateForDays, productPhotoForName } from '@/lib/shopping/pantry';
 import { recipeProductKeys } from '@/lib/shopping/recipe';
 import { readRecentList, rememberRecentList } from '@/lib/shopping/recent-list';
 import { pluralize } from '@/lib/shopping/items';
-import { useLivePantry } from '@/lib/shopping/live';
 import { pantryScanPrefill } from '@/lib/shopping/pantry-scan';
 import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import { useOnTabDeactivate } from './shopping/tab-activity';
-import { justOpened } from '@/lib/shopping/live-state';
+import { justOpened, type LiveState } from '@/lib/shopping/live-state';
 import { DURATION, EASE } from '@/lib/motion';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
@@ -812,7 +811,17 @@ type DeleteTarget = { name: string; ids: string[] };
 /** One package change of a used-up tap, kept for its Undo. */
 type PackageChange = { batch: PantryBatch; delta: number };
 
-export function PantryInventoryClient() {
+export function PantryInventoryClient({
+  pantryState,
+  focusItemId = null,
+  onFocusHandled,
+}: {
+  /** The page's pantry listener (shared with the Shopping overview's expiring chips). */
+  pantryState: LiveState<PantryItem[]>;
+  /** A pantry batch to open (an expiring chip on the Shopping overview, SH-11c). */
+  focusItemId?: string | null;
+  onFocusHandled?: () => void;
+}) {
   const { currentUser, household, permissions } = useAuth();
   const { toast, toastError } = useToast();
   const canEdit = Boolean(permissions['shopping.edit']);
@@ -826,7 +835,7 @@ export function PantryInventoryClient() {
   // Live (SH-1c): one listener on the pantry, so another member's additions, moves
   // and deletions show without a reload, and this device's own writes show at once
   // (a rejected one is rolled back in the listener). No re-read after a write.
-  const pantryState = useLivePantry(householdId);
+  // The listener itself is the page's (ShoppingCenterClient), shared with the overview's chips.
   const items = pantryState.value;
   const loading = pantryState.status === 'loading';
   // Pantry v2: every document is read as a batch (legacy documents derive their
@@ -1197,6 +1206,16 @@ export function PantryInventoryClient() {
     setItemToEdit(batch);
     setIsItemDialogOpen(true);
   };
+
+  // An expiring chip on the Shopping overview opens this tab on its product's
+  // soonest-expiring batch (the chip carries that batch's id): its edit dialog for
+  // members who can edit, the tab alone otherwise or when the batch is gone or used up.
+  useEffect(() => {
+    if (!focusItemId || !tabActive || loading) return;
+    const batch = visibleBatches.find((entry) => entry.id === focusItemId);
+    if (batch && canEdit) openEditDialog(batch);
+    onFocusHandled?.();
+  });
 
   const openAddDialog = () => {
     setItemToEdit(null);
