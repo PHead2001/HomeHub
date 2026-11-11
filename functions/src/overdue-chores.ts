@@ -51,6 +51,10 @@ const storedState = (
     snap.get("lastPushDay") : null,
   nearExpiry: ctx.nearExpiry(snap.get("expiresAt") as Timestamp | undefined),
   seenByRun: ctx.seenByRun(snap.updateTime as Timestamp | undefined),
+  total: typeof snap.get("overdueTotal") === "number" ?
+    snap.get("overdueTotal") : null,
+  overflowFrom: typeof snap.get("overflowFrom") === "string" ?
+    snap.get("overflowFrom") : null,
 } : null;
 
 export type OverdueRunInput = {
@@ -87,6 +91,7 @@ export const syncOverdueNotification = async (
   const {db, house, now, ts} = ctx;
   const ref = house.collection("notifications").doc(overdueNotificationId(uid));
   const tasks = new Map(view.chores.map((c) => [c.id, c.task]));
+  const overdueDays = new Map(view.chores.map((c) => [c.id, c.day]));
   const decide = (
     snap: DocumentSnapshot,
     legacy: StoredOverdue | null = null,
@@ -99,6 +104,7 @@ export const syncOverdueNotification = async (
     reminderSentNow: run.reminderSentNow,
     reminderPending: run.reminderPending,
     existingChoreIds: run.existingChoreIds,
+    overdueDays,
   });
   // A plain read first: most runs change nothing and need no transaction.
   if (decide(await ref.get()).action === "none" && !run.sweepLegacy) {
@@ -125,7 +131,10 @@ export const syncOverdueNotification = async (
     const decision = decide(snap, legacyState);
     if (decision.action === "none") return "unchanged";
     if (decision.action === "resolve") {
-      tx.update(ref, {resolvedAt: ts(now), overdueChoreIds: []});
+      tx.update(ref, {
+        resolvedAt: ts(now), overdueChoreIds: [], overdueTotal: 0,
+        overflowFrom: null,
+      });
       return "resolved";
     }
     const fields: Record<string, unknown> = {
@@ -140,6 +149,8 @@ export const syncOverdueNotification = async (
       overdueChoreIds: decision.choreIds,
       notifiedChoreIds: decision.notifiedChoreIds,
       lastPushDay: decision.lastPushDay,
+      overdueTotal: decision.total,
+      overflowFrom: decision.overflowFrom,
     };
     if (decision.create) {
       // Taken over from the dated document unless there is news: the

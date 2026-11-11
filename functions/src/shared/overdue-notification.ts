@@ -68,6 +68,13 @@ export type StoredOverdue = {
    * or from the person, so this run leaves the document alone.
    */
   seenByRun: boolean;
+  /** Overdue chores counted in the message (null on older documents). */
+  total: number | null;
+  /**
+   * When the list was capped: the due day of its oldest listed chore. Chores
+   * due on or before it may have been counted without being listed.
+   */
+  overflowFrom: string | null;
 };
 
 /**
@@ -87,6 +94,7 @@ export const legacyOverdueState = (
   return {
     resolved: false, overdueChoreIds: told, notifiedChoreIds: told,
     lastPushDay: legacyDay, nearExpiry: false, seenByRun: true,
+    total: null, overflowFrom: null,
   };
 };
 
@@ -122,6 +130,8 @@ export type OverdueInput = {
   reminderSentNow: boolean;
   /** Today's daily reminder is still to come and will carry the count. */
   reminderPending: boolean;
+  /** Due day of each overdue chore (decides news past the list cap). */
+  overdueDays?: ReadonlyMap<string, string>;
 };
 
 export type OverdueDecision =
@@ -139,6 +149,8 @@ export type OverdueDecision =
     choreIds: string[];
     /** Overdue chores in the message (may exceed the listed ones). */
     total: number;
+    /** Due day of the oldest listed chore when the list is capped. */
+    overflowFrom: string | null;
     notifiedChoreIds: string[];
     lastPushDay: string | null;
     /** Send a push now. */
@@ -170,9 +182,20 @@ export const decideOverdue = (input: OverdueInput): OverdueDecision => {
   // only shrink), unless the daily reminder just announced it.
   const known = new Set(open ? base.overdueChoreIds : []);
   const announce = input.alertsAllowed || input.reminderSentNow;
+  const dayOf = (id: string) => input.overdueDays?.get(id);
+  // Counted earlier without being listed (past the cap): not new.
+  const unlisted = (id: string) => {
+    const day = dayOf(id);
+    return Boolean(open && base.overflowFrom && day !== undefined &&
+      day <= base.overflowFrom);
+  };
   const all = [...new Set(input.overdueIds)]
-    .filter((id) => announce || known.has(id));
-  const current = all.slice(0, OVERDUE_LIST_CAP).sort();
+    .filter((id) => announce || known.has(id) || unlisted(id));
+  const capped = all.slice(0, OVERDUE_LIST_CAP);
+  const current = [...capped].sort();
+  // Callers list newest due day first, so the last listed is the oldest.
+  const overflowFrom = all.length > OVERDUE_LIST_CAP ?
+    dayOf(capped[capped.length - 1]) ?? null : null;
   if (current.length === 0) {
     return stored && open ? {action: "resolve"} : {action: "none"};
   }
@@ -183,7 +206,17 @@ export const decideOverdue = (input: OverdueInput): OverdueDecision => {
   const kept = (base?.notifiedChoreIds ?? [])
     .filter((id) => input.existingChoreIds.has(id));
   const notified = new Set([...kept, ...(open ? base.overdueChoreIds : [])]);
-  const fresh = current.some((id) => !notified.has(id));
+  // A chore past the cap is counted, never listed, so never news on its own
+  // (a newly overdue chore is due most recently and always listed). One
+  // that moves into the list later was counted before: due on or before the
+  // stored boundary, so not news either.
+  const isNew = (id: string) => {
+    if (notified.has(id)) return false;
+    const day = dayOf(id);
+    return !(base?.overflowFrom && day !== undefined &&
+      day <= base.overflowFrom);
+  };
+  const fresh = current.some(isNew);
   // Listed chores are always remembered; only the history is bounded.
   const history = kept.filter((id) => !listed.has(id))
     .slice(-NOTIFIED_HISTORY_CAP);
@@ -199,7 +232,8 @@ export const decideOverdue = (input: OverdueInput): OverdueDecision => {
   const changed = stored === null || !open ||
     !sameIds(current, stored.overdueChoreIds) ||
     !sameIds(remembered, stored.notifiedChoreIds) ||
-    lastPushDay !== stored.lastPushDay;
+    lastPushDay !== stored.lastPushDay ||
+    all.length !== stored.total || overflowFrom !== stored.overflowFrom;
   const redate = reopen || Boolean(stored?.nearExpiry);
   if (!fresh && !changed && !redate) return {action: "none"};
   return {
@@ -209,6 +243,7 @@ export const decideOverdue = (input: OverdueInput): OverdueDecision => {
     reopen,
     choreIds: current,
     total: all.length,
+    overflowFrom,
     notifiedChoreIds: remembered,
     lastPushDay,
     push,

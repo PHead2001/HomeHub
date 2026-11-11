@@ -231,6 +231,32 @@ describe('overdue chores notification (NO-1)', () => {
     assert.deepEqual(await choreReminders(), ['o1-overdue']);
   });
 
+  test('past the 500-chore list, completing an unlisted chore updates the count in place', async () => {
+    // 'sweep' (Nov 4) plus 500 more, each due a day earlier: 501 overdue, the oldest unlisted.
+    const batch = adminDb.batch();
+    for (let i = 0; i < 500; i++) {
+      const day = new Date(Date.UTC(2026, 10, 3) - i * 86400000).toISOString().slice(0, 10);
+      batch.set(house().collection('chores').doc(`bulk-${String(i).padStart(3, '0')}`), {
+        task: `Bulk ${i}`, assignedToUid: 'o1', assignedToEmail: EMAIL, originalDueDate: day, isCompleted: false,
+      });
+    }
+    await batch.commit();
+    await run(at('2026-11-05', 8));
+    let data = (await stable().get()).data()!;
+    assert.equal(data.message, 'You have 501 overdue chores.');
+    assert.equal(data.overdueTotal, 501);
+    assert.equal(data.overdueChoreIds.length, 500);
+    assert.equal(data.overdueChoreIds.includes('bulk-499'), false, 'the oldest is counted, not listed');
+    await stable().update({ 'dismissedBy.o1': { at: 'x' } });
+    await house().collection('chores').doc('bulk-499').update({ isCompleted: true });
+    await run(at('2026-11-06', 8));
+    data = (await stable().get()).data()!;
+    assert.equal(data.message, 'You have 500 overdue chores.');
+    assert.equal(data.overdueTotal, 500);
+    assert.deepEqual(data.dismissedBy, { o1: { at: 'x' } }, 'not news');
+    assert.equal(data.renotifyAt, undefined);
+  });
+
   test('a household being deleted gets no overdue notification', async () => {
     await house().update({ deletingAt: Timestamp.now() });
     await run(at('2026-11-05', 8));

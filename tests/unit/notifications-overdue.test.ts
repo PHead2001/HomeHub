@@ -9,10 +9,13 @@ import { pushOnCreate, pushOnUpdate } from '../../functions/src/push-policy';
 import { recurringChoreId } from '../../functions/src/shared/ids';
 
 const TODAY = '2026-11-11';
-const stored = (fields: Partial<StoredOverdue> = {}): StoredOverdue => ({
-  resolved: false, overdueChoreIds: ['a'], notifiedChoreIds: ['a'], lastPushDay: '2026-11-10',
-  nearExpiry: false, seenByRun: true, ...fields,
-});
+const stored = (fields: Partial<StoredOverdue> = {}): StoredOverdue => {
+  const listed = fields.overdueChoreIds ?? ['a'];
+  return {
+    resolved: false, overdueChoreIds: listed, notifiedChoreIds: ['a'], lastPushDay: '2026-11-10',
+    nearExpiry: false, seenByRun: true, total: listed.length, overflowFrom: null, ...fields,
+  };
+};
 const EXISTING = new Set(['a', 'b', 'c']);
 const decide = (fields: Partial<OverdueInput>) => decideOverdue({
   stored: null, overdueIds: [], today: TODAY, alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: EXISTING, ...fields,
@@ -20,7 +23,7 @@ const decide = (fields: Partial<OverdueInput>) => decideOverdue({
 const after = (d: ReturnType<typeof decideOverdue>, prev: StoredOverdue | null): StoredOverdue | null => {
   if (d.action === 'none') return prev;
   if (d.action === 'resolve') return { ...prev!, resolved: true, overdueChoreIds: [] };
-  return { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
+  return { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true, total: d.total, overflowFrom: d.overflowFrom };
 };
 
 describe('overdue notification decision (NO-1)', () => {
@@ -148,7 +151,7 @@ describe('overdue notification decision (NO-1)', () => {
         const d = decideOverdue({ stored: state, overdueIds: ['a'], today: `2026-11-${day}`, alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: EXISTING });
         if (d.action !== 'write') continue;
         if (d.push) pushes++;
-        state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
+        state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true, total: d.total, overflowFrom: d.overflowFrom };
       }
     }
     assert.equal(pushes, 1);
@@ -217,7 +220,7 @@ describe('overdue notification decision (NO-1)', () => {
           if (d.push) pushes++;
           assert.equal(d.total, size);
           assert.ok(d.choreIds.length <= OVERDUE_LIST_CAP);
-          state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
+          state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true, total: d.total, overflowFrom: d.overflowFrom };
         }
       }
       assert.equal(pushes, 1);
@@ -236,6 +239,74 @@ describe('overdue notification decision (NO-1)', () => {
     assert.equal(next.push, true);
     assert.ok(next.choreIds.includes('newest'));
     assert.equal(next.total, OVERDUE_LIST_CAP + 1);
+  });
+
+  describe('past the list cap: a stored total', () => {
+    // n chores, newest due day first (as overdueChoresFor orders them), each a day older than the last.
+    const make = (n: number) => {
+      const ids = Array.from({ length: n }, (_, i) => `k-${String(i).padStart(4, '0')}`);
+      const days = new Map(ids.map((id, i) => [id, new Date(Date.UTC(2026, 10, 10) - i * 86400000).toISOString().slice(0, 10)]));
+      return { ids, days };
+    };
+    const run = (state: StoredOverdue | null, ids: string[], days: Map<string, string>, today = TODAY) => decideOverdue({
+      stored: state, overdueIds: ids, overdueDays: days, today, alertsAllowed: true, reminderSentNow: false, reminderPending: false,
+      existingChoreIds: new Set(days.keys()),
+    });
+
+    test('501 -> 500 by completing an unlisted chore updates the count quietly', () => {
+      const { ids, days } = make(501);
+      const first = run(null, ids, days);
+      assert.equal(first.action === 'write' && first.total, 501);
+      assert.equal(first.action === 'write' && first.overflowFrom, days.get(ids[OVERDUE_LIST_CAP - 1]));
+      const state = after(first, null);
+      const d = run(state, ids.slice(0, 500), days, '2026-11-12');
+      assert.equal(d.action, 'write');
+      if (d.action !== 'write') return;
+      assert.equal(d.total, 500);
+      assert.equal(d.push, false);
+      assert.equal(d.fresh, false, 'read and dismissed state kept');
+      assert.equal(d.overflowFrom, null);
+    });
+
+    test('500 -> 501 with a new chore outside the list: counted quietly, never re-announced, not news when it moves into the list', () => {
+      const { ids, days } = make(501);
+      const listed = ids.slice(0, 500);
+      let state = after(run(null, listed, days), null);
+      // The oldest chore joins (for example reassigned to this person): past the cap.
+      const grown = run(state, ids, days, '2026-11-12');
+      assert.equal(grown.action, 'write');
+      if (grown.action !== 'write') return;
+      assert.equal(grown.total, 501);
+      assert.equal(grown.push, false);
+      assert.equal(grown.fresh, false);
+      state = after(grown, state);
+      assert.deepEqual(run(state, ids, days, '2026-11-13'), { action: 'none' }, 'not re-announced the next day');
+      // A listed chore is completed: the unlisted one moves into the list, already counted.
+      const moved = run(state, ids.slice(1), days, '2026-11-14');
+      assert.equal(moved.action === 'write' && !moved.push && !moved.fresh && moved.choreIds.includes(ids[500]), true);
+      // A chore that is newly overdue (due yesterday) is still news.
+      const fresh = new Map(days).set('newest', '2026-11-13');
+      const news = run(after(moved, state), ['newest', ...ids.slice(1)], fresh, '2026-11-14');
+      assert.equal(news.action === 'write' && news.fresh && news.total === 501, true);
+    });
+
+    test('600 unchanged overdue chores stay quiet across days', () => {
+      const { ids, days } = make(600);
+      let state: StoredOverdue | null = null;
+      let pushes = 0;
+      let writes = 0;
+      for (let day = 11; day <= 16; day++) {
+        for (let i = 0; i < 3; i++) {
+          const d = run(state, ids, days, `2026-11-${day}`);
+          if (d.action !== 'write') continue;
+          writes++;
+          if (d.push) pushes++;
+          state = after(d, state);
+        }
+      }
+      assert.equal(pushes, 1);
+      assert.equal(writes, 1);
+    });
   });
 
   describe('daily reminder coverage', () => {
