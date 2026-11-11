@@ -169,6 +169,18 @@ export function dropJournal(storage: JournalStorage | null, opId: string, now: n
   return next;
 }
 
+/** Removes every entry of `householdId` (this device no longer shows that household, SL-3). */
+export function forgetHouseholdJournal(storage: JournalStorage | null, householdId: string, now: number): UndoEntry[] {
+  const next = readJournal(storage, now).filter((entry) => entry.householdId !== householdId);
+  writeJournal(storage, next);
+  return next;
+}
+
+/** Removes the whole journal (sign-out). */
+export function clearJournal(storage: JournalStorage | null): void {
+  writeJournal(storage, []);
+}
+
 /** The entries this signed-in member may be offered in this household. */
 export function journalFor(entries: readonly UndoEntry[], uid: string | null | undefined, householdId: string | null | undefined): UndoEntry[] {
   if (!uid || !householdId) return [];

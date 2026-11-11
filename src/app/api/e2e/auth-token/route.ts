@@ -10,6 +10,8 @@ const ALLOWED_E2E_UIDS = new Set([
   "e2e-limited-uid",
   "e2e-legacy-uid",
   "e2e-household-b-owner-uid",
+  // Created and removed by tests/e2e/live-membership.spec.ts.
+  "e2e-live-member-uid",
 ]);
 const CUSTOM_TOKEN_AUDIENCE =
   "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit";

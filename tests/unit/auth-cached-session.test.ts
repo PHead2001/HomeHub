@@ -49,18 +49,17 @@ describe('repeat-visit fast path (H01)', () => {
     assert.match(source, /getDocFromCache\(/);
   });
 
-  it('never leaves the household loading: loading is set ahead only with a change that re-runs the load', () => {
+  it('never leaves the household loading: loading follows the live membership, never a flag set ahead', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
     const publish = source.slice(source.indexOf('const publishProfile = useCallback'), source.indexOf('}, []);', source.indexOf('const publishProfile = useCallback')));
     // Unchanged profile: nothing happens at all.
-    assert.match(publish, /if \(sameProfile\(shown, profile\)\) return;/);
-    // Loading is set in advance only when uid or householdId (household-effect dependencies) change.
-    assert.match(publish, /if \(shown\?\.uid !== profile\.uid \|\| \(shown\?\.householdId \?\? null\) !== \(profile\.householdId \?\? null\)\) setHouseholdLoading\(true\);/);
-    // Both server-profile paths (session restore and the sign-in handler) go through it, and no
-    // caller sets householdLoading(true) itself any more.
+    assert.match(publish, /if \(sameProfile\(profileRef\.current, next\)\) return;/);
+    // Both server-profile paths (session restore and the sign-in handler) go through it.
     assert.equal((source.match(/publishProfile\(userProfile\)/g) ?? []).length, 2);
-    const outside = source.replace(publish, '').replace(/const fetchHousehold = async[\s\S]*?fetchHousehold\(\);/, '');
-    assert.equal((outside.match(/setHouseholdLoading\(true\)/g) ?? []).length, 0);
+    // Loading is derived from the membership view (a pointer not watched yet is loading,
+    // see tests/unit/live-membership.test.ts); no flag can be left on.
+    assert.match(source, /const householdLoading = profile \? view\.phase === 'loading' : loading;/);
+    assert.equal((source.match(/setHouseholdLoading\(/g) ?? []).length, 0);
   });
 
   it('uses the cache only for the session restore, and survives the new-profile race', () => {
@@ -77,24 +76,17 @@ describe('repeat-visit fast path (H01)', () => {
     assert.equal((source.match(/await setDoc\(userDocRef, dataToSave\)/g) ?? []).length, 0);
   });
 
-  it('never lets a provisional profile or a superseded load clear the household', () => {
+  it('never lets a provisional profile or a superseded listener clear the household', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
-    const fetchHousehold = source.slice(source.indexOf('const fetchHousehold = async'), source.indexOf('fetchHousehold();'));
-    // Provisional profile: only the cached household is shown, then it returns, before any
-    // server read or the stale-household cleanup.
-    const provisional = fetchHousehold.indexOf('if (!profileConfirmed)');
-    assert.ok(provisional > 0);
-    assert.ok(fetchHousehold.indexOf('return;', provisional) < fetchHousehold.indexOf('loadMembership('));
-    assert.ok(fetchHousehold.indexOf('return;', provisional) < fetchHousehold.indexOf('clearStaleHousehold()'));
-    // Only a definite "not a member" (null), never a superseded load (undefined), clears it.
-    assert.match(fetchHousehold, /if \(member === null\) await clearStaleHousehold\(\);/);
-    // Each run is cancelled by the next, and a cancelled run neither writes nor updates state.
-    assert.match(source, /return \(\) => \{ active = false; \};/);
-    const clear = source.slice(source.indexOf('const clearStaleHousehold = async'), source.indexOf('const showCachedHousehold'));
-    assert.match(clear, /^const clearStaleHousehold = async \(\) => \{\s+if \(!active\) return;/);
-    assert.ok(clear.indexOf('if (!active) return;', clear.indexOf('loadData()')) < clear.indexOf('setDoc('));
-    const load = source.slice(source.indexOf('const loadMembership = async'), source.indexOf('const clearStaleHousehold'));
-    assert.equal((load.match(/if \(!active\) return undefined;/g) ?? []).length, 2);
+    // The stale-pointer cleanup waits for the server-confirmed profile, once per household.
+    assert.match(source, /const stalePointer = profileConfirmed && profileHouseholdId !== null && \(/);
+    const clear = source.slice(source.indexOf('const clearedPointer = useRef'), source.indexOf('const shownHousehold ='));
+    assert.match(clear, /if \(!stalePointer \|\| !email \|\| clearedPointer\.current === stalePointer\) return;/);
+    // Each listener is stopped by the next run, and answers for another household are ignored
+    // by the state machine (tests/unit/live-membership.test.ts).
+    assert.ok((source.match(/return \(\) => \{ stopped = true; stop\?\.\(\); \};/g) ?? []).length >= 3);
+    // The membership view shows an ended or stale membership as loading until the profile is confirmed.
+    assert.match(source, /membershipView\(membership, profileHouseholdId, profileConfirmed\)/);
   });
 
   it('builds the profile forms only from the server-confirmed profile', () => {

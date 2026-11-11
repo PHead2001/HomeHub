@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +25,24 @@ import {
   CardHeader,
   CardTitle,
 } from './ui/card';
+
+const NO_DATA = 'Nothing from it is shown on this device any more. You can create a household or join one with an invite code.';
+
+/** What the person is told when access ends (`membershipEnded.reason`). */
+const membershipEndedCopy = {
+  removed: {
+    title: "You're no longer in this household",
+    description: `An owner or admin removed you, or you left on another device. ${NO_DATA}`,
+  },
+  declined: {
+    title: 'Your request to join was declined',
+    description: `An owner or admin turned down your request. ${NO_DATA}`,
+  },
+  deleted: {
+    title: 'This household was deleted',
+    description: `The owner deleted the household and everything in it. ${NO_DATA}`,
+  },
+} as const;
 
 interface HouseholdManagerProps {
   children: ReactNode;
@@ -143,11 +161,55 @@ function JoinHouseholdForm({
 }
 
 export function HouseholdManager({ children }: HouseholdManagerProps) {
-  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
+  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, membershipEnded, dismissMembershipEnded, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
+  // Screens are keyed by household: moving from one household to another remounts every
+  // screen, so no screen state, listener or pending write of the previous household
+  // survives the switch. The first household of a page load keeps the initial key.
+  const [scope, setScope] = useState<{ householdId: string | null; key: number }>({ householdId: null, key: 0 });
+  const scopeHouseholdId = currentUser?.householdId ?? null;
+  if (scopeHouseholdId && scopeHouseholdId !== scope.householdId) {
+    setScope({ householdId: scopeHouseholdId, key: scope.householdId ? scope.key + 1 : scope.key });
+  }
   const [finishingDelete, setFinishingDelete] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+
+  // Access ended while this page was open (or since the last visit): the household's
+  // data is already gone from this device. Explain it once, then onboarding.
+  if (currentUser && membershipEnded) {
+    const copy = membershipEndedCopy[membershipEnded.reason];
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          hideClose
+        >
+          <DialogHeader>
+            <DialogTitle className="font-headline text-2xl text-center">{copy.title}</DialogTitle>
+            <DialogDescription className="text-center text-base">{copy.description}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-2">
+            <Button
+              onClick={() => {
+                dismissMembershipEnded();
+                if (pathname !== '/') router.replace('/');
+              }}
+            >
+              Continue
+            </Button>
+            <Button variant="link" className="text-primary" onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   if (currentUser && currentMember?.role === 'newuser' && pathname !== '/profile') {
     return (
@@ -262,7 +324,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
 
   // If user is not logged in, is still resolving household state, or has a household, show the main app.
   if (!currentUser || householdLoading || household !== null) {
-    return <>{children}</>;
+    return <Fragment key={scope.key}>{children}</Fragment>;
   }
 
   const handleCreate = async (name: string) => {

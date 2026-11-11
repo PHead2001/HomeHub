@@ -135,7 +135,8 @@ export function HouseholdManagementClient() {
     () => (canListInvites ? live.invites : sessionInvites.filter((invite) => invite.householdId === household?.id)),
     [canListInvites, household?.id, live.invites, sessionInvites],
   );
-  const householdDisplayName = live.name ?? household?.name ?? '';
+  // Live: the auth context listens to the household document.
+  const householdDisplayName = household?.name ?? '';
 
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState('');

@@ -25,6 +25,7 @@ import { MAX_CATEGORIZE_BATCH } from '@/ai/tasks/categorize-grocery-items';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { db, getLocalPersistence } from '@/lib/firebase';
 import { isBrowserOffline } from '@/lib/firestore-offline';
+import { onHouseholdForgotten } from '@/lib/auth/household-scope';
 import { buildShoppingListItem } from '@/lib/shopping-items';
 import type { ShoppingListItem } from '@/lib/types';
 import { mergeIntoNeededItem } from './item-transactions';
@@ -73,6 +74,11 @@ const remember = (householdId: string, name: string, category: string) => {
   memory.set(itemNameKey(name), category);
   sessionMemory.set(householdId, memory);
 };
+// A household this device no longer shows (SL-3) leaves nothing behind here.
+onHouseholdForgotten((householdId) => {
+  if (householdId === null) sessionMemory.clear();
+  else sessionMemory.delete(householdId);
+});
 
 // One batched call at a time per page: the server allows one in-flight request per
 // user and flow, so a second submission waits for the first instead of failing busy.

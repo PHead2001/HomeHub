@@ -124,8 +124,8 @@ export function ChoreChartClient() {
       return;
     }
     try {
-      const householdDocSnap = await getDoc(doc(db, 'households', currentUser.householdId));
-      if (!householdDocSnap.exists()) throw new Error('not-found');
+      // The household document itself is live in the auth context (no read here);
+      // these reads are refused unless this person is an approved member.
       // Assignees are the approved membership records: their public fields (name,
       // photo, role) are all this page shows. Housemates' profiles are never read.
       const membersSnap = await getDocs(collection(db, 'households', currentUser.householdId, 'members'));

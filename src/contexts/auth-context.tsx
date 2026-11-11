@@ -8,6 +8,7 @@ import {
   type ReactNode,
   useCallback,
   useMemo,
+  useReducer,
   useRef,
 } from 'react';
 import {
@@ -24,11 +25,25 @@ import { auth, firebaseEmulatorMode } from '@/lib/firebase-app';
 import { getMemberPermissions } from '@/lib/permissions';
 import { normalizeMember, sameProfile } from '@/lib/auth/cached-session';
 import { SESSION_HINT_KEY } from '@/lib/dashboard/session-hint';
-import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
+import { deviceStorage } from '@/lib/dashboard/house-snapshot';
+import { forgetHouseholdOnDevice } from '@/lib/auth/household-scope';
+import {
+  canWatchHousehold,
+  classifyListenerError,
+  initialMembershipState,
+  liveProfile,
+  membershipChangeNotice,
+  membershipReducer,
+  membershipView,
+  MEMBERSHIP_LOAD_TIMEOUT_MS,
+  type AccessEnd,
+  type NoticeSnapshot,
+} from '@/lib/auth/live-membership';
+import { keepListening } from '@/lib/shopping/live-state';
 import { pushSignOutGate, runPushSignOut } from '@/lib/push-tokens';
 import { hasPushSubscription } from '@/lib/service-worker';
 import { normalizeInviteCode } from '@/lib/invite-codes';
-import { memberProfileDiffers, pendingHouseholdView } from '@/lib/member-directory';
+import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
 import type {
@@ -82,6 +97,13 @@ interface AuthContextType {
   /** True when membership could not be loaded for an operational reason (offline, timeout). */
   householdLoadFailed: boolean;
   retryHouseholdLoad: () => void;
+  /**
+   * Set when access to a household ended while this session knew the membership
+   * (removed, a join request declined, or the household deleted). Its data is already
+   * gone from this device; `HouseholdManager` explains it until dismissed.
+   */
+  membershipEnded: AccessEnd | null;
+  dismissMembershipEnded: () => void;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
   /** `silent` skips the global loading state and the success toast (used for background preference sync). */
@@ -146,36 +168,34 @@ async function syncMemberProfile(householdId: string): Promise<void> {
 
 // --- Provider Component ---
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  // The latest user, readable synchronously inside the Auth listener.
-  const currentUserRef = useRef<User | null>(null);
-  useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  // The signed-in person's profile (`users/{email}`) as last read. The household pointer,
+  // role and overrides the app uses come from the live membership instead (`liveProfile`).
+  const [profile, setProfile] = useState<User | null>(null);
+  // The latest profile, readable synchronously inside the Auth listener.
+  const profileRef = useRef<User | null>(null);
+  useEffect(() => { profileRef.current = profile; }, [profile]);
 
-  const [household, setHousehold] = useState<Household | null>(null);
-  const [currentMember, setCurrentMember] = useState<HouseholdMember | null>(null);
+  const [membership, dispatchMembership] = useReducer(membershipReducer, initialMembershipState);
   const [loading, setLoading] = useState(true);
-  const [householdLoading, setHouseholdLoading] = useState(true);
   const [profileConfirmed, setProfileConfirmed] = useState(false);
-  // Household shown from the cache (by id), so the confirmed run doesn't flash back to loading.
-  const cachedHouseholdShown = useRef<string | null>(null);
+  // Bumped by "Try again" so every listener of the household is reopened.
+  const [listenAttempt, setListenAttempt] = useState(0);
   // The first Auth callback of a page load is the session restore: the only one the cache
   // fast path helps. Later callbacks (a sign-in on this page) keep the server-only path.
   const restoringSession = useRef(true);
 
-  // Publishes a profile from the server. The household effect owns `householdLoading`; it is
-  // set here in advance only when the uid or householdId changes (so the onboarding screen
-  // never flashes before that effect runs), which are exactly the changes that re-run the
-  // effect and end loading. An unchanged profile changes nothing, so loading can't be left on.
-  const publishProfile = useCallback((profile: User) => {
-    const shown = currentUserRef.current;
-    if (sameProfile(shown, profile)) return;
-    if (shown?.uid !== profile.uid || (shown?.householdId ?? null) !== (profile.householdId ?? null)) setHouseholdLoading(true);
-    currentUserRef.current = profile;
-    setCurrentUser(profile);
+  // Publishes a profile from the server; an unchanged profile changes nothing, so the
+  // listeners that depend on it are not reopened.
+  const publishProfile = useCallback((next: User) => {
+    if (sameProfile(profileRef.current, next)) return;
+    profileRef.current = next;
+    setProfile(next);
   }, []);
-  const [householdLoadFailed, setHouseholdLoadFailed] = useState(false);
-  const [householdLoadAttempt, setHouseholdLoadAttempt] = useState(0);
-  const retryHouseholdLoad = useCallback(() => setHouseholdLoadAttempt(attempt => attempt + 1), []);
+  const retryHouseholdLoad = useCallback(() => {
+    dispatchMembership({ type: 'retry' });
+    setListenAttempt(attempt => attempt + 1);
+  }, []);
+  const dismissMembershipEnded = useCallback(() => dispatchMembership({ type: 'dismissEnded' }), []);
 
   // On a device where someone was signed in, start loading the data layer (Firestore and
   // App Check) alongside Auth's session restore instead of after it. Signed-out visitors
@@ -250,7 +270,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       forcePasswordChange: false,
       householdId: null,
     };
-    
+
     const dataToSave = Object.fromEntries(
       Object.entries(newUserProfile).filter(([, value]) => value !== undefined && value !== null)
     ) as Partial<Omit<User, 'uid'>>;
@@ -260,162 +280,203 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return created;
 
   }, [toast]);
-  
 
-  // This effect runs when the householdId on the currentUser changes, or when the cached
-  // profile is confirmed by the server.
+  // --- Live membership (SL-3) ---------------------------------------------------------
+  // One listener per document for the whole app: the profile, the person's own membership
+  // record and (approved members only) the household document. Screens read them from
+  // this context and never open their own.
+  const uid = profile?.uid ?? null;
+  const email = profile?.email ?? null;
+  const profileHouseholdId = profile?.householdId ?? null;
+  const watchedHouseholdId = membership.householdId;
+
+  // The profile pointer chooses the household to watch.
   useEffect(() => {
-    // A newer run supersedes this one (the profile changed or was confirmed, or the provider
-    // unmounted): from then on this run neither updates state nor writes to the profile.
-    let active = true;
-    const cleanupLegacyInviteCode = async (householdData: Household, role: HouseholdMember['role']) => {
-      if (role !== 'owner' || !householdData.inviteCode) return;
+    dispatchMembership({ type: 'watch', householdId: profileHouseholdId });
+  }, [profileHouseholdId]);
+
+  // The profile itself, once the server has confirmed it: a pointer moved by the server
+  // (removal, a join or a new household on another device) reaches this session.
+  useEffect(() => {
+    if (!profileConfirmed || !email || !uid) return;
+    let stopped = false;
+    let stop: (() => void) | null = null;
+    void loadData().then(({ db, doc, onSnapshot }) => {
+      if (stopped) return;
+      stop = keepListening(({ healthy, failed }) => onSnapshot(
+        doc(db, 'users', email),
+        (snapshot) => {
+          healthy(snapshot.metadata.fromCache);
+          // A missing profile says nothing about membership; the next sign-in recreates it.
+          if (snapshot.exists()) publishProfile({ uid, ...snapshot.data() } as User);
+        },
+        (error) => {
+          console.warn('Profile listener stopped.', error instanceof Error ? error.message : String(error));
+          if (classifyListenerError(error) === 'transient') failed();
+        },
+      ));
+    });
+    return () => { stopped = true; stop?.(); };
+  }, [email, profileConfirmed, publishProfile, uid]);
+
+  // The person's own membership record: the only authority for access and permissions.
+  useEffect(() => {
+    if (!watchedHouseholdId || !uid) return;
+    const householdId = watchedHouseholdId;
+    let stopped = false;
+    let stop: (() => void) | null = null;
+    void loadData().then(({ db, doc, onSnapshot }) => {
+      if (stopped) return;
+      stop = keepListening(({ healthy, failed }) => onSnapshot(
+        doc(db, 'households', householdId, 'members', uid),
+        // Metadata changes too, so a server answer that matches the cache still confirms it.
+        { includeMetadataChanges: true },
+        (snapshot) => {
+          healthy(snapshot.metadata.fromCache);
+          dispatchMembership({
+            type: 'member',
+            householdId,
+            uid,
+            exists: snapshot.exists(),
+            data: snapshot.data(),
+            fromCache: snapshot.metadata.fromCache,
+            offline: typeof navigator !== 'undefined' && navigator.onLine === false,
+          });
+        },
+        (error) => {
+          const failure = classifyListenerError(error);
+          console.warn('Membership listener stopped.', error instanceof Error ? error.message : String(error));
+          dispatchMembership({ type: 'memberError', householdId, failure });
+          // A denial ends access; a network or other error keeps the last known state and retries.
+          if (failure === 'transient') failed();
+        },
+      ));
+    });
+    return () => { stopped = true; stop?.(); };
+  }, [listenAttempt, uid, watchedHouseholdId]);
+
+  // The household document, only while the record is approved (the rules let nobody else read it).
+  const householdReadable = canWatchHousehold(membership);
+  useEffect(() => {
+    if (!householdReadable || !watchedHouseholdId) return;
+    const householdId = watchedHouseholdId;
+    let stopped = false;
+    let stop: (() => void) | null = null;
+    void loadData().then(({ db, doc, onSnapshot }) => {
+      if (stopped) return;
+      stop = keepListening(({ healthy, failed }) => onSnapshot(
+        doc(db, 'households', householdId),
+        (snapshot) => {
+          healthy(snapshot.metadata.fromCache);
+          dispatchMembership({ type: 'household', householdId, exists: snapshot.exists(), data: snapshot.data(), fromCache: snapshot.metadata.fromCache });
+        },
+        (error) => {
+          console.warn('Household listener stopped.', error instanceof Error ? error.message : String(error));
+          dispatchMembership({ type: 'householdError', householdId, failure: classifyListenerError(error) });
+          // The membership record decides access; until it says otherwise, keep trying.
+          failed();
+        },
+      ));
+    });
+    return () => { stopped = true; stop?.(); };
+  }, [householdReadable, listenAttempt, watchedHouseholdId]);
+
+  const view = useMemo(
+    () => membershipView(membership, profileHouseholdId, profileConfirmed),
+    [membership, profileConfirmed, profileHouseholdId],
+  );
+  // Same identity while the data is the same: screens that reload on a new `currentUser`
+  // (the Chores page) must not reload for a membership snapshot that changes nothing they use.
+  const computedUser = useMemo(() => liveProfile(profile, view, watchedHouseholdId), [profile, view, watchedHouseholdId]);
+  const [currentUser, setStableUser] = useState<User | null>(computedUser);
+  if (!sameProfile(currentUser, computedUser)) setStableUser(computedUser);
+  const household = view.household;
+  const currentMember = view.member;
+  const householdLoading = profile ? view.phase === 'loading' : loading;
+  const householdLoadFailed = view.phase === 'failed';
+
+  // Nothing usable in time (a slow or absent connection with nothing cached): offer a retry.
+  // The listeners keep running, so a late answer still opens the app.
+  const waitingForMembership = Boolean(profile && watchedHouseholdId && view.phase === 'loading');
+  useEffect(() => {
+    if (!waitingForMembership || !watchedHouseholdId) return;
+    const householdId = watchedHouseholdId;
+    const timer = window.setTimeout(() => dispatchMembership({ type: 'loadTimeout', householdId }), MEMBERSHIP_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [listenAttempt, waitingForMembership, watchedHouseholdId]);
+
+  // Access ended, or the profile points at a household without a record: clear the
+  // pointer (once the server confirmed the profile), so no later load tries it again.
+  const stalePointer = profileConfirmed && profileHouseholdId !== null && (
+    membership.ended?.householdId === profileHouseholdId ||
+    (membership.householdId === profileHouseholdId && membership.memberFromServer && !membership.member)
+  ) ? profileHouseholdId : null;
+  const clearedPointer = useRef<string | null>(null);
+  useEffect(() => {
+    if (!stalePointer || !email || clearedPointer.current === stalePointer) return;
+    clearedPointer.current = stalePointer;
+    void (async () => {
+      try {
+        const { db, doc, setDoc } = await loadData();
+        await setDoc(doc(db, 'users', email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
+        setProfile(prev => prev && prev.householdId === stalePointer ? { ...prev, householdId: null, role: 'member', permissions: {} } : prev);
+      } catch (error) {
+        console.warn('Could not clear a stale household reference from the profile.', error instanceof Error ? error.message : String(error));
+      }
+    })();
+  }, [email, stalePointer]);
+
+  // Nothing of a household this device no longer shows stays on it: the dashboard's
+  // last-known house, Undo journal entries and in-memory memories (screens remount).
+  const shownHousehold = membership.ended ? null : watchedHouseholdId;
+  const lastShownHousehold = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = lastShownHousehold.current;
+    lastShownHousehold.current = shownHousehold;
+    if (previous && previous !== shownHousehold) forgetHouseholdOnDevice(previous);
+  }, [shownHousehold]);
+
+  // An approval or a new role made by someone else while this page is open.
+  const lastSettled = useRef<NoticeSnapshot | null>(null);
+  useEffect(() => {
+    if (view.phase === 'loading') return;
+    const next: NoticeSnapshot = { householdId: watchedHouseholdId, phase: view.phase, role: view.member?.role ?? null };
+    const notice = membershipChangeNotice(lastSettled.current, next);
+    lastSettled.current = next;
+    if (notice) toast(notice);
+  }, [toast, view.member?.role, view.phase, watchedHouseholdId]);
+
+  // Legacy permanent invite codes are removed by the owner's client (older households).
+  const legacyInviteHousehold = view.phase === 'member' && currentMember?.role === 'owner' && household?.inviteCode ? household.id : null;
+  const legacyInviteCleaned = useRef<string | null>(null);
+  useEffect(() => {
+    if (!legacyInviteHousehold || legacyInviteCleaned.current === legacyInviteHousehold) return;
+    legacyInviteCleaned.current = legacyInviteHousehold;
+    void (async () => {
       try {
         const { db, doc, updateDoc, deleteField } = await loadData();
-        await updateDoc(doc(db, 'households', householdData.id), {
+        await updateDoc(doc(db, 'households', legacyInviteHousehold), {
           inviteCode: deleteField(),
           updatedAt: new Date().toISOString(),
         });
       } catch (error) {
         console.warn("Legacy permanent invite code could not be removed automatically.", error);
       }
-    };
+    })();
+  }, [legacyInviteHousehold]);
 
-    // households/{id}/members/{uid} is the only authority. A profile that points at
-    // a household without a membership record is stale: clear it, grant nothing.
-    const loadMembership = async (householdId: string) => {
-      if (!currentUser?.email || !currentUser.uid) return null;
-
-      const { db, doc, getDoc } = await loadData();
-      const memberSnap = await getDoc(doc(db, 'households', householdId, 'members', currentUser.uid));
-      if (!active) return undefined;
-      if (!memberSnap.exists()) return null;
-
-      const normalizedMember = normalizeMember(memberSnap.data() as HouseholdMember, currentUser.uid);
-
-      // A pending person knows the household's name from their own record (written
-      // when the invite was redeemed) and never reads the household document, which
-      // only approved members may read. Older pending records without a name get the
-      // waiting screen's generic text.
-      let householdData: Household;
-      const pendingView = pendingHouseholdView(householdId, normalizedMember);
-      if (pendingView) {
-        householdData = pendingView;
-      } else {
-        const householdSnap = await getDoc(doc(db, 'households', householdId));
-        if (!active) return undefined;
-        if (!householdSnap.exists()) return null;
-        householdData = { id: householdSnap.id, ...householdSnap.data() } as Household;
-      }
-      setHousehold(householdData);
-      setCurrentMember(normalizedMember);
-      const currentOverrides = JSON.stringify(currentUser.permissions || {});
-      const memberOverrides = JSON.stringify(normalizedMember.permissions || {});
-      if (
-        currentUser.householdId !== householdData.id ||
-        currentUser.role !== normalizedMember.role ||
-        currentOverrides !== memberOverrides
-      ) {
-        setCurrentUser(prev => prev ? {
-          ...prev,
-          householdId: householdData.id,
-          role: normalizedMember.role,
-          permissions: normalizedMember.permissions,
-        } : prev);
-      }
-      await cleanupLegacyInviteCode(householdData, normalizedMember.role);
-      // Heal drift between the profile and the public member data (name, photo).
-      if (memberProfileDiffers(normalizedMember, { displayName: currentUser.displayName, avatarUrl: currentUser.avatarUrl })) void syncMemberProfile(householdId);
-      return normalizedMember;
-    };
-
-    const clearStaleHousehold = async () => {
-      if (!active) return;
-      setHousehold(null);
-      setCurrentMember(null);
-      if (!currentUser?.email || !currentUser.householdId) return;
-      try {
-        const { db, doc, setDoc } = await loadData();
-        if (!active) return;
-        await setDoc(doc(db, 'users', currentUser.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
-        if (!active) return;
-        setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : prev);
-      } catch (error) {
-        console.warn('Could not clear a stale household reference from the profile.', error);
-      }
-    };
-
-    // Repeat visit: show this member's cached household at once (display only, no network).
-    const showCachedHousehold = async (householdId: string, uid: string) => {
-      if (cachedHouseholdShown.current === householdId) return;
-      const [cachedMember, cachedHousehold] = await Promise.all([
-        readCached(['households', householdId, 'members', uid]),
-        readCached(['households', householdId]),
-      ]);
-      if (!active || !cachedMember) return;
-      const member = normalizeMember(cachedMember.data() as HouseholdMember, uid);
-      const pendingView = pendingHouseholdView(householdId, member);
-      if (!pendingView && !cachedHousehold) return;
-      setHousehold(pendingView ?? ({ id: cachedHousehold!.id, ...cachedHousehold!.data() } as Household));
-      setCurrentMember(member);
-      cachedHouseholdShown.current = householdId;
-      setHouseholdLoading(false);
-    };
-
-    const fetchHousehold = async () => {
-      const householdId = currentUser?.householdId;
-      // Provisional (cached) profile: at most show the cached household. The server reads,
-      // the stale-household cleanup and the end of loading wait for the confirmed profile,
-      // so an outdated cached profile can never clear or replace a valid household.
-      if (!profileConfirmed) {
-        if (householdId && currentUser?.uid) await showCachedHousehold(householdId, currentUser.uid);
-        return;
-      }
-      setHouseholdLoadFailed(false);
-      if (cachedHouseholdShown.current !== householdId) setHouseholdLoading(true);
-      try {
-        if (!householdId) {
-          setHousehold(null);
-          setCurrentMember(null);
-          return;
-        }
-        if (currentUser?.uid) await showCachedHousehold(householdId, currentUser.uid);
-        if (!active) return;
-        try {
-          const member = await loadMembership(householdId);
-          if (member === null) await clearStaleHousehold();
-        } catch (error) {
-          if (!active) return;
-          // Only a definitive denial means this account is not a member. Offline or
-          // transient failures keep the profile's reference so loading can be retried.
-          console.warn('Household membership could not be loaded.', error);
-          if ((error as { code?: string })?.code === 'permission-denied') {
-            await clearStaleHousehold();
-          } else {
-            setHousehold(null);
-            setCurrentMember(null);
-            cachedHouseholdShown.current = null;
-            setHouseholdLoadFailed(true);
-          }
-        }
-      } finally {
-        if (active) setHouseholdLoading(false);
-      }
-    };
-
-    fetchHousehold();
-    return () => { active = false; };
-  }, [
-    currentUser?.avatarUrl,
-    currentUser?.displayName,
-    currentUser?.email,
-    currentUser?.householdId,
-    currentUser?.permissions,
-    currentUser?.role,
-    currentUser?.uid,
-    householdLoadAttempt,
-    profileConfirmed,
-  ]);
+  // Heal drift between the profile and the public member data (name, photo), once per change.
+  const memberShown = view.phase === 'member' || view.phase === 'pending';
+  const profileDrift = profileConfirmed && memberShown && watchedHouseholdId && currentMember && profile &&
+    memberProfileDiffers(currentMember, { displayName: profile.displayName, avatarUrl: profile.avatarUrl })
+    ? `${watchedHouseholdId}|${profile.displayName ?? ''}|${profile.avatarUrl ?? ''}`
+    : null;
+  const driftSynced = useRef<string | null>(null);
+  useEffect(() => {
+    if (!profileDrift || !watchedHouseholdId || driftSynced.current === profileDrift) return;
+    driftSynced.current = profileDrift;
+    void syncMemberProfile(watchedHouseholdId);
+  }, [profileDrift, watchedHouseholdId]);
 
   // This is for session management ONLY (on page refresh)
   useEffect(() => {
@@ -424,36 +485,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoringSession.current = false;
       setLoading(true);
       if (firebaseUser) {
+        // Another account on this page: nothing of the previous one's household stays.
+        if (profileRef.current && profileRef.current.uid !== firebaseUser.uid) {
+          dispatchMembership({ type: 'reset' });
+          forgetHouseholdOnDevice(null);
+        }
         // Repeat visit: render from this user's cached profile at once; the server copy
         // below replaces it only if something changed.
         const cached = restoring && firebaseUser.email ? await readCached(['users', firebaseUser.email]) : null;
         if (cached) {
           setProfileConfirmed(false);
-          setCurrentUser({ uid: firebaseUser.uid, ...cached.data() } as User);
+          const provisional = { uid: firebaseUser.uid, ...cached.data() } as User;
+          profileRef.current = provisional;
+          setProfile(provisional);
           setLoading(false);
         }
         // On refresh, we only fetch the existing profile. Creation happens at sign-in.
         const userProfile = await fetchOrCreateUserProfile(firebaseUser);
         if (userProfile) {
-            publishProfile(userProfile);
-            setProfileConfirmed(true);
+          publishProfile(userProfile);
+          setProfileConfirmed(true);
         } else {
-        setCurrentUser(null);
-        setProfileConfirmed(false);
-        setHousehold(null);
-        setCurrentMember(null);
-        cachedHouseholdShown.current = null;
-        setHouseholdLoading(false);
-      }
+          dispatchMembership({ type: 'reset' });
+          profileRef.current = null;
+          setProfile(null);
+          setProfileConfirmed(false);
+        }
       } else {
         // User is not logged in: nothing of the last user's house stays on this device.
-        clearHouseSnapshot(deviceStorage());
-        setCurrentUser(null);
+        dispatchMembership({ type: 'reset' });
+        forgetHouseholdOnDevice(null);
+        profileRef.current = null;
+        setProfile(null);
         setProfileConfirmed(false);
-        setHousehold(null);
-        setCurrentMember(null);
-        cachedHouseholdShown.current = null;
-        setHouseholdLoading(false);
       }
       setLoading(false);
     });
@@ -504,8 +568,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     pushSignOutGate.begin();
     let reloading = false;
     try {
-      // The last-known house rooms go first, before anything that can fail or reload.
-      clearHouseSnapshot(deviceStorage());
+      // The last-known house rooms and the Undo journal go first, before anything that can fail or reload.
+      forgetHouseholdOnDevice(null);
       // This device stops receiving the account's pushes: while still signed in, its
       // token leaves the account's private push document and FCM. Loading the module
       // and the cleanup share one 2 s budget and never block sign-out; what is left
@@ -530,12 +594,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (firestoreStopped) window.location.assign("/");
       }
       if (firestoreStopped) return;
-      setCurrentUser(null);
+      dispatchMembership({ type: 'reset' });
+      profileRef.current = null;
+      setProfile(null);
       setProfileConfirmed(false);
-      setHousehold(null);
-      setCurrentMember(null);
-      cachedHouseholdShown.current = null;
-      setHouseholdLoading(false);
       toast({ title: "Logged Out", description: "You have been successfully logged out." });
     } finally {
       // The page is about to reload after a full sign-out; otherwise sign-out is possible again.
@@ -545,7 +607,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
   },[toast]);
-  
+
   const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string, options?: { silent?: boolean }) => {
     const silent = options?.silent === true;
     if (!auth.currentUser || !currentUser?.email) {
@@ -560,16 +622,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         toast({title: 'Password Updated Successfully!'})
         data.forcePasswordChange = false;
       }
-      
+
       const { db, doc, setDoc } = await loadData();
       const userDocRef = doc(db, 'users', currentUser.email);
       await setDoc(userDocRef, data, { merge: true });
-      setCurrentUser(prev => prev ? { ...prev, ...data } : null);
+      setProfile(prev => prev ? { ...prev, ...data } : null);
       // Housemates see the name and photo through the membership record, which only
       // the server may write for you (best effort: the next load heals a failure).
       if (currentUser.householdId && ('displayName' in data || 'avatarUrl' in data)) void syncMemberProfile(currentUser.householdId);
       if (!silent) toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
-    
+
     } catch (error) {
       console.error("Update User Error:", error instanceof Error ? error : String(error));
       let description = "An unknown error occurred.";
@@ -608,9 +670,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const { household: createdHousehold, member: createdMember } = result.data;
-      setCurrentUser(prev => prev ? { ...prev, householdId: createdHousehold.id, role: 'owner', permissions: {} } : null);
-      setHousehold(createdHousehold);
-      setCurrentMember(createdMember);
+      // Shown at once; the listeners take over from here.
+      dispatchMembership({ type: 'adopt', householdId: createdHousehold.id, member: normalizeMember(createdMember, currentUser.uid), household: createdHousehold });
+      setProfile(prev => prev ? { ...prev, householdId: createdHousehold.id, role: 'owner', permissions: {} } : null);
 
       toast({ title: 'Household Created!', description: `Welcome to ${createdHousehold.name}!` });
     } catch (error) {
@@ -643,14 +705,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       // The result holds only the household's id and name and the caller's own status.
-      setCurrentUser(prev => prev ? { ...prev, householdId: result.data.household.id, role: 'newuser', permissions: {} } : null);
-      setHousehold({ id: result.data.household.id, name: result.data.household.name });
-      setCurrentMember({
+      const joinedId = result.data.household.id;
+      const member = normalizeMember({
         ...result.data.member,
         email: currentUser.email,
         ...(currentUser.displayName ? { displayName: currentUser.displayName } : {}),
         avatarUrl: currentUser.avatarUrl ?? null,
-      });
+      } as HouseholdMember, currentUser.uid);
+      dispatchMembership({ type: 'adopt', householdId: joinedId, member, household: { id: joinedId, name: result.data.household.name } });
+      setProfile(prev => prev ? { ...prev, householdId: joinedId, role: 'newuser', permissions: {} } : null);
       toast({ title: 'Request sent', description: `An owner or admin of ${result.data.household.name} will approve you shortly.` });
       return true;
     } catch (error) {
@@ -660,10 +723,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [currentUser, toast]);
 
+  // This person left or deleted the household here: no notice; its data leaves the device.
   const resetHouseholdState = useCallback(() => {
-    setHousehold(null);
-    setCurrentMember(null);
-    setCurrentUser(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : null);
+    dispatchMembership({ type: 'reset' });
+    setProfile(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : null);
   }, []);
 
   const leaveHousehold = useCallback(async () => {
@@ -672,9 +735,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       toast({ variant: 'destructive', title: 'No household', description: 'There is no household to leave.' });
       return false;
     }
+    // The record disappears before the action answers: that end needs no "removed" notice.
+    dispatchMembership({ type: 'endingHere', householdId: currentUser.householdId });
     try {
       const result = await leaveHouseholdAction({ idToken: await firebaseUser.getIdToken(), householdId: currentUser.householdId });
       if (!result.ok) {
+        dispatchMembership({ type: 'endingHereCancelled' });
         toast({ variant: 'destructive', title: 'Could not leave', description: result.message });
         return false;
       }
@@ -682,6 +748,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       toast({ title: 'You left the household', description: `You are no longer part of ${household.name}.` });
       return true;
     } catch {
+      dispatchMembership({ type: 'endingHereCancelled' });
       toast({ variant: 'destructive', title: 'Could not leave', description: 'We could not reach HomeHub. Try again.' });
       return false;
     }
@@ -690,6 +757,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const deleteHousehold = useCallback(async (confirmName: string) => {
     const firebaseUser = auth.currentUser;
     if (!firebaseUser || !currentUser?.householdId || !household) return false;
+    // The record is frozen, then deleted, before the action answers: no notice for that.
+    dispatchMembership({ type: 'endingHere', householdId: currentUser.householdId });
     try {
       const result = await deleteHouseholdAction({
         idToken: await firebaseUser.getIdToken(),
@@ -697,6 +766,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         confirmName,
       });
       if (!result.ok) {
+        dispatchMembership({ type: 'endingHereCancelled' });
         toast({ variant: 'destructive', title: 'Could not delete', description: result.message });
         return false;
       }
@@ -704,13 +774,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       toast({ title: 'Household deleted', description: `${household.name} and everything in it were deleted.` });
       return true;
     } catch {
+      dispatchMembership({ type: 'endingHereCancelled' });
       toast({ variant: 'destructive', title: 'Could not delete', description: 'We could not reach HomeHub. Try again.' });
       return false;
     }
   }, [currentUser?.householdId, household, resetHouseholdState, toast]);
 
-  // Stable identity: consumers list permissions in effect and callback dependencies.
-  const permissions = useMemo(() => getMemberPermissions(currentMember), [currentMember]);
+  // Stable identity while the values are the same: consumers list permissions in effect
+  // and callback dependencies, and a membership snapshot that changes nothing else
+  // (or another field of the record) must not re-run them.
+  const computedPermissions = useMemo(() => getMemberPermissions(currentMember), [currentMember]);
+  const permissionsKey = JSON.stringify(computedPermissions);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const permissions = useMemo(() => computedPermissions, [permissionsKey]);
 
   const value = {
     currentUser,
@@ -722,6 +798,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     profileConfirmed,
     householdLoadFailed,
     retryHouseholdLoad,
+    membershipEnded: view.ended,
+    dismissMembershipEnded,
     signInWithGoogle,
     logout,
     updateUser,
