@@ -28,9 +28,11 @@ async function openAuthenticated(page: Page, path: string, heading: string) {
 async function cleanupShoppingItems() {
   for (const name of [
     'E2E AI milk',
-    'AI-TEST:provider-error canned beans',
-    'AI-TEST:timeout frozen meal',
+    'E2E AI zorblax',
+    'AI-TEST:provider-error mystery tin',
+    'AI-TEST:timeout mystery meal',
     'AI-TEST:provider-error manual category',
+    'E2E Yogurt Multipack',
   ]) {
     const snapshot = await groceryItems.where('name', '==', name).get();
     await Promise.all(snapshot.docs.map(document => document.ref.delete()));
@@ -63,30 +65,61 @@ test.describe('OpenAI migration workflows', () => {
 
   test('shopping categorization succeeds and all fallback paths save exactly once', async ({ page }) => {
     await openAuthenticated(page, '/shopping', 'Shopping Center');
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
 
+    // QA-6: items save at once; "milk" is known locally, an unknown name waits for
+    // one batched AI call, and a failed or timed-out call leaves it under Other.
     await addShoppingItem(page, 'E2E AI milk');
-    await addShoppingItem(page, 'AI-TEST:provider-error canned beans');
+    await addShoppingItem(page, 'E2E AI zorblax');
+    await addShoppingItem(page, 'AI-TEST:provider-error mystery tin');
     await expect(page.getByText('Item saved to Other', { exact: true })).toBeVisible();
-    await addShoppingItem(page, 'AI-TEST:timeout frozen meal');
+    await addShoppingItem(page, 'AI-TEST:timeout mystery meal');
     await addShoppingItem(page, 'AI-TEST:provider-error manual category', 'Dairy');
 
     const expected = [
-      ['E2E AI milk', 'Dairy'],
-      ['AI-TEST:provider-error canned beans', 'Other'],
-      ['AI-TEST:timeout frozen meal', 'Other'],
-      ['AI-TEST:provider-error manual category', 'Dairy'],
+      ['E2E AI milk', 'Dairy', 'local'],
+      // The deterministic model picks the list's first non-Other category.
+      ['E2E AI zorblax', 'Produce', 'ai'],
+      ['AI-TEST:provider-error mystery tin', 'Other', 'pending'],
+      ['AI-TEST:timeout mystery meal', 'Other', 'pending'],
+      ['AI-TEST:provider-error manual category', 'Dairy', 'manual'],
     ];
-    for (const [name, category] of expected) {
-      const snapshot = await groceryItems.where('name', '==', name).get();
-      expect(snapshot.size).toBe(1);
-      expect(snapshot.docs[0].data().category).toBe(category);
+    for (const [name, category, source] of expected) {
+      await expect.poll(async () => {
+        const snapshot = await groceryItems.where('name', '==', name).get();
+        return snapshot.docs.map((document) => `${document.data().category}/${document.data().categorySource}`);
+      }, { timeout: 15_000 }).toEqual([`${category}/${source}`]);
+      const [document] = (await groceryItems.where('name', '==', name).get()).docs;
+      expect(typeof document.data().addedByUid).toBe('string');
+      expect(document.data().nameKey).toBe(name.toLowerCase());
     }
 
     // The open list is in the URL (?list=weekly-groceries), so a reload keeps it open.
     await page.reload();
     await expect(page).toHaveURL(/[?&]list=weekly-groceries(&|$)/);
     await expect(page.getByRole('checkbox', { name: /E2E AI milk/ })).toBeVisible();
+  });
+
+  test('a barcode scan adds one package with its size as a note, and a second scan adds 1 (BL-1)', async ({ page }) => {
+    await openAuthenticated(page, '/shopping', 'Shopping Center');
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
+    const scanInto = async () => {
+      await page.getByRole('button', { name: 'Add Item' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Add Item to List' });
+      await dialog.getByRole('button', { name: 'Scan Barcode' }).click();
+      const scanner = page.getByRole('dialog', { name: 'Scan Barcode' });
+      await scanner.getByLabel('Barcode number').fill('009900045000');
+      await scanner.getByRole('button', { name: 'Use barcode' }).click();
+    };
+    await scanInto();
+    await expect.poll(async () => (await groceryItems.where('name', '==', 'E2E Yogurt Multipack').get()).docs
+      .map((document) => [document.data().quantity, document.data().size, document.data().sizeUnit]), { timeout: 15_000 })
+      .toEqual([[1, 450, 'g']]);
+    await expect(page.getByText('450 g')).toBeVisible();
+    await scanInto();
+    await expect.poll(async () => (await groceryItems.where('name', '==', 'E2E Yogurt Multipack').get()).docs
+      .map((document) => document.data().quantity), { timeout: 15_000 })
+      .toEqual([2]);
   });
 
   test('recipe generation renders structured output and retryable sanitized failures', async ({ page }) => {

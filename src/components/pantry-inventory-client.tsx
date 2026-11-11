@@ -9,22 +9,21 @@ import { format, parseISO } from 'date-fns';
 import type { BarcodeLibraryItem, PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { collection, doc, deleteDoc, writeBatch, query, setDoc, updateDoc } from 'firebase/firestore';
-import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
+import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware } from '@/lib/firestore-offline';
+import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
+import { addItemsToList } from '@/lib/shopping/add-items';
 import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { justOpened } from '@/lib/shopping/live-state';
 import { DURATION, EASE } from '@/lib/motion';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
 import { AiClientError, getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { friendlyError } from '@/lib/friendly-error';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 
 import { Button } from '@/components/ui/button';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
@@ -869,31 +868,34 @@ export function PantryInventoryClient() {
     if (!householdId) return;
 
     try {
-        const listItemsCollectionRef = collection(db, 'households', householdId, 'shopping-lists', listId, 'items');
         const categoriesDocRef = doc(db, 'households', householdId, 'shopping-lists', listId, 'config', 'categories');
-
         const categoriesDoc = await getDocOfflineAware(categoriesDocRef).catch(() => null);
         const categories = (categoriesDoc?.exists() ? normalizeStoredCategories(categoriesDoc.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
 
-        const categoryResult = await resolveShoppingCategory({
-          itemName,
+        // The Shopping list's save path: saved at once with a local category, then one
+        // batched AI call. No merge here yet (SH-6 arrives with the pantry rework).
+        const { outcomes, categorization } = await addItemsToList({
+          householdId,
+          listId,
+          uid: currentUser?.uid,
+          entries: [{ name: itemName, quantity }],
           categories,
-          selectedCategory: isBrowserOffline() ? 'Other' : undefined,
-          categorize: async categorizeInput => unwrapAiActionResult(await categorizeGroceryItem(
-            categorizeInput,
-            await getAiActionContext(householdId)
-          )),
+          allowMerge: false,
+          active: () => ({ householdId: auth.currentUser ? householdId : null, listId }),
+          onLateError: (name, error) => toastError(error, `Could not sync ${name}`),
         });
-
-        const { itemId, data } = buildShoppingListItem({ name: itemName, quantity, category: categoryResult.category });
-        const saved = await awaitWriteUnlessOffline(
-          setDoc(doc(listItemsCollectionRef, itemId), data),
-          (error) => toastError(error, `Could not sync ${itemName}`),
-        );
-        toast({ title: saved === 'queued' ? 'Saved offline' : 'Added to the list', description: `${itemName} is on your shopping list.` });
-        if (categoryResult.usedFallback && !isBrowserOffline()) {
-          toast({ title: 'Item saved to Other', description: 'Automatic categorization was unavailable. You can update the category later.' });
-        }
+        const [outcome] = outcomes;
+        if (outcome.state === 'failed') throw outcome.error ?? new Error('save-failed');
+        toast(outcome.state === 'saved'
+          ? { title: 'Added to the list', description: `${itemName} is on your shopping list.` }
+          : outcome.state === 'stored-locally'
+            ? { title: 'Saved, will sync', description: `${itemName} is saved on this device and syncs when the connection is back.` }
+            : { title: 'Still sending…', description: `${itemName} has not reached the list yet. An error shows here if it fails.` });
+        void categorization.then((report) => {
+          if (report.unavailable.length > 0) {
+            toast({ title: 'Item saved to Other', description: `Automatic sorting was unavailable. ${itemName} stays under Other.` });
+          }
+        });
     } catch (error) {
         toastError(error, 'Could not add to the shopping list');
     }
