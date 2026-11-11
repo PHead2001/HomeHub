@@ -28,9 +28,16 @@ async function openAuthenticated(page: Page, path: string, heading: string) {
 async function cleanupShoppingItems() {
   for (const name of [
     'E2E AI milk',
-    'AI-TEST:provider-error canned beans',
-    'AI-TEST:timeout frozen meal',
+    'E2E AI zorblax',
+    'AI-TEST:provider-error mystery tin',
+    'AI-TEST:timeout mystery meal',
     'AI-TEST:provider-error manual category',
+    'E2E Yogurt Multipack',
+    // The deterministic recipe's missing ingredients (SH-22c/d).
+    'Salt',
+    'Pepper',
+    'Cooking oil',
+    'Fresh basil',
   ]) {
     const snapshot = await groceryItems.where('name', '==', name).get();
     await Promise.all(snapshot.docs.map(document => document.ref.delete()));
@@ -63,30 +70,61 @@ test.describe('OpenAI migration workflows', () => {
 
   test('shopping categorization succeeds and all fallback paths save exactly once', async ({ page }) => {
     await openAuthenticated(page, '/shopping', 'Shopping Center');
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
 
+    // QA-6: items save at once; "milk" is known locally, an unknown name waits for
+    // one batched AI call, and a failed or timed-out call leaves it under Other.
     await addShoppingItem(page, 'E2E AI milk');
-    await addShoppingItem(page, 'AI-TEST:provider-error canned beans');
+    await addShoppingItem(page, 'E2E AI zorblax');
+    await addShoppingItem(page, 'AI-TEST:provider-error mystery tin');
     await expect(page.getByText('Item saved to Other', { exact: true })).toBeVisible();
-    await addShoppingItem(page, 'AI-TEST:timeout frozen meal');
+    await addShoppingItem(page, 'AI-TEST:timeout mystery meal');
     await addShoppingItem(page, 'AI-TEST:provider-error manual category', 'Dairy');
 
     const expected = [
-      ['E2E AI milk', 'Dairy'],
-      ['AI-TEST:provider-error canned beans', 'Other'],
-      ['AI-TEST:timeout frozen meal', 'Other'],
-      ['AI-TEST:provider-error manual category', 'Dairy'],
+      ['E2E AI milk', 'Dairy', 'local'],
+      // The deterministic model picks the list's first non-Other category.
+      ['E2E AI zorblax', 'Produce', 'ai'],
+      ['AI-TEST:provider-error mystery tin', 'Other', 'pending'],
+      ['AI-TEST:timeout mystery meal', 'Other', 'pending'],
+      ['AI-TEST:provider-error manual category', 'Dairy', 'manual'],
     ];
-    for (const [name, category] of expected) {
-      const snapshot = await groceryItems.where('name', '==', name).get();
-      expect(snapshot.size).toBe(1);
-      expect(snapshot.docs[0].data().category).toBe(category);
+    for (const [name, category, source] of expected) {
+      await expect.poll(async () => {
+        const snapshot = await groceryItems.where('name', '==', name).get();
+        return snapshot.docs.map((document) => `${document.data().category}/${document.data().categorySource}`);
+      }, { timeout: 15_000 }).toEqual([`${category}/${source}`]);
+      const [document] = (await groceryItems.where('name', '==', name).get()).docs;
+      expect(typeof document.data().addedByUid).toBe('string');
+      expect(document.data().nameKey).toBe(name.toLowerCase());
     }
 
     // The open list is in the URL (?list=weekly-groceries), so a reload keeps it open.
     await page.reload();
     await expect(page).toHaveURL(/[?&]list=weekly-groceries(&|$)/);
     await expect(page.getByRole('checkbox', { name: /E2E AI milk/ })).toBeVisible();
+  });
+
+  test('a barcode scan adds one package with its size as a note, and a second scan adds 1 (BL-1)', async ({ page }) => {
+    await openAuthenticated(page, '/shopping', 'Shopping Center');
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
+    const scanInto = async () => {
+      await page.getByRole('button', { name: 'Add Item' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Add Item to List' });
+      await dialog.getByRole('button', { name: 'Scan Barcode' }).click();
+      const scanner = page.getByRole('dialog', { name: 'Scan Barcode' });
+      await scanner.getByLabel('Barcode number').fill('009900045000');
+      await scanner.getByRole('button', { name: 'Use barcode' }).click();
+    };
+    await scanInto();
+    await expect.poll(async () => (await groceryItems.where('name', '==', 'E2E Yogurt Multipack').get()).docs
+      .map((document) => [document.data().quantity, document.data().size, document.data().sizeUnit]), { timeout: 15_000 })
+      .toEqual([[1, 450, 'g']]);
+    await expect(page.getByText('450 g')).toBeVisible();
+    await scanInto();
+    await expect.poll(async () => (await groceryItems.where('name', '==', 'E2E Yogurt Multipack').get()).docs
+      .map((document) => document.data().quantity), { timeout: 15_000 })
+      .toEqual([2]);
   });
 
   test('recipe generation renders structured output and retryable sanitized failures', async ({ page }) => {
@@ -109,6 +147,9 @@ test.describe('OpenAI migration workflows', () => {
       })));
       await page.reload();
       await page.getByRole('tab', { name: 'Inventory' }).click();
+      // The recipe is requested once, from the pantry as it is when the dialog
+      // opens: wait for the renamed stock before opening it.
+      await expect(page.getByText(`AI-TEST:${scenario} Jasmine rice`).first()).toBeVisible();
       await page.getByRole('button', { name: 'Generate Recipe' }).click();
       dialog = page.getByRole('dialog', { name: 'AI Recipe Idea' });
       await expect(dialog.getByRole('alert')).toContainText(expectedMessage);
@@ -123,9 +164,57 @@ test.describe('OpenAI migration workflows', () => {
     ]);
     await page.reload();
     await page.getByRole('tab', { name: 'Inventory' }).click();
+    // One usable item: the server rejects fewer than two, so the button is disabled
+    // (Pantry v2) instead of sending a request that can only fail.
+    await expect(page.getByText('Jasmine rice', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(/Greek yogurt|Frozen berries/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Generate Recipe' })).toBeDisabled();
+  });
+
+  test('the recipe uses what goes off first and adds missing ingredients to the Grocery list (SH-31, SH-22c/d)', async ({ page }) => {
+    // Salt is already needed on the only Grocery list: its "+" raises it instead of adding a second Salt.
+    await groceryItems.doc('e2e-recipe-salt').set({
+      name: 'Salt', nameKey: 'salt', quantity: 1, category: 'Pantry', status: 'needed', createdAt: fixedNow,
+    });
+    const quantities = async (name: string) => (await groceryItems.where('name', '==', name).get()).docs
+      .map((document) => [document.data().quantity, document.data().status]);
+
+    await openAuthenticated(page, '/shopping', 'Shopping Center');
+    await page.getByRole('tab', { name: 'Inventory' }).click();
     await page.getByRole('button', { name: 'Generate Recipe' }).click();
-    await expect(page.getByRole('dialog', { name: 'AI Recipe Idea' }).getByRole('alert'))
-      .toContainText('information provided for this AI request is invalid');
+    const dialog = page.getByRole('dialog', { name: 'AI Recipe Idea' });
+    // SH-31a: stock is sent soonest expiry first (yogurt in 3 days, berries in December,
+    // rice next year); the stand-in model builds the recipe from the first two.
+    await expect(dialog.getByRole('heading', { name: 'Greek yogurt and Frozen berries Skillet' })).toBeVisible();
+    // Amounts on hand come from HomeHub's pantry, not the model.
+    const fromPantry = dialog.getByRole('list', { name: 'From your pantry' });
+    await expect(fromPantry).toContainText('You have 3 items · Tue (Fridge)');
+    await expect(fromPantry).not.toContainText('Fresh basil');
+
+    // The model's "Fresh basil" pantry claim is not stock, so it is listed as missing.
+    const missing = dialog.getByTestId('recipe-missing');
+    await expect(missing).toContainText('Adds to Weekly Groceries.');
+    await expect(missing.getByRole('button', { name: 'Add Fresh basil to the list' })).toBeVisible();
+
+    // SH-22c: one "+" merges into the needed Salt.
+    await missing.getByRole('button', { name: 'Add Salt to the list' }).click();
+    await expect(missing.getByRole('button', { name: 'Salt added' })).toBeDisabled();
+    await expect.poll(() => quantities('Salt'), { timeout: 15_000 }).toEqual([[2, 'needed']]);
+
+    // A live pantry change neither clears the recipe nor re-requests it.
+    await household.collection('pantry-inventory').doc('rice').update({ quantity: 5 });
+    await expect(dialog.getByRole('heading', { name: 'Greek yogurt and Frozen berries Skillet' })).toBeVisible();
+    await expect(missing.getByRole('button', { name: 'Salt added' })).toBeVisible();
+
+    // SH-22d / SH-31b: "Add all missing" adds the rest in one action; Salt is not added again.
+    await missing.getByRole('button', { name: 'Add all missing' }).click();
+    for (const name of ['Fresh basil', 'Pepper', 'Cooking oil']) {
+      await expect(missing.getByRole('button', { name: `${name} added` })).toBeVisible();
+      await expect.poll(() => quantities(name), { timeout: 15_000 }).toEqual([[1, 'needed']]);
+    }
+    expect(await quantities('Salt')).toEqual([[2, 'needed']]);
+    await expect(missing.getByRole('button', { name: 'Add all missing' })).toBeDisabled();
+    await page.keyboard.press('Escape');
   });
 
   test('maintenance summaries are transient and provider failures remain retryable', async ({ page }) => {

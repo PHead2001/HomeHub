@@ -41,3 +41,27 @@ export function sparkleDelay(index: number, count: number): number {
   const step = Math.min(0.12, 0.6 / (count - 1));
   return Math.round((0.15 + index * step) * 1000) / 1000;
 }
+
+type FlagStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
+// The moment fires at most once per household per day on this device: the flag lives
+// in localStorage (shared by tabs, survives reloads) and an in-memory set covers
+// storage being blocked. Shared by the Chores page and the dashboard (HP-34), so a
+// celebration on one is not repeated on the other.
+const shownDays = new Set<string>();
+
+const deviceStorage = (): FlagStorage | null => {
+  try { return typeof window === 'undefined' ? null : window.localStorage; } catch { return null; }
+};
+
+/** Whether "House is clean" already showed for this key (`houseCleanStorageKey`). */
+export function houseCleanShown(key: string, storage: FlagStorage | null = deviceStorage()): boolean {
+  if (shownDays.has(key)) return true;
+  try { return storage?.getItem(key) === '1'; } catch { return false; }
+}
+
+/** Records that "House is clean" showed for this key. */
+export function markHouseCleanShown(key: string, storage: FlagStorage | null = deviceStorage()): void {
+  shownDays.add(key);
+  try { storage?.setItem(key, '1'); } catch { /* storage blocked: the in-memory flag still holds for this visit */ }
+}

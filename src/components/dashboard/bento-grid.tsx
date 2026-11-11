@@ -14,8 +14,9 @@
  *
  * Touch (HP-13b, HP-14b): a tile's peek details come from one row list (`details`).
  * With a fine, hovering pointer they open as the peek; everywhere else the first rows
- * render inline in the tile (two in the wide layout), so next up, the shopping lists,
- * later maintenance and the streak names never need hover. The tile "+" and Retry are
+ * render inline in the tile (two in the wide layout), so next up, later maintenance and
+ * the streak names never need hover. The Shopping tile lists its needed items with a
+ * tick instead (HP-33c, `shopping-tick.tsx`); its lists stay in the peek. The tile "+" and Retry are
  * 44 px (48 px on touch).
  */
 import { useMemo, type PointerEvent, type ReactNode } from 'react';
@@ -33,11 +34,14 @@ import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
 import { dashboardTiles, type TileId } from '@/lib/dashboard/tiles';
+import { shoppingRowKey, shoppingTileRows } from '@/lib/dashboard/shopping-tile';
 import { dailyLabel, temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
 import { useLiveWeatherState, useWeatherPreference } from '@/lib/dashboard/use-weather';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
+import { HouseholdChores, HouseholdSummaryLine, PetFedButton, useChoreDone } from './one-tap';
+import { ShoppingTickRows, useShoppingTick } from './shopping-tick';
 import { PeekCard } from './peek-card';
 import { TileCell, TileSkeleton } from './tile-grid-skeleton';
 import styles from './dashboard.module.css';
@@ -75,6 +79,7 @@ function Tile({
   inlineDetails,
   quickAdd,
   hint,
+  actions,
   children,
 }: {
   /** Omitted for a tile with nowhere to go (weather, HP-24): it is not a link. */
@@ -91,6 +96,12 @@ function Tile({
   quickAdd?: { shortcut: ShortcutId; label: string };
   /** Stale data: "Reconnecting…" or "Updated 9:41" next to the title. */
   hint?: string | null;
+  /**
+   * One-tap controls (HP-33) below the link, inside the same card. With actions the card
+   * frame moves to a wrapper (`testId`), the link keeps the title and summary
+   * (`<testId>-link`), and nothing tilts (the buttons must not move with it).
+   */
+  actions?: ReactNode;
   children: ReactNode;
 }) {
   const reduced = useReducedMotion();
@@ -126,6 +137,22 @@ function Tile({
       <div data-testid={testId} className={cn('relative h-full min-w-0', className)}>
         <div className={cn(styles.tileBody, 'flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>{body}</div>
       </div>
+    );
+  }
+  if (actions) {
+    return (
+      <PeekCard peek={peek} className={cn('relative h-full min-w-0', className)}>
+        <div data-testid={testId} className={cn(styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>
+          {/* D-2: with nothing but the title inside (Pets), the link itself is at least 44 px
+              tall (48 px on touch); no overflowing hit area, so it never covers the action
+              buttons below it. */}
+          <Link href={href} data-testid={`${testId}-link`} className={cn(styles.tileLink, styles.target, 'flex min-w-0 flex-col gap-2 rounded-md')}>
+            {body}
+          </Link>
+          {actions}
+        </div>
+        {quickAdd && <TileQuickAdd {...quickAdd} />}
+      </PeekCard>
     );
   }
   return (
@@ -206,13 +233,19 @@ function UnavailableTile({
   );
 }
 
+/** A peek row's value: the due label and, when known, the assignee (names only, HP-32a). */
+function assigneeValue(chore: { dueLabel: string; mine: boolean; assignee?: string | null }) {
+  const who = chore.mine ? 'you' : chore.assignee;
+  return who ? `${chore.dueLabel} · ${who}` : chore.dueLabel;
+}
+
 /** HP-2b: an empty track when nothing is scheduled; full (green) only when today's work is all done. */
 function ProgressRing({ done, total, settled }: { done: number; total: number; settled: boolean }) {
   const radius = 30;
   const circumference = 2 * Math.PI * radius;
   const ratio = total > 0 ? Math.min(1, done / total) : 0;
   return (
-    <svg viewBox="0 0 72 72" className={cn(styles.ring, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
+    <svg viewBox="0 0 72 72" className={cn(styles.progressRing, 'h-20 w-20 shrink-0 -rotate-90')} aria-hidden>
       <circle cx="36" cy="36" r={radius} fill="none" strokeWidth="7" className="stroke-muted" />
       <circle
         cx="36"
@@ -250,6 +283,14 @@ export function BentoGrid({
   onRetry?: () => void;
 }) {
   const { permissions } = useAuth();
+  const liveChoreIds = facts.chores && sections.chores && sections.chores.status !== 'loading'
+    ? (facts.chores.todayWork ?? []).map((chore) => chore.id)
+    : undefined;
+  const done = useChoreDone(liveChoreIds);
+  // HP-33c: the Shopping tile's rows are tickable only from live (or stale) listener data.
+  const shoppingLive = Boolean(facts.shopping && sections.shopping && sections.shopping.status !== 'loading');
+  const liveShoppingKeys = shoppingLive ? facts.shopping!.firstItems.map(shoppingRowKey) : undefined;
+  const shoppingTick = useShoppingTick(liveShoppingKeys);
   const { report: weather, stale: weatherStale, failed: weatherFailed } = useLiveWeatherState();
   const { preference: weatherPreference } = useWeatherPreference();
   const weatherEnabled = weatherPreference.enabled && Boolean(weatherPreference.city);
@@ -265,6 +306,8 @@ export function BentoGrid({
 
   if (permissions['chores.view']) {
     const chores = facts.chores;
+    // Only from live (or stale) listener data, never from the house's saved snapshot.
+    const work = chores && sections.chores && sections.chores.status !== 'loading' ? chores.todayWork ?? [] : [];
     tiles.set('chores', chores ? (
       <Tile
         key="chores"
@@ -274,9 +317,12 @@ export function BentoGrid({
         testId="dashboard-tile-chores"
         hint={hint('chores')}
         quickAdd={permissions['chores.create'] ? { shortcut: 'new-chore', label: 'Add a chore' } : undefined}
-        details={chores.nextUp.map((chore) => ({ key: chore.id, label: chore.task, value: chore.dueLabel, warn: chore.overdue }))}
+        details={chores.nextUp.map((chore) => ({ key: chore.id, label: chore.task, value: assigneeValue(chore), warn: chore.overdue }))}
+        // HP-32a/HP-33b: today's work with names and Done replaces the inline next-up rows.
+        inlineDetails={work.length > 0 ? [] : undefined}
+        actions={work.length > 0 ? <HouseholdChores work={work} total={chores.todayWorkTotal ?? work.length} canComplete={Boolean(permissions['chores.complete'])} done={done} /> : undefined}
       >
-        <span className="flex flex-1 items-center gap-4">
+        <span className={cn(styles.choresHeadline, 'flex flex-1 items-center gap-4')}>
           <ProgressRing done={chores.todayDone} total={chores.todayTotal} settled={chores.overdueTotal === 0} />
           {chores.todayTotal === 0 ? (
             // HP-2a: 0 of 0 is an empty state, with the overdue count as the headline when there is one.
@@ -290,22 +336,25 @@ export function BentoGrid({
                 Nothing scheduled today
               </span>
               {chores.mineOpen > 0 && (
-                <span className="block text-sm text-muted-foreground"><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</span>
+                <span className={cn('block text-sm text-muted-foreground', work.length > 0 && styles.wideHide)}><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</span>
               )}
+              {work.length > 0 && <HouseholdSummaryLine work={work} />}
             </span>
           ) : (
             <span className="min-w-0">
               <span className="block font-headline text-2xl font-semibold tabular-nums">
                 <NumberTicker value={chores.todayDone} /> of <NumberTicker value={chores.todayTotal} /> done
               </span>
-              <span className="block text-sm text-muted-foreground">
+              {/* Beside the house the summary line below takes this line's place (HP-12d). */}
+              <span className={cn('block text-sm text-muted-foreground', work.length > 0 && styles.wideHide)}>
                 {chores.mineOpen === 0 ? 'Nothing assigned to you.' : <><NumberTicker value={chores.mineOpen} animateOnMount={false} /> open for you</>}
                 {chores.overdueTotal > 0 && <span className="text-warning">{` · ${chores.overdueTotal} overdue`}</span>}
               </span>
+              {work.length > 0 && <HouseholdSummaryLine work={work} />}
             </span>
           )}
         </span>
-        {chores.nextUp.length > 0 && (
+        {chores.nextUp.length > 0 && work.length === 0 && (
           // On touch the inline rows list next up, so this line is for hover screens.
           <span className={cn(styles.wideHide, styles.peekOnly, 'hidden text-sm text-muted-foreground lg:block')}>
             Next: <span className="text-foreground">{chores.nextUp[0].task}</span> ({chores.nextUp[0].dueLabel})
@@ -317,7 +366,8 @@ export function BentoGrid({
 
   if (permissions['shopping.view']) {
     const shopping = facts.shopping;
-    tiles.set('shopping', shopping ? (
+    const list = shopping ? shoppingTileRows(shopping.firstItems, shopping.neededItems) : null;
+    tiles.set('shopping', shopping && list ? (
       <Tile
         key="shopping"
         href="/shopping"
@@ -327,17 +377,20 @@ export function BentoGrid({
         hint={hint('shopping')}
         quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
         details={shopping.lists.map((list) => ({ key: list.id, label: list.name, value: String(list.needed) }))}
+        // HP-36a/HP-33c: the needed items with a tick replace the inline list rows.
+        inlineDetails={list.rows.length > 0 ? [] : undefined}
+        actions={list.rows.length > 0 ? (
+          <ShoppingTickRows
+            rows={list.rows}
+            more={list.more}
+            showLists={list.showLists}
+            canTick={Boolean(permissions['shopping.edit']) && shoppingLive}
+            tick={shoppingTick}
+          />
+        ) : undefined}
       >
         <Big value={shopping.neededItems} suffix={shopping.neededItems === 1 ? 'item needed' : 'items needed'} />
-        {shopping.firstItems.length > 0 ? (
-          <span className="flex flex-wrap gap-1.5">
-            {shopping.firstItems.map((item) => (
-              <span key={`${item.listId}-${item.id}`} className="max-w-full truncate rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">{item.name}</span>
-            ))}
-          </span>
-        ) : (
-          <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>
-        )}
+        {list.rows.length === 0 && <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>}
       </Tile>
     ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" unauthorized={unauthorized('shopping')} onRetry={onRetry} /> : <TileSkeleton key="shopping" />);
   }
@@ -354,22 +407,26 @@ export function BentoGrid({
         // The pets collection and each pet's feeding history: a stale count is never shown as current.
         hint={hint('pets', ...pets.pets.map((pet) => feedingFailureKey(pet.id)))}
         quickAdd={permissions['pets.addLogs'] && pets.pets.length > 0 ? { shortcut: 'log-feeding', label: 'Log a feeding' } : undefined}
-      >
-        {pets.pets.length === 0 ? (
-          <span className="text-sm text-muted-foreground">No pets yet.</span>
-        ) : (
+        // HP-33a: the rows sit beside the link so a hungry pet's row can carry "Fed".
+        actions={pets.pets.length > 0 ? (
           <ul className="space-y-1 text-sm">
             {pets.pets.slice(0, 3).map((pet) => (
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
-                <span className={cn('shrink-0 text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
-                  {pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className={cn('text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
+                    {pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
+                  </span>
+                  {/* Beside the house the house's own pet chips carry Fed. */}
+                  <PetFedButton pet={pet} className={styles.wideHide} />
                 </span>
               </li>
             ))}
             {pets.pets.length > 3 && <li className="text-xs text-muted-foreground">+<NumberTicker value={pets.pets.length - 3} animateOnMount={false} /> more</li>}
           </ul>
-        )}
+        ) : undefined}
+      >
+        {pets.pets.length === 0 && <span className="text-sm text-muted-foreground">No pets yet.</span>}
       </Tile>
     ) : failed.has('pets') ? <UnavailableTile key="pets" href="/pets" title="Pets" icon={PawPrint} testId="dashboard-tile-pets" unauthorized={unauthorized('pets')} onRetry={onRetry} /> : <TileSkeleton key="pets" />);
   }
@@ -504,6 +561,7 @@ export function BentoGrid({
 
   return (
     <section aria-labelledby="dashboard-grid-heading" className={cn(styles.tilesSection, 'mb-8')}>
+      {done.layer}
       {/* HP-12: beside the house the tiles speak for themselves; the heading stays for screen readers. */}
       <h2 id="dashboard-grid-heading" className={cn(styles.wideSrOnly, 'mb-3 font-headline text-xl font-semibold')}>Your Dashboard</h2>
       {descriptors.length > 0 ? (

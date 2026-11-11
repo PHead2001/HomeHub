@@ -320,7 +320,7 @@ test.describe('verification finding regressions', () => {
   test('shopping items save with a manual category and after categorization failure', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openAuthenticated(page, '/shopping', 'Shopping Center');
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
 
     await page.getByRole('button', { name: 'Add Item' }).click();
     let dialog = page.getByRole('dialog', { name: 'Add Item to List' });
@@ -412,7 +412,7 @@ test.describe('verification finding regressions', () => {
 
     await openAuthenticated(page, '/shopping', 'Shopping Center');
     await expect(page.getByRole('button', { name: 'Open actions for Weekly Groceries' })).toBeVisible();
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
     const shoppingWidths = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,

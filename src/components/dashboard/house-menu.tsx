@@ -47,8 +47,9 @@ export function HouseMenu({
         // a long weather city truncates inside the menu instead of widening it.
         className="min-w-[min(13rem,var(--radix-dropdown-menu-content-available-width,100vw))] max-w-[min(20rem,var(--radix-dropdown-menu-content-available-width,100vw))]"
         onCloseAutoFocus={(event) => {
-          // The city form just opened and focuses its own field, not the trigger.
-          if (weather.cityFocus) event.preventDefault();
+          // When this menu opened the city form, focus goes (back) to its field, not the
+          // trigger: the closing menu may have taken it from the field in the meantime.
+          if (weather.menuClosed()) event.preventDefault();
         }}
       >
         {weather.ready && (

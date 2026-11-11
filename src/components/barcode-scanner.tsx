@@ -40,6 +40,20 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
     },
   });
 
+  // Release the camera when the scanner unmounts (its dialog closed, or the tab
+  // that owns it was hidden): stop every track still attached to the video, in
+  // addition to react-zxing's own reader reset.
+  React.useEffect(() => {
+    const video = ref.current as HTMLVideoElement | null;
+    return () => {
+      const stream = video?.srcObject;
+      if (stream && typeof (stream as MediaStream).getTracks === 'function') {
+        (stream as MediaStream).getTracks().forEach((track) => track.stop());
+      }
+      if (video) video.srcObject = null;
+    };
+  }, [ref]);
+
   return (
     <div className="space-y-4">
       <div className="relative aspect-video w-full overflow-hidden rounded-md">

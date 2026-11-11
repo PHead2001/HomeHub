@@ -10,8 +10,8 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 
 ## User-Facing Capabilities
 
-- Categorize a shopping item against a supplied category list.
-- Generate a recipe suggestion from pantry inventory.
+- Categorize shopping items against a supplied category list: one batched call per submission (`categorizeGroceryItems`, up to 40 names, QA-6). The single-item `categorizeGroceryItem` action remains for the e2e household probe; no screen calls it any more.
+- Generate a recipe suggestion from pantry inventory, built around the stock that goes off soonest, with pantry and missing ingredients marked.
 - Summarize maintenance notes without changing the original log.
 - Generate a permission-filtered dashboard overview from exact server-calculated facts (shown as the AI rewrite of the dashboard's morning brief, on demand).
 - Read a command-palette quick-add sentence the deterministic parser could not read, into one structured, previewable intent (no writes).
@@ -27,6 +27,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 - `src/ai/action-auth.ts`
 - `src/ai/household-authority.ts`
 - `src/ai/overview-facts.ts`
+- `src/ai/overview-fact-helpers.ts`
 - `src/ai/overview-types.ts`
 - `src/ai/tasks/*`
 - `src/ai/flows/*`
@@ -34,6 +35,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 - `tests/ai/parse-command.test.ts`
 - `tests/unit/ai-strict-schema.test.ts`
 - `tests/unit/ai-openai-provider.test.ts`
+- `tests/unit/overview-facts.test.ts`
 - `tests/e2e/ai-openai.spec.ts`
 - `tests/e2e/ai-hardening.spec.ts`
 - `scripts/ai/openai-live-smoke.ts`
@@ -44,9 +46,9 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 
 `src/ai/openai-client.ts` creates one `openai` SDK client (`maxRetries: 0`, 30-second client timeout) on first use, and only when `OPENAI_API_KEY` exists. The SDK reads the key from the server environment; application code never passes or exposes its value. Model names are resolved centrally in `src/ai/model-config.ts`.
 
-Each model capability is a plain exported async function under `src/ai/tasks/` (`parseCommandFlow`, `categorizeGroceryItemFlow`, `generateRecipeFlow`, `summarizeMaintenanceLogFlow`, `generateHomeOverviewNarrativeFlow`). Each validates its input with its Zod schema first (a failure is `invalid_input` and no model call happens), then calls `generateStructured`, then validates its final output. Public `"use server"` actions under `src/ai/flows/` verify Firebase identity and permissions before invoking those tasks. `src/ai/structured-generation.ts` sends one Chat Completions request with the shared `HOMEHUB_AI_SYSTEM_INSTRUCTION` as the `system` message and the task instruction plus the bounded household input (inside an untrusted-data delimiter) as the `user` message. It applies per-flow timeouts through an abort signal, `max_completion_tokens` and (overview only) `reasoning_effort`, validates structured output with Zod, and logs only flow/model/duration/outcome metadata. Token usage is returned as `{ inputTokens, outputTokens, totalTokens }`.
+Each model capability is a plain exported async function under `src/ai/tasks/` (`parseCommandFlow`, `categorizeGroceryItemFlow`, `categorizeGroceryItemsFlow`, `generateRecipeFlow`, `summarizeMaintenanceLogFlow`, `generateHomeOverviewNarrativeFlow`). Each validates its input with its Zod schema first (a failure is `invalid_input` and no model call happens), then calls `generateStructured`, then validates its final output. Public `"use server"` actions under `src/ai/flows/` verify Firebase identity and permissions before invoking those tasks. `src/ai/structured-generation.ts` sends one Chat Completions request with the shared `HOMEHUB_AI_SYSTEM_INSTRUCTION` as the `system` message and the task instruction plus the bounded household input (inside an untrusted-data delimiter) as the `user` message. It applies per-flow timeouts through an abort signal, `max_completion_tokens` and (overview only) `reasoning_effort`, validates structured output with Zod, and logs only flow/model/duration/outcome metadata. Token usage is returned as `{ inputTokens, outputTokens, totalTokens }`.
 
-The homepage overview first uses Firebase Admin to aggregate a bounded facts object from only collections allowed by the caller's effective permissions. Personal chore facts include only chores assigned to the caller, matched by the shared `isAssignedTo` (`functions/src/shared/assignee.ts`) against the verified token's uid and email: a stored assignee email decides when both the chore and the token have one; otherwise the chore's `assignedToUid` must equal the caller's uid. Notification facts include only documents addressed to the caller: a stored `audience` decides on its own (`isAddressedToMember` in `functions/src/shared/notification-audience.ts`), and only documents without one fall back to the old target fields. Every free-text label in the facts (chore, item, asset and notification titles) has email-like parts replaced (`redactEmails` in `src/ai/redact.ts`) before it reaches the model. Exact metrics are rendered by the client independently of the optional narrative. The model receives no database handle, credentials, member identifiers, raw documents, Home Assistant credentials, arbitrary routes, or data from omitted sections. Overview output section references are filtered against supplied fact keys and route links come from application-owned mappings.
+The homepage overview first uses Firebase Admin to aggregate a bounded facts object from only collections allowed by the caller's effective permissions. Personal chore facts include only chores assigned to the caller, matched by the shared `isAssignedTo` (`functions/src/shared/assignee.ts`) against the verified token's uid and email: a stored assignee email decides when both the chore and the token have one; otherwise the chore's `assignedToUid` must equal the caller's uid. Notification facts include only documents addressed to the caller: a stored `audience` decides on its own (`isAddressedToMember` in `functions/src/shared/notification-audience.ts`), and only documents without one fall back to the old target fields. Pantry facts (`summarizeOverviewPantry` in `src/ai/overview-fact-helpers.ts`, pure and unit tested, with the shared `label` and `toDate` helpers) leave out used-up Pantry v2 batches (`packages` 0, still stored until deleted; `isUsedUpPantryDoc`) and count legacy documents without `packages` as before. Expiry is compared as household calendar days: the aggregation reads `households/{id}.timeZone` (the app default, America/Chicago, when unset or invalid) and the helper compares each date-only v2 `expiryDate` as stored, and each legacy ISO timestamp as its day in that zone, with the household's today (`householdToday`, `diffDays`), so a 2026-11-10 batch already counts as expired at 15:30 UTC that day in Asia/Tokyo; `nearestExpirations[].due` is that household day. Every free-text label in the facts (chore, item, asset and notification titles) has email-like parts replaced (`redactEmails` in `src/ai/redact.ts`) before it reaches the model. Exact metrics are rendered by the client independently of the optional narrative. The model receives no database handle, credentials, member identifiers, raw documents, Home Assistant credentials, arbitrary routes, or data from omitted sections. Overview output section references are filtered against supplied fact keys and route links come from application-owned mappings.
 
 ### Structured output: strict JSON schema
 
@@ -77,11 +79,13 @@ This module owns no persisted result collection.
 
 Input limits include 120-character grocery names, at most 60 recipe inventory items, and 8,000-character maintenance notes. Output schemas also bound titles, summaries, ingredient lists, and instruction lengths.
 
+Recipe (`generateRecipeFlow`, SH-31a): each inventory item is `{name (≤120), quantity (0 to 100,000), unit (≤40), expiresOn?, expiresInDays?}`; `expiresOn` is a date-only `yyyy-MM-dd` household day or null and `expiresInDays` an integer from 0 or null, both optional so an older page's request is still accepted. The instruction asks the model to build the recipe around the items with the fewest days left. The output lists `ingredients.used` as `{pantryItem, line}` (a supplied item's exact name and the recipe's amount) and `ingredients.needed` as `{name, line}` (a short shopping-list name and the amount). The model is untrusted: before the final output check the task normalises the lists against the input (`normalizeRecipeIngredients` in `src/lib/shopping/recipe.ts`): a used entry that does not name a supplied item (case and spacing aside) is moved to needed, a needed entry that names a supplied item is moved to used, the used name becomes the supplied spelling, names are cleaned and cut to 120 characters, each name is kept once and the lists stay within 60 used and 30 needed. Amounts on hand are never taken from the model; the pantry shows them from its own data. The deterministic provider uses the first two supplied items and also claims an item that was not supplied ("Fresh basil"), so tests see it moved to needed.
+
 ## Authentication, Roles, and Security
 
 Protected clients send the current Firebase ID token and household ID to the server action. Firebase Admin derives UID/email from the verified token, loads `households/{householdId}` and `members/{uid}`, rejects missing/pending/`newuser` membership, and applies member-document role presets and overrides. The approved member record is the only authority: without one (including legacy `memberEmails`, owner email/UID fields or `users/{email}` role data) the request is rejected.
 
-- Categorization requires `shopping.edit`.
+- Categorization (single and batched) requires `shopping.edit`. The batched action (`src/ai/flows/categorize-grocery-items-flow.ts`, flow `categorization-batch`, 10 requests a minute) takes one daily quota unit per submission, not one per item. Its task (`src/ai/tasks/categorize-grocery-items.ts`) asks for `{ results: [{ index, category }] }` (12 s timeout, 1200 output tokens) and returns one category per input name in input order; missing, duplicate or unknown answers become `Other`. Shopping items are already saved before the call, so a failure only leaves them under `Other`.
 - Recipe generation requires `shopping.view`.
 - Maintenance summaries require `maintenance.view`.
 - Dashboard overview requires `household.view`, then independently gates every fact section by its module permission.
@@ -117,7 +121,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 
 - OpenAI credentials never enter client bundles or flow inputs.
 - A manually selected Shopping category bypasses AI. Automatic failure, timeout, rate limit, invalid output, or configuration failure still saves exactly one item under `Other`.
-- Categorization accepts only a supplied category and adds `Other` without mutating caller input.
+- Categorization accepts only a supplied category and adds `Other` without mutating caller input; the batched flow always returns exactly one category per name.
 - Recipe generation rejects fewer than two inventory items and does not persist results.
 - Maintenance summaries do not overwrite notes or persist automatically.
 - Provider configuration, timeout, rate limit, refusal, malformed output, authentication, and permission failures return sanitized application errors.
@@ -132,7 +136,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 
 ## Validation
 
-- Run `npm.cmd run test:ai` for deterministic task success and failure contracts (`tests/ai/parse-command.test.ts` covers the palette reader: strict-schema conversion, references, allowed kinds, invented mileage, input validation and provider failures).
+- Run `npm.cmd run test:ai` for deterministic task success and failure contracts (the recipe flow's normalised ingredients included; `tests/ai/parse-command.test.ts` covers the palette reader: strict-schema conversion, references, allowed kinds, invented mileage, input validation and provider failures).
 - Run `npm.cmd run test:unit` for the strict-schema conversion of every flow output schema and the OpenAI provider contract (request body, response handling, SDK error mapping) against a stubbed `fetch`; it never reaches the network.
 - Run `npm.cmd run test:e2e:ai:local` for authenticated desktop/mobile Shopping, recipe, maintenance-summary, overview, barcode, partial-permission, and cross-household workflows.
 - Run `npm.cmd run test:rules` for emulator-only module permissions and Household A/B isolation.
