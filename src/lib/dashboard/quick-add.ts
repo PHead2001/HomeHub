@@ -440,7 +440,28 @@ function parseShopping(text: string, context: QuickAddContext): ShoppingIntent |
   return { kind: 'shopping', items, list: list ?? defaultList(context.lists), explicit: Boolean(verb) || explicitList };
 }
 
-function parseChore(text: string, context: QuickAddContext): ChoreIntent | null {
+/** What a command verb asks for: a feeding, a shopping item or a chore. */
+export type CommandVerbKind = 'feeding' | 'item' | 'chore';
+const BARE_VERBS: Array<[RegExp, CommandVerbKind]> = [
+  [/^(?:i\s+)?(?:fed|feed|fed up|feeding)$/i, 'feeding'],
+  [/^(?:please\s+)?(?:add|buy|get|grab|pick up|need|we need|i need|we're out of|out of)$/i, 'item'],
+  [/^(?:chore|task|todo|to do|remind (?:me|us)(?: to)?)$/i, 'chore'],
+];
+/**
+ * The command verbs on their own, with nothing to act on ("fed", "feed", "add",
+ * "buy", "chore"), after trimming, collapsing spaces and dropping end punctuation.
+ * Returns the kind of entry the verb asks for, or null when the text says more
+ * than a verb. A bare verb is never an entry itself (QA-1): "Add" or "Fed" is not
+ * a grocery item.
+ */
+export function bareCommandVerb(input: string): CommandVerbKind | null {
+  const text = collapse(input).replace(/[.!?:]+$/, '').trim();
+  for (const [pattern, kind] of BARE_VERBS) if (pattern.test(text)) return kind;
+  return null;
+}
+
+/** A chore sentence ("vacuum Friday for Sam"; "chore …" also works). Exported for the palette's Chore mode. */
+export function parseChore(text: string, context: QuickAddContext): ChoreIntent | null {
   const explicit = /^(?:chore|task|todo|to do|remind (?:me|us) to)[:\s]+(.+)$/i.exec(text);
   let body = explicit ? explicit[1] : text;
   const repeat = findRepeat(body, context.now);
@@ -479,6 +500,8 @@ function parseChore(text: string, context: QuickAddContext): ChoreIntent | null 
 export function parseQuickAdd(input: string, context: QuickAddContext): QuickAddIntent | null {
   const text = collapse(input).replace(/[.!?]+$/, '');
   if (text.length < 2 || text.length > 200) return null;
+  // A verb alone ("fed", "add ") names nothing to add: never a grocery item (QA-1).
+  if (bareCommandVerb(text)) return null;
 
   const feeding = parseFeeding(text, context);
   if (feeding) return feeding;
