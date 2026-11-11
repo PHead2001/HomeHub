@@ -66,7 +66,7 @@ Primary topology:
 - `households/{householdId}/rooms/{roomId}`
 - `households/{householdId}/chore-settings/preferences` (household chore preferences: `leaderboardEnabled`)
 - `households/{householdId}/stats/chores-{year}` (yearly totals of completed chores that retention removed: `year`, `completed`, `byAssignee`, `names`, `updatedAt`, and, on documents a release C departure touched, `aliases` (uid of someone who left -> their legacy stats key) until `scripts/ops/rekey-chore-stats.mjs` folds and removes it; written only by the server)
-- `households/{householdId}/ops/former-members` (`secret`, `createdAt`, `identities`: the key and the settled identities of people who have left, for older chores and yearly stats, written by `scripts/ops/rekey-chore-stats.mjs` and `scripts/ops/scrub-member-emails.mjs`; no client access, by the household catch-all rule; see [Chores](../chores/README.md), "Assignee identity")
+- `households/{householdId}/ops/former-members` (`secret`, `createdAt`, `identities`: the key and the settled identities of people who have left, for older chores and yearly stats, written by `scripts/ops/rekey-chore-stats.mjs`, `scripts/ops/scrub-member-emails.mjs` and by leaving and removal (the leaver's uid under the key of their email); no client access, by the household catch-all rule; see [Chores](../chores/README.md), "Assignee identity")
 - `households/{householdId}/shopping-lists/{listId}` with `items` and `config/categories`
 - `households/{householdId}/pantry-inventory/{itemId}`
 - `households/{householdId}/barcode-library/{barcode}`

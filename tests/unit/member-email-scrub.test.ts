@@ -4,6 +4,7 @@ import { choreStatsAssigneeKey, choreStatsMemberKey } from '../../functions/src/
 import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { choreEmailScrubPlan } from '../../scripts/ops/shared-email-scrub.mjs';
 import { choreMemberEmailPlan, memberRecordEmailPlan } from '../../scripts/ops/member-email-scrub.mjs';
+import { formerMemberKey as formerMemberKeyTs } from '../../functions/src/shared/former-member';
 import { FORMER_KEY_PREFIX, formerEvidence, formerMemberKey, proposeFormerIdentity, unknownLegacyKey } from '../../scripts/ops/former-member-key.mjs';
 import {
   choreStatsAssigneeKeyJs,
@@ -176,6 +177,8 @@ describe('former-member keys', () => {
     assert.ok(!key.includes('lee'));
     assert.equal(isLegacyStatsKey(choreStatsMemberKey(key)), false);
     assert.equal(formerMemberKey('secret-a', ''), '');
+    // The server (departures) and the scripts derive the same key.
+    for (const email of ['Lee@Example.test ', 'kim@example.test', '']) assert.equal(formerMemberKeyTs('secret-a', email), formerMemberKey('secret-a', email));
     assert.equal(formerMemberKey('', 'lee@example.test'), '');
   });
 
