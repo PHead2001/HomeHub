@@ -36,6 +36,8 @@ export type OverviewGrocery = {
   hasPendingWrites: boolean;
   store: ShoppingStore | null;
   attributionFor: (item: ShoppingListItem) => string | null;
+  /** The row's photo as the open list shows it (the live Barcode Library first, `rowPhoto`). */
+  photoFor: (item: ShoppingListItem) => string | null;
   onToggle: (item: ShoppingListItem) => void;
   /** Why adds and ticks must wait (`writeWait`), or null when they may run. */
   writeWait: 'loading' | 'retrying' | null;
@@ -223,6 +225,7 @@ export function ShoppingOverview({
                               onToggle={grocery.onToggle}
                               onEdit={() => undefined}
                               attribution={grocery.attributionFor(item)}
+                              photoUrl={grocery.photoFor(item)}
                             />
                           ))}
                         </AnimatePresence>

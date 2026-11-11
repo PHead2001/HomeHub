@@ -58,8 +58,15 @@ async function seed() {
   for (const [id, data] of PANTRY_BATCHES) await household.collection('pantry-inventory').doc(id).set(data);
 }
 
+// A scanned product whose photo was replaced in the Barcode Library (data URLs: no Storage needed).
+const PHOTO_BARCODE = '0000000000017';
+const libraryRef = household.collection('barcode-library').doc(PHOTO_BARCODE);
+const STORED_PHOTO = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+const LIBRARY_PHOTO = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
 async function cleanup() {
   await firestore.recursiveDelete(listRef);
+  await libraryRef.delete();
   await preferences.delete();
   for (const [id] of PANTRY_BATCHES) await household.collection('pantry-inventory').doc(id).delete();
 }
@@ -179,6 +186,27 @@ test.describe('shopping overview: the Grocery list on the overview', () => {
     } finally {
       await a.context.close();
       await b.context.close();
+    }
+  });
+
+  test("rows show the Barcode Library's current photo, as in the open list", async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    await items.doc('ov-scanned').set({ name: 'E2E ov scanned', quantity: 1, category: 'Snacks', status: 'needed', createdAt: fixedNow, barcode: PHOTO_BARCODE, imageUrl: STORED_PHOTO });
+    await libraryRef.set({ name: 'E2E ov scanned', imageUrl: LIBRARY_PHOTO });
+    const a = await session(browser);
+    try {
+      const section = await openOverview(a.page);
+      const photo = section.locator('[data-row-id="ov-scanned"] img');
+      await expect(photo).toHaveAttribute('src', LIBRARY_PHOTO);
+      // Replaced in the library: the overview row follows live, like the open list's row.
+      await libraryRef.update({ imageUrl: STORED_PHOTO });
+      await expect(photo).toHaveAttribute('src', STORED_PHOTO);
+      await libraryRef.update({ imageUrl: LIBRARY_PHOTO });
+      await expect(photo).toHaveAttribute('src', LIBRARY_PHOTO);
+      await section.getByRole('button', { name: `Open ${LIST_NAME}` }).click();
+      await expect(a.page.getByTestId('open-list').locator('[data-row-id="ov-scanned"] img')).toHaveAttribute('src', LIBRARY_PHOTO);
+    } finally {
+      await a.context.close();
     }
   });
 

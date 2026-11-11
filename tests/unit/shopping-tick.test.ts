@@ -63,6 +63,23 @@ describe('shared Shopping tick (HP-33c)', () => {
     assert.equal(recorded.length, 1);
   });
 
+  test('the own-tick memory is settled when the write is answered: acknowledged, or forgotten when refused', async () => {
+    const settled: string[] = [];
+    const ok = fakeIO();
+    tickShoppingItem({ ...ok.io, settleLocal: (_p, opId, outcome) => void settled.push(`${opId}:${outcome}`) }, { path, uid: 'u1', current: { status: 'needed' } });
+    const refused = fakeIO({ settle: { error: deniedError } });
+    const started = tickShoppingItem({ ...refused.io, opId: () => 'op-2', settleLocal: (_p, opId, outcome) => void settled.push(`${opId}:${outcome}`) }, { path, uid: 'u1', current: { status: 'needed' } });
+    if (started.status === 'ticked') await started.write.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(settled.sort(), ['op-1:acknowledged', 'op-2:refused']);
+    // A write still pending (offline) settles nothing: the tick stays pending, never aged out.
+    const pending = fakeIO({ settle: 'pending' });
+    const before = settled.length;
+    tickShoppingItem({ ...pending.io, settleLocal: () => void settled.push('x') }, { path, uid: 'u1', current: { status: 'needed' } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(settled.length, before);
+  });
+
   test('never re-ticks an item the live list shows as purchased, and never writes for a gone item', () => {
     const { io, calls } = fakeIO();
     assert.deepEqual(tickShoppingItem(io, { path, uid: 'u1', current: { status: 'purchased' } }), { status: 'already-purchased' });
