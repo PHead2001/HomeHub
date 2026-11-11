@@ -1,6 +1,6 @@
 # HomeHub audit 2: section by section
 
-> **Public copy.** 18 findings about privacy and permissions are withheld until their fixes are live (NO-2, NO-6, NO-8, NO-15, HO-2, HO-6, HO-8, HO-9, HO-10, HO-11, HO-12, QA-7, QA-8, BL-17, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
+> **Public copy.** 13 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-2, HO-6, HO-8, HO-9, HO-10, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
 
 One section at a time, nitpicked. The primary device is a **wall-mounted tablet in landscape, one per room** (always on, touch only, read from across the room). Phone portrait comes second, desktop third.
 
@@ -632,18 +632,18 @@ The experience is noisy and person-centric in a house of shared screens:
 - the same overdue chore is pushed every day and never clears;
 - pushes fire at midnight;
 - a tablet signed in as Mom acts as Mom;
-- one item withheld.
+- signing out doesn't stop a device's pushes.
 
 ### 7.1 Broken (fix these first)
 
 | # | Finding | Why it matters | Fix | Effort | Verified |
 |---|---|---|---|---|---|
 | NO-1 | **The same overdue chore is notified every day, often twice, and never clears.** The overdue alert's ID includes the date (`chore-reminders.ts:75-87`, `${uid}-overdue-${today}`), so each day makes a new document and a new push; the daily reminder also counts overdue chores, a second push; chore reminders are never resolved, so finishing the chore leaves the alert for up to 7 days. Live: 4 unread, but only 2 things: "sweep floor is overdue" today *and* yesterday, plus "Flea & Tick is overdue" *and* a stale "is due today". | Noise on every phone and clutter on every tablet; people learn to ignore it. | One stable notification per person ("open chores") updated in place, pushing only when the set grows (at most once a day); resolve it when nothing is overdue; fold overdue into the daily reminder. | M | Live + Code |
-| NO-2 | *Withheld from the public copy until the fix is live.* | | | | |
+| NO-2 | **Signing out doesn't stop a device's pushes.** There's no `deleteToken` and no token removal on sign-out anywhere in the app (verified; the server does remove tokens that have gone invalid); the settings card has no "turn off". The same device can sit in Mom's and Dad's token lists at once. | After Mom signs out of a tablet or a borrowed phone, it keeps receiving her private pushes; if Dad enables push there, it gets both. | On logout, remove this device's token (`arrayRemove`) and `deleteToken`; a "Turn off on this device" button; device labels and last-seen (rules change). | M | Code |
 | NO-3 | **Pushes fire around midnight.** Maintenance and medication reminder states change at local midnight, and the first hourly run after it creates documents, which push immediately (`reminders.ts:339-380`, `index.ts:47`). There are no quiet hours. | Every phone in the house (kids included) buzzes between 00:00 and 01:00: "Maple's flea prevention is due today". | Create the document any time, but hold the push until a morning hour (or `notBefore`); per-member quiet hours (NO-24). | Q–M | Code |
 | NO-4 | **The overdue alert ignores the reminder setting** (only checks the time is after 07:00, `chore-reminders.ts:75`). | Kids and partners get a 7 am push every day with no way to opt out. | Respect a setting (and the member's reminder time). | Q | Code |
 | NO-5 | **Push tokens are never refreshed, and the UI says "active" when it may not be** (`PushNotificationSettings.tsx:27-33,103-108`: permission granted means "active", with no button). Token rotation, a re-registered worker or a server-removed token silently ends push. | The likely cause of "my phone stopped getting notifications", with no way to fix it. | On each signed-in load with permission, get the token and upsert it if it's missing; a real status ("This device is registered" / "Re-connect"). | M | Code |
-| NO-6 | *Withheld from the public copy until the fix is live.* | | | | |
+| NO-6 | **The bell and dashboard show only the latest 30 household documents,** filtered client-side, so other members' targeted reminders crowd yours out within about 3 days in a 5-person house (`notification-bell.tsx:516-521`, `use-dashboard-data.ts:211`). | Too few items, or a wrong count, in the bell and tile. | An `audience` field queried with `array-contains-any [uid, '*']` (also enables NO-15's privacy rule). | M | Code |
 | NO-7 | **Counts disagree:** the bell and tile exclude resolved items and cap at 10; the center's Unread doesn't exclude resolved items and isn't capped (an already-given dose shows under Unread with a "Resolved" badge). The bell's "Dismiss all" only dismisses the 10 shown. | "9+" in the bell, "Unread 12" in the center; "Dismiss all" that doesn't. | Exclude resolved items everywhere; count before capping; dismiss everything active. | Q | Code |
 | NO-8 | *Withheld from the public copy until the fix is live.* | | | | |
 | NO-9 | **Tapping a push opens a new window** instead of reusing the open app: the worker compares paths without the query string (`api/sw/route.ts:128-136`), and most links have one. Opening a push also doesn't mark it read. | A stack of HomeHub windows on phones, and an unread badge that stays. | Match path plus query, or focus and navigate the first window; pass `?n=<id>` and mark it read on landing. | Q–M | Code |
@@ -659,7 +659,7 @@ The experience is noisy and person-centric in a house of shared screens:
 | NO-12 | *(On tablets the fix is replaced by section 15; see 16.2 for what still applies.)* **A wall tablet signed in as Mom acts as Mom.** It shows her targeted reminders and approval notices; a kid dismissing or opening one on the tablet clears it on Mom's phone; the bell count is hers; with push enabled, the tablet gets all her private pushes. | A per-device **Shared display** mode: only household-wide items, no targeted ones, never write read state, "dismiss" is a local hide (or "Who's this?"), never register a push token. Pairs with HP-30, CH-11 and CA-22. | B | Live + Code |
 | NO-13 | **No household feed:** the center is "Last 7 days of household notification history" in one person's view; there's no "message the house" and no banner for shared screens. | **House announcements** (NO-25) and a household-only filter. | M | Live |
 | NO-14 | **No "mark all read",** and items only become read when opened, so the phone's app badge stays up. | "Mark all read" in the bell and center (optionally after the bell has been open for 2 s). | Q | Code |
-| NO-15 | *Withheld from the public copy until the fix is live.* | | | |
+| NO-15 | *(Fix tightened: see section 17.)* **Targeted notifications are readable by the whole household:** the rules let anyone with view permission read every document; targeting is client-side only (`firestore.rules:496`). | The `audience` field from NO-6, plus a rule requiring it to include the reader or `*`. | M | Code |
 | NO-16 | **Targets and layout:** <br>• the visible × is a 24 px non-button `<div>` inside the card's link (Live; the real "Dismiss …" buttons are hidden layers); <br>• center dismiss is 32 px, bell dismiss 28 px, the badge 10 px; <br>• the center is one full-width column at 1280 px (long lines, the × far away); <br>• the bell dropdown is a fixed 320×256 px (about 3 items on a tablet); <br>• filter chips scroll off-screen on phones with no hint. | A real 44 px dismiss button on touch; `max-w-3xl` or 2 columns with a sticky filter bar; a bell dropdown sized to the screen; a fade on the chip row. | Q | Live + Code |
 | NO-17 | **Enabling push on an iPhone dead-ends:** outside an installed home-screen app, Safari has no Notification API and the card just says "This browser does not support push notifications". The setup also shows two toasts ("Permissions granted!" then "Subscription Successful!") and triggers the OS prompt without explaining first. | Detect iOS outside the installed app: "Add HomeHub to your Home Screen, open it from there, then enable." One outcome toast; a short explanation before the prompt (denial is usually permanent). | Q | Code |
 
@@ -670,7 +670,7 @@ The experience is noisy and person-centric in a house of shared screens:
 | NO-18 | **The filter chips ignore permissions** (a child sees always-empty Shopping, Maintenance and Automation chips) and there's no Household/System chip. | Build the chips from viewable categories; add "Household". | Q | Live + Code |
 | NO-19 | **Push content is generic** ("Overdue chores", "Daily chore reminder"), text only, with no actions; chore reminders link to the generic Chores page. | Specific titles ("Sweep the floor is 2 days overdue"); deep links to the item (NO-23 actions). | Q–M | Code |
 | NO-20 | **Accessibility:** <br>• the bell's dismiss buttons sit inside a Radix menu, where Tab is blocked (keyboard can't reach them); <br>• new notifications aren't announced; <br>• unread in the bell is colour only; <br>• items without a link render as links to `#`; <br>• dismissed cards use `opacity-70` on muted text (contrast risk); <br>• mouse users get a grab cursor they can't use. | A popover with a real list (or menu items); a polite live region; an "Unread" dot; buttons for linkless items; token colours; grab cursor only on touch. | Q–M | Code |
-| NO-21 | **Performance:** <br>• the center's query has no limit; <br>• the hourly upkeep reads whole collections (all chores including 90 days completed, every pet's full medication history, every profile) 24 times a day, plus again on every Chores page load. | Audience filter and `limit(100)` with "Load more"; bounded upkeep queries; throttle the on-demand sync. | M | Code |
+| NO-21 | **Performance:** <br>• the center's query has no limit and reads everyone's targeted documents; <br>• the hourly upkeep reads whole collections (all chores including 90 days completed, every pet's full medication history, every profile) 24 times a day, plus again on every Chores page load. | Audience filter and `limit(100)` with "Load more"; bounded upkeep queries; throttle the on-demand sync. | M | Code |
 
 ### 7.4 Wow and value ideas (built on existing code)
 
@@ -680,7 +680,7 @@ The experience is noisy and person-centric in a house of shared screens:
 | NO-23 | **Actionable pushes** | "Mark done" on a chore, "Logged dose" on a medication, "Snooze till tonight" on maintenance (it already has `snoozedUntil`). Simplest safe version: the action opens a prefilled deep link. | M–B |
 | NO-24 | **Per-member preferences** | Muted categories, quiet hours in the member's zone (pushes held until morning; items still in the bell), and "this device is a shared display, don't push". | M |
 | NO-25 | **Message the house** | Owners and admins write "Dinner at 6" or "Plumber coming 2 pm" (the rules already allow general/system notifications); it pins as a banner on shared-display tablets until it expires, optionally pushing to phones. | M |
-| NO-26 | **My devices** | A list of this member's registered devices (label, last seen) with "Turn off" for each; it lets people retire an old tablet. | M |
+| NO-26 | **My devices** | A list of this member's registered devices (label, last seen) with "Turn off" for each; it solves NO-2 and lets people retire an old tablet. | M |
 | NO-27 | **Background app badge** | The worker updates the phone's icon count when a push arrives (today it only updates while the app is open). | Q |
 
 ### 7.5 Looks good: keep as is
@@ -697,8 +697,8 @@ The experience is noisy and person-centric in a house of shared screens:
 ### 7.6 Suggested order
 
 1. **Stop the noise:** NO-1 one overdue notification per person, NO-4 respect the setting, NO-3 no midnight pushes, NO-10 approvals.
-2. **Make push trustworthy:** NO-2, NO-5 refresh tokens, NO-9 reuse windows and mark read, NO-17 iPhone guidance.
-3. **Correct counts:** NO-6, NO-15, NO-7, NO-8, the NO-11 list.
+2. **Make push trustworthy:** NO-2 sign-out removes the token, NO-5 refresh tokens, NO-9 reuse windows and mark read, NO-17 iPhone guidance.
+3. **Correct counts:** NO-6 audience field (with NO-15 privacy), NO-7, NO-8, the NO-11 list.
 4. **Shared screens:** NO-12 shared-display mode, NO-14 mark all read, NO-16 targets and layout, NO-25 message the house.
 5. **Wow:** NO-22 digest, NO-24 quiet hours and preferences, NO-23 actionable pushes, NO-26 my devices, NO-27.
 
@@ -842,7 +842,7 @@ The gaps:
 | PR-7 | **Loading and error states:** <br>• "Sign in to see your profile" flashes for a signed-in member while auth restores (`page.tsx:9,20`); <br>• if the profile read fails, the skeleton spins forever with no retry. | First impressions, and a dead end on a wall tablet. | Wait for loading; an error state with Retry. | Q | Code |
 | PR-8 | *Withheld from the public copy until the fix is live.* | | | | |
 | PR-9 | **Avatar gaps:** <br>• the old photo is never deleted (on replace or remove); <br>• the extension comes from the file name ("IMG" → `.IMG`); <br>• photos aren't resized, so a 5 MB original downloads on every avatar render on every wall tablet; <br>• EXIF data, including GPS, is kept on files readable by any signed-in user with the link; <br>• HEIC is rejected client-side although the rules allow it. | Storage waste, slow tablets, and location leaks from photos. | Resize to 512 px WebP/JPEG in the browser (this also strips EXIF); derive the extension from the type; delete the previous file. | M | Code |
-| PR-10 | **Smaller bugs:** <br>• The logout toast never shows in production (the page reloads first), and the up-to-3-second flush has no spinner, so it can be tapped twice. <br>• (One item withheld: NO-2.) <br>• Saving the profile re-reads membership and the household (unnecessary dependencies). <br>• The README says the E2E login endpoint needs a non-production runtime; it doesn't check that, though it's still unreachable in production. | Each one is small. | One small fix each. | Q | Code |
+| PR-10 | **Smaller bugs:** <br>• The logout toast never shows in production (the page reloads first), and the up-to-3-second flush has no spinner, so it can be tapped twice. <br>• Logout leaves this device's push token on the account (NO-2). <br>• Saving the profile re-reads membership and the household (unnecessary dependencies). <br>• The README says the E2E login endpoint needs a non-production runtime; it doesn't check that, though it's still unreachable in production. | Each one is small. | One small fix each. | Q | Code |
 
 ### 9.2 Shared tablets (the biggest wins)
 
@@ -959,7 +959,7 @@ The code review traced more: "fed Maple and Oreo" logs Maple only; "every week o
 |---|---|---|---|---|
 | QA-6 | **Every new item asks the AI for a category,** one daily quota request each, with a 5 s race; in a multi-item add, later items likely time out to "Other" while still consuming quota (same as SH-16). | One batched categorize call per submission, or a local keyword map first. | M | Code (needs live check) |
 | QA-7 | *Withheld from the public copy until the fix is live.* | | | |
-| QA-8 | *Withheld from the public copy until the fix is live.* | | | |
+| QA-8 | *(Fix tightened: see section 17.)* **The rules check permission, not shape or assignee:** chore creation doesn't check `chores.assign`; chore templates, maintenance, items and feeding logs have no field validation; `loggedByUid` isn't tied to the signed-in user. The quick-add assignee restriction is client-only. | Field allowlists and `loggedByUid == request.auth.uid` in the rules; check assign permission on create. | M | Code |
 | QA-9 | **No Undo after saving,** and no "already added" or "fed 5 min ago" check (two tablets can log the same meal). | Undo on the success toast (the created IDs are already returned), allowed for 10 s even without delete via a narrow rule; a "Last fed 10 min ago by Sam" line in the feeding preview (QA-17). | M | Code |
 
 ### 10.4 Search quality
@@ -1017,7 +1017,7 @@ The code review traced more: "fed Maple and Oreo" logs Maple only; "every week o
 2. **Wall tablet:** QA-13 big Speak and Add buttons, QA-14 keyboard-safe palette, QA-16 voice, QA-22 voice-first flow.
 3. **Parser depth:** QA-4 repeats, pets and names; QA-19 editable chips; QA-17 last fed.
 4. **Search:** QA-10 index rooms, members and settings; QA-11 matching; QA-12 deep links and cache; QA-18 recent items.
-5. **Safety and polish:** QA-6 batched categorize, QA-7, QA-8, QA-9 Undo, QA-20, QA-21, QA-5.
+5. **Safety and polish:** QA-6 batched categorize, QA-7, QA-8 rules, QA-9 Undo, QA-20, QA-21, QA-5.
 
 ---
 
@@ -1185,7 +1185,7 @@ The page itself is a plain gallery: tapping a card does nothing, and there's no 
 | BL-14 | **No live updates:** a one-time `getDocs` with a full reload after each save, so other members' additions don't appear; and not the offline-aware read that Pantry uses. | `onSnapshot` plus the offline-aware read. | Q | Code |
 | BL-15 | **Empty state shows two buttons that do the same thing** ("Add Item" and "Save a product"); "Back to Shopping" is a full-width button above the content on the phone. | Keep the empty-state button only when empty; move Back to a small link or drop it (the tab bar covers it). | Q | Live |
 | BL-16 | **Pantry photos are matched by product name, not barcode** (`pantry.ts:234-237`); renaming either side loses the photo. | Store `barcode` on pantry items (shopping items already do) and match on it first. | M | Code |
-| BL-17 | *Withheld from the public copy until the fix is live.* | | | |
+| BL-17 | **Rules don't check field shapes:** anyone with `shopping.edit` can set `imageUrl` to any external URL (shown unoptimised). Household members are trusted, so this is low risk. | Bounded string fields; `imageUrl` limited to Firebase Storage or Open Food Facts. | Q | Code |
 | BL-18 | **Accessibility:** card titles are `h2` under the "Your Library" `h2`; no status text in the scanner ("Camera ready", "Scanned 4006…"); focus stays put after a scan. | `h3`; a polite live status; move focus to Product Name after a scan. | Q | Code |
 
 ### 12.4 Wow and value ideas
@@ -1213,7 +1213,7 @@ The page itself is a plain gallery: tapping a card does nothing, and there's no 
 1. **Trust:** BL-1 the scan count, BL-3 overwrite, BL-4 delete undo, BL-5 photo leak.
 2. **Wall tablet scanning:** BL-2 camera switch, BL-6 errors, BL-7 feedback, torch and formats, BL-8 camera cleanup.
 3. **Make it useful:** BL-13 card actions, BL-9 "Save to library" from not-found, BL-10 optional photo, BL-11 compression, BL-19 library that fills itself.
-4. **Data quality:** BL-12 barcode normalisation, BL-16 pantry by barcode, BL-14 live updates, BL-17.
+4. **Data quality:** BL-12 barcode normalisation, BL-16 pantry by barcode, BL-14 live updates, BL-17 rules.
 5. **Wow:** BL-20 kitchen scan station, BL-21, BL-22, BL-23; BL-15, BL-18 polish.
 
 ---
@@ -1313,7 +1313,7 @@ The big value is in bringing a few chosen devices to the house drawing and the w
 | 4 Maintenance | 33 (11) | Careful reminder logic. Stale "today", no live updates, saves overwrite, forms too long. |
 | 5 Chores | 33 (10) | Strong fundamentals. No live data, points can be farmed, deleted repeats come back. |
 | 6 Calendar | 27 (7) | Good foundation. You can't tick anything off; too small for a wall. |
-| 7 Notifications | 27 (11) | Careful plumbing. Daily duplicate overdue alerts; one item withheld. |
+| 7 Notifications | 27 (11) | Careful plumbing. Daily duplicate overdue alerts; sign-out doesn't stop pushes. |
 | 8 Household | 28 (8) | Careful core. one item withheld; no shared-tablet, kid or guest path. |
 | 9 Profile | 26 (10) | Appearance is well done. Failed saves look successful; no text size. |
 | 10 Search and quick add | 25 (5) | Excellent safety (always Confirm). The parser misreads common sentences; weak on touch. |
@@ -1346,7 +1346,7 @@ The big value is in bringing a few chosen devices to the house drawing and the w
 - **Chores and Calendar:** tick off from the calendar (CA-8), chore details (CH-15), who did it (CH-27), rotations (CH-28), per-person view (CH-14, CA-21), phone calendar sync (CA-25).
 - **Shopping:** live shared lists (SH-28), trip mode (SH-33), "out of this" (SH-29), list editing (SH-8), aisle order (SH-21).
 - **Maintenance:** what's due on Overview (MA-12), receipt photo in the log (MA-16), odometer quick update (MA-19).
-- **Notifications:** mark all read (NO-14), NO-2, actionable pushes (NO-23), household message (NO-25).
+- **Notifications:** mark all read (NO-14), stop pushes on sign-out (NO-2), actionable pushes (NO-23), household message (NO-25).
 - **Household settings:** time zone and week start (HO-19, CA-16).
 - **Shell:** error screens, update flow, offline pill, tablet rail (SL-1, SL-2, SL-10, SL-5).
 
@@ -1467,7 +1467,7 @@ The whole file was re-read end to end for contradictions, by an independent revi
 
 **How to read the file from here:** where two items disagree, the ruling in this section wins. 16.1–16.4 are settled; 16.5 is the build order.
 
-**Fixed directly in the text:** four wrong cross-references (HP-3, HP-10, HP-24, CA-10); the NO-2 wording; the notes in 1.2, 10.5, 11.2 and 11.4; WT-4 (added motion, sound, weather and seasonal touches); WT-14 (top bar wording); the list of superseded items in section 15; and the 15.5 steps.
+**Fixed directly in the text:** four wrong cross-references (HP-3, HP-10, HP-24, CA-10); the NO-2 wording about token removal; the notes in 1.2, 10.5, 11.2 and 11.4; WT-4 (added motion, sound, weather and seasonal touches); WT-14 (top bar wording); the list of superseded items in section 15; and the 15.5 steps.
 
 ### 16.1 Open choices, settled with the recommended option
 
@@ -1578,11 +1578,11 @@ Section 16.5 had no step for these, and the tablets add a new reader of househol
 
 | Finding | What it is | Note on the fix |
 |---|---|---|
-| NO-15, NO-6 | *Withheld from the public copy until the fix is live.* | |
+| NO-15, NO-6 | Targeted notifications can be read by other members; filtering is in the browser only. | The `audience` rule must be enforced in the database rules, not only in the query. |
 | HO-9, HO-10 | *Withheld from the public copy until the fix is live.* | |
-| QA-8 | *Withheld from the public copy until the fix is live.* | |
+| QA-8 | Several saves have no field, assignee or author checks in the rules. | See WT-18 for how the author check works with tablets. |
 | HO-2 | *Withheld from the public copy until the fix is live.* | |
-| NO-2 | *Withheld from the public copy until the fix is live.* | |
+| NO-2 | Signing out doesn't stop that device's pushes. | Remove the device's push registration on sign-out. |
 | HO-8 (activity log part) | *Withheld from the public copy until the fix is live.* | |
 
 These are findings from reading the code; none was exploited in testing.
@@ -1592,7 +1592,7 @@ These are findings from reading the code; none was exploited in testing.
 | # | Decision | Detail |
 |---|---|---|
 | WT-17 | **A PIN reset can never raise anyone's authority.** | As first written, an admin could reset the owner's PIN, tap the owner's face and act as owner. Now: <br>• nobody can set another adult's PIN to a value they know; an admin can only **clear** the PIN of someone with a lower role, and that person sets a new one from their own signed-in phone; <br>• the owner's PIN can only be changed by the owner, signed in as themselves; <br>• an admin sets PINs only for kid profiles with no sign-in (D-3); <br>• changing or clearing a PIN ends every unlocked tablet session for that person at once. |
-| WT-18 | **Three things are recorded separately: the device, the selected member, and how they were verified.** | A face tap is **attribution, not proof of identity**. Every tablet action goes through the server, which checks the device is registered, the selected member belongs to the household, the action is allowed at that level, and (for PIN actions) that an unlocked session exists. The activity log shows "as Alex (face)" or "as Alex (PIN)" and which tablet. <br>(A note about QA-8 is withheld.) <br>A PIN never unlocks what WT-10 keeps off tablets (personal notifications, profile, push). |
+| WT-18 | **Three things are recorded separately: the device, the selected member, and how they were verified.** | A face tap is **attribution, not proof of identity**. Every tablet action goes through the server, which checks the device is registered, the selected member belongs to the household, the action is allowed at that level, and (for PIN actions) that an unlocked session exists. The activity log shows "as Alex (face)" or "as Alex (PIN)" and which tablet. <br>This also corrects QA-8: "the author must be the signed-in user" applies to personal accounts; on a tablet the signed-in identity is the device, and a selected kid may have no account. <br>A PIN never unlocks what WT-10 keeps off tablets (personal notifications, profile, push). |
 | WT-19 | **Removal, offline and re-pairing** (settles the open item in 15.4). | **Removed tablet:** the server refuses its requests from that moment (checked on the server, not just a sign-out message); the screen shows "This tablet was removed" and the setup screen; any unlocked PIN session ends; cached household data on it is cleared; changes it had queued are discarded. <br>**Offline tablet:** shows the last synced view with an "Offline" marker; face-level actions queue and sync later; anything needing a PIN waits for a connection, because PINs are checked on the server. Queued actions are re-checked when they sync and dropped if the member or tablet has lost access. <br>**Browser reset or replaced hardware:** settings live on the device record, but the tablet's credentials do not survive a reset. The Devices list gets **"Re-pair this tablet"**, which issues a code that reconnects the same record, so no duplicate is created and its settings are kept. |
 | WT-20 | **"A face is enough" only where Undo really works.** | An action is face-level only once its Undo exists and has been tested for: another device editing the same thing, a page reload, and a dropped connection. Until then it needs a PIN. This applies first to "put away and clear" (SH-2, SH-17), whose combined reversal (pantry credit and list clear) isn't yet defined. Undo is done on the server and must not overwrite later changes by someone else. <br>Undoing a record does not undo the physical act: feeding and medication still need the "last fed / last dose" check (PE-23), whatever Undo allows. |
 | WT-21 | **Guests appear in "Who's here?" only while a guest pass is active** (owner, 2026-11-09). | Hidden by default: the Guest role can only look, so a guest face would do nothing. An admin creates a **guest pass** (HO-24), for example "Babysitter, until 11 pm, can feed pets and tick chores". That adds a temporary face with no account behind it; it disappears when the pass ends, and everything done under it is logged under that name. Until guest passes are built, guests do not appear. |
