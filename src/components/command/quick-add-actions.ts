@@ -107,21 +107,29 @@ export async function logFeeding({
 }): Promise<FeedPetResult> {
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
   // type of the pet's latest feeding, and no comment.
-  const latest = await latestFeedings(householdId, petId);
-  // The newest 20 per date shape, as the pet cards read them: today's count
-  // (household day) feeds the complete-day check when the state lags behind.
-  const known = knownFromLogs(latest.flat(), new Date(), timeZone);
+  const { food, known } = await feedingHistory(householdId, petId, timeZone);
   return feedPet({
     householdId,
     petId,
     portion: { amount, unit },
-    food: foodTypeFromLatest(latest),
+    food,
     confirm,
     timeZone,
     known,
     user: { uid: viewer.uid, name: loggerName(viewer) },
     onLateError,
   });
+}
+
+/**
+ * What a quick feeding reuses from the pet's history: the food type of its latest
+ * feeding and, from the newest 20 per date shape as the pet cards read them,
+ * today's count (household day) for the complete-day check when the state lags
+ * behind. Shared by the typed quick add and the palette's Feeding mode buttons.
+ */
+export async function feedingHistory(householdId: string, petId: string, timeZone?: string | null) {
+  const latest = await latestFeedings(householdId, petId);
+  return { food: foodTypeFromLatest(latest), known: knownFromLogs(latest.flat(), new Date(), timeZone) };
 }
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */

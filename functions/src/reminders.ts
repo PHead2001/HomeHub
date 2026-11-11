@@ -9,9 +9,13 @@ import type {
   Timestamp as FirestoreTimestamp,
 } from "firebase-admin/firestore";
 import {
-  addDays, localDay, safeTimeZone, zonedMidnightIso,
+  addDays, localDay, localMinutes, safeTimeZone, zonedMidnightIso,
 } from "./shared/calendar";
-import {choreNotificationsFor, type ChoreInput} from "./shared/chore-reminders";
+import {
+  choreNotificationsFor, overdueChoresFor, UPKEEP_INTERVAL_MS,
+  type ChoreInput,
+} from "./shared/chore-reminders";
+import {syncOverdueNotification} from "./overdue-chores";
 import {
   addPurgedChores, choreStatsDocId, completionYear, readChoreStats,
   type PurgedChore,
@@ -380,7 +384,8 @@ export const runHouseholdReminders = async (
     result.purgedChores = done.purged;
   }
 
-  // Returns false when the household disappeared or started deleting.
+  // Returns false when the household disappeared or started deleting,
+  // otherwise what was written.
   const ensure = async (id: string, fields: Record<string, unknown>) => {
     const ref = house.collection("notifications").doc(id);
     const created = await db.runTransaction(async (tx) => {
@@ -441,7 +446,7 @@ export const runHouseholdReminders = async (
     if (created === "created") result.createdNotifications++;
     if (created === "refreshed") result.refreshedNotifications++;
     if (created === "reopened") result.reopenedNotifications++;
-    return created !== "stopped";
+    return created === "stopped" ? false : created;
   };
 
   // Maintenance reminders (household-wide).
@@ -535,6 +540,7 @@ export const runHouseholdReminders = async (
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
+  const choreIdSet = new Set(choreDocs.map((d) => d.id));
   // Reminder settings live on the email-keyed profile, so members with no
   // email in either their contact document or their record are skipped.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
@@ -544,14 +550,16 @@ export const runHouseholdReminders = async (
   for (const [index, member] of reachable.entries()) {
     const profile = profiles[index].data() || {};
     const settings = profile.choreSettings || {};
-    const notes = choreNotificationsFor({
+    const person = {
       uid: member.uid,
       email: member.email,
       timeZone: safeTimeZone(profile.timeZone || timeZone),
       householdTimeZone: timeZone,
       reminderEnabled: Boolean(settings.reminderEnabled),
       reminderTime: settings.reminderTime,
-    }, chores, now);
+    };
+    const notes = choreNotificationsFor(person, chores, now);
+    let reminderSent = false;
     for (const note of notes) {
       const kept = await ensure(note.id, {
         category: "chores",
@@ -563,7 +571,34 @@ export const runHouseholdReminders = async (
         targetUserUid: note.targetUserUid,
       });
       if (!kept) return result;
+      if (kept === "created") reminderSent = true;
     }
+    // One overdue notification per person, updated in place
+    // (./overdue-chores.ts). A daily reminder sent in this run (at any hour),
+    // or still to come today, states the overdue count, so it carries the
+    // push; the overdue document records that the same run.
+    const overdue = overdueChoresFor(person, chores, now);
+    const status = await syncOverdueNotification({
+      db, house, now, ts,
+      newBody: (fields) => notificationBody(householdId, now, ts, fields),
+      freshExpiry: () => ts(new Date(now.getTime() +
+        NOTIFICATION_TTL_DAYS * 86400000)),
+      nearExpiry: (expiresAt) => Boolean(expiresAt &&
+        expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS),
+      seenByRun: (updateTime) => shouldReopen(updateTime, sourcesReadAt),
+    }, member.uid, overdue, {
+      reminderSentNow: reminderSent,
+      reminderPending: overdue.dailyReminderPending,
+      // Dated documents from earlier versions: swept in the first hour of
+      // the person's day, and whenever the notification is written.
+      sweepLegacy:
+        localMinutes(now, person.timeZone) < UPKEEP_INTERVAL_MS / 60000,
+      existingChoreIds: choreIdSet,
+    });
+    if (status === "stopped") return result;
+    if (status === "created") result.createdNotifications++;
+    if (status === "reopened") result.reopenedNotifications++;
+    if (status === "resolved") result.resolvedNotifications++;
   }
   return result;
 };
