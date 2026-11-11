@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, LogOut } from 'lucide-react';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
+import { finishDeletingName } from '@/lib/auth/live-membership';
 import { HOUSEHOLD_NAME_MAX, formatInviteInput, householdNameError, inviteCodeError } from '@/components/household/household-model';
 import {
   Card,
@@ -160,6 +161,89 @@ function JoinHouseholdForm({
   );
 }
 
+/**
+ * The frozen-household screen. "Finish deleting" needs the household's exact name (the
+ * server checks it): with the name known it is one button; otherwise the owner types the
+ * name first, and the button is offered only once something is typed.
+ */
+function DeletingHouseholdDialog({
+  isOwner,
+  knownName,
+  onFinish,
+  onSignOut,
+}: {
+  isOwner: boolean;
+  knownName: string;
+  onFinish: (confirmName: string) => Promise<boolean>;
+  onSignOut: () => void;
+}) {
+  const [finishing, setFinishing] = useState(false);
+  const [typedName, setTypedName] = useState('');
+  const needsName = !knownName.trim();
+  const confirmName = finishDeletingName(knownName, typedName);
+  return (
+    <Dialog open={true} onOpenChange={() => {}}>
+      <DialogContent
+        className="max-w-md"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        hideClose
+      >
+        <DialogHeader>
+          <DialogTitle className="font-headline text-2xl text-center">This household is being deleted</DialogTitle>
+          <DialogDescription className="text-center text-base">
+            {!isOwner
+              ? 'The owner is deleting this household. Its data is no longer available.'
+              : needsName
+                ? "Deletion did not finish. Type the household's name to finish deleting the remaining data."
+                : 'Deletion did not finish. Finish deleting to remove the remaining data.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="flex flex-col gap-3 pt-2"
+          noValidate
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (!isOwner || !confirmName || finishing) return;
+            setFinishing(true);
+            try {
+              await onFinish(confirmName);
+            } finally {
+              setFinishing(false);
+            }
+          }}
+        >
+          {isOwner && needsName && (
+            <div className="space-y-2 text-left">
+              <Label htmlFor="finishDeleteName">Household name</Label>
+              <Input
+                id="finishDeleteName"
+                value={typedName}
+                onChange={(e) => setTypedName(e.target.value)}
+                disabled={finishing}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                maxLength={HOUSEHOLD_NAME_MAX}
+              />
+            </div>
+          )}
+          {isOwner && confirmName && (
+            <Button type="submit" variant="destructive" disabled={finishing}>
+              {finishing ? 'Deleting…' : 'Finish deleting'}
+            </Button>
+          )}
+          <Button type="button" variant="link" className="text-primary" onClick={onSignOut}>
+            <LogOut className="mr-2 h-4 w-4" />
+            Sign Out
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function HouseholdManager({ children }: HouseholdManagerProps) {
   const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, membershipEnded, dismissMembershipEnded, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
   const pathname = usePathname();
@@ -174,7 +258,6 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   if (scopeUid && scopeHouseholdId && (scopeHouseholdId !== scope.householdId || scopeUid !== scope.uid)) {
     setScope({ uid: scopeUid, householdId: scopeHouseholdId, key: scope.householdId ? scope.key + 1 : scope.key });
   }
-  const [finishingDelete, setFinishingDelete] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
 
@@ -252,47 +335,13 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   // The owner started deleting this household; its data is frozen. If a run failed
   // partway, the owner can finish it from here.
   if (currentUser && household?.deletingAt) {
-    const isOwner = currentMember?.role === 'owner';
     return (
-      <Dialog open={true} onOpenChange={() => {}}>
-        <DialogContent
-          className="max-w-md"
-          onInteractOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => e.preventDefault()}
-          hideClose
-        >
-          <DialogHeader>
-            <DialogTitle className="font-headline text-2xl text-center">This household is being deleted</DialogTitle>
-            <DialogDescription className="text-center text-base">
-              {isOwner
-                ? 'Deletion did not finish. Finish deleting to remove the remaining data.'
-                : 'The owner is deleting this household. Its data is no longer available.'}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 pt-2">
-            {isOwner && (
-              <Button
-                variant="destructive"
-                disabled={finishingDelete}
-                onClick={async () => {
-                  setFinishingDelete(true);
-                  try {
-                    await deleteHousehold(household.name);
-                  } finally {
-                    setFinishingDelete(false);
-                  }
-                }}
-              >
-                {finishingDelete ? 'Deleting…' : 'Finish deleting'}
-              </Button>
-            )}
-            <Button variant="link" className="text-primary" onClick={logout}>
-              <LogOut className="mr-2 h-4 w-4" />
-              Sign Out
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <DeletingHouseholdDialog
+        isOwner={currentMember?.role === 'owner'}
+        knownName={household.name}
+        onFinish={deleteHousehold}
+        onSignOut={logout}
+      />
     );
   }
 

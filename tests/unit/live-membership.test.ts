@@ -3,6 +3,8 @@ import { describe, test } from 'node:test';
 import {
   canWatchHousehold,
   classifyListenerError,
+  finishDeletingName,
+  stalePointerFor,
   initialMembershipState,
   liveProfile,
   membershipChangeNotice,
@@ -428,5 +430,66 @@ describe('live membership: account switched on an open page', () => {
     const back = membershipReducer(out, watch(H, UID));
     assert.deepEqual(back, { ...initialMembershipState, uid: UID, householdId: H });
     assert.equal(view(run([member(active()), householdDoc({ name: 'The Foxes' })], back)).phase, 'member');
+  });
+});
+
+describe('live membership: stale profile pointer', () => {
+  const B = 'uid-b';
+  const pointer = (uid: string, householdId: string | null = H) => ({ uid, householdId });
+
+  test("A's ended membership with B's profile (same household) is never stale: B's pointer is kept", () => {
+    // A's listener is denied once Auth is B, before B's profile arrives.
+    const aEnded = membershipReducer(approved(), { type: 'memberError', householdId: H, failure: 'denied' });
+    assert.equal(aEnded.uid, UID);
+    assert.ok(aEnded.ended);
+    assert.equal(stalePointerFor(aEnded, pointer(B), true), null);
+    // A pending B, same household: still nothing to clear.
+    assert.equal(stalePointerFor(run([member(pending())], { ...initialMembershipState, uid: UID, householdId: H }), pointer(B), true), null);
+  });
+
+  test("B's own ended membership with B's profile is stale", () => {
+    const bEnded = run([watch(H, B), member(active(), { uid: B }), householdDoc({ name: 'x' }), member(null, { uid: B })]);
+    assert.equal(stalePointerFor(bEnded, pointer(B), true), H);
+  });
+
+  test('a pointer without a record is stale; nothing is stale before the profile is confirmed or for another pointer', () => {
+    const noRecord = run([watch(H), member(null)]);
+    assert.equal(stalePointerFor(noRecord, pointer(UID), true), H);
+    assert.equal(stalePointerFor(noRecord, pointer(UID), false), null);
+    assert.equal(stalePointerFor(noRecord, pointer(UID, 'house-b'), true), null);
+    assert.equal(stalePointerFor(noRecord, pointer(UID, null), true), null);
+    assert.equal(stalePointerFor(noRecord, null, true), null);
+    assert.equal(stalePointerFor(approved(), pointer(UID), true), null);
+  });
+});
+
+describe('live membership: finishing a deletion after a reload', () => {
+  const frozen = (extra: Record<string, unknown> = {}) => active('owner', { status: 'deleting', ...extra });
+
+  test('restored straight into a frozen household: no name until one is recovered', () => {
+    const state = run([watch(H), member(frozen())]);
+    assert.equal(view(state).phase, 'deleting');
+    assert.equal(view(state).household?.name, '');
+    assert.equal(canWatchHousehold(state), false, 'the rules do not let a deleting member read the household');
+    // The cached household document gives the name.
+    const named = membershipReducer(state, { type: 'householdName', householdId: H, name: ' The Foxes ' });
+    assert.equal(view(named).household?.name, 'The Foxes');
+    // Blank names and other households change nothing; a known name is kept.
+    assert.equal(membershipReducer(state, { type: 'householdName', householdId: H, name: '  ' }), state);
+    assert.equal(membershipReducer(state, { type: 'householdName', householdId: 'house-b', name: 'Other' }), state);
+    assert.equal(membershipReducer(named, { type: 'householdName', householdId: H, name: 'Else' }), named);
+  });
+
+  test('a record that kept the household name (joined by invite) gives it directly', () => {
+    const state = run([watch(H), member(frozen({ householdName: 'The Foxes' }))]);
+    assert.equal(view(state).household?.name, 'The Foxes');
+  });
+
+  test('the name sent: the known one, else what the owner typed, else nothing (no action offered)', () => {
+    assert.equal(finishDeletingName('The Foxes', ''), 'The Foxes');
+    assert.equal(finishDeletingName('The Foxes', 'typo'), 'The Foxes');
+    assert.equal(finishDeletingName('', ' The Foxes '), 'The Foxes');
+    assert.equal(finishDeletingName('', '   '), null);
+    assert.equal(finishDeletingName(null, ''), null);
   });
 });

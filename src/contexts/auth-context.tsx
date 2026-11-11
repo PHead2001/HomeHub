@@ -35,6 +35,7 @@ import {
   membershipChangeNotice,
   membershipReducer,
   membershipView,
+  stalePointerFor,
   MEMBERSHIP_LOAD_TIMEOUT_MS,
   type AccessEnd,
   type NoticeSnapshot,
@@ -408,24 +409,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Access ended, or the profile points at a household without a record: clear the
   // pointer (once the server confirmed the profile), so no later load tries it again.
-  const stalePointer = profileConfirmed && profileHouseholdId !== null && (
-    membership.ended?.householdId === profileHouseholdId ||
-    (membership.householdId === profileHouseholdId && membership.memberFromServer && !membership.member)
-  ) ? profileHouseholdId : null;
+  // Only the signed-in account's own membership counts (`stalePointerFor`), and the write
+  // is dropped if the account changed before it runs.
+  const stalePointer = stalePointerFor(membership, profile, profileConfirmed);
   const clearedPointer = useRef<string | null>(null);
   useEffect(() => {
-    if (!stalePointer || !email || clearedPointer.current === `${email}|${stalePointer}`) return;
-    clearedPointer.current = `${email}|${stalePointer}`;
+    if (!stalePointer || !email || !uid || clearedPointer.current === `${uid}|${stalePointer}`) return;
+    let cancelled = false;
+    const sameAccount = () => !cancelled && auth.currentUser?.uid === uid && profileRef.current?.uid === uid &&
+      profileRef.current.householdId === stalePointer;
     void (async () => {
       try {
         const { db, doc, setDoc } = await loadData();
+        if (!sameAccount()) return;
+        clearedPointer.current = `${uid}|${stalePointer}`;
         await setDoc(doc(db, 'users', email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
-        setProfile(prev => prev && prev.householdId === stalePointer ? { ...prev, householdId: null, role: 'member', permissions: {} } : prev);
+        setProfile(prev => prev && prev.uid === uid && prev.householdId === stalePointer ? { ...prev, householdId: null, role: 'member', permissions: {} } : prev);
       } catch (error) {
         console.warn('Could not clear a stale household reference from the profile.', error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [email, stalePointer]);
+    return () => { cancelled = true; };
+  }, [email, stalePointer, uid]);
 
   // Nothing of a household this device no longer shows stays on it: the dashboard's
   // last-known house, Undo journal entries and in-memory memories (screens remount).
@@ -452,14 +457,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [membership.uid, toast, view.member?.role, view.phase, watchedHouseholdId]);
 
   // Legacy permanent invite codes are removed by the owner's client (older households).
-  const legacyInviteHousehold = view.phase === 'member' && currentMember?.role === 'owner' && household?.inviteCode ? household.id : null;
+  const legacyInviteHousehold = profileConfirmed && membership.uid === uid && view.phase === 'member' && currentMember?.role === 'owner' && household?.inviteCode ? household.id : null;
   const legacyInviteCleaned = useRef<string | null>(null);
   useEffect(() => {
-    if (!legacyInviteHousehold || legacyInviteCleaned.current === legacyInviteHousehold) return;
-    legacyInviteCleaned.current = legacyInviteHousehold;
+    if (!legacyInviteHousehold || !uid || legacyInviteCleaned.current === `${uid}|${legacyInviteHousehold}`) return;
+    let cancelled = false;
     void (async () => {
       try {
         const { db, doc, updateDoc, deleteField } = await loadData();
+        if (cancelled || auth.currentUser?.uid !== uid) return;
+        legacyInviteCleaned.current = `${uid}|${legacyInviteHousehold}`;
         await updateDoc(doc(db, 'households', legacyInviteHousehold), {
           inviteCode: deleteField(),
           updatedAt: new Date().toISOString(),
@@ -468,20 +475,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.warn("Legacy permanent invite code could not be removed automatically.", error);
       }
     })();
-  }, [legacyInviteHousehold]);
+    return () => { cancelled = true; };
+  }, [legacyInviteHousehold, uid]);
 
   // Heal drift between the profile and the public member data (name, photo), once per change.
   const memberShown = view.phase === 'member' || view.phase === 'pending';
   const profileDrift = profileConfirmed && memberShown && watchedHouseholdId && currentMember && profile &&
+    membership.uid === profile.uid && currentMember.uid === profile.uid &&
     memberProfileDiffers(currentMember, { displayName: profile.displayName, avatarUrl: profile.avatarUrl })
     ? `${profile.uid}|${watchedHouseholdId}|${profile.displayName ?? ''}|${profile.avatarUrl ?? ''}`
     : null;
   const driftSynced = useRef<string | null>(null);
   useEffect(() => {
-    if (!profileDrift || !watchedHouseholdId || driftSynced.current === profileDrift) return;
+    if (!profileDrift || !watchedHouseholdId || !uid || driftSynced.current === profileDrift) return;
+    // The sync runs as whoever is signed in: never for a membership of another account.
+    if (auth.currentUser?.uid !== uid) return;
     driftSynced.current = profileDrift;
     void syncMemberProfile(watchedHouseholdId);
-  }, [profileDrift, watchedHouseholdId]);
+  }, [profileDrift, uid, watchedHouseholdId]);
+
+  // A frozen household (a deletion that failed partway) cannot be read any more, and
+  // "Finish deleting" needs its exact name: take it from this device's cached copy when
+  // there is one (otherwise the owner types it on the deletion screen).
+  const deletingWithoutName = view.phase === 'deleting' && membership.uid === uid && !membership.lastName && watchedHouseholdId ? watchedHouseholdId : null;
+  useEffect(() => {
+    if (!deletingWithoutName) return;
+    let cancelled = false;
+    void readCached(['households', deletingWithoutName]).then((snapshot) => {
+      const name = snapshot?.get('name');
+      if (!cancelled && typeof name === 'string' && name.trim()) {
+        dispatchMembership({ type: 'householdName', householdId: deletingWithoutName, name });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [deletingWithoutName]);
 
   // This is for session management ONLY (on page refresh)
   useEffect(() => {
@@ -495,6 +522,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // account's own record when its profile arrives (the watch is keyed by account).
         if (profileRef.current && profileRef.current.uid !== firebaseUser.uid) {
           forgetHouseholdOnDevice(null);
+          // The previous account's profile is no longer confirmed for whoever is signed in:
+          // nothing may act on it (or pair it with the new account) until the new one arrives.
+          setProfileConfirmed(false);
         }
         // Repeat visit: render from this user's cached profile at once; the server copy
         // below replaces it only if something changed.

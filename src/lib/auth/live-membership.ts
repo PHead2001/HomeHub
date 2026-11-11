@@ -93,6 +93,8 @@ export type MembershipEvent =
   | { type: 'memberError'; householdId: string; failure: ListenerFailure }
   | { type: 'household'; householdId: string; exists: boolean; data?: Record<string, unknown>; fromCache: boolean }
   | { type: 'householdError'; householdId: string; failure: ListenerFailure }
+  /** A household name recovered for the deletion screen (the cached household document). */
+  | { type: 'householdName'; householdId: string; name: string }
   /** Nothing usable arrived in time while loading. */
   | { type: 'loadTimeout'; householdId: string }
   /** Try again after a failed load (the caller also reopens the listeners). */
@@ -183,6 +185,9 @@ export function membershipReducer(state: LiveMembershipState, event: MembershipE
         pendingView = pendingView && same(pendingView, view) ? pendingView : view;
         household = null;
         if (view.name) lastName = view.name;
+      } else if (!lastName && typeof nextMember.householdName === 'string' && nextMember.householdName.trim()) {
+        // Joined by invite: the record keeps the name (used while the household is frozen).
+        lastName = nextMember.householdName.trim();
       }
       if (
         nextMember === state.member && memberFromServer === state.memberFromServer && household === state.household &&
@@ -211,6 +216,11 @@ export function membershipReducer(state: LiveMembershipState, event: MembershipE
     case 'householdError':
       // The membership record decides access; the caller retries the household listener.
       return state;
+    case 'householdName': {
+      const name = event.name.trim();
+      if (event.householdId !== state.householdId || !name || state.lastName || state.ended) return state;
+      return { ...state, lastName: name };
+    }
     case 'loadTimeout':
       if (event.householdId !== state.householdId || state.loadFailed) return state;
       return membershipPhase(state) === 'loading' ? { ...state, loadFailed: true } : state;
@@ -339,6 +349,36 @@ export function membershipChangeNotice(previous: NoticeSnapshot | null, next: No
     return { title: 'Your role changed', description: `Your role is now ${role}. What you can do here changed with it.` };
   }
   return null;
+}
+
+/**
+ * The household pointer to clear because the membership behind it is gone, or null.
+ * Only for the signed-in account's own, server-confirmed profile, and only when the
+ * membership state belongs to that same account: another account's ended membership
+ * (seen while a new account's profile is arriving) never clears this one's pointer.
+ */
+export function stalePointerFor(
+  state: LiveMembershipState,
+  profile: Pick<User, 'uid' | 'householdId'> | null,
+  profileConfirmed: boolean,
+): string | null {
+  const householdId = profile?.householdId ?? null;
+  if (!profileConfirmed || !profile || !householdId || state.uid !== profile.uid) return null;
+  if (state.ended?.householdId === householdId) return householdId;
+  if (state.householdId === householdId && state.memberFromServer && !state.member) return householdId;
+  return null;
+}
+
+/**
+ * The name "Finish deleting" sends (the server requires the household's exact name):
+ * the known name, else what the owner typed; null while neither is available, so the
+ * action is not offered.
+ */
+export function finishDeletingName(knownName: string | null | undefined, typedName: string): string | null {
+  const known = (knownName ?? '').trim();
+  if (known) return known;
+  const typed = typedName.trim();
+  return typed || null;
 }
 
 /** Whether the household document may be read (and so listened to) for this state. */

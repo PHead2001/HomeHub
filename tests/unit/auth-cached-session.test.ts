@@ -41,7 +41,7 @@ describe('repeat-visit fast path (H01)', () => {
     const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));
     const cachedAt = restore.indexOf("readCached(['users', firebaseUser.email])");
     assert.ok(cachedAt > 0 && cachedAt < 1200);
-    assert.ok(restore.indexOf('setProfileConfirmed(false)') > cachedAt);
+    assert.ok(restore.indexOf('setProfileConfirmed(false)', cachedAt) > cachedAt);
     const serverAt = restore.indexOf('fetchOrCreateUserProfile(firebaseUser)');
     assert.ok(serverAt > cachedAt);
     assert.ok(restore.indexOf('setProfileConfirmed(true)') > serverAt);
@@ -79,9 +79,19 @@ describe('repeat-visit fast path (H01)', () => {
   it('never lets a provisional profile or a superseded listener clear the household', () => {
     const source = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
     // The stale-pointer cleanup waits for the server-confirmed profile, once per household.
-    assert.match(source, /const stalePointer = profileConfirmed && profileHouseholdId !== null && \(/);
+    // It pairs only the signed-in account's own membership with its own profile
+    // (`stalePointerFor`, tests/unit/live-membership.test.ts), and a write scheduled for one
+    // account never runs once another is signed in.
+    assert.match(source, /const stalePointer = stalePointerFor\(membership, profile, profileConfirmed\);/);
     const clear = source.slice(source.indexOf('const clearedPointer = useRef'), source.indexOf('const shownHousehold ='));
-    assert.match(clear, /if \(!stalePointer \|\| !email \|\| clearedPointer\.current === `\$\{email\}\|\$\{stalePointer\}`\) return;/);
+    assert.match(clear, /if \(!stalePointer \|\| !email \|\| !uid \|\| clearedPointer\.current === `\$\{uid\}\|\$\{stalePointer\}`\) return;/);
+    assert.match(clear, /const sameAccount = \(\) => !cancelled && auth\.currentUser\?\.uid === uid/);
+    assert.ok(clear.indexOf('if (!sameAccount()) return;') < clear.indexOf('await setDoc('));
+    assert.match(clear, /return \(\) => \{ cancelled = true; \};/);
+    // A switch to another account un-confirms the previous profile at once.
+    const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'));
+    const switched = restore.indexOf('profileRef.current.uid !== firebaseUser.uid');
+    assert.ok(switched > 0 && restore.indexOf('setProfileConfirmed(false);', switched) < restore.indexOf('readCached(', switched));
     // The watch is keyed by account as well as household: another account in the same
     // household restarts from its own record (tests/unit/live-membership.test.ts).
     assert.match(source, /dispatchMembership\(\{ type: 'watch', uid, householdId: profileHouseholdId \}\);\s+\}, \[profileHouseholdId, uid\]\);/);
