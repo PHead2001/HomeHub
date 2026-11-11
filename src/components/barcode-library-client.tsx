@@ -255,6 +255,9 @@ export function BarcodeLibraryClient() {
             imageUrl: finalImageUrl,
             ...(finalImagePath ? { imagePath: finalImagePath } : {}),
             createdAt: itemToEdit?.createdAt || new Date().toISOString(),
+            // This save replaces the document, and the rules keep a stored creator fixed,
+            // so an edit writes the stored creator back.
+            ...(itemToEdit?.createdByUid ? { createdByUid: itemToEdit.createdByUid } : {}),
         };
 
         await setDoc(doc(collectionRef, data.id.trim()), itemData);
