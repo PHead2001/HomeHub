@@ -362,8 +362,8 @@ describe('live state: one-shot URL requests wait for confirmed lists', () => {
 
   test('?quickAdd=1 opens the only list or the first Grocery list, and nothing without edit rights or lists', () => {
     assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [hardware, grocery] }), { kind: 'open', listId: 'weekly' });
-    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: false, lists: [grocery] }), { kind: 'none' });
-    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [] }), { kind: 'none' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: false, lists: [grocery] }), { kind: 'read-only' });
+    assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [] }), { kind: 'empty' });
     assert.equal(quickAddDecision({ requested: false, confirmed: true, canEdit: true, lists: [grocery] }), null);
   });
 });

@@ -142,6 +142,27 @@ export function useLiveStores(householdId: string | null | undefined): LiveState
   ));
 }
 
+export type ShoppingPreferences = { defaultGroceryListId: string | null };
+const NO_PREFERENCES: ShoppingPreferences = { defaultGroceryListId: null };
+
+/**
+ * The household's shopping preferences (`shopping-settings/preferences`): only
+ * `defaultGroceryListId` is read here (the Grocery list the overview shows, S8a).
+ * No document reads as no default.
+ */
+export function useLiveShoppingPreferences(householdId: string | null | undefined): LiveState<ShoppingPreferences> {
+  const key = liveKey('shopping-preferences', householdId);
+  return useLive(key, NO_PREFERENCES, (next, fail) => onSnapshot(
+    doc(db, 'households', householdId as string, 'shopping-settings', 'preferences'),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      const value = snapshot.get('defaultGroceryListId');
+      next({ defaultGroceryListId: typeof value === 'string' && value ? value : null }, snapshot.metadata);
+    },
+    fail,
+  ));
+}
+
 /** The household's pantry, ordered by name. */
 export function useLivePantry(householdId: string | null | undefined): LiveState<PantryItem[]> {
   const key = liveKey('pantry', householdId);

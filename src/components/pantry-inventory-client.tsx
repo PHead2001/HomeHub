@@ -16,9 +16,8 @@ import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/sh
 import { addItemsToList } from '@/lib/shopping/add-items';
 import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
-import { useLivePantry } from '@/lib/shopping/live';
 import { useOnTabDeactivate } from './shopping/tab-activity';
-import { justOpened } from '@/lib/shopping/live-state';
+import { justOpened, type LiveState } from '@/lib/shopping/live-state';
 import { DURATION, EASE } from '@/lib/motion';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
 import { generateRecipe, type GenerateRecipeOutput } from '@/ai/flows/generate-recipe-flow';
@@ -735,7 +734,17 @@ function AddToListDialog({
 const PANTRY_VIEW_KEY = 'homehub.pantry.view';
 type PantryView = 'shelves' | 'list';
 
-export function PantryInventoryClient() {
+export function PantryInventoryClient({
+  pantryState,
+  focusItemId = null,
+  onFocusHandled,
+}: {
+  /** The page's pantry listener (shared with the Shopping overview's expiring chips). */
+  pantryState: LiveState<PantryItem[]>;
+  /** An item to open (an expiring chip on the Shopping overview, SH-11c). */
+  focusItemId?: string | null;
+  onFocusHandled?: () => void;
+}) {
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
   const canEdit = Boolean(permissions['shopping.edit']);
@@ -744,7 +753,6 @@ export function PantryInventoryClient() {
   // Live (SH-1c): one listener on the pantry, so another member's additions, moves
   // and deletions show without a reload, and this device's own writes show at once
   // (a rejected one is rolled back in the listener). No re-read after a write.
-  const pantryState = useLivePantry(currentUser?.householdId);
   const items = pantryState.value;
   const loading = pantryState.status === 'loading';
   // The chosen view is a per-device convenience (this tab only renders client-side, after sign-in).
@@ -1014,6 +1022,15 @@ export function PantryInventoryClient() {
     setItemToEdit(item);
     setIsItemDialogOpen(true);
   };
+
+  // An expiring chip on the Shopping overview opens this tab on its item: the
+  // item's dialog for members who can edit, the tab alone otherwise.
+  useEffect(() => {
+    if (!focusItemId || !tabActive || loading) return;
+    const item = items.find((entry) => entry.id === focusItemId);
+    if (item && canEdit) openEditDialog(item);
+    onFocusHandled?.();
+  });
 
   const openAddDialog = () => {
     setItemToEdit(null);
