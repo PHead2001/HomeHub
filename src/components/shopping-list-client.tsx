@@ -75,7 +75,7 @@ import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveShoppingPreferences, useLiveStores } from '@/lib/shopping/live';
-import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, preferencesKnown, writeWait, writeWaitText, readLocalTicks, readRecentGrocery, rememberRecentGrocery } from '@/lib/shopping/overview';
+import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, preferencesKnown, writeWait, writeWaitText, readLocalTicks, readRecentGrocery, rememberRecentGrocery, syncLocalTicks } from '@/lib/shopping/overview';
 import { assignedStore, storesListed } from '@/lib/shopping/assigned-store';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
@@ -362,6 +362,14 @@ export function ShoppingListClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [householdId, itemsListId, now, localTicksVersion],
   );
+  // Each items snapshot settles this device's own ticks on that list: a pending one
+  // whose server purchasedAt has arrived starts ageing (also after a reload, when no
+  // write promise is left), and one whose purchase is gone is dropped (`syncLocalTicks`).
+  const itemsForSync = itemsState.status === 'ready' ? itemsState.value : null;
+  useEffect(() => {
+    if (!itemsForSync) return;
+    if (syncLocalTicks(browserStorage(), householdId, itemsListId, itemsForSync, Date.now())) setLocalTicksVersion((version) => version + 1);
+  }, [itemsForSync, householdId, itemsListId]);
   // Overview writes wait until the listener follows the target list and has answered (`overviewWriteReady`).
   const itemsStatusRef = useRef(itemsState.status);
   itemsStatusRef.current = itemsState.status;
@@ -1824,6 +1832,8 @@ export function ShoppingListClient({
           hasPendingWrites: itemsState.hasPendingWrites,
           store: overviewAssigned?.store ?? null,
           attributionFor,
+          // The page's one Barcode Library listener, as the open list's rows use it.
+          photoFor,
           // Rows show only once loaded; a click racing a list switch is dropped.
           onToggle: (item) => {
             if (writeReadyFor(overviewList.id) && listItemsRef.current.some((entry) => entry.id === item.id)) void toggleItemStatus(item, overviewList);

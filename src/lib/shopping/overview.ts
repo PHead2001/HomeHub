@@ -305,10 +305,57 @@ export const writeWaitText = (wait: 'loading' | 'retrying', listName: string): s
 
 /** Where this device keeps the purchase ids of its own recent ticks (SH-28c), per household and list. */
 export const LOCAL_TICKS_KEY = 'homehub.shopping.localTicks.v1';
-/** Own ticks are kept a little longer than the activity window (server and device clocks may differ). */
+/**
+ * An acknowledged own tick is kept this long after its acknowledgement: a little
+ * longer than the activity window (server and device clocks may differ).
+ */
 export const LOCAL_TICKS_KEEP_MS = 2 * SHOPPING_WINDOW_MS;
+/** A tick this young is never dropped for missing from a snapshot (the snapshot may predate it). */
+export const LOCAL_TICK_SYNC_GRACE_MS = 60_000;
+/** At most this many own ticks are kept per list (the oldest acknowledged go first). */
+export const LOCAL_TICKS_CAP = 200;
 
-type LocalTick = { opId: string; at: number };
+/**
+ * One of this device's ticks. `ackAt` is null while the write is still pending
+ * (offline, or not answered yet): its `purchasedAt` is a server timestamp set
+ * only when the write reaches the server, so the purchase enters the activity
+ * window then, and a pending tick is never aged out. Once acknowledged (`ackAt`,
+ * this device's time) it is kept for `LOCAL_TICKS_KEEP_MS`.
+ */
+type LocalTick = { opId: string; at: number; ackAt: number | null; itemId?: string };
+
+const readTick = (value: unknown): LocalTick | null => {
+  if (!value || typeof value !== 'object') return null;
+  const tick = value as Record<string, unknown>;
+  if (typeof tick.opId !== 'string' || !tick.opId || typeof tick.at !== 'number') return null;
+  // An entry without `ackAt` (written before pending ticks were kept) counts as acknowledged when made.
+  const ackAt = tick.ackAt === null ? null : typeof tick.ackAt === 'number' ? tick.ackAt : tick.at;
+  return { opId: tick.opId, at: tick.at, ackAt, ...(typeof tick.itemId === 'string' ? { itemId: tick.itemId } : {}) };
+};
+
+/** Pending ticks always stay; acknowledged ones while within the keep window of their acknowledgement. */
+const keepTick = (tick: LocalTick, now: number) =>
+  tick.ackAt === null || (now - tick.ackAt <= LOCAL_TICKS_KEEP_MS && tick.ackAt - now <= LOCAL_TICKS_KEEP_MS);
+
+/** Bounded per list: past the cap, acknowledged ticks go oldest first, then pending ones. */
+const capTicks = (ticks: LocalTick[]): LocalTick[] => {
+  if (ticks.length <= LOCAL_TICKS_CAP) return ticks;
+  const drop = new Set(
+    [...ticks]
+      .sort((a, b) => Number(a.ackAt === null) - Number(b.ackAt === null) || (a.ackAt ?? a.at) - (b.ackAt ?? b.at))
+      .slice(0, ticks.length - LOCAL_TICKS_CAP),
+  );
+  return ticks.filter((tick) => !drop.has(tick));
+};
+
+function writeLocalTickMap(storage: KeyValueStorage, map: Record<string, LocalTick[]>): boolean {
+  try {
+    storage.setItem(LOCAL_TICKS_KEY, JSON.stringify(map));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** The stored map ("household/list" -> ticks), pruned; null when storage cannot be read. */
 function readLocalTickMap(storage: KeyValueStorage, now: number): Record<string, LocalTick[]> | null {
@@ -328,11 +375,7 @@ function readLocalTickMap(storage: KeyValueStorage, now: number): Record<string,
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return map;
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (!Array.isArray(value)) continue;
-    const kept = value.filter((tick): tick is LocalTick => Boolean(tick)
-      && typeof (tick as LocalTick).opId === 'string'
-      && typeof (tick as LocalTick).at === 'number'
-      && now - (tick as LocalTick).at <= LOCAL_TICKS_KEEP_MS
-      && (tick as LocalTick).at - now <= LOCAL_TICKS_KEEP_MS);
+    const kept = value.map(readTick).filter((tick): tick is LocalTick => tick !== null && keepTick(tick, now));
     if (kept.length > 0) map[key] = kept;
   }
   return map;
@@ -360,23 +403,100 @@ export function readLocalTicks(
   return { opIds: new Set((map[localTicksKey(householdId, listId)] ?? []).map((tick) => tick.opId)), reliable: true };
 }
 
-/** Records one of this device's ticks; false when it could not be stored (storage blocked or full). */
+/**
+ * Records one of this device's ticks as pending (not yet acknowledged); false
+ * when it could not be stored (storage blocked or full).
+ */
 export function recordLocalTick(
   storage: KeyValueStorage | null,
   householdId: string | null | undefined,
   listId: string | null | undefined,
   opId: string,
   now: number,
+  itemId?: string,
 ): boolean {
   if (!storage || !householdId || !listId || !opId) return false;
   const map = readLocalTickMap(storage, now);
   if (!map) return false;
   const key = localTicksKey(householdId, listId);
-  map[key] = [...(map[key] ?? []).filter((tick) => tick.opId !== opId), { opId, at: now }].slice(-200);
-  try {
-    storage.setItem(LOCAL_TICKS_KEY, JSON.stringify(map));
-    return true;
-  } catch {
-    return false;
+  const tick: LocalTick = { opId, at: now, ackAt: null, ...(itemId ? { itemId } : {}) };
+  map[key] = capTicks([...(map[key] ?? []).filter((entry) => entry.opId !== opId), tick]);
+  return writeLocalTickMap(storage, map);
+}
+
+/**
+ * Marks a tick acknowledged by the server at `now` (its keep window starts then),
+ * or forgets it (`refused`: the write was rejected, so no purchase carries its
+ * id). False when storage failed; true when there was nothing to change.
+ */
+export function settleLocalTick(
+  storage: KeyValueStorage | null,
+  householdId: string | null | undefined,
+  listId: string | null | undefined,
+  opId: string,
+  now: number,
+  outcome: 'acknowledged' | 'refused',
+): boolean {
+  if (!storage || !householdId || !listId || !opId) return false;
+  const map = readLocalTickMap(storage, now);
+  if (!map) return false;
+  const key = localTicksKey(householdId, listId);
+  const ticks = map[key] ?? [];
+  const index = ticks.findIndex((tick) => tick.opId === opId);
+  if (index < 0) return true;
+  if (outcome === 'refused') ticks.splice(index, 1);
+  else if (ticks[index].ackAt === null) ticks[index] = { ...ticks[index], ackAt: now };
+  else return true;
+  if (ticks.length > 0) map[key] = ticks;
+  else delete map[key];
+  return writeLocalTickMap(storage, map);
+}
+
+/**
+ * Brings the list's own ticks up to date with its items as the live listener
+ * shows them (`items` must be a loaded snapshot of that list): a pending tick
+ * whose item carries a server `purchasedAt` has reached the server (its keep
+ * window starts now; this also covers a write acknowledged in an earlier session
+ * or after a reload, when no write promise is left to report it); a tick whose
+ * purchase is no longer on the list (the item is gone, un-ticked, or bought again
+ * under another id) is dropped. Returns whether anything changed and was stored.
+ */
+export function syncLocalTicks(
+  storage: KeyValueStorage | null,
+  householdId: string | null | undefined,
+  listId: string | null | undefined,
+  items: readonly Pick<ShoppingListItem, 'status' | 'purchaseOpId' | 'purchasedAt'>[],
+  now: number,
+): boolean {
+  if (!storage || !householdId || !listId) return false;
+  const map = readLocalTickMap(storage, now);
+  if (!map) return false;
+  const key = localTicksKey(householdId, listId);
+  const ticks = map[key];
+  if (!ticks || ticks.length === 0) return false;
+  const byOp = new Map<string, Pick<ShoppingListItem, 'purchasedAt'>>();
+  for (const item of items) {
+    if (item.status === 'purchased' && item.purchaseOpId) byOp.set(item.purchaseOpId, item);
   }
+  let changed = false;
+  const next: LocalTick[] = [];
+  for (const tick of ticks) {
+    const item = byOp.get(tick.opId);
+    if (!item) {
+      // A tick younger than the grace may not be in the snapshot yet: kept for now.
+      if (now - tick.at <= LOCAL_TICK_SYNC_GRACE_MS) next.push(tick);
+      else changed = true;
+      continue;
+    }
+    if (tick.ackAt === null && toMillis(item.purchasedAt) !== null) {
+      next.push({ ...tick, ackAt: now });
+      changed = true;
+    } else {
+      next.push(tick);
+    }
+  }
+  if (!changed) return false;
+  if (next.length > 0) map[key] = next;
+  else delete map[key];
+  return writeLocalTickMap(storage, map);
 }

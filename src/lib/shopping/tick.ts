@@ -37,6 +37,11 @@ export type TickIO = {
    * counts this device's own ticks), called once per tick, before the write's answer.
    */
   recordLocal?: (path: ItemPath, opId: string) => void;
+  /**
+   * The tick's write was answered: `acknowledged` (its server `purchasedAt` exists
+   * now, so its "own tick" memory starts ageing) or `refused` (forget it).
+   */
+  settleLocal?: (path: ItemPath, opId: string, outcome: 'acknowledged' | 'refused') => void;
 };
 
 /** The item as the caller's live list shows it right now; `null` = not in the list (deleted). */
@@ -81,6 +86,10 @@ export function tickShoppingItem(io: TickIO, { path, uid, current }: { path: Ite
   io.recordLocal?.(path, opId);
   const offline = io.offline();
   const write = io.update(path, tickUpdate(uid, opId));
+  if (io.settleLocal) {
+    const settle = io.settleLocal;
+    write.then(() => settle(path, opId, 'acknowledged'), () => settle(path, opId, 'refused'));
+  }
   const storedLocally = async () => {
     if (io.persistence() !== 'durable') return false;
     return io.cachedStatusIs(path, 'purchased').catch(() => false);

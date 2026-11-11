@@ -4,7 +4,9 @@ import {
   RECENT_GROCERY_KEY,
   SHOPPING_WINDOW_MS,
   chooseOverviewList,
+  LOCAL_TICKS_CAP,
   LOCAL_TICKS_KEEP_MS,
+  LOCAL_TICK_SYNC_GRACE_MS,
   LOCAL_TICKS_KEY,
   expiringChips,
   expiryWhen,
@@ -13,6 +15,8 @@ import {
   writeWaitText,
   readLocalTicks,
   recordLocalTick,
+  settleLocalTick,
+  syncLocalTicks,
   groceryListsOf,
   neededAisleGroups,
   neededEmptyCopy,
@@ -340,12 +344,77 @@ describe("overview: this device's own ticks survive a reload (SH-28c)", () => {
     );
   });
 
-  test('entries older than the keep window are pruned on read and on write', () => {
+  test('a pending (unacknowledged) tick is never aged out; an acknowledged one ages from its acknowledgement', () => {
     const storage = memory();
-    recordLocalTick(storage, 'house', 'weekly', 'old', now - LOCAL_TICKS_KEEP_MS - 1);
+    const long = 3 * LOCAL_TICKS_KEEP_MS;
+    recordLocalTick(storage, 'house', 'weekly', 'pending', now - long);
+    recordLocalTick(storage, 'house', 'weekly', 'acked', now - long);
+    // Acknowledged long after it was made (a write queued offline that synced later).
+    settleLocalTick(storage, 'house', 'weekly', 'acked', now - 60_000, 'acknowledged');
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now).opIds].sort(), ['acked', 'pending']);
+    // Its keep window counts from the acknowledgement, not from the tick.
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now - 60_000 + LOCAL_TICKS_KEEP_MS + 1).opIds], ['pending']);
+    // A refused tick is forgotten at once.
+    settleLocalTick(storage, 'house', 'weekly', 'pending', now, 'refused');
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now).opIds], ['acked']);
+    // A legacy entry without ackAt counts as acknowledged when made, and is pruned on write.
+    storage.data.set(LOCAL_TICKS_KEY, JSON.stringify({ 'house/weekly': [{ opId: 'legacy', at: now - LOCAL_TICKS_KEEP_MS - 1 }] }));
     recordLocalTick(storage, 'house', 'weekly', 'new', now);
     assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now).opIds], ['new']);
-    assert.doesNotMatch(storage.data.get(LOCAL_TICKS_KEY) ?? '', /"old"/);
+    assert.doesNotMatch(storage.data.get(LOCAL_TICKS_KEY) ?? '', /"legacy"/);
+  });
+
+  test('ticked offline, offline past the window, reconnect and reload: still this device, never "another device"', () => {
+    const storage = memory();
+    const tickedAt = now - 45 * 60_000;
+    recordLocalTick(storage, 'house', 'weekly', 'op-1', tickedAt, 'milk');
+    recordLocalTick(storage, 'house', 'weekly', 'op-2', tickedAt + 1000, 'eggs');
+    // The queued writes reach the server on reconnect: purchasedAt is the server's time now.
+    const items = [
+      { id: 'milk', status: 'purchased' as const, purchasedByUid: 'me', purchaseOpId: 'op-1', purchasedAt: { toMillis: () => now - 5_000 } },
+      { id: 'eggs', status: 'purchased' as const, purchasedByUid: 'me', purchaseOpId: 'op-2', purchasedAt: { toMillis: () => now - 4_000 } },
+      { id: 'tea', status: 'needed' as const },
+    ];
+    // After the reload nothing is in memory; the first snapshot settles the stored ticks.
+    assert.equal(syncLocalTicks(storage, 'house', 'weekly', items, now), true);
+    const local = readLocalTicks(storage, 'house', 'weekly', now);
+    assert.deepEqual([...local.opIds].sort(), ['op-1', 'op-2']);
+    assert.equal(shoppingActivity({ items, now, uid: 'me', localOpIds: local.opIds, names, selfKnown: local.reliable }), null);
+    // ... and they now age from that acknowledgement.
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now + LOCAL_TICKS_KEEP_MS + 1).opIds], []);
+  });
+
+  test('a snapshot keeps pending ticks it still shows and drops purchases that are gone', () => {
+    const storage = memory();
+    recordLocalTick(storage, 'house', 'weekly', 'shown', now - 10 * 60_000, 'a');
+    recordLocalTick(storage, 'house', 'weekly', 'unticked', now - 10 * 60_000, 'b');
+    recordLocalTick(storage, 'house', 'weekly', 'fresh', now - 1_000, 'c');
+    const items = [
+      // Still pending (no server time yet): kept, not acknowledged.
+      { status: 'purchased' as const, purchaseOpId: 'shown', purchasedAt: null },
+      // Un-ticked (or ticked again under another id): dropped.
+      { status: 'needed' as const, purchaseOpId: 'unticked', purchasedAt: null },
+    ];
+    assert.equal(syncLocalTicks(storage, 'house', 'weekly', items, now), true);
+    // `fresh` is not in this snapshot but is younger than the grace (the snapshot may predate it).
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now).opIds].sort(), ['fresh', 'shown']);
+    assert.ok(LOCAL_TICK_SYNC_GRACE_MS >= 1_000);
+    // Still pending after any time.
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now + 10 * LOCAL_TICKS_KEEP_MS).opIds].sort(), ['fresh', 'shown']);
+    assert.equal(syncLocalTicks(storage, 'other', 'weekly', items, now), false);
+  });
+
+  test('bounded per list: past the cap the oldest acknowledged ticks go first', () => {
+    const storage = memory();
+    recordLocalTick(storage, 'house', 'weekly', 'pending-old', now - 1000);
+    for (let index = 0; index < LOCAL_TICKS_CAP; index += 1) {
+      recordLocalTick(storage, 'house', 'weekly', `acked-${index}`, now);
+      settleLocalTick(storage, 'house', 'weekly', `acked-${index}`, now + index, 'acknowledged');
+    }
+    const ids = readLocalTicks(storage, 'house', 'weekly', now).opIds;
+    assert.equal(ids.size, LOCAL_TICKS_CAP);
+    assert.ok(ids.has('pending-old'));
+    assert.ok(!ids.has('acked-0'));
   });
 
   test('corrupt storage starts over; unavailable storage shows no "You … on another device" (other members still do)', () => {
