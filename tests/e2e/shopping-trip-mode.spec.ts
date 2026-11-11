@@ -45,35 +45,44 @@ async function seed(testInfo: TestInfo) {
   return listRef;
 }
 
-/** A stub Screen Wake Lock that logs request/release, with a way to hide and show the page. */
+/**
+ * A stub Screen Wake Lock: counts requests and the locks still held, and can hide
+ * and show the page (hiding drops every held lock, as the browser does). Counts,
+ * not an exact call log: React's development Strict Mode mounts effects twice.
+ */
 const WAKE_LOCK_STUB = () => {
-  const log: string[] = [];
+  const held = new Set<{ released: boolean; release: () => Promise<void> }>();
+  const stats = { requests: 0 };
   let hidden = false;
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
   Object.defineProperty(navigator, 'wakeLock', {
     configurable: true,
     value: {
       request: async () => {
-        log.push('request');
+        if (hidden) throw new DOMException('The page is not visible', 'NotAllowedError');
+        stats.requests += 1;
         let released = false;
         const listeners: Array<() => void> = [];
         const sentinel = {
           get released() { return released; },
-          release: async () => { if (!released) { released = true; log.push('release'); listeners.forEach((fn) => fn()); } },
+          release: async () => {
+            if (released) return;
+            released = true;
+            held.delete(sentinel);
+            listeners.forEach((fn) => fn());
+          },
           addEventListener: (_type: string, fn: () => void) => listeners.push(fn),
         };
-        (window as unknown as { __wakeSentinel: typeof sentinel }).__wakeSentinel = sentinel;
+        held.add(sentinel);
         return sentinel;
       },
     },
   });
   Object.assign(window, {
-    __wakeLog: log,
+    __wake: () => ({ requests: stats.requests, held: held.size }),
     __setHidden: (next: boolean) => {
       hidden = next;
-      // The browser drops the lock itself when the page is hidden.
-      const sentinel = (window as unknown as { __wakeSentinel?: { release: () => Promise<void> } }).__wakeSentinel;
-      if (next && sentinel) void sentinel.release();
+      if (next) [...held].forEach((sentinel) => void sentinel.release());
       document.dispatchEvent(new Event('visibilitychange'));
     },
   });
@@ -114,7 +123,18 @@ const noHorizontalOverflow = async (page: Page) => {
   expect(widths.scroll).toBeLessThanOrEqual(widths.client);
 };
 
-const wakeLog = (page: Page) => page.evaluate(() => [...((window as unknown as { __wakeLog: string[] }).__wakeLog ?? [])]);
+/** Closes any toasts (the headless camera's "Scan Error"): they sit over the top of the screen, where the list's header is. */
+async function dismissToasts(page: Page) {
+  const toasts = page.getByRole('region', { name: 'Notifications (F8)' }).getByRole('button', { name: 'Dismiss notification' });
+  for (let attempt = 0; attempt < 10 && await toasts.count() > 0; attempt += 1) {
+    await toasts.first().click({ force: true }).catch(() => undefined);
+    await page.waitForTimeout(100);
+  }
+  await expect(toasts).toHaveCount(0);
+}
+
+const wake = (page: Page) => page.evaluate(() => (window as unknown as { __wake: () => { requests: number; held: number } }).__wake());
+const setHidden = (page: Page, hidden: boolean) => page.evaluate((next) => (window as unknown as { __setHidden: (value: boolean) => void }).__setHidden(next), hidden);
 
 test.describe('shopping trip mode: the open list in the store', () => {
   test('phone: compact sticky header with "n left", page header, tabs and the floating "+" out of the way, first item near the top', async ({ browser }, testInfo) => {
@@ -237,6 +257,9 @@ test.describe('shopping trip mode: the open list in the store', () => {
       await a.page.getByRole('menu').getByRole('menuitem', { name: 'Scan to tick' }).click();
       await expect(a.page.getByRole('dialog', { name: 'Scan to tick' })).toBeVisible();
       await a.page.keyboard.press('Escape');
+      await expect(a.page.getByRole('dialog', { name: 'Scan to tick' })).toHaveCount(0);
+      await expect(menuButton).toBeFocused();
+      await dismissToasts(a.page);
 
       // Add Item and the edit sheet are bottom sheets too.
       await list.getByRole('button', { name: 'Add Item' }).click();
@@ -267,7 +290,13 @@ test.describe('shopping trip mode: the open list in the store', () => {
 
       // Scroll partway into the Dairy aisle: its heading sits right under the sticky header.
       const dairy = aisles.filter({ has: a.page.getByRole('heading', { name: 'Dairy', level: 4 }) });
-      await dairy.locator('[data-row-id]').nth(2).evaluate((row) => row.scrollIntoView({ block: 'center' }));
+      // Scroll so the aisle's top is 60 px above the stuck header's bottom (the site
+      // header is 3.5rem, the trip header sticks right under it).
+      const headerHeight = (await header.boundingBox())!.height;
+      await dairy.evaluate((section, height) => {
+        const siteHeader = parseFloat(getComputedStyle(document.documentElement).fontSize) * 3.5;
+        window.scrollTo(0, section.getBoundingClientRect().top + window.scrollY - (siteHeader + height) + 60);
+      }, headerHeight);
       await expect.poll(async () => {
         const headerBox = (await header.boundingBox())!;
         const headingBox = (await dairy.locator('h4').boundingBox())!;
@@ -275,13 +304,14 @@ test.describe('shopping trip mode: the open list in the store', () => {
       }).toBe(true);
       expect(await a.page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 
-      // Back to the top, then the "Household" chip brings that aisle up under the header.
+      // Back to the top, then the "Dairy" chip brings that aisle up under the header
+      // (the last aisle cannot reach the top: the page ends first).
       await a.page.evaluate(() => window.scrollTo(0, 0));
-      await header.getByTestId('aisle-chips').getByRole('button', { name: 'Household, 3 needed' }).click();
-      const household = list.getByRole('heading', { name: 'Household', level: 4 });
+      await header.getByTestId('aisle-chips').getByRole('button', { name: 'Dairy, 4 needed' }).click();
+      const jumped = list.getByRole('heading', { name: 'Dairy', level: 4 });
       await expect.poll(async () => {
         const headerBox = (await header.boundingBox())!;
-        const headingBox = (await household.boundingBox())!;
+        const headingBox = (await jumped.boundingBox())!;
         return Math.abs(headingBox.y - (headerBox.y + headerBox.height)) <= 4;
       }).toBe(true);
       await noHorizontalOverflow(a.page);
@@ -322,13 +352,20 @@ test.describe('shopping trip mode: the open list in the store', () => {
     const a = await session(browser, PHONE, { mobile: true });
     try {
       const list = await openList(a.page, testInfo);
-      await expect.poll(() => wakeLog(a.page)).toEqual(['request']);
-      await a.page.evaluate(() => (window as unknown as { __setHidden: (hidden: boolean) => void }).__setHidden(true));
-      await expect.poll(() => wakeLog(a.page)).toEqual(['request', 'release']);
-      await a.page.evaluate(() => (window as unknown as { __setHidden: (hidden: boolean) => void }).__setHidden(false));
-      await expect.poll(() => wakeLog(a.page)).toEqual(['request', 'release', 'request']);
+      // One lock held while the list is open.
+      await expect.poll(async () => (await wake(a.page)).held).toBe(1);
+      // Hidden: the browser drops it and nothing asks again while hidden.
+      await setHidden(a.page, true);
+      await expect.poll(async () => (await wake(a.page)).held).toBe(0);
+      const before = (await wake(a.page)).requests;
+      // Shown again: asked for again.
+      await setHidden(a.page, false);
+      await expect.poll(async () => wake(a.page)).toEqual({ requests: before + 1, held: 1 });
+      // Leaving the list lets go.
       await list.getByRole('button', { name: 'Back to all lists' }).click();
-      await expect.poll(() => wakeLog(a.page)).toEqual(['request', 'release', 'request', 'release']);
+      await expect.poll(async () => (await wake(a.page)).held).toBe(0);
+      await expect(a.page.getByRole('tab', { name: 'Pantry Inventory' })).toBeVisible();
+      expect((await wake(a.page)).held).toBe(0);
     } finally {
       await a.context.close();
     }
@@ -372,7 +409,7 @@ test.describe('shopping trip mode: the open list in the store', () => {
       const fontSize = await list.locator('[data-row-section="needed"] [data-item-name]').first().evaluate((node) => parseFloat(getComputedStyle(node.parentElement!).fontSize));
       expect(fontSize).toBeGreaterThanOrEqual(16);
       // A wide screen never keeps itself awake.
-      expect(await wakeLog(a.page)).toEqual([]);
+      expect(await wake(a.page)).toEqual({ requests: 0, held: 0 });
 
       await a.page.setViewportSize({ width: 1024, height: 768 });
       await expect.poll(columns).toBe(2);

@@ -22,10 +22,16 @@ function Header({ canView, pending, listOpen }: HeaderProps & { listOpen: boolea
   const compact = listOpen && canView;
   return (
     <div className={cn('flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between', compact ? 'mb-0' : 'mb-8')} data-testid="shopping-page-header" data-compact={compact ? 'true' : 'false'}>
-      <div className={cn('w-full min-w-0', compact && 'sr-only')}>
-        <h1 className="w-full font-headline text-3xl font-bold tracking-tight">Shopping Center</h1>
-        {!compact && <p className="text-muted-foreground">Lists in the order you walk the store, and a pantry that shows what is on the shelves.</p>}
-      </div>
+      {compact ? (
+        // Only `sr-only`: a width utility beside it (`w-full`) would win over its 1 px
+        // width and stretch the hidden box past the viewport (sideways page scroll).
+        <h1 className="sr-only">Shopping Center</h1>
+      ) : (
+        <div className="w-full min-w-0">
+          <h1 className="w-full font-headline text-3xl font-bold tracking-tight">Shopping Center</h1>
+          <p className="text-muted-foreground">Lists in the order you walk the store, and a pantry that shows what is on the shelves.</p>
+        </div>
+      )}
       {pending && <Skeleton className="h-10 w-full shrink-0 sm:w-36" aria-hidden />}
       {canView && !compact && (
         <Button asChild variant="outline" className="w-full sm:w-auto">

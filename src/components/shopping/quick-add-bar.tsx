@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -70,7 +70,7 @@ export function QuickAddBar({
    */
   loading?: boolean;
   placeholder?: string;
-  /** The field's text as it changes (the open list filters its needed items by it, SH-18c). */
+  /** The text as the member types it, and '' on submit (the open list filters its needed items by it, SH-18c). Never called for entries put back after a failed save. */
   onTextChange?: (text: string) => void;
   /** A status line under the field ("2 needed items match. Press Enter to add milk."). */
   hint?: string | null;
@@ -84,15 +84,6 @@ export function QuickAddBar({
   const mountedRef = useRef(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const fieldId = `quick-add-${useId().replace(/:/g, '')}`;
-
-  // Every change, typed or put back after a failed save, reaches the filter.
-  const onTextChangeRef = useRef(onTextChange);
-  useLayoutEffect(() => {
-    onTextChangeRef.current = onTextChange;
-  });
-  useEffect(() => {
-    onTextChangeRef.current?.(value);
-  }, [value]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -115,6 +106,7 @@ export function QuickAddBar({
     }
     // The submitted entries are a snapshot; the field is free for new input.
     setValue('');
+    onTextChange?.('');
     setError(null);
     busyRef.current = true;
     setBusy(true);
@@ -175,6 +167,9 @@ export function QuickAddBar({
           value={value}
           onChange={(event) => {
             setValue(event.target.value);
+            // Only what the member types filters the list: entries put back after a
+            // failed save are shown with their error, never as a filter.
+            onTextChange?.(event.target.value);
             if (error) setError(null);
           }}
           placeholder={placeholder}

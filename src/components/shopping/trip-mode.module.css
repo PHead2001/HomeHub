@@ -27,13 +27,13 @@
 
 .group {
   break-inside: avoid;
+  scroll-margin-top: calc(3.5rem + var(--trip-header-h, 0px));
 }
 
 .aisle {
   position: sticky;
   top: calc(3.5rem + var(--trip-header-h, 0px));
   z-index: 5;
-  scroll-margin-top: calc(3.5rem + var(--trip-header-h, 0px));
   background: hsl(var(--card));
 }
 

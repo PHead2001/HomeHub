@@ -89,7 +89,10 @@ export const TripHeader = forwardRef<HTMLDivElement, {
   }, []);
 
   const jump = (targetId: string) => {
-    const target = document.getElementById(targetId);
+    // The aisle's section (its scroll margin clears the sticky header), not the
+    // sticky heading itself, whose own box moves while it sticks.
+    const heading = document.getElementById(targetId);
+    const target = heading?.closest('section') ?? heading;
     if (!target) return;
     const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     target.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });

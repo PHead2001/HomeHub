@@ -33,7 +33,15 @@ async function open(page: Page, path: string, heading: string) {
 
 async function scanWith(page: Page, opener: string, scannerName: string, barcode: string) {
   if (opener === 'Scan to tick') {
-    // Scan to tick is in the open list's actions menu (S8b).
+    // Scan to tick is in the open list's actions menu (S8b), at the top right of the
+    // list, where the top-right toasts of an earlier scan sit (and a pointer resting
+    // on them pauses their timeout): dismiss them first.
+    const toasts = page.getByRole('region', { name: 'Notifications (F8)' }).getByRole('button', { name: 'Dismiss notification' });
+    for (let attempt = 0; attempt < 10 && await toasts.count() > 0; attempt += 1) {
+      await toasts.first().click({ force: true }).catch(() => undefined);
+      await page.waitForTimeout(100);
+    }
+    await expect(toasts).toHaveCount(0);
     await page.getByTestId('open-list').getByRole('button', { name: 'More list actions' }).click();
     await page.getByRole('menu').getByRole('menuitem', { name: opener, exact: true }).click();
   } else {

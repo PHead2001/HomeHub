@@ -32,6 +32,7 @@ export function ScanToTick({
   open: openProp,
   onOpenChange,
   showTrigger = true,
+  onCloseAutoFocus,
 }: {
   householdId: string;
   /** The open list `items`, `onTick` and `onAdd` belong to. */
@@ -44,6 +45,8 @@ export function ScanToTick({
   onOpenChange?: (open: boolean) => void;
   /** Draws the "Scan to tick" button (off when a menu item opens the scanner instead). */
   showTrigger?: boolean;
+  /** Where focus goes when the dialog closes (opened from a menu, it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = openProp ?? ownOpen;
@@ -122,7 +125,7 @@ export function ScanToTick({
           <ScanLine className="mr-2" aria-hidden /> Scan to tick
         </Button>
       )}
-      <DialogContent phoneSheet>
+      <DialogContent phoneSheet onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Scan to tick</DialogTitle>
           <DialogDescription>Scan a product to tick it off this list.</DialogDescription>

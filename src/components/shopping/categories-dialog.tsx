@@ -77,6 +77,7 @@ export function CategoriesDialog({
   open: openProp,
   onOpenChange,
   showTrigger = true,
+  onCloseAutoFocus,
 }: {
   householdId: string;
   list: ShoppingList;
@@ -93,6 +94,8 @@ export function CategoriesDialog({
   onOpenChange?: (open: boolean) => void;
   /** Draws the "Manage Categories" button (off when a menu item opens the dialog instead). */
   showTrigger?: boolean;
+  /** Where focus goes when the dialog closes (opened from a menu, it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = openProp ?? ownOpen;
@@ -287,7 +290,7 @@ export function CategoriesDialog({
           <Button variant="outline" className="w-full sm:w-auto"><Settings className="mr-2 h-4 w-4" aria-hidden /> Manage Categories</Button>
         </DialogTrigger>
       )}
-      <DialogContent phoneSheet className="max-h-[90dvh] overflow-y-auto">
+      <DialogContent phoneSheet className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="font-headline">Manage Categories</DialogTitle>
           <DialogDescription>

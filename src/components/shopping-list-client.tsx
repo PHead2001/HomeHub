@@ -1175,6 +1175,15 @@ export function ShoppingListClient({
     now,
   });
 
+  // The dialogs the open list's actions menu opens have no trigger of their own:
+  // when one closes, focus goes back to the menu button (S8b), never to the page.
+  const focusListMenu = (event: Event) => {
+    const button = document.querySelector<HTMLElement>('[data-testid="open-list"] [data-testid="list-actions-menu"]');
+    if (!button) return;
+    event.preventDefault();
+    button.focus({ preventScroll: true });
+  };
+
   // After-trip flow (S5): receipt choice, put away, trip Undo, usual chips, history.
   const tripFlow = useTripFlow({
     householdId,
@@ -1197,6 +1206,7 @@ export function ShoppingListClient({
     onOpenPantry,
     onQuickAdd,
     closeReceipt: () => setIsReceiptOpen(false),
+    historyCloseAutoFocus: (event) => focusListMenu(event),
   });
 
   const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-trip'
@@ -1590,6 +1600,7 @@ export function ShoppingListClient({
                     showTrigger={false}
                     open={listDialogOpen === 'categories'}
                     onOpenChange={(open) => setListDialogOpen(open ? 'categories' : null)}
+                    onCloseAutoFocus={focusListMenu}
                   />
                 )}
                 {canEdit && householdId && (
@@ -1603,6 +1614,7 @@ export function ShoppingListClient({
                     showTrigger={false}
                     open={listDialogOpen === 'scan'}
                     onOpenChange={(open) => setListDialogOpen(open ? 'scan' : null)}
+                    onCloseAutoFocus={focusListMenu}
                   />
                 )}
                 <div className="px-3 pb-4 sm:px-6 sm:pb-6">

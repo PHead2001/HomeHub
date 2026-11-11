@@ -26,6 +26,7 @@ export function TripHistoryButton({
   open: openProp,
   onOpenChange,
   showTrigger = true,
+  onCloseAutoFocus,
 }: {
   householdId: string;
   memberNames: ReadonlyMap<string, string>;
@@ -38,6 +39,8 @@ export function TripHistoryButton({
   onOpenChange?: (open: boolean) => void;
   /** Draws the "Trips" button (off when a menu item opens the history instead). */
   showTrigger?: boolean;
+  /** Where focus goes when the dialog closes (opened from a menu, it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = openProp ?? ownOpen;
@@ -58,6 +61,7 @@ export function TripHistoryButton({
           canUndo={canUndo}
           onUndo={onUndo}
           onClose={() => setOpen(false)}
+          onCloseAutoFocus={onCloseAutoFocus}
         />
       )}
     </>
@@ -65,7 +69,7 @@ export function TripHistoryButton({
 }
 
 function TripHistoryDialog({
-  householdId, memberNames, currentUid, canUndo, onUndo, onClose,
+  householdId, memberNames, currentUid, canUndo, onUndo, onClose, onCloseAutoFocus,
 }: {
   householdId: string;
   memberNames: ReadonlyMap<string, string>;
@@ -73,6 +77,7 @@ function TripHistoryDialog({
   canUndo: boolean;
   onUndo: (tripId: string) => Promise<void>;
   onClose: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const trips = useRecentTrips(householdId);
   const [now, setNow] = useState(() => Date.now());
@@ -86,7 +91,7 @@ function TripHistoryDialog({
 
   return (
     <Dialog open onOpenChange={(next) => !next && onClose()}>
-      <DialogContent phoneSheet className="max-w-md">
+      <DialogContent phoneSheet className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="font-headline">Recent trips</DialogTitle>
           <DialogDescription>What was put away after each trip. The latest trip can be undone for 15 minutes.</DialogDescription>

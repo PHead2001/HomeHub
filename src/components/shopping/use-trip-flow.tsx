@@ -64,6 +64,7 @@ export function useTripFlow({
   onOpenPantry,
   onQuickAdd,
   closeReceipt,
+  historyCloseAutoFocus,
 }: {
   householdId: string | null;
   uid: string | null;
@@ -82,6 +83,8 @@ export function useTripFlow({
   onOpenPantry?: () => void;
   onQuickAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
   closeReceipt: () => void;
+  /** Where focus goes when the trip history closes (it opens from the list's menu). */
+  historyCloseAutoFocus?: (event: Event) => void;
 }) {
   const { household } = useAuth();
   const { toast, toastError } = useToast();
@@ -259,6 +262,7 @@ export function useTripFlow({
       showTrigger={false}
       open={historyOpen}
       onOpenChange={setHistoryOpen}
+      onCloseAutoFocus={historyCloseAutoFocus}
       householdId={householdId}
       memberNames={memberNames}
       currentUid={uid}
