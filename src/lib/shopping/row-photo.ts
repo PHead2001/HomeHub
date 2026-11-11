@@ -11,6 +11,11 @@
  * - Otherwise: the stored URL, unless it is one of this household's managed
  *   library photos (its product is gone, so the object is deleted or will be).
  */
+/** The photo to draw: none when this URL already failed to load (the tile or row then shows its fallback). */
+export function shownPhoto(url: string | null | undefined, failed: string | null): string | null {
+  return url && url !== failed ? url : null;
+}
+
 export function rowPhoto(
   item: { barcode?: string; imageUrl?: string },
   library: ReadonlyMap<string, { imageUrl?: string }> | null,

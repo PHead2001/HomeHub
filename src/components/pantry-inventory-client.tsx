@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format, parseISO } from 'date-fns';
-import type { BarcodeLibraryItem, PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
+import type { PantryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { auth, db } from '@/lib/firebase';
@@ -65,6 +65,7 @@ import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
@@ -761,7 +762,9 @@ export function PantryInventoryClient() {
       return 'shelves';
     }
   });
-  const [library, setLibrary] = useState<BarcodeLibraryItem[]>([]);
+  // Product photos for tiles: the live Barcode Library (matched by name), the same source as shopping rows.
+  const libraryPhotos = useLibraryPhotos(currentUser?.householdId ?? null);
+  const library = useMemo(() => (libraryPhotos ? [...libraryPhotos.values()] : []), [libraryPhotos]);
   const [liftedIds, setLiftedIds] = useState<ReadonlySet<string>>(new Set());
 
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
@@ -829,22 +832,7 @@ export function PantryInventoryClient() {
     return lists;
   }, [currentUser]);
 
-  // Product photos for tiles come from the household's barcode library (matched by name).
-  const fetchLibrary = useCallback(async () => {
-    if (!currentUser?.householdId) return;
-    try {
-      const snapshot = await getDocsOfflineAware(query(collection(db, 'households', currentUser.householdId, 'barcode-library')));
-      setLibrary(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BarcodeLibraryItem)));
-    } catch {
-      // Photos are decoration; tiles fall back to emoji.
-    }
-  }, [currentUser]);
-
-  // Shopping lists are read on demand (when an item is put on a list); the photo
-  // library once per household.
-  useEffect(() => {
-    if (currentUser?.householdId) fetchLibrary();
-  }, [currentUser, fetchLibrary]);
+  // Shopping lists are read on demand (when an item is put on a list).
 
   const photos = useMemo(() => Object.fromEntries(items.map(item => [item.id, productPhotoForName(item.name, library)])), [items, library]);
 

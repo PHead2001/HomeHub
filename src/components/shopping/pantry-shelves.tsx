@@ -13,6 +13,7 @@ import type { PantryItem, PantryItemLocation } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { PANTRY_LOCATIONS, expiryLabel, expiryState, pantryEmoji, type ExpiryState } from '@/lib/shopping/pantry';
 import { NumberTicker } from '@/components/motion/number-ticker';
+import { shownPhoto } from '@/lib/shopping/row-photo';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 
 const SHELF_ICON: Record<PantryItemLocation, LucideIcon> = { Pantry: Archive, Fridge: Refrigerator, Freezer: Snowflake };
@@ -58,6 +59,15 @@ export type PantryShelvesProps = {
  * Enter to pick up, arrow keys to choose a shelf, Space or Enter to drop, Escape
  * to cancel), or by tapping the handle and then "Move here" on a shelf.
  */
+/** A tile's product photo; one that fails to load (e.g. its object was deleted) falls back to the emoji. */
+function TilePhoto({ src, fallback }: { src: string; fallback: string }) {
+  const [failed, setFailed] = useState<string | null>(null);
+  const shown = shownPhoto(src, failed);
+  return shown
+    ? <Image src={shown} alt="" width={56} height={56} unoptimized className="h-14 w-14 object-cover" onError={() => setFailed(shown)} />
+    : <>{fallback}</>;
+}
+
 export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, onEdit, onDelete, onMove, onAddToList }: PantryShelvesProps) {
   const [picked, setPicked] = useState<{ id: string; target: PantryItemLocation } | null>(null);
   const [ghost, setGhost] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -227,7 +237,7 @@ export function PantryShelves({ items, photos, liftedIds, canEdit, canDelete, on
                         >
                           <span className={cn('flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg text-4xl transition-transform duration-200 ease-out', state === 'expired' && 'opacity-60', lifted && '-translate-y-2')} aria-hidden>
                             {photo ? (
-                              <Image src={photo} alt="" width={56} height={56} unoptimized className="h-14 w-14 object-cover" />
+                              <TilePhoto src={photo} fallback={pantryEmoji(item.name, item.location)} />
                             ) : (
                               pantryEmoji(item.name, item.location)
                             )}

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { currentItemForToggle, matchByBarcode, scanTickDecision, type TickCandidate } from '../../src/lib/shopping/scan-tick';
-import { rowPhoto } from '../../src/lib/shopping/row-photo';
+import { rowPhoto, shownPhoto } from '../../src/lib/shopping/row-photo';
+import { productPhotoForName } from '../../src/lib/shopping/pantry';
 
 const items: TickCandidate[] = [
   { id: 'milk', name: 'Milk', status: 'needed' },
@@ -80,5 +81,22 @@ describe('row photos follow the library', () => {
 
   test('while the library is unknown the stored photo shows', () => {
     assert.equal(rowPhoto({ barcode: '111', imageUrl: managedUrl }, null, isManaged), managedUrl);
+  });
+});
+
+describe('photos that fail to load fall back (rows and pantry tiles)', () => {
+  test('a URL that failed is not drawn again; a new URL is', () => {
+    assert.equal(shownPhoto('https://x.test/a.jpg', null), 'https://x.test/a.jpg');
+    assert.equal(shownPhoto('https://x.test/a.jpg', 'https://x.test/a.jpg'), null);
+    assert.equal(shownPhoto('https://x.test/b.jpg', 'https://x.test/a.jpg'), 'https://x.test/b.jpg');
+    assert.equal(shownPhoto(undefined, null), null);
+    assert.equal(shownPhoto('', null), null);
+  });
+
+  test('pantry tiles follow the live library: a replaced or removed photo changes the tile', () => {
+    const before = [{ name: 'Oat milk', imageUrl: 'https://x.test/old.jpg' }];
+    assert.equal(productPhotoForName('oat milk', before), 'https://x.test/old.jpg');
+    assert.equal(productPhotoForName('oat milk', [{ name: 'Oat milk', imageUrl: 'https://x.test/new.jpg' }]), 'https://x.test/new.jpg');
+    assert.equal(productPhotoForName('oat milk', [{ name: 'Oat milk', imageUrl: '' }]), undefined);
   });
 });

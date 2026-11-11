@@ -1,6 +1,7 @@
 'use client';
 
 import { formatPackageSize } from '@/lib/shopping/scan';
+import { shownPhoto } from '@/lib/shopping/row-photo';
 import { forwardRef, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Image from 'next/image';
 import { motion, useMotionValue, useTransform, type PanInfo } from 'motion/react';
@@ -166,14 +167,15 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
       {attribution && <span className="block text-xs text-muted-foreground" data-testid="item-attribution">{attribution}</span>}
     </span>
   );
-  const image = photo && photo !== failedPhoto && (
+  const shown = shownPhoto(photo, failedPhoto);
+  const image = shown && (
     <Image
-      src={photo}
+      src={shown}
       alt=""
       width={40}
       height={40}
       sizes="40px"
-      onError={() => setFailedPhoto(photo)}
+      onError={() => setFailedPhoto(shown)}
       className={cn('h-10 w-10 shrink-0 rounded-md object-cover', purchased && 'opacity-50')}
     />
   );
