@@ -6,6 +6,7 @@ import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-ad
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { choreStatsAssigneeKey } from '@functions/shared/ids';
 import { choreStatsDocId } from '@functions/shared/chore-stats';
+import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import {
   canAssignRole,
   canEditPermissions,
@@ -326,9 +327,13 @@ const unassignChoreFields = (): FirebaseFirestore.UpdateData<FirebaseFirestore.D
  * counted under `choreStatsAssigneeKey(email)` while they were a member, and
  * once their membership and contact documents are gone their uid can no longer
  * be resolved to that email. `aliases.<uid>` in the stats documents of this
- * and last year (every completion still stored is at most 90 days old) keeps
- * crediting it to the same key (`creditedStatsKey`), so their score is one
- * bucket before and after they leave. The alias holds no email.
+ * and last year keeps crediting it to the same key (`creditedStatsKey`), so
+ * their score is one bucket before and after they leave. The alias holds no
+ * email. The years are the household's (`timeZone`, defaulted by
+ * `safeTimeZone` exactly as upkeep's `completionYear` and Home Wrapped
+ * do): a completion of theirs still stored is in the past and at most 90 days
+ * old, so its stats year is this local year or the one before; next year can
+ * receive none of theirs (they no longer complete chores here).
  */
 const keepStatsIdentity = (
   transaction: FirebaseFirestore.Transaction,
@@ -336,10 +341,11 @@ const keepStatsIdentity = (
   uid: string,
   email: string | null | undefined,
   now: Date,
+  timeZone: unknown,
 ) => {
   if (!uid || typeof email !== 'string' || !email.trim()) return;
   const key = choreStatsAssigneeKey(email);
-  const year = now.getUTCFullYear();
+  const year = Number(localDay(now, safeTimeZone(typeof timeZone === 'string' ? timeZone : undefined)).slice(0, 4));
   for (const statsYear of [year - 1, year]) {
     transaction.set(householdRef.collection('stats').doc(choreStatsDocId(statsYear)), { aliases: { [uid]: key } }, { merge: true });
   }
@@ -382,7 +388,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
-    keepStatsIdentity(transaction, householdRef, caller.uid, caller.email, now);
+    keepStatsIdentity(transaction, householdRef, caller.uid, caller.email, now, householdSnap.get('timeZone'));
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
@@ -926,7 +932,7 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
     // The email upkeep credited them by: the contact document's, else the record's.
-    if (!denied) keepStatsIdentity(transaction, context.householdRef, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email, now);
+    if (!denied) keepStatsIdentity(transaction, context.householdRef, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email, now, context.household.timeZone);
     transaction.update(context.householdRef, {
       ...legacyMemberEmailRemoval(context.household, target.email),
       updatedAt: iso,
