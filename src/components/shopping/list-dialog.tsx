@@ -34,6 +34,9 @@ const TEMPLATES: { name: string; icon: string; type: ShoppingListType; color: st
   { name: 'Pet Supplies', icon: 'PawPrint', type: 'Pets', color: 'tint-7' },
 ];
 
+/** The Groceries template as a list form (the quick-add shortcut's "Create Groceries", SH-10h). */
+export const groceriesTemplateValues = (): ListFormValues => ({ ...TEMPLATES[0], description: '' });
+
 const TINTS: MemberColorIndex[] = [1, 2, 3, 4, 5, 6, 7, 8];
 
 /** The list types (SH-5a). Grocery lists get the pantry hand-off and the pantry's "Put on a shopping list". */
