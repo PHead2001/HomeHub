@@ -23,7 +23,11 @@ const STORE_ID = 'e2e-aisles-store';
 const STORE_NAME = 'E2E Corner Shop';
 const CREATED_NAME = 'E2E Saturday Shop';
 const NEW_STORE_NAME = 'E2E Big Box';
+const SECOND_LIST_ID = 'e2e-aisles-list-2';
+const OTHER_STORE_ID = 'e2e-aisles-other-store';
+const RENAMED_NAME = 'E2E Corner Market';
 const listRef = lists.doc(LIST_ID);
+const secondListRef = lists.doc(SECOND_LIST_ID);
 const configRef = listRef.collection('config').doc('categories');
 
 async function session(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
@@ -62,7 +66,9 @@ async function deleteByName(collection: CollectionReference, name: string) {
 
 async function seed() {
   await firestore.recursiveDelete(listRef);
+  await firestore.recursiveDelete(secondListRef);
   await stores.doc(STORE_ID).delete();
+  await stores.doc(OTHER_STORE_ID).delete();
   await deleteByName(lists, CREATED_NAME);
   await deleteByName(stores, NEW_STORE_NAME);
   await listRef.set({ name: LIST_NAME, description: '', icon: 'ShoppingCart', type: 'Grocery', color: 'tint-2' });
@@ -75,7 +81,9 @@ async function seed() {
 
 async function cleanup() {
   await firestore.recursiveDelete(listRef);
+  await firestore.recursiveDelete(secondListRef);
   await stores.doc(STORE_ID).delete();
+  await stores.doc(OTHER_STORE_ID).delete();
   await deleteByName(lists, CREATED_NAME);
   await deleteByName(stores, NEW_STORE_NAME);
 }
@@ -206,6 +214,94 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await dialog.getByRole('combobox', { name: 'Store for this list' }).click();
     await page.getByRole('option', { name: /No store/ }).click();
     await expect.poll(async () => (await listRef.get()).data()?.storeId).toBeNull();
+  });
+
+  test('the store is renamed from Manage Categories and every list shows the new name', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await listRef.update({ storeId: STORE_ID });
+    await stores.doc(OTHER_STORE_ID).set({ name: NEW_STORE_NAME, aisleOrder: [], createdByUid: OWNER_UID, updatedAt: fixedNow });
+    await open(page, `/shopping?list=${LIST_ID}`);
+    await expect(page.getByTestId('list-store')).toHaveText(`Sorted for ${STORE_NAME}`);
+    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
+    await dialog.getByRole('button', { name: 'Rename store' }).click();
+    const field = dialog.getByLabel('Store name');
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue(STORE_NAME);
+
+    // Another store's name (case ignored) is explained inline.
+    await field.fill(NEW_STORE_NAME.toUpperCase());
+    await dialog.getByRole('button', { name: 'Save name' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: `You already have a store called ${NEW_STORE_NAME}` })).toBeVisible();
+
+    await field.fill(`  ${RENAMED_NAME} `);
+    await page.keyboard.press('Enter');
+    await expect(dialog.getByTestId('categories-save-status')).toHaveText(`Renamed to ${RENAMED_NAME} · Saved`);
+    const stored = (await stores.doc(STORE_ID).get()).data();
+    expect(stored).toMatchObject({ name: RENAMED_NAME, createdByUid: OWNER_UID, aisleOrder: ['Party', 'Dairy', 'Bakery'] });
+    expect(stored?.updatedAt).not.toEqual(fixedNow);
+    await expect(dialog.getByRole('heading', { name: `Aisle order at ${RENAMED_NAME}` })).toBeVisible();
+    await expect(dialog.getByRole('combobox', { name: 'Store for this list' })).toHaveText(RENAMED_NAME);
+    await dialog.getByRole('combobox', { name: 'Store for this list' }).click();
+    await expect(page.getByRole('option', { name: RENAMED_NAME })).toBeVisible();
+    await expect(page.getByRole('option', { name: STORE_NAME, exact: true })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByTestId('list-store')).toHaveText(`Sorted for ${RENAMED_NAME}`);
+  });
+
+  test('deleting a store asks first, unassigns its lists, and Undo brings both back', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await listRef.update({ storeId: STORE_ID });
+    await secondListRef.set({ name: 'E2E Aisles Two', description: '', icon: 'ShoppingCart', type: 'Grocery', color: 'tint-3', storeId: STORE_ID });
+    await open(page, `/shopping?list=${LIST_ID}`);
+    await expectAisleOrder(page, 'Party', 'Bakery');
+    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
+    const status = dialog.getByTestId('categories-save-status');
+
+    // The confirmation names the store and how many lists use it; Cancel deletes nothing.
+    await dialog.getByRole('button', { name: 'Delete store' }).click();
+    const confirm = dialog.getByTestId('delete-store-confirm');
+    await expect(confirm).toContainText(`Delete ${STORE_NAME}?`);
+    await expect(confirm).toContainText('2 lists use it');
+    const box = await confirm.getByRole('button', { name: `Delete ${STORE_NAME}` }).boundingBox();
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+    await confirm.getByRole('button', { name: 'Cancel' }).click();
+    expect((await stores.doc(STORE_ID).get()).exists).toBe(true);
+
+    await dialog.getByRole('button', { name: 'Delete store' }).click();
+    await confirm.getByRole('button', { name: `Delete ${STORE_NAME}` }).click();
+    await expect(status).toHaveText(`${STORE_NAME} deleted, 2 lists back to their own order · Saved`);
+    expect((await stores.doc(STORE_ID).get()).exists).toBe(false);
+    expect((await listRef.get()).data()?.storeId).toBeNull();
+    expect((await secondListRef.get()).data()?.storeId).toBeNull();
+    await expect(dialog.getByRole('heading', { name: 'Category order' })).toBeVisible();
+    await dialog.getByRole('combobox', { name: 'Store for this list' }).click();
+    await expect(page.getByRole('option', { name: STORE_NAME })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    // Undo (the shared 10 s window) re-creates the store with the same id and points both lists back.
+    await dialog.getByRole('button', { name: `Undo deleting ${STORE_NAME}` }).click();
+    await expect(status).toHaveText(`${STORE_NAME} restored · Saved`);
+    expect((await stores.doc(STORE_ID).get()).data()).toMatchObject({ name: STORE_NAME, aisleOrder: ['Party', 'Dairy', 'Bakery'], createdByUid: OWNER_UID });
+    expect((await listRef.get()).data()?.storeId).toBe(STORE_ID);
+    expect((await secondListRef.get()).data()?.storeId).toBe(STORE_ID);
+    await expect(dialog.getByRole('heading', { name: `Aisle order at ${STORE_NAME}` })).toBeVisible();
+
+    // Delete again without Undo: the open list falls back to its own order.
+    await dialog.getByRole('button', { name: 'Delete store' }).click();
+    await confirm.getByRole('button', { name: `Delete ${STORE_NAME}` }).click();
+    await expect(status).toHaveText(`${STORE_NAME} deleted, 2 lists back to their own order · Saved`);
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByTestId('list-store')).toHaveCount(0);
+    await expectAisleOrder(page, 'Bakery', 'Party');
+
+    // A device that still pointed a list at the deleted store leaves a dangling id:
+    // the list follows its own order, as before.
+    await listRef.update({ storeId: STORE_ID });
+    await expect(page.getByTestId('list-store')).toHaveCount(0);
+    await expectAisleOrder(page, 'Bakery', 'Party');
   });
 
   test('a reorder and a store change reach the other session without a reload', async ({ browser }, testInfo) => {
