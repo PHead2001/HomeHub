@@ -26,7 +26,7 @@ import {
 } from '../../src/lib/shopping/category-order';
 import { groupItemsByAisle } from '../../src/lib/shopping/items';
 import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '../../src/lib/shopping-items';
-import { listSaveData, shouldOpenCreatedList } from '../../src/lib/shopping/list-save';
+import { listSaveData, rejectedCreateView, shouldOpenCreatedList } from '../../src/lib/shopping/list-save';
 import { createSettledQueue, rejectedDraftRestore, rejectedInputRestore, saveLineText } from '../../src/lib/shopping/save-line';
 
 const defaults = DEFAULT_SHOPPING_CATEGORIES;
@@ -394,5 +394,24 @@ describe('category moves commit in click order', () => {
     await enqueue(async () => { throw new Error('refused'); }).catch(() => events.push('failed'));
     await enqueue(async () => { events.push('next'); return { settled: Promise.resolve() }; });
     assert.deepEqual(events, ['failed', 'next']);
+  });
+});
+
+describe('a creation refused after its list was opened', () => {
+  test('leaves that list for the overview; anything else stays put', () => {
+    assert.equal(rejectedCreateView({ createdListId: 'saturday-x1', openListId: 'saturday-x1' }), 'overview');
+    assert.equal(rejectedCreateView({ createdListId: 'saturday-x1', openListId: 'hardware' }), 'stay');
+    assert.equal(rejectedCreateView({ createdListId: 'saturday-x1', openListId: null }), 'stay');
+    // An edit (no created list) never moves the member.
+    assert.equal(rejectedCreateView({ createdListId: null, openListId: 'hardware' }), 'stay');
+  });
+});
+
+describe('a new store made while the list follows another store', () => {
+  test('starts from the order shown (the current store), not the list config', () => {
+    const listOrder = ['Bakery', 'Dairy', 'Party', 'Other'];
+    const shown = listOrderAtStore(['Party', 'Dairy', 'Bakery'], listOrder);
+    assert.deepEqual(initialAisleOrder(shown), ['Party', 'Dairy', 'Bakery']);
+    assert.notDeepEqual(initialAisleOrder(shown), initialAisleOrder(listOrder));
   });
 });

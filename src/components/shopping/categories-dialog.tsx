@@ -209,7 +209,7 @@ export function CategoriesDialog({
       return;
     }
     setStoreError(null);
-    const { write } = createStoreForList(householdId, list.id, { name: check.name, aisleOrder: initialAisleOrder(config.list), uid });
+    const { write } = createStoreForList(householdId, list.id, { name: check.name, aisleOrder: initialAisleOrder(order), uid });
     setCreatingStore(false);
     setStoreName('');
     await save.track(write, {

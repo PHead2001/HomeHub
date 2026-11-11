@@ -76,7 +76,7 @@ import { ListCard } from './shopping/list-card';
 import { ListCardsSkeleton } from './shopping/shopping-skeletons';
 import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { CategoriesDialog } from './shopping/categories-dialog';
-import { listSaveData, shouldOpenCreatedList } from '@/lib/shopping/list-save';
+import { listSaveData, rejectedCreateView, shouldOpenCreatedList } from '@/lib/shopping/list-save';
 import { rejectedDraftRestore } from '@/lib/shopping/save-line';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
@@ -381,6 +381,9 @@ export function ShoppingListClient({
     // with what was submitted, unless the list dialog is in use again by then.
     const rejected = (error: unknown) => {
       toastError(error, failTitle);
+      // A refused creation whose list is open (it was opened while the save was
+      // still waiting) leaves that list for the overview, where its form returns.
+      if (rejectedCreateView({ createdListId: id ? null : listId, openListId: selectedListIdRef.current }) === 'overview') onSelectList(null);
       const listGone = Boolean(id) && !listsRef.current.some((entry) => entry.id === id);
       if (!rejectedDraftRestore({ dialogOpen: isListDialogOpenRef.current, listGone })) return;
       setListToEdit(id ? listsRef.current.find((entry) => entry.id === id) ?? null : null);
@@ -1107,9 +1110,28 @@ export function ShoppingListClient({
     );
   }
 
+  // The list form (create and edit) is rendered on every screen below, so a
+  // rejected form can open again wherever the member is.
+  const listDialog = (
+    <ListDialog
+      isOpen={isListDialogOpen}
+      onOpenChange={(open) => {
+        setIsListDialogOpen(open);
+        if (!open) setListDraft(null);
+      }}
+      draft={listDraft}
+      onSave={handleSaveList}
+      listToEdit={listToEdit}
+      lists={lists}
+      onOpenList={(listId) => onSelectList(listId)}
+    />
+  );
+
   // The open list was deleted elsewhere: say so, with the way back and nothing to write with.
   if (deletedList) {
     return (
+      <>
+      {listDialog}
       <div className="rounded-xl border bg-card text-card-foreground shadow-raised" data-testid="open-list" data-list-deleted="true">
         <div className="p-4 sm:p-6">
           <Button variant="ghost" onClick={() => onSelectList(null)} className="mb-3 pl-1">
@@ -1127,6 +1149,7 @@ export function ShoppingListClient({
         </div>
         {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
       </div>
+      </>
     );
   }
 
@@ -1146,6 +1169,7 @@ export function ShoppingListClient({
     return (
         <>
             {cartFlight.layer}
+            {listDialog}
             <AlertDialog open={isClearAlertOpen} onOpenChange={setIsClearAlertOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
@@ -1464,18 +1488,7 @@ export function ShoppingListClient({
     <>
       {/* An Undo from a list that was open a moment ago stays reachable here. */}
       {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
-      <ListDialog
-        isOpen={isListDialogOpen}
-        onOpenChange={(open) => {
-          setIsListDialogOpen(open);
-          if (!open) setListDraft(null);
-        }}
-        draft={listDraft}
-        onSave={handleSaveList}
-        listToEdit={listToEdit}
-        lists={lists}
-        onOpenList={(listId) => onSelectList(listId)}
-      />
+      {listDialog}
       <AlertDialog open={!!listToDelete} onOpenChange={(open) => !open && setListToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

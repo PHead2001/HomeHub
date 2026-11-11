@@ -45,3 +45,14 @@ export function shouldOpenCreatedList({
 }): boolean {
   return request === latestRequest && selectionNow === selectionAtSubmit && householdNow === householdAtSubmit;
 }
+
+/**
+ * Where the member goes when a list creation is refused after its list was
+ * already opened (a queued or slow save, SH-20a): if that list is the one open,
+ * back to the overview, where the form opens again with what was submitted
+ * (`rejectedDraftRestore`); otherwise they stay where they are. An edit never
+ * moves the member.
+ */
+export function rejectedCreateView({ createdListId, openListId }: { createdListId: string | null; openListId: string | null }): 'overview' | 'stay' {
+  return createdListId !== null && openListId === createdListId ? 'overview' : 'stay';
+}
