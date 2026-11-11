@@ -25,9 +25,9 @@ export const categoriesKey = (categories: NotificationCategory[] | null) => (cat
 /**
  * The audience filter every client list query of notifications carries:
  * documents addressed to the member (`[uid]`) or to everyone (`['*']`). The
- * read rule (release 3 of the audience change) only lets a query through when
- * it is constrained this way. Documents without `audience` (written before the
- * field existed and not yet backfilled) do not match.
+ * read rule only lets a query through when it is constrained this way.
+ * Documents without `audience` (written before the field existed and not
+ * backfilled) do not match and are unreadable.
  */
 export const audienceConstraint = (uid: string) => where('audience', 'array-contains-any', audienceQueryValues(uid));
 
