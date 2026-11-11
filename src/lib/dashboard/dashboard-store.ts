@@ -23,6 +23,8 @@ export type SectionState = {
   reason?: 'reconnecting' | 'offline';
   /** When the section last had a live (server) answer in this context, epoch ms. */
   updatedAt: number | null;
+  /** Some listener's latest answer came from the device cache (not yet confirmed by the server). */
+  cached?: boolean;
 };
 
 export type ListenerState = {
@@ -125,6 +127,7 @@ export function sectionStates(
     else if (listeners.some((listener) => listener.error === 'retrying')) state = { status: 'stale', reason: 'reconnecting', updatedAt };
     else if (offline && listeners.some((listener) => listener.fromCache)) state = { status: 'stale', reason: 'offline', updatedAt };
     else state = { status: 'ready', updatedAt };
+    if (listeners.some((listener) => listener.fromCache)) state.cached = true;
     states[group] = state;
   }
   return states;

@@ -8,10 +8,11 @@
 import { relativeDays, toDateValue } from './dates';
 import { choreDueKey, completionInstant, diffDayKeys, type ChoreRecord } from '../chores/dates';
 import { collapseMissedRecurring } from '../chores/list';
-import { isAssignedTo } from '../../../functions/src/shared/assignee';
+import { isAssignedTo, resolveAssigneeUid, type AssigneePerson } from '../../../functions/src/shared/assignee';
 import { daysUntilExpiry } from '../shopping/pantry';
-import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, type FeedingEntry } from '../pets/care';
-import type { PetProfile } from '../pets/types';
+import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, knownFoodType, type FeedingEntry } from '../pets/care';
+import { knownFromLogs, type KnownFeedings } from '../pets/feed-decision';
+import type { FoodType, PetProfile, PortionUnit } from '../pets/types';
 import type { HealthResult } from '../maintenance/health';
 import type { StreakTileModel } from './streaks';
 import {
@@ -40,6 +41,8 @@ export type RoomStatus = 'overdue' | 'due' | 'clear';
 export type RoomState = {
   id: string;
   name: string;
+  /** The room's icon name (Chores' `RoomIcon`), when the room document has one. */
+  icon?: string;
   overdue: number;
   dueToday: number;
   /** Open chores due later than today. */
@@ -55,6 +58,28 @@ export type RoomState = {
   chores: Array<{ id: string; task: string; dueLabel: string; overdue: boolean }>;
 };
 
+/** An open chore as the dashboard lists it (next up, today's work). */
+export type ChoreEntry = {
+  id: string;
+  task: string;
+  dueLabel: string;
+  overdue: boolean;
+  mine: boolean;
+  /**
+   * HP-32a: the assignee's name (member record, else the chore's stored display name);
+   * never an email. Null when unassigned or the name is unknown.
+   */
+  assignee?: string | null;
+  /** Who it is assigned to, for grouping: a member uid, else the lower-cased email, else '' (unassigned). Never shown. */
+  assigneeKey?: string;
+  /** `overdue`, `today`, `later` (within or beyond the week) or `none` (no date). */
+  due?: 'overdue' | 'today' | 'later' | 'none';
+  /** The first room's name ("Kitchen", "Around the house"). */
+  room?: string;
+  /** Older missed instances of the same series folded into this one ("+2 earlier missed"). */
+  missed?: number;
+};
+
 export type ChoreFacts = {
   mineOpen: number;
   mineOverdue: number;
@@ -65,10 +90,22 @@ export type ChoreFacts = {
   overdueTotal: number;
   rooms: RoomState[];
   /** Household next-up list (everyone's open chores, soonest first, yours first on a tie). */
-  nextUp: Array<{ id: string; task: string; dueLabel: string; overdue: boolean; mine: boolean }>;
+  nextUp: ChoreEntry[];
   /** HP-11a: the reader's own open chores (overdue, today, then within the upcoming window), soonest first. */
-  mineNext: Array<{ id: string; task: string; dueLabel: string; overdue: boolean; mine: boolean }>;
+  mineNext: ChoreEntry[];
+  /**
+   * HP-32a, HP-33b: every open chore that is overdue or due today, the household's work
+   * for today (most overdue first, yours first on a tie), at most `TODAY_WORK_MAX`.
+   */
+  todayWork?: ChoreEntry[];
+  /** Open overdue or due-today chores in all (`todayWork` may be capped). */
+  todayWorkTotal?: number;
+  /** Older missed instances of repeating chores, folded into their latest one (never counted as done). */
+  missed?: number;
 };
+
+/** The most chores `todayWork` lists (the tile shows fewer; the rest is "+N more" to /chores). */
+export const TODAY_WORK_MAX = 20;
 
 export type ShoppingFacts = {
   activeLists: number;
@@ -118,6 +155,18 @@ export type MaintenanceFacts = {
   vehicles: number;
 };
 
+/** What the dashboard's one-tap Fed (HP-33a) logs: the pet's usual portion and latest food type. */
+export type PetFeed = {
+  amount: number;
+  unit: PortionUnit;
+  /** Planned feedings per day (null when unknown). */
+  perDay: number | null;
+  /** The latest feeding's food type (`knownFoodType`), Dry without history. */
+  foodType: FoodType;
+  /** Last feed and today's count from the loaded logs (the duplicate check's fallback). */
+  known: KnownFeedings;
+};
+
 export type PetState = {
   id: string;
   name: string;
@@ -137,6 +186,8 @@ export type PetState = {
   headline: string;
   /** Set when the feeding history is stale (kept while reconnecting, or cached offline): "Reconnecting…", "Updated 9:41". */
   feedingHint?: string;
+  /** The one-tap feeding's request; absent when the feeding history could not be read. */
+  feed?: PetFeed;
 };
 
 /** Pets with an unreadable feeding history (`fed === null`) count in neither number. */
@@ -207,6 +258,28 @@ export function recurringTemplateIdsFrom(templates: RawDoc[], today: string): Se
 /** How far ahead a room's "coming up" count looks. */
 export const UPCOMING_DAYS = 7;
 
+/**
+ * A member's name for the dashboard (HP-32a): the display name, never an email. A
+ * display name that is itself an email is not used.
+ */
+export function memberName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim().replace(/\s+/g, ' ');
+  if (!name || name.includes('@')) return null;
+  return name.slice(0, 60);
+}
+
+/** Approved members as the assignee helpers want them, with their names. */
+function peopleFrom(members: readonly RawDoc[]): Array<AssigneePerson & { name: string | null }> {
+  return members.flatMap((member) => {
+    const status = typeof member.status === 'string' ? member.status : 'active';
+    if (member.role === 'newuser' || status !== 'active') return [];
+    const uid = typeof member.uid === 'string' && member.uid ? member.uid : member.id;
+    const email = typeof member.email === 'string' ? member.email : null;
+    return [{ uid, email, name: memberName(member.displayName) }];
+  });
+}
+
 export function computeChoreFacts(
   chores: RawDoc[],
   rooms: RawDoc[],
@@ -214,6 +287,8 @@ export function computeChoreFacts(
   now: Date,
   recurringTemplateIds: ReadonlySet<string> = new Set(),
   timeZone?: string | null,
+  /** Household membership records (names for HP-32a); without them the chore's stored name is used. */
+  members: readonly RawDoc[] = [],
 ): ChoreFacts {
   // D-6: "today" and "completed today" are the household's day (device zone only when the
   // household has none); due dates are date-only keys and are compared as stored.
@@ -222,7 +297,20 @@ export function computeChoreFacts(
   const records = chores as unknown as ChoreRecord[];
   // Same folding as the Chores page: only the latest instance of each recurring series counts.
   const dueByToday = records.filter((chore) => chore.isCompleted !== true && choreDueKey(chore) !== '' && choreDueKey(chore) <= today);
-  const folded = new Set(collapseMissedRecurring(dueByToday, recurringTemplateIds).flatMap((entry) => entry.missed.map((missed) => missed.id)));
+  const collapsed = collapseMissedRecurring(dueByToday, recurringTemplateIds);
+  const folded = new Set(collapsed.flatMap((entry) => entry.missed.map((missed) => missed.id)));
+  const missedBy = new Map(collapsed.filter((entry) => entry.missed.length > 0).map((entry) => [entry.chore.id, entry.missed.length]));
+  const people = peopleFrom(members);
+  const assigneeOf = (chore: ChoreRecord): { key: string; name: string | null } => {
+    const record = chore as unknown as Record<string, unknown>;
+    const uid = resolveAssigneeUid(record, people);
+    const person = uid ? people.find((entry) => entry.uid === uid) : undefined;
+    const email = typeof record.assignedToEmail === 'string' ? record.assignedToEmail.trim().toLowerCase() : '';
+    const storedUid = typeof record.assignedToUid === 'string' ? record.assignedToUid.trim() : '';
+    const key = person?.uid ?? (email || storedUid);
+    if (!key) return { key: '', name: null };
+    return { key, name: person?.name ?? memberName(record.assignedToDisplayName) };
+  };
 
   const roomMap = new Map<string, RoomState>();
   const ensureRoom = (id: string, name: string) => {
@@ -235,7 +323,10 @@ export function computeChoreFacts(
   };
   [...rooms]
     .sort((a, b) => text(a.name, a.id).localeCompare(text(b.name, b.id)))
-    .forEach((room) => ensureRoom(room.id, text(room.name, 'Room')));
+    .forEach((room) => {
+      const state = ensureRoom(room.id, text(room.name, 'Room'));
+      if (typeof room.icon === 'string' && room.icon) state.icon = room.icon;
+    });
 
   let mineOpen = 0;
   let mineOverdue = 0;
@@ -243,7 +334,7 @@ export function computeChoreFacts(
   let todayTotal = 0;
   let todayDone = 0;
   let overdueTotal = 0;
-  const openWithDays: Array<{ entry: ChoreFacts['nextUp'][number]; days: number }> = [];
+  const openWithDays: Array<{ entry: ChoreEntry; days: number }> = [];
   const roomOrder = new Map<string, Array<{ chore: RoomState['chores'][number]; days: number }>>();
 
   for (const chore of records) {
@@ -300,8 +391,21 @@ export function computeChoreFacts(
       if (days === 0) mineDueToday += 1;
     }
     if (days !== null && days < 0) overdueTotal += 1;
+    const assignee = assigneeOf(chore);
+    const firstRoom = roomMap.get(roomIds[0]);
     openWithDays.push({
-      entry: { id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0, mine },
+      entry: {
+        id: chore.id,
+        task: text(chore.task, 'Chore'),
+        dueLabel,
+        overdue: days !== null && days < 0,
+        mine,
+        assignee: assignee.name,
+        assigneeKey: assignee.key,
+        due: days === null ? 'none' : days < 0 ? 'overdue' : days === 0 ? 'today' : 'later',
+        room: firstRoom?.name,
+        missed: missedBy.get(chore.id) ?? 0,
+      },
       days: days ?? Number.MAX_SAFE_INTEGER,
     });
   }
@@ -323,6 +427,7 @@ export function computeChoreFacts(
   }
 
   const sorted = openWithDays.sort((a, b) => a.days - b.days || Number(b.entry.mine) - Number(a.entry.mine));
+  const todayWork = sorted.filter((item) => item.days <= 0);
   return {
     mineOpen,
     mineOverdue,
@@ -336,6 +441,9 @@ export function computeChoreFacts(
       .filter((item) => item.entry.mine && item.days <= UPCOMING_DAYS)
       .slice(0, 5)
       .map((item) => item.entry),
+    todayWork: todayWork.slice(0, TODAY_WORK_MAX).map((item) => item.entry),
+    todayWorkTotal: todayWork.length,
+    missed: folded.size,
   };
 }
 
@@ -464,7 +572,7 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
  * the plan). A pet counts as fed when today's target is met, as on its card.
  * `feedings` holds each pet's recent feeding entries in either date shape.
  */
-export function computePetFacts(pets: RawDoc[], feedings: Record<string, FeedingEntry[] | null | undefined>, now: Date): PetFacts {
+export function computePetFacts(pets: RawDoc[], feedings: Record<string, FeedingEntry[] | null | undefined>, now: Date, timeZone?: string | null): PetFacts {
   const states = [...pets]
     .sort((a, b) => text(a.name, a.id).localeCompare(text(b.name, b.id)))
     .map<PetState>((pet) => {
@@ -483,7 +591,17 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
           headline: FEEDING_UNAVAILABLE,
         };
       }
-      const status = feedingStatus(logs, feedingPlan(pet as unknown as PetProfile), now);
+      const plan = feedingPlan(pet as unknown as PetProfile);
+      const status = feedingStatus(logs, plan, now);
+      // HP-33a: the same request as the Pets one-tap feed (usual portion, latest food type).
+      const latest = [...logs].sort((a, b) => (toDateValue(b.date)?.getTime() ?? 0) - (toDateValue(a.date)?.getTime() ?? 0))[0] as (FeedingEntry & { foodType?: unknown }) | undefined;
+      const feed: PetFeed = {
+        amount: plan.amount,
+        unit: plan.unit,
+        perDay: plan.perDay,
+        foodType: knownFoodType(latest?.foodType) ?? 'Dry',
+        known: knownFromLogs(logs, now, timeZone),
+      };
       return {
         id: pet.id,
         name: text(pet.name, 'Pet'),
@@ -494,6 +612,7 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
         fed: status.complete,
         countLabel: feedingCountLabel(status),
         headline: feedingHeadline(status, now),
+        feed,
       };
     });
   return {
