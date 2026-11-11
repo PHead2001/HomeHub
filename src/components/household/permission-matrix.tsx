@@ -89,7 +89,7 @@ function Cell({
         aria-label={label}
         disabled={disabled}
         onClick={onToggle}
-        className="group inline-flex h-10 w-10 items-center justify-center rounded-md disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent"
+        className="group inline-flex h-[var(--target-min)] w-[var(--target-min)] items-center justify-center rounded-md disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent"
         data-matrix-cell
       >
         <span className={box}>
@@ -101,7 +101,7 @@ function Cell({
   }
 
   return (
-    <span className="inline-flex h-10 w-10 items-center justify-center" title={locked}>
+    <span className="inline-flex h-[var(--target-min)] w-[var(--target-min)] items-center justify-center" title={locked}>
       {locked ? (
         <Lock aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
       ) : (

@@ -56,7 +56,7 @@ export function HealthPanel({
                   <button
                     type="button"
                     onClick={() => onOpen(deduction)}
-                    className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-ui hover:bg-accent"
+                    className="flex min-h-[var(--target-min)] w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-ui hover:bg-accent"
                   >
                     <span className="w-9 shrink-0 font-semibold tabular-nums text-destructive">−{deduction.points}</span>
                     <span className="min-w-0 flex-1">
