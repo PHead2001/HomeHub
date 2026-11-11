@@ -11,8 +11,8 @@ import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import type { QuickAddEntry } from '@/lib/shopping/items';
 import { addAndReportDetached, type QuickAddOutcome } from '@/lib/shopping/quick-add-outcome';
 import { purchasesAlreadyPutAway, rememberAfterTrip, useAfterTripPreference, useShoppingUsuals } from '@/lib/shopping/trip-live';
-import { tripGroup, tripOutcomeText, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
-import type { TripUndo, UndoEntry } from '@/lib/shopping/undo';
+import { tripGroup, tripOutcomeText, tripUndoAfterAnswer, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
+import { browserJournalStorage, pushJournal, type TripUndo, type UndoEntry } from '@/lib/shopping/undo';
 import { closeIfCurrent, createRequestGate } from '@/lib/shopping/request-gate';
 import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import type { ShoppingList, ShoppingListItem } from '@/lib/types';
@@ -145,6 +145,20 @@ export function useTripFlow({
       toast({ title: OFFLINE_TITLE, description: 'Put the trip away once you are back online.' });
       return false;
     }
+    const undoEntry = (): TripUndo | null => (uid ? {
+      group: 'shopping-trip', uid, householdId: target.householdId, listId: target.listId, itemId: tripId, name: target.listName, opId: tripId,
+      expiresAt: Date.now() + UNDO_WINDOW_MS,
+    } : null);
+    // Journaled (not shown) before the request: a reload while the answer is on its way
+    // still re-offers this trip's Undo once the page is back (`tripUndoAfterAnswer`).
+    const early = undoEntry();
+    if (early) pushJournal(browserJournalStorage(), early, Date.now());
+    const settle = (answer: Parameters<typeof tripUndoAfterAnswer>[0]) => {
+      const next = tripUndoAfterAnswer(answer);
+      const entry = undoEntry();
+      if (next === 'show' && entry) addUndo(entry);
+      else if (next === 'drop') dropUndo(tripId);
+    };
     try {
       const result = await putAwayAndClear({
         ...(await getAiActionContext(target.householdId)),
@@ -153,6 +167,7 @@ export function useTripFlow({
         mode: target.mode,
         items: choices,
       });
+      settle(result.ok ? { ok: true, applied: result.trip.applied } : { ok: false });
       if (!result.ok) {
         toast({ variant: 'destructive', title: 'Could not put the trip away', description: result.message });
         // The list is gone: nothing more can be done in this dialog.
@@ -167,23 +182,13 @@ export function useTripFlow({
         description: text.description,
         action: onOpenPantry && trip.credited > 0 ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
       });
-      if (trip.applied && uid) {
-        addUndo({
-          group: 'shopping-trip',
-          uid,
-          householdId: target.householdId,
-          listId: target.listId,
-          itemId: trip.tripId,
-          name: target.listName,
-          opId: trip.tripId,
-          expiresAt: Date.now() + UNDO_WINDOW_MS,
-        });
-      }
       if (trip.cleared.length > 0) onCleared(target.listId);
       return true;
     } catch (error) {
       // A lost response may still have applied it: the dialog keeps its trip id,
-      // so trying again never puts the same purchases away twice.
+      // so trying again never puts the same purchases away twice; the journaled
+      // Undo stays for a reload (the server says if there is nothing to undo).
+      settle('lost');
       toastError(error, 'Could not put the trip away');
       return false;
     }
