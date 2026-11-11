@@ -672,8 +672,8 @@
  * D-2: every dashboard control is at least 44 px on any pointer and 48 px on touch.
  * Written as plain media queries so it works with or without the shared `--target-min`
  * token. `.target` sizes the control itself; `.hitSlop` keeps a small visual (the
- * health badge, the brief's inline links) and grows only its hit area (`.hitSlopDown`:
- * downward only); `.menuItem` sizes menu rows.
+ * health badge, the brief's inline links) and grows only its hit area; `.menuItem`
+ * sizes menu rows.
  */
 .target {
   min-width: 44px;
@@ -693,11 +693,6 @@
   width: max(100%, 44px);
   height: max(100%, 44px);
   transform: translate(-50%, -50%);
-}
-/* The hit area grows downward only: for a tile link whose tile has little padding above. */
-.hitSlopDown::after {
-  top: 0;
-  transform: translateX(-50%);
 }
 @media (pointer: coarse) {
   .target {

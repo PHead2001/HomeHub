@@ -71,6 +71,40 @@ async function roomNameAndWindow(page: Page) {
   }));
 }
 
+/**
+ * D-2 with HP-33: in every one-tap tile (a title link with action rows below it: Done,
+ * Fed, tick), the first visible action button owns its own centre and its top edge
+ * (+4 px): no link hit area covers it. Returns one entry per tile with an action button.
+ */
+async function firstActionHits(page: Page) {
+  return page.getByTestId('dashboard-grid').locator('[data-testid$="-link"]').evaluateAll((links) => links.flatMap((link) => {
+    const tile = link.parentElement;
+    if (!tile) return [];
+    const button = Array.from(tile.querySelectorAll('button'))
+      .find((candidate) => !link.contains(candidate) && candidate.getBoundingClientRect().height > 0);
+    if (!button) return [];
+    // Hit-testing needs the button on screen (stacked layouts scroll); clear of the sticky header.
+    button.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const rect = button.getBoundingClientRect();
+    const owns = (x: number, y: number) => {
+      const hit = document.elementFromPoint(x, y);
+      return Boolean(hit && (hit === button || button.contains(hit)));
+    };
+    const x = rect.x + rect.width / 2;
+    return [{
+      tile: link.getAttribute('data-testid'),
+      centre: owns(x, rect.y + rect.height / 2),
+      top: owns(x, rect.y + 4),
+    }];
+  }));
+}
+
+async function expectActionsOwnTheirTaps(page: Page) {
+  const hits = await firstActionHits(page);
+  expect(hits.length, 'the seed gives a one-tap tile an action button').toBeGreaterThanOrEqual(1);
+  for (const hit of hits) expect(hit, `${hit.tile}: the first action button takes its own taps`).toEqual({ tile: hit.tile, centre: true, top: true });
+}
+
 async function tileBoxes(page: Page): Promise<Box[]> {
   return page.getByTestId('dashboard-grid').locator(':scope > [data-tile]').evaluateAll((cells) => cells.map((cell) => {
     const rect = cell.getBoundingClientRect();
@@ -140,6 +174,7 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         for (let i = 0; i < tiles.length; i += 1) {
           for (let j = i + 1; j < tiles.length; j += 1) expect(overlaps(tiles[i], tiles[j]), `tiles ${i} and ${j}`).toBe(false);
         }
+        await expectActionsOwnTheirTaps(page);
         // Nothing inside a tile is clipped by it.
         const clipped = await page.getByTestId('dashboard-grid').locator(':scope > [data-tile]').evaluateAll((cells) => cells
           .filter((cell) => cell.scrollHeight > cell.clientHeight + 1 || cell.scrollWidth > cell.clientWidth + 1)
@@ -188,6 +223,8 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
       const grid = (await page.getByTestId('dashboard-grid').boundingBox())!;
       expect(brief.y).toBeGreaterThanOrEqual(house.y + house.height - 1);
       expect(grid.y).toBeGreaterThanOrEqual(brief.y + brief.height - 1);
+      // Stacked on touch, the Pets tile shows Fed in its rows: the title link never covers it.
+      await expectActionsOwnTheirTaps(page);
       // The heading is visible again outside the wide layout.
       const heading = (await page.getByRole('heading', { name: 'Welcome Home', level: 1 }).boundingBox())!;
       expect(heading.width).toBeGreaterThan(1);
