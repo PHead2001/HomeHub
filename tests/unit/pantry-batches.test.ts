@@ -41,7 +41,7 @@ import {
   type PantryBatch,
 } from '../../src/lib/shopping/pantry-batches';
 import { daysUntilExpiry, expiryState, pantryLocationForCategory, pantryMergeStillValid, planPantryHandoff } from '../../src/lib/shopping/pantry';
-import { MAX_PACKAGES, REPAIR_PACKAGES_MESSAGE, REPAIR_SIZE_MESSAGE, fillBatch, packageChangeToast, planMergeAdd, repairEditError, repairEditPrefill, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
+import { MAX_PACKAGES, REPAIR_PACKAGES_MESSAGE, REPAIR_SIZE_MESSAGE, editPackagesLimit, fillBatch, packageChangeToast, planAddOne, planBatchEdit, planMergeAdd, stepPackages, repairEditError, repairEditPrefill, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
 import { notifyDataChanged, onDataChanged } from '../../src/lib/data-changed';
 
 const CENTRAL = 'America/Chicago';
@@ -748,5 +748,65 @@ describe('editing a batch that needs repair can never store zero stock (PR #129 
     const client = readFileSync(join(process.cwd(), 'src/components/pantry-inventory-client.tsx'), 'utf8');
     assert.match(client, /itemToEdit\.needsRepair \? repairEditPrefill\(itemToEdit\) : itemToEdit/);
     assert.match(client, /itemToEdit\?\.needsRepair \? repairEditError\(data\) : null;\s+if \(repairProblem\) \{\s+form\.setError\(repairProblem\.field/);
+  });
+});
+
+describe('editing a legacy count above 10,000 keeps every package (PR #129 review)', () => {
+  const big = batch('eggs', { name: 'Eggs', nameKey: 'eggs', unit: 'items', packageSize: null, packages: 15_000, legacy: true });
+
+  test('the form accepts the stored count and its stepper steps from it, not from 10,000', () => {
+    assert.equal(editPackagesLimit(big), 15_000);
+    assert.equal(stepPackages(15_000, -1, editPackagesLimit(big)), 14_999);
+    assert.equal(stepPackages(15_000, 1, editPackagesLimit(big)), 15_000, 'never above the stored count');
+    assert.equal(editPackagesLimit(batch('r', { packages: 3 })), MAX_PACKAGES);
+    assert.equal(editPackagesLimit(null), MAX_PACKAGES);
+    assert.equal(stepPackages(MAX_PACKAGES, 1, MAX_PACKAGES), MAX_PACKAGES);
+    assert.equal(stepPackages(0, -1, MAX_PACKAGES), 0);
+  });
+
+  test('saving splits the edited total: the document keeps the remainder, full batches hold the rest', () => {
+    const input = { name: 'Eggs', location: 'Fridge' as const, unit: 'items' as const, packages: 14_999, packageSize: null, expiryDate: '2026-11-20' };
+    const plan = planBatchEdit(input);
+    assert.equal(plan.fields.packages, 4_999);
+    assert.deepEqual(plan.newBatches.map((entry) => entry.packages), [MAX_PACKAGES]);
+    assert.equal(plan.fields.packages + plan.newBatches.reduce((sum, entry) => sum + entry.packages, 0), 14_999);
+    assert.ok(plan.newBatches.every((entry) => entry.expiryDate === '2026-11-20' && entry.location === 'Fridge' && entry.quantity === entry.packages));
+  });
+
+  test('a count up to 10,000 is the edited document alone', () => {
+    const input = { name: 'Eggs', location: 'Fridge' as const, unit: 'items' as const, packages: MAX_PACKAGES, packageSize: null, expiryDate: null };
+    assert.deepEqual(planBatchEdit(input), { fields: pantryBatchFields(input), newBatches: [] });
+    assert.equal(planBatchEdit({ ...input, packages: 0 }).fields.packages, 0);
+  });
+});
+
+describe('"One more" never increments a full batch (PR #129 review)', () => {
+  const full = batch('rice-a', { packages: MAX_PACKAGES, expiryDate: '2026-11-20' });
+
+  test('the soonest batch with room takes it', () => {
+    const plan = planAddOne([batch('rice-b', { packages: 4, expiryDate: '2026-12-01' }), batch('rice-c', { packages: 2, expiryDate: '2026-11-20' })]);
+    assert.equal(plan?.kind === 'increment' && plan.batch.id, 'rice-c');
+  });
+
+  test('a full soonest batch passes it to a same-key batch with room', () => {
+    const overflow = batch('rice-o', { packages: 3, expiryDate: '2026-11-20' });
+    const plan = planAddOne([full, overflow, batch('rice-later', { packages: 1, expiryDate: '2026-12-01' })]);
+    assert.equal(plan?.kind === 'increment' && plan.batch.id, 'rice-o');
+  });
+
+  test('with no same-key room it becomes a one-package overflow batch of the same stock', () => {
+    // A later batch has room, but a different expiry: the package keeps the soonest batch's date.
+    const plan = planAddOne([full, batch('rice-later', { packages: 1, expiryDate: '2026-12-01' })]);
+    assert.equal(plan?.kind, 'create');
+    if (plan?.kind !== 'create') return;
+    assert.equal(plan.full.id, 'rice-a');
+    assert.equal(pantryMergeKey(readPantryBatch('', pantryBatchFields(plan.input))), pantryMergeKey(full));
+    assert.equal(plan.input.packages, 1);
+  });
+
+  test('a legacy soonest batch still takes the increment (its upgrade splits above 10,000)', () => {
+    const legacy = batch('eggs', { name: 'Eggs', nameKey: 'eggs', unit: 'items', packageSize: null, packages: MAX_PACKAGES, legacy: true });
+    assert.equal(planAddOne([legacy])?.kind, 'increment');
+    assert.equal(planAddOne([]), undefined);
   });
 });

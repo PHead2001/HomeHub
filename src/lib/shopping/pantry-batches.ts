@@ -296,6 +296,45 @@ export function chooseAddOneBatch(batches: readonly PantryBatch[]): PantryBatch 
   return [...batches].filter((batch) => !batch.needsRepair).sort(compareBatchesForUse)[0];
 }
 
+export type AddOnePlan =
+  /** Add the package to `batch` (an increment, or a legacy upgrade that splits above 10,000). */
+  | { kind: 'increment'; batch: PantryBatch }
+  /**
+   * The soonest batch is full (10,000, the rules' limit per batch) and no batch
+   * with the same merge key has room: add one package as a merge into `full`
+   * (`saveBatch`), which re-checks it and creates an overflow batch of the same
+   * product (same shelf, size, unit and expiry) when it is still full.
+   */
+  | { kind: 'create'; full: PantryBatch; input: PantryBatchInput };
+
+/**
+ * Where "One more" puts its package: the soonest batch (`chooseAddOneBatch`)
+ * while it has room below `MAX_PACKAGES` (or is a legacy document, whose
+ * upgrade splits a large count), else a batch with the same merge key that has
+ * room, else a new overflow batch. A full batch never receives an increment the
+ * rules would refuse.
+ */
+export function planAddOne(batches: readonly PantryBatch[]): AddOnePlan | undefined {
+  const soonest = chooseAddOneBatch(batches);
+  if (!soonest) return undefined;
+  if (soonest.legacy || soonest.packages < MAX_PACKAGES) return { kind: 'increment', batch: soonest };
+  const sibling = findPantryMergeTarget(batches, soonest);
+  if (sibling && sibling.packages < MAX_PACKAGES) return { kind: 'increment', batch: sibling };
+  return {
+    kind: 'create',
+    full: soonest,
+    input: {
+      name: soonest.name,
+      location: soonest.location,
+      unit: soonest.unit,
+      packages: 1,
+      packageSize: soonest.packageSize,
+      expiryDate: soonest.expiryDate,
+      barcode: soonest.barcode,
+    },
+  };
+}
+
 export type UsedUpOutcome = {
   batch: PantryBatch;
   /** Packages left across the product after this tap. */
@@ -747,6 +786,39 @@ export function planLegacyUpgrade(batch: PantryBatch, delta: number): {
   };
   return {
     fields: pantryBatchFields(input),
+    newBatches: splitPackages(total - kept).map((packages) => pantryBatchFields({ ...input, packages })),
+  };
+}
+
+/**
+ * The most packages the add/edit form accepts: `MAX_PACKAGES`, or, when editing
+ * a legacy count stored above that, its stored count, so the form never lowers
+ * that stock on its own (the save splits it: `planBatchEdit`).
+ */
+export function editPackagesLimit(batch: Pick<PantryBatch, 'packages'> | null | undefined): number {
+  return Math.max(MAX_PACKAGES, batch?.packages ?? 0);
+}
+
+/** The form's package stepper: one step, kept between 0 and `limit`. */
+export function stepPackages(current: number, amount: number, limit: number): number {
+  return Math.min(limit, Math.max(0, (Number.isFinite(current) ? current : 0) + amount));
+}
+
+/**
+ * The writes for saving the edit form. A count up to 10,000 is the edited
+ * document's alone. A larger count (a legacy count stored above 10,000 and kept
+ * or lowered in the form) is split like `planLegacyUpgrade`: the document keeps
+ * the remainder (1 to 10,000) and `newBatches` hold full 10,000-package batches
+ * of the same product, written with it. Nothing is dropped.
+ */
+export function planBatchEdit(input: PantryBatchInput): {
+  fields: ReturnType<typeof pantryBatchFields>;
+  newBatches: ReturnType<typeof pantryBatchFields>[];
+} {
+  const total = Math.max(0, Math.round(input.packages));
+  const kept = keptByDocument(total);
+  return {
+    fields: pantryBatchFields({ ...input, packages: kept }),
     newBatches: splitPackages(total - kept).map((packages) => pantryBatchFields({ ...input, packages })),
   };
 }

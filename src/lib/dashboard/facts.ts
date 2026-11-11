@@ -467,14 +467,16 @@ export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string
 }
 
 /**
- * Pantry facts with the Shopping module's expiry day math (`daysUntilExpiry`).
+ * Pantry facts with the Shopping module's expiry day math (`daysUntilExpiry`),
+ * counted in the household's zone (D-6, `timeZone`): a date-only v2 expiry and a
+ * legacy ISO expiry are both read as household days, as on the Pantry page.
  * Used-up v2 batches (`packages` 0, still stored until deleted) are not stock and
  * are left out of every count; legacy documents without `packages` still count.
  */
-export function computePantryFacts(allItems: RawDoc[], now: Date): PantryFacts {
+export function computePantryFacts(allItems: RawDoc[], now: Date, timeZone: string): PantryFacts {
   const items = allItems.filter((item) => !isUsedUpPantryDoc(item));
   const dated = items
-    .map((item) => ({ item, days: daysUntilExpiry(typeof item.expiryDate === 'string' ? item.expiryDate : null, now) }))
+    .map((item) => ({ item, days: daysUntilExpiry(typeof item.expiryDate === 'string' ? item.expiryDate : null, now, timeZone) }))
     .filter((entry): entry is { item: RawDoc; days: number } => entry.days !== null);
   return {
     total: items.length,
