@@ -12,6 +12,14 @@
 //   included: the yearly stats credit by uid now), after setting
 //   `assignedToUid` where it was missing or stale, and the server-written
 //   `completedByEmail` (after setting `completedByUid` if it was missing).
+//   A completed chore whose credited person (its completer, else its assignee)
+//   has left and is named only by that email gets the person's opaque
+//   former-member key instead (`completedByUid` or `assignedToUid`;
+//   ./former-member-key.mjs), so their yearly credit is kept. The key comes
+//   from a random per-household secret the script stores in
+//   `households/{id}/ops/former-members` (which no client can read) before
+//   the first --apply write that needs one; a dry run uses a throwaway secret
+//   and stores nothing.
 // Planners: ./member-email-scrub.mjs.
 //
 // Run it after the release D app, functions and rules are live and after
@@ -36,6 +44,7 @@ import { parseOpsArgs } from './profile-privacy.mjs';
 import { opsFirestore } from './credentials.mjs';
 import { householdEmailScrubPlan, householdUidsByEmail } from './shared-email-scrub.mjs';
 import { choreMemberEmailPlan, memberRecordEmailPlan } from './member-email-scrub.mjs';
+import { formerMemberKey, formerMemberSecret } from './former-member-key.mjs';
 
 const PAGE_SIZE = 400;
 const NOT_FOUND = 5;
@@ -51,9 +60,10 @@ const CHORE_FIELDS = ['assignedToUid', 'assignedToEmail', 'recurrence', 'isCompl
 const totals = {
   members: { scanned: 0, clean: 0, scrub: 0, 'no-contact': 0, mismatch: 0, written: 0, changed: 0 },
   households: { scanned: 0, clean: 0, scrub: 0, 'no-owner-uid': 0, written: 0, changed: 0 },
-  chores: { scanned: 0, clean: 0, kept: 0, scrub: 0, assignee: 0, completer: 0, written: 0, changed: 0 },
-  'chore-templates': { scanned: 0, clean: 0, kept: 0, scrub: 0, assignee: 0, completer: 0, written: 0, changed: 0 },
+  chores: { scanned: 0, clean: 0, scrub: 0, assignee: 0, completer: 0, former: 0, written: 0, changed: 0 },
+  'chore-templates': { scanned: 0, clean: 0, scrub: 0, assignee: 0, completer: 0, former: 0, written: 0, changed: 0 },
 };
+let secretsCreated = 0;
 
 const skippable = error => error?.code === NOT_FOUND || error?.code === FAILED_PRECONDITION;
 
@@ -86,7 +96,12 @@ const writePage = async (writes, counts) => {
   }
 };
 
-const scrubChores = async (collectionRef, name, uidByEmail) => {
+const usesFormerKey = plan => plan.kind === 'scrub' && (plan.assignee === 'former' || plan.completer === 'former');
+
+// `former`: the household's former-member secret ({ ref, secret, stored }). It is
+// stored (or the one another run stored is adopted) before the first write that
+// uses a key, so every key written is reproducible by later runs.
+const scrubChores = async (collectionRef, name, uidByEmail, former) => {
   const counts = totals[name];
   let cursor = null;
   for (;;) {
@@ -94,14 +109,27 @@ const scrubChores = async (collectionRef, name, uidByEmail) => {
     if (cursor) page = page.startAfter(cursor);
     const snapshot = await page.get();
     if (snapshot.empty) break;
+    const planAll = () => snapshot.docs.map(record =>
+      choreMemberEmailPlan(record.data(), uidByEmail, email => formerMemberKey(former.secret, email)));
+    let plans = planAll();
+    if (apply && !former.stored && plans.some(usesFormerKey)) {
+      const result = await formerMemberSecret(former.ref, { create: true, candidate: former.secret, now: () => FieldValue.serverTimestamp() });
+      if (result.created) secretsCreated += 1;
+      const adopted = result.secret !== former.secret;
+      Object.assign(former, { secret: result.secret, stored: true });
+      if (adopted) plans = planAll();
+    }
     const writes = [];
-    for (const record of snapshot.docs) {
+    for (const [index, record] of snapshot.docs.entries()) {
       counts.scanned += 1;
-      const plan = choreMemberEmailPlan(record.data(), uidByEmail);
+      const plan = plans[index];
+      // With a key function every email is removable, so `kept` never occurs.
+      if (plan.kind === 'kept') throw new Error('unexpected kept plan');
       counts[plan.kind] += 1;
       if (plan.kind !== 'scrub') continue;
       if (plan.assignee !== 'clean') counts.assignee += 1;
-      if (plan.completer === 'removed' || plan.completer === 'repaired') counts.completer += 1;
+      if (plan.completer !== 'none' && plan.completer !== 'kept') counts.completer += 1;
+      if (usesFormerKey(plan)) counts.former += 1;
       writes.push({ ref: record.ref, plan, updateTime: record.updateTime });
     }
     if (apply) await writePage(writes, counts);
@@ -155,8 +183,11 @@ for (;;) {
       recordEmail: member.get('email'),
       contactEmail: contacts[index]?.exists ? contacts[index].get('email') : undefined,
     })));
-    await scrubChores(household.ref.collection('chores'), 'chores', uidByEmail);
-    await scrubChores(household.ref.collection('chore-templates'), 'chore-templates', uidByEmail);
+    // Read only; stored once a chore of this household needs a key (scrubChores).
+    const formerRef = household.ref.collection('ops').doc('former-members');
+    const former = { ref: formerRef, ...(await formerMemberSecret(formerRef, { create: false })) };
+    await scrubChores(household.ref.collection('chores'), 'chores', uidByEmail, former);
+    await scrubChores(household.ref.collection('chore-templates'), 'chore-templates', uidByEmail, former);
     await scrubMembers(members);
     const plan = householdEmailScrubPlan(household.data());
     totals.households[plan.kind] += 1;
@@ -180,7 +211,7 @@ const report = {
     scrub: 'emails removed',
     assignee: '  of which an assignee email (uid set or cleared first where needed)',
     completer: '  of which completedByEmail (completedByUid set first where missing)',
-    kept: 'completedByEmail of someone who left, without completedByUid (kept)',
+    former: '  of which credited to someone who left, now under a former-member key',
   },
 };
 report['chore-templates'] = report.chores;
@@ -189,4 +220,5 @@ for (const [name, counts] of Object.entries(totals)) {
   for (const [kind, text] of Object.entries(report[name])) console.log(`  ${text}: ${counts[kind]}`);
   if (apply) console.log(`  updated: ${counts.written}; changed or deleted meanwhile and skipped: ${counts.changed}`);
 }
+if (apply) console.log(`former-member secrets created: ${secretsCreated}`);
 if (!apply) console.log('Dry run only. Re-run with --apply to remove the fields.');

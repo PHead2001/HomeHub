@@ -2360,6 +2360,17 @@ describe('member privacy: closed reads and no emails in shared documents', () =>
     await assertFails(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.owner.uid)));
   });
 
+  test('the former-member secret (ops scrub) is never read or written by a client, owners included', async () => {
+    await environment.withSecurityRulesDisabled(context =>
+      setDoc(doc(context.firestore(), 'households', householdA, 'ops', 'former-members'), { secret: 'server-only', createdAt: 'x' }));
+    for (const user of [...approved, users.pending, users.ownerB, users.stranger]) {
+      const ref = doc(dbFor(user), 'households', householdA, 'ops', 'former-members');
+      await assertFails(getDoc(ref));
+      await assertFails(setDoc(ref, { secret: 'chosen' }));
+    }
+    await assertFails(getDocs(collection(dbFor(users.owner), 'households', householdA, 'ops')));
+  });
+
   test('household documents: no client write adds or changes ownerEmail or memberEmails', async () => {
     for (const user of [users.owner, users.admin]) {
       await assertFails(updateDoc(doc(dbFor(user), 'households', householdA), { memberEmails: [user.email], updatedAt: 'x' }));

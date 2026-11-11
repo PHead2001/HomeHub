@@ -8,7 +8,7 @@ import {
   unassignedChoreFields,
 } from '../../functions/src/shared/assignee';
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
-import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, purgeNeedsMemberEmails, readChoreStats } from '../../functions/src/shared/chore-stats';
+import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, purgeMustWait, purgeNeedsMemberEmails, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
 import { choreStatsAssigneeKey, choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
@@ -260,6 +260,23 @@ describe('yearly stats are keyed by uid (member privacy release D)', () => {
     assert.equal(purgeNeedsMemberEmails({ completedByUid: 'uid-sam', completedByEmail: 'sam@example.test', assignedToEmail: 'ana@example.test' }), false);
     assert.equal(purgeNeedsMemberEmails({ assignedToUid: 'uid-sam', assignedToEmail: '' }), false);
     assert.equal(purgeNeedsMemberEmails({}), false);
+  });
+
+  test('a purge also waits while an email-only credit names nobody (someone who left, before the scrub)', () => {
+    const people = [{ uid: 'uid-sam', email: 'sam@example.test' }, { uid: 'uid-ana', email: 'ana@example.test' }];
+    // Credit resolvable through a known email: purged when the emails are known, not otherwise.
+    assert.equal(purgeMustWait({ assignedToEmail: 'sam@example.test' }, people, true), false);
+    assert.equal(purgeMustWait({ assignedToEmail: 'sam@example.test' }, [], false), true);
+    // The email names nobody here, and nothing else identifies the person: wait for the scrub.
+    assert.equal(purgeMustWait({ assignedToEmail: 'gone@example.test' }, people, true), true);
+    assert.equal(purgeMustWait({ completedByEmail: 'gone@example.test', assignedToUid: 'uid-ana' }, people, true), true);
+    assert.equal(purgeMustWait({ assignedToUid: 'uid-ana', assignedToEmail: 'gone@example.test' }, people, true), true, 'a stale uid is no credit');
+    // The person's own uid is still there: credited by uid, purged.
+    assert.equal(purgeMustWait({ assignedToUid: 'uid-lee', assignedToEmail: 'gone@example.test' }, people, true), false);
+    // No email involved: never waits, emails known or not.
+    assert.equal(purgeMustWait({ assignedToUid: 'former-0123456789abcdef01234567' }, people, false), false);
+    assert.equal(purgeMustWait({ completedByUid: 'uid-sam', completedByEmail: 'gone@example.test' }, [], false), false);
+    assert.equal(purgeMustWait({}, [], false), false);
   });
 
   test('uid keys are field-path safe and never collide with legacy keys', () => {

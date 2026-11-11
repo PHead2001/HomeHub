@@ -149,6 +149,26 @@ export const purgeNeedsMemberEmails = (
   (filled(chore.completedByEmail) || filled(chore.assignedToEmail));
 
 /**
+ * Whether upkeep must leave a completed chore for a later run rather than
+ * purge it now: its credit depends on members' emails
+ * (`purgeNeedsMemberEmails`) and either the contact documents could not be
+ * read, or the email names nobody in `people`, so `creditedPerson` finds no
+ * one (a person who has left, known only by email). Such a chore waits for
+ * scripts/ops/scrub-member-emails.mjs, which gives it an opaque
+ * former-member identity, so the person's credit is never dropped.
+ * @param {object} chore Chore fields.
+ * @param {CreditPerson[]} people Household members (emails where known).
+ * @param {boolean} emailsKnown Whether the contact documents were read.
+ * @return {boolean} True when the purge must wait.
+ */
+export const purgeMustWait = (
+  chore: Omit<PurgedChore, "completedAt">,
+  people: readonly CreditPerson[],
+  emailsKnown: boolean,
+): boolean => purgeNeedsMemberEmails(chore) &&
+  (!emailsKnown || creditedPerson(chore, people) === null);
+
+/**
  * Moves the counts and labels kept under a legacy email-derived key
  * (`choreStatsAssigneeKey(email)`) to the member's uid key, for every person
  * whose email the reader knows. Legacy keys of anyone else are left as they
