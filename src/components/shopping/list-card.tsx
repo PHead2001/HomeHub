@@ -5,7 +5,8 @@ import { Edit, MoreVertical, Trash2 } from 'lucide-react';
 import { PeekCard } from '@/components/dashboard/peek-card';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { TabDropdownMenu, useTabActive } from './tab-activity';
 import type { ShoppingList } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { listTint } from '@/lib/shopping/list-style';
@@ -36,6 +37,8 @@ export function ListCard({
   style?: CSSProperties;
 }) {
   const tint = listTint(list);
+  // Overlays close (the menu) or are not offered (the peek) while the tab is hidden.
+  const tabActive = useTabActive();
   const total = counts ? counts.needed + counts.purchased : 0;
   const progress = counts && total > 0 ? Math.round((counts.purchased / total) * 100) : 0;
   const summary = !counts
@@ -76,7 +79,7 @@ export function ListCard({
           </div>
         </div>
         {(onEdit || onDelete) && (
-          <DropdownMenu>
+          <TabDropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label={`Open actions for ${list.name}`} className="h-8 w-8 shrink-0">
                 <MoreVertical aria-hidden />
@@ -86,7 +89,7 @@ export function ListCard({
               {onEdit && <DropdownMenuItem onClick={onEdit}><Edit className="mr-2" aria-hidden /> Edit</DropdownMenuItem>}
               {onDelete && <DropdownMenuItem onClick={onDelete} className="text-destructive"><Trash2 className="mr-2" aria-hidden /> Delete</DropdownMenuItem>}
             </DropdownMenuContent>
-          </DropdownMenu>
+          </TabDropdownMenu>
         )}
       </div>
 
@@ -105,9 +108,13 @@ export function ListCard({
         </div>
       </div>
 
-      <PeekCard peek={peek}>
+      {tabActive ? (
+        <PeekCard peek={peek}>
+          <Button className="w-full" aria-label={`Open ${list.name}`} onClick={onSelect}>Open List</Button>
+        </PeekCard>
+      ) : (
         <Button className="w-full" aria-label={`Open ${list.name}`} onClick={onSelect}>Open List</Button>
-      </PeekCard>
+      )}
     </div>
   );
 }

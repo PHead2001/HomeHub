@@ -786,6 +786,11 @@ service cloud.firestore {
         (!('ordered' in keys) || boundedList(data.ordered, 200));
     }
 
+    // The parent list document of an item or category write (one document read).
+    function shoppingListExists(householdId, listId) {
+      return exists(/databases/$(database)/documents/households/$(householdId)/shopping-lists/$(listId));
+    }
+
     // --- Pantry (Pantry v2, stage S4a) ------------------------------------
 
     // One document per batch. Both shapes are accepted while older pages are still
@@ -1356,14 +1361,20 @@ service cloud.firestore {
           validShoppingListFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
 
+        // Items and categories are written only while their list exists (SH-9b): a
+        // list deleted elsewhere (deleteShoppingList removes it and everything under
+        // it) takes no more ticks, adds or category edits, and orphans left by older
+        // clients cannot be revived. Deletes stay allowed, for cleanup.
         match /items/{itemId} {
           allow read: if hasHouseholdPermission(householdId, 'shopping.view');
           allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+            shoppingListExists(householdId, listId) &&
             request.resource.data.keys().hasAll(['name']) &&
             validShoppingItemFields(request.resource.data, writtenKeys()) &&
             validShoppingItemStamps(request.resource.data, writtenKeys()) &&
             shoppingAdderOnCreate(householdId);
           allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+            shoppingListExists(householdId, listId) &&
             validShoppingItemFields(request.resource.data, writtenKeys()) &&
             validShoppingItemStamps(request.resource.data, writtenKeys()) &&
             shoppingAdderUnchanged();
@@ -1373,6 +1384,7 @@ service cloud.firestore {
         match /config/{configId} {
           allow read: if hasHouseholdPermission(householdId, 'shopping.view');
           allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+            shoppingListExists(householdId, listId) &&
             validShoppingConfig(request.resource.data, writtenKeys());
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
