@@ -26,7 +26,7 @@ import { addItemsToList, type ActiveTarget, type CategorizationReport } from './
 import type { SaveState } from './save-status';
 import {
   BATCH_GONE_MESSAGE, PantryChangeRefused, decidePantryMerge, isCountUnit, packageChangeRoute, pantryBatchFields, planLegacyUpgrade,
-  planMergeAdd, readPantryBatch, shoppingWriteNotice, shouldDeleteEmptyBatch, undoFits,
+  planBatchEdit, planMergeAdd, readPantryBatch, shoppingWriteNotice, shouldDeleteEmptyBatch, undoFits,
   type PantryBatch, type PantryBatchInput,
 } from './pantry-batches';
 
@@ -110,7 +110,8 @@ const isUnavailable = (error: unknown) =>
   typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'unavailable';
 
 /**
- * Saves the add/edit form. Editing writes the batch by id. Adding with a merge
+ * Saves the add/edit form. Editing writes the batch by id (a count above 10,000
+ * is split across new batches in the same write: `planBatchEdit`). Adding with a merge
  * target (`mergeInto`, found by the caller with `findPantryMergeTarget` from what
  * is on screen) re-reads that batch in a transaction and adds the packages only
  * while its merge key (name, shelf, package size, unit, expiry) still matches
@@ -130,7 +131,15 @@ export async function saveBatch(
   const fields = pantryBatchFields(input);
   const created = () => ({ ...fields, addedByUid: uid, ...touched(uid) });
   if (editId) {
-    return { outcome: await awaitWriteUnlessOffline(updateDoc(doc(pantry, editId), { ...fields, ...touched(uid) }), onLateError), merged: false };
+    // A count above 10,000 (a legacy count kept in the form) is split, never cut: `planBatchEdit`.
+    const plan = planBatchEdit(input);
+    if (plan.newBatches.length === 0) {
+      return { outcome: await awaitWriteUnlessOffline(updateDoc(doc(pantry, editId), { ...plan.fields, ...touched(uid) }), onLateError), merged: false };
+    }
+    const batch = writeBatch(db);
+    batch.update(doc(pantry, editId), { ...plan.fields, ...touched(uid) });
+    for (const extra of plan.newBatches) batch.set(doc(pantry, slugify(extra.name)), { ...extra, addedByUid: uid, ...touched(uid) });
+    return { outcome: await awaitWriteUnlessOffline(batch.commit(), onLateError), merged: false };
   }
   if (mergeInto && !isBrowserOffline()) {
     const ref = doc(pantry, mergeInto.id);

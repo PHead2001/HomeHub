@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { auth, db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, chooseAddOneBatch, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, editPackagesLimit, planAddOne, stepPackages, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { categorizationNotice } from '@/lib/shopping/save-status';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
@@ -86,9 +86,10 @@ const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 // Pantry v2 (17.3): how many packages, and for weights and volumes the size of one
 // package, so "used one" removes a package and never 1 g. Expiry is a date-only day.
-const pantryItemSchema = z.object({
+// `maxPackages` is `editPackagesLimit`: 10,000, or a legacy count's stored total while editing it.
+const pantryItemSchemaFor = (maxPackages: number) => z.object({
   name: z.string().trim().min(1, 'Item name is required.').max(PANTRY_NAME_MAX, `Keep the name to ${PANTRY_NAME_MAX} characters.`),
-  packages: z.coerce.number<number>().int('Use whole packages.').min(0, 'Cannot be negative.').max(MAX_PACKAGES, `At most ${MAX_PACKAGES}.`),
+  packages: z.coerce.number<number>().int('Use whole packages.').min(0, 'Cannot be negative.').max(maxPackages, `At most ${maxPackages.toLocaleString()}.`),
   unit: z.enum(allPantryUnits),
   packageSize: z.string().refine(
     (value) => value.trim() === '' || (Number(value) > 0 && Number(value) <= MAX_PACKAGE_SIZE),
@@ -99,7 +100,7 @@ const pantryItemSchema = z.object({
   barcode: z.string().max(128).optional(),
 });
 
-type PantryItemFormValues = z.infer<typeof pantryItemSchema>;
+type PantryItemFormValues = z.infer<ReturnType<typeof pantryItemSchemaFor>>;
 
 type UnitCategory = keyof typeof pantryItemUnitCategories;
 
@@ -152,8 +153,10 @@ function PantryItemDialog({
   const { toast, toastError } = useToast();
   const { currentUser } = useAuth();
 
+  const packagesLimit = editPackagesLimit(itemToEdit);
+  const resolver = useMemo(() => zodResolver(pantryItemSchemaFor(packagesLimit)), [packagesLimit]);
   const form = useForm<PantryItemFormValues>({
-    resolver: zodResolver(pantryItemSchema),
+    resolver,
     defaultValues: EMPTY_FORM,
   });
 
@@ -258,9 +261,8 @@ function PantryItemDialog({
   };
 
   const adjustPackages = (amount: number) => {
-    const currentVal = Number(getValues('packages')) || 0;
-    const newVal = Math.min(MAX_PACKAGES, Math.max(0, currentVal + amount));
-    setValue('packages', newVal, { shouldValidate: true, shouldDirty: true });
+    // Never below a legacy count stored above 10,000 just by stepping (`editPackagesLimit`).
+    setValue('packages', stepPackages(Number(getValues('packages')) || 0, amount, packagesLimit), { shouldValidate: true, shouldDirty: true });
   }
 
   const applyChip = (chip: (typeof EXPIRY_CHIPS)[number]['id']) => {
@@ -1153,12 +1155,17 @@ export function PantryInventoryClient() {
     );
   };
 
-  // SH-22b's counterpart: one more package of the soonest batch.
+  // SH-22b's counterpart: one more package of the soonest batch; when that batch
+  // is full (10,000), a same-key batch with room or a new overflow batch (`planAddOne`).
   const addOne = (product: PantryProduct) => {
-    const batch = chooseAddOneBatch(product.batches);
-    if (!householdId || !uid || !batch) return;
+    const plan = planAddOne(product.batches);
+    if (!householdId || !uid || !plan) return;
     const onError = (error: unknown) => reportChangeError(error, `Could not update ${product.name}`);
-    changePackagesTogether(householdId, [{ batch, delta: 1 }], uid, onError, timeZone).catch(onError);
+    if (plan.kind === 'increment') {
+      changePackagesTogether(householdId, [{ batch: plan.batch, delta: 1 }], uid, onError, timeZone).catch(onError);
+    } else {
+      saveBatch(householdId, plan.input, uid, { mergeInto: plan.full, timeZone }, onError).catch(onError);
+    }
   };
 
   const handleDeleteItem = async () => {

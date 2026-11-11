@@ -134,7 +134,7 @@ describe('shopping, pantry, maintenance and pets', () => {
       { id: 'yogurt', name: 'Greek yogurt', location: 'Fridge', expiryDate: '2026-08-04' },
       { id: 'rice', name: 'Rice', location: 'Pantry', expiryDate: '2027-02-01' },
       { id: 'old', name: 'Old milk', location: 'Fridge', expiryDate: '2026-07-20' },
-    ], now);
+    ], now, localZone);
     assert.equal(facts.expiringSoon, 1);
     assert.equal(facts.expired, 1);
     assert.equal(facts.fridgeItems, 2);
@@ -150,7 +150,7 @@ describe('shopping, pantry, maintenance and pets', () => {
       { id: 'old', name: 'Old milk', location: 'Fridge', expiryDate: '2026-07-20', packages: 0, schemaVersion: 2 },
       // Legacy (no packages field): counted as before, even at quantity 0.
       { id: 'legacy', name: 'Butter', location: 'Fridge', expiryDate: '2026-08-03', quantity: 0 },
-    ], now);
+    ], now, localZone);
     assert.equal(facts.total, 2);
     assert.equal(facts.fridgeItems, 2);
     assert.equal(facts.expired, 0);
@@ -301,7 +301,7 @@ describe('buildMorningBrief', () => {
     const facts = {
       chores: computeChoreFacts(chores, rooms, viewer, now),
       pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat', foodSchedule: 'twice daily' }], { pixel: [] }, now),
-      pantry: computePantryFacts([{ id: 'milk', name: 'Milk', location: 'Fridge', expiryDate: '2026-08-02' }], now),
+      pantry: computePantryFacts([{ id: 'milk', name: 'Milk', location: 'Fridge', expiryDate: '2026-08-02' }], now, localZone),
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });
     assert.equal(brief.text, "Good morning, Alex. 1 chore today (1 overdue), Pixel's next meal is due, and the Milk expiring tomorrow.");
@@ -315,9 +315,9 @@ describe('buildMorningBrief', () => {
   });
 
   it('keeps the item name as written, with no verb to agree (HP-22a)', () => {
-    const pantry = computePantryFacts([{ id: 'eggs', name: 'Eggs', expiryDate: '2026-08-02' }], now);
+    const pantry = computePantryFacts([{ id: 'eggs', name: 'Eggs', expiryDate: '2026-08-02' }], now, localZone);
     assert.equal(buildMorningBrief({ pantry }, { greeting: 'Hi' }).text, 'Hi. The Eggs expiring tomorrow.');
-    const brand = computePantryFacts([{ id: 'y', name: 'Chobani yogurt', expiryDate: '2026-08-01' }], now);
+    const brand = computePantryFacts([{ id: 'y', name: 'Chobani yogurt', expiryDate: '2026-08-01' }], now, localZone);
     assert.equal(buildMorningBrief({ pantry: brand }, { greeting: 'Hi' }).text, 'Hi. The Chobani yogurt expiring today.');
   });
 
