@@ -123,6 +123,7 @@ export function rekeyTargets(base) {
  *     move then keeps the fields as they are).
  */
 export function choreIdRekeyPlan(id, chore, memberUidSlugs = new Set(), roomSlugs = null) {
+  if (chore?.sourceType === 'template') return oneTimeLibraryPlan(id, chore, memberUidSlugs, roomSlugs);
   if (!chore || (chore.sourceType !== undefined && chore.sourceType !== null)) return { kind: 'one-time' };
   const templateId = text(chore.templateId) ? chore.templateId : '';
   if (!templateId) return { kind: 'one-time' };
@@ -149,6 +150,63 @@ export function choreIdRekeyPlan(id, chore, memberUidSlugs = new Set(), roomSlug
     suffix: memberUidSlugs.has(suffix) ? 'uid' : 'other',
     occurrenceKey: !stored && key ? key : null,
   };
+}
+
+/** Suffix of a moved one-time library assignment's id (never an occurrence id). */
+export const ONE_TIME_SUFFIX = 'once';
+const ONE_TIME_ID_TAIL = /^once(-[2-9])?$/;
+
+/**
+ * One-time chores assigned from the chore library before upkeep matched
+ * occurrences by id (`sourceType: 'template'`) were stored under
+ * `stableSlugify(templateId-roomId-day-<assignee email>)`, the same shape as a
+ * generated chore: the slug of the assignee's email stays in a document id every
+ * member can list. Such a chore moves to `<template>-<room>-<day>-once` (or a
+ * `-once-2`..`-once-9` slot): never the occurrence id itself, which would stop
+ * upkeep generating that day for the template, and without an occurrence key (a
+ * `sourceType` chore has none, so it never suppresses recurring work). It stays a
+ * one-time chore. Ids that do not start with the template's slug (auto ids, every
+ * assignment since), that end at the day, or that were already moved are left alone.
+ * @returns {{ kind: 'one-time' } | { kind: 'rekey', base: string, suffix: 'uid' | 'other', occurrenceKey: null, oneTime: true }}
+ */
+function oneTimeLibraryPlan(id, chore, memberUidSlugs, roomSlugs) {
+  const templateId = text(chore.templateId) ? chore.templateId : '';
+  if (!templateId) return { kind: 'one-time' };
+  const found = legacyOccurrenceBase(id, stableSlugify(templateId), roomSlugs);
+  if (!found || 'ambiguous' in found) return { kind: 'one-time' };
+  const suffix = id.slice(found.base.length + 1);
+  if (!id.startsWith(`${found.base}-`) || !suffix || ONE_TIME_ID_TAIL.test(suffix) || DUPLICATE_SUFFIX.test(suffix)) {
+    return { kind: 'one-time' };
+  }
+  return {
+    kind: 'rekey',
+    base: `${assertOccurrenceBase(found.base, stableSlugify(templateId))}-${ONE_TIME_SUFFIX}`,
+    suffix: memberUidSlugs.has(suffix) ? 'uid' : 'other',
+    occurrenceKey: null,
+    oneTime: true,
+  };
+}
+
+/**
+ * Overdue notifications list chore ids (`overdueChoreIds`, `notifiedChoreIds`;
+ * functions/src/shared/overdue-notification.ts): a moved chore's old id is
+ * replaced by its new one in place, so the chore is not news to its person again.
+ * `overdueChoreIds` stays sorted, as upkeep stores it.
+ * @param {Record<string, unknown> | null | undefined} data Notification data.
+ * @param {string} from Old chore id.
+ * @param {string} to New chore id.
+ * @returns {{ overdueChoreIds?: string[], notifiedChoreIds?: string[] } | null} Fields to update, or null.
+ */
+export function overdueIdsAfterMove(data, from, to) {
+  const update = {};
+  const swap = list => [...new Set(list.map(id => (id === from ? to : id)))];
+  if (Array.isArray(data?.overdueChoreIds) && data.overdueChoreIds.includes(from)) {
+    update.overdueChoreIds = swap(data.overdueChoreIds).sort();
+  }
+  if (Array.isArray(data?.notifiedChoreIds) && data.notifiedChoreIds.includes(from)) {
+    update.notifiedChoreIds = swap(data.notifiedChoreIds);
+  }
+  return Object.keys(update).length > 0 ? update : null;
 }
 
 /**
