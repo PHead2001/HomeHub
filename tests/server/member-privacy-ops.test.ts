@@ -139,4 +139,26 @@ describe('release D ops: one identity per person who has left', () => {
     const key = await assertOneScore();
     assert.match(key, /^uid-former-[0-9a-f]{24}$/);
   });
+
+  test('a departure alias left by release C is counted, folded and removed by the re-key; a re-run is clean', async () => {
+    // Gil left under release C: the alias holds his email-derived key; his archive sits under it.
+    const gil = choreStatsAssigneeKey('gil@example.test');
+    await house().collection('stats').doc('chores-2025').set({
+      year: 2025, completed: 4, byAssignee: { [gil]: 4 }, names: { [gil]: 'Gil' }, aliases: { 'uid-gil': gil },
+    });
+    // An alias-only document (the departure wrote it; nothing archived there yet).
+    await house().collection('stats').doc('chores-2024').set({ aliases: { 'uid-gil': gil } });
+    const dry = await rekey(false);
+    assert.equal(dry.written, 0);
+    assert.equal((dry as { aliases?: number }).aliases, 2, 'the dry run counts both documents');
+    assert.ok((await house().collection('stats').doc('chores-2025').get()).data()?.aliases, 'nothing written by the dry run');
+    const applied = await rekey(true);
+    assert.equal((applied as { aliases?: number }).aliases, 2);
+    const y2025 = (await house().collection('stats').doc('chores-2025').get()).data();
+    assert.deepEqual(y2025?.byAssignee, { [choreStatsMemberKey('uid-gil')]: 4 });
+    assert.equal(y2025?.aliases, undefined);
+    assert.equal((await house().collection('stats').doc('chores-2024').get()).data()?.aliases, undefined);
+    assert.ok(!JSON.stringify(y2025).includes(gil));
+    assert.equal((await rekey(true)).written, 0, 'a re-run finds nothing');
+  });
 });

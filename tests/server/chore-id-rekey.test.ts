@@ -6,6 +6,7 @@ import { runHouseholdReminders } from '../../functions/src/reminders';
 import { occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
 import { choreIdRekeyPlan } from '../../scripts/ops/chore-id-rekey.mjs';
 import { moveChoreToOccurrenceId } from '../../scripts/ops/chore-id-move.mjs';
+import { decideOverdue } from '../../functions/src/shared/overdue-notification';
 
 // The write of scripts/ops/rekey-chore-ids.mjs (member privacy release E)
 // against the Firestore emulator: one chore per transaction, every field kept.
@@ -18,7 +19,7 @@ const EMAIL = 'owner@example.test';
 const plan = (id: string, data: Record<string, unknown>) => {
   const decided = choreIdRekeyPlan(id, data);
   assert.equal(decided.kind, 'rekey');
-  return decided as { kind: 'rekey'; base: string; suffix: 'uid' | 'other'; occurrenceKey: string | null };
+  return decided as { kind: 'rekey'; base: string; suffix: 'uid' | 'other'; occurrenceKey: string | null; oneTime?: true };
 };
 const move = async (id: string) => {
   const snap = await chores().doc(id).get();
@@ -97,5 +98,54 @@ describe('moving chores to email-free ids', () => {
     assert.equal(await move(id), 'stopped');
     assert.equal((await chores().doc(id).get()).exists, true);
     assert.equal((await chores().doc(occurrenceChoreId('trash', 'general', '2026-11-26')).get()).exists, false);
+  });
+
+  test('the overdue notification follows a moved chore: not news again, read and dismissed state kept', async () => {
+    const id = recurringChoreId('trash', 'general', '2026-11-05', EMAIL);
+    await chores().doc(id).set({ task: 'Trash', templateId: 'trash', roomIds: [], assignedToUid: 'o1', originalDueDate: '2026-11-05', dueDate: '2026-11-05T06:00:00.000Z', occurrenceKey: 'trash|general|2026-11-05', isCompleted: false });
+    await chores().doc('other').set({ task: 'Other', assignedToUid: 'o1', dueDate: '2026-11-04T06:00:00.000Z', isCompleted: false });
+    const note = house().collection('notifications').doc('o1-overdue');
+    await note.set({
+      householdId: HOUSE, category: 'chores', sourceType: 'chore-reminder', sourceId: 'overdue', targetUserUid: 'o1', audience: ['o1'],
+      overdueChoreIds: ['other', id].sort(), notifiedChoreIds: ['other', id].sort(), lastPushDay: '2026-11-06', overdueTotal: 2, overflowFrom: null,
+      readBy: { o1: { at: 'x', uid: 'o1' } }, dismissedBy: {},
+    });
+    const counts: { references?: number } = {};
+    const snap = await chores().doc(id).get();
+    assert.equal(await moveChoreToOccurrenceId(adminDb as never, snap.ref as never, snap.updateTime as never, plan(id, snap.data()!), counts), 'moved');
+    assert.equal(counts.references, 1);
+    const target = occurrenceChoreId('trash', 'general', '2026-11-05');
+    const stored = (await note.get()).data()!;
+    assert.deepEqual(stored.overdueChoreIds, ['other', target].sort());
+    assert.deepEqual(stored.notifiedChoreIds, ['other', target].sort());
+    assert.deepEqual(stored.readBy, { o1: { at: 'x', uid: 'o1' } }, 'read state kept');
+    // Upkeep's next decision: the moved chore is not news (no fresh, no push).
+    const decision = decideOverdue({
+      stored: { resolved: false, overdueChoreIds: stored.overdueChoreIds, notifiedChoreIds: stored.notifiedChoreIds, lastPushDay: '2026-11-06', nearExpiry: false, seenByRun: true, total: 2, overflowFrom: null },
+      overdueIds: [target, 'other'], existingChoreIds: new Set([target, 'other']), today: '2026-11-07',
+      alertsAllowed: true, reminderSentNow: false, reminderPending: false,
+    });
+    assert.ok(decision.action === 'none' || (decision.action === 'write' && !decision.fresh && !decision.push), JSON.stringify(decision));
+    // A second move attempt finds nothing to do for the notification.
+    const again: { references?: number } = {};
+    assert.equal(await moveChoreToOccurrenceId(adminDb as never, (await chores().doc(target).get()).ref as never, undefined as never, { base: target, occurrenceKey: null }, again), 'changed');
+    assert.equal(again.references ?? 0, 0);
+  });
+
+  test('a legacy one-time library assignment moves to a -once id; upkeep still generates that day', async () => {
+    const id = recurringChoreId('trash', 'general', '2026-11-05', EMAIL);
+    const data = { task: 'Trash', templateId: 'trash', roomIds: [], sourceType: 'template', assignedToUid: 'o1', dueDate: '2026-11-05T06:00:00.000Z', isCompleted: false };
+    await chores().doc(id).set(data);
+    const decided = plan(id, data);
+    assert.equal(decided.oneTime, true);
+    const snap = await chores().doc(id).get();
+    assert.equal(await moveChoreToOccurrenceId(adminDb as never, snap.ref as never, snap.updateTime as never, decided), 'moved');
+    const onceId = `${occurrenceChoreId('trash', 'general', '2026-11-05')}-once`;
+    assert.deepEqual((await chores().doc(onceId).get()).data(), data, 'still one-time, no occurrence key');
+    assert.equal((await chores().doc(id).get()).exists, false);
+    assert.equal(choreIdRekeyPlan(onceId, data).kind, 'one-time', 'a re-run leaves it alone');
+    // Upkeep generates the recurring chore for that day as usual.
+    await runHouseholdReminders(adminDb as never, HOUSE, new Date('2026-11-05T15:00:00Z'), ts);
+    assert.equal((await chores().doc(occurrenceChoreId('trash', 'general', '2026-11-05')).get()).exists, true);
   });
 });

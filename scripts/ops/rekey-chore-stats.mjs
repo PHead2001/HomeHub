@@ -51,7 +51,7 @@ const { db, label } = await opsFirestore(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (stats will be re-keyed)' : 'dry run (no writes)'}.`);
 
-const totals = { households: 0, documents: 0, clean: 0, rekey: 0, moved: 0, unknown: 0, written: 0, identities: 0 };
+const totals = { households: 0, documents: 0, clean: 0, rekey: 0, moved: 0, unknown: 0, aliases: 0, written: 0, identities: 0 };
 
 let cursor = null;
 for (;;) {
@@ -83,5 +83,6 @@ console.log(`  already keyed by uid: ${totals.clean}`);
 console.log(`  with legacy keys: ${totals.rekey}`);
 console.log(`  legacy keys of current members or of people who left (named on chores) moved to their identity: ${totals.moved}`);
 console.log(`  legacy keys of nobody named any more moved to an opaque key: ${totals.unknown}`);
+console.log(`  departure aliases (email-derived keys) folded and removed: ${totals.aliases}`);
 if (apply) console.log(`  updated: ${totals.written}; identities of people who left stored: ${totals.identities}`);
 else console.log('Dry run only. Re-run with --apply to re-key the stats.');

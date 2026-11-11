@@ -6,6 +6,7 @@ import {
   choreIdRekeyPlan,
   legacyOccurrenceBase,
   occurrenceChoreIdJs,
+  overdueIdsAfterMove,
   parseOccurrenceKey,
   rekeyTargets,
   rekeyedChoreData,
@@ -112,12 +113,40 @@ describe('chore id re-key decisions', () => {
     assert.deepEqual(choreIdRekeyPlan(`${base}-2`, fields), { kind: 'current' });
     assert.deepEqual(choreIdRekeyPlan(`${base}-9`, { templateId: 'trash', roomIds: [] }), { kind: 'current' });
     assert.deepEqual(choreIdRekeyPlan('AbCdEf0123456789wxyz', { templateId: 'trash', sourceType: 'temporary' }), { kind: 'one-time' });
-    assert.deepEqual(choreIdRekeyPlan(recurringChoreId('trash', 'general', '2026-11-05', EMAIL), { templateId: 'trash', sourceType: 'template' }), { kind: 'one-time' });
     assert.deepEqual(choreIdRekeyPlan('anything', { task: 'No template' }), { kind: 'one-time' });
     assert.deepEqual(choreIdRekeyPlan('AbCdEf0123456789wxyz', { templateId: 'trash', roomIds: [] }), { kind: 'unrecognized' });
     // A template whose id contains a date: its own date is part of the prefix, not a day.
     assert.deepEqual(choreIdRekeyPlan('x-2025-01-01-r-2026-11-05', { templateId: 'x-2025-01-01', roomIds: ['elsewhere'] }), { kind: 'current' });
     assert.deepEqual(choreIdRekeyPlan('x-2025-01-01-r', { templateId: 'x-2025-01-01', roomIds: ['elsewhere'] }), { kind: 'unrecognized' });
+  });
+
+  test('a one-time library assignment whose id carries the assignee email moves to a -once id, never the occurrence id', () => {
+    const legacy = recurringChoreId('trash', 'kitchen', '2026-11-05', EMAIL);
+    assert.ok(legacy.endsWith(stableSlugify(EMAIL)), 'the email slug is in the id');
+    const fields = { templateId: 'trash', roomIds: ['kitchen'], sourceType: 'template' };
+    const plan = choreIdRekeyPlan(legacy, fields);
+    assert.deepEqual(plan, { kind: 'rekey', base: `${occurrenceChoreId('trash', 'kitchen', '2026-11-05')}-once`, suffix: 'other', occurrenceKey: null, oneTime: true });
+    // The moved chore keeps its fields (still one-time, no occurrence key) and is clean on a re-run.
+    assert.deepEqual(rekeyedChoreData(fields, plan as never), fields);
+    assert.equal(storedOccurrenceKey(`${occurrenceChoreId('trash', 'kitchen', '2026-11-05')}-once`, fields), null);
+    assert.deepEqual(choreIdRekeyPlan(`${occurrenceChoreId('trash', 'kitchen', '2026-11-05')}-once`, fields), { kind: 'one-time' });
+    assert.deepEqual(choreIdRekeyPlan(`${occurrenceChoreId('trash', 'kitchen', '2026-11-05')}-once-2`, fields), { kind: 'one-time' });
+    // One-time chores whose id carries no email are untouched: auto ids, and an id that ends at the day.
+    assert.deepEqual(choreIdRekeyPlan('AbCdEf0123456789wxyz', fields), { kind: 'one-time' });
+    assert.deepEqual(choreIdRekeyPlan(occurrenceChoreId('trash', 'kitchen', '2026-11-05'), fields), { kind: 'one-time' });
+    // A genuine recurring instance with the same email shape is handled as before.
+    const recurring = choreIdRekeyPlan(legacy, { templateId: 'trash', roomIds: ['kitchen'] });
+    assert.ok(recurring.kind === 'rekey' && recurring.base === occurrenceChoreId('trash', 'kitchen', '2026-11-05') && !('oneTime' in recurring));
+  });
+
+  test('overdue notification id lists follow a moved chore; nothing else changes', () => {
+    const note = { overdueChoreIds: ['b-old', 'z'], notifiedChoreIds: ['x', 'b-old', 'z'], readBy: { u: { at: 1 } } };
+    assert.deepEqual(overdueIdsAfterMove(note, 'b-old', 'a-new'), { overdueChoreIds: ['a-new', 'z'], notifiedChoreIds: ['x', 'a-new', 'z'] });
+    assert.deepEqual(overdueIdsAfterMove({ overdueChoreIds: ['z'], notifiedChoreIds: ['b-old'] }, 'b-old', 'a-new'), { notifiedChoreIds: ['a-new'] });
+    assert.equal(overdueIdsAfterMove({ overdueChoreIds: ['z'] }, 'b-old', 'a-new'), null);
+    assert.equal(overdueIdsAfterMove(null, 'b-old', 'a-new'), null);
+    // The new id already listed (an earlier partial run): no duplicate.
+    assert.deepEqual(overdueIdsAfterMove({ overdueChoreIds: ['a-new', 'b-old'] }, 'b-old', 'a-new'), { overdueChoreIds: ['a-new'] });
   });
 
   test('running the plan on its own output finds nothing to do', () => {

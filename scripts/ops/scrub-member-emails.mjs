@@ -72,7 +72,7 @@ const totals = {
   chores: choreCounts(),
   'chore-templates': choreCounts(),
 };
-const statsTotals = { documents: 0, rekey: 0, moved: 0, written: 0, identities: 0 };
+const statsTotals = { documents: 0, rekey: 0, moved: 0, aliases: 0, written: 0, identities: 0 };
 
 const skippable = error => error?.code === NOT_FOUND || error?.code === FAILED_PRECONDITION;
 
@@ -119,7 +119,7 @@ for (;;) {
     statsTotals.identities += former.added;
     // The stats first: once a chore's email is gone, its legacy key can no longer be matched.
     const stats = await rekeyHouseholdStats(db, await householdStats(household.ref), { apply, byLegacy: householdLegacyKeys(people, former) });
-    for (const key of ['documents', 'rekey', 'moved', 'written']) statsTotals[key] += stats[key];
+    for (const key of ['documents', 'rekey', 'moved', 'aliases', 'written']) statsTotals[key] += stats[key];
     const context = { apply, uidByEmail: people.uidByEmail, formerKeyOf: former.identityOf };
     await scrubChoreCollection(db, household.ref.collection('chores'), { ...context, counts: totals.chores });
     await scrubChoreCollection(db, household.ref.collection('chore-templates'), { ...context, counts: totals['chore-templates'] });
@@ -151,7 +151,7 @@ const report = {
   },
 };
 report['chore-templates'] = report.chores;
-console.log(`yearly stats: ${statsTotals.documents} scanned; with legacy keys of members or people who left: ${statsTotals.rekey} (${statsTotals.moved} keys)`);
+console.log(`yearly stats: ${statsTotals.documents} scanned; with legacy keys of members or people who left: ${statsTotals.rekey} (${statsTotals.moved} keys; departure aliases removed: ${statsTotals.aliases})`);
 if (apply) console.log(`  updated: ${statsTotals.written}; identities of people who left stored: ${statsTotals.identities}`);
 for (const [name, counts] of Object.entries(totals)) {
   console.log(`${name}: ${counts.scanned} scanned`);

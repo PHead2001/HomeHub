@@ -21,6 +21,7 @@ import {
 import { getMemberPermissions } from '../../src/lib/permissions';
 import { clearJournal, forgetHouseholdJournal, readJournal, UNDO_JOURNAL_KEY, type UndoEntry } from '../../src/lib/shopping/undo';
 import type { HouseholdMember, User } from '../../src/lib/types';
+import { readLocalTicks, readRecentGrocery, recordLocalTick, rememberRecentGrocery } from '../../src/lib/shopping/overview';
 import { forgetHouseholdKeys, forgetHouseholdMapEntries, HOUSEHOLD_KEY_PREFIXES, HOUSEHOLD_MAP_KEYS, mapEntryOfHousehold } from '../../src/lib/auth/household-scope';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -405,6 +406,27 @@ describe('household data on this device', () => {
     assert.equal(mapEntryOfHousehold(H, H), true);
     assert.equal(mapEntryOfHousehold(`${H}2`, H), false);
     assert.deepEqual([...HOUSEHOLD_MAP_KEYS], ['homehub.shopping.recentGrocery.v1', 'homehub.shopping.localTicks.v1']);
+  });
+
+  test('the real Shopping stores (overview.ts) are forgotten for one household, pending ticks included', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      get length() { return values.size; },
+      key: (index: number) => [...values.keys()][index] ?? null,
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    const now = 1_000_000;
+    rememberRecentGrocery(storage, H, 'list-1');
+    rememberRecentGrocery(storage, 'house-b', 'list-9');
+    assert.ok(recordLocalTick(storage, H, 'list-1', 'op-a', now, 'item-1'));
+    assert.ok(recordLocalTick(storage, 'house-b', 'list-3', 'op-b', now));
+    forgetHouseholdMapEntries(storage, H);
+    assert.equal(readRecentGrocery(storage, H), null);
+    assert.equal(readRecentGrocery(storage, 'house-b'), 'list-9');
+    assert.deepEqual([...readLocalTicks(storage, H, 'list-1', now).opIds], []);
+    assert.deepEqual([...readLocalTicks(storage, 'house-b', 'list-3', now).opIds], ['op-b']);
   });
 
   test('the Undo journal forgets one household, or everything at sign-out', () => {

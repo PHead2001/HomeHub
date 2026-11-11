@@ -8,6 +8,7 @@
  */
 import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
 import { browserJournalStorage, clearJournal, forgetHouseholdJournal } from '@/lib/shopping/undo';
+import { LOCAL_TICKS_KEY, RECENT_GROCERY_KEY } from '@/lib/shopping/overview';
 
 export const HOUSEHOLD_FORGOTTEN_EVENT = 'homehub:household-forgotten';
 
@@ -24,10 +25,11 @@ export const HOUSEHOLD_KEY_PREFIXES = ['homehub.pantry.recentList.'] as const;
  * Device keys that hold one JSON object for every household, with entries keyed by
  * the household id (`<householdId>`) or by `<householdId>/<listId>`: Shopping's
  * last-used Grocery list (`RECENT_GROCERY_KEY`) and this device's own recent ticks
- * (`LOCAL_TICKS_KEY`), both in `src/lib/shopping/overview.ts`. Named here by their
- * literal keys, so they are forgotten whichever change lands first.
+ * (`LOCAL_TICKS_KEY`, entries of `{ opId, at, ackAt, itemId? }` ticks), both in
+ * `src/lib/shopping/overview.ts`. A forgotten household's entries go whole, pending
+ * ticks included: this device no longer shows its lists.
  */
-export const HOUSEHOLD_MAP_KEYS = ['homehub.shopping.recentGrocery.v1', 'homehub.shopping.localTicks.v1'] as const;
+export const HOUSEHOLD_MAP_KEYS = [RECENT_GROCERY_KEY, LOCAL_TICKS_KEY] as const;
 
 type KeyStorage = Pick<Storage, 'removeItem' | 'key' | 'length'> & Partial<Pick<Storage, 'getItem' | 'setItem'>>;
 

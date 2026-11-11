@@ -20,8 +20,14 @@
 //   whose room changed and whose id has several date-shaped parts that the
 //   household's rooms cannot tell apart (the email may contain dates); the
 //   target id always ends with the occurrence day.
-// Nothing else refers to a generated chore id: notifications name one-time
-// chores (their own auto ids), templates or days, never a generated id. A page
+// - one-time chores assigned from the library before upkeep matched occurrences
+//   by id (`sourceType: 'template'`, id `<template>-<room>-<day>-<assignee email>`)
+//   move to `<template>-<room>-<day>-once` (never the occurrence id, no occurrence
+//   key: they stay one-time and never stop recurring work);
+// - the overdue notifications that list a moved chore's id (`overdueChoreIds`,
+//   `notifiedChoreIds`) get its new id in the same transaction, so the chore is
+//   not news to its person again (read and dismissed state are kept).
+// Other notifications name one-time chores by auto id, templates or days. A page
 // that listed a chore just before it moved acts on the old id once, like on a
 // chore deleted meanwhile: completion, Undo and reopen report it missing and
 // the page lists again; a direct edit (calendar move, sub-task tick) shows its
@@ -56,7 +62,7 @@ console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY 
 
 const totals = {
   households: 0, scanned: 0, 'one-time': 0, current: 0, unrecognized: 0, ambiguous: 0, rekey: 0, uid: 0, other: 0,
-  moved: 0, duplicate: 0, changed: 0, 'no-free-id': 0, stopped: 0,
+  oneTime: 0, references: 0, moved: 0, duplicate: 0, changed: 0, 'no-free-id': 0, stopped: 0,
 };
 
 const rekeyHousehold = async householdRef => {
@@ -64,6 +70,15 @@ const rekeyHousehold = async householdRef => {
   const memberUidSlugs = new Set(members.docs.map(member => stableSlugify(member.id)));
   const rooms = await householdRef.collection('rooms').select().get();
   const roomSlugs = new Set(['general', ...rooms.docs.map(room => stableSlugify(room.id))]);
+  // Chore ids the overdue notifications list (dry-run count of references to rewrite).
+  const overdue = await householdRef.collection('notifications').where('sourceId', '==', 'overdue')
+    .select('overdueChoreIds', 'notifiedChoreIds').get();
+  const listedIds = new Map();
+  for (const note of overdue.docs) {
+    for (const id of new Set([...(note.get('overdueChoreIds') ?? []), ...(note.get('notifiedChoreIds') ?? [])])) {
+      listedIds.set(id, (listedIds.get(id) ?? 0) + 1);
+    }
+  }
   let cursor = null;
   for (;;) {
     let page = householdRef.collection('chores')
@@ -78,8 +93,12 @@ const rekeyHousehold = async householdRef => {
       totals[plan.kind] += 1;
       if (plan.kind !== 'rekey') continue;
       totals[plan.suffix] += 1;
-      if (!apply) continue;
-      const outcome = await moveChoreToOccurrenceId(db, chore.ref, chore.updateTime, plan);
+      if (plan.oneTime) totals.oneTime += 1;
+      if (!apply) {
+        totals.references += listedIds.get(chore.id) ?? 0;
+        continue;
+      }
+      const outcome = await moveChoreToOccurrenceId(db, chore.ref, chore.updateTime, plan, totals);
       totals[outcome] += 1;
       if (outcome === 'stopped') return;
     }
@@ -107,7 +126,8 @@ console.log(`  one-time or not generated (left alone): ${totals['one-time']}`);
 console.log(`  already under an email-free id: ${totals.current}`);
 console.log(`  generated, id not recognized (left alone): ${totals.unrecognized}`);
 console.log(`  generated, no key and the day cannot be told from the assignee part (left alone, follow up): ${totals.ambiguous}`);
-console.log(`  to move: ${totals.rekey} (assignee part a member's uid: ${totals.uid}; an email or a former member: ${totals.other})`);
+console.log(`  to move: ${totals.rekey} (assignee part a member's uid: ${totals.uid}; an email or a former member: ${totals.other}; of which one-time library assignments: ${totals.oneTime})`);
+console.log(`  overdue notification references ${apply ? 'rewritten' : 'to rewrite'}: ${totals.references}`);
 if (apply) {
   console.log(`  moved: ${totals.moved}; moved to a numbered id (day already had a chore): ${totals.duplicate}`);
   console.log(`  changed or deleted meanwhile and skipped: ${totals.changed}; no free id: ${totals['no-free-id']}; household being deleted: ${totals.stopped}`);

@@ -456,28 +456,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (notice) toast(notice);
   }, [membership.uid, toast, view.member?.role, view.phase, watchedHouseholdId]);
 
-  // Legacy permanent invite codes are removed by the owner's client (older households).
-  const legacyInviteHousehold = profileConfirmed && membership.uid === uid && view.phase === 'member' && currentMember?.role === 'owner' && household?.inviteCode ? household.id : null;
-  const legacyInviteCleaned = useRef<string | null>(null);
-  useEffect(() => {
-    if (!legacyInviteHousehold || !uid || legacyInviteCleaned.current === `${uid}|${legacyInviteHousehold}`) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { db, doc, updateDoc, deleteField } = await loadData();
-        if (cancelled || auth.currentUser?.uid !== uid) return;
-        legacyInviteCleaned.current = `${uid}|${legacyInviteHousehold}`;
-        await updateDoc(doc(db, 'households', legacyInviteHousehold), {
-          inviteCode: deleteField(),
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (error) {
-        console.warn("Legacy permanent invite code could not be removed automatically.", error);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [legacyInviteHousehold, uid]);
-
   // Heal drift between the profile and the public member data (name, photo), once per change.
   const memberShown = view.phase === 'member' || view.phase === 'pending';
   const profileDrift = profileConfirmed && memberShown && watchedHouseholdId && currentMember && profile &&
