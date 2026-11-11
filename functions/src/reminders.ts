@@ -141,19 +141,46 @@ export const readMemberContactsOrNull = async (
   }
 };
 
+/** Thrown when the members' contact documents could not be read. */
+export class MemberContactsUnavailable extends Error {
+  attempts: number;
+  /** @param {number} attempts How many reads were tried. */
+  constructor(attempts: number) {
+    super(`Member contact documents unreadable after ${attempts} attempts.`);
+    this.name = "MemberContactsUnavailable";
+    this.attempts = attempts;
+  }
+}
+
 /**
- * As readMemberContactsOrNull, but a failed read yields no contacts, so the
- * caller makes no email-keyed lookup (push tokens, reminder settings) rather
- * than a wrong one; the next run tries again.
+ * As readMemberContactsOrNull, for a caller that nothing will revisit (the
+ * push trigger on a new notification): a failed read is tried again after
+ * each of `delaysMs` (by default three reads, 250 ms and 1 s apart), and if
+ * every read fails it throws, so the caller fails visibly rather than
+ * finishing with no recipients. It never falls back to an email kept on a
+ * membership record.
  * @param {DocumentReference} house Household document.
  * @param {string[]} uids Members to read.
+ * @param {number[]} delaysMs Waits before each retry.
+ * @param {Function} wait Sleeps for a number of milliseconds (tests).
  * @return {Promise<Map<string, unknown>>} Contact data by uid.
  */
 export const readMemberContacts = async (
   house: DocumentReference,
   uids: string[],
-): Promise<Map<string, unknown>> =>
-  (await readMemberContactsOrNull(house, uids)) ?? new Map();
+  delaysMs: readonly number[] = [250, 1000],
+  wait: (ms: number) => Promise<unknown> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<Map<string, unknown>> => {
+  for (let attempt = 0; ; attempt++) {
+    const contacts = await readMemberContactsOrNull(house, uids);
+    if (contacts) return contacts;
+    if (attempt >= delaysMs.length) {
+      throw new MemberContactsUnavailable(attempt + 1);
+    }
+    await wait(delaysMs[attempt]);
+  }
+};
 
 /**
  * Runs reminders and recurring-chore upkeep for one household.

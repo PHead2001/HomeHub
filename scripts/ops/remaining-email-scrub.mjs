@@ -11,7 +11,7 @@
 // folder (`users/{email}/avatars/...`, uploads before release B whose move was
 // not possible); and any assignee or completer email written since release
 // D's scrub ran, which goes the same way (a completion credited to someone who
-// has left keeps it under their former-member key, ./former-member-key.mjs). A
+// has left keeps it under their settled identity, ./former-member-key.mjs). A
 // write is a list of field paths (arrays of segments) to delete plus
 // `[path, value]` pairs to set.
 
@@ -105,34 +105,35 @@ export function labelFixes(data, fields, namesByUid, overrides = {}) {
 
 /**
  * The decisions of release D's planner (`choreMemberEmailPlan`) with the
- * household's former-member keys, which it needs so that no email carrying a
- * credit is ever kept or dropped.
+ * household's settled identities of people who have left, which it needs so
+ * that no email carrying a credit is ever dropped (one whose person has no
+ * settled identity is kept: `kind: 'kept'`).
  */
 const memberEmailPlan = (data, uidByEmail, formerKeyOf) => {
   if (typeof formerKeyOf !== 'function') throw new TypeError('formerKeyOf is required');
-  const base = choreMemberEmailPlan(data, uidByEmail, formerKeyOf);
-  if (base.kind === 'kept') throw new Error('unexpected kept plan');
-  return base;
+  return choreMemberEmailPlan(data, uidByEmail, formerKeyOf);
 };
 
 /**
  * What the scrub does with one chore: any assignee or completer email still
  * stored, as release D's planner (uid first where it was missing; a completion
- * credited to someone who has left gets their former-member key), and email labels.
+ * credited to someone who has left gets their settled identity), and email labels.
  * @param {Record<string, unknown> | null | undefined} data
  * @param {{ uidByEmail: Map<string, string>, namesByUid: Map<string, string>, formerKeyOf: (email: string) => string }} context
- * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, former: boolean, labels: number }}
- *   `former`: a former-member key was written.
+ * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, former: boolean, kept: boolean, labels: number }}
+ *   `former`: a departed person's identity was written; `kept`: an email whose
+ *   departed person has no settled identity yet stays (a re-run picks it up).
  */
 export function choreRemainingEmailPlan(data, { uidByEmail, namesByUid, formerKeyOf }) {
   const base = memberEmailPlan(data, uidByEmail, formerKeyOf);
   const remove = base.kind === 'scrub' ? [...base.remove] : [];
   const sets = base.kind === 'scrub' ? { ...base.set } : {};
   const former = base.kind === 'scrub' && (base.assignee === 'former' || base.completer === 'former');
+  const kept = base.kind === 'kept' || (base.kind === 'scrub' && base.completer === 'kept');
   const labels = labelFixes(data, LABEL_FIELDS.chores, namesByUid, sets);
-  if (remove.length === 0 && Object.keys(sets).length === 0 && labels.length === 0) return { kind: 'clean' };
+  if (remove.length === 0 && Object.keys(sets).length === 0 && labels.length === 0) return kept ? { kind: 'kept' } : { kind: 'clean' };
   const set = [...Object.entries(sets).map(([field, value]) => [[field], value]), ...labels];
-  return { kind: 'scrub', remove, set, emails: remove.length, former, labels: labels.length };
+  return { kind: 'scrub', remove, set, emails: remove.length, former, kept, labels: labels.length };
 }
 
 /**
@@ -140,7 +141,7 @@ export function choreRemainingEmailPlan(data, { uidByEmail, namesByUid, formerKe
  * and an email assignee label.
  * @param {Record<string, unknown> | null | undefined} data
  * @param {{ uidByEmail: Map<string, string>, namesByUid: Map<string, string>, formerKeyOf: (email: string) => string }} context
- * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, former: false, labels: number }}
+ * @returns {{ kind: 'clean' | 'kept' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, former: false, kept: false, labels: number }}
  */
 export function templateRemainingEmailPlan(data, { uidByEmail, namesByUid, formerKeyOf }) {
   const base = memberEmailPlan(data, uidByEmail, formerKeyOf);
@@ -149,7 +150,7 @@ export function templateRemainingEmailPlan(data, { uidByEmail, namesByUid, forme
   const labels = labelFixes(data, LABEL_FIELDS['chore-templates'], namesByUid, sets);
   if (remove.length === 0 && Object.keys(sets).length === 0 && labels.length === 0) return { kind: 'clean' };
   const set = [...Object.entries(sets).map(([field, value]) => [[field], value]), ...labels];
-  return { kind: 'scrub', remove, set, emails: remove.length, former: false, labels: labels.length };
+  return { kind: 'scrub', remove, set, emails: remove.length, former: false, kept: false, labels: labels.length };
 }
 
 /**
