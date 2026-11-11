@@ -89,7 +89,7 @@ describe('strict OpenAI output schemas', () => {
       [GenerateRecipeOutputSchema, {
         recipeTitle: 'Rice and Beans',
         description: 'Simple.',
-        ingredients: { used: ['rice', 'beans'], needed: [] },
+        ingredients: { used: [{ pantryItem: 'Rice', line: '1 cup rice' }], needed: [{ name: 'Salt', line: 'a pinch of salt' }] },
         instructions: ['Cook.'],
         prepTime: '5 minutes',
         cookTime: '20 minutes',
