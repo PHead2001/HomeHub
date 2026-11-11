@@ -90,6 +90,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
+- `tests/e2e/tablet-pages.spec.ts` checks `/library` on the wall tablet (1263 × 818, touch): no sideways scroll, every control's hit area at least 48 × 48 and none overlapping (see [Application Shell](../application-shell/README.md)).
 - `tests/e2e/shopping-trip.spec.ts` covers the product count wording, product photos and the missing-photo placeholder, search, and the inline missing-photo error; `tests/e2e/verification-findings.spec.ts` keeps covering prompt deletes and the add dialog.
 - Manually test camera denial, manual entry, local-library precedence, public fallback, unknown barcodes, and mapping CRUD.
 - Camera release: open a scanner (Pantry > Add Item > Scan Barcode, list Add Item > Scan Barcode, the library), then close it, press Escape, or use browser Back to switch Shopping tabs: the browser's camera-in-use indicator turns off at once, and `chrome://media-internals` (or DevTools > Media) shows the video track ended. `tests/unit/shopping-live.test.ts` checks the scanner stops its tracks and that nested scanners close with their dialog and tab.
