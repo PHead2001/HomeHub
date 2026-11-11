@@ -25,9 +25,6 @@ import { deleteStoreAndUnassign, renameStore, restoreDeletedStore } from '@/lib/
 import { useLiveShoppingLists } from '@/lib/shopping/live';
 import type { ShoppingStore } from '@/lib/types';
 
-/** 44 px controls, 48 px on touch (D-2). */
-const CONTROL = 'h-11 [@media(pointer:coarse)]:h-12';
-
 type Track = <T>(write: Promise<T>, options: {
   kind: WriteKind;
   subject: string;
@@ -47,7 +44,8 @@ type PendingUndo = { restore: StoreRestore; at: number };
  * within the window, the Undo moves to a toast for the time left. The
  * household's lists come from the same live query the Shopping page holds
  * (Firestore shares one listen for identical queries), and `shopping.delete`
- * from the signed-in member's permissions.
+ * from the signed-in member's permissions. Every control uses the shared
+ * Button and Input default height (`--target-min`: 44 px, 48 px on touch).
  */
 export function StoreManageControls({
   householdId,
@@ -220,14 +218,14 @@ export function StoreManageControls({
     <div className="space-y-2">
       {store && ready && mode === 'idle' && (
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" className={CONTROL} onClick={startRename}>
+          <Button type="button" variant="outline" onClick={startRename}>
             <Pencil className="mr-2 h-4 w-4" aria-hidden /> Rename store
           </Button>
           {canDelete && (
             <Button
               type="button"
               variant="outline"
-              className={`${CONTROL} hover:text-destructive`}
+              className="hover:text-destructive"
               onClick={() => setMode('confirm-delete')}
             >
               <Trash2 className="mr-2 h-4 w-4" aria-hidden /> Delete store
@@ -244,7 +242,6 @@ export function StoreManageControls({
               value={name}
               autoFocus
               maxLength={80}
-              className={CONTROL}
               enterKeyHint="done"
               onFocus={(event) => {
                 // Once the on-screen keyboard is up, keep the field in view inside the dialog.
@@ -256,8 +253,8 @@ export function StoreManageControls({
               {...fieldErrorProps('rename-store-name', error)}
             />
             <div className="flex gap-2">
-              <Button type="button" className={`${CONTROL} flex-1`} onClick={() => void saveRename()}>Save name</Button>
-              <Button type="button" variant="ghost" className={`${CONTROL} flex-1`} onClick={() => { setMode('idle'); setError(null); }}>Cancel</Button>
+              <Button type="button" className="flex-1" onClick={() => void saveRename()}>Save name</Button>
+              <Button type="button" variant="ghost" className="flex-1" onClick={() => { setMode('idle'); setError(null); }}>Cancel</Button>
             </div>
           </div>
           <FieldError id="rename-store-name">{error}</FieldError>
@@ -274,14 +271,15 @@ export function StoreManageControls({
             <Button
               type="button"
               variant="destructive"
-              className={CONTROL}
+              // A long store name wraps instead of overflowing a phone; the box never drops under the target.
+              className="h-auto min-h-[var(--target-min)] whitespace-normal break-words"
               aria-disabled={!online || undefined}
               autoFocus
               onClick={() => void confirmDelete()}
             >
               Delete {store.name}
             </Button>
-            <Button type="button" variant="ghost" className={CONTROL} onClick={() => setMode('idle')}>Cancel</Button>
+            <Button type="button" variant="ghost" onClick={() => setMode('idle')}>Cancel</Button>
           </div>
         </div>
       )}
@@ -294,7 +292,7 @@ export function StoreManageControls({
           <Button
             type="button"
             variant="ghost"
-            className={`${CONTROL} shrink-0 px-4 font-semibold text-primary`}
+            className="shrink-0 px-4 font-semibold text-primary"
             aria-label={`Undo deleting ${pending.restore.name}`}
             aria-disabled={!online || undefined}
             onClick={() => { if (online) void undo(pending, false); }}

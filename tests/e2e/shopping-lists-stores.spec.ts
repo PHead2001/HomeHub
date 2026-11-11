@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, type CollectionReference } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
@@ -57,6 +57,19 @@ async function expectAisleOrder(page: Page, first: string, second: string) {
     const order = await aisles(page);
     return order.indexOf(first.toLowerCase()) >= 0 && order.indexOf(first.toLowerCase()) < order.indexOf(second.toLowerCase());
   }).toBe(true);
+}
+
+/**
+ * A control is at least 44 px tall in its own box once the dialog has finished
+ * entering: the dialog zooms in from 95 %, and a box read during that animation
+ * is scaled with it.
+ */
+async function expectTarget(dialog: Locator, control: Locator) {
+  await dialog.evaluate((element) => Promise.all(element.getAnimations({ subtree: true })
+    .filter((animation) => Number.isFinite(Number(animation.effect?.getComputedTiming().endTime)))
+    .map((animation) => animation.finished.catch(() => undefined))));
+  const box = await control.boundingBox();
+  expect(box?.height).toBeGreaterThanOrEqual(44);
 }
 
 async function deleteByName(collection: CollectionReference, name: string) {
@@ -224,10 +237,13 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await expect(page.getByTestId('list-store')).toHaveText(`Sorted for ${STORE_NAME}`);
     await page.getByRole('button', { name: 'Manage Categories' }).click();
     const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
+    await expectTarget(dialog, dialog.getByRole('button', { name: 'Rename store' }));
     await dialog.getByRole('button', { name: 'Rename store' }).click();
     const field = dialog.getByLabel('Store name');
     await expect(field).toBeFocused();
     await expect(field).toHaveValue(STORE_NAME);
+    await expectTarget(dialog, dialog.getByRole('button', { name: 'Save name' }));
+    await expectTarget(dialog, dialog.getByRole('button', { name: 'Cancel' }));
 
     // Another store's name (case ignored) is explained inline.
     await field.fill(NEW_STORE_NAME.toUpperCase());
@@ -261,12 +277,13 @@ test.describe('shopping: list types, category order and store aisles', () => {
     const status = dialog.getByTestId('categories-save-status');
 
     // The confirmation names the store and how many lists use it; Cancel deletes nothing.
+    await expectTarget(dialog, dialog.getByRole('button', { name: 'Delete store' }));
     await dialog.getByRole('button', { name: 'Delete store' }).click();
     const confirm = dialog.getByTestId('delete-store-confirm');
     await expect(confirm).toContainText(`Delete ${STORE_NAME}?`);
     await expect(confirm).toContainText('2 lists use it');
-    const box = await confirm.getByRole('button', { name: `Delete ${STORE_NAME}` }).boundingBox();
-    expect(box?.height).toBeGreaterThanOrEqual(44);
+    await expectTarget(dialog, confirm.getByRole('button', { name: `Delete ${STORE_NAME}` }));
+    await expectTarget(dialog, confirm.getByRole('button', { name: 'Cancel' }));
     await confirm.getByRole('button', { name: 'Cancel' }).click();
     expect((await stores.doc(STORE_ID).get()).exists).toBe(true);
 
@@ -282,6 +299,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await page.keyboard.press('Escape');
 
     // Undo (the shared 10 s window) re-creates the store with the same id and points both lists back.
+    await expectTarget(dialog, dialog.getByRole('button', { name: `Undo deleting ${STORE_NAME}` }));
     await dialog.getByRole('button', { name: `Undo deleting ${STORE_NAME}` }).click();
     await expect(status).toHaveText(`${STORE_NAME} restored · Saved`);
     expect((await stores.doc(STORE_ID).get()).data()).toMatchObject({ name: STORE_NAME, aisleOrder: ['Party', 'Dairy', 'Bakery'], createdByUid: OWNER_UID });
