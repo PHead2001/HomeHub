@@ -41,7 +41,7 @@ The inventory is one `onSnapshot` listener ordered by name (`useLivePantry`, wit
 
 In the list view, inventory uses compact table rows from `sm` upward and stacked item rows on narrower screens. Location filters and inventory actions wrap into a two-column mobile control grid; long item names wrap instead of widening the document.
 
-Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins. The shopping write is refused by the rules if that list was deleted meanwhile (items may only be written to a list document that exists).
+Deleting an item and adding it back to a shopping list are separate operations: the inventory document is deleted before the shopping write begins. The shopping write is refused by the rules if that list was deleted meanwhile (items may only be written to a list document that exists). The shopping write goes through Shopping's shared save path (`addItemsToList`, no merge yet): saved at once with a local category, then one batched AI call; the toast says "Added to the list", "Saved, will sync" (only when the durable cache shows it) or "Still sending…", and a failed AI call says the item stays under Other (it no longer promises a later edit).
 
 ## Data Model and Persistence
 

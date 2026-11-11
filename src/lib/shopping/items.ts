@@ -226,3 +226,29 @@ export function withoutIds<T extends { id: string }>(items: readonly T[], ids: I
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+/** Fields a restore never writes back: stamps that only the writer of the moment may set (rules: request.time, own uid). */
+const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt'] as const;
+
+/**
+ * The document an Undo-after-delete writes back: the item as it was read,
+ * keeping its original `addedByUid`, plus `restoredByUid` naming the signed-in
+ * member who restored it (the rules accept another member's `addedByUid` on a
+ * create only together with the writer's own `restoredByUid`) and, from S3, a
+ * fresh `restoreOpId` (accepted only on a create, so a restore never overwrites
+ * an item that exists again). Purchase and edit stamps are not written back (the
+ * rules accept them only as the writer's own uid and the server's time; a restore
+ * keeps its status and purchaseOpId). `restoreDocument` (item-writes.ts) adds
+ * `restoredAt` at write time.
+ * Without a signed-in uid the snapshot is returned as a copy, without the stamps.
+ */
+export function restoreItemData<T extends object>(
+  snapshot: T,
+  restorerUid: string | null | undefined,
+  restoreOpId?: string,
+): T & { restoredByUid?: string; restoreOpId?: string } {
+  const copy: Record<string, unknown> = { ...(snapshot as Record<string, unknown>) };
+  for (const key of RESTORE_DROPS) delete copy[key];
+  if (!restorerUid) return copy as T;
+  return { ...copy, restoredByUid: restorerUid, ...(restoreOpId ? { restoreOpId } : {}) } as T & { restoredByUid?: string; restoreOpId?: string };
+}

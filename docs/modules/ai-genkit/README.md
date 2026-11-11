@@ -10,7 +10,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 
 ## User-Facing Capabilities
 
-- Categorize a shopping item against a supplied category list.
+- Categorize shopping items against a supplied category list: one batched call per submission (`categorizeGroceryItems`, up to 40 names, QA-6). The single-item `categorizeGroceryItem` action remains for the e2e household probe; no screen calls it any more.
 - Generate a recipe suggestion from pantry inventory.
 - Summarize maintenance notes without changing the original log.
 - Generate a permission-filtered dashboard overview from exact server-calculated facts (shown as the AI rewrite of the dashboard's morning brief, on demand).
@@ -44,7 +44,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 
 `src/ai/openai-client.ts` creates one `openai` SDK client (`maxRetries: 0`, 30-second client timeout) on first use, and only when `OPENAI_API_KEY` exists. The SDK reads the key from the server environment; application code never passes or exposes its value. Model names are resolved centrally in `src/ai/model-config.ts`.
 
-Each model capability is a plain exported async function under `src/ai/tasks/` (`parseCommandFlow`, `categorizeGroceryItemFlow`, `generateRecipeFlow`, `summarizeMaintenanceLogFlow`, `generateHomeOverviewNarrativeFlow`). Each validates its input with its Zod schema first (a failure is `invalid_input` and no model call happens), then calls `generateStructured`, then validates its final output. Public `"use server"` actions under `src/ai/flows/` verify Firebase identity and permissions before invoking those tasks. `src/ai/structured-generation.ts` sends one Chat Completions request with the shared `HOMEHUB_AI_SYSTEM_INSTRUCTION` as the `system` message and the task instruction plus the bounded household input (inside an untrusted-data delimiter) as the `user` message. It applies per-flow timeouts through an abort signal, `max_completion_tokens` and (overview only) `reasoning_effort`, validates structured output with Zod, and logs only flow/model/duration/outcome metadata. Token usage is returned as `{ inputTokens, outputTokens, totalTokens }`.
+Each model capability is a plain exported async function under `src/ai/tasks/` (`parseCommandFlow`, `categorizeGroceryItemFlow`, `categorizeGroceryItemsFlow`, `generateRecipeFlow`, `summarizeMaintenanceLogFlow`, `generateHomeOverviewNarrativeFlow`). Each validates its input with its Zod schema first (a failure is `invalid_input` and no model call happens), then calls `generateStructured`, then validates its final output. Public `"use server"` actions under `src/ai/flows/` verify Firebase identity and permissions before invoking those tasks. `src/ai/structured-generation.ts` sends one Chat Completions request with the shared `HOMEHUB_AI_SYSTEM_INSTRUCTION` as the `system` message and the task instruction plus the bounded household input (inside an untrusted-data delimiter) as the `user` message. It applies per-flow timeouts through an abort signal, `max_completion_tokens` and (overview only) `reasoning_effort`, validates structured output with Zod, and logs only flow/model/duration/outcome metadata. Token usage is returned as `{ inputTokens, outputTokens, totalTokens }`.
 
 The homepage overview first uses Firebase Admin to aggregate a bounded facts object from only collections allowed by the caller's effective permissions. Personal chore facts include only chores assigned to the caller, matched by the shared `isAssignedTo` (`functions/src/shared/assignee.ts`) against the verified token's uid and email: a stored assignee email decides when both the chore and the token have one; otherwise the chore's `assignedToUid` must equal the caller's uid. Notification facts include only documents addressed to the caller: a stored `audience` decides on its own (`isAddressedToMember` in `functions/src/shared/notification-audience.ts`), and only documents without one fall back to the old target fields. Every free-text label in the facts (chore, item, asset and notification titles) has email-like parts replaced (`redactEmails` in `src/ai/redact.ts`) before it reaches the model. Exact metrics are rendered by the client independently of the optional narrative. The model receives no database handle, credentials, member identifiers, raw documents, Home Assistant credentials, arbitrary routes, or data from omitted sections. Overview output section references are filtered against supplied fact keys and route links come from application-owned mappings.
 
@@ -81,7 +81,7 @@ Input limits include 120-character grocery names, at most 60 recipe inventory it
 
 Protected clients send the current Firebase ID token and household ID to the server action. Firebase Admin derives UID/email from the verified token, loads `households/{householdId}` and `members/{uid}`, rejects missing/pending/`newuser` membership, and applies member-document role presets and overrides. The approved member record is the only authority: without one (including legacy `memberEmails`, owner email/UID fields or `users/{email}` role data) the request is rejected.
 
-- Categorization requires `shopping.edit`.
+- Categorization (single and batched) requires `shopping.edit`. The batched action (`src/ai/flows/categorize-grocery-items-flow.ts`, flow `categorization-batch`, 10 requests a minute) takes one daily quota unit per submission, not one per item. Its task (`src/ai/tasks/categorize-grocery-items.ts`) asks for `{ results: [{ index, category }] }` (12 s timeout, 1200 output tokens) and returns one category per input name in input order; missing, duplicate or unknown answers become `Other`. Shopping items are already saved before the call, so a failure only leaves them under `Other`.
 - Recipe generation requires `shopping.view`.
 - Maintenance summaries require `maintenance.view`.
 - Dashboard overview requires `household.view`, then independently gates every fact section by its module permission.
@@ -117,7 +117,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 
 - OpenAI credentials never enter client bundles or flow inputs.
 - A manually selected Shopping category bypasses AI. Automatic failure, timeout, rate limit, invalid output, or configuration failure still saves exactly one item under `Other`.
-- Categorization accepts only a supplied category and adds `Other` without mutating caller input.
+- Categorization accepts only a supplied category and adds `Other` without mutating caller input; the batched flow always returns exactly one category per name.
 - Recipe generation rejects fewer than two inventory items and does not persist results.
 - Maintenance summaries do not overwrite notes or persist automatically.
 - Provider configuration, timeout, rate limit, refusal, malformed output, authentication, and permission failures return sanitized application errors.

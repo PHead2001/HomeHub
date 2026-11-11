@@ -114,7 +114,7 @@ test.describe('offline shopping', () => {
     try {
       await page.clock.setFixedTime(fixedNow);
       await page.goto('/shopping');
-      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
       const needed = page.locator('#item-needed-apples');
       await expect(needed).toBeVisible();
 
@@ -141,7 +141,7 @@ test.describe('offline shopping', () => {
     try {
       await page.clock.setFixedTime(fixedNow);
       await page.goto('/shopping');
-      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
       const needed = page.locator(`#item-needed-${itemId}`);
       const purchased = page.locator(`#item-purchased-${itemId}`);
       await expect(needed).toBeVisible();

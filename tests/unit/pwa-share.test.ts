@@ -38,7 +38,7 @@ describe('shopping item contract', () => {
     assert.equal(data.status, 'needed');
     assert.equal(data.quantity, 2);
     assert.ok(data.createdAt instanceof Date);
-    assert.deepEqual(Object.keys(data).sort(), ['category', 'createdAt', 'name', 'quantity', 'status']);
+    assert.deepEqual(Object.keys(data).sort(), ['category', 'createdAt', 'name', 'nameKey', 'quantity', 'status']);
   });
 
   test('keeps a valid source URL', () => {
