@@ -39,24 +39,25 @@ export function memberRecordEmailPlan(member, contact) {
  * dropping the person a completed chore is credited to (`creditedPerson` in
  * functions/src/shared/chore-stats.ts: the completer, else the assignee). When
  * the email being removed names nobody in the household (someone who has left)
- * and is the only identity of the credited person, the chore gets that person's
- * opaque former-member key (`formerKeyOf`, ./former-member-key.mjs) in its place.
+ * and identifies the credited person, the chore is credited to that person's
+ * settled identity instead (`formerKeyOf`: their uid or former-member key, the
+ * one the stats re-key also uses; ./former-member-key.mjs).
  * @param {Record<string, unknown> | null | undefined} data Document data.
  * @param {Map<string, string>} uidByEmail Email (lower-cased) to member uid.
- * @param {(email: string) => string} [formerKeyOf] Former-member key for an email
- *   (the same for the same person in the household). Without it, such an email
- *   is kept rather than dropped with its credit.
+ * @param {(email: string) => string} [formerKeyOf] Settled identity of a departed
+ *   person's email (`settleFormerIdentities`). Without it, or when it has none,
+ *   such an email is kept rather than dropped with its credit.
  * @returns {{ kind: 'clean' | 'kept' } | { kind: 'scrub', remove: string[][], set: Record<string, string>, assignee: string, completer: string }}
  *   `assignee` is release C's kind (`clean`, `scrub`, `repaired`, `cleared`), or
  *   `former`: a completed chore credited to its assignee, whose email names
- *   nobody here and whose stored uid would not name them (none, or a current
- *   member's leftover): `assignedToUid` becomes their former-member key.
+ *   nobody here and whose stored uid is not that person's identity (none, a
+ *   current member's leftover, or another uid): `assignedToUid` becomes it.
  *   `completer` is one of:
  *   - `none`: no `completedByEmail`;
  *   - `removed`: removed; `completedByUid` already names the completer;
  *   - `repaired`: `completedByUid` was missing and is set to the member the email names;
  *   - `former`: no `completedByUid` and the email names nobody here (someone who
- *     left): `completedByUid` becomes their former-member key;
+ *     left): `completedByUid` becomes their identity;
  *   - `kept`: as `former`, without `formerKeyOf`: the email is kept.
  *   `kind` is `clean` when there is nothing to write, `kept` when the only emails
  *   left are such kept ones.
@@ -71,12 +72,16 @@ export function choreMemberEmailPlan(data, uidByEmail, formerKeyOf) {
   const creditedToAssignee = data?.isCompleted === true && !text(data?.completedByUid) && !text(data?.completedByEmail);
   if (creditedToAssignee && (assignee.kind === 'scrub' || assignee.kind === 'cleared')) {
     const email = assigneeEmailOfJs(data);
-    const uidAfter = text(assignee.kind === 'cleared' ? assignee.set.assignedToUid : data?.assignedToUid);
-    if (!uidByEmail.get(email) && !uidAfter) {
+    if (!uidByEmail.get(email)) {
       const key = formerKeyOf ? formerKeyOf(email) : '';
       if (key) {
-        set.assignedToUid = key;
-        assigneeKind = 'former';
+        if (key !== text(data?.assignedToUid)) {
+          set.assignedToUid = key;
+          assigneeKind = 'former';
+        } else if (assignee.kind === 'cleared') {
+          delete set.assignedToUid;
+          assigneeKind = 'scrub';
+        }
       } else {
         remove = [];
         delete set.assignedToUid;

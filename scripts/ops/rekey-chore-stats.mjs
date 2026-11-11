@@ -7,15 +7,21 @@
 // - a current member's legacy key is folded into their uid key (their email
 //   comes from their protected contact document, else, until the member-email
 //   scrub runs, from their membership record);
-// - any other legacy key (someone who has left) becomes an opaque `former-<n>`
-//   key with the same count and label.
-// Totals (`completed`) are unchanged. Planners: ./chore-stats-rekey.mjs.
+// - a departed person's legacy key goes to their identity, the one
+//   scripts/ops/scrub-member-emails.mjs gives their chores (their uid when the
+//   chores pair their email with exactly one, else their former-member key;
+//   ./former-member-key.mjs, decisions stored in households/{id}/ops/former-members
+//   before use), so their archived and retained completions are one score;
+// - a legacy key whose email no chore names any more goes to an opaque key of
+//   its own (`unknownLegacyKey`), the same in every run.
+// Totals (`completed`) are unchanged. Planners: ./chore-stats-rekey.mjs; steps:
+// ./member-privacy-household.mjs.
 //
-// Run it after the release D app and functions are live, before
-// scripts/ops/scrub-member-emails.mjs. Each stats document is re-read and
-// written in its own transaction (upkeep writes the same documents in
-// transactions), so a run can be stopped and repeated at any time; already
-// re-keyed documents are left alone.
+// Run it after the release D app and functions are live, before or after
+// scripts/ops/scrub-member-emails.mjs (which re-keys the stats of the people it
+// scrubs the same way). Each stats document is re-read and written in its own
+// transaction (upkeep writes the same documents in transactions), so a run can
+// be stopped and repeated at any time; already re-keyed documents are left alone.
 //
 // Usage:
 //   node scripts/ops/rekey-chore-stats.mjs --project homehub-j91jb           # dry run: counts only
@@ -28,10 +34,16 @@
 import { FieldPath } from 'firebase-admin/firestore';
 import { parseOpsArgs } from './profile-privacy.mjs';
 import { opsFirestore } from './credentials.mjs';
-import { legacyKeyMap, statsRekeyPlan } from './chore-stats-rekey.mjs';
+import {
+  hasLegacyKeys,
+  householdLegacyKeys,
+  householdStats,
+  readHouseholdPeople,
+  rekeyHouseholdStats,
+  settleHouseholdFormerPeople,
+} from './member-privacy-household.mjs';
 
 const PAGE_SIZE = 200;
-const STATS_ID = /^chores-\d{4}$/;
 
 const options = parseOpsArgs(process.argv.slice(2), process.env);
 const { projectId, apply } = options;
@@ -39,16 +51,7 @@ const { db, label } = await opsFirestore(options);
 const target = process.env.FIRESTORE_EMULATOR_HOST ? `emulator ${process.env.FIRESTORE_EMULATOR_HOST}` : 'live Firestore';
 console.log(`Project ${projectId} (${target}, ${label}). Mode: ${apply ? 'APPLY (stats will be re-keyed)' : 'dry run (no writes)'}.`);
 
-const totals = { households: 0, documents: 0, clean: 0, rekey: 0, memberKeys: 0, formerKeys: 0, written: 0 };
-
-const householdMembers = async householdRef => {
-  const members = await householdRef.collection('members').get();
-  const contacts = members.empty ? [] : await db.getAll(...members.docs.map(member => member.ref.collection('private').doc('contact')));
-  return members.docs.map((member, index) => {
-    const contactEmail = contacts[index]?.exists ? contacts[index].get('email') : undefined;
-    return { uid: member.id, email: typeof contactEmail === 'string' && contactEmail.trim() ? contactEmail : member.get('email') };
-  });
-};
+const totals = { households: 0, documents: 0, clean: 0, rekey: 0, moved: 0, unknown: 0, written: 0, identities: 0 };
 
 let cursor = null;
 for (;;) {
@@ -58,27 +61,17 @@ for (;;) {
   if (snapshot.empty) break;
   for (const household of snapshot.docs) {
     totals.households += 1;
-    const stats = (await household.ref.collection('stats').get()).docs.filter(d => STATS_ID.test(d.id));
-    if (stats.length === 0) continue;
-    const byLegacy = legacyKeyMap(await householdMembers(household.ref));
-    for (const statsDoc of stats) {
-      totals.documents += 1;
-      // Planned and (with --apply) written from the same transactional read.
-      const plan = await db.runTransaction(async tx => {
-        const fresh = await tx.get(statsDoc.ref);
-        const decision = statsRekeyPlan(fresh.exists ? fresh.data() : null, byLegacy);
-        if (apply && decision.kind === 'rekey') {
-          tx.update(statsDoc.ref, { byAssignee: decision.byAssignee, names: decision.names });
-        }
-        return decision;
-      });
-      totals[plan.kind] += 1;
-      if (plan.kind === 'rekey') {
-        totals.memberKeys += plan.members;
-        totals.formerKeys += plan.former;
-        if (apply) totals.written += 1;
-      }
+    const stats = await householdStats(household.ref);
+    if (!hasLegacyKeys(stats)) {
+      totals.documents += stats.length;
+      totals.clean += stats.length;
+      continue;
     }
+    const people = await readHouseholdPeople(db, household.ref);
+    const former = await settleHouseholdFormerPeople(db, household.ref, people, { apply, needSecret: true });
+    totals.identities += former.added;
+    const counts = await rekeyHouseholdStats(db, stats, { apply, byLegacy: householdLegacyKeys(people, former), unknownKeyOf: former.unknownKeyOf });
+    for (const [key, value] of Object.entries(counts)) totals[key] += value;
   }
   cursor = snapshot.docs[snapshot.docs.length - 1];
   if (snapshot.size < PAGE_SIZE) break;
@@ -88,7 +81,7 @@ console.log(`households: ${totals.households} scanned`);
 console.log(`stats documents: ${totals.documents} scanned`);
 console.log(`  already keyed by uid: ${totals.clean}`);
 console.log(`  with legacy keys: ${totals.rekey}`);
-console.log(`  legacy keys of current members folded into their uid key: ${totals.memberKeys}`);
-console.log(`  legacy keys of people who left replaced with an opaque key: ${totals.formerKeys}`);
-if (apply) console.log(`  updated: ${totals.written}`);
+console.log(`  legacy keys of current members or of people who left (named on chores) moved to their identity: ${totals.moved}`);
+console.log(`  legacy keys of nobody named any more moved to an opaque key: ${totals.unknown}`);
+if (apply) console.log(`  updated: ${totals.written}; identities of people who left stored: ${totals.identities}`);
 else console.log('Dry run only. Re-run with --apply to re-key the stats.');
