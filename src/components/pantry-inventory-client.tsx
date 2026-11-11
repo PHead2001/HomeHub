@@ -14,7 +14,9 @@ import { isBrowserOffline } from '@/lib/firestore-offline';
 import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, editPackagesLimit, planAddOne, stepPackages, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { categorizationNotice } from '@/lib/shopping/save-status';
-import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
+import { expiryStateForDays, productPhotoForName } from '@/lib/shopping/pantry';
+import { recipeProductKeys } from '@/lib/shopping/recipe';
+import { readRecentList, rememberRecentList } from '@/lib/shopping/recent-list';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
 import { pantryScanPrefill } from '@/lib/shopping/pantry-scan';
@@ -63,7 +65,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { Skeleton } from './ui/skeleton';
 import { cn } from '@/lib/utils';
-import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, Salad, Check, LayoutGrid, List as ListIcon, X } from 'lucide-react';
+import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Minus, Sparkles, ChefHat, Clock, LayoutGrid, List as ListIcon, X } from 'lucide-react';
 import { buttonVariants } from './ui/button';
 import { BarcodeScanner } from './barcode-scanner';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
@@ -75,6 +77,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './
 import { Checkbox } from './ui/checkbox';
 import { EmptyState } from './empty-state';
 import { PantryShelves } from './shopping/pantry-shelves';
+import { RecipeIngredients } from './shopping/recipe-ingredients';
 
 /** AI failures already carry a public message; anything else goes through friendlyError. */
 const recipeErrorMessage = (error: unknown) =>
@@ -498,12 +501,22 @@ function RecipeGeneratorDialog({
     recipeItems,
     householdId,
     onRecipe,
+    products,
+    today,
+    uid,
+    canEdit,
 }: {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    /** Usable stock only (SH-27e): products with packages left, expired batches left out. */
+    /** Usable stock only (SH-27e, SH-31a): soonest expiry first, used-up, needs-repair and expired batches left out. */
     recipeItems: RecipeStockItem[];
     householdId: string;
+    /** The live pantry, for the amounts on hand next to each pantry ingredient. */
+    products: readonly PantryProduct[];
+    today: string;
+    uid: string | null;
+    /** `shopping.edit`: adding missing ingredients to a list needs it. */
+    canEdit: boolean;
     /**
      * Receives each generated recipe so the shelves can lift the items it uses;
      * returns how many lifted tiles are on screen (0 in the list view).
@@ -514,6 +527,8 @@ function RecipeGeneratorDialog({
     const reduced = useReducedMotion();
     const [isLoading, setIsLoading] = useState(false);
     const [recipe, setRecipe] = useState<GenerateRecipeOutput | null>(null);
+    // Keys the ingredients per recipe, so a new one starts with fresh add states.
+    const [recipeId, setRecipeId] = useState(0);
     // 'lifting': the dialog and its scrim step aside so the lifted tiles are seen,
     // then 'shown': the dialog returns and the recipe card flips in.
     const [phase, setPhase] = useState<'shown' | 'lifting'>('shown');
@@ -542,6 +557,7 @@ function RecipeGeneratorDialog({
             const liftedOnScreen = onRecipe?.(result) ?? 0;
             setPhase(!reduced && liftedOnScreen > 0 ? 'lifting' : 'shown');
             setRecipe(result);
+            setRecipeId((id) => id + 1);
         } catch (error) {
             const message = recipeErrorMessage(error);
             console.error('Recipe generation failed', error instanceof Error ? error : String(error));
@@ -641,31 +657,15 @@ function RecipeGeneratorDialog({
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-3">
-                                <h3 className="font-headline text-lg font-semibold flex items-center gap-2"><Salad /> Ingredients</h3>
-                                <div className="p-4 bg-secondary/50 rounded-lg">
-                                    <h4 className="font-semibold mb-2">From Your Pantry</h4>
-                                    <ul className="space-y-1">
-                                    {recipe.ingredients.used.map(ing => (
-                                        <li key={ing} className="flex items-center gap-2">
-                                            <Check className="h-4 w-4 text-success" /> <span>{ing}</span>
-                                        </li>
-                                    ))}
-                                    </ul>
-                                </div>
-                                {recipe.ingredients.needed.length > 0 && (
-                                    <div className="p-4 bg-warning/10 rounded-lg">
-                                        <h4 className="font-semibold mb-2">You Might Need</h4>
-                                        <ul className="space-y-1">
-                                        {recipe.ingredients.needed.map(ing => (
-                                            <li key={ing} className="flex items-center gap-2">
-                                                <PlusCircle className="h-4 w-4 text-warning"/> <span>{ing}</span>
-                                            </li>
-                                        ))}
-                                        </ul>
-                                    </div>
-                                )}
-                            </div>
+                            <RecipeIngredients
+                                key={recipeId}
+                                ingredients={recipe.ingredients}
+                                products={products}
+                                today={today}
+                                householdId={householdId}
+                                uid={uid}
+                                canEdit={canEdit}
+                            />
 
                             <div className="space-y-3">
                                  <h3 className="font-headline text-lg font-semibold">Instructions</h3>
@@ -804,23 +804,6 @@ function AddToListDialog({
   );
 }
 
-/** Per-device memory of the Grocery list the pantry last added to (a convenience; storage may be blocked). */
-const recentListKey = (householdId: string) => `homehub.pantry.recentList.${householdId}`;
-const readRecentList = (householdId: string): string | null => {
-  try {
-    return window.localStorage.getItem(recentListKey(householdId));
-  } catch {
-    return null;
-  }
-};
-const rememberRecentList = (householdId: string, listId: string) => {
-  try {
-    window.localStorage.setItem(recentListKey(householdId), listId);
-  } catch {
-    // Storage blocked: the default list is preselected next time.
-  }
-};
-
 const PANTRY_VIEW_KEY = 'homehub.pantry.view';
 type PantryView = 'shelves' | 'list';
 
@@ -851,7 +834,7 @@ export function PantryInventoryClient() {
   const batches = useMemo(() => items.map((item) => readPantryBatch(item.id, item, timeZone)), [items, timeZone]);
   const products = useMemo(() => groupPantryBatches(batches), [batches]);
   const visibleBatches = useMemo(() => products.flatMap((product) => product.batches), [products]);
-  // SH-27e: recipes get only usable stock (packages left, not expired).
+  // SH-27e / SH-31a: recipes get only usable stock (packages left, not expired), soonest expiry first.
   const recipeItems = useMemo(() => usableRecipeItems(products, today), [products, today]);
 
   // The chosen view is a per-device convenience (this tab only renders client-side, after sign-in).
@@ -961,7 +944,8 @@ export function PantryInventoryClient() {
   // H08: the used tiles lift first (the dialog steps aside while they do), then
   // the recipe card flips in. Returns how many lifted tiles are on screen.
   const handleRecipe = useCallback((recipe: GenerateRecipeOutput | null) => {
-    const ids = recipe ? matchRecipeIngredients(recipe.ingredients.used, productsRef.current.map((product) => ({ id: product.key, name: product.name }))) : [];
+    // The pantry items the recipe names exactly (normalised on the server against the stock sent).
+    const ids = recipe ? recipeProductKeys(recipe.ingredients.used, productsRef.current) : [];
     setLiftedIds(new Set(ids));
     if (ids.length === 0 || viewRef.current !== 'shelves') return 0;
     requestAnimationFrame(() => {
@@ -1280,6 +1264,10 @@ export function PantryInventoryClient() {
         recipeItems={recipeItems}
         householdId={householdId || ''}
         onRecipe={handleRecipe}
+        products={products}
+        today={today}
+        uid={uid}
+        canEdit={canEdit}
       />
       <AddToListDialog
         key={listPick ? `pick:${listPick.name}:${listPick.preselectId}` : 'closed'}

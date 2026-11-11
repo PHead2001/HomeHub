@@ -11,7 +11,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 ## User-Facing Capabilities
 
 - Categorize shopping items against a supplied category list: one batched call per submission (`categorizeGroceryItems`, up to 40 names, QA-6). The single-item `categorizeGroceryItem` action remains for the e2e household probe; no screen calls it any more.
-- Generate a recipe suggestion from pantry inventory.
+- Generate a recipe suggestion from pantry inventory, built around the stock that goes off soonest, with pantry and missing ingredients marked.
 - Summarize maintenance notes without changing the original log.
 - Generate a permission-filtered dashboard overview from exact server-calculated facts (shown as the AI rewrite of the dashboard's morning brief, on demand).
 - Read a command-palette quick-add sentence the deterministic parser could not read, into one structured, previewable intent (no writes).
@@ -79,6 +79,8 @@ This module owns no persisted result collection.
 
 Input limits include 120-character grocery names, at most 60 recipe inventory items, and 8,000-character maintenance notes. Output schemas also bound titles, summaries, ingredient lists, and instruction lengths.
 
+Recipe (`generateRecipeFlow`, SH-31a): each inventory item is `{name (≤120), quantity (0 to 100,000), unit (≤40), expiresOn?, expiresInDays?}`; `expiresOn` is a date-only `yyyy-MM-dd` household day or null and `expiresInDays` an integer from 0 or null, both optional so an older page's request is still accepted. The instruction asks the model to build the recipe around the items with the fewest days left. The output lists `ingredients.used` as `{pantryItem, line}` (a supplied item's exact name and the recipe's amount) and `ingredients.needed` as `{name, line}` (a short shopping-list name and the amount). The model is untrusted: before the final output check the task normalises the lists against the input (`normalizeRecipeIngredients` in `src/lib/shopping/recipe.ts`): a used entry that does not name a supplied item (case and spacing aside) is moved to needed, a needed entry that names a supplied item is moved to used, the used name becomes the supplied spelling, names are cleaned and cut to 120 characters, each name is kept once and the lists stay within 60 used and 30 needed. Amounts on hand are never taken from the model; the pantry shows them from its own data. The deterministic provider uses the first two supplied items and also claims an item that was not supplied ("Fresh basil"), so tests see it moved to needed.
+
 ## Authentication, Roles, and Security
 
 Protected clients send the current Firebase ID token and household ID to the server action. Firebase Admin derives UID/email from the verified token, loads `households/{householdId}` and `members/{uid}`, rejects missing/pending/`newuser` membership, and applies member-document role presets and overrides. The approved member record is the only authority: without one (including legacy `memberEmails`, owner email/UID fields or `users/{email}` role data) the request is rejected.
@@ -134,7 +136,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 
 ## Validation
 
-- Run `npm.cmd run test:ai` for deterministic task success and failure contracts (`tests/ai/parse-command.test.ts` covers the palette reader: strict-schema conversion, references, allowed kinds, invented mileage, input validation and provider failures).
+- Run `npm.cmd run test:ai` for deterministic task success and failure contracts (the recipe flow's normalised ingredients included; `tests/ai/parse-command.test.ts` covers the palette reader: strict-schema conversion, references, allowed kinds, invented mileage, input validation and provider failures).
 - Run `npm.cmd run test:unit` for the strict-schema conversion of every flow output schema and the OpenAI provider contract (request body, response handling, SDK error mapping) against a stubbed `fetch`; it never reaches the network.
 - Run `npm.cmd run test:e2e:ai:local` for authenticated desktop/mobile Shopping, recipe, maintenance-summary, overview, barcode, partial-permission, and cross-household workflows.
 - Run `npm.cmd run test:rules` for emulator-only module permissions and Household A/B isolation.
