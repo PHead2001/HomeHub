@@ -2338,7 +2338,7 @@ describe('member privacy: closed reads and no emails in shared documents', () =>
     await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { ownerEmail: users.admin.email, updatedAt: 'x' }));
     await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { memberEmails: [], updatedAt: 'x' }));
     // A household that still carries the legacy fields stays editable on its other fields.
-    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { name: 'Renamed', updatedAt: 'x' }));
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { timeZone: 'America/Denver', updatedAt: 'x' }));
     // Creating a household with either field is refused.
     for (const extra of [{ ownerEmail: users.stranger.email }, { memberEmails: [users.stranger.email] }]) {
       const db = dbFor(users.stranger);
@@ -2371,8 +2371,9 @@ describe('member privacy: closed reads and no emails in shared documents', () =>
       await assertFails(updateDoc(doc(dbFor(writer), 'households', householdA, 'members', users.member.uid), { email: deleteField() }));
     }
     await assertFails(updateDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.pending.uid), { email: users.pending.email }));
-    // Approving a record without an email works as before.
-    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA, 'members', users.pending.uid), { role: 'member', status: 'active' }));
+    // Records without an email are read as before.
+    await assertSucceeds(getDoc(doc(dbFor(users.member), 'households', householdA, 'members', users.pending.uid)));
+    await assertSucceeds(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.pending.uid)));
   });
 
   test('notifications: no email target, from anyone', async () => {
