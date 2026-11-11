@@ -35,8 +35,17 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
-import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
-import { scanToShoppingEntry } from '@/lib/shopping/scan';
+import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, pendingSaveStatus, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
+import { scanToShoppingEntry, type ScanEntry } from '@/lib/shopping/scan';
+import { currentItemForToggle } from '@/lib/shopping/scan-tick';
+import { addScannedProduct, createScanAddGuard, dialogAfterScan, scanAddKey, withScanGuard } from '@/lib/shopping/scan-add';
+import { lookupMiss } from '@/lib/barcode/lookup-outcome';
+import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
+import { ScanToTick } from './shopping/scan-to-tick';
+import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { rowPhoto } from '@/lib/shopping/row-photo';
+import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { editUpdate, restoreDocument, restoreIfAbsent, untickUpdate } from '@/lib/shopping/item-writes';
 import { notUndoneNotice, planTick, tickShoppingItem, undoShoppingTick, type TickCurrent } from '@/lib/shopping/tick';
@@ -147,6 +156,10 @@ export function ShoppingListClient({
 }) {
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
+  const lookupFeedback = useLookupFeedback();
+  // A miss from the scanner inside Add Item is shown in that dialog (a toast's
+  // action would be unreachable behind the modal).
+  const addScanMiss = useScanMiss();
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
@@ -176,9 +189,16 @@ export function ShoppingListClient({
   const categories = categoryConfig.list;
   const loadingItems = Boolean(selectedListId) && (itemsState.status === 'loading' || categoriesState.status === 'loading');
   const counts = useLiveListCounts(householdId, lists.map((list) => list.id), selectedListId ?? '');
+  // Rows show the Barcode Library's current photo for scanned items (one source of truth).
+  const libraryPhotos = useLibraryPhotos(householdId);
+  const photoFor = (item: ShoppingListItem) => rowPhoto(item, libraryPhotos,
+    (url) => Boolean(householdId && getManagedBarcodeImagePath({ householdId, imageUrl: url })));
 
   const [isAddItemDialogOpen, setIsAddItemDialogOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // A scan from inside Add Item that is not confirmed yet (or refused as a repeat
+  // of one still being added), shown under the form like the typed add's status.
+  const [scanStatus, setScanStatus] = useState<{ key: string; text: string } | null>(null);
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
   const [listToEdit, setListToEdit] = useState<ShoppingList | null>(null);
   // A list form whose save was rejected, shown again (`rejectedDraftRestore`).
@@ -262,6 +282,8 @@ export function ShoppingListClient({
   // The Add Item scanner is nested in the Add Item dialog: it never outlives it
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
+  if (!isAddItemDialogOpen && addScanMiss.scanMiss) addScanMiss.clear();
+  if (!isAddItemDialogOpen && scanStatus) setScanStatus(null);
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
@@ -580,7 +602,7 @@ export function ShoppingListClient({
         // Not known yet: the values stay, Add stays blocked for this submission,
         // and the answer decides (other adds, such as quick add, keep working).
         keepGuard = true;
-        setDialogStatus(`${saveStateLabel(outcome.state)} ${outcome.name} is not confirmed yet.`);
+        setDialogStatus(pendingSaveStatus(outcome.state, outcome.name));
         void outcome.settled.then((final) => {
           guard.end(submissionId);
           setDialogStatus(null);
@@ -631,28 +653,84 @@ export function ShoppingListClient({
   };
 
   // A scan adds ONE package (BL-1): the package size is a note on the row, never the count.
+  // It is its own submission: it uses the category chosen when the scan started,
+  // never consumes or resets the typed draft, and closes only that same opening
+  // of Add Item (`dialogAfterScan`). A save not confirmed in time shows the typed
+  // add's "Still sending…" / "Checking…" line, and the scan stays outstanding until
+  // it settles: scanning the same product on the same list again meanwhile (here
+  // or through Scan to tick) is refused instead of queuing a second addition.
+  const scanGuardRef = useRef(createScanAddGuard());
   const handleBarcodeScan = async (barcode: string) => {
     if (!currentUser?.householdId) return;
+    const householdForLookup = currentUser.householdId;
+    const started = currentDialogDraft();
+    const category = getValues('category');
+    const key = scanAddKey(started.listId, barcode);
+    addScanMiss.clear();
     setIsScannerOpen(false);
-    toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
-    try {
-      const result = unwrapAiActionResult(await lookupBarcode(
-        { barcode },
-        await getAiActionContext(currentUser.householdId)
-      ));
-      const entry = scanToShoppingEntry(result);
-      if (entry) {
-        await onAddItemSubmit(
-          { name: entry.name, quantity: entry.quantity, category: getValues('category') },
-          { libraryItem: result.libraryItem, barcode, size: entry.size, sizeUnit: entry.sizeUnit },
-        );
-      } else {
-        toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. You can add it to your Barcode Library.' });
+    const inSameDialog = () => addDialogOpenRef.current && addDialogSessionRef.current === started.session;
+    // Inline in the same opening of Add Item when it is still open, else a toast.
+    const showMiss = (show: () => void, toastInstead: () => void) => {
+      if (inSameDialog()) show();
+      else toastInstead();
+    };
+    const showStatus = (text: string) => {
+      if (inSameDialog()) setScanStatus({ key, text });
+      else toast({ description: text });
+    };
+    const clearStatus = () => setScanStatus((current) => (current?.key === key ? null : current));
+    await withScanGuard(scanGuardRef.current, key, async (notePending) => {
+      toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
+      try {
+        const result = unwrapAiActionResult(await lookupBarcode(
+          { barcode },
+          await getAiActionContext(householdForLookup)
+        ));
+        const entry = scanToShoppingEntry(result);
+        const miss = result.libraryItem ? null : lookupMiss(result);
+        if (entry && !miss) {
+          const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, {
+            ...scanAddDeps,
+            pending: (status) => {
+              notePending(status);
+              showStatus(status);
+            },
+          });
+          if (final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close) {
+            setIsAddItemDialogOpen(false);
+          }
+        } else {
+          // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
+          const found = miss ?? { kind: 'not-found' as const };
+          showMiss(() => addScanMiss.reportMiss(found, barcode),
+            () => lookupFeedback.reportMiss(found, barcode, { fallback: 'type the name instead', canSave: canEdit }));
+        }
+      } catch (error) {
+        showMiss(() => addScanMiss.reportError(error, barcode),
+          () => lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit }));
+      } finally {
+        clearStatus();
       }
-    } catch (error) {
-      toastError(error, 'Barcode lookup failed');
-    }
+    }, showStatus);
   };
+  const scanAddDeps = {
+    add: addEntries,
+    report: reportAddResults,
+    fail: (error: unknown) => toastError(error, 'Could not add the item'),
+  };
+  // Scan to tick's "Add": outside the Add Item form entirely (no draft, no category
+  // from it); its pending status and a refused repeat are toasts.
+  const addScannedEntry = (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) =>
+    withScanGuard(scanGuardRef.current, scanAddKey(selectedListIdRef.current, extras.barcode), (notePending) =>
+      addScannedProduct(entry, extras, {
+        ...scanAddDeps,
+        pending: (status) => {
+          notePending(status);
+          toast({ description: status });
+        },
+      }),
+    (copy) => toast({ description: copy }),
+    ).then(() => undefined, (error: unknown) => { toastError(error, 'Could not add the item'); });
 
   // --- Undo (S3: SH-15a/b, UNDO-10s) ---
   // One 10 s Undo per group (the latest tick, the latest delete), shown in the
@@ -772,8 +850,13 @@ export function ShoppingListClient({
     focusRowWhenShown(nextRowFocusId(item));
   };
 
-  const toggleItemStatus = async (item: ShoppingListItem) => {
+  const toggleItemStatus = async (staleItem: ShoppingListItem) => {
       if (!householdId || !selectedList) return;
+      // Decide from the listener's latest copy, never a stale one (a scan's lookup,
+      // an old render): ticking an item someone else already bought would overwrite
+      // their purchasedByUid, time and purchaseOpId (and void their Undo).
+      const item = currentItemForToggle(staleItem, listItemsRef.current);
+      if (!item) return;
 
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
@@ -1305,6 +1388,7 @@ export function ShoppingListClient({
                             online={online}
                           />
                         )}
+                        {householdId && <ScanToTick key={`scan:${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
@@ -1394,6 +1478,8 @@ export function ShoppingListClient({
                                     </Button>
                                 </DialogFooter>
                                 {dialogStatus && <p role="status" className="text-sm text-muted-foreground">{dialogStatus}</p>}
+                                {scanStatus && <p role="status" className="text-sm text-muted-foreground">{scanStatus.text}</p>}
+                                <LookupMissNotice scanMiss={addScanMiss.scanMiss} fallback="type the name instead" canSave={canEdit} />
                                 </form>
                             </Form>
                         </DialogContent>
@@ -1445,6 +1531,7 @@ export function ShoppingListClient({
                                           onToggle={toggleItemStatus}
                                           onEdit={openEditor}
                                           attribution={attributionFor(item)}
+                                          photoUrl={photoFor(item)}
                                         />
                                       )),
                                     ])}
@@ -1479,6 +1566,7 @@ export function ShoppingListClient({
                                       onToggle={toggleItemStatus}
                                       onEdit={openEditor}
                                       attribution={attributionFor(item)}
+                                      photoUrl={photoFor(item)}
                                     />
                                 ))}
                                 </AnimatePresence>
