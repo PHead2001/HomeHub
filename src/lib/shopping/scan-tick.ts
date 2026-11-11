@@ -30,7 +30,20 @@ export function matchByBarcode<T extends TickCandidate>(items: readonly T[], bar
   return purchased ? { kind: 'in-cart', item: purchased } : null;
 }
 
-/** The decision once the lookup has answered. */
+/**
+ * The copy of an item a tick or un-tick must act on: the latest one from the
+ * list's listener. Null when the item's status has changed since `seen` was read
+ * (someone else ticked or un-ticked it), so the action no longer applies and must
+ * not overwrite their change. An item the listener does not hold (yet) is acted on
+ * as seen; the write then succeeds or fails on its own.
+ */
+export function currentItemForToggle<T extends { id: string; status: 'needed' | 'purchased' }>(seen: T, latest: readonly T[]): T | null {
+  const current = latest.find((item) => item.id === seen.id);
+  if (!current) return seen;
+  return current.status === seen.status ? current : null;
+}
+
+/** The decision once the lookup has answered. Pass the LATEST items (read after the lookup). */
 export function scanTickDecision<T extends TickCandidate>(
   items: readonly T[],
   barcode: string,

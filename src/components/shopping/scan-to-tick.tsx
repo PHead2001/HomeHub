@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ScanLine } from 'lucide-react';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
@@ -35,6 +35,11 @@ export function ScanToTick({
   onAdd: (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  // The latest items: a lookup takes a moment, and someone may tick meanwhile.
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
   useOnTabDeactivate(() => setOpen(false));
   const { toast } = useToast();
   const lookupFeedback = useLookupFeedback();
@@ -66,14 +71,15 @@ export function ScanToTick({
   const handleScan = async (barcode: string) => {
     setOpen(false);
     // An item added by scanning this code ticks without a lookup (works offline).
-    const local = matchByBarcode(items, barcode);
+    const local = matchByBarcode(itemsRef.current, barcode);
     if (local) {
       act(local, barcode);
       return;
     }
     try {
       const result = unwrapAiActionResult(await lookupBarcode({ barcode }, await getAiActionContext(householdId)));
-      act(scanTickDecision(items, barcode, result), barcode, result.libraryItem);
+      // Decided against the items as they are NOW (not as they were before the lookup).
+      act(scanTickDecision(itemsRef.current, barcode, result), barcode, result.libraryItem);
     } catch (error) {
       lookupFeedback.reportError(error, barcode, options);
     }

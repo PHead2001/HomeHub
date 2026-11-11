@@ -8,7 +8,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { db, storage } from '@/lib/firebase';
 import { collection, deleteField, doc, getDoc, getDocs, deleteDoc, query, orderBy, runTransaction, updateDoc, type CollectionReference } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { useToast } from '@/hooks/use-toast';
+import { toast as globalToast, useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -39,6 +39,7 @@ import {
   type PhotoChange,
   type ProductPhoto,
 } from '@/lib/barcode/library-writes';
+import { createPendingPhotoDeletes } from '@/lib/barcode/pending-photo-deletes';
 
 const libraryItemSchema = z.object({
   id: z.string().trim().min(1, 'Barcode is required.').max(64, 'Barcodes are at most 64 characters.')
@@ -238,6 +239,24 @@ function LibraryItemDialog({
 const storageErrorCode = (error: unknown) => (typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : '');
 
 /**
+ * Photos of deleted products wait out the Undo window (BL-4). Module level, not
+ * page state: the Undo toast is global and outlives the library page, so leaving
+ * the page neither deletes a photo the Undo could still restore nor drops the
+ * delete; the timer completes it and the Undo cancels it first.
+ */
+const libraryPhotoDeletes = createPendingPhotoDeletes({
+  windowMs: UNDO_WINDOW_MS,
+  remove: (path) => {
+    void deleteObject(ref(storage, path)).catch((error: unknown) => {
+      if (storageErrorCode(error) === 'storage/object-not-found') return;
+      console.warn('Barcode image cleanup failed:', error);
+      globalToast({ title: 'Item deleted; image cleanup pending', description: 'The library record is gone, but its product image could not be removed.' });
+    });
+  },
+});
+const photoDeleteKey = (householdId: string, barcode: string) => `${householdId}/${barcode}`;
+
+/**
  * The household Barcode Library: a photo-first grid of saved products (H30) with
  * search. Add/Edit appear for `shopping.edit`, Delete for `shopping.delete`;
  * without `shopping.view` the page explains that the library is not shared.
@@ -406,34 +425,21 @@ export function BarcodeLibraryClient() {
     }
   };
 
-  // Photos of deleted products wait out the Undo window (BL-4); leaving the page
-  // cleans them up at once.
-  const pendingPhotoDeletes = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; path: string }>());
-  useEffect(() => {
-    const pending = pendingPhotoDeletes.current;
-    return () => {
-      pending.forEach(({ timer, path }) => {
-        clearTimeout(timer);
-        void deleteObject(ref(storage, path)).catch(() => undefined);
-      });
-      pending.clear();
-    };
-  }, []);
-
   const undoDelete = async (item: BarcodeLibraryItem) => {
     const collectionRef = getLibraryCollectionRef();
     const uid = currentUser?.uid;
-    if (!collectionRef || !uid) return;
-    const pending = pendingPhotoDeletes.current.get(item.id);
+    if (!collectionRef || !uid || !householdId) return;
+    // Stop the photo's delayed delete first. If it already ran (the toast was held
+    // open past the window), the product comes back without a photo.
+    const photoPath = managedPath(item);
+    const photoKept = !photoPath || libraryPhotoDeletes.cancel(photoDeleteKey(householdId, item.id)) === photoPath;
     try {
-      await createProduct(collectionRef, item.id, restoredProductData(item, uid, new Date()));
-      if (pending) {
-        clearTimeout(pending.timer);
-        pendingPhotoDeletes.current.delete(item.id);
-      }
+      await createProduct(collectionRef, item.id, restoredProductData(item, uid, new Date(), { photoGone: !photoKept }));
       toast({ title: 'Item restored', description: `${item.name} is back in the library.` });
       await fetchItems();
     } catch (error) {
+      // Not restored: the photo is no longer needed.
+      if (photoPath && photoKept) libraryPhotoDeletes.removeNow(photoPath);
       if (error instanceof AlreadySaved) {
         toast({ title: 'Not restored', description: `This barcode was saved again as ${error.existing.name} meanwhile.` });
         await fetchItems();
@@ -450,13 +456,7 @@ export function BarcodeLibraryClient() {
         await deleteDoc(doc(collectionRef, item.id));
         setItems(prev => prev.filter(existingItem => existingItem.id !== item.id));
         const photoPath = managedPath(item);
-        if (photoPath) {
-          const timer = setTimeout(() => {
-            pendingPhotoDeletes.current.delete(item.id);
-            removePhoto(photoPath, 'Item deleted; image cleanup pending');
-          }, UNDO_WINDOW_MS);
-          pendingPhotoDeletes.current.set(item.id, { timer, path: photoPath });
-        }
+        if (photoPath && householdId) libraryPhotoDeletes.schedule(photoDeleteKey(householdId, item.id), photoPath);
         toast({
           title: 'Item Deleted',
           description: `${item.name} was removed from the library.`,

@@ -10,6 +10,7 @@ import {
   saveToLibraryHref,
   staleProductPhoto,
 } from '../../src/lib/barcode/library-writes';
+import { createPendingPhotoDeletes } from '../../src/lib/barcode/pending-photo-deletes';
 
 const now = new Date('2026-11-10T12:00:00.000Z');
 const photo = { imageUrl: 'https://example.test/a.jpg', imagePath: 'households/h/barcode-library/a.jpg' };
@@ -77,5 +78,65 @@ describe('save to library from a scan (BL-9)', () => {
 
   test('an existing code is offered for editing, not overwritten', () => {
     assert.equal(alreadySavedCopy('Juice'), 'This barcode is already saved as Juice. Edit it instead?');
+  });
+});
+
+describe('photo deletes wait out the Undo window (BL-4)', () => {
+  const fakeScheduler = () => {
+    const timers = new Map<number, () => void>();
+    let next = 0;
+    return {
+      scheduler: {
+        set: (callback: () => void) => { next += 1; timers.set(next, callback); return next; },
+        clear: (handle: unknown) => { timers.delete(handle as number); },
+      },
+      fireAll: () => { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach((callback) => callback()); },
+      count: () => timers.size,
+    };
+  };
+
+  test('the timer deletes the photo; nothing is deleted before it', () => {
+    const removed: string[] = [];
+    const clock = fakeScheduler();
+    const registry = createPendingPhotoDeletes({ windowMs: 10_000, remove: (path) => removed.push(path), scheduler: clock.scheduler });
+    registry.schedule('h/1', 'households/h/barcode-library/a.jpg');
+    assert.deepEqual(removed, []);
+    assert.equal(registry.pending('h/1'), true);
+    clock.fireAll();
+    assert.deepEqual(removed, ['households/h/barcode-library/a.jpg']);
+    assert.equal(registry.pending('h/1'), false);
+    // After the window an Undo learns the photo is gone.
+    assert.equal(registry.cancel('h/1'), null);
+  });
+
+  test('an Undo cancels the delete and keeps the photo', () => {
+    const removed: string[] = [];
+    const clock = fakeScheduler();
+    const registry = createPendingPhotoDeletes({ windowMs: 10_000, remove: (path) => removed.push(path), scheduler: clock.scheduler });
+    registry.schedule('h/1', 'p1');
+    assert.equal(registry.cancel('h/1'), 'p1');
+    assert.equal(clock.count(), 0);
+    clock.fireAll();
+    assert.deepEqual(removed, []);
+    registry.removeNow('p1');
+    assert.deepEqual(removed, ['p1']);
+  });
+
+  test('a second delete of the same code replaces the first entry without losing its photo', () => {
+    const removed: string[] = [];
+    const clock = fakeScheduler();
+    const registry = createPendingPhotoDeletes({ windowMs: 10_000, remove: (path) => removed.push(path), scheduler: clock.scheduler });
+    registry.schedule('h/1', 'p1');
+    registry.schedule('h/1', 'p2');
+    assert.deepEqual(removed, ['p1']);
+    assert.equal(clock.count(), 1);
+    clock.fireAll();
+    assert.deepEqual(removed, ['p1', 'p2']);
+  });
+
+  test('an Undo after the photo was deleted restores the product without it', () => {
+    assert.deepEqual(restoredProductData({ name: 'Juice', ...photo, createdAt: '2026-01-01T00:00:00.000Z' }, 'u2', now, { photoGone: true }), {
+      name: 'Juice', imageUrl: '', createdAt: '2026-01-01T00:00:00.000Z', createdByUid: 'u2',
+    });
   });
 });

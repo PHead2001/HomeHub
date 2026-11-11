@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { matchByBarcode, scanTickDecision, type TickCandidate } from '../../src/lib/shopping/scan-tick';
+import { currentItemForToggle, matchByBarcode, scanTickDecision, type TickCandidate } from '../../src/lib/shopping/scan-tick';
+import { rowPhoto } from '../../src/lib/shopping/row-photo';
 
 const items: TickCandidate[] = [
   { id: 'milk', name: 'Milk', status: 'needed' },
@@ -38,5 +39,46 @@ describe('scan to tick (SH-33f)', () => {
     assert.deepEqual(scanTickDecision(items, '000000000404', { source: 'none', productName: null }), { kind: 'miss', miss: { kind: 'not-found' } });
     assert.deepEqual(scanTickDecision(items, '000000000408', { source: 'unavailable', productName: null, unavailableReason: 'timeout' }),
       { kind: 'miss', miss: { kind: 'unavailable', reason: 'timeout' } });
+  });
+});
+
+describe('stale matches never re-tick (SH-33f)', () => {
+  test('a name match decided on the items AFTER the lookup reports the cart when someone ticked meanwhile', () => {
+    const before = items;
+    const after = items.map((item) => (item.id === 'juice' ? { ...item, status: 'purchased' as const } : item));
+    const result = { source: 'open_food_facts' as const, productName: 'E2E Family Juice' };
+    assert.equal(scanTickDecision(before, '008500001280', result).kind, 'tick');
+    assert.deepEqual(scanTickDecision(after, '008500001280', result), { kind: 'in-cart', item: after[1] });
+  });
+
+  test('the tick acts on the latest copy and refuses one whose status changed', () => {
+    const seen = items[1];
+    const ticked = { ...seen, status: 'purchased' as const };
+    assert.equal(currentItemForToggle(seen, [ticked]), null);
+    const renamed = { ...seen, name: 'Juice (big)' };
+    assert.equal(currentItemForToggle(seen, [renamed]), renamed);
+    // Not in the listener (yet): acted on as seen; the write decides.
+    assert.equal(currentItemForToggle(seen, []), seen);
+  });
+});
+
+describe('row photos follow the library', () => {
+  const managedUrl = 'https://storage.test/households%2Fh%2Fbarcode-library%2Fold.jpg';
+  const isManaged = (url: string) => url.includes('barcode-library');
+  const library = new Map([['111', { imageUrl: 'https://storage.test/new.jpg' }], ['222', { imageUrl: '' }]]);
+
+  test('the current library photo wins over the stored one', () => {
+    assert.equal(rowPhoto({ barcode: '111', imageUrl: managedUrl }, library, isManaged), 'https://storage.test/new.jpg');
+    assert.equal(rowPhoto({ barcode: '222', imageUrl: managedUrl }, library, isManaged), null);
+  });
+
+  test('a deleted product hides its managed photo but keeps other stored photos', () => {
+    assert.equal(rowPhoto({ barcode: '333', imageUrl: managedUrl }, library, isManaged), null);
+    assert.equal(rowPhoto({ imageUrl: 'https://images.openfoodfacts.org/x.jpg' }, library, isManaged), 'https://images.openfoodfacts.org/x.jpg');
+    assert.equal(rowPhoto({}, library, isManaged), null);
+  });
+
+  test('while the library is unknown the stored photo shows', () => {
+    assert.equal(rowPhoto({ barcode: '111', imageUrl: managedUrl }, null, isManaged), managedUrl);
   });
 });

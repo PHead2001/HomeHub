@@ -39,9 +39,13 @@ import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offli
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
 import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry, type ScanEntry } from '@/lib/shopping/scan';
+import { currentItemForToggle } from '@/lib/shopping/scan-tick';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
 import { ScanToTick } from './shopping/scan-to-tick';
+import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { rowPhoto } from '@/lib/shopping/row-photo';
+import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { editUpdate, restoreDocument, restoreIfAbsent, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
 import {
@@ -273,6 +277,10 @@ export function ShoppingListClient({
   const categories = categoriesState.value;
   const loadingItems = Boolean(selectedListId) && (itemsState.status === 'loading' || categoriesState.status === 'loading');
   const counts = useLiveListCounts(householdId, lists.map((list) => list.id), selectedListId ?? '');
+  // Rows show the Barcode Library's current photo for scanned items (one source of truth).
+  const libraryPhotos = useLibraryPhotos(householdId);
+  const photoFor = (item: ShoppingListItem) => rowPhoto(item, libraryPhotos,
+    (url) => Boolean(householdId && getManagedBarcodeImagePath({ householdId, imageUrl: url })));
 
   const [isAddItemDialogOpen, setIsAddItemDialogOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -821,8 +829,13 @@ export function ShoppingListClient({
     focusRowWhenShown(nextRowFocusId(item));
   };
 
-  const toggleItemStatus = async (item: ShoppingListItem) => {
+  const toggleItemStatus = async (staleItem: ShoppingListItem) => {
       if (!householdId || !selectedList) return;
+      // Decide from the listener's latest copy, never a stale one (a scan's lookup,
+      // an old render): ticking an item someone else already bought would overwrite
+      // their purchasedByUid, time and purchaseOpId (and void their Undo).
+      const item = currentItemForToggle(staleItem, listItemsRef.current);
+      if (!item) return;
 
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
@@ -1443,6 +1456,7 @@ export function ShoppingListClient({
                                           onToggle={toggleItemStatus}
                                           onEdit={openEditor}
                                           attribution={attributionFor(item)}
+                                          photoUrl={photoFor(item)}
                                         />
                                       )),
                                     ])}
@@ -1477,6 +1491,7 @@ export function ShoppingListClient({
                                       onToggle={toggleItemStatus}
                                       onEdit={openEditor}
                                       attribution={attributionFor(item)}
+                                      photoUrl={photoFor(item)}
                                     />
                                 ))}
                                 </AnimatePresence>

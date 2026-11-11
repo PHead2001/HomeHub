@@ -42,13 +42,17 @@ export function newProductData({ name, photo, uid, now }: { name: string; photo:
 /**
  * The document an Undo of a delete re-creates (only while the code is still
  * free). It keeps the name, photo and date; `createdByUid` is the restorer,
- * because a create must name its writer.
+ * because a create must name its writer. With `photoGone` (the photo's delayed
+ * delete already ran) the product comes back without a photo rather than
+ * pointing at a deleted object.
  */
 export function restoredProductData(
   item: { name: string; imageUrl?: string; imagePath?: string; createdAt?: string },
   uid: string,
   now: Date,
+  { photoGone = false }: { photoGone?: boolean } = {},
 ): NewProductData {
+  if (photoGone) return restoredProductData({ name: item.name, imageUrl: '', createdAt: item.createdAt }, uid, now);
   const createdAt = typeof item.createdAt === 'string' && item.createdAt && item.createdAt.length <= 40 ? item.createdAt : now.toISOString();
   return {
     name: item.name,
