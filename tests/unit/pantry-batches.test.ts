@@ -210,8 +210,8 @@ describe('tiles group a product and "used one" takes from the soonest batch (SH-
       batch('cans', { name: 'Beans', nameKey: 'beans', unit: 'cans', packageSize: null, packages: 3, expiryDate: '2026-11-10' }),
     ]);
     assert.deepEqual(usableRecipeItems(products, today), [
-      { name: 'Beans', quantity: 3, unit: 'cans' },
-      { name: 'Rice', quantity: 900, unit: 'g' },
+      { name: 'Beans', quantity: 3, unit: 'cans', expiresOn: '2026-11-10', expiresInDays: 0 },
+      { name: 'Rice', quantity: 900, unit: 'g', expiresOn: null, expiresInDays: null },
     ]);
   });
 });
@@ -302,10 +302,11 @@ describe('every v2 update carries the attribution the rules check', () => {
     for (const line of writes.split('\n').filter((entry) => /updateDoc\(|batch\.update\(|packages: increment/.test(entry))) {
       assert.match(line, /touched\(uid\)|packageChange\(/, line.trim());
     }
-    const handoff = read('pantry-writes.ts');
-    assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
+    // The put-away trip (server, Admin SDK) stamps the same attribution.
+    const handoff = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: FieldValue\.serverTimestamp\(\) \}\)/);
     assert.match(handoff, /planLegacyUpgrade\(batch, toTarget\)\.fields, \.\.\.stamp\(\)/);
-    assert.match(handoff, /quantity: increment\(toTarget\), \.\.\.stamp\(\)/);
+    assert.match(handoff, /quantity: FieldValue\.increment\(toTarget\), \.\.\.stamp\(\)/);
   });
 });
 
@@ -329,14 +330,14 @@ describe('recipes never turn unknown-size packages into grams (PR #129 review)',
       batch('sized', { name: 'Flour', nameKey: 'flour', packages: 1, packageSize: 1000, expiryDate: '2026-12-01' }),
     ]);
     assert.deepEqual(usableRecipeItems(products, today), [
-      { name: 'Flour', quantity: 1000, unit: 'g' },
-      { name: 'Flour', quantity: 2, unit: 'packs of unknown size (g)' },
+      { name: 'Flour', quantity: 1000, unit: 'g', expiresOn: '2026-12-01', expiresInDays: 21 },
+      { name: 'Flour', quantity: 2, unit: 'packs of unknown size (g)', expiresOn: null, expiresInDays: null },
     ]);
   });
 
   test('one unknown-size pack on its own', () => {
     const products = groupPantryBatches([batch('milk', { name: 'Milk', nameKey: 'milk', unit: 'L', packages: 1, packageSize: null })]);
-    assert.deepEqual(usableRecipeItems(products, today), [{ name: 'Milk', quantity: 1, unit: 'pack of unknown size (L)' }]);
+    assert.deepEqual(usableRecipeItems(products, today), [{ name: 'Milk', quantity: 1, unit: 'pack of unknown size (L)', expiresOn: null, expiresInDays: null }]);
   });
 
   test('the recipe flow input schema accepts every stock line, including the longest unknown-size unit and the largest amounts', async () => {
@@ -473,13 +474,12 @@ describe('purchases above 10,000 packages are split, never clamped', () => {
     assert.equal(plans[0].kind === 'create' && plans[0].quantity, 15_000);
     assert.deepEqual(splitPackages(15_000), [10_000, 5_000]);
   });
-  test('the handoff writes split batches and refuses an oversized handoff before clearing', () => {
-    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-writes.ts'), 'utf8');
-    assert.match(writes, /fillBatch\(plan\.add, batch\.packages\)/);
-    assert.match(writes, /for \(const packages of splitPackages\(total\)\)/);
-    const refusal = writes.indexOf('> MAX_HANDOFF_WRITES');
-    assert.ok(refusal > 0 && refusal < writes.indexOf('transaction.delete(itemRef(id))'), 'the size check comes before any clear');
-    assert.ok(refusal < writes.indexOf('for (const write of writes) write();'), 'and before any pantry write is applied');
+  test('the handoff writes split batches and fits the trip to the write limit before clearing', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'server', 'shopping-trips.ts'), 'utf8');
+    assert.match(writes, /tripPlanWrites\(plan, batch\)/);
+    assert.match(writes, /for \(const packages of newBatches\) createBatch\(plan, packages\)/);
+    const refusal = writes.indexOf('<= MAX_TRIP_WRITES');
+    assert.ok(refusal > 0 && refusal < writes.indexOf('for (const write of writes) write();'), 'the trip is cut to what fits before any pantry write or clear is applied');
   });
 });
 
@@ -498,9 +498,10 @@ describe('recipe amounts keep tiny package sizes', () => {
     ]);
     const items = usableRecipeItems(products, '2026-11-10');
     const byName = Object.fromEntries(items.map((item) => [item.name, item]));
-    assert.deepEqual(byName.Yeast, { name: 'Yeast', quantity: 4, unit: 'g' });
-    assert.deepEqual(byName.Vanilla, { name: 'Vanilla', quantity: 2, unit: 'ml' });
-    assert.deepEqual(byName.Flour, { name: 'Flour', quantity: 3, unit: 'kg' });
+    const noExpiry = { expiresOn: null, expiresInDays: null };
+    assert.deepEqual(byName.Yeast, { name: 'Yeast', quantity: 4, unit: 'g', ...noExpiry });
+    assert.deepEqual(byName.Vanilla, { name: 'Vanilla', quantity: 2, unit: 'ml', ...noExpiry });
+    assert.deepEqual(byName.Flour, { name: 'Flour', quantity: 3, unit: 'kg', ...noExpiry });
     assert.ok(items.every((item) => item.quantity > 0));
   });
   test('a small kg total joins the same product g line', () => {
@@ -508,7 +509,7 @@ describe('recipe amounts keep tiny package sizes', () => {
       batch('a', { name: 'Salt', nameKey: 'salt', unit: 'kg', packages: 1, packageSize: 0.25 }),
       batch('b', { name: 'Salt', nameKey: 'salt', unit: 'g', packages: 1, packageSize: 100 }),
     ]);
-    assert.deepEqual(usableRecipeItems(products, '2026-11-10'), [{ name: 'Salt', quantity: 350, unit: 'g' }]);
+    assert.deepEqual(usableRecipeItems(products, '2026-11-10'), [{ name: 'Salt', quantity: 350, unit: 'g', expiresOn: null, expiresInDays: null }]);
   });
   test('a tile label shows a tiny size instead of 0', () => {
     assert.equal(batchAmountLabel({ unit: 'kg', packages: 1, packageSize: 0.004 }), '1 × 0.004 kg');

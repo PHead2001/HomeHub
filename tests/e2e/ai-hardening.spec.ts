@@ -91,6 +91,10 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
       ['009900045000', { source: 'open_food_facts', productName: 'E2E Yogurt Multipack', quantity: 450, unit: 'g' }],
       ['007700000006', { source: 'open_food_facts', productName: 'E2E Odd Measure' }],
       ['000000000404', { source: 'none', productName: null }],
+      // BL-9: a lookup that cannot answer is not "not found".
+      ['000000000408', { source: 'unavailable', unavailableReason: 'timeout', productName: null }],
+      ['000000000429', { source: 'unavailable', unavailableReason: 'rate_limited', productName: null }],
+      ['000000000422', { source: 'unavailable', unavailableReason: 'error', productName: null }],
     ] as const;
     for (const [barcode, expected] of cases) {
       const result = await probe(request, ownerToken, { operation: 'barcode', householdId: householdA, barcode });

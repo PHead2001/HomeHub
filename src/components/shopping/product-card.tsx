@@ -66,12 +66,12 @@ export function ProductCard({
         {(onEdit || onDelete) && (
           <div className="mt-auto flex justify-end gap-2 pt-2">
             {onEdit && (
-              <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} onClick={onEdit}>
+              <Button variant="ghost" size="icon" aria-label={`Edit ${item.name}`} className="h-11 w-11 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12" onClick={onEdit}>
                 <Edit className="h-4 w-4" aria-hidden />
               </Button>
             )}
             {onDelete && (
-              <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} onClick={onDelete}>
+              <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} className="h-11 w-11 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12" onClick={onDelete}>
                 <Trash2 className="h-4 w-4" aria-hidden />
               </Button>
             )}
