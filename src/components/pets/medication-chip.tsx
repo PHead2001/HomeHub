@@ -13,7 +13,7 @@ const STATE_CLASSES: Record<MedicationDue['state'], string> = {
 export function MedicationChip({ due, className }: { due: MedicationDue; className?: string }) {
   return (
     <span
-      className={cn('inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', STATE_CLASSES[due.state], className)}
+      className={cn('inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium coarse:text-sm', STATE_CLASSES[due.state], className)}
       title={`${due.medication}: next dose ${due.due.toLocaleDateString()}`}
       data-medication-state={due.state}
     >

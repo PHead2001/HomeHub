@@ -43,7 +43,16 @@ jobs:
         run: npm ci
 
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        shell: bash
+        run: |
+          # The system packages (mostly fonts) come from the Ubuntu archives. When the runner cannot
+          # reach them the install hangs on retries and fails, so it gets five minutes; after that the
+          # browser alone is installed (the runner image already has the libraries Chromium needs).
+          if timeout 300 npx playwright install --with-deps chromium; then
+            exit 0
+          fi
+          echo "::warning::Playwright system packages could not be installed; installing the browser only."
+          npx playwright install chromium
 
       - name: Load demo emulator environment
         shell: bash
