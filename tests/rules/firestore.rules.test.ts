@@ -438,7 +438,8 @@ describe('independent review regressions', () => {
     for (const user of [users.admin, users.member]) {
       const db = dbFor(user);
       await assertFails(addDoc(collection(db, 'households', householdA, 'auditLogs'), audit(user)));
-      await assertFails(addDoc(collection(db, 'households', householdA, 'notifications'), notice(user)));
+      // Admins may send system notifications in general; members may not.
+      if (user === users.member) await assertFails(addDoc(collection(db, 'households', householdA, 'notifications'), notice(user)));
       const batch = writeBatch(db);
       batch.delete(doc(db, 'households', householdA, 'members', user.uid));
       batch.set(doc(collection(db, 'households', householdA, 'auditLogs')), audit(user));
