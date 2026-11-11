@@ -45,8 +45,11 @@ const plural = (count: number, word: string) =>
 export type OverdueView = {
   /** Local day of the person. */
   today: string;
-  /** Incomplete chores assigned to them, due before their local today. */
-  chores: Array<{id: string; task: string}>;
+  /**
+   * Incomplete chores assigned to them, due before their local today, newest
+   * due day first (then by ID).
+   */
+  chores: Array<{id: string; task: string; day: string}>;
   /** At or after OVERDUE_ALERT_AFTER_MINUTES local time. */
   alertsAllowed: boolean;
   /** Their daily reminder is enabled and its time is still to come today. */
@@ -84,10 +87,12 @@ export const overdueChoresFor = (
   const reminderAt = parseTimeOfDay(person.reminderTime);
   return {
     today,
-    chores: chores.filter(isMine(person)).filter((c) => {
+    chores: chores.filter(isMine(person)).flatMap((c) => {
       const day = dueDay(c);
-      return day !== null && day < today;
-    }).map((c) => ({id: c.id, task: c.task || "A chore"})),
+      return day !== null && day < today ?
+        [{id: c.id, task: c.task || "A chore", day}] : [];
+    }).sort((a, b) => a.day === b.day ?
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.day < b.day ? 1 : -1),
     alertsAllowed: minutes >= OVERDUE_ALERT_AFTER_MINUTES,
     dailyReminderPending: Boolean(person.reminderEnabled) &&
       reminderAt !== null && minutes < reminderAt,
@@ -97,11 +102,16 @@ export const overdueChoresFor = (
 /**
  * The overdue notification's message for these chores.
  * @param {string[]} tasks Names of the listed chores.
+ * @param {number} total Overdue chores in all (more than listed past the
+ * list cap).
  * @return {string} Message.
  */
-export const overdueMessage = (tasks: string[]): string => tasks.length === 1 ?
+export const overdueMessage = (
+  tasks: string[],
+  total = tasks.length,
+): string => total === 1 && tasks.length === 1 ?
   `"${tasks[0]}" is overdue.` :
-  `You have ${plural(tasks.length, "overdue chore")}.`;
+  `You have ${plural(total, "overdue chore")}.`;
 
 /**
  * Daily chore reminders due for one person right now. IDs are per person per

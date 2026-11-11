@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  decideOverdue, legacyOverdueNotificationIds, NOTIFIED_CHORE_IDS_CAP, overdueNotificationId,
+  decideOverdue, legacyOverdueNotificationIds, NOTIFIED_HISTORY_CAP, OVERDUE_LIST_CAP, legacyOverdueState, overdueNotificationId,
   type OverdueInput, type StoredOverdue,
 } from '../../functions/src/shared/overdue-notification';
 import { overdueChoresFor, overdueMessage } from '../../functions/src/shared/chore-reminders';
@@ -15,7 +15,7 @@ const stored = (fields: Partial<StoredOverdue> = {}): StoredOverdue => ({
 });
 const EXISTING = new Set(['a', 'b', 'c']);
 const decide = (fields: Partial<OverdueInput>) => decideOverdue({
-  stored: null, overdueIds: [], today: TODAY, alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: EXISTING, ...fields,
+  stored: null, overdueIds: [], today: TODAY, alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: EXISTING, ...fields,
 });
 const after = (d: ReturnType<typeof decideOverdue>, prev: StoredOverdue | null): StoredOverdue | null => {
   if (d.action === 'none') return prev;
@@ -85,8 +85,8 @@ describe('overdue notification decision (NO-1)', () => {
     assert.equal(d.lastPushDay, TODAY);
   });
 
-  test('the daily reminder carries the overdue count: no separate push, counted as today’s', () => {
-    const d = decide({ overdueIds: ['a'], dailyReminderCovers: true });
+  test('a daily reminder later today carries the overdue count: no separate push, counted as today’s', () => {
+    const d = decide({ overdueIds: ['a'], reminderPending: true });
     assert.equal(d.action, 'write');
     if (d.action !== 'write') return;
     assert.equal(d.create, true);
@@ -145,7 +145,7 @@ describe('overdue notification decision (NO-1)', () => {
     let pushes = 0;
     for (let day = 11; day <= 17; day++) {
       for (let hour = 7; hour < 24; hour++) {
-        const d = decideOverdue({ stored: state, overdueIds: ['a'], today: `2026-11-${day}`, alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: EXISTING });
+        const d = decideOverdue({ stored: state, overdueIds: ['a'], today: `2026-11-${day}`, alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: EXISTING });
         if (d.action !== 'write') continue;
         if (d.push) pushes++;
         state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
@@ -178,25 +178,129 @@ describe('overdue notification decision (NO-1)', () => {
     const wed = recurringChoreId('trash', 'general', '2026-11-11', 'uid-sam');
     assert.notEqual(tue, wed);
     const existing = new Set([tue, wed]);
-    const state = after(decideOverdue({ stored: null, overdueIds: [tue], today: '2026-11-11', alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: existing }), null);
-    const next = decideOverdue({ stored: state, overdueIds: [wed], today: '2026-11-12', alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: existing });
+    const state = after(decideOverdue({ stored: null, overdueIds: [tue], today: '2026-11-11', alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: existing }), null);
+    const next = decideOverdue({ stored: state, overdueIds: [wed], today: '2026-11-12', alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: existing });
     assert.equal(next.action === 'write' && next.push && next.fresh, true);
   });
 
-  test('told-about IDs are bounded: chores that no longer exist are forgotten, and at most the cap, oldest first', () => {
+  test('told-about history is bounded: gone chores forgotten, oldest history evicted, listed chores never', () => {
     const gone = decide({ stored: stored({ notifiedChoreIds: ['a', 'deleted'] }), overdueIds: ['a', 'b'] });
     assert.deepEqual(gone.action === 'write' && gone.notifiedChoreIds, ['a', 'b']);
-    const many = Array.from({ length: NOTIFIED_CHORE_IDS_CAP }, (_, i) => `old-${String(i).padStart(3, '0')}`);
-    const existing = new Set([...many, 'new-1']);
-    const capped = decideOverdue({
-      stored: stored({ overdueChoreIds: [], notifiedChoreIds: many }), overdueIds: ['new-1'], today: TODAY,
-      alertsAllowed: true, dailyReminderCovers: false, existingChoreIds: existing,
+    const history = Array.from({ length: NOTIFIED_HISTORY_CAP + 5 }, (_, i) => `old-${String(i).padStart(3, '0')}`);
+    const existing = new Set([...history, 'cur-1', 'cur-2', 'new-1']);
+    const d = decideOverdue({
+      stored: stored({ overdueChoreIds: ['cur-1', 'cur-2'], notifiedChoreIds: [...history, 'cur-1', 'cur-2'] }),
+      overdueIds: ['new-1', 'cur-1', 'cur-2'], today: TODAY, alertsAllowed: true, reminderSentNow: false, reminderPending: false,
+      existingChoreIds: existing,
     });
-    assert.equal(capped.action, 'write');
-    if (capped.action !== 'write') return;
-    assert.equal(capped.notifiedChoreIds.length, NOTIFIED_CHORE_IDS_CAP);
-    assert.equal(capped.notifiedChoreIds.includes('old-000'), false, 'oldest dropped');
-    assert.equal(capped.notifiedChoreIds.at(-1), 'new-1');
+    assert.equal(d.action, 'write');
+    if (d.action !== 'write') return;
+    assert.equal(d.push, true);
+    assert.equal(d.notifiedChoreIds.length, NOTIFIED_HISTORY_CAP + 3);
+    assert.equal(d.notifiedChoreIds.includes('old-000'), false, 'oldest history dropped first');
+    assert.equal(d.notifiedChoreIds.includes('old-005'), true);
+    for (const id of ['cur-1', 'cur-2', 'new-1']) assert.ok(d.notifiedChoreIds.includes(id), id);
+  });
+
+  for (const size of [201, 1000]) {
+    test(`${size} unchanged overdue chores stay quiet across days`, () => {
+      const ids = Array.from({ length: size }, (_, i) => `c-${String(i).padStart(4, '0')}`);
+      const existing = new Set(ids);
+      let state: StoredOverdue | null = null;
+      let pushes = 0;
+      let writes = 0;
+      for (let day = 11; day <= 16; day++) {
+        for (let run = 0; run < 3; run++) {
+          const d = decideOverdue({ stored: state, overdueIds: ids, today: `2026-11-${day}`, alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: existing });
+          if (d.action !== 'write') continue;
+          writes++;
+          if (d.push) pushes++;
+          assert.equal(d.total, size);
+          assert.ok(d.choreIds.length <= OVERDUE_LIST_CAP);
+          state = { resolved: false, overdueChoreIds: d.choreIds, notifiedChoreIds: d.notifiedChoreIds, lastPushDay: d.lastPushDay, nearExpiry: false, seenByRun: true };
+        }
+      }
+      assert.equal(pushes, 1);
+      assert.equal(writes, 1, 'written once, then unchanged');
+    });
+  }
+
+  test('past the list cap the newest overdue chores are listed, and a newly overdue one is still news', () => {
+    // Caller order: newest due day first.
+    const old = Array.from({ length: OVERDUE_LIST_CAP }, (_, i) => `old-${String(i).padStart(4, '0')}`);
+    const existing = new Set([...old, 'newest']);
+    const first = decideOverdue({ stored: null, overdueIds: old, today: TODAY, alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: existing });
+    const next = decideOverdue({ stored: after(first, null), overdueIds: ['newest', ...old], today: '2026-11-12', alertsAllowed: true, reminderSentNow: false, reminderPending: false, existingChoreIds: existing });
+    assert.equal(next.action, 'write');
+    if (next.action !== 'write') return;
+    assert.equal(next.push, true);
+    assert.ok(next.choreIds.includes('newest'));
+    assert.equal(next.total, OVERDUE_LIST_CAP + 1);
+  });
+
+  describe('daily reminder coverage', () => {
+    const base = { today: TODAY, existingChoreIds: EXISTING, reminderPending: false };
+    test('reminder at 06:00, then the 07:00 run: no second push', () => {
+      // 06:00 run: before the threshold, but the reminder created now announced the overdue count.
+      const six = decideOverdue({ ...base, stored: null, overdueIds: ['a'], alertsAllowed: false, reminderSentNow: true });
+      assert.equal(six.action, 'write');
+      if (six.action !== 'write') return;
+      assert.equal(six.create, true);
+      assert.equal(six.push, false, 'silent');
+      assert.equal(six.lastPushDay, TODAY);
+      const seven = decideOverdue({ ...base, stored: after(six, null), overdueIds: ['a'], alertsAllowed: true, reminderSentNow: false });
+      assert.deepEqual(seven, { action: 'none' });
+    });
+    test('reminder at 06:00, then a chore newly overdue at 15:00: shown as new, no second push that day, normal rule the next day', () => {
+      const six = after(decideOverdue({ ...base, stored: null, overdueIds: ['a'], alertsAllowed: false, reminderSentNow: true }), null);
+      const three = decideOverdue({ ...base, stored: six, overdueIds: ['a', 'b'], alertsAllowed: true, reminderSentNow: false });
+      assert.equal(three.action === 'write' && three.fresh && !three.push, true);
+      const tomorrow = decideOverdue({ ...base, today: '2026-11-12', stored: after(three, six), overdueIds: ['a', 'b', 'c'], alertsAllowed: true, reminderSentNow: false });
+      assert.equal(tomorrow.action === 'write' && tomorrow.push, true);
+    });
+    test('reminder disabled: the 07:00 run pushes', () => {
+      const d = decideOverdue({ ...base, stored: null, overdueIds: ['a'], alertsAllowed: true, reminderSentNow: false });
+      assert.equal(d.action === 'write' && d.push, true);
+    });
+    test('reminder exactly at 07:00: the same run creates both, the overdue one silently', () => {
+      const d = decideOverdue({ ...base, stored: null, overdueIds: ['a'], alertsAllowed: true, reminderSentNow: true });
+      assert.equal(d.action === 'write' && !d.push && d.lastPushDay === TODAY, true);
+    });
+    test('a reminder sent over an unchanged list records today as pushed', () => {
+      const d = decideOverdue({ ...base, stored: stored(), overdueIds: ['a'], alertsAllowed: true, reminderSentNow: true });
+      assert.equal(d.action === 'write' && !d.push && !d.fresh && d.lastPushDay === TODAY, true);
+    });
+  });
+
+  describe('dated documents from earlier versions', () => {
+    const view = [{ id: 'a', day: '2026-11-09' }, { id: 'b', day: '2026-11-10' }];
+    test('a dated alert from today covers the chores overdue today: silent create', () => {
+      const legacy = legacyOverdueState(TODAY, view);
+      assert.deepEqual(legacy.notifiedChoreIds, ['a', 'b']);
+      const d = decide({ legacy, overdueIds: ['b', 'a'] });
+      assert.equal(d.action, 'write');
+      if (d.action !== 'write') return;
+      assert.equal(d.create && d.fromLegacy, true);
+      assert.equal(d.push, false);
+      assert.equal(d.fresh, false, 'read and dismissed state carried over');
+      assert.equal(d.lastPushDay, TODAY);
+    });
+    test('a dated alert from today plus one more overdue chore: once a day, so no push today', () => {
+      const d = decide({ legacy: legacyOverdueState(TODAY, view), overdueIds: ['c', 'b', 'a'] });
+      assert.equal(d.action === 'write' && d.fresh && !d.push, true);
+    });
+    test('a dated alert from an earlier day: its chores are not news, later ones are', () => {
+      const legacy = legacyOverdueState('2026-11-10', view);
+      assert.deepEqual(legacy.notifiedChoreIds, ['a'], 'b was not overdue on Nov 10');
+      const d = decide({ legacy, overdueIds: ['b', 'a'] });
+      assert.equal(d.action === 'write' && d.fresh && d.push, true);
+      const quiet = decide({ legacy: legacyOverdueState('2026-11-10', [{ id: 'a', day: '2026-11-09' }]), overdueIds: ['a'] });
+      assert.equal(quiet.action === 'write' && !quiet.push && !quiet.fresh, true);
+    });
+    test('no dated documents: unchanged behaviour', () => {
+      const d = decide({ legacy: null, overdueIds: ['a'] });
+      assert.equal(d.action === 'write' && d.push && !d.fromLegacy, true);
+    });
   });
 });
 
@@ -211,7 +315,7 @@ describe('overdue view and message', () => {
 
   test('only the person’s incomplete chores due before their today', () => {
     const view = overdueChoresFor(person, chores, new Date('2026-11-05T14:00:00Z')); // 8am Chicago
-    assert.deepEqual(view.chores, [{ id: 'a', task: 'Trash' }]);
+    assert.deepEqual(view.chores, [{ id: 'a', task: 'Trash', day: '2026-11-04' }]);
     assert.equal(view.today, '2026-11-05');
     assert.equal(view.alertsAllowed, true);
     assert.equal(view.dailyReminderPending, true, '5pm reminder still to come');

@@ -574,8 +574,9 @@ export const runHouseholdReminders = async (
       if (kept === "created") reminderSent = true;
     }
     // One overdue notification per person, updated in place
-    // (./overdue-chores.ts). A daily reminder sent in this run, or still to
-    // come today, states the overdue count, so it carries the push.
+    // (./overdue-chores.ts). A daily reminder sent in this run (at any hour),
+    // or still to come today, states the overdue count, so it carries the
+    // push; the overdue document records that the same run.
     const overdue = overdueChoresFor(person, chores, now);
     const status = await syncOverdueNotification({
       db, house, now, ts,
@@ -585,11 +586,15 @@ export const runHouseholdReminders = async (
       nearExpiry: (expiresAt) => Boolean(expiresAt &&
         expiresAt.toMillis() <= now.getTime() + REFRESH_BEFORE_EXPIRY_MS),
       seenByRun: (updateTime) => shouldReopen(updateTime, sourcesReadAt),
-    }, member.uid, overdue, reminderSent || overdue.dailyReminderPending,
-    // Dated documents from earlier versions: swept in the first hour of the
-    // person's day, and whenever the notification is written.
-    localMinutes(now, person.timeZone) < UPKEEP_INTERVAL_MS / 60000,
-    choreIdSet);
+    }, member.uid, overdue, {
+      reminderSentNow: reminderSent,
+      reminderPending: overdue.dailyReminderPending,
+      // Dated documents from earlier versions: swept in the first hour of
+      // the person's day, and whenever the notification is written.
+      sweepLegacy:
+        localMinutes(now, person.timeZone) < UPKEEP_INTERVAL_MS / 60000,
+      existingChoreIds: choreIdSet,
+    });
     if (status === "stopped") return result;
     if (status === "created") result.createdNotifications++;
     if (status === "reopened") result.reopenedNotifications++;

@@ -6,8 +6,9 @@ import type {
   Timestamp as FirestoreTimestamp,
 } from "firebase-admin/firestore";
 import {
-  decideOverdue, legacyOverdueNotificationIds, OVERDUE_SOURCE_ID,
-  overdueNotificationId, type OverdueDecision, type StoredOverdue,
+  decideOverdue, legacyOverdueNotificationIds, legacyOverdueState,
+  OVERDUE_SOURCE_ID, overdueNotificationId, type OverdueDecision,
+  type StoredOverdue,
 } from "./shared/overdue-notification";
 import {overdueMessage, type OverdueView} from "./shared/chore-reminders";
 import {notificationAudience} from "./shared/notification-audience";
@@ -35,6 +36,10 @@ export type OverdueResult =
 const ids = (value: unknown): string[] => Array.isArray(value) ?
   value.filter((id): id is string => typeof id === "string") : [];
 
+const entryOf = (map: unknown, uid: string): Record<string, unknown> =>
+  map && typeof map === "object" && uid in map ?
+    {[uid]: (map as Record<string, unknown>)[uid]} : {};
+
 const storedState = (
   ctx: OverdueContext,
   snap: DocumentSnapshot,
@@ -48,40 +53,55 @@ const storedState = (
   seenByRun: ctx.seenByRun(snap.updateTime as Timestamp | undefined),
 } : null;
 
+export type OverdueRunInput = {
+  /** Today's daily reminder was created in this run. */
+  reminderSentNow: boolean;
+  /** Today's daily reminder is still to come. */
+  reminderPending: boolean;
+  /** Look for dated documents even if nothing else is written. */
+  sweepLegacy: boolean;
+  /** Every chore ID in the household. */
+  existingChoreIds: ReadonlySet<string>;
+};
+
+const LEGACY_DAY = /-(\d{4}-\d{2}-\d{2})$/;
+
 /**
  * Brings one person's overdue notification up to date: creates, updates in
  * place, resolves or reopens it, and removes the person's dated overdue
  * documents written by earlier versions (when it writes, and in the first
- * hour of the person's day).
+ * hour of the person's day). A new document takes over the most recent dated
+ * one's push coverage and the person's read and dismissed entries.
  * @param {OverdueContext} ctx Run context.
  * @param {string} uid Recipient uid.
  * @param {OverdueView} view The person's overdue chores and timing.
- * @param {boolean} dailyReminderCovers Today's daily reminder carries it.
- * @param {boolean} sweepLegacy Look for dated documents even if unchanged.
- * @param {ReadonlySet<string>} existingChoreIds Every chore ID in the house.
+ * @param {OverdueRunInput} run Daily reminder state, sweep and chore IDs.
  * @return {Promise<OverdueResult>} What was written.
  */
 export const syncOverdueNotification = async (
   ctx: OverdueContext,
   uid: string,
   view: OverdueView,
-  dailyReminderCovers: boolean,
-  sweepLegacy: boolean,
-  existingChoreIds: ReadonlySet<string>,
+  run: OverdueRunInput,
 ): Promise<OverdueResult> => {
   const {db, house, now, ts} = ctx;
   const ref = house.collection("notifications").doc(overdueNotificationId(uid));
   const tasks = new Map(view.chores.map((c) => [c.id, c.task]));
-  const decide = (snap: DocumentSnapshot): OverdueDecision => decideOverdue({
+  const decide = (
+    snap: DocumentSnapshot,
+    legacy: StoredOverdue | null = null,
+  ): OverdueDecision => decideOverdue({
     stored: storedState(ctx, snap),
+    legacy,
     overdueIds: view.chores.map((c) => c.id),
     today: view.today,
     alertsAllowed: view.alertsAllowed,
-    dailyReminderCovers,
-    existingChoreIds,
+    reminderSentNow: run.reminderSentNow,
+    reminderPending: run.reminderPending,
+    existingChoreIds: run.existingChoreIds,
   });
   // A plain read first: most runs change nothing and need no transaction.
-  if (decide(await ref.get()).action === "none" && !sweepLegacy) {
+  if (decide(await ref.get()).action === "none" && !run.sweepLegacy) {
     return "unchanged";
   }
   const legacyRefs = legacyOverdueNotificationIds(uid, view.today)
@@ -92,13 +112,17 @@ export const syncOverdueNotification = async (
     if (!home.exists || home.get("deletingAt")) return "stopped";
     // Dated documents of this person only (the ID embeds the uid; the
     // fields are checked too), so the bell never lists them beside this one.
-    for (const old of legacy) {
-      if (old.exists && old.get("sourceType") === "chore-reminder" &&
-          old.get("targetUserUid") === uid) {
-        tx.delete(old.ref);
-      }
-    }
-    const decision = decide(snap);
+    const mine = legacy.filter((old) => old.exists &&
+      old.get("sourceType") === "chore-reminder" &&
+      old.get("targetUserUid") === uid);
+    for (const old of mine) tx.delete(old.ref);
+    // Most recent first (legacyOverdueNotificationIds order): its day's push
+    // covered every chore overdue then; earlier ones add nothing.
+    const latest = mine[0];
+    const latestDay = latest?.id.match(LEGACY_DAY)?.[1];
+    const legacyState = !snap.exists && latestDay ?
+      legacyOverdueState(latestDay, view.chores) : null;
+    const decision = decide(snap, legacyState);
     if (decision.action === "none") return "unchanged";
     if (decision.action === "resolve") {
       tx.update(ref, {resolvedAt: ts(now), overdueChoreIds: []});
@@ -108,7 +132,7 @@ export const syncOverdueNotification = async (
       category: "chores",
       title: "Overdue chores",
       message: overdueMessage(decision.choreIds.map((id) =>
-        tasks.get(id) ?? "A chore")),
+        tasks.get(id) ?? "A chore"), decision.total),
       deepLink: "/chores?due=overdue",
       sourceType: "chore-reminder",
       sourceId: OVERDUE_SOURCE_ID,
@@ -118,11 +142,16 @@ export const syncOverdueNotification = async (
       lastPushDay: decision.lastPushDay,
     };
     if (decision.create) {
+      // Taken over from the dated document unless there is news: the
+      // person's own read and dismissed entries.
+      const carried = decision.fromLegacy && !decision.fresh && latest ? {
+        readBy: entryOf(latest.get("readBy"), uid),
+        dismissedBy: entryOf(latest.get("dismissedBy"), uid),
+      } : {};
       // The push trigger sends on creation unless `silent` (the daily
-      // reminder or an earlier push today already told the person).
-      tx.set(ref, {...ctx.newBody(fields), ...(decision.push ? {} : {
-        silent: true,
-      })});
+      // reminder, an earlier push today or a dated alert told the person).
+      tx.set(ref, {...ctx.newBody(fields), ...carried, ...(decision.push ?
+        {} : {silent: true})});
       return "created";
     }
     tx.update(ref, {

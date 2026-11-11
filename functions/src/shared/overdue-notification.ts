@@ -14,9 +14,15 @@ import {addDays} from "./calendar";
 /** `sourceId` of the stable overdue notification. */
 export const OVERDUE_SOURCE_ID = "overdue";
 /**
- * Most chore IDs kept in `notifiedChoreIds`; the oldest are dropped first.
+ * Most overdue chores the document lists (newest due day first). Older ones
+ * beyond it still count in the message; only their IDs are not stored.
  */
-export const NOTIFIED_CHORE_IDS_CAP = 200;
+export const OVERDUE_LIST_CAP = 500;
+/**
+ * Most IDs remembered of chores that left the list (told about, no longer
+ * overdue); the oldest are dropped first. Listed chores are always kept.
+ */
+export const NOTIFIED_HISTORY_CAP = 200;
 /** Days of the dated `overdue-YYYY-MM-DD` documents swept (7-day TTL + 1). */
 export const LEGACY_OVERDUE_LOOKBACK_DAYS = 8;
 
@@ -30,7 +36,8 @@ export const overdueNotificationId = (uid: string): string =>
 
 /**
  * IDs of the per-day overdue documents earlier versions wrote for this
- * person, from `today` back over the notification lifetime (bounded).
+ * person, from `today` back over the notification lifetime (bounded), most
+ * recent first.
  * @param {string} uid Recipient uid.
  * @param {string} today Person's local day ("YYYY-MM-DD").
  * @return {string[]} Document IDs to remove if present.
@@ -46,7 +53,10 @@ export type StoredOverdue = {
   resolved: boolean;
   /** Chores the document currently lists. */
   overdueChoreIds: string[];
-  /** Chores the person has been told about (bell or push), oldest first. */
+  /**
+   * Chores the person has been told about (bell or push): the listed ones
+   * plus, oldest first, up to NOTIFIED_HISTORY_CAP that left the list.
+   */
   notifiedChoreIds: string[];
   /** Local day of the last push, or of the daily reminder that carried it. */
   lastPushDay: string | null;
@@ -60,9 +70,38 @@ export type StoredOverdue = {
   seenByRun: boolean;
 };
 
+/**
+ * The state a dated overdue document from an earlier version stands for:
+ * on its day the person was pushed about every chore overdue that day, that
+ * is due before it.
+ * @param {string} legacyDay The dated document's day.
+ * @param {Array} overdue The person's overdue chores now, with due days.
+ * @return {StoredOverdue} Equivalent stored state.
+ */
+export const legacyOverdueState = (
+  legacyDay: string,
+  overdue: Array<{id: string; day: string}>,
+): StoredOverdue => {
+  const told = overdue.filter((c) => c.day < legacyDay).map((c) => c.id)
+    .sort();
+  return {
+    resolved: false, overdueChoreIds: told, notifiedChoreIds: told,
+    lastPushDay: legacyDay, nearExpiry: false, seenByRun: true,
+  };
+};
+
 export type OverdueInput = {
   stored: StoredOverdue | null;
-  /** IDs of the person's incomplete chores due before their local today. */
+  /**
+   * When there is no stored document: the person's most recent dated
+   * document from an earlier version (`legacyOverdueState`), whose push and
+   * read state the new document takes over.
+   */
+  legacy?: StoredOverdue | null;
+  /**
+   * IDs of the person's incomplete chores due before their local today,
+   * newest due day first (the order decides which are listed past the cap).
+   */
   overdueIds: string[];
   /**
    * IDs of every chore document that still exists in the household
@@ -76,10 +115,13 @@ export type OverdueInput = {
   /** After the morning threshold (no new alerts at night). */
   alertsAllowed: boolean;
   /**
-   * The person's daily chore reminder for today is sent in this run or is
-   * still to come today; it states the overdue count, so no separate push.
+   * Today's daily reminder was created in this run. It stated the overdue
+   * count, so it told the person about every listed chore (at any hour) and
+   * is today's push.
    */
-  dailyReminderCovers: boolean;
+  reminderSentNow: boolean;
+  /** Today's daily reminder is still to come and will carry the count. */
+  reminderPending: boolean;
 };
 
 export type OverdueDecision =
@@ -89,10 +131,14 @@ export type OverdueDecision =
     action: "write";
     /** The document does not exist yet. */
     create: boolean;
+    /** Created from a dated document: take over its read/dismissed state. */
+    fromLegacy: boolean;
     /** The document is resolved and becomes active again. */
     reopen: boolean;
-    /** Chores to list, sorted. */
+    /** Chores to list, sorted (at most OVERDUE_LIST_CAP). */
     choreIds: string[];
+    /** Overdue chores in the message (may exceed the listed ones). */
+    total: number;
     notifiedChoreIds: string[];
     lastPushDay: string | null;
     /** Send a push now. */
@@ -117,43 +163,54 @@ const sameIds = (left: string[], right: string[]) =>
  */
 export const decideOverdue = (input: OverdueInput): OverdueDecision => {
   const {stored, today} = input;
-  const open = stored !== null && !stored.resolved;
   if (stored && !stored.seenByRun) return {action: "none"};
-  // Before the morning threshold nothing new is announced: the list may only
-  // shrink (completed chores leave it) until alerts are allowed.
-  const known = new Set(open ? stored.overdueChoreIds : []);
-  const current = [...new Set(input.overdueIds)].sort()
-    .filter((id) => input.alertsAllowed || known.has(id));
+  const base = stored ?? input.legacy ?? null;
+  const open = base !== null && !base.resolved;
+  // Before the morning threshold nothing new is announced (the list may
+  // only shrink), unless the daily reminder just announced it.
+  const known = new Set(open ? base.overdueChoreIds : []);
+  const announce = input.alertsAllowed || input.reminderSentNow;
+  const all = [...new Set(input.overdueIds)]
+    .filter((id) => announce || known.has(id));
+  const current = all.slice(0, OVERDUE_LIST_CAP).sort();
   if (current.length === 0) {
-    return open ? {action: "resolve"} : {action: "none"};
+    return stored && open ? {action: "resolve"} : {action: "none"};
   }
+  const listed = new Set(current);
   // Everything the person was told about stays told about while the chore
   // exists, even after it left the list. A chore is new only under a new ID:
   // each recurring occurrence has its own (template, room, day, assignee).
-  const kept = (stored?.notifiedChoreIds ?? [])
+  const kept = (base?.notifiedChoreIds ?? [])
     .filter((id) => input.existingChoreIds.has(id));
-  const notified = new Set(kept);
-  const told = [...kept, ...current.filter((id) => !notified.has(id))]
-    .slice(-NOTIFIED_CHORE_IDS_CAP);
+  const notified = new Set([...kept, ...(open ? base.overdueChoreIds : [])]);
   const fresh = current.some((id) => !notified.has(id));
-  const pushedToday = stored?.lastPushDay === today;
-  const push = fresh && !pushedToday && !input.dailyReminderCovers;
+  // Listed chores are always remembered; only the history is bounded.
+  const history = kept.filter((id) => !listed.has(id))
+    .slice(-NOTIFIED_HISTORY_CAP);
+  const remembered = [...history, ...current];
+  const pushedToday = base?.lastPushDay === today;
+  const push = fresh && !pushedToday && !input.reminderSentNow &&
+    !input.reminderPending;
+  // The person is told today by this push, an earlier push today, or
+  // today's daily reminder (sent now or still to come).
+  const lastPushDay = fresh || input.reminderSentNow ?
+    today : base?.lastPushDay ?? null;
   const reopen = stored !== null && stored.resolved;
-  const changed = !open || !sameIds(current, stored.overdueChoreIds);
+  const changed = stored === null || !open ||
+    !sameIds(current, stored.overdueChoreIds) ||
+    !sameIds(remembered, stored.notifiedChoreIds) ||
+    lastPushDay !== stored.lastPushDay;
   const redate = reopen || Boolean(stored?.nearExpiry);
   if (!fresh && !changed && !redate) return {action: "none"};
   return {
     action: "write",
     create: stored === null,
+    fromLegacy: stored === null && Boolean(input.legacy),
     reopen,
     choreIds: current,
-    // Grows by the newly told chores (bounded: existing chores only, at most
-    // NOTIFIED_CHORE_IDS_CAP, oldest dropped first), so a chore they already
-    // heard about never notifies twice.
-    notifiedChoreIds: fresh ? told : kept,
-    // When fresh, the person is told today: by this push, by an earlier push
-    // today, or by today's daily reminder.
-    lastPushDay: fresh ? today : stored?.lastPushDay ?? null,
+    total: all.length,
+    notifiedChoreIds: remembered,
+    lastPushDay,
     push,
     fresh,
     redate,

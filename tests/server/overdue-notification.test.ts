@@ -169,6 +169,68 @@ describe('overdue chores notification (NO-1)', () => {
     assert.deepEqual(await choreReminders(), ['o1-overdue', 'x1-overdue-2026-11-05']);
   });
 
+  test('a daily reminder before 07:00 carries the overdue push; the 07:00 run adds none', async () => {
+    await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, choreSettings: { reminderEnabled: true, reminderTime: '06:00' } });
+    await run(at('2026-11-05', 6));
+    assert.equal((await notes().doc('o1-reminder-2026-11-05').get()).data()!.message, '1 chore still overdue.');
+    let data = (await stable().get()).data()!;
+    assert.equal(data.silent, true, 'created silently with the reminder');
+    assert.equal(data.lastPushDay, '2026-11-05');
+    await run(at('2026-11-05', 7));
+    data = (await stable().get()).data()!;
+    assert.equal(data.renotifyAt, undefined, 'no second push at 07:00');
+
+    // A chore newly overdue later that day: shown as new, but the day's push was the reminder.
+    await stable().update({ 'dismissedBy.o1': { at: 'x' } });
+    await chore('dishes', 'Dishes', '2026-11-04');
+    await run(at('2026-11-05', 15));
+    data = (await stable().get()).data()!;
+    assert.equal(data.message, 'You have 2 overdue chores.');
+    assert.deepEqual(data.dismissedBy, {}, 'listed as new');
+    assert.equal(data.renotifyAt, undefined, 'at most one push a day');
+  });
+
+  test('a daily reminder exactly at 07:00 and the overdue notification: one push between them', async () => {
+    await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, choreSettings: { reminderEnabled: true, reminderTime: '07:00' } });
+    await run(at('2026-11-05', 7));
+    assert.equal((await notes().doc('o1-reminder-2026-11-05').get()).exists, true);
+    assert.equal((await stable().get()).data()!.silent, true);
+  });
+
+  test('a dated alert from today: the stable document takes over its push, read and dismissed state', async () => {
+    await notes().doc('o1-overdue-2026-11-05').set({
+      householdId: HOUSE, category: 'chores', title: 'Overdue chores', message: '"Sweep floor" is overdue.',
+      sourceType: 'chore-reminder', sourceId: 'overdue-2026-11-05', targetUserUid: 'o1', audience: ['o1'],
+      createdAt: Timestamp.fromDate(at('2026-11-05', 7)), expiresAt: Timestamp.fromDate(new Date('2026-11-12T13:00:00Z')),
+      readBy: { o1: { at: 'r' } }, dismissedBy: { o1: { at: 'd' } },
+    });
+    await run(at('2026-11-05', 8));
+    assert.deepEqual(await choreReminders(), ['o1-overdue']);
+    const data = (await stable().get()).data()!;
+    assert.equal(data.silent, true, 'already pushed today by the dated alert');
+    assert.deepEqual(data.readBy, { o1: { at: 'r' } });
+    assert.deepEqual(data.dismissedBy, { o1: { at: 'd' } });
+    assert.equal(data.lastPushDay, '2026-11-05');
+  });
+
+  test('a dated alert from an earlier day: chores overdue since then are news and push', async () => {
+    await chore('dishes', 'Dishes', '2026-11-04');
+    await notes().doc('o1-overdue-2026-11-05').set({
+      householdId: HOUSE, category: 'chores', title: 'Overdue chores', message: 'x',
+      sourceType: 'chore-reminder', sourceId: 'overdue-2026-11-05', targetUserUid: 'o1', audience: ['o1'],
+      createdAt: Timestamp.fromDate(at('2026-11-05', 7)), expiresAt: Timestamp.fromDate(new Date('2026-11-12T13:00:00Z')),
+      readBy: {}, dismissedBy: { o1: { at: 'd' } },
+    });
+    // The Nov 5 alert covered chores due before Nov 5; dishes is due Nov 5.
+    await house().collection('chores').doc('dishes').update({ originalDueDate: '2026-11-05', dueDate: '2026-11-05T06:00:00.000Z' });
+    await run(at('2026-11-06', 8));
+    // On Nov 6 the dated alert is from an earlier day: dishes is news and today has had no push.
+    const data = (await stable().get()).data()!;
+    assert.equal(data.silent, undefined, 'pushed: a chore not covered, first push of the day');
+    assert.deepEqual(data.dismissedBy, {}, 'news: not carried');
+    assert.deepEqual(await choreReminders(), ['o1-overdue']);
+  });
+
   test('a household being deleted gets no overdue notification', async () => {
     await house().update({ deletingAt: Timestamp.now() });
     await run(at('2026-11-05', 8));
