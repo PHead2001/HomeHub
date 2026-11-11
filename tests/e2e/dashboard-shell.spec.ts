@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore, type QuerySnapshot } from 'firebase-admin/firestore';
+import { getFirestore, type DocumentReference, type QuerySnapshot } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 import { computeChoreFacts, computePetFacts, recurringTemplateIdsFrom, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
 import { dayKey } from '../../src/lib/dashboard/dates';
@@ -371,8 +371,121 @@ test.describe('H7: dashboard one-tap actions', () => {
       await expect(fed).toBeVisible();
       const fedBox = (await fed.boundingBox())!;
       expect(fedBox.height).toBeGreaterThanOrEqual(48);
+      // HP-33c: the Shopping tile's tick is a real 48 px button beside the tile link.
+      const tick = page.getByTestId('dashboard-tile-shopping').locator('[data-tick-key]').first();
+      await expect(tick).toBeVisible();
+      const tickBox = (await tick.boundingBox())!;
+      expect(tickBox.height).toBeGreaterThanOrEqual(48);
+      expect(tickBox.width).toBeGreaterThanOrEqual(48);
+      expect(await tick.evaluate((button) => button.closest('a') === null)).toBe(true);
     } finally {
       await ref.delete();
+    }
+  });
+
+  // The oldest needed item of the first list by name (Hardware Run), so it is the tile's
+  // first row: the one shown beside the house on the desktop project's wide screen.
+  const seedShoppingItem = (id: string, name: string) => {
+    const ref = household.collection('shopping-lists').doc('hardware-run').collection('items').doc(id);
+    return ref.set({ name, quantity: 1, category: 'Other', status: 'needed', createdAt: new Date('2026-07-01T12:00:00.000Z') }).then(() => ref);
+  };
+
+  test('HP-33c: Tick on the Shopping tile buys the item as the reader through the shared tick, and Undo puts it back', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const ref = await seedShoppingItem('dashboard-tick', 'Dashboard tick');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const row = tile.getByTestId('dashboard-shopping-item-hardware-run-dashboard-tick');
+      const tick = row.getByRole('button', { name: 'Tick Dashboard tick', exact: true });
+      await expect(tick).toBeVisible();
+      // A real button beside the tile link, never inside it.
+      expect(await tick.evaluate((button) => button.closest('a') === null)).toBe(true);
+      await tick.focus();
+      await tick.press('Enter');
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('purchased');
+      const bought = (await ref.get()).data()!;
+      expect(bought.purchasedByUid, 'the reader is the buyer').toBe('e2e-owner-uid');
+      expect(bought.purchasedAt).toBeTruthy();
+      expect(bought.purchaseOpId).toBeTruthy();
+      await expect(row).toHaveCount(0);
+      // Focus stays in the tile (the next row's tick, else the tile link), never on the page.
+      await expect.poll(() => page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="dashboard-tile-shopping"]')))).toBe(true);
+      await expect(page.getByText('Dashboard tick is in the cart').first()).toBeVisible();
+
+      await page.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('needed');
+      const undone = (await ref.get()).data()!;
+      expect(undone.undoOpId, 'the Undo names the tick it undoes').toBe(bought.purchaseOpId);
+      expect(undone.purchasedByUid).toBeNull();
+      await expect(tick).toBeEnabled();
+    } finally {
+      await ref.delete();
+    }
+  });
+
+  test('HP-33c: the tile follows ticks made elsewhere, and an Undo after someone else bought it again is refused', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const ref = await seedShoppingItem('dashboard-tick-elsewhere', 'Dashboard elsewhere');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const row = tile.getByTestId('dashboard-shopping-item-hardware-run-dashboard-tick-elsewhere');
+      const tick = row.getByRole('button', { name: 'Tick Dashboard elsewhere', exact: true });
+      await expect(tick).toBeEnabled();
+
+      // Bought on another device: the row leaves the tile.
+      await ref.update({ status: 'purchased', purchasedByUid: 'e2e-member-uid', purchaseOpId: 'elsewhere-1' });
+      await expect(row).toHaveCount(0);
+      // Un-ticked there: back, with a working tick.
+      await ref.update({ status: 'needed', purchasedByUid: null, purchasedAt: null });
+      await expect(tick).toBeEnabled();
+
+      // Ticked here, then un-ticked elsewhere: the control is enabled again (not stuck as done).
+      await tick.click();
+      await expect.poll(async () => (await ref.get()).data()?.purchasedByUid).toBe('e2e-owner-uid');
+      await expect(row).toHaveCount(0);
+      await ref.update({ status: 'needed', purchasedByUid: null, purchasedAt: null });
+      await expect(tick).toBeEnabled();
+
+      // Ticked here, then bought again by someone else before Undo: their purchase stays.
+      await tick.click();
+      await expect.poll(async () => (await ref.get()).data()?.purchasedByUid).toBe('e2e-owner-uid');
+      await ref.update({ purchasedByUid: 'e2e-member-uid', purchaseOpId: 'elsewhere-2' });
+      await page.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(page.getByText('Changed by someone else — not undone').first()).toBeVisible();
+      const kept = (await ref.get()).data()!;
+      expect(kept.status).toBe('purchased');
+      expect(kept.purchaseOpId).toBe('elsewhere-2');
+      expect(kept.purchasedByUid).toBe('e2e-member-uid');
+    } finally {
+      await ref.delete();
+    }
+  });
+
+  test('HP-33c: ticking the last needed item from the keyboard leaves focus on the Shopping tile (review finding on #150)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // One needed item in the household: the seeded ones are parked as purchased and restored after.
+    const parked: DocumentReference[] = [];
+    for (const list of (await household.collection('shopping-lists').get()).docs) {
+      parked.push(...(await list.ref.collection('items').where('status', '==', 'needed').get()).docs.map((doc) => doc.ref));
+    }
+    await Promise.all(parked.map((doc) => doc.update({ status: 'purchased' })));
+    const ref = await seedShoppingItem('dashboard-last-tick', 'Dashboard last tick');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const tick = tile.getByRole('button', { name: 'Tick Dashboard last tick', exact: true });
+      await expect(tick).toBeEnabled();
+      await tick.focus();
+      await tick.press('Enter');
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('purchased');
+      // The last row's departure re-mounts the tile as a plain link: focus moves to it.
+      await expect(tile.getByText('Lists are empty. Nice.')).toBeVisible();
+      await expect(tile).toBeFocused();
+    } finally {
+      await ref.delete();
+      await Promise.all(parked.map((doc) => doc.update({ status: 'needed' })));
     }
   });
 
