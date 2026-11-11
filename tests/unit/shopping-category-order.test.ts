@@ -17,6 +17,8 @@ import {
   planListReorder,
   planSeededChange,
   planStoreReorder,
+  addNeedsCompaction,
+  changeNeedsTransaction,
   changeSeedsOrder,
   readCategoryConfig,
   storeForList,
@@ -24,8 +26,8 @@ import {
 } from '../../src/lib/shopping/category-order';
 import { groupItemsByAisle } from '../../src/lib/shopping/items';
 import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '../../src/lib/shopping-items';
-import { listSaveData } from '../../src/lib/shopping/list-save';
-import { saveLineText } from '../../src/lib/shopping/save-line';
+import { listSaveData, shouldOpenCreatedList } from '../../src/lib/shopping/list-save';
+import { createSettledQueue, rejectedDraftRestore, rejectedInputRestore, saveLineText } from '../../src/lib/shopping/save-line';
 
 const defaults = DEFAULT_SHOPPING_CATEGORIES;
 const WALK_DEFAULTS = ['Produce', 'Bakery', 'Meat', 'Dairy', 'Frozen', 'Pantry', 'Snacks', 'Drinks', 'Household', 'Other'];
@@ -299,5 +301,98 @@ describe('dialog save line', () => {
     assert.equal(saveLineText('sending', 'Garden added'), 'Garden added · Still sending…');
     assert.equal(saveLineText('uncertain', 'Dairy moved up'), 'Dairy moved up · Checking…');
     assert.equal(saveLineText('stored-locally', 'Garden added'), 'Garden added · Saved, will sync');
+  });
+});
+
+describe('input given back after a rejected write (at once or later)', () => {
+  test('the submitted name returns only to an empty field or one holding the same text', () => {
+    assert.deepEqual(rejectedInputRestore('', 'Garden'), { value: 'Garden', restored: true });
+    assert.deepEqual(rejectedInputRestore('   ', 'Garden'), { value: 'Garden', restored: true });
+    assert.deepEqual(rejectedInputRestore(' Garden ', 'Garden'), { value: 'Garden', restored: true });
+    // Something newer was typed meanwhile: it is kept (the toast names what failed).
+    assert.deepEqual(rejectedInputRestore('Party', 'Garden'), { value: 'Party', restored: false });
+  });
+
+  test('a rejected list form opens again only while the list dialog is closed and the list exists', () => {
+    assert.equal(rejectedDraftRestore({ dialogOpen: false, listGone: false }), true);
+    assert.equal(rejectedDraftRestore({ dialogOpen: true, listGone: false }), false);
+    assert.equal(rejectedDraftRestore({ dialogOpen: false, listGone: true }), false);
+  });
+});
+
+describe('an add to a full `ordered` with stale entries', () => {
+  // 200 stored in `ordered`; an older client removed C0 from `list`, so 199 are shown.
+  const names = Array.from({ length: MAX_LIST_CATEGORIES - 1 }, (_, index) => `C${index}`);
+  const stored = { list: [...names.slice(1), 'Other'], ordered: [...names, 'Other'] };
+  const config = readCategoryConfig(stored, true, defaults);
+
+  test('is allowed (fewer than 200 shown) but runs as a compacting transaction', () => {
+    assert.equal(config.rawOrdered.length, MAX_LIST_CATEGORIES);
+    assert.equal(config.list.length, MAX_LIST_CATEGORIES - 1);
+    assert.equal(planCategoryAdd('New', config).ok, true);
+    assert.equal(addNeedsCompaction(config), true);
+    assert.equal(changeNeedsTransaction(config, 'add'), true);
+    // A remove never grows the arrays: it stays one arrayRemove write.
+    assert.equal(changeNeedsTransaction(config, 'remove'), false);
+  });
+
+  test('the transaction drops the stale entry and stays within the rules bound', () => {
+    const plan = planSeededChange({ data: stored, exists: true }, defaults, { kind: 'add', name: 'New' });
+    assert.ok(plan);
+    assert.equal(plan.ordered.length, MAX_LIST_CATEGORIES);
+    assert.equal(plan.ordered.includes('C0'), false);
+    assert.deepEqual(plan.ordered.slice(-2), ['New', 'Other']);
+    assert.deepEqual(plan.list, plan.ordered);
+  });
+
+  test('a list with room left keeps the single arrayUnion write', () => {
+    const roomy = readCategoryConfig({ list: ['A', 'Other'], ordered: ['A', 'Stale', 'Other'] }, true, defaults);
+    assert.equal(changeNeedsTransaction(roomy, 'add'), false);
+  });
+});
+
+describe('opening a list after it was created (SH-20a)', () => {
+  const base = { request: 2, latestRequest: 2, selectionAtSubmit: null, selectionNow: null, householdAtSubmit: 'h', householdNow: 'h' };
+
+  test('opens only if the view, the household and the latest creation are unchanged', () => {
+    assert.equal(shouldOpenCreatedList(base), true);
+    // The member opened another list while the save was still waiting.
+    assert.equal(shouldOpenCreatedList({ ...base, selectionNow: 'hardware' }), false);
+    // A newer creation was submitted: only that one opens.
+    assert.equal(shouldOpenCreatedList({ ...base, latestRequest: 3 }), false);
+    assert.equal(shouldOpenCreatedList({ ...base, householdNow: 'other' }), false);
+  });
+});
+
+describe('category moves commit in click order', () => {
+  test('a slow first move holds the queue until its transaction settles', async () => {
+    const enqueue = createSettledQueue();
+    const events: string[] = [];
+    let commitFirst: () => void = () => undefined;
+    const firstSettled = new Promise<void>((resolve) => { commitFirst = resolve; });
+    // The first move's status wait ends ("Checking…") before its transaction commits.
+    const first = enqueue(async () => {
+      events.push('start A');
+      return { state: 'uncertain', settled: firstSettled.then(() => { events.push('commit A'); }) };
+    });
+    const second = enqueue(async () => {
+      events.push('start B');
+      return { state: 'saved', settled: Promise.resolve().then(() => { events.push('commit B'); }) };
+    });
+    await first;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(events, ['start A']);
+    commitFirst();
+    await second;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(events, ['start A', 'commit A', 'start B', 'commit B']);
+  });
+
+  test('a failed move does not stop the queue', async () => {
+    const enqueue = createSettledQueue();
+    const events: string[] = [];
+    await enqueue(async () => { throw new Error('refused'); }).catch(() => events.push('failed'));
+    await enqueue(async () => { events.push('next'); return { settled: Promise.resolve() }; });
+    assert.deepEqual(events, ['failed', 'next']);
   });
 });

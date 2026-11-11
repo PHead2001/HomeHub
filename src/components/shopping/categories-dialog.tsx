@@ -11,7 +11,8 @@ import { toastError } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import {
   categoryKey,
-  changeSeedsOrder,
+  addNeedsCompaction,
+  changeNeedsTransaction,
   checkStoreName,
   initialAisleOrder,
   isOtherCategory,
@@ -33,6 +34,7 @@ import {
 import type { ShoppingList, ShoppingStore } from '@/lib/types';
 import { useOnTabDeactivate } from './tab-activity';
 import { useSaveLine } from './use-save-line';
+import { createSettledQueue, rejectedInputRestore } from '@/lib/shopping/save-line';
 
 const NO_STORE = '__none__';
 const NEW_STORE = '__new__';
@@ -81,10 +83,17 @@ export function CategoriesDialog({
   const [creatingStore, setCreatingStore] = useState(false);
   const [storeName, setStoreName] = useState('');
   const [storeError, setStoreError] = useState<string | null>(null);
+  // The New store field as typed now (read when a store create is rejected later).
+  const storeNameRef = useRef(storeName);
+  useEffect(() => {
+    storeNameRef.current = storeName;
+  }, [storeName]);
   const [announcement, setAnnouncement] = useState('');
   const save = useSaveLine(reportFailure);
-  // Moves run one after another, each on the order the server holds by then.
-  const moveChain = useRef<Promise<unknown>>(Promise.resolve());
+  // Moves run one after another, each on the order the server holds by then: the
+  // next starts only once the previous transaction has finally settled, even when
+  // its status line gave up waiting after 4 s (so they commit in click order).
+  const [enqueueMove] = useState(() => createSettledQueue());
 
   useOnTabDeactivate(() => setOpen(false));
 
@@ -114,27 +123,34 @@ export function CategoriesDialog({
       setCategoryError(result.error);
       return;
     }
+    // A full `ordered` with stale entries is compacted in a transaction, which needs a connection.
+    if (!online && addNeedsCompaction(config)) {
+      setCategoryError('Adding a category to this list needs a connection right now. Try again once you are online.');
+      return;
+    }
     setCategoryError(null);
     setNewCategory('');
-    // The first edit that introduces `ordered` re-reads the document in a
-    // transaction online; otherwise (and offline) one arrayUnion write.
-    const seed = online && changeSeedsOrder(config);
+    // The first edit that introduces `ordered`, or an add that must compact it,
+    // re-reads the document in a transaction online; otherwise (and offline) one
+    // arrayUnion write.
+    const seed = online && changeNeedsTransaction(config, 'add');
     const write: Promise<unknown> = seed
       ? writeSeededCategoryChange(householdId, list.id, { kind: 'add', name: result.name })
       : writeCategoryPlan(householdId, list.id, result.plan);
-    const tracked = await save.track(write, {
+    // A refused add (at once, or later when it was queued or slow) goes back into
+    // the field unless something newer was typed there; the toast names it.
+    await save.track(write, {
       kind: seed ? 'transaction' : 'write',
       subject: `${result.name} added`,
       failTitle: `Could not add ${result.name}`,
+      onRejected: () => setNewCategory((current) => rejectedInputRestore(current, result.name).value),
     });
-    // A refused add goes back into the field.
-    if (tracked.state === 'failed') setNewCategory((current) => current || result.name);
   };
 
   const removeCategory = (category: string) => {
     const plan = planCategoryRemove(category, config);
     if (!plan) return;
-    const seed = online && changeSeedsOrder(config);
+    const seed = online && changeNeedsTransaction(config, 'remove');
     const write: Promise<unknown> = seed
       ? writeSeededCategoryChange(householdId, list.id, { kind: 'remove', category })
       : writeCategoryPlan(householdId, list.id, plan);
@@ -161,13 +177,11 @@ export function CategoriesDialog({
         subject: `${category} moved ${where}`,
         failTitle: `Could not move ${category}`,
       });
-      if (tracked.state === 'saved' && tracked.value === false) {
-        save.clear();
-        return;
-      }
-      if (tracked.state !== 'failed') setAnnouncement(`${category} moved ${where}, position ${target + 1} of ${movable.length}.`);
+      if (tracked.state === 'saved' && tracked.value === false) save.clear();
+      else if (tracked.state !== 'failed') setAnnouncement(`${category} moved ${where}, position ${target + 1} of ${movable.length}.`);
+      return tracked;
     };
-    moveChain.current = moveChain.current.then(run, run);
+    void enqueueMove(run);
   };
 
   const chooseStore = (value: string) => {
@@ -198,7 +212,18 @@ export function CategoriesDialog({
     const { write } = createStoreForList(householdId, list.id, { name: check.name, aisleOrder: initialAisleOrder(config.list), uid });
     setCreatingStore(false);
     setStoreName('');
-    await save.track(write, { kind: 'write', subject: `${check.name} created`, failTitle: `Could not create ${check.name}` });
+    await save.track(write, {
+      kind: 'write',
+      subject: `${check.name} created`,
+      failTitle: `Could not create ${check.name}`,
+      // The name comes back in the New store field unless another name was typed since.
+      onRejected: () => {
+        const restore = rejectedInputRestore(storeNameRef.current, check.name);
+        if (!restore.restored) return;
+        setStoreName(restore.value);
+        setCreatingStore(true);
+      },
+    });
   };
 
   const selectValue = creatingStore ? NEW_STORE : store?.id ?? NO_STORE;

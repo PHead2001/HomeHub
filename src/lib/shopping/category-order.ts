@@ -152,6 +152,21 @@ export type CategoryChange = { kind: 'add'; name: string } | { kind: 'remove'; c
 export const changeSeedsOrder = (config: CategoryConfig): boolean => !config.exists || !config.ordered;
 
 /**
+ * Whether an add must rewrite (compact) the stored arrays instead of appending:
+ * `ordered` or `list` already holds {@link MAX_LIST_CATEGORIES} entries, some of
+ * them stale (an `ordered` entry an older client removed from `list`, or a second
+ * spelling), so one more `arrayUnion` value would exceed the rules' bound although
+ * fewer categories are shown. Such an add runs online as the same transaction as
+ * a seed (`planSeededChange`), which writes both fields from the shown order.
+ */
+export const addNeedsCompaction = (config: CategoryConfig): boolean =>
+  config.rawOrdered.length >= MAX_LIST_CATEGORIES || config.rawList.length >= MAX_LIST_CATEGORIES;
+
+/** Whether an add or remove runs as a transaction (`planSeededChange`) rather than one arrayUnion/arrayRemove write. */
+export const changeNeedsTransaction = (config: CategoryConfig, change: CategoryChange['kind']): boolean =>
+  changeSeedsOrder(config) || (change === 'add' && addNeedsCompaction(config));
+
+/**
  * The first add or remove that introduces `ordered`, planned inside a
  * transaction from the document as stored now (a removal or add another member
  * made meanwhile is respected): both fields are written with the resulting

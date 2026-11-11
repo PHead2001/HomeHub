@@ -76,7 +76,8 @@ import { ListCard } from './shopping/list-card';
 import { ListCardsSkeleton } from './shopping/shopping-skeletons';
 import { ListDialog, type ListFormValues } from './shopping/list-dialog';
 import { CategoriesDialog } from './shopping/categories-dialog';
-import { listSaveData } from '@/lib/shopping/list-save';
+import { listSaveData, shouldOpenCreatedList } from '@/lib/shopping/list-save';
+import { rejectedDraftRestore } from '@/lib/shopping/save-line';
 import { renderListIcon } from './shopping/list-icons';
 import { ShoppingItemRow } from './shopping/shopping-item-row';
 import { ItemEditSheet } from './shopping/item-edit-sheet';
@@ -182,6 +183,15 @@ export function ShoppingListClient({
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
   const [listToEdit, setListToEdit] = useState<ShoppingList | null>(null);
+  // A list form whose save was rejected, shown again (`rejectedDraftRestore`).
+  const [listDraft, setListDraft] = useState<ListFormValues | null>(null);
+  const isListDialogOpenRef = useRef(false);
+  isListDialogOpenRef.current = isListDialogOpen;
+  // The lists as shown now (read when a list save is rejected later).
+  const listsRef = useRef<ShoppingList[]>([]);
+  // Counts list creations; only the latest one opens its list when saved.
+  const createRequestRef = useRef(0);
+  listsRef.current = lists;
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
   const [isArchiveAlertOpen, setIsArchiveAlertOpen] = useState(false);
@@ -362,23 +372,44 @@ export function ShoppingListClient({
     const listsCollection = getListsCollectionRef();
     if (!listsCollection) return;
     const listId = id || slugify(data.name);
-    const failTitle = id ? 'Could not save the list' : 'Could not create the list';
+    const failTitle = id ? `Could not save ${data.name.trim()}` : `Could not create ${data.name.trim()}`;
+    // What was on screen at submit, so a slow save never pulls the member away
+    // from a list they opened meanwhile, and only the latest creation opens.
+    const request = id ? 0 : ++createRequestRef.current;
+    const selectionAtSubmit = selectedListIdRef.current;
+    // A rejected form (at once, or later when it was queued or slow) opens again
+    // with what was submitted, unless the list dialog is in use again by then.
+    const rejected = (error: unknown) => {
+      toastError(error, failTitle);
+      const listGone = Boolean(id) && !listsRef.current.some((entry) => entry.id === id);
+      if (!rejectedDraftRestore({ dialogOpen: isListDialogOpenRef.current, listGone })) return;
+      setListToEdit(id ? listsRef.current.find((entry) => entry.id === id) ?? null : null);
+      setListDraft(data);
+      setIsListDialogOpen(true);
+    };
     const tracked = await trackWrite(
       setDoc(doc(listsCollection, listId), listSaveData(data, { isNew: !id, uid }), { merge: true }),
       { kind: 'write', persistence: getLocalPersistence, offline: isBrowserOffline },
     );
     if (tracked.state === 'failed') {
-      toastError(tracked.error, failTitle);
+      rejected(tracked.error);
       return;
     }
     const done = id ? 'List updated' : 'List created';
     toast({ title: tracked.state === 'saved' ? done : `${done}: ${saveStateLabel(tracked.state)}` });
     if (tracked.state !== 'saved') {
       void tracked.settled.then((final) => {
-        if (final.state === 'failed') toastError(final.error, failTitle);
+        if (final.state === 'failed') rejected(final.error);
       });
     }
-    if (!id && householdIdRef.current === householdId) onSelectList(listId);
+    if (!id && shouldOpenCreatedList({
+      request,
+      latestRequest: createRequestRef.current,
+      selectionAtSubmit,
+      selectionNow: selectedListIdRef.current,
+      householdAtSubmit: householdId,
+      householdNow: householdIdRef.current,
+    })) onSelectList(listId);
   };
 
   /**
@@ -1435,7 +1466,11 @@ export function ShoppingListClient({
       {snackbarEntries.length > 0 && <UndoSnackbar floating entries={snackbarEntries} />}
       <ListDialog
         isOpen={isListDialogOpen}
-        onOpenChange={setIsListDialogOpen}
+        onOpenChange={(open) => {
+          setIsListDialogOpen(open);
+          if (!open) setListDraft(null);
+        }}
+        draft={listDraft}
         onSave={handleSaveList}
         listToEdit={listToEdit}
         lists={lists}

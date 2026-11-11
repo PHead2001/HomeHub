@@ -52,6 +52,7 @@ export function ListDialog({
   listToEdit,
   lists,
   onOpenList,
+  draft = null,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -61,12 +62,14 @@ export function ListDialog({
   lists: readonly ShoppingList[];
   /** Opens an existing list (a template whose list already exists). */
   onOpenList: (listId: string) => void;
+  /** A submitted form whose save was rejected: the form opens with these values. */
+  draft?: ListFormValues | null;
 }) {
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       {/* The content mounts on open, so the form starts from the list being edited. */}
       <DialogContent className="max-h-[90dvh] overflow-y-auto">
-        <ListDialogBody listToEdit={listToEdit} onOpenChange={onOpenChange} onSave={onSave} lists={lists} onOpenList={onOpenList} />
+        <ListDialogBody listToEdit={listToEdit} onOpenChange={onOpenChange} onSave={onSave} lists={lists} onOpenList={onOpenList} draft={draft} />
       </DialogContent>
     </Dialog>
   );
@@ -78,17 +81,19 @@ function ListDialogBody({
   onSave,
   lists,
   onOpenList,
+  draft,
 }: {
   listToEdit: ShoppingList | null;
   onOpenChange: (open: boolean) => void;
   onSave: (data: ListFormValues, id?: string) => Promise<void>;
   lists: readonly ShoppingList[];
   onOpenList: (listId: string) => void;
+  draft: ListFormValues | null;
 }) {
-  const [showCustomForm, setShowCustomForm] = useState(Boolean(listToEdit));
+  const [showCustomForm, setShowCustomForm] = useState(Boolean(listToEdit || draft));
   const form = useForm<ListFormValues>({
     resolver: zodResolver(listSchema),
-    defaultValues: listToEdit
+    defaultValues: draft ? { ...draft, description: draft.description ?? '', color: draft.color ?? '' } : listToEdit
       ? {
           name: listToEdit.name,
           description: listToEdit.description || '',
