@@ -584,6 +584,18 @@ export function tripOutcomeText(outcome: {
 }
 
 /**
+ * What becomes of a trip's Undo, journaled before its request, once the answer
+ * is known: shown when the trip was applied (now or by an earlier attempt),
+ * dropped when the server applied nothing or refused it, and kept (journal
+ * only) when the answer was lost, since the trip may have been applied: a
+ * reload then re-offers it and the server says if there is nothing to undo.
+ */
+export function tripUndoAfterAnswer(answer: { ok: true; applied: boolean } | { ok: false } | 'lost'): 'show' | 'drop' | 'keep' {
+  if (answer === 'lost') return 'keep';
+  return answer.ok && answer.applied ? 'show' : 'drop';
+}
+
+/**
  * The trip the history may offer to undo: the newest one, only if it is not
  * undone and still inside the 15-minute window by this device's clock (the
  * server checks again with its own clock).

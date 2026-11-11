@@ -25,6 +25,7 @@ import {
   shelfDefaultPick,
   tripGroup,
   tripOutcomeText,
+  tripUndoAfterAnswer,
   tripPlanWrites,
   tripTargetStillValid,
   tripUndoOpen,
@@ -490,5 +491,25 @@ describe('opening the put-away dialog after a lookup', () => {
     assert.match(source, /useOnTabDeactivate\(\(\) => \{\s*openGate\.invalidate\(\);\s*setPutAway\(null\);/);
     assert.match(source, /const dialog: ReactNode = opening && tabActive &&/);
     assert.match(source, /useLayoutEffect\(\(\) => \{\s*openGate\.setScope\(scope\);[\s\S]*?return \(\) => openGate\.invalidate\(\);\s*\}, \[openGate, scope\]\);/);
+  });
+});
+
+describe('the trip Undo survives a reload while the answer is on its way', () => {
+  test('journaled before the request; shown when applied, dropped when not, kept when the answer was lost', () => {
+    assert.equal(tripUndoAfterAnswer({ ok: true, applied: true }), 'show');
+    assert.equal(tripUndoAfterAnswer({ ok: true, applied: false }), 'drop');
+    assert.equal(tripUndoAfterAnswer({ ok: false }), 'drop');
+    assert.equal(tripUndoAfterAnswer('lost'), 'keep');
+    // A reload in that moment finds the journaled entry (it is re-offered on mount).
+    const store = new Map<string, string>();
+    const storage: JournalStorage = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => void store.set(key, value), removeItem: (key) => void store.delete(key) };
+    const entry: UndoEntry = { group: 'shopping-trip', uid: 'u', householdId: 'h', listId: 'l', itemId: 'trip-1', name: 'Weekly', opId: 'trip-1', expiresAt: 10_000 };
+    pushJournal(storage, entry, 0);
+    assert.deepEqual(readJournal(storage, 1_000), [entry]);
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping', 'use-trip-flow.tsx'), 'utf8');
+    const confirm = source.slice(source.indexOf('const confirm = async'), source.indexOf('const undo = useCallback'));
+    assert.ok(confirm.indexOf('pushJournal(browserJournalStorage(), early') > 0);
+    assert.ok(confirm.indexOf('pushJournal(browserJournalStorage(), early') < confirm.indexOf('await putAwayAndClear('));
+    assert.ok(confirm.includes("settle('lost')"));
   });
 });
