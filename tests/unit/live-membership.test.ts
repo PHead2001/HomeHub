@@ -193,6 +193,17 @@ describe('live membership: access ends', () => {
     assert.equal(membershipReducer(frozen, member(null)).ended?.reason, 'deleted');
   });
 
+  test('a deletion that failed partway, seen fresh after a reload: the frozen screen from the own record, the pointer and device data kept', () => {
+    // Reload: only the server's own record (status deleting), no household document read.
+    const reloaded = run([watch(H), member(active('owner', { status: 'deleting' }))]);
+    const shown = view(reloaded);
+    assert.equal(shown.phase, 'deleting');
+    assert.ok(shown.household?.deletingAt, 'Finish deleting is offered');
+    assert.equal(canWatchHousehold(reloaded), false, 'the household document is not needed');
+    assert.equal(reloaded.ended, null, 'not ended, so this device forgets nothing');
+    assert.equal(stalePointerFor(reloaded, profile(), true), null, 'the profile keeps its household');
+  });
+
   test('the profile pointer can be cleared before the record snapshot arrives: still a removal', () => {
     const state = membershipReducer(approved(), watch(null));
     assert.deepEqual(state.ended, { householdId: H, reason: 'removed' });
