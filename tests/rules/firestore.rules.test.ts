@@ -2541,6 +2541,31 @@ describe('member privacy: closed reads and no emails in shared documents', () =>
     await assertFails(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.owner.uid)));
   });
 
+  // Review finding on #146 (4543465259): a failed deletion stays reachable for recovery.
+  test('during a deletion, members who were approved still read the household document, and nothing else', async () => {
+    const member = (user: Identity) => doc(dbFor(user), 'households', householdA, 'members', user.uid);
+    const setStatus = (uids: string[], status: string) => environment.withSecurityRulesDisabled(async context => {
+      for (const uid of uids) await updateDoc(doc(context.firestore(), 'households', householdA, 'members', uid), { status });
+    });
+    await setStatus([users.owner.uid, users.member.uid, users.pending.uid], 'deleting');
+    try {
+      await assertSucceeds(getDoc(doc(dbFor(users.owner), 'households', householdA)));
+      await assertSucceeds(getDoc(doc(dbFor(users.member), 'households', householdA)));
+      await assertSucceeds(getDoc(member(users.owner)));
+      // A pending person stays closed out, deleting or not.
+      await assertFails(getDoc(doc(dbFor(users.pending), 'households', householdA)));
+      // Nothing else of the household, and no list.
+      await assertFails(getDoc(doc(dbFor(users.owner), 'households', householdA, 'chores', 'task')));
+      await assertFails(getDocs(collection(dbFor(users.owner), 'households', householdA, 'chores')));
+      await assertFails(getDocs(query(collection(dbFor(users.owner), 'households'), where('ownerUid', '==', users.owner.uid))));
+      // Someone without a record (removed) reads nothing.
+      await assertFails(getDoc(doc(dbFor(users.stranger), 'households', householdA)));
+    } finally {
+      await setStatus([users.owner.uid, users.member.uid], 'active');
+      await setStatus([users.pending.uid], 'pending');
+    }
+  });
+
   test('the former-member secret (ops scrub) is never read or written by a client, owners included', async () => {
     await environment.withSecurityRulesDisabled(context =>
       setDoc(doc(context.firestore(), 'households', householdA, 'ops', 'former-members'), { secret: 'server-only', createdAt: 'x' }));

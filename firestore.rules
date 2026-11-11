@@ -46,6 +46,17 @@ service cloud.firestore {
       return hasMemberDoc(householdId) && isApprovedMemberData(myMember(householdId));
     }
 
+    // During a household deletion every membership is set to status `deleting`. A
+    // member who was approved (any role but a pending `newuser`) may still read the
+    // household document then, so a failed deletion can be seen and the owner can
+    // finish it (the server action checks owner and deleting state itself). Nothing
+    // else in the household is readable to them.
+    function isDeletingMember(householdId) {
+      return hasMemberDoc(householdId) &&
+        myMember(householdId).get('status', '') == 'deleting' &&
+        myMember(householdId).role in ['owner', 'admin', 'member', 'child', 'guest'];
+    }
+
     function isOwnerRole(householdId) {
       return isApprovedMember(householdId) && myMember(householdId).role == 'owner';
     }
@@ -1088,9 +1099,9 @@ service cloud.firestore {
     // ---------------------------------------------------------------------
 
     match /households/{householdId} {
-      // Approved members only. A pending person's waiting screen uses the household
-      // name on their own membership record (`householdName`).
-      allow get: if isApprovedMember(householdId);
+      // Approved members (and, during a deletion, members who were approved: see
+      // isDeletingMember). A pending person uses `householdName` on their own record.
+      allow get: if isApprovedMember(householdId) || isDeletingMember(householdId);
       allow list: if false;
       // Households are created, renamed, re-owned and deleted only by the server
       // (Admin SDK); no one writes memberEmails or ownerEmail any more (release C).
