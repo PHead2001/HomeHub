@@ -84,7 +84,7 @@ The Overview dial uses `NumberTicker` and a ring that sweeps to the value in 550
 - Assets: `households/{householdId}/home-assets/{assetId}`.
 - Vehicles: `households/{householdId}/vehicles/{vehicleId}`.
 - Logs: `households/{householdId}/maintenance/{logId}`.
-- Attachment metadata: `households/{householdId}/maintenance-attachments/{attachmentId}`.
+- Attachment metadata: `households/{householdId}/maintenance-attachments/{attachmentId}`. `uploadedByUid` and `uploadedByName` record the uploader; the name is the profile's display name through `publicDisplayName` ("Member" when it is missing or an email), never the email. `scripts/ops/scrub-remaining-emails.mjs` rewrites older names that are an email (see [Household Governance](../household-governance/README.md), "Email copies").
 - Reminder notifications: `households/{householdId}/notifications/{notificationId}`.
 - Attachment objects: `households/{householdId}/maintenance/{targetType}/{targetId}/{attachmentId}-{sanitizedFileName}`.
 
