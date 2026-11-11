@@ -13,7 +13,7 @@ import { addAndReportDetached, type QuickAddOutcome } from '@/lib/shopping/quick
 import { purchasesAlreadyPutAway, rememberAfterTrip, useAfterTripPreference, useShoppingUsuals } from '@/lib/shopping/trip-live';
 import { tripGroup, tripOutcomeText, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
 import type { TripUndo, UndoEntry } from '@/lib/shopping/undo';
-import { createRequestGate } from '@/lib/shopping/request-gate';
+import { closeIfCurrent, createRequestGate } from '@/lib/shopping/request-gate';
 import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import type { ShoppingList, ShoppingListItem } from '@/lib/types';
 import { PutAwayDialog } from './put-away-dialog';
@@ -23,6 +23,8 @@ import { UsualChips } from './usual-chips';
 import type { SnackbarEntry } from './undo-snackbar';
 
 type PutAwayTarget = {
+  /** The opening's ticket: the dialog's key and identity. */
+  openingId: number;
   mode: TripMode;
   householdId: string;
   listId: string;
@@ -135,7 +137,7 @@ export function useTripFlow({
       toast({ title: 'Already put away', description: 'These purchases are already on the pantry shelves.' });
       return;
     }
-    setPutAway({ mode, householdId, listId, listName, items: group.items, shelvedIds: group.shelvedIds, left: group.left });
+    setPutAway({ openingId: ticket, mode, householdId, listId, listName, items: group.items, shelvedIds: group.shelvedIds, left: group.left });
   }, [householdId, list, openGate, purchasedItems, toast]);
 
   const confirm = async (target: PutAwayTarget, tripId: string, choices: TripChoice[]): Promise<boolean> => {
@@ -232,17 +234,21 @@ export function useTripFlow({
     ? <UsualChips suggestions={suggestions} onAdd={(name) => void addAndReportDetached(list?.name ?? 'the list', [{ name, quantity: 1 }], onQuickAdd, toast)} />
     : null;
 
-  const dialog: ReactNode = putAway && tabActive && householdId === putAway.householdId && list?.id === putAway.listId ? (
+  // Keyed and closed by its own opening: an earlier dialog's slow submission that
+  // finishes after it was unmounted reports its trip but never closes a newer dialog.
+  const opening = putAway;
+  const dialog: ReactNode = opening && tabActive && householdId === opening.householdId && list?.id === opening.listId ? (
     <PutAwayDialog
+      key={opening.openingId}
       open
-      onOpenChange={(open) => { if (!open) setPutAway(null); }}
-      items={putAway.items}
-      shelvedIds={putAway.shelvedIds}
-      left={putAway.left}
-      mode={putAway.mode}
+      onOpenChange={(open) => { if (!open) setPutAway((current) => closeIfCurrent(current, opening)); }}
+      items={opening.items}
+      shelvedIds={opening.shelvedIds}
+      left={opening.left}
+      mode={opening.mode}
       today={today}
       offline={!online}
-      onConfirm={(tripId, choices) => confirm(putAway, tripId, choices)}
+      onConfirm={(tripId, choices) => confirm(opening, tripId, choices)}
     />
   ) : null;
 
