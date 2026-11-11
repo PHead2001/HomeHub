@@ -101,15 +101,26 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
   }
 
   if (flowName === 'recipe') {
-    const recipeInput = input as { items: Array<{ name: string }> };
-    const first = recipeInput.items[0]?.name || 'Pantry ingredient';
-    const second = recipeInput.items[1]?.name || 'Kitchen staple';
+    // Uses the first two supplied items (the client sends the soonest expiry first)
+    // and claims one item the pantry does not have, so tests see it moved to needed.
+    const recipeInput = input as { items: Array<{ name: string; quantity: number; unit: string }> };
+    const [first, second] = recipeInput.items;
+    const firstName = first?.name || 'Pantry ingredient';
+    const secondName = second?.name || 'Kitchen staple';
     return {
-      recipeTitle: `${first} and ${second} Skillet`,
-      description: `A simple skillet meal built around ${first} and ${second}.`,
+      recipeTitle: `${firstName} and ${secondName} Skillet`,
+      description: `A simple skillet meal built around ${firstName} and ${secondName}.`,
       ingredients: {
-        used: [first, second],
-        needed: ['Salt', 'Pepper', 'Cooking oil'],
+        used: [
+          { pantryItem: firstName, line: `${first?.quantity ?? 1} ${first?.unit ?? ''} ${firstName}`.replace(/\s+/g, ' ') },
+          { pantryItem: secondName, line: `${second?.quantity ?? 1} ${second?.unit ?? ''} ${secondName}`.replace(/\s+/g, ' ') },
+          { pantryItem: 'Fresh basil', line: 'A handful of fresh basil' },
+        ],
+        needed: [
+          { name: 'Salt', line: '1 tsp salt' },
+          { name: 'Pepper', line: 'Black pepper to taste' },
+          { name: 'Cooking oil', line: '2 tbsp cooking oil' },
+        ],
       },
       instructions: [
         'Prepare the pantry ingredients.',

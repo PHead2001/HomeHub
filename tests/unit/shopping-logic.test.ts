@@ -24,7 +24,6 @@ import {
   daysUntilExpiry,
   expiryLabel,
   expiryState,
-  matchRecipeIngredients,
   pantryEmoji,
   pantryLocationForCategory,
   planPantryHandoff,
@@ -427,20 +426,6 @@ describe('pantry shelves', () => {
     assert.equal(pantryEmoji('Greek yogurt', 'Fridge'), '🥣');
     assert.equal(pantryEmoji('Jasmine rice', 'Pantry'), '🍚');
     assert.equal(pantryEmoji('Something odd', 'Freezer'), '🧊');
-  });
-
-  test('matches recipe ingredient lines back to pantry items', () => {
-    const items = [
-      { id: 'rice', name: 'Jasmine rice' },
-      { id: 'yogurt', name: 'Greek yogurt' },
-      { id: 'berries', name: 'Frozen berries' },
-      { id: 'oil', name: 'Olive oil' },
-    ];
-    assert.deepEqual(
-      matchRecipeIngredients(['2 cups rice', '1 cup Greek yogurt', 'A handful of berries'], items).sort(),
-      ['berries', 'rice', 'yogurt'],
-    );
-    assert.deepEqual(matchRecipeIngredients([], items), []);
   });
 
   test('finds a product photo by exact name only', () => {

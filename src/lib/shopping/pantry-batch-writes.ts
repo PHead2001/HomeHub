@@ -23,7 +23,7 @@ import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/sh
 import type { PantryItemLocation, ShoppingList, ShoppingListItem } from '@/lib/types';
 import { slugify } from '@/lib/utils';
 import { addItemsToList, type ActiveTarget, type CategorizationReport } from './add-items';
-import type { SaveState } from './save-status';
+import type { SaveState, SettledState } from './save-status';
 import {
   BATCH_GONE_MESSAGE, PantryChangeRefused, decidePantryMerge, isCountUnit, packageChangeRoute, pantryBatchFields, planLegacyUpgrade,
   planBatchEdit, planMergeAdd, readPantryBatch, shoppingWriteNotice, shouldDeleteEmptyBatch, undoFits,
@@ -234,6 +234,8 @@ export type AddToListResult = {
   /** `trackWrite`'s classification of the one write (merge transaction or create). */
   state: SaveState;
   error?: unknown;
+  /** The write's final answer when `state` was not yet final ('saved' at once otherwise). */
+  settled: Promise<SettledState>;
   /** The batched AI call for a new item saved under a pending `Other` (resolves at once otherwise). */
   categorization: Promise<CategorizationReport>;
 };
@@ -269,6 +271,44 @@ export async function addToGroceryList({
   /** A write that was still pending and later failed. */
   onLateError: (error: unknown) => void;
 }): Promise<AddToListResult> {
+  const { entries, categorization } = await addAllToGroceryList({
+    householdId, uid, list, entries: [{ name, quantity }], active, onLateError: (_name, error) => onLateError(error),
+  });
+  const [outcome] = entries;
+  return { listName: list.name, name: outcome.name, merged: outcome.merged, state: outcome.state, error: outcome.error, settled: outcome.settled, categorization };
+}
+
+export type AddAllToListResult = {
+  listName: string;
+  /** One per entry, in order: the display name, whether it merged, and its write's honest state. */
+  entries: Array<{ asked: string; name: string; merged: boolean; state: SaveState; error?: unknown; settled: Promise<SettledState> }>;
+  categorization: Promise<CategorizationReport>;
+};
+
+/**
+ * Several names onto one Grocery list in one action (the recipe's "Add all
+ * missing", SH-22d/SH-31b): the list's needed items and categories are read once,
+ * every entry goes through `addItemsToList` (each merged into a still-needed item
+ * of the same name online, each write classified on its own) and the new items
+ * share ONE batched AI categorization call. Each confirmed write is announced
+ * with `notifyDataChanged` as `addToGroceryList` does.
+ */
+export async function addAllToGroceryList({
+  householdId,
+  uid,
+  list,
+  entries,
+  active,
+  onLateError,
+}: {
+  householdId: string;
+  uid: string | null | undefined;
+  list: Pick<ShoppingList, 'id' | 'name'>;
+  entries: readonly { name: string; quantity: number }[];
+  active: () => ActiveTarget;
+  /** An entry's write that was still pending and later failed. */
+  onLateError: (name: string, error: unknown) => void;
+}): Promise<AddAllToListResult> {
   const listRef = doc(db, 'households', householdId, 'shopping-lists', list.id);
   const itemsRef = collection(listRef, 'items');
   const needed = isBrowserOffline()
@@ -281,15 +321,20 @@ export async function addToGroceryList({
     householdId,
     listId: list.id,
     uid,
-    entries: [{ name, quantity }],
+    entries,
     categories,
     knownItems: needed,
     active,
-    onLateError: (_name, error) => onLateError(error),
+    onLateError,
   });
-  const [outcome] = outcomes;
-  void outcome.settled.then((final) => announceShoppingWrite(householdId, list.id, final));
-  return { listName: list.name, name: outcome.name, merged: outcome.merged, state: outcome.state, error: outcome.error, categorization };
+  for (const outcome of outcomes) void outcome.settled.then((final) => announceShoppingWrite(householdId, list.id, final));
+  return {
+    listName: list.name,
+    entries: outcomes.map((outcome, index) => ({
+      asked: entries[index].name, name: outcome.name, merged: outcome.merged, state: outcome.state, error: outcome.error, settled: outcome.settled,
+    })),
+    categorization,
+  };
 }
 
 function announceShoppingWrite(householdId: string, listId: string, state: SaveState) {
