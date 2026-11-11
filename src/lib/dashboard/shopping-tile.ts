@@ -4,7 +4,7 @@
  * operation (`src/lib/shopping/tick.ts`).
  */
 import type { ShoppingTileItem } from './facts';
-import { reconcileDoneStates, type DoneTracking } from './done-states';
+import { reconcileDoneStates, type DoneStateNames, type DoneTracking } from './done-states';
 
 /** One row's key: items are unique per list, not per household. */
 export const shoppingRowKey = (item: Pick<ShoppingTileItem, 'listId' | 'id'>) => `${item.listId}/${item.id}`;
@@ -55,16 +55,16 @@ export function wideTickRows(screenHeightPx: number, remPx = 16): number {
 export type TickRowState = 'saving' | 'done' | 'failed';
 
 /**
- * Reconciles the tile's local tick states with the live list (HP-33d), with the
- * dashboard's `done-states` rule: a row ticked here reads "done" until it leaves the
- * live list; once it has left, seeing it again means someone un-ticked it (or Undo
- * restored it), so the local state is dropped and its tick works again. `liveKeys` are
- * the listed rows' keys. Unlike a chore, a ticked item usually leaves the list before the
- * tick is acknowledged (the listener shows a queued write at once), so this runs on
- * state changes too, not only on list changes.
+ * The tile's tick states follow the live list with the dashboard's `done-states` rule
+ * (HP-33d): a row ticked here reads "done" until it leaves the live list; once it has
+ * left (while saving too: the listener shows a queued write at once, usually before the
+ * tick is acknowledged), seeing it again means someone un-ticked it (or Undo restored
+ * it), so the local state is dropped and its tick works again.
  */
+export const TICK_DONE_STATES = { saving: 'saving', done: 'done' } as const satisfies DoneStateNames<TickRowState>;
+
 export function reconcileTickStates(tracking: DoneTracking<TickRowState>, liveKeys: Iterable<string>): DoneTracking<TickRowState> {
-  return reconcileDoneStates(tracking, liveKeys, 'done');
+  return reconcileDoneStates(tracking, liveKeys, TICK_DONE_STATES);
 }
 
 /**

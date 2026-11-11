@@ -6,12 +6,13 @@ import {
   focusAfterTick,
   reconcileTickStates,
   shoppingRowKey,
+  TICK_DONE_STATES,
   shoppingTileRows,
   wideTickRows,
   WIDE_TICK_ROW_STEPS,
   type TickRowState,
 } from '../../src/lib/dashboard/shopping-tile';
-import type { DoneTracking } from '../../src/lib/dashboard/done-states';
+import { emptyDoneTracking, setDoneState, settleDone, type DoneTracking } from '../../src/lib/dashboard/done-states';
 
 const item = (id: string, listId = 'weekly', quantity = 1) => ({ id, name: id, listId, listName: listId, quantity });
 
@@ -57,7 +58,7 @@ describe('dashboard Shopping tile rows (HP-36a, HP-33c)', () => {
 });
 
 describe('dashboard Shopping tick states follow the live list (HP-33d)', () => {
-  const start = (states: Record<string, TickRowState>): DoneTracking<TickRowState> => ({ states, gone: new Set() });
+  const start = (states: Record<string, TickRowState>): DoneTracking<TickRowState> => ({ states, gone: new Set(), returned: new Set() });
 
   test('a row ticked here that already left the list (queued write shown at once) is remembered as gone', () => {
     const next = reconcileTickStates(start({ 'weekly/milk': 'done' }), ['weekly/eggs']);
@@ -73,10 +74,38 @@ describe('dashboard Shopping tick states follow the live list (HP-33d)', () => {
     assert.equal(tracking.states['weekly/milk'], undefined);
   });
 
-  test('a failed tick keeps its Retry when the row comes back; saving rows are left alone', () => {
+  test('a failed tick keeps its Retry when the row comes back; a saving row keeps saving', () => {
     const tracking = reconcileTickStates(start({ 'weekly/milk': 'failed', 'weekly/eggs': 'saving' }), ['weekly/milk']);
     assert.equal(tracking.states['weekly/milk'], 'failed');
     assert.equal(tracking.states['weekly/eggs'], 'saving');
+  });
+
+  test('un-ticked elsewhere after the tick reached the server but before its answer: the tick works again (review finding on #150)', () => {
+    const key = 'weekly/milk';
+    let tracking = setDoneState(emptyDoneTracking<TickRowState>(), key, 'saving');
+    tracking = reconcileTickStates(tracking, []); // the queued tick shows at once
+    tracking = reconcileTickStates(tracking, [key]); // un-ticked on another device
+    assert.equal(tracking.states[key], 'saving');
+    tracking = settleDone(tracking, key, TICK_DONE_STATES); // the tick's answer (or the 4 s timeout)
+    assert.equal(tracking.states[key], undefined, 'not left disabled as done');
+  });
+
+  test('the usual tick: the row leaves while saving, reads done, and an un-tick later re-enables it', () => {
+    const key = 'weekly/milk';
+    let tracking = setDoneState(emptyDoneTracking<TickRowState>(), key, 'saving');
+    tracking = reconcileTickStates(tracking, ['weekly/eggs']);
+    tracking = settleDone(tracking, key, TICK_DONE_STATES);
+    assert.equal(tracking.states[key], 'done');
+    tracking = reconcileTickStates(tracking, ['weekly/eggs', key]);
+    assert.equal(tracking.states[key], undefined);
+  });
+
+  test('an Undo that finished before the tick was acknowledged is not overwritten by the late tick answer', () => {
+    const key = 'weekly/milk';
+    let tracking = setDoneState(emptyDoneTracking<TickRowState>(), key, 'saving');
+    tracking = setDoneState(tracking, key, null); // Undo restored it
+    tracking = settleDone(tracking, key, TICK_DONE_STATES);
+    assert.equal(tracking.states[key], undefined);
   });
 
   test('focus after a tick: the next visible row, else the previous one, else the tile link', () => {

@@ -11,7 +11,7 @@
  * The rows come from the dashboard's live listeners, which show a tick at once (offline
  * too), so a ticked row leaves the tile by itself; a failed tick comes back with Retry.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { ToastAction } from '@/components/ui/toast';
 import { useAuth } from '@/hooks/use-auth';
@@ -22,9 +22,10 @@ import { offlineTickNote } from '@/lib/shopping/save-status';
 import { notUndoneNotice, reportFailure, tickShoppingItem, undoShoppingTick } from '@/lib/shopping/tick';
 import { shoppingTickIO } from '@/lib/shopping/tick-firestore';
 import type { ShoppingTileItem } from '@/lib/dashboard/facts';
-import { focusAfterTick, reconcileTickStates, shoppingRowKey, type TickRowState } from '@/lib/dashboard/shopping-tile';
+import { focusAfterTick, shoppingRowKey, TICK_DONE_STATES, type TickRowState } from '@/lib/dashboard/shopping-tile';
 import { cn } from '@/lib/utils';
 import { ActionButton } from './one-tap';
+import { useDoneTracking } from './use-done-tracking';
 import styles from './dashboard.module.css';
 
 const TILE_SELECTOR = '[data-testid="dashboard-tile-shopping"]';
@@ -39,21 +40,33 @@ function visibleTickKeys(tile: Element | null): string[] {
 }
 
 /**
+ * The control to focus once the ticked row has left: the target row's tick, else the
+ * tile link. Resolved from the tile mounted now, not the one seen at the tick: the last
+ * row's departure re-mounts the tile (with rows it is a card around a link, without them
+ * the tile is the link itself).
+ */
+function focusTargetAfterTick(targetKey: string | null): HTMLElement | null {
+  const tile = document.querySelector<HTMLElement>(TILE_SELECTOR);
+  if (!tile) return null;
+  const row = targetKey ? tile.querySelector<HTMLElement>(`[data-tick-key="${CSS.escape(targetKey)}"]`) : null;
+  return row ?? tile.querySelector<HTMLElement>(TILE_LINK_SELECTOR) ?? (tile.matches('a[href]') ? tile : null);
+}
+
+/**
  * Focus after a tick (SH-26a on the dashboard): once the ticked row has left, focus goes
  * to the next row's tick (else the previous one, else the tile link), and only when it was
  * on the ticked control, so it never jumps from somewhere the member moved to.
  */
-function focusWhenRowLeaves(button: HTMLButtonElement, tile: Element | null, targetKey: string | null, frames = 20) {
+function focusWhenRowLeaves(button: HTMLButtonElement, targetKey: string | null, frames = 20) {
   requestAnimationFrame(() => {
     if (button.isConnected) {
       // Still listed (saving, or the tick failed): focus stays on it.
-      if (frames > 0) focusWhenRowLeaves(button, tile, targetKey, frames - 1);
+      if (frames > 0) focusWhenRowLeaves(button, targetKey, frames - 1);
       return;
     }
     const active = document.activeElement;
     if (active && active !== document.body) return;
-    const target = targetKey ? tile?.querySelector<HTMLElement>(`[data-tick-key="${CSS.escape(targetKey)}"]`) : null;
-    (target ?? tile?.querySelector<HTMLElement>(TILE_LINK_SELECTOR))?.focus({ preventScroll: true });
+    focusTargetAfterTick(targetKey)?.focus({ preventScroll: true });
   });
 }
 
@@ -64,8 +77,7 @@ function focusWhenRowLeaves(button: HTMLButtonElement, tile: Element | null, tar
 export function useShoppingTick(liveKeys?: readonly string[]) {
   const { currentUser } = useAuth();
   const { toast } = useToast();
-  const [states, setStates] = useState<Record<string, TickRowState>>({});
-  const gone = useRef<ReadonlySet<string>>(new Set());
+  const { states, set, settle } = useDoneTracking<TickRowState>(liveKeys, TICK_DONE_STATES);
   const busy = useRef(new Set<string>());
   const live = useRef<ReadonlySet<string>>(new Set());
   // The first offline tick on this page carries the offline note in its Undo (SH-7c).
@@ -78,27 +90,6 @@ export function useShoppingTick(liveKeys?: readonly string[]) {
     live.current = new Set(liveKeys ?? []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveKey]);
-  // An item un-ticked elsewhere (or restored by Undo) gets an enabled control again.
-  // Runs on state changes too: a ticked row usually leaves before its tick is acknowledged.
-  useEffect(() => {
-    if (!liveKeys) return;
-    setStates((current) => {
-      const next = reconcileTickStates({ states: current, gone: gone.current }, liveKeys);
-      gone.current = next.gone;
-      return next.states === current ? current : { ...next.states };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveKey, states]);
-
-  const set = useCallback((key: string, state: TickRowState | null) => {
-    setStates((current) => {
-      if (state ? current[key] === state : !(key in current)) return current;
-      const next = { ...current };
-      if (state) next[key] = state;
-      else delete next[key];
-      return next;
-    });
-  }, []);
 
   const undo = useCallback(async (item: ShoppingTileItem, opId: string) => {
     if (!householdId) return;
@@ -136,7 +127,7 @@ export function useShoppingTick(liveKeys?: readonly string[]) {
     busy.current.add(key);
     set(key, 'saving');
     playFeedback('complete');
-    if (hadFocus) focusWhenRowLeaves(button, tile, targetKey);
+    if (hadFocus) focusWhenRowLeaves(button, targetKey);
     try {
       let note: string | undefined;
       if (started.offline && !offlineNoted.current) {
@@ -161,11 +152,12 @@ export function useShoppingTick(liveKeys?: readonly string[]) {
         set(key, 'failed');
         toast({ variant: 'destructive', title: `Could not tick ${item.name}`, description: 'It is still on the list. Try again.' });
       });
-      if (state !== 'failed') set(key, 'done');
+      // Done until the row leaves; not if it was un-ticked elsewhere before this answer.
+      if (state !== 'failed') settle(key);
     } finally {
       busy.current.delete(key);
     }
-  }, [householdId, uid, set, toast, undo]);
+  }, [householdId, uid, set, settle, toast, undo]);
 
   return { states, tick };
 }

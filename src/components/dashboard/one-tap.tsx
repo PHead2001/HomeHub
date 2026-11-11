@@ -38,45 +38,29 @@ import {
 import { formatPortion } from '@/lib/pets/care';
 import { memberName, type ChoreEntry, type PetState } from '@/lib/dashboard/facts';
 import { householdSummary, summaryPhrase } from '@/lib/dashboard/household-summary';
-import { reconcileDoneStates } from '@/lib/dashboard/done-states';
 import { cn } from '@/lib/utils';
+import { useDoneTracking } from './use-done-tracking';
 import styles from './dashboard.module.css';
 
 export type ActionState = 'saving' | 'done' | 'failed';
+
+const CHORE_DONE_STATES = { saving: 'saving', done: 'done' } as const satisfies { saving: ActionState; done: ActionState };
 
 /**
  * Done for dashboard chores. The dashboard reads chores with live listeners, so it
  * never patches them locally: a completed chore leaves the list when its snapshot
  * arrives, and until then its row says "Done". `liveIds` is the live list's chore ids:
- * a chore that left it after being completed here and later reappears was reopened
- * elsewhere, so its local Done state is dropped and its button works again.
+ * a chore that left it after being completed here (or while its completion was saving)
+ * and later reappears was reopened elsewhere, so its local Done state is dropped and its
+ * button works again (`src/lib/dashboard/done-states.ts`).
  */
 export function useChoreDone(liveIds?: readonly string[]) {
   const { currentUser } = useAuth();
   const { toast } = useToast();
   const { burst, layer } = useConfetti();
-  const [states, setStates] = useState<Record<string, ActionState>>({});
   const busy = useRef(new Set<string>());
-  const gone = useRef<ReadonlySet<string>>(new Set());
-  const liveKey = liveIds?.join('|');
-  useEffect(() => {
-    if (!liveIds) return;
-    setStates((current) => {
-      const next = reconcileDoneStates({ states: current, gone: gone.current }, liveIds, 'done' as ActionState);
-      gone.current = next.gone;
-      return next.states === current ? current : { ...next.states };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveKey]);
+  const { states, set, settle } = useDoneTracking<ActionState>(liveIds, CHORE_DONE_STATES);
   const householdId = currentUser?.householdId ?? null;
-  const set = useCallback((id: string, state: ActionState | null) => {
-    setStates((current) => {
-      const next = { ...current };
-      if (state) next[id] = state;
-      else delete next[id];
-      return next;
-    });
-  }, []);
 
   const undo = useCallback(async (chore: Pick<ChoreEntry, 'id' | 'task'>, ticket: UndoTicket) => {
     if (!householdId) return;
@@ -116,7 +100,7 @@ export function useChoreDone(liveIds?: readonly string[]) {
         }
         return;
       }
-      set(chore.id, 'done');
+      settle(chore.id);
       if (outcome.status === 'already') {
         const by = memberName(outcome.completion.completedByName);
         toast({ title: 'Already done', description: by ? `${chore.task} was already done by ${by}.` : `${chore.task} was already done.` });
@@ -140,7 +124,7 @@ export function useChoreDone(liveIds?: readonly string[]) {
     } finally {
       busy.current.delete(chore.id);
     }
-  }, [householdId, set, toast, burst, undo]);
+  }, [householdId, set, settle, toast, burst, undo]);
 
   return { states, complete, layer };
 }

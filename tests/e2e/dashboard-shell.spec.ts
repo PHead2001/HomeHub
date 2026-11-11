@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore, type QuerySnapshot } from 'firebase-admin/firestore';
+import { getFirestore, type DocumentReference, type QuerySnapshot } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 import { computeChoreFacts, computePetFacts, recurringTemplateIdsFrom, roomSummary, type RawDoc } from '../../src/lib/dashboard/facts';
 import { dayKey } from '../../src/lib/dashboard/dates';
@@ -460,6 +460,32 @@ test.describe('H7: dashboard one-tap actions', () => {
       expect(kept.purchasedByUid).toBe('e2e-member-uid');
     } finally {
       await ref.delete();
+    }
+  });
+
+  test('HP-33c: ticking the last needed item from the keyboard leaves focus on the Shopping tile (review finding on #150)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // One needed item in the household: the seeded ones are parked as purchased and restored after.
+    const parked: DocumentReference[] = [];
+    for (const list of (await household.collection('shopping-lists').get()).docs) {
+      parked.push(...(await list.ref.collection('items').where('status', '==', 'needed').get()).docs.map((doc) => doc.ref));
+    }
+    await Promise.all(parked.map((doc) => doc.update({ status: 'purchased' })));
+    const ref = await seedShoppingItem('dashboard-last-tick', 'Dashboard last tick');
+    try {
+      await openDashboard(page);
+      const tile = page.getByTestId('dashboard-tile-shopping');
+      const tick = tile.getByRole('button', { name: 'Tick Dashboard last tick', exact: true });
+      await expect(tick).toBeEnabled();
+      await tick.focus();
+      await tick.press('Enter');
+      await expect.poll(async () => (await ref.get()).data()?.status).toBe('purchased');
+      // The last row's departure re-mounts the tile as a plain link: focus moves to it.
+      await expect(tile.getByText('Lists are empty. Nice.')).toBeVisible();
+      await expect(tile).toBeFocused();
+    } finally {
+      await ref.delete();
+      await Promise.all(parked.map((doc) => doc.update({ status: 'needed' })));
     }
   });
 
