@@ -13,11 +13,13 @@ import {
 } from "./shared/calendar";
 import {choreNotificationsFor, type ChoreInput} from "./shared/chore-reminders";
 import {
-  addPurgedChores, choreStatsDocId, completionYear, purgeNeedsMemberEmails,
+  addPurgedChores, choreStatsDocId, completionYear, purgeMustWait,
   readChoreStats,
   type PurgedChore,
 } from "./shared/chore-stats";
-import {assigneeFields, resolveAssigneeUid} from "./shared/assignee";
+import {
+  assigneeEmailOf, assigneeFields, resolveAssigneeUid,
+} from "./shared/assignee";
 import {
   choreOccurrenceKey, deterministicNotificationId, occurrenceChoreId,
   storedOccurrenceKey,
@@ -249,7 +251,7 @@ export const runHouseholdReminders = async (
           }
         } else if (snap.exists && snap.get("isCompleted") === true &&
             snap.get("completedAt") === op.completedAt &&
-            (emailsKnown || !purgeNeedsMemberEmails(snap.data() ?? {}))) {
+            !purgeMustWait(snap.data() ?? {}, members, emailsKnown)) {
           tx.delete(op.ref);
           purged++;
           // Counted only when actually deleted, so repeated or overlapping
@@ -305,9 +307,11 @@ export const runHouseholdReminders = async (
         uid: string; email?: string; displayName?: string;
       }>;
   // Emails come only from each member's contact document. When that read
-  // fails, reminders simply skip email-keyed lookups this run, but purges of
-  // chores that can only be credited through an email wait for a run that
-  // has the emails (purgeNeedsMemberEmails), so no credit is lost.
+  // fails, reminders simply skip email-keyed lookups this run; purges of
+  // chores that can only be credited through an email, and generation from
+  // templates that still carry an email, wait for a run that has the emails
+  // (purgeMustWait, and the template check below), so no credit is lost and
+  // no possibly stale uid is trusted.
   const contacts = await readMemberContactsOrNull(
     house, approvedRecords.map((m) => m.uid));
   const emailsKnown = contacts !== null;
@@ -336,7 +340,17 @@ export const runHouseholdReminders = async (
     // (release E).
     if (!recurrence) continue;
     // Never generate work for someone who is no longer an approved member.
-    const assigneeUid = resolveAssigneeUid(template, members);
+    // A template that still carries an assignee email (written before member
+    // privacy release C and not yet scrubbed) is generated only for the
+    // member whose contact document holds that email: its uid may be stale
+    // (an older build reassigned it by email only), and a day once written
+    // is never generated again. Without that match (the contact read failed,
+    // or the email names nobody) it waits for a later run.
+    const templateEmail = assigneeEmailOf(template);
+    const assigneeUid = templateEmail ?
+      members.find((m) => typeof m.email === "string" &&
+        m.email.trim().toLowerCase() === templateEmail)?.uid ?? null :
+      resolveAssigneeUid(template, members);
     const person = assigneeUid ? memberByUid.get(assigneeUid) : undefined;
     if (!person) continue;
     const rooms: string[] = Array.isArray(template.roomIds) &&
@@ -392,11 +406,11 @@ export const runHouseholdReminders = async (
     // Retention keys off completedAt (unchanged policy); the stats year comes
     // from the authoritative completion instant (completedAtServer first).
     const year = completedAt ? completionYear(chore, timeZone) : null;
-    // Without members' emails, a chore credited only through an email is
-    // left for a later run (see purgeNeedsMemberEmails).
+    // A chore credited only through an email is left for a later run when
+    // the members' emails are unknown or name nobody (see purgeMustWait).
     if (chore.isCompleted && completedAt && year !== null &&
         completedAt < purgeBefore && choreOps.length < 450 &&
-        (emailsKnown || !purgeNeedsMemberEmails(chore))) {
+        !purgeMustWait(chore, members, emailsKnown)) {
       choreOps.push({
         kind: "purge", ref: choreDoc.ref, completedAt: chore.completedAt, year,
       });

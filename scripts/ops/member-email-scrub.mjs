@@ -3,6 +3,7 @@
 // A write is a list of field paths (arrays of segments) to delete, plus fields
 // to set, as in ./shared-email-scrub.mjs.
 
+import { assigneeEmailOfJs } from './chore-assignee.mjs';
 import { choreEmailScrubPlan } from './shared-email-scrub.mjs';
 
 const text = value => (typeof value === 'string' ? value.trim() : '');
@@ -34,28 +35,61 @@ export function memberRecordEmailPlan(member, contact) {
 /**
  * What the scrub does with one chore or chore template: every assignee email
  * (completed chores included, since the yearly stats credit by uid) as in
- * release C's planner, and the server-written `completedByEmail`.
+ * release C's planner, and the server-written `completedByEmail`, without ever
+ * dropping the person a completed chore is credited to (`creditedPerson` in
+ * functions/src/shared/chore-stats.ts: the completer, else the assignee). When
+ * the email being removed names nobody in the household (someone who has left)
+ * and is the only identity of the credited person, the chore gets that person's
+ * opaque former-member key (`formerKeyOf`, ./former-member-key.mjs) in its place.
  * @param {Record<string, unknown> | null | undefined} data Document data.
  * @param {Map<string, string>} uidByEmail Email (lower-cased) to member uid.
+ * @param {(email: string) => string} [formerKeyOf] Former-member key for an email
+ *   (the same for the same person in the household). Without it, such an email
+ *   is kept rather than dropped with its credit.
  * @returns {{ kind: 'clean' | 'kept' } | { kind: 'scrub', remove: string[][], set: Record<string, string>, assignee: string, completer: string }}
- *   `assignee` is release C's kind (`clean`, `scrub`, `repaired`, `cleared`);
+ *   `assignee` is release C's kind (`clean`, `scrub`, `repaired`, `cleared`), or
+ *   `former`: a completed chore credited to its assignee, whose email names
+ *   nobody here and whose stored uid would not name them (none, or a current
+ *   member's leftover): `assignedToUid` becomes their former-member key.
  *   `completer` is one of:
  *   - `none`: no `completedByEmail`;
  *   - `removed`: removed; `completedByUid` already names the completer;
  *   - `repaired`: `completedByUid` was missing and is set to the member the email names;
- *   - `kept`: no `completedByUid` and the email names nobody here (a former
- *     member): kept, since without it the chore would be credited to its assignee.
- *   `kind` is `clean` when there is nothing to write, `kept` when the only email
- *   left is such a kept `completedByEmail`.
+ *   - `former`: no `completedByUid` and the email names nobody here (someone who
+ *     left): `completedByUid` becomes their former-member key;
+ *   - `kept`: as `former`, without `formerKeyOf`: the email is kept.
+ *   `kind` is `clean` when there is nothing to write, `kept` when the only emails
+ *   left are such kept ones.
  */
-export function choreMemberEmailPlan(data, uidByEmail) {
+export function choreMemberEmailPlan(data, uidByEmail, formerKeyOf) {
   const assignee = choreEmailScrubPlan(data, uidByEmail, { keepForStats: false });
-  const remove = assignee.kind === 'clean' ? [] : [...assignee.remove];
+  let assigneeKind = assignee.kind;
+  let remove = assignee.kind === 'clean' ? [] : [...assignee.remove];
   const set = assignee.kind === 'clean' ? {} : { ...assignee.set };
+  let kept = false;
+  // Credited to the assignee: completed, with no completer recorded at all.
+  const creditedToAssignee = data?.isCompleted === true && !text(data?.completedByUid) && !text(data?.completedByEmail);
+  if (creditedToAssignee && (assignee.kind === 'scrub' || assignee.kind === 'cleared')) {
+    const email = assigneeEmailOfJs(data);
+    const uidAfter = text(assignee.kind === 'cleared' ? assignee.set.assignedToUid : data?.assignedToUid);
+    if (!uidByEmail.get(email) && !uidAfter) {
+      const key = formerKeyOf ? formerKeyOf(email) : '';
+      if (key) {
+        set.assignedToUid = key;
+        assigneeKind = 'former';
+      } else {
+        remove = [];
+        delete set.assignedToUid;
+        assigneeKind = 'clean';
+        kept = true;
+      }
+    }
+  }
   let completer = 'none';
   if (data && 'completedByEmail' in data) {
     const email = text(data.completedByEmail).toLowerCase();
     const uid = text(data.completedByUid);
+    const key = uid || !email || uidByEmail.get(email) || !formerKeyOf ? '' : formerKeyOf(email);
     if (uid || !email) {
       completer = 'removed';
       remove.push(['completedByEmail']);
@@ -63,10 +97,15 @@ export function choreMemberEmailPlan(data, uidByEmail) {
       completer = 'repaired';
       set.completedByUid = uidByEmail.get(email);
       remove.push(['completedByEmail']);
+    } else if (key) {
+      completer = 'former';
+      set.completedByUid = key;
+      remove.push(['completedByEmail']);
     } else {
       completer = 'kept';
+      kept = true;
     }
   }
-  if (remove.length === 0 && Object.keys(set).length === 0) return { kind: completer === 'kept' ? 'kept' : 'clean' };
-  return { kind: 'scrub', remove, set, assignee: assignee.kind, completer };
+  if (remove.length === 0 && Object.keys(set).length === 0) return { kind: kept ? 'kept' : 'clean' };
+  return { kind: 'scrub', remove, set, assignee: assigneeKind, completer };
 }

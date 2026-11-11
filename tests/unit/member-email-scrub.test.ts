@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { choreStatsAssigneeKey, choreStatsMemberKey } from '../../functions/src/shared/ids';
-import { foldLegacyStatsKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
+import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { choreEmailScrubPlan } from '../../scripts/ops/shared-email-scrub.mjs';
 import { choreMemberEmailPlan, memberRecordEmailPlan } from '../../scripts/ops/member-email-scrub.mjs';
+import { FORMER_KEY_PREFIX, formerMemberKey, formerMemberSecret } from '../../scripts/ops/former-member-key.mjs';
 import {
   choreStatsAssigneeKeyJs,
   choreStatsMemberKeyJs,
@@ -86,6 +87,66 @@ describe('chore email scrub (release D)', () => {
     assert.ok(!(both as { remove: string[][] }).remove.some(path => path[0] === 'completedByEmail'));
   });
 
+  test('a completed chore credited to someone who left keeps that credit under a former-member key', () => {
+    const keyOf = (email: string) => formerMemberKey('household-secret', email);
+    const people = [{ uid: 'uid-sam', email: 'sam@example.test' }, { uid: 'uid-ana', email: 'ana@example.test' }];
+    const gone = keyOf('gone@example.test');
+    // Assignee who left, known only by email (no uid, no completer recorded).
+    const legacy = { isCompleted: true, assignedToEmail: 'Gone@Example.test', assignedToDisplayName: 'Lee' };
+    assert.equal(creditedPerson(legacy, people), null, 'the email names nobody: no credit while it is stored');
+    const plan = choreMemberEmailPlan(legacy, uidByEmail, keyOf);
+    assert.ok(plan.kind === 'scrub' && plan.assignee === 'former' && plan.completer === 'none');
+    const after = applyPlan(legacy, plan as { remove: string[][]; set: Record<string, unknown> });
+    assert.deepEqual(after, { isCompleted: true, assignedToUid: gone, assignedToDisplayName: 'Lee' });
+    assert.deepEqual(creditedPerson(after, people), { uid: gone, name: 'Lee' });
+    // A current member's leftover uid next to the email of someone who left (release C clears it):
+    // a completed chore gets the former key instead, an open one is cleared as before.
+    const stale = { isCompleted: true, assignedToUid: 'uid-ana', assignedToEmail: 'gone@example.test' };
+    const stalePlan = choreMemberEmailPlan(stale, uidByEmail, keyOf);
+    assert.ok(stalePlan.kind === 'scrub' && stalePlan.assignee === 'former');
+    assert.equal(applyPlan(stale, stalePlan as { remove: string[][]; set: Record<string, unknown> }).assignedToUid, gone);
+    const open = choreMemberEmailPlan({ ...stale, isCompleted: false }, uidByEmail, keyOf);
+    assert.ok(open.kind === 'scrub' && open.assignee === 'cleared');
+    assert.equal((open as { set: Record<string, unknown> }).set.assignedToUid, '');
+    // A stored uid that is not a current member's (the person's own) already carries the credit.
+    const ownUid = choreMemberEmailPlan({ isCompleted: true, assignedToUid: 'uid-lee', assignedToEmail: 'gone@example.test' }, uidByEmail, keyOf);
+    assert.ok(ownUid.kind === 'scrub' && ownUid.assignee === 'scrub');
+    assert.deepEqual((ownUid as { set: Record<string, unknown> }).set, {});
+    // A recorded completer means the assignee's email carries no credit.
+    const byCompleter = choreMemberEmailPlan({ isCompleted: true, assignedToEmail: 'gone@example.test', completedByUid: 'uid-sam' }, uidByEmail, keyOf);
+    assert.ok(byCompleter.kind === 'scrub' && byCompleter.assignee === 'scrub');
+  });
+
+  test('a completer who left, without a uid, gets their former-member key as completedByUid', () => {
+    const keyOf = (email: string) => formerMemberKey('household-secret', email);
+    const done = { isCompleted: true, assignedToUid: 'uid-ana', completedByEmail: 'GONE@example.test', completedByName: 'Lee' };
+    const plan = choreMemberEmailPlan(done, uidByEmail, keyOf);
+    assert.ok(plan.kind === 'scrub' && plan.completer === 'former' && plan.assignee === 'clean');
+    const after = applyPlan(done, plan as { remove: string[][]; set: Record<string, unknown> });
+    assert.deepEqual(after, { isCompleted: true, assignedToUid: 'uid-ana', completedByUid: keyOf('gone@example.test'), completedByName: 'Lee' });
+    // The completer, not the assignee, keeps the credit; the same person shares one key across chores.
+    const assigneeOnly = { isCompleted: true, assignedToEmail: 'gone@example.test' };
+    const assigneeAfter = applyPlan(assigneeOnly, choreMemberEmailPlan(assigneeOnly, uidByEmail, keyOf) as { remove: string[][]; set: Record<string, unknown> });
+    const stats = addPurgedChores(readChoreStats(undefined, 2026), [
+      { ...after, completedAt: '2026-01-02T00:00:00.000Z' },
+      { ...assigneeAfter, completedAt: '2026-01-03T00:00:00.000Z' },
+    ]);
+    const key = choreStatsMemberKey(keyOf('gone@example.test'));
+    assert.deepEqual(stats.byAssignee, { [key]: 2 });
+    assert.deepEqual(stats.names, { [key]: 'Lee' });
+    assert.ok(!JSON.stringify(stats).includes('gone'), 'nothing readable from the email');
+    // Re-running on the result writes nothing.
+    assert.deepEqual(choreMemberEmailPlan(after, uidByEmail, keyOf), { kind: 'clean' });
+    assert.deepEqual(choreMemberEmailPlan(assigneeAfter, uidByEmail, keyOf), { kind: 'clean' });
+  });
+
+  test('without a key function, an email that alone carries a credit is kept', () => {
+    assert.deepEqual(choreMemberEmailPlan({ isCompleted: true, assignedToEmail: 'gone@example.test' }, uidByEmail), { kind: 'kept' });
+    assert.deepEqual(choreMemberEmailPlan({ isCompleted: true, assignedToUid: 'uid-ana', assignedToEmail: 'gone@example.test' }, uidByEmail), { kind: 'kept' });
+    // An open chore carries no credit: scrubbed as before.
+    assert.equal(choreMemberEmailPlan({ isCompleted: false, assignedToEmail: 'gone@example.test' }, uidByEmail).kind, 'scrub');
+  });
+
   test('clean documents and re-runs write nothing', () => {
     assert.deepEqual(choreMemberEmailPlan({ assignedToUid: 'uid-sam', completedByUid: 'uid-sam' }, uidByEmail), { kind: 'clean' });
     const template = { assignedToEmail: 'sam@example.test', recurrence: { frequency: 'daily', assignedToEmail: 'sam@example.test' } };
@@ -93,6 +154,60 @@ describe('chore email scrub (release D)', () => {
     const after = applyPlan(template, plan as { remove: string[][]; set: Record<string, unknown> });
     assert.deepEqual(after, { assignedToUid: 'uid-sam', recurrence: { frequency: 'daily' } });
     assert.deepEqual(choreMemberEmailPlan(after, uidByEmail), { kind: 'clean' });
+  });
+});
+
+describe('former-member keys', () => {
+  test('stable per person and household, opaque, and left alone by the stats re-key', () => {
+    const key = formerMemberKey('secret-a', 'Lee@Example.test ');
+    assert.equal(key, formerMemberKey('secret-a', 'lee@example.test'), 'case and spaces do not matter');
+    assert.match(key, /^former-[0-9a-f]{24}$/);
+    assert.ok(key.startsWith(FORMER_KEY_PREFIX));
+    assert.notEqual(key, formerMemberKey('secret-b', 'lee@example.test'), 'another household (secret) gives another key');
+    assert.notEqual(key, formerMemberKey('secret-a', 'kim@example.test'));
+    assert.ok(!key.includes('lee'));
+    assert.equal(isLegacyStatsKey(choreStatsMemberKey(key)), false);
+    assert.equal(formerMemberKey('secret-a', ''), '');
+    assert.equal(formerMemberKey('', 'lee@example.test'), '');
+  });
+
+  // A fake of the one document: get and create as the Admin SDK has them.
+  const fakeRef = (initial?: string) => {
+    let stored: Record<string, unknown> | undefined = initial === undefined ? undefined : { secret: initial };
+    const creates: unknown[] = [];
+    const ref = {
+      creates,
+      onGet: () => {},
+      race(secret: string) { stored = { secret }; },
+      async get() { const data = stored; ref.onGet(); return { exists: data !== undefined, get: (field: string) => data?.[field] }; },
+      async create(data: Record<string, unknown>) {
+        if (stored) throw Object.assign(new Error('exists'), { code: 6 });
+        creates.push(data);
+        stored = data;
+      },
+    };
+    return ref;
+  };
+
+  test('the secret is read, stored only when asked, and a concurrent creation wins', async () => {
+    const existing = fakeRef('kept-secret');
+    assert.deepEqual(await formerMemberSecret(existing, { create: true }), { secret: 'kept-secret', stored: true, created: false });
+    assert.equal(existing.creates.length, 0);
+
+    const missing = fakeRef();
+    const dry = await formerMemberSecret(missing, { create: false });
+    assert.equal(dry.stored, false);
+    assert.ok(dry.secret.length >= 40);
+    assert.equal(missing.creates.length, 0, 'nothing stored until asked');
+    const made = await formerMemberSecret(missing, { create: true, candidate: dry.secret, now: () => 'now' });
+    assert.deepEqual(made, { secret: dry.secret, stored: true, created: true });
+    assert.deepEqual(missing.creates, [{ secret: dry.secret, createdAt: 'now' }]);
+
+    // Another run stores its secret between our read and our create: we adopt theirs.
+    const raced = fakeRef();
+    let first = true;
+    raced.onGet = () => { if (first) { first = false; raced.race('their-secret'); } };
+    assert.deepEqual(await formerMemberSecret(raced, { create: true, candidate: 'mine' }), { secret: 'their-secret', stored: true, created: false });
   });
 });
 

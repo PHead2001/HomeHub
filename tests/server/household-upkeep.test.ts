@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
-import { Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { parseNotificationDoc } from '../../src/lib/notifications';
 import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
 import { choreStatsAssigneeKey, choreStatsMemberKey, deterministicNotificationId, occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreMemberEmailPlan } from '../../scripts/ops/member-email-scrub.mjs';
+import { formerMemberKey, formerMemberSecret } from '../../scripts/ops/former-member-key.mjs';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -34,6 +36,15 @@ const staleListingDb = (staleSub: string, listing: unknown) => bind(adminDb, key
     : undefined)
   : undefined);
 const staleChoresDb = () => staleListingDb('chores', { docs: [] });
+// The real database, except that the household reference's Firestore fails getAll,
+// the call only the members' contact read makes.
+const failingContactsDb = bind(adminDb, key => key === 'collection'
+  ? (name: string) => bind(adminDb.collection(name), k => k === 'doc'
+    ? (id: string) => bind(adminDb.collection(name).doc(id), d => d === 'firestore'
+      ? bind(adminDb, f => f === 'getAll' ? async () => { throw new Error('unavailable'); } : undefined)
+      : undefined)
+    : undefined)
+  : undefined);
 
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());
@@ -328,14 +339,6 @@ describe('household upkeep', () => {
   });
 
   test('a failed contact read defers purging chores credited by email; the next run credits them once', async () => {
-    // The household reference's Firestore fails getAll, the call only the contact read makes.
-    const failingContactsDb = bind(adminDb, key => key === 'collection'
-      ? (name: string) => bind(adminDb.collection(name), k => k === 'doc'
-        ? (id: string) => bind(adminDb.collection(name).doc(id), d => d === 'firestore'
-          ? bind(adminDb, f => f === 'getAll' ? async () => { throw new Error('unavailable'); } : undefined)
-          : undefined)
-        : undefined)
-      : undefined);
     const chores = house().collection('chores');
     // Credited only through the owner's email (no uid, no recorded completer).
     await chores.doc('old-email').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToEmail: 'owner@example.test' });
@@ -358,6 +361,68 @@ describe('household upkeep', () => {
     assert.deepEqual(stats?.byAssignee, { [owner]: 2 });
     assert.equal((await run(new Date('2026-11-05T17:00:00Z'))).purgedChores, 0);
     assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 2);
+  });
+
+  test('a failed contact read defers templates that still carry an email; uid-only ones still generate', async () => {
+    // Bob and Anna are members. A legacy template was reassigned by email only to Anna by an
+    // older build, so its uid is Bob's, stale; another template is assigned by uid only.
+    for (const [uid, name] of [['b1', 'Bob'], ['a1', 'Anna']]) {
+      await house().collection('members').doc(uid).set({ uid, role: 'member', status: 'active', displayName: name });
+      await house().collection('members').doc(uid).collection('private').doc('contact').set({ email: `${name.toLowerCase()}@example.test`, updatedAt: 'x' });
+    }
+    await house().collection('chore-templates').doc('legacy').set({
+      task: 'Dishes', assignedToUid: 'b1', assignedToEmail: 'anna@example.test', roomIds: [],
+      recurrence: { frequency: 'daily', assignedToEmail: 'anna@example.test' },
+    });
+    await house().collection('chore-templates').doc('modern').set({ task: 'Sweep', assignedToUid: 'b1', roomIds: [], recurrence: { frequency: 'daily' } });
+    const byTemplate = async (templateId: string) => (await house().collection('chores').where('templateId', '==', templateId).get()).docs.map(d => d.data());
+
+    const failed = await runHouseholdReminders(failingContactsDb as never, HOUSE, new Date('2026-11-05T15:00:00Z'), ts);
+    assert.equal((await byTemplate('legacy')).length, 0, 'nothing generated from a template whose email cannot be checked');
+    assert.equal((await byTemplate('trash')).length, 0, 'the owner\'s email-keyed template waits too');
+    const sweep = await byTemplate('modern');
+    assert.ok(sweep.length > 0 && sweep.every(c => c.assignedToUid === 'b1'), 'a uid-only template generates as usual');
+    assert.equal(failed.generatedChores, sweep.length);
+
+    await run(new Date('2026-11-05T16:00:00Z'));
+    const dishes = await byTemplate('legacy');
+    assert.equal(dishes.length, sweep.length, 'every day generated once the emails are known');
+    assert.ok(dishes.every(c => c.assignedToUid === 'a1' && c.assignedToDisplayName === 'Anna'), 'for the member the email names, never the stale uid');
+    assert.ok(dishes.every(c => c.assignedToEmail === undefined));
+    assert.ok((await byTemplate('trash')).every(c => c.assignedToUid === 'o1'));
+  });
+
+  test('a completion credited to someone who left waits for the scrub, then keeps its own score', async () => {
+    const chores = house().collection('chores');
+    // Lee has left: one chore names them only as assignee by email, another only as completer by email.
+    await chores.doc('lee-assigned').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToEmail: 'lee@example.test', assignedToDisplayName: 'Lee' });
+    await chores.doc('lee-completed').set({ task: 'Older', isCompleted: true, completedAt: '2026-07-02T12:00:00.000Z', assignedToUid: 'o1', completedByEmail: 'LEE@example.test', completedByName: 'Lee' });
+    const first = await run(new Date('2026-11-05T15:00:00Z'));
+    assert.equal(first.purgedChores, 0, 'the email names nobody: purging now would drop the credit');
+    assert.equal((await chores.get()).docs.filter(d => d.id.startsWith('lee-')).length, 2);
+
+    // scripts/ops/scrub-member-emails.mjs: the household's stored secret, then each plan applied.
+    const secretRef = house().collection('ops').doc('former-members');
+    const { secret } = await formerMemberSecret(secretRef, { create: true });
+    assert.equal((await formerMemberSecret(secretRef, { create: true })).secret, secret, 'a later run reuses it');
+    const uidByEmail = new Map([['owner@example.test', 'o1']]);
+    for (const id of ['lee-assigned', 'lee-completed']) {
+      const plan = choreMemberEmailPlan((await chores.doc(id).get()).data(), uidByEmail, email => formerMemberKey(secret, email));
+      assert.equal(plan.kind, 'scrub');
+      const { set, remove } = plan as { set: Record<string, unknown>; remove: string[][] };
+      await chores.doc(id).update({ ...set, ...Object.fromEntries(remove.map(path => [path.join('.'), FieldValue.delete()])) });
+    }
+    const lee = formerMemberKey(secret, 'lee@example.test');
+    assert.equal((await chores.doc('lee-assigned').get()).data()?.assignedToUid, lee);
+    assert.equal((await chores.doc('lee-completed').get()).data()?.completedByUid, lee);
+
+    const next = await run(new Date('2026-11-05T16:00:00Z'));
+    assert.equal(next.purgedChores, 2);
+    const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats?.completed, 2);
+    assert.deepEqual(stats?.byAssignee, { [choreStatsMemberKey(lee)]: 2 }, 'one score for Lee, not the owner');
+    assert.deepEqual(stats?.names, { [choreStatsMemberKey(lee)]: 'Lee' });
+    assert.ok(!JSON.stringify(stats).includes('example'));
   });
 
   test("a purged chore is added to its year's stats exactly once, even when upkeep runs twice", async () => {

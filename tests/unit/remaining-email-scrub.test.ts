@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { FORMER_MEMBER_UID as SHARED_FORMER_MEMBER_UID, creditedPerson } from '../../functions/src/shared/chore-stats';
+import { creditedPerson } from '../../functions/src/shared/chore-stats';
+import { formerMemberKey } from '../../scripts/ops/former-member-key.mjs';
 import { creditedUid } from '../../src/lib/chores/stats';
 import { isEmailFolderPhotoUrl, memberProfileDiffers } from '../../src/lib/member-directory';
 import { membershipAvatarUrl } from '../../src/lib/household-records';
 import { loggerName } from '../../src/lib/pets/care';
 import {
-  FORMER_MEMBER_UID,
   choreRemainingEmailPlan,
   isEmailFolderPhotoUrl as isEmailFolderPhotoUrlJs,
   labelEmailPlan,
@@ -25,28 +25,30 @@ const names = publicNamesByUid([
   { uid: 'uid-sam', displayName: 'Sam Member' },
   { uid: 'uid-ana', displayName: 'ana@example.test' },
 ]);
-const context = { uidByEmail: new Map([['sam@example.test', 'uid-sam']]), namesByUid: names };
+const formerKeyOf = (email: string) => formerMemberKey('household-secret', email);
+const context = { uidByEmail: new Map([['sam@example.test', 'uid-sam']]), namesByUid: names, formerKeyOf };
 
 describe('remaining email scrub', () => {
   test('public names never include an email', () => {
     assert.deepEqual([...names], [['uid-sam', 'Sam Member']]);
   });
 
-  test('a former member’s completer email becomes a completer nobody is credited for', () => {
+  test('a completer who left, known only by email, keeps the credit under their former-member key', () => {
     const chore = { isCompleted: true, assignedToUid: 'uid-sam', completedByEmail: 'gone@example.test', completedByName: 'Gone' };
     const plan = choreRemainingEmailPlan(chore, context);
     assert.equal(plan.kind, 'scrub');
     if (plan.kind !== 'scrub') return;
+    const key = formerKeyOf('gone@example.test');
     assert.deepEqual(plan.remove, [['completedByEmail']]);
-    assert.deepEqual(plan.set, [[['completedByUid'], FORMER_MEMBER_UID]]);
-    assert.equal(plan.formerCompleter, true);
-    assert.equal(plan.emails, 0);
-    // Credited to nobody, before and after, in the yearly stats and on the Chores page.
-    const after = { ...chore, completedByEmail: undefined, completedByUid: FORMER_MEMBER_UID, completedAt: '2026-01-01T00:00:00Z' };
-    assert.equal(creditedPerson({ ...chore, completedAt: '' } as never, [{ uid: 'uid-sam', email: 'sam@example.test' }]), null);
-    assert.equal(creditedPerson(after as never, [{ uid: 'uid-sam', email: 'sam@example.test' }]), null);
+    assert.deepEqual(plan.set, [[['completedByUid'], key]]);
+    assert.equal(plan.former, true);
+    assert.equal(plan.emails, 1);
+    // The yearly stats credit that person, never the assignee; the Chores page (members only) credits nobody.
+    const after = { ...chore, completedByEmail: undefined, completedByUid: key, completedAt: '2026-01-01T00:00:00Z' };
+    assert.deepEqual(creditedPerson(after as never, [{ uid: 'uid-sam', email: 'sam@example.test' }]), { uid: key, name: 'Gone' });
     assert.equal(creditedUid(after as never, [{ uid: 'uid-sam', email: 'sam@example.test' }]), null);
-    assert.equal(FORMER_MEMBER_UID, SHARED_FORMER_MEMBER_UID);
+    // Without the household's keys the planner refuses rather than keep or drop the credit.
+    assert.throws(() => choreRemainingEmailPlan(chore, { uidByEmail: context.uidByEmail, namesByUid: names } as never), TypeError);
   });
 
   test('email labels become the current public name, else a neutral label', () => {
@@ -71,7 +73,7 @@ describe('remaining email scrub', () => {
   });
 
   test('clean documents are left alone; running on the output finds nothing', () => {
-    const clean = { assignedToUid: 'uid-sam', assignedToDisplayName: 'Sam Member', isCompleted: true, completedByUid: FORMER_MEMBER_UID, completedByName: 'Gone' };
+    const clean = { assignedToUid: 'uid-sam', assignedToDisplayName: 'Sam Member', isCompleted: true, completedByUid: formerKeyOf('gone@example.test'), completedByName: 'Gone' };
     assert.deepEqual(choreRemainingEmailPlan(clean, context), { kind: 'clean' });
     assert.deepEqual(labelEmailPlan({ loggedByUid: 'uid-sam', loggedByName: 'Sam' }, 'pet-logs', names), { kind: 'clean' });
   });

@@ -66,6 +66,7 @@ Primary topology:
 - `households/{householdId}/rooms/{roomId}`
 - `households/{householdId}/chore-settings/preferences` (household chore preferences: `leaderboardEnabled`)
 - `households/{householdId}/stats/chores-{year}` (yearly totals of completed chores that retention removed: `year`, `completed`, `byAssignee`, `names`, `updatedAt`; written only by server upkeep)
+- `households/{householdId}/ops/former-members` (`secret`, `createdAt`: the key for former-member identities on older chores, written by `scripts/ops/scrub-member-emails.mjs`; no client access, by the household catch-all rule; see [Chores](../chores/README.md), "Assignee identity")
 - `households/{householdId}/shopping-lists/{listId}` with `items` and `config/categories`
 - `households/{householdId}/pantry-inventory/{itemId}`
 - `households/{householdId}/barcode-library/{barcode}`

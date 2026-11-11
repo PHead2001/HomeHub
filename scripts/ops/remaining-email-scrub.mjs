@@ -9,25 +9,17 @@
 // `loggedByName` and the feeding state's `lastFedByName`; membership records'
 // `displayName` and an `avatarUrl` that points into an email-named photo
 // folder (`users/{email}/avatars/...`, uploads before release B whose move was
-// not possible); and a completed chore's `completedByEmail` that names someone
-// who has left (release D kept it so the chore is not credited to its
-// assignee). A write is a list of field paths (arrays of segments) to delete
-// plus `[path, value]` pairs to set.
+// not possible); and any assignee or completer email written since release
+// D's scrub ran, which goes the same way (a completion credited to someone who
+// has left keeps it under their former-member key, ./former-member-key.mjs). A
+// write is a list of field paths (arrays of segments) to delete plus
+// `[path, value]` pairs to set.
 
 import { parseStorageDownloadUrl } from './avatar-path.mjs';
 import { choreMemberEmailPlan } from './member-email-scrub.mjs';
 
 /** Same test as `publicDisplayName` (src/lib/member-directory.ts). */
 const EMAIL_LIKE = /\S+@\S+/;
-
-/**
- * `completedByUid` given to a completion whose completer has left and was known
- * only by email. It names nobody, so the chore is credited to no one, as it was
- * with the email (`creditedPerson` in functions/src/shared/chore-stats.ts and the
- * Chores page's points); `completedByName` keeps the label. Twin of
- * `FORMER_MEMBER_UID` in functions/src/shared/chore-stats.ts.
- */
-export const FORMER_MEMBER_UID = 'former-member';
 
 const text = value => (typeof value === 'string' ? value.trim() : '');
 const isMap = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -112,44 +104,52 @@ export function labelFixes(data, fields, namesByUid, overrides = {}) {
 }
 
 /**
- * What the scrub does with one chore: any assignee or completer email still
- * stored (as release D's planner: uid first where it was missing), a former
- * member's `completedByEmail` (replaced by `FORMER_MEMBER_UID`), and email labels.
- * @param {Record<string, unknown> | null | undefined} data
- * @param {{ uidByEmail: Map<string, string>, namesByUid: Map<string, string> }} context
- * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, formerCompleter: boolean, labels: number }}
+ * The decisions of release D's planner (`choreMemberEmailPlan`) with the
+ * household's former-member keys, which it needs so that no email carrying a
+ * credit is ever kept or dropped.
  */
-export function choreRemainingEmailPlan(data, { uidByEmail, namesByUid }) {
-  const base = choreMemberEmailPlan(data, uidByEmail);
+const memberEmailPlan = (data, uidByEmail, formerKeyOf) => {
+  if (typeof formerKeyOf !== 'function') throw new TypeError('formerKeyOf is required');
+  const base = choreMemberEmailPlan(data, uidByEmail, formerKeyOf);
+  if (base.kind === 'kept') throw new Error('unexpected kept plan');
+  return base;
+};
+
+/**
+ * What the scrub does with one chore: any assignee or completer email still
+ * stored, as release D's planner (uid first where it was missing; a completion
+ * credited to someone who has left gets their former-member key), and email labels.
+ * @param {Record<string, unknown> | null | undefined} data
+ * @param {{ uidByEmail: Map<string, string>, namesByUid: Map<string, string>, formerKeyOf: (email: string) => string }} context
+ * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, former: boolean, labels: number }}
+ *   `former`: a former-member key was written.
+ */
+export function choreRemainingEmailPlan(data, { uidByEmail, namesByUid, formerKeyOf }) {
+  const base = memberEmailPlan(data, uidByEmail, formerKeyOf);
   const remove = base.kind === 'scrub' ? [...base.remove] : [];
   const sets = base.kind === 'scrub' ? { ...base.set } : {};
-  const formerCompleter = base.kind === 'kept' || (base.kind === 'scrub' && base.completer === 'kept');
-  if (formerCompleter) {
-    remove.push(['completedByEmail']);
-    sets.completedByUid = FORMER_MEMBER_UID;
-  }
+  const former = base.kind === 'scrub' && (base.assignee === 'former' || base.completer === 'former');
   const labels = labelFixes(data, LABEL_FIELDS.chores, namesByUid, sets);
-  const emails = remove.length - (formerCompleter ? 1 : 0);
   if (remove.length === 0 && Object.keys(sets).length === 0 && labels.length === 0) return { kind: 'clean' };
   const set = [...Object.entries(sets).map(([field, value]) => [[field], value]), ...labels];
-  return { kind: 'scrub', remove, set, emails, formerCompleter, labels: labels.length };
+  return { kind: 'scrub', remove, set, emails: remove.length, former, labels: labels.length };
 }
 
 /**
  * What the scrub does with one chore template: any assignee email still stored
  * and an email assignee label.
  * @param {Record<string, unknown> | null | undefined} data
- * @param {{ uidByEmail: Map<string, string>, namesByUid: Map<string, string> }} context
- * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, formerCompleter: false, labels: number }}
+ * @param {{ uidByEmail: Map<string, string>, namesByUid: Map<string, string>, formerKeyOf: (email: string) => string }} context
+ * @returns {{ kind: 'clean' } | { kind: 'scrub', remove: string[][], set: Array<[string[], unknown]>, emails: number, former: false, labels: number }}
  */
-export function templateRemainingEmailPlan(data, { uidByEmail, namesByUid }) {
-  const base = choreMemberEmailPlan(data, uidByEmail);
+export function templateRemainingEmailPlan(data, { uidByEmail, namesByUid, formerKeyOf }) {
+  const base = memberEmailPlan(data, uidByEmail, formerKeyOf);
   const remove = base.kind === 'scrub' ? [...base.remove] : [];
   const sets = base.kind === 'scrub' ? { ...base.set } : {};
   const labels = labelFixes(data, LABEL_FIELDS['chore-templates'], namesByUid, sets);
   if (remove.length === 0 && Object.keys(sets).length === 0 && labels.length === 0) return { kind: 'clean' };
   const set = [...Object.entries(sets).map(([field, value]) => [[field], value]), ...labels];
-  return { kind: 'scrub', remove, set, emails: remove.length, formerCompleter: false, labels: labels.length };
+  return { kind: 'scrub', remove, set, emails: remove.length, former: false, labels: labels.length };
 }
 
 /**

@@ -1,10 +1,12 @@
 // Removes the last email copies from documents housemates can read (member
 // privacy release E; household-governance README, "Email copies"; chores,
 // pets and maintenance-center READMEs):
-// - chores and chore templates: any assignee or completer email still stored
-//   (as scripts/ops/scrub-member-emails.mjs, for anything written since), and a
-//   former member's `completedByEmail` without `completedByUid`, which becomes
-//   `completedByUid: 'former-member'` (credited to nobody, as with the email);
+// - chores and chore templates: any assignee or completer email still stored,
+//   as scripts/ops/scrub-member-emails.mjs (for anything written since): a
+//   completion credited to someone who has left gets their former-member key
+//   (./former-member-key.mjs; the household's secret in
+//   `households/{id}/ops/former-members`, stored before the first write that
+//   needs one, the same secret that script uses);
 // - labels that are an email (written before release A, or from a profile
 //   whose name is an email): chores' `assignedToDisplayName` and
 //   `completedByName`, templates' `assignedToDisplayName`, maintenance
@@ -44,6 +46,7 @@ import {
   publicNamesByUid,
   templateRemainingEmailPlan,
 } from './remaining-email-scrub.mjs';
+import { formerMemberKey, formerMemberSecret } from './former-member-key.mjs';
 
 const PAGE_SIZE = 400;
 const NOT_FOUND = 5;
@@ -101,7 +104,12 @@ const writePage = async (writes, counts) => {
   }
 };
 
-const scrubCollection = async (query, name, decide) => {
+let secretsCreated = 0;
+
+// `former` (chores and templates only): the household's former-member secret
+// ({ ref, secret, stored }). It is stored, or the one another run stored is
+// adopted (and the page decided again), before the first write that uses a key.
+const scrubCollection = async (query, name, decide, former) => {
   const counts = totals[name];
   let cursor = null;
   for (;;) {
@@ -109,14 +117,22 @@ const scrubCollection = async (query, name, decide) => {
     if (cursor) page = page.startAfter(cursor);
     const snapshot = await page.get();
     if (snapshot.empty) break;
+    let plans = snapshot.docs.map(record => decide(record.data()));
+    if (apply && former && !former.stored && plans.some(plan => plan.former)) {
+      const result = await formerMemberSecret(former.ref, { create: true, candidate: former.secret, now: () => FieldValue.serverTimestamp() });
+      if (result.created) secretsCreated += 1;
+      const adopted = result.secret !== former.secret;
+      Object.assign(former, { secret: result.secret, stored: true });
+      if (adopted) plans = snapshot.docs.map(record => decide(record.data()));
+    }
     const writes = [];
-    for (const record of snapshot.docs) {
+    for (const [index, record] of snapshot.docs.entries()) {
       counts.scanned += 1;
-      const plan = decide(record.data());
+      const plan = plans[index];
       counts[plan.kind] += 1;
       if (plan.kind !== 'scrub') continue;
       if (plan.emails) counts.emails += 1;
-      if (plan.formerCompleter) counts.former += 1;
+      if (plan.former) counts.former += 1;
       if (plan.labels) counts.labels += 1;
       writes.push({ ref: record.ref, plan, updateTime: record.updateTime });
     }
@@ -141,7 +157,9 @@ for (;;) {
       contactEmail: contacts[index]?.exists ? contacts[index].get('email') : undefined,
     })));
     const namesByUid = publicNamesByUid(members.docs.map(member => ({ uid: member.id, displayName: member.get('displayName') })));
-    const context = { uidByEmail, namesByUid };
+    const formerRef = household.ref.collection('ops').doc('former-members');
+    const former = { ref: formerRef, ...(await formerMemberSecret(formerRef, { create: false })) };
+    const context = { uidByEmail, namesByUid, formerKeyOf: email => formerMemberKey(former.secret, email) };
 
     const memberWrites = [];
     for (const member of members.docs) {
@@ -156,8 +174,8 @@ for (;;) {
     }
     if (apply) await writePage(memberWrites, totals.members);
 
-    await scrubCollection(household.ref.collection('chores'), 'chores', data => choreRemainingEmailPlan(data, context));
-    await scrubCollection(household.ref.collection('chore-templates'), 'chore-templates', data => templateRemainingEmailPlan(data, context));
+    await scrubCollection(household.ref.collection('chores'), 'chores', data => choreRemainingEmailPlan(data, context), former);
+    await scrubCollection(household.ref.collection('chore-templates'), 'chore-templates', data => templateRemainingEmailPlan(data, context), former);
     await scrubCollection(household.ref.collection('maintenance-attachments'), 'maintenance-attachments',
       data => labelEmailPlan(data, 'maintenance-attachments', namesByUid));
     const pets = await household.ref.collection('pets').select().get();
@@ -178,8 +196,9 @@ for (const [name, counts] of Object.entries(totals)) {
     console.log(`  name that is an email (removed): ${counts.displayName}; photo in an email-named folder (removed): ${counts.avatarUrl}`);
     console.log(`  record still holding email (not changed here; run backfill-member-contact.mjs, then scrub-member-emails.mjs): ${counts.recordEmail}`);
   } else {
-    console.log(`  with an assignee or completer email: ${counts.emails}; former member's completer email: ${counts.former}; with an email label: ${counts.labels}`);
+    console.log(`  with an assignee or completer email: ${counts.emails}; credited to someone who left, now under a former-member key: ${counts.former}; with an email label: ${counts.labels}`);
   }
   if (apply) console.log(`  updated: ${counts.written}; changed or deleted meanwhile and skipped: ${counts.changed}`);
 }
+if (apply) console.log(`former-member secrets created: ${secretsCreated}`);
 if (!apply) console.log('Dry run only. Re-run with --apply to rewrite the fields.');
