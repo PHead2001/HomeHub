@@ -265,10 +265,11 @@ export function PantryShelves({
                         {(label || lifted) && (
                           <span
                             className={cn(
-                              'rounded-full px-2 py-0.5 text-[11px] font-medium',
-                              lifted ? 'bg-primary/15 text-primary'
-                                : state === 'expired' ? 'bg-destructive/15 text-destructive'
-                                  : state === 'soon' ? 'bg-warning/15 text-warning' : 'text-muted-foreground',
+                              // 12 px on a 10% tint of its own colour: the pairs the theme contrast test checks (SH-26f).
+                              'rounded-full px-2 py-0.5 text-xs font-medium',
+                              lifted ? 'bg-primary/10 text-primary'
+                                : state === 'expired' ? 'bg-destructive/10 text-destructive'
+                                  : state === 'soon' ? 'bg-warning/10 text-warning' : 'text-muted-foreground',
                             )}
                           >
                             {lifted ? 'In the recipe' : label}

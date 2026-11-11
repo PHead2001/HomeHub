@@ -372,3 +372,20 @@
   transition-delay: 0ms !important;
   scroll-behavior: auto !important;
 }
+
+/* How far a phone's sticky quick-add dock sits above the bottom: the tab bar
+   (4rem) and its raised centre "+" (1.25rem above the bar plus its 4 px ring). */
+:root {
+  --dock-clearance: calc(5.75rem + env(safe-area-inset-bottom));
+}
+
+/* SH-12d: while a shopping list is open (set by the open list), the tab bar keeps
+   its tabs but its floating "+" steps aside, so it never covers the list's own
+   quick add; the dock then only clears the bar (plus a 0.5rem gap). */
+:root[data-shopping-trip] [data-quick-add-slot] {
+  display: none;
+}
+
+:root[data-shopping-trip] {
+  --dock-clearance: calc(4.5rem + env(safe-area-inset-bottom));
+}

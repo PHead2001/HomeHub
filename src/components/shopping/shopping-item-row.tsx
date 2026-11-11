@@ -2,7 +2,7 @@
 
 import { formatPackageSize } from '@/lib/shopping/scan';
 import { shownPhoto } from '@/lib/shopping/row-photo';
-import { forwardRef, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { forwardRef, memo, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Image from 'next/image';
 import { motion, useMotionValue, useTransform, type PanInfo } from 'motion/react';
 import { Check, ChevronRight, ExternalLink } from 'lucide-react';
@@ -14,6 +14,7 @@ import { normalizeSourceUrl } from '@/lib/shopping-items';
 import { cn } from '@/lib/utils';
 import { DURATION, EASE } from '@/lib/motion';
 import { useTabActive } from './tab-activity';
+import { useCoarsePointer } from './use-coarse-pointer';
 
 /** Distance (px) a phone swipe must travel to tick an item. */
 const SWIPE_TICK_DISTANCE = 72;
@@ -54,20 +55,6 @@ const hostOf = (href: string) => {
   }
 };
 
-/** True on touch-first devices, where rows can be swiped. */
-function useCoarsePointer() {
-  const [coarse, setCoarse] = useState(false);
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const query = window.matchMedia('(pointer: coarse)');
-    const update = () => setCoarse(query.matches);
-    update();
-    query.addEventListener('change', update);
-    return () => query.removeEventListener('change', update);
-  }, []);
-  return coarse;
-}
-
 type RowProps = {
   item: ShoppingListItem;
   /** The row ticks (members with `shopping.edit`). */
@@ -82,6 +69,8 @@ type RowProps = {
   enterDelay?: number;
   /** The photo to show (`rowPhoto`: the library's current one); undefined = the stored `imageUrl`, null = none. */
   photoUrl?: string | null;
+  /** Trip mode on an open list (SH-33b, SH-14b): taller rows and one step larger text on touch. */
+  trip?: boolean;
 };
 
 /**
@@ -94,9 +83,11 @@ type RowProps = {
  * there is no bare trash button beside each row. Leaving the Needed list draws a
  * strike-through across the name before the row fades; purchased rows drop in
  * from above. Reduced motion shows every end state at once (MotionConfig).
+ * Memoised, with no layout animation and no media listener of its own (SH-27c:
+ * the touch check is one shared listener, `useCoarsePointer`).
  */
-export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function ShoppingItemRow(
-  { item, canToggle, canOpenEditor, onToggle, onEdit, attribution, enterDelay, photoUrl },
+export const ShoppingItemRow = memo(forwardRef<HTMLDivElement, RowProps>(function ShoppingItemRow(
+  { item, canToggle, canOpenEditor, onToggle, onEdit, attribution, enterDelay, photoUrl, trip = false },
   ref,
 ) {
   const photo = photoUrl === undefined ? item.imageUrl || null : photoUrl;
@@ -149,7 +140,7 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
   const packageNote = formatPackageSize(item.size, item.sizeUnit);
   const text = (
     <span className="min-w-0 text-left">
-      <span className="relative block break-words text-sm font-medium leading-snug">
+      <span className={cn('relative block break-words text-sm font-medium leading-snug', trip && 'coarse:text-base')}>
         <span data-item-name className={cn(purchased && 'text-muted-foreground line-through')}>{item.name}</span>{' '}
         <span className="text-muted-foreground">(x{item.quantity})</span>
         {packageNote && <span className="text-muted-foreground"> · {packageNote}</span>}
@@ -179,12 +170,11 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
       className={cn('h-10 w-10 shrink-0 rounded-md object-cover', purchased && 'opacity-50')}
     />
   );
-  const rowTarget = 'flex min-h-11 min-w-0 flex-1 items-center gap-3 px-2 py-1.5 [@media(pointer:coarse)]:min-h-12';
+  const rowTarget = cn('flex min-h-11 min-w-0 flex-1 items-center gap-3 px-2 py-1.5 [@media(pointer:coarse)]:min-h-12', trip && 'coarse:min-h-14 coarse:py-2');
 
   return (
     <motion.div
       ref={ref}
-      layout="position"
       initial={enterDelay !== undefined ? { opacity: 0, y: 6 } : purchased ? { opacity: 0, y: -8 } : false}
       animate={{ opacity: 1, y: 0, transition: { duration: DURATION.ui, ease: EASE.standard, delay: enterDelay ?? 0 } }}
       exit={{ opacity: 0, pointerEvents: 'none', transition: { duration: 0.12, delay: DURATION.micro, ease: EASE.exit } }}
@@ -264,4 +254,4 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
       </motion.div>
     </motion.div>
   );
-});
+}));

@@ -46,9 +46,15 @@ async function open(page: Page, path: string) {
   await expect(page.getByRole('heading', { name: 'Shopping Center', exact: true })).toBeVisible();
 }
 
-/** The aisle headings of the open list's Needed section, in screen order. */
+/** Opens one of the open list's actions from its menu (S8b: Manage Categories, Trips, Scan to tick). */
+async function listAction(page: Page, name: string) {
+  await page.getByTestId('open-list').getByRole('button', { name: 'More list actions' }).click();
+  await page.getByRole('menu').getByRole('menuitem', { name, exact: true }).click();
+}
+
+/** The aisle headings (h4) of the open list's Needed section, in screen order. */
 async function aisles(page: Page): Promise<string[]> {
-  return page.getByTestId('open-list').locator('h3.uppercase').allInnerTexts()
+  return page.getByTestId('open-list').locator('h4.uppercase').allInnerTexts()
     .then((texts) => texts.map((text) => text.trim().toLowerCase()));
 }
 
@@ -148,7 +154,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await open(page, `/shopping?list=${LIST_ID}`);
     await expectAisleOrder(page, 'Bakery', 'Dairy');
 
-    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    await listAction(page, 'Manage Categories');
     const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
     const status = dialog.getByTestId('categories-save-status');
 
@@ -190,7 +196,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await open(page, `/shopping?list=${LIST_ID}`);
     await expectAisleOrder(page, 'Bakery', 'Party');
 
-    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    await listAction(page, 'Manage Categories');
     const dialog = page.getByRole('dialog', { name: 'Manage Categories' });
     await dialog.getByRole('combobox', { name: 'Store for this list' }).click();
     await page.getByRole('option', { name: STORE_NAME }).click();
@@ -211,7 +217,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
 
     // A new store starts with the order the dialog shows (here the Corner Shop's
     // aisle order, not the list's own Bakery, Dairy, Party) and is the list's store at once.
-    await page.getByRole('button', { name: 'Manage Categories' }).click();
+    await listAction(page, 'Manage Categories');
     await dialog.getByRole('combobox', { name: 'Store for this list' }).click();
     await page.getByRole('option', { name: 'New store…' }).click();
     await dialog.getByLabel('New store name').fill(NEW_STORE_NAME);
@@ -331,7 +337,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
       await open(b.page, `/shopping?list=${LIST_ID}`);
       await expectAisleOrder(b.page, 'Bakery', 'Dairy');
 
-      await a.page.getByRole('button', { name: 'Manage Categories' }).click();
+      await listAction(a.page, 'Manage Categories');
       const dialog = a.page.getByRole('dialog', { name: 'Manage Categories' });
       await dialog.getByRole('button', { name: 'Move Dairy up' }).click();
       await expect(dialog.getByTestId('categories-save-status')).toHaveText('Dairy moved up · Saved');
@@ -343,7 +349,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
       await expectAisleOrder(b.page, 'Party', 'Dairy');
 
       // B's own dialog shows the store's order A is editing, live.
-      await b.page.getByRole('button', { name: 'Manage Categories' }).click();
+      await listAction(b.page, 'Manage Categories');
       const other = b.page.getByRole('dialog', { name: 'Manage Categories' });
       await expect(other.getByRole('heading', { name: `Aisle order at ${STORE_NAME}` })).toBeVisible();
       await dialog.getByRole('button', { name: 'Move Bakery up' }).click();
