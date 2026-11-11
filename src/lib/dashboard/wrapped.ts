@@ -7,7 +7,7 @@ import { completionInstant, type ChoreRecord } from '../chores/dates';
 import type { RawDoc } from './facts';
 import { localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { choreStatsAssigneeKey } from '../../../functions/src/shared/ids';
-import { creditedPerson, creditedStatsKey, readChoreStats, type CreditPerson, type PurgedChore } from '../../../functions/src/shared/chore-stats';
+import { creditedPerson, creditedStatsKey, foldAliasedUidKeys, readChoreStats, type CreditPerson, type PurgedChore } from '../../../functions/src/shared/chore-stats';
 
 export type WrappedSummary = {
   year: number;
@@ -91,7 +91,7 @@ export function summarizeChores(
 ): Pick<WrappedSummary, 'choresDone' | 'champion' | 'choresWindow'> {
   const zone = safeTimeZone(options.timeZone);
   const yearOf = (date: Date | null) => (date ? Number(localDay(date, zone).slice(0, 4)) : null);
-  const stats = options.stats ? readChoreStats(options.stats, year) : null;
+  const stats = options.stats ? foldAliasedUidKeys(readChoreStats(options.stats, year)) : null;
   const names = new Map<string, string>();
   options.names?.forEach((name, email) => names.set(choreStatsAssigneeKey(email), name));
 
@@ -106,7 +106,7 @@ export function summarizeChores(
     // 90-day boundary.
     const person = creditedPerson(chore as Omit<PurgedChore, 'completedAt'>, options.people);
     if (!person) continue;
-    const key = creditedStatsKey(person);
+    const key = creditedStatsKey(person, stats?.aliases);
     counts.set(key, (counts.get(key) ?? 0) + 1);
     // Labels only: a name that looks like an email is never used.
     if (!labels.has(key) && typeof person.name === 'string' && person.name.trim() && !person.name.includes('@')) labels.set(key, person.name);

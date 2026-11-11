@@ -65,7 +65,7 @@ Primary topology:
 - `households/{householdId}/chore-templates/{templateId}`
 - `households/{householdId}/rooms/{roomId}`
 - `households/{householdId}/chore-settings/preferences` (household chore preferences: `leaderboardEnabled`)
-- `households/{householdId}/stats/chores-{year}` (yearly totals of completed chores that retention removed: `year`, `completed`, `byAssignee`, `names`, `updatedAt`; written only by server upkeep)
+- `households/{householdId}/stats/chores-{year}` (yearly totals of completed chores that retention removed: `year`, `completed`, `byAssignee`, `names`, `updatedAt`, and `aliases` (uid of someone who left -> their stats key, written by leaving and removal); written only by the server)
 - `households/{householdId}/shopping-lists/{listId}` with `items` and `config/categories`
 - `households/{householdId}/pantry-inventory/{itemId}`
 - `households/{householdId}/barcode-library/{barcode}`

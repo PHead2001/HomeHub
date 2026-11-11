@@ -8,7 +8,7 @@ import {
   unassignedChoreFields,
 } from '../../functions/src/shared/assignee';
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
-import { addPurgedChores, creditedPerson, readChoreStats } from '../../functions/src/shared/chore-stats';
+import { addPurgedChores, creditedPerson, creditedStatsKey, foldAliasedUidKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
 import { choreStatsAssigneeKey, choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
@@ -237,6 +237,20 @@ describe('yearly stats credit for uid-only chores (review finding on #140)', () 
     assert.deepEqual(summarizeChores([{ id: 'g1', ...gone }], 2026, { timeZone: 'UTC', people, stats: archived }).champion, { name: 'Gil', count: 5 });
     // Uid keys never collide with email-derived keys.
     assert.ok(choreStatsMemberKey('uid-gone').includes('-') && !choreStatsAssigneeKey('gone@example.test').includes('-'));
+    // With the departure's alias the uid goes back to the key it was counted under while a member.
+    const aliases = { 'uid-gone': choreStatsAssigneeKey('gil@example.test') };
+    assert.equal(creditedStatsKey({ email: '', uid: 'uid-gone' }, aliases), choreStatsAssigneeKey('gil@example.test'));
+    assert.equal(creditedStatsKey({ email: 'sam@example.test', uid: 'uid-sam' }, aliases), choreStatsAssigneeKey('sam@example.test'));
+    const withAlias = readChoreStats({ completed: 4, byAssignee: { [aliases['uid-gone']]: 4 }, aliases }, 2026);
+    assert.deepEqual(withAlias.aliases, aliases);
+    const merged = addPurgedChores(withAlias, [gone], people);
+    assert.deepEqual(merged.byAssignee, { [aliases['uid-gone']]: 5 });
+    assert.deepEqual(merged.aliases, aliases, 'kept on the document');
+    // A uid bucket counted before the alias existed is folded into it.
+    const folded = foldAliasedUidKeys(readChoreStats({ byAssignee: { [choreStatsMemberKey('uid-gone')]: 2, [aliases['uid-gone']]: 4 }, names: { [choreStatsMemberKey('uid-gone')]: 'Gil' }, aliases }, 2026));
+    assert.deepEqual(folded.byAssignee, { [aliases['uid-gone']]: 6 });
+    assert.deepEqual(folded.names, { [aliases['uid-gone']]: 'Gil' });
+    assert.equal(readChoreStats({ byAssignee: {} }, 2026).aliases, undefined, 'no field without aliases');
     // A chore that names nobody credits nobody.
     assert.equal(creditedPerson({ assignedToDisplayName: 'Nobody' }, people), null);
   });

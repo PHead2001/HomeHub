@@ -519,6 +519,27 @@ service cloud.firestore {
           get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data.get('email', null) == email);
     }
 
+    // `uid` is the member of this household whom a stored legacy assignee email names:
+    // their member document or their protected contact document holds that email
+    // (compared case-insensitively). The rules read the contact document themselves;
+    // the caller never sees it.
+    function memberUidHasEmail(householdId, uid, email) {
+      let member = /databases/$(database)/documents/households/$(householdId)/members/$(uid);
+      let contact = /databases/$(database)/documents/households/$(householdId)/members/$(uid)/private/contact;
+      return uid is string && uid != '' && email is string && email != '' && exists(member) &&
+        (get(member).data.get('email', '').lower() == email.lower() ||
+          (exists(contact) && get(contact).data.get('email', '').lower() == email.lower()));
+    }
+
+    // Release C writers replace a legacy assignee email by the uid of the member it
+    // names, removing the email (and a template's recurrence copy) in the same write.
+    // That keeps the assignee, so it needs no chores.assign: the email is removed and
+    // the new uid belongs to the member the stored email named.
+    function legacyAssigneeKept(householdId, after, before, beforeEmail) {
+      return after.get('assignedToEmail', '') in [null, ''] &&
+        memberUidHasEmail(householdId, after.get('assignedToUid', null), beforeEmail);
+    }
+
     // Since member privacy release C writers store the uid alone (no email). Creating a
     // chore or setting a template for yourself that way needs no chores.assign, as with
     // your own email; any other uid is checked as above. Not used for chore updates:
@@ -600,6 +621,7 @@ service cloud.firestore {
       return (after.get('assignedToEmail', null) == before.get('assignedToEmail', null) &&
           (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
             choreAssigneeUidMatchesEmail(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))) ||
+        legacyAssigneeKept(householdId, after, before, before.get('assignedToEmail', null)) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }
 
@@ -660,7 +682,12 @@ service cloud.firestore {
           (recurrenceAssignee(after) == recurrenceAssignee(before) ||
             choreAssigneeIsCallerOrNone(recurrenceAssignee(after))) &&
           (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
-            choreAssigneeUidIsCallerOrMatches(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)))
+            choreAssigneeUidIsCallerOrMatches(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)) ||
+            // The stored legacy email (top level, else the recurrence copy) is replaced by
+            // the uid of the member it names; both email copies end up removed.
+            (recurrenceAssignee(after) in [null, ''] &&
+              legacyAssigneeKept(householdId, after, before,
+                before.get('assignedToEmail', '') in [null, ''] ? recurrenceAssignee(before) : before.get('assignedToEmail', null))))
         ) ||
         hasHouseholdPermission(householdId, 'chores.assign');
     }

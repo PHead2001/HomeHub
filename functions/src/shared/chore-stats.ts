@@ -12,6 +12,13 @@ export type ChoreStatsDoc = {
   byAssignee: Record<string, number>;
   /** Display name per assignee key, for labels only. */
   names: Record<string, string>;
+  /**
+   * For people who have left: their uid -> the stats key their completions
+   * were counted under while they were members (`choreStatsAssigneeKey` of
+   * their email), written by the departure (leave or removal). No email.
+   * Present only when the document has one.
+   */
+  aliases?: Record<string, string>;
 };
 
 export type PurgedChore = {
@@ -77,15 +84,46 @@ export const creditedPerson = (
 /**
  * The yearly stats key of a credited person: their email-derived key, or,
  * when no email is known for their uid (someone who has left: their
- * membership and contact documents are gone), their uid key, so the credit is
- * kept rather than dropped.
+ * membership and contact documents are gone), the key their departure
+ * recorded as an alias (the one they were counted under while a member),
+ * else their uid key, so the credit is kept in one bucket rather than dropped.
  * @param {{email: string, uid: string}} person From creditedPerson.
+ * @param {Record<string, string>} aliases The stats document's `aliases`
+ *   (uid of someone who left -> the key they were counted under).
  * @return {string} The key.
  */
 export const creditedStatsKey = (
   person: {email: string; uid: string},
+  aliases: Readonly<Record<string, string>> = {},
 ): string => person.email ? choreStatsAssigneeKey(person.email) :
-  choreStatsMemberKey(person.uid);
+  aliases[person.uid] || choreStatsMemberKey(person.uid);
+
+/**
+ * Moves any `uid-<uid>` bucket of a person with an alias into the aliased
+ * key (counts added, an existing label kept), so a departed person has one
+ * score whatever order their completions were counted in.
+ * @param {ChoreStatsDoc} stats Stats as read.
+ * @return {ChoreStatsDoc} Stats with aliased uid buckets folded.
+ */
+export const foldAliasedUidKeys = (stats: ChoreStatsDoc): ChoreStatsDoc => {
+  const aliases = stats.aliases ?? {};
+  if (Object.keys(aliases).length === 0) return stats;
+  const byAssignee = {...stats.byAssignee};
+  const names = {...stats.names};
+  for (const [uid, key] of Object.entries(aliases)) {
+    const uidKey = choreStatsMemberKey(uid);
+    if (uidKey === key) continue;
+    if (uidKey in byAssignee) {
+      byAssignee[key] = (byAssignee[key] ?? 0) + byAssignee[uidKey];
+      delete byAssignee[uidKey];
+    }
+    if (uidKey in names) {
+      if (!(key in names)) names[key] = names[uidKey];
+      delete names[uidKey];
+    }
+  }
+  return {...stats, byAssignee, names};
+};
 
 /**
  * Stats document id for a calendar year.
@@ -129,12 +167,14 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
       value && typeof value === "object" ? value : {})
       .filter(([, s]) => typeof s === "string")
       .map(([key, s]) => [key, s as string]));
+  const aliases = strings(raw.aliases);
   return {
     year,
     completed: typeof raw.completed === "number" && raw.completed > 0 ?
       raw.completed : 0,
     byAssignee: numbers(raw.byAssignee),
     names: strings(raw.names),
+    ...(Object.keys(aliases).length > 0 ? {aliases} : {}),
   };
 };
 
@@ -152,12 +192,13 @@ export const addPurgedChores = (
   chores: PurgedChore[],
   people: readonly CreditPerson[] = [],
 ): ChoreStatsDoc => {
-  const byAssignee = {...stats.byAssignee};
-  const names = {...stats.names};
+  const folded = foldAliasedUidKeys(stats);
+  const byAssignee = {...folded.byAssignee};
+  const names = {...folded.names};
   for (const chore of chores) {
     const person = creditedPerson(chore, people);
     if (!person) continue;
-    const key = creditedStatsKey(person);
+    const key = creditedStatsKey(person, stats.aliases);
     byAssignee[key] = (byAssignee[key] ?? 0) + 1;
     // Labels only, readable by everyone who sees chores: never the email.
     if (filled(person.name) && !person.name.includes("@")) {
@@ -169,5 +210,6 @@ export const addPurgedChores = (
     completed: stats.completed + chores.length,
     byAssignee,
     names,
+    ...(stats.aliases ? {aliases: stats.aliases} : {}),
   };
 };
