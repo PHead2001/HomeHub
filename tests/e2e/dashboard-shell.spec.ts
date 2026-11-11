@@ -515,6 +515,14 @@ test.describe('QA-15 / QA-1: palette modes instead of typed prefixes', () => {
       await expect(picker.getByRole('radio', { name: 'Weekly Groceries' })).toBeVisible();
       await picker.getByRole('radio', { name: 'E2E Mode Groceries' }).click();
       await expect(picker.getByRole('radio', { name: 'E2E Mode Groceries' })).toHaveAttribute('aria-checked', 'true');
+      // The pick is kept by the palette, not the Item panel: leaving the mode
+      // (as the preview does after a failed save) and coming back keeps it.
+      await mode.getByTestId('palette-mode-type-instead').click();
+      await expect(mode).toHaveCount(0);
+      const input = palette.getByRole('combobox', { name: 'Search or quick add' });
+      await input.fill('add');
+      await palette.getByRole('option', { name: /Add a shopping item/ }).click();
+      await expect(picker.getByRole('radio', { name: 'E2E Mode Groceries' })).toHaveAttribute('aria-checked', 'true');
       await field.fill('e2e mode towels');
       await field.press('Enter');
       await expect.poll(async () => (await namedItems(second, 'E2e mode towels')).size).toBe(1);

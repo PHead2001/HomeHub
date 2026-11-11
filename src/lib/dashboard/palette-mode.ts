@@ -83,6 +83,15 @@ export function itemModeLists(lists: readonly QuickAddList[]): { choices: QuickA
   return { choices, initial: choices[0] ?? null };
 }
 
+/**
+ * The list Item mode adds to: the one the member picked while it is still offered,
+ * else the preselected one. The pick is kept by the palette (not the Item panel),
+ * so it survives the preview's Back after a failed save.
+ */
+export function chosenItemList(choices: readonly QuickAddList[], pickedId: string | null, initial: QuickAddList | null): QuickAddList | null {
+  return (pickedId ? choices.find((list) => list.id === pickedId) : undefined) ?? initial;
+}
+
 const SHOPPING_VERB = /^(?:please\s+)?(?:add|buy|get|grab|pick up|need|we need|i need|we're out of|out of)\s+/i;
 
 /**

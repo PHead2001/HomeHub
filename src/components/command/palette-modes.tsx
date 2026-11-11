@@ -23,6 +23,7 @@ import { DEFAULT_PORTION, formatPortion } from '@/lib/pets/care';
 import { cn } from '@/lib/utils';
 import {
   MODE_COPY,
+  chosenItemList,
   choreModeIntent,
   itemModeIntent,
   type FeedingModeState,
@@ -156,6 +157,8 @@ export function ItemMode({
   state,
   text,
   onText,
+  listId,
+  onListId: setListId,
   onRetry,
   onSave,
   onOpenShopping,
@@ -164,15 +167,17 @@ export function ItemMode({
   state: ItemModeState;
   text: string;
   onText: (text: string) => void;
+  /** The list the member picked (kept by the palette across the preview), or null for the preselected one. */
+  listId: string | null;
+  onListId: (listId: string) => void;
   onRetry: () => void;
   onSave: (intent: ShoppingIntent) => void;
   onOpenShopping: () => void;
   onTypeInstead: () => void;
 }) {
-  const [listId, setListId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const choices = state.status === 'ready' ? state.choices : [];
-  const list = choices.find((candidate) => candidate.id === listId) ?? (state.status === 'ready' ? state.initial : null);
+  const list = chosenItemList(choices, listId, state.status === 'ready' ? state.initial : null);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const intent = itemModeIntent(text, list);

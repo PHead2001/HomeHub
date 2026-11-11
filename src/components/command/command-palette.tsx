@@ -134,6 +134,9 @@ export function CommandPalette({
   const [mode, setMode] = useState<PaletteMode | null>(initialMode);
   // What is typed in Item or Chore mode (kept when a preview goes Back).
   const [modeText, setModeText] = useState('');
+  // The list picked in Item mode: kept here, because the Item panel unmounts while
+  // the preview shows, so Back after a failed save returns to the same list.
+  const [itemListId, setItemListId] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [activeChoice, setActive] = useState(0);
   const [pending, setPending] = useState<QuickAddIntent | null>(null);
@@ -655,6 +658,8 @@ export function CommandPalette({
             })}
             text={modeText}
             onText={setModeText}
+            listId={itemListId}
+            onListId={setItemListId}
             onRetry={index.retry}
             onSave={saveFromMode}
             onOpenShopping={() => navigate('/shopping')}

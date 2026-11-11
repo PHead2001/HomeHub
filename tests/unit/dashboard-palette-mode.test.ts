@@ -6,6 +6,7 @@ import { bareCommandVerb, parseQuickAdd, type QuickAddContext } from '../../src/
 import {
   MODE_COPY,
   MODE_PERMISSION,
+  chosenItemList,
   bareVerbOffer,
   choreModeIntent,
   feedingModeState,
@@ -190,6 +191,24 @@ describe('QA-15: mode permissions and states', () => {
     const hardware = { id: 'hardware', name: 'Hardware Run', type: 'Hardware' };
     assert.deepEqual(itemModeLists([hardware]), { choices: [hardware], initial: hardware });
     assert.deepEqual(itemModeLists([]), { choices: [], initial: null });
+  });
+});
+
+describe('QA-15: the Item mode list pick (Codex 4535003369)', () => {
+  const [groceries, costco, hardware] = context.lists;
+
+  it('keeps the picked list while it is offered, else the preselected one', () => {
+    assert.equal(chosenItemList([groceries, costco], 'costco', groceries), costco);
+    assert.equal(chosenItemList([groceries, costco], null, groceries), groceries);
+    // A list that is no longer offered (deleted, or its type changed) is never kept.
+    assert.equal(chosenItemList([groceries, costco], hardware.id, groceries), groceries);
+    assert.equal(chosenItemList([], 'costco', null), null);
+  });
+
+  it('the pick lives in the palette, so the preview Back cannot reset it', () => {
+    const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
+    assert.match(read('src/components/command/command-palette.tsx'), /listId=\{itemListId\}/);
+    assert.doesNotMatch(read('src/components/command/palette-modes.tsx'), /\[listId, setListId\] = useState/);
   });
 });
 
