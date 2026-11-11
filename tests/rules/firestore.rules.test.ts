@@ -1534,6 +1534,8 @@ describe('content shapes: shopping', () => {
     // original attribution, recording the restorer; a restore cannot invent a member or
     // be credited to someone else.
     await assertSucceeds(setDoc(item(users.owner, 's2-restore'), built({ addedByUid: users.member.uid, restoredByUid: users.owner.uid })));
+    // Restoring one's own item (restoreItemData adds the writer as restorer too).
+    await assertSucceeds(setDoc(item(users.member, 's2-restore-own'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-unmarked'), built({ addedByUid: users.member.uid })));

@@ -1,5 +1,6 @@
 'use client';
 
+import { formatPackageSize } from '@/lib/shopping/scan';
 import { forwardRef, useEffect, useState } from 'react';
 import Image from 'next/image';
 import { motion, useMotionValue, useTransform, type PanInfo } from 'motion/react';
@@ -96,10 +97,13 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
     if (info.offset.x >= SWIPE_TICK_DISTANCE) onToggle(item);
   };
 
+  // A scanned package size is a note, never the count (BL-1).
+  const packageNote = formatPackageSize(item.size, item.sizeUnit);
   const label = (
     <span className="relative min-w-0 break-words text-sm font-medium leading-snug">
       <span className={cn(purchased && 'text-muted-foreground line-through')}>{item.name}</span>{' '}
       <span className="text-muted-foreground">(x{item.quantity})</span>
+      {packageNote && <span className="text-muted-foreground"> · {packageNote}</span>}
       {!purchased && (
         // The strike-through that draws across when the item is ticked (exit only).
         <motion.span

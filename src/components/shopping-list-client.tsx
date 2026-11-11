@@ -5,12 +5,10 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AnimatePresence, motion } from 'motion/react';
-import { collection, doc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocFromCache, updateDoc, deleteDoc, setDoc, type DocumentReference } from 'firebase/firestore';
 import { ArchiveX, ArrowLeft, Loader2, Minus, Plus, PlusCircle, ScanBarcode, Settings, X } from 'lucide-react';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -34,12 +32,14 @@ import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { useAuth } from '@/hooks/use-auth';
-import { db } from '@/lib/firebase';
+import { db, getLocalPersistence } from '@/lib/firebase';
 import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
-import { buildShoppingListItem } from '@/lib/shopping-items';
-import { findMergeTarget, groupItemsByAisle, normalizeItemName, pluralize, splitSettled, type QuickAddEntry } from '@/lib/shopping/items';
+import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
+import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
+import { scanToShoppingEntry } from '@/lib/shopping/scan';
+import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { countAllOnServer, countNeededOnServer, useLiveListCategories, useLiveListCounts, useLiveListItems, useLiveShoppingLists } from '@/lib/shopping/live';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
@@ -47,7 +47,7 @@ import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
 import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
 import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
-import { deleteStillPurchasedItems, mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
+import { deleteStillPurchasedItems } from '@/lib/shopping/item-transactions';
 import type { ShoppingListItem, ShoppingListCategory, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
 import { ListCard } from './shopping/list-card';
@@ -184,7 +184,6 @@ function ManageCategoriesDialog({ categories, householdId, listId }: { categorie
   );
 }
 
-type AddResult = { name: string; merged: boolean; saved: 'saved' | 'queued'; usedFallback: boolean; reason?: string; category: string };
 
 /** Entrance delay of one needed row, in walk order across the aisle groups (≤ 30 ms each, ≤ 400 ms total). */
 const rowDelay = (groups: Array<{ items: unknown[] }>, groupIndex: number, itemIndex: number, total: number) => {
@@ -193,12 +192,12 @@ const rowDelay = (groups: Array<{ items: unknown[] }>, groupIndex: number, itemI
 };
 
 const fallbackReasonText = (reason?: string) => reason === 'timeout'
-  ? 'Automatic categorization timed out.'
+  ? 'Automatic sorting timed out.'
   : reason === 'rate_limited'
-    ? 'Automatic categorization is receiving too many requests.'
+    ? 'Automatic sorting is receiving too many requests.'
     : reason === 'configuration'
-      ? 'Automatic categorization is not configured.'
-      : 'Automatic categorization was unavailable.';
+      ? 'Automatic sorting is not configured.'
+      : 'Automatic sorting was unavailable.';
 
 export function ShoppingListClient({
   selectedListId,
@@ -287,6 +286,7 @@ export function ShoppingListClient({
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
+  const householdIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
 
@@ -315,6 +315,7 @@ export function ShoppingListClient({
 
   // The open list's id (from the URL), so async results for another list are never shown.
   selectedListIdRef.current = selectedListId;
+  householdIdRef.current = householdId;
 
   const getListsCollectionRef = useCallback(() => {
     if (!householdId) return null;
@@ -425,126 +426,185 @@ export function ShoppingListClient({
   const { watch, setValue, getValues } = form;
   const currentQuantity = watch('quantity');
 
-  /**
-   * Adds entries to the open list. A name that matches a still-needed item
-   * (ignoring case and spacing) raises that item's quantity instead of creating a
-   * duplicate. New items are categorized like before (manual category, else AI,
-   * `Other` on any failure or while offline) and written through Firestore's queue.
-   */
-  const addEntries = async (
-    entries: QuickAddEntry[],
-    { selectedCategory, libraryItem, barcode }: { selectedCategory?: string; libraryItem?: BarcodeLibraryItem | null; barcode?: string } = {},
-  ): Promise<{ results: AddResult[]; failed: QuickAddEntry[]; firstError?: unknown } | null> => {
-    const list = selectedList;
-    if (!householdId || !list) return null;
-    const offline = isBrowserOffline();
-    // A rejected queued write is rolled back in the listener; only say so.
-    const onLateError = (name: string) => (error: unknown) => {
-      toastError(error, `Could not sync ${name}`);
-    };
-
-    // Each entry is its own write: settle them all, so one failure never hides
-    // which entries were saved (and a retry never adds those twice).
-    const settled = await Promise.allSettled(entries.map(async (entry): Promise<AddResult> => {
-      // The list on screen is live but can trail the server by a moment.
-      // Online, the merge re-reads the target in a transaction and only increments it
-      // if it is still needed; otherwise (bought or deleted meanwhile) a new needed
-      // item is created below. Offline, transactions cannot run, so there is no merge
-      // at all: a new needed item is queued. A duplicate is harmless; folding an
-      // addition into an item someone already bought would lose it.
-      const target = offline ? undefined : findMergeTarget(listItemsRef.current, entry.name);
-      if (target) {
-        const merged = await mergeIntoNeededItem(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', target.id), entry.quantity);
-        if (merged) return { name: target.name, merged: true, saved: 'saved', usedFallback: false, category: target.category };
-      }
-      const categoryResult = await resolveShoppingCategory({
-        itemName: entry.name,
-        categories,
-        // Offline there is no model to ask; save under Other like any AI fallback.
-        selectedCategory: selectedCategory || (offline ? 'Other' : undefined),
-        categorize: async categorizeInput => unwrapAiActionResult(await categorizeGroceryItem(
-          categorizeInput,
-          await getAiActionContext(householdId)
-        )),
-      });
-      const { itemId, data } = buildShoppingListItem({
-        name: entry.name,
-        quantity: entry.quantity,
-        category: categoryResult.category,
-        imageUrl: libraryItem?.imageUrl,
-        barcode,
-      });
-      const saved = await awaitWriteUnlessOffline(
-        setDoc(doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', itemId), data),
-        onLateError(entry.name),
-      );
-      return { name: entry.name, merged: false, saved, usedFallback: categoryResult.usedFallback && !offline, reason: categoryResult.reason, category: categoryResult.category };
-    }));
-    const { succeeded, failed, firstError } = splitSettled(entries, settled);
-
-    if (succeeded.length > 0) playFeedback('add');
-    // No re-read (SH-27a): the listener already shows whatever was saved.
-    return { results: succeeded, failed, firstError };
+  // Which opening of Add Item this is and how often its draft changed, so a save
+  // confirmed late never wipes or closes a newer draft (`dialogAfterSave`).
+  const addDialogSessionRef = useRef(0);
+  const addDraftRevisionRef = useRef(0);
+  const addDialogOpenRef = useRef(false);
+  addDialogOpenRef.current = isAddItemDialogOpen;
+  useEffect(() => {
+    addDialogSessionRef.current += 1;
+  }, [isAddItemDialogOpen]);
+  useEffect(() => {
+    return form.subscribe({
+      formState: { values: true },
+      callback: () => {
+        addDraftRevisionRef.current += 1;
+      },
+    });
+  }, [form]);
+  const currentDialogDraft = () => ({
+    session: addDialogSessionRef.current,
+    listId: selectedListIdRef.current,
+    revision: addDraftRevisionRef.current,
+  });
+  // After a confirmed save: clear and close only what still belongs to it.
+  const finishDialogSave = (submitted: DialogDraft) => {
+    const { reset, close } = dialogAfterSave(submitted, { ...currentDialogDraft(), open: addDialogOpenRef.current });
+    if (reset) form.reset({ name: '', quantity: 1, category: '' });
+    if (close) setIsAddItemDialogOpen(false);
   };
 
-  const reportAddResults = (results: AddResult[]) => {
-    const queued = results.some((result) => result.saved === 'queued');
-    if (results.length === 1) {
-      const [result] = results;
-      toast(queued
-        ? { title: 'Item Added Offline', description: `${result.name} will sync when you are back online.` }
+  // One dialog submission at a time (SH-4c): a second Enter while it is sending is ignored.
+  const dialogGuardRef = useRef(createSubmissionGuard());
+  const [dialogStatus, setDialogStatus] = useState<string | null>(null);
+  // A save that was still pending and later failed says so once.
+  const reportLateFailure = useCallback((name: string, error: unknown) => {
+    toastError(error, `Could not save ${name}`);
+  }, [toastError]);
+
+  /**
+   * Adds entries to the open list through the shared save path (`addItemsToList`):
+   * each saves at once with a remembered or local category, merges into a
+   * still-needed item of the same name online, and is classified honestly
+   * (save-status.ts). One batched AI call then sorts the `pending` ones; its late
+   * answers only touch items that are unchanged and still on the active list.
+   */
+  const addEntries = async (
+    entries: AddEntry[],
+    { selectedCategory, libraryItem, barcode }: { selectedCategory?: string; libraryItem?: BarcodeLibraryItem | null; barcode?: string } = {},
+  ): Promise<EntryOutcome[] | null> => {
+    const list = selectedList;
+    if (!householdId || !list) return null;
+    const { outcomes, categorization } = await addItemsToList({
+      householdId,
+      listId: list.id,
+      uid: currentUser?.uid,
+      entries,
+      categories,
+      knownItems: listItemsRef.current,
+      selectedCategory,
+      imageUrl: libraryItem?.imageUrl,
+      barcode,
+      active: () => ({ householdId: householdIdRef.current, listId: selectedListIdRef.current }),
+      onLateError: reportLateFailure,
+    });
+    if (outcomes.some((outcome) => outcome.state !== 'failed')) playFeedback('add');
+    void categorization.then(reportCategorization);
+    // No re-read (SH-27a): the listener already shows whatever was saved.
+    return outcomes;
+  };
+
+  // "Saved to Other" only for entries the server confirmed; the rest were only not sorted.
+  const reportCategorization = (report: CategorizationReport) => {
+    const notice = categorizationNotice(
+      { savedNames: report.unavailable, unconfirmedNames: report.unconfirmed },
+      fallbackReasonText(report.reason),
+    );
+    if (notice) toast(notice);
+  };
+
+  // Only what is known: "Saved, will sync" needs the durable cache to show the write.
+  const reportAddResults = (outcomes: EntryOutcome[]) => {
+    const done = outcomes.filter((outcome) => isSettledForInput(outcome.state));
+    if (done.length === 0) return;
+    const local = done.some((outcome) => outcome.state === 'stored-locally');
+    if (done.length === 1) {
+      const [result] = done;
+      toast(local
+        ? { title: 'Saved, will sync', description: `${result.name} is saved on this device and syncs when the connection is back.` }
         : result.merged
           ? { title: 'Quantity updated', description: `${result.name} was already on the list, so its quantity went up.` }
           : { title: 'Item Added', description: `${result.name} was added to the ${result.category} category.` });
     } else {
-      const merged = results.filter((result) => result.merged).length;
+      const merged = done.filter((outcome) => outcome.merged).length;
       toast({
-        title: queued ? `${pluralize(results.length, 'item')} added offline` : `${pluralize(results.length, 'item')} added`,
-        description: queued
-          ? 'They will sync when you are back online.'
+        title: local ? 'Saved, will sync' : `${pluralize(done.length, 'item')} added`,
+        description: local
+          ? `${pluralize(done.length, 'item')} saved on this device; they sync when the connection is back.`
           : merged > 0 ? `${pluralize(merged, 'item')} already on the list had the quantity raised.` : undefined,
       });
     }
-    const fallback = results.filter((result) => result.usedFallback);
-    if (fallback.length === 1) {
-      toast({ title: 'Item saved to Other', description: `${fallbackReasonText(fallback[0].reason)} You can update ${fallback[0].name} later.` });
-    } else if (fallback.length > 1) {
-      toast({ title: 'Items saved to Other', description: `${fallbackReasonText(fallback[0].reason)} You can update their categories later.` });
-    }
   };
 
-  const onAddItemSubmit = async (values: z.infer<typeof itemSchema>, libraryItem?: BarcodeLibraryItem | null, barcode?: string) => {
+  const onAddItemSubmit = async (
+    values: z.infer<typeof itemSchema>,
+    extras: { libraryItem?: BarcodeLibraryItem | null; barcode?: string; size?: number; sizeUnit?: string } = {},
+  ) => {
+    const submissionId = newSubmissionId();
+    const guard = dialogGuardRef.current;
+    if (!guard.begin(submissionId)) return;
     const name = normalizeItemName(values.name);
+    const submittedDraft = currentDialogDraft();
+    let keepGuard = false;
     try {
-      const outcome = await addEntries([{ name, quantity: values.quantity }], { selectedCategory: values.category, libraryItem, barcode });
-      if (!outcome) return;
-      if (outcome.failed.length > 0) {
+      const outcomes = await addEntries(
+        [{ name, quantity: values.quantity, size: extras.size, sizeUnit: extras.sizeUnit }],
+        { selectedCategory: values.category, libraryItem: extras.libraryItem, barcode: extras.barcode },
+      );
+      if (!outcomes) return;
+      const [outcome] = outcomes;
+      if (outcome.state === 'failed') {
         // Nothing was saved: keep the dialog and its values for a retry.
-        toastError(outcome.firstError, 'Could not add the item');
+        setDialogStatus(null);
+        toastError(outcome.error, 'Could not add the item');
         return;
       }
-      reportAddResults(outcome.results);
-      form.reset({ name: '', quantity: 1, category: '' });
-      setIsAddItemDialogOpen(false);
+      if (isPendingState(outcome.state)) {
+        // Not known yet: the values stay, Add stays blocked for this submission,
+        // and the answer decides (other adds, such as quick add, keep working).
+        keepGuard = true;
+        setDialogStatus(`${saveStateLabel(outcome.state)} ${outcome.name} is not confirmed yet.`);
+        void outcome.settled.then((final) => {
+          guard.end(submissionId);
+          setDialogStatus(null);
+          if (final === 'saved') {
+            // Reported even when the member has moved on to another draft or list.
+            reportAddResults([{ ...outcome, state: 'saved' }]);
+            finishDialogSave(submittedDraft);
+          }
+          // A late failure was reported by onLateError; the values are still in the dialog.
+        });
+        return;
+      }
+      setDialogStatus(null);
+      reportAddResults(outcomes);
+      finishDialogSave(submittedDraft);
     } catch (error) {
       toastError(error, 'Could not add the item');
+    } finally {
+      if (!keepGuard) guard.end(submissionId);
     }
   };
 
   // Saved entries are reported; failed ones go back into the field with an inline
   // message naming them (QuickAddBar), so a retry only adds what is missing.
+  // Entries without an answer yet stay in a "Still sending" chip until they settle.
   const onQuickAdd = async (entries: QuickAddEntry[]): Promise<QuickAddOutcome> => {
     try {
-      const outcome = await addEntries(entries);
-      if (!outcome) return null;
-      if (outcome.results.length > 0) reportAddResults(outcome.results);
-      return { failed: outcome.failed };
+      const outcomes = await addEntries(entries);
+      if (!outcomes) return null;
+      reportAddResults(outcomes);
+      const failed = outcomes.filter((outcome) => outcome.state === 'failed').map((outcome) => outcome.entry);
+      const pending = outcomes.filter((outcome) => isPendingState(outcome.state));
+      if (pending.length === 0) return { failed };
+      const pendingState = summarizeStates(pending.map((outcome) => outcome.state)) ?? 'sending';
+      return {
+        failed,
+        pending: {
+          entries: pending.map((outcome) => outcome.entry),
+          label: saveStateLabel(pendingState),
+          settled: Promise.all(pending.map(async (outcome) => ((await outcome.settled) === 'failed' ? outcome.entry : null)))
+            .then((late) => late.filter((entry): entry is AddEntry => entry !== null)),
+        },
+      };
     } catch (error) {
       toastError(error, 'Could not add the items');
       return null;
     }
   };
 
+  // A scan adds ONE package (BL-1): the package size is a note on the row, never the count.
   const handleBarcodeScan = async (barcode: string) => {
     if (!currentUser?.householdId) return;
     setIsScannerOpen(false);
@@ -554,10 +614,12 @@ export function ShoppingListClient({
         { barcode },
         await getAiActionContext(currentUser.householdId)
       ));
-      const { productName, libraryItem } = result;
-      const finalName = libraryItem?.name || productName;
-      if (finalName) {
-        await onAddItemSubmit({ name: finalName, quantity: result.quantity || 1 }, libraryItem, barcode);
+      const entry = scanToShoppingEntry(result);
+      if (entry) {
+        await onAddItemSubmit(
+          { name: entry.name, quantity: entry.quantity, category: getValues('category') },
+          { libraryItem: result.libraryItem, barcode, size: entry.size, sizeUnit: entry.sizeUnit },
+        );
       } else {
         toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. You can add it to your Barcode Library.' });
       }
@@ -611,38 +673,71 @@ export function ShoppingListClient({
           setIsReceiptOpen(true);
         }
         write.catch(failToggle);
-        if (!offlineNoticeShownRef.current) {
-          offlineNoticeShownRef.current = true;
-          toast({ title: 'You are offline', description: 'Ticks are saved on this device and sync when you reconnect.' });
-        } else if (isCheckingOff) {
-          showTickUndo(item);
-        }
+        // The first offline tick carries the offline note inside its Undo toast (SH-7c);
+        // the note says "saved on this device" only when the durable cache shows it.
+        const firstOffline = !offlineNoticeShownRef.current;
+        offlineNoticeShownRef.current = true;
+        const stored = firstOffline && await tickStoredLocally(itemRef, newStatus);
+        const note = firstOffline ? offlineTickNote(stored) : undefined;
+        if (isCheckingOff) showTickUndo(item, note);
+        else if (note) toast({ title: 'You are offline', description: note });
         return;
       }
 
       if (isCheckingOff) showTickUndo(item);
 
-      try {
-        await write;
-      } catch {
+      // Online, a weak signal can leave the write unanswered; the listener already
+      // shows it, so only a rejection (now or later) is reported.
+      const tracked = await trackWrite(write, {
+        kind: 'write',
+        persistence: getLocalPersistence,
+        offline: isBrowserOffline,
+      });
+      // Online, "trip complete" is decided by the server (another member may have
+      // added an item a moment ago): one count query, not a re-read of the list.
+      // It runs once the tick is acknowledged, also when that happens after the
+      // timeout on a weak connection (never twice: `once`).
+      const checkTripComplete = once(async () => {
+        if (!isCheckingOff || !isListOpen()) return;
+        const stillNeeded = await countNeededOnServer(householdId, list.id).catch(() => null);
+        if (stillNeeded === 0 && isListOpen()) {
+          playFeedback('celebrate');
+          setIsReceiptOpen(true);
+        }
+      });
+      const plan = tickFollowUp(tracked.state);
+      if (plan === 'fail') {
         failToggle();
         return;
       }
-      // Online, "trip complete" is decided by the server (another member may have
-      // added an item a moment ago): one count query, not a re-read of the list.
-      if (!isCheckingOff || !isListOpen()) return;
-      const stillNeeded = await countNeededOnServer(householdId, list.id).catch(() => null);
-      if (stillNeeded === 0 && isListOpen()) {
-        playFeedback('celebrate');
-        setIsReceiptOpen(true);
+      if (plan === 'check-after-settle') {
+        void tracked.settled.then((final) => {
+          if (settledTickFollowUp(final.state) === 'fail') failToggle();
+          else void checkTripComplete();
+        });
+        return;
       }
+      await checkTripComplete();
   };
 
-  // "Milk is in the cart · Undo" for the shared Undo window after a tick.
-  const showTickUndo = (item: ShoppingListItem) => {
+  // Whether the durable cache already shows a tick queued offline.
+  const tickStoredLocally = async (itemRef: DocumentReference, status: ShoppingListItem['status']) => {
+    if (getLocalPersistence() !== 'durable') return false;
+    try {
+      const cached = await getDocFromCache(itemRef);
+      return cached.exists() && cached.get('status') === status;
+    } catch {
+      return false;
+    }
+  };
+
+  // "Milk is in the cart · Undo" for the shared Undo window after a tick; the first
+  // offline tick adds the offline note to the same toast.
+  const showTickUndo = (item: ShoppingListItem, note?: string) => {
     toast({
       group: 'shopping-tick',
       title: `${item.name} is in the cart`,
+      ...(note ? { description: note } : {}),
       duration: UNDO_WINDOW_MS,
       action: (
         <ToastAction
@@ -672,8 +767,12 @@ export function ShoppingListClient({
       toastError(error, `Could not delete ${item.name}`);
       return;
     }
-    const { id: _id, ...data } = item;
+    const { id: _id, ...snapshot } = item;
     void _id;
+    // The restore re-creates the item as it was, keeping who added it, and names the
+    // restorer in `restoredByUid` (the rules accept another member's `addedByUid`
+    // on a create only as a restore by the writer; see rules PR 121).
+    const data = restoreItemData(snapshot, currentUser?.uid);
     toast({
       group: 'shopping-remove',
       title: `${item.name} removed`,
@@ -1020,10 +1119,11 @@ export function ShoppingListClient({
                                             <BarcodeScanner onScan={handleBarcodeScan} />
                                         </DialogContent>
                                       </Dialog>
-                                    <Button type="submit" disabled={form.formState.isSubmitting}>
-                                        {form.formState.isSubmitting ? ( <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> ) : ( "Add to List" )}
+                                    <Button type="submit" disabled={form.formState.isSubmitting || dialogStatus !== null}>
+                                        {form.formState.isSubmitting || dialogStatus !== null ? ( <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> ) : ( "Add to List" )}
                                     </Button>
                                 </DialogFooter>
+                                {dialogStatus && <p role="status" className="text-sm text-muted-foreground">{dialogStatus}</p>}
                                 </form>
                             </Form>
                         </DialogContent>
