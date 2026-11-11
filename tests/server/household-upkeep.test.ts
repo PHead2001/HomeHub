@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { parseNotificationDoc } from '../../src/lib/notifications';
 import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
-import { choreStatsAssigneeKey, choreStatsMemberKey, deterministicNotificationId, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey, deterministicNotificationId, occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -77,32 +77,75 @@ describe('household upkeep', () => {
     assert.equal((await house().collection('chores').get()).size, 30);
   });
 
-  test('generated chores carry the assignee uid only, under the ids they always had', async () => {
+  test('generated chores carry the assignee uid only, under ids that name no one', async () => {
     const now = new Date('2026-11-05T15:00:00Z');
     await run(now);
-    const chore = (await house().collection('chores').doc(recurringChoreId('trash', 'general', '2026-11-05', 'owner@example.test')).get()).data();
+    const chore = (await house().collection('chores').doc(occurrenceChoreId('trash', 'general', '2026-11-05')).get()).data();
     assert.equal(chore?.assignedToUid, 'o1');
     assert.equal(chore?.assignedToEmail, undefined, 'member privacy release C: no email on generated chores');
     assert.equal(chore?.assignedToDisplayName, 'Owner');
+    assert.equal(chore?.occurrenceKey, 'trash|general|2026-11-05');
+    const ids = (await house().collection('chores').get()).docs.map(d => d.id);
+    assert.ok(ids.every(id => !id.includes('owner') && !id.includes('example')), 'member privacy release E: no id carries the email');
   });
 
-  test('a template whose email is scrubbed (release C) generates by uid without a second copy of any day', async () => {
-    const now = new Date('2026-11-05T15:00:00Z');
-    assert.equal((await run(now)).generatedChores, 30);
-    // scripts/ops/scrub-shared-emails.mjs: the uid is set and both email copies removed.
-    await house().collection('chore-templates').doc('trash').update({
-      assignedToUid: 'o1', assignedToEmail: FieldValue.delete(), 'recurrence.assignedToEmail': FieldValue.delete(),
+  test('switching to email-free ids never generates a second copy of a day that already has its chore', async () => {
+    // Chores generated before release E, under ids with the assignee's email or uid:
+    // open with a stored key, open from before keys existed, completed and moved to
+    // another day, and one keyed by uid.
+    const legacy = (day: string, key: string) => recurringChoreId('trash', 'general', day, key);
+    const base = { task: 'Trash', templateId: 'trash', roomIds: [], assignedToUid: 'o1', isCompleted: false };
+    await house().collection('chores').doc(legacy('2026-11-05', 'owner@example.test')).set({ ...base, originalDueDate: '2026-11-05', occurrenceKey: 'trash|general|2026-11-05' });
+    await house().collection('chores').doc(legacy('2026-11-12', 'owner@example.test')).set({ ...base, originalDueDate: '2026-11-12' });
+    await house().collection('chores').doc(legacy('2026-11-19', 'owner@example.test')).set({
+      ...base, originalDueDate: '2026-11-21', occurrenceKey: 'trash|general|2026-11-19', isCompleted: true, completedAt: '2026-11-04T12:00:00.000Z',
     });
-    // A week later: the 29 open days generated under the email-keyed ids are still there.
-    const later = new Date('2026-11-12T15:00:00Z');
-    const result = await run(later);
-    assert.equal(result.generatedChores, 1, 'only the one new day at the end of the window');
-    const chores = (await house().collection('chores').get()).docs.map(d => d.data());
-    const days = chores.map(c => c.originalDueDate);
-    assert.equal(new Set(days).size, days.length, 'no day twice');
-    const fresh = await house().collection('chores').doc(recurringChoreId('trash', 'general', '2027-06-03', 'o1')).get();
-    assert.equal(fresh.exists, true, 'new days are keyed by uid');
-    assert.equal(fresh.data()?.assignedToEmail, undefined);
+    await house().collection('chores').doc(legacy('2026-11-26', 'o1')).set({ ...base, originalDueDate: '2026-11-26', occurrenceKey: 'trash|general|2026-11-26' });
+
+    const result = await run(new Date('2026-11-05T15:00:00Z'));
+    assert.equal(result.generatedChores, 26, 'the four days that have a chore are skipped');
+    const chores = (await house().collection('chores').get()).docs;
+    const keys = chores.map(d => d.data().occurrenceKey ?? 'trash|general|2026-11-12');
+    assert.equal(new Set(keys).size, keys.length, 'no day twice, open or completed');
+    for (const day of ['2026-11-05', '2026-11-12', '2026-11-19', '2026-11-26']) {
+      assert.equal((await house().collection('chores').doc(occurrenceChoreId('trash', 'general', day)).get()).exists, false, day);
+    }
+    assert.equal((await house().collection('chores').doc(occurrenceChoreId('trash', 'general', '2026-12-03')).get()).exists, true);
+    assert.equal((await run(new Date('2026-11-05T16:00:00Z'))).generatedChores, 0, 'idempotent');
+  });
+
+  test("reassigning a template keeps each day's id: a completed day stays done, open days come back for the new assignee", async () => {
+    await house().collection('members').doc('m2').set({ uid: 'm2', role: 'member', status: 'active', displayName: 'Mo' });
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const today = house().collection('chores').doc(occurrenceChoreId('trash', 'general', '2026-11-05'));
+    await today.update({ isCompleted: true, completedAt: '2026-11-05T15:30:00.000Z', completedByUid: 'o1' });
+    // Reassign the way the app does: the template changes and its open chores go.
+    const open = await house().collection('chores').where('templateId', '==', 'trash').where('isCompleted', '==', false).get();
+    await Promise.all(open.docs.map(d => d.ref.delete()));
+    await house().collection('chore-templates').doc('trash').set({
+      task: 'Trash', assignedToUid: 'm2', roomIds: [], recurrence: { frequency: 'weekly', weeklyOptions: { daysOfWeek: [4] } },
+    });
+    assert.equal((await run(now)).generatedChores, 29);
+    const chores = (await house().collection('chores').get()).docs;
+    assert.equal(chores.length, 30);
+    assert.equal((await today.get()).data()?.assignedToUid, 'o1', 'the completed day is not regenerated');
+    const next = (await house().collection('chores').doc(occurrenceChoreId('trash', 'general', '2026-11-12')).get()).data();
+    assert.equal(next?.assignedToUid, 'm2');
+    assert.equal(next?.assignedToDisplayName, 'Mo');
+  });
+
+  test('a schedule edit after the switch adds new days only, beside chores generated under older ids', async () => {
+    await house().collection('chores').doc(recurringChoreId('trash', 'general', '2026-11-05', 'owner@example.test')).set({
+      task: 'Trash', templateId: 'trash', roomIds: [], assignedToUid: 'o1', isCompleted: true, completedAt: '2026-11-05T14:00:00.000Z',
+      originalDueDate: '2026-11-05', occurrenceKey: 'trash|general|2026-11-05',
+    });
+    await house().collection('chore-templates').doc('trash').set({
+      task: 'Trash', assignedToUid: 'o1', roomIds: [], recurrence: { frequency: 'daily' },
+    });
+    assert.equal((await run(new Date('2026-11-05T15:00:00Z'))).generatedChores, 29);
+    const days = (await house().collection('chores').get()).docs.map(d => d.data().originalDueDate);
+    assert.equal(new Set(days).size, 30, 'thirty days, each once');
   });
 
   test('a template assigned by uid only (email no longer known to its writer) still generates', async () => {
@@ -113,7 +156,7 @@ describe('household upkeep', () => {
     });
     const now = new Date('2026-11-05T15:00:00Z');
     await run(now);
-    const chore = (await house().collection('chores').doc(recurringChoreId('mop', 'kitchen', '2026-11-05', 'o1')).get()).data();
+    const chore = (await house().collection('chores').doc(occurrenceChoreId('mop', 'kitchen', '2026-11-05')).get()).data();
     assert.equal(chore?.assignedToUid, 'o1');
     assert.equal(chore?.assignedToEmail, undefined);
     // A uid that is not an approved member gets nothing.

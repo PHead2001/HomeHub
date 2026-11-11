@@ -33,6 +33,14 @@ export type PurgedChore = {
 const filled = (value: unknown): value is string =>
   typeof value === "string" && value.trim() !== "";
 
+/**
+ * `completedByUid` of a completion by someone who has left and was recorded
+ * by email only (scripts/ops/scrub-remaining-emails.mjs replaces that email
+ * with it). It names nobody, so the chore is credited to no one, as it was
+ * while the email was stored. Firebase Auth uids never contain "-".
+ */
+export const FORMER_MEMBER_UID = "former-member";
+
 const lower = (value: unknown): string =>
   typeof value === "string" ? value.trim().toLowerCase() : "";
 
@@ -44,7 +52,8 @@ export type CreditPerson = {uid: string; email?: string | null};
 
 /**
  * Who a completed chore counts for, by account ID: the person who completed
- * it when the server recorded them (`completedByUid`; an older
+ * it when the server recorded them (`completedByUid`, nobody for
+ * `FORMER_MEMBER_UID`; an older
  * `completedByEmail` without a uid is matched through `people`), else its
  * assignee (completions made before attribution existed, or by an older
  * client): an `assignedToEmail` that names one of `people`, else
@@ -64,7 +73,9 @@ export const creditedPerson = (
   const uidOf = (email: unknown): string =>
     people.find((person) => lower(person.email) === lower(email))?.uid ?? "";
   if (filled(chore.completedByUid)) {
-    return {uid: chore.completedByUid.trim(), name: chore.completedByName};
+    const uid = chore.completedByUid.trim();
+    return uid === FORMER_MEMBER_UID ? null :
+      {uid, name: chore.completedByName};
   }
   if (filled(chore.completedByEmail)) {
     const uid = uidOf(chore.completedByEmail);

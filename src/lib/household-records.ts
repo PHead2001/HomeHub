@@ -5,6 +5,8 @@
  * the Household Manager share them and unit tests run without an emulator.
  */
 
+import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
+
 export const HOUSEHOLD_NAME_MAX = 80;
 const HOUSEHOLD_ID_SUFFIX_CHARS = 'abcdefghjklmnpqrstuvwxyz23456789';
 const TIME_ZONE_MAX = 64;
@@ -76,10 +78,11 @@ export const pendingReminderStateKey = (now: Date): string => `pending|${now.toI
  * The photo for a new membership. A photo removed in Profile is saved as
  * `avatarUrl: null` and stays removed (as does ''); a non-empty string wins; only
  * a profile with no avatarUrl field at all falls back to the ID token's picture.
+ * A photo in an email-named Storage folder (`isEmailFolderPhotoUrl`) is never
+ * copied: the membership gets no photo.
  */
 export const membershipAvatarUrl = (profile: Record<string, unknown> | undefined, tokenAvatarUrl?: string): string | undefined => {
-  if (profile && Object.prototype.hasOwnProperty.call(profile, 'avatarUrl')) {
-    return typeof profile.avatarUrl === 'string' && profile.avatarUrl ? profile.avatarUrl : undefined;
-  }
-  return tokenAvatarUrl || undefined;
+  const usable = (value: unknown) => (typeof value === 'string' && value && !isEmailFolderPhotoUrl(value) ? value : undefined);
+  if (profile && Object.prototype.hasOwnProperty.call(profile, 'avatarUrl')) return usable(profile.avatarUrl);
+  return usable(tokenAvatarUrl);
 };

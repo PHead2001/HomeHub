@@ -31,6 +31,7 @@ import {
   readHouseholdName,
 } from '@/lib/household-records';
 import { getDeterministicNotificationId } from '@/lib/notifications';
+import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
 import type { Household, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
 /**
@@ -978,8 +979,10 @@ const publicMemberName = (value: unknown): string | null => {
   return name.slice(0, MEMBER_NAME_MAX);
 };
 
+// A photo in an email-named Storage folder carries the email: never public.
 const publicAvatarUrl = (value: unknown): string | null =>
-  typeof value === 'string' && value.startsWith('https://') && value.length <= AVATAR_URL_MAX ? value : null;
+  typeof value === 'string' && value.startsWith('https://') && value.length <= AVATAR_URL_MAX &&
+    !isEmailFolderPhotoUrl(value) ? value : null;
 
 export type MemberProfileSync = { displayName: string | null; avatarUrl: string | null; changed: boolean };
 

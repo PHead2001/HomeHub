@@ -10,7 +10,7 @@ import { approvedPeople } from '../../src/lib/member-directory';
 import { streakMembersFrom } from '../../src/lib/dashboard/streaks';
 import { occurrences, plannedRecurringEvents } from '../../src/lib/chores/calendar';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
-import { choreOccurrenceKey, choreStatsMemberKey, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
+import { choreOccurrenceKey, choreStatsMemberKey, occurrenceChoreId, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
 import { addPurgedChores, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { occurrenceKeyDecision, storedOccurrenceKey as opsStoredOccurrenceKey } from '../../scripts/ops/occurrence-key.mjs';
 
@@ -177,8 +177,8 @@ describe('the completer gets the points (CH-12, D-7)', () => {
 describe('occurrence identity (CH-3)', () => {
   it('builds the key from template, room and day, ignoring the assignee', () => {
     assert.equal(choreOccurrenceKey('trash', 'general', '2026-11-05'), 'trash|general|2026-11-05');
-    assert.deepEqual(occurrences({ id: 'trash', roomIds: ['kitchen'] }, '2026-11-05', 'sam@example.test'), [
-      { id: recurringChoreId('trash', 'kitchen', '2026-11-05', 'sam@example.test'), key: 'trash|kitchen|2026-11-05' },
+    assert.deepEqual(occurrences({ id: 'trash', roomIds: ['kitchen'] }, '2026-11-05'), [
+      { id: occurrenceChoreId('trash', 'kitchen', '2026-11-05'), key: 'trash|kitchen|2026-11-05' },
     ]);
   });
 
@@ -192,6 +192,8 @@ describe('occurrence identity (CH-3)', () => {
     assert.equal(storedOccurrenceKey(general, { templateId: 'trash', roomIds: [], sourceType: 'template' }), null);
     assert.equal(storedOccurrenceKey('AbCdEf123', { templateId: 'trash', roomIds: [] }), null);
     assert.equal(storedOccurrenceKey(general, {}), null);
+    // Ids generated since member privacy release E (no assignee part) too.
+    assert.equal(storedOccurrenceKey(occurrenceChoreId('trash', 'kitchen', '2026-11-05'), { templateId: 'trash', roomIds: ['kitchen'] }), 'trash|kitchen|2026-11-05');
   });
 
   it('the calendar never plans a day whose chore was reassigned', () => {

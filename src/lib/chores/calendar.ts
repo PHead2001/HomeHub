@@ -5,8 +5,8 @@
 import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
 import { toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
-import { choreOccurrenceKey, recurringChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
-import { occurrenceAssigneeKey, resolveAssigneeUid } from '../../../functions/src/shared/assignee';
+import { choreOccurrenceKey, occurrenceChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
+import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { publicDisplayName } from '../member-directory';
 import { currentMedications, type MedicationDue as MedicationCountdown } from '../pets/care';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
@@ -268,23 +268,25 @@ export type RecurringTemplate = {
 };
 
 /**
- * The document ID the server gives a generated occurrence. It is the occurrence's
- * stable identity: the server skips an occurrence when this document exists, even
- * if the chore was moved to another day, so planning must match on it too.
- * Delegates to the server's `recurringChoreId` and mirrors its room fallback.
+ * The document IDs the server gives a generated occurrence (one per room). They
+ * are the occurrence's stable identity: the server skips an occurrence when this
+ * document exists, even if the chore was moved to another day, so planning must
+ * match on it too. Delegates to the server's `occurrenceChoreId` (template, room
+ * and day; no assignee) and mirrors its room fallback.
  */
-export function occurrenceIds(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string, assignee: string): string[] {
-  return occurrences(template, day, assignee).map(occurrence => occurrence.id);
+export function occurrenceIds(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string): string[] {
+  return occurrences(template, day).map(occurrence => occurrence.id);
 }
 
 /**
  * Each room instance of an occurrence: its document id and its occurrence key
- * (`templateId|roomId|day`, independent of the assignee), the two identities the
- * server checks before generating it.
+ * (`templateId|roomId|day`), the two identities the server checks before
+ * generating it. The key also matches chores generated before member privacy
+ * release E, whose ids carried the assignee.
  */
-export function occurrences(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string, assignee: string): { id: string; key: string }[] {
+export function occurrences(template: Pick<RecurringTemplate, 'id' | 'roomIds'>, day: string): { id: string; key: string }[] {
   const rooms = Array.isArray(template.roomIds) && template.roomIds.length > 0 ? template.roomIds : ['general'];
-  return rooms.map(roomId => ({ id: recurringChoreId(template.id, roomId, day, assignee), key: choreOccurrenceKey(template.id, roomId, day) }));
+  return rooms.map(roomId => ({ id: occurrenceChoreId(template.id, roomId, day), key: choreOccurrenceKey(template.id, roomId, day) }));
 }
 
 /**
@@ -316,14 +318,13 @@ export function plannedRecurringEvents(
   const events: CalendarEvent[] = [];
   for (const template of templates) {
     const recurrence = normalizeRecurrence(template.recurrence, today);
-    // Same assignee rules and occurrence key as the server (functions/src/shared/assignee.ts).
-    const assignee = occurrenceAssigneeKey(template);
+    // Same assignee rules as the server (functions/src/shared/assignee.ts).
     const assigneeUid = resolveAssigneeUid(template, members);
     const member = assigneeUid ? byUid.get(assigneeUid) : undefined;
-    if (!recurrence || !member || !assignee) continue;
+    if (!recurrence || !member) continue;
     for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
       if (!occursOn(day, recurrence)) continue;
-      for (const { id, key } of occurrences(template, day, assignee)) {
+      for (const { id, key } of occurrences(template, day)) {
         if (existing.has(id) || existingKeys.has(key)) continue;
         events.push({
           id: `planned:${id}`,

@@ -17,11 +17,9 @@ import {
   readChoreStats,
   type PurgedChore,
 } from "./shared/chore-stats";
+import {assigneeFields, resolveAssigneeUid} from "./shared/assignee";
 import {
-  assigneeFields, occurrenceAssigneeKey, resolveAssigneeUid,
-} from "./shared/assignee";
-import {
-  choreOccurrenceKey, deterministicNotificationId, recurringChoreId,
+  choreOccurrenceKey, deterministicNotificationId, occurrenceChoreId,
   storedOccurrenceKey,
 } from "./shared/ids";
 import {
@@ -290,9 +288,12 @@ export const runHouseholdReminders = async (
   const memberByUid = new Map(members.map((m) => [m.uid, m]));
 
   // Recurring chores: create the next occurrences that do not exist yet. An
-  // occurrence exists when its deterministic id does, or when any chore holds
-  // its occurrence key (template, room and day, whoever it is assigned to),
-  // so a completed day is never regenerated after a reassignment or edit.
+  // occurrence exists when its id (`occurrenceChoreId`: template, room and
+  // day) does, or when any chore holds its occurrence key (the same three,
+  // stored on the chore or recovered from an id generated before release E,
+  // which also carried the assignee), so a day that already has its chore,
+  // completed or open, is never generated again after a reassignment, a
+  // schedule edit or the id switch.
   const choreIds = new Set(choresSnap.docs.map((d) => d.id));
   const occurrenceKeys = new Set(choresSnap.docs.flatMap((d) => {
     const key = storedOccurrenceKey(d.id, d.data());
@@ -303,11 +304,10 @@ export const runHouseholdReminders = async (
   for (const templateDoc of templatesSnap.docs) {
     const template = templateDoc.data();
     const recurrence = normalizeRecurrence(template.recurrence, today);
-    // Assigned by uid or (older templates) by email; the id keeps the key
-    // each template was generated with (occurrenceAssigneeKey). Generated
-    // chores store the uid only (member privacy release C).
-    const assignee = occurrenceAssigneeKey(template);
-    if (!recurrence || !assignee) continue;
+    // Assigned by uid or (older templates) by email. Generated chores store
+    // the uid only (member privacy release C) and their id names no one
+    // (release E).
+    if (!recurrence) continue;
     // Never generate work for someone who is no longer an approved member.
     const assigneeUid = resolveAssigneeUid(template, members);
     const person = assigneeUid ? memberByUid.get(assigneeUid) : undefined;
@@ -317,7 +317,7 @@ export const runHouseholdReminders = async (
     for (const day of upcomingOccurrences(recurrence, today,
       RECURRING_LOOKAHEAD)) {
       for (const roomId of rooms) {
-        const id = recurringChoreId(templateDoc.id, roomId, day, assignee);
+        const id = occurrenceChoreId(templateDoc.id, roomId, day);
         const occurrenceKey = choreOccurrenceKey(templateDoc.id, roomId, day);
         if (choreIds.has(id) || occurrenceKeys.has(occurrenceKey)) continue;
         choreIds.add(id);

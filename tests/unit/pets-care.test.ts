@@ -325,10 +325,12 @@ describe('mixed date shapes', () => {
 });
 
 describe('who logged', () => {
-  it('prefers first name, then display name, then the email local part', () => {
+  it('prefers first name, then display name, and never uses the email', () => {
     assert.equal(loggerName({ firstName: 'Alex', displayName: 'Alex E2E' }), 'Alex');
     assert.equal(loggerName({ firstName: '', displayName: 'Sam Member' }), 'Sam');
-    assert.equal(loggerName({ email: 'casey@example.test' }), 'casey');
+    assert.equal(loggerName({ email: 'casey@example.test' } as never), 'Someone');
+    assert.equal(loggerName({ firstName: 'casey@example.test', displayName: 'casey@example.test' }), 'Someone');
+    assert.equal(loggerName({ displayName: 'casey@example.test Casey' }), 'Someone');
   });
 });
 

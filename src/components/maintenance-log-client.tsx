@@ -110,6 +110,7 @@ import {
   type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
 import { cn, slugify, stableSlugify } from '@/lib/utils';
+import { publicDisplayName } from '@/lib/member-directory';
 import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
@@ -1108,7 +1109,8 @@ export function MaintenanceLogClient() {
         contentType: file.type || undefined,
         size: file.size,
         uploadedByUid: currentUser.uid,
-        uploadedByName: currentUser.displayName || currentUser.email,
+        // Every member who can see maintenance reads it: never the email.
+        uploadedByName: publicDisplayName(currentUser.displayName),
         createdAt: new Date().toISOString(),
       };
 

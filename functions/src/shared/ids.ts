@@ -36,12 +36,40 @@ export const deterministicNotificationId = (
     hashIdentity(identity);
 };
 
+/**
+ * Document id of one generated occurrence of a repeating chore:
+ * `stableSlugify(templateId-roomId-day)`. It does not depend on the assignee
+ * (member privacy release E), so reassigning a template never changes the id
+ * of a day and no id carries anything about a person.
+ * @param {string} templateId Source template id.
+ * @param {string} roomId Room id ("general" when the template has none).
+ * @param {string} day Occurrence day (YYYY-MM-DD, household timezone).
+ * @return {string} Chore document id.
+ */
+export const occurrenceChoreId = (
+  templateId: string,
+  roomId: string,
+  day: string,
+): string => stableSlugify(`${templateId}-${roomId}-${day}`);
+
+/**
+ * The id shape generated before member privacy release E: the occurrence id
+ * followed by the slug of the template's assignee key (its email, or later
+ * its uid). Nothing generates it any more; scripts/ops/rekey-chore-ids.mjs
+ * moves stored chores to `occurrenceChoreId`. Kept for tests that build such
+ * chores (release F removes it).
+ * @param {string} templateId Source template id.
+ * @param {string} roomId Room id.
+ * @param {string} day Occurrence day.
+ * @param {string} assigneeKey Assignee email or uid.
+ * @return {string} Legacy chore document id.
+ */
 export const recurringChoreId = (
   templateId: string,
   roomId: string,
   day: string,
-  assignedToEmail: string,
-): string => stableSlugify(`${templateId}-${roomId}-${day}-${assignedToEmail}`);
+  assigneeKey: string,
+): string => stableSlugify(`${templateId}-${roomId}-${day}-${assigneeKey}`);
 
 /**
  * The legacy map key for one person in yearly chore stats, written before the

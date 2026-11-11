@@ -73,9 +73,10 @@ export const MAX_DOC_ID_BYTES = 1500;
 /**
  * A chore document ID as Firestore allows it: one non-empty path segment (no
  * '/'), at most 1500 UTF-8 bytes, not '.' or '..', not reserved (`__…__`).
- * Upkeep's recurring IDs (`recurringChoreId`: template ID, room ID, day and
- * assignee email) can be well over 200 characters, so the generic 200-character
- * `isDocId` would refuse legitimate chores.
+ * Upkeep's recurring IDs (`occurrenceChoreId`: template ID, room ID and day;
+ * those generated before member privacy release E also carried the assignee)
+ * can be well over 200 characters, so the generic 200-character `isDocId` would
+ * refuse legitimate chores.
  */
 export function isChoreDocId(id: unknown): id is string {
   if (typeof id !== 'string' || id === '' || id.includes('/')) return false;
