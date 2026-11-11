@@ -10,6 +10,7 @@ import { parseShoppingUrlState, shoppingHref, type ShoppingTab } from '@/lib/sho
 import { TabActivity } from '@/components/shopping/tab-activity';
 import { useAuth } from '@/hooks/use-auth';
 import { useLivePantry } from '@/lib/shopping/live';
+import { cn } from '@/lib/utils';
 
 /**
  * The Shopping Center: Shopping Lists and Pantry Inventory tabs. The open tab and
@@ -82,7 +83,8 @@ export function ShoppingCenterClient() {
 
   return (
     <Tabs value={state.tab} onValueChange={handleTabChange} className="w-full">
-      <TabsList className="grid w-full grid-cols-2">
+      {/* Hidden while a list is open (SH-12a): the list's compact header takes the space. */}
+      <TabsList className={cn('grid w-full grid-cols-2', state.listId && 'hidden')}>
         <TabsTrigger value="lists"><ClipboardList className="mr-2" aria-hidden /> Shopping Lists</TabsTrigger>
         <TabsTrigger value="inventory"><Archive className="mr-2" aria-hidden /> Pantry Inventory</TabsTrigger>
       </TabsList>
