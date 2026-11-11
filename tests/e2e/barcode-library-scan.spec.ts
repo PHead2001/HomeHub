@@ -150,7 +150,7 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
     await expect.poll(async () => (await juice.get()).data()?.status, { timeout: 10_000 }).toBe('needed');
 
     await scanWith(page, 'Scan to tick', 'Scan to tick', YOGURT);
-    await expect(page.getByRole('status').filter({ hasText: 'Not on this list' })).toBeVisible();
+    await expect(page.getByText('Not on this list', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Add', exact: true }).click();
     await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Yogurt Multipack').get()).docs
       .map((document) => [document.data().quantity, document.data().size, document.data().sizeUnit, document.data().status]), { timeout: 15_000 })
