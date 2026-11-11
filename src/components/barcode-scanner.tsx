@@ -23,13 +23,24 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
   // This open scanner's session: each kind of error toasts once (a screen reader
   // hears it once), never again on every retry; a remounted scanner starts afresh.
   const errorSession = React.useRef(newScannerErrorSession());
+  // Mounted = open. A camera start that fails after the scanner was closed (the
+  // browser answers getUserMedia late) reports into a closed scanner: stay quiet.
+  const open = React.useRef(true);
+  React.useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
 
   const { ref } = useZxing({
     onDecodeResult(result) {
+      if (!open.current) return;
       setCameraError(null);
       onScan(result.getText());
     },
     onError(error) {
+        if (!open.current) return;
         const kind = scannerErrorKind(error);
         const report = reportScannerError(errorSession.current, kind);
         errorSession.current = report.session;

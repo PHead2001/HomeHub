@@ -144,6 +144,8 @@ const wake = (page: Page) => page.evaluate(() => (window as unknown as { __wake:
 const setHidden = (page: Page, hidden: boolean) => page.evaluate((next) => (window as unknown as { __setHidden: (value: boolean) => void }).__setHidden(next), hidden);
 
 test.describe('shopping trip mode: the open list in the store', () => {
+  // Every action is bounded, so a stuck step fails with its own message instead of the test timeout.
+  test.use({ actionTimeout: 10_000, navigationTimeout: 20_000 });
   test.beforeEach(() => {
     consoleGuards = [];
   });
@@ -247,43 +249,59 @@ test.describe('shopping trip mode: the open list in the store', () => {
     const a = await session(browser, PHONE, { mobile: true });
     try {
       const list = await openList(a.page, testInfo);
-      // None of them is a full-width button on the screen any more.
-      for (const name of ['Manage Categories', 'Scan to tick', 'Trips']) await expect(a.page.getByRole('button', { name, exact: true })).toHaveCount(0);
       const menuButton = list.getByRole('button', { name: 'More list actions' });
-      await menuButton.click();
       const menu = a.page.getByRole('menu');
-      for (const name of ['Scan to tick', 'Trips', 'Manage Categories']) await expect(menu.getByRole('menuitem', { name })).toBeVisible();
-      await expect(menu.getByRole('menuitem', { name: 'Barcode Library' })).toHaveAttribute('href', '/library');
-      await menu.getByRole('menuitem', { name: 'Manage Categories' }).click();
-      const dialog = a.page.getByRole('dialog', { name: 'Manage Categories' });
-      await expect(dialog).toBeVisible();
-      // A bottom sheet: full width, on the bottom edge.
-      await expect.poll(async () => {
-        const box = (await dialog.boundingBox())!;
-        return [Math.round(box.x), Math.round(box.width), Math.round(box.y + box.height)];
-      }).toEqual([0, PHONE.width, PHONE.height]);
-      await a.page.keyboard.press('Escape');
-      await expect(dialog).toHaveCount(0);
-      await expect(menuButton).toBeFocused();
+      await test.step('the actions menu holds the secondary actions', async () => {
+        // None of them is a full-width button on the screen any more.
+        for (const name of ['Manage Categories', 'Scan to tick', 'Trips']) {
+          await expect(a.page.getByRole('button', { name, exact: true }), `no "${name}" button`).toHaveCount(0);
+        }
+        await menuButton.click();
+        for (const name of ['Scan to tick', 'Trips', 'Manage Categories']) {
+          await expect(menu.getByRole('menuitem', { name }), `"${name}" in the menu`).toBeVisible();
+        }
+        await expect(menu.getByRole('menuitem', { name: 'Barcode Library' }), 'the Barcode Library link').toHaveAttribute('href', '/library');
+      });
 
-      // Scan to tick is still one tap from the menu (SH-33f).
-      await menuButton.click();
-      await a.page.getByRole('menu').getByRole('menuitem', { name: 'Scan to tick' }).click();
-      await expect(a.page.getByRole('dialog', { name: 'Scan to tick' })).toBeVisible();
-      await a.page.keyboard.press('Escape');
-      await expect(a.page.getByRole('dialog', { name: 'Scan to tick' })).toHaveCount(0);
-      await expect(menuButton).toBeFocused();
+      await test.step('Manage Categories opens as a bottom sheet and returns focus to the menu', async () => {
+        await menu.getByRole('menuitem', { name: 'Manage Categories' }).click();
+        const dialog = a.page.getByRole('dialog', { name: 'Manage Categories' });
+        await expect(dialog, 'Manage Categories opens').toBeVisible();
+        // A bottom sheet: full width, on the bottom edge.
+        await expect.poll(async () => {
+          const box = (await dialog.boundingBox())!;
+          return [Math.round(box.x), Math.round(box.width), Math.round(box.y + box.height)];
+        }, { message: 'Manage Categories is a full-width bottom sheet' }).toEqual([0, PHONE.width, PHONE.height]);
+        await a.page.keyboard.press('Escape');
+        await expect(dialog, 'Escape closes Manage Categories').toHaveCount(0);
+        await expect(menuButton, 'focus is back on the menu button').toBeFocused();
+      });
 
-      // Add Item and the edit sheet are bottom sheets too.
-      await press(a.page, list.getByRole('button', { name: 'Add Item' }));
-      const add = a.page.getByRole('dialog', { name: 'Add Item to List' });
-      await expect(add).toBeVisible();
-      await expect.poll(async () => Math.round((await add.boundingBox())!.width)).toBe(PHONE.width);
-      await a.page.keyboard.press('Escape');
-      await press(a.page, list.getByRole('button', { name: 'Edit E2E tm milk' }));
-      const sheet = a.page.getByTestId('item-edit-sheet');
-      await expect(sheet).toBeVisible();
-      await expect.poll(async () => { const box = (await sheet.boundingBox())!; return Math.round(box.y + box.height); }).toBe(PHONE.height);
+      await test.step('Scan to tick opens from the menu (SH-33f) and returns focus to the menu', async () => {
+        await menuButton.click();
+        await menu.getByRole('menuitem', { name: 'Scan to tick' }).click();
+        const scanner = a.page.getByRole('dialog', { name: 'Scan to tick' });
+        await expect(scanner, 'the scanner opens').toBeVisible();
+        // Closed with its own Close button, from the keyboard: the headless camera's
+        // error toast can arrive while it is open, and a toast above a dialog takes
+        // Escape (it is the topmost layer) and covers the top of the screen.
+        await press(a.page, scanner.getByRole('button', { name: 'Close' }));
+        await expect(scanner, 'the scanner closes').toHaveCount(0);
+        await expect(menuButton, 'focus is back on the menu button').toBeFocused();
+      });
+
+      await test.step('Add Item and the edit sheet are bottom sheets too', async () => {
+        await press(a.page, list.getByRole('button', { name: 'Add Item' }));
+        const add = a.page.getByRole('dialog', { name: 'Add Item to List' });
+        await expect(add, 'Add Item opens').toBeVisible();
+        await expect.poll(async () => Math.round((await add.boundingBox())!.width), { message: 'Add Item is full width' }).toBe(PHONE.width);
+        await press(a.page, add.getByRole('button', { name: 'Close' }));
+        await expect(add, 'Add Item closes').toHaveCount(0);
+        await press(a.page, list.getByRole('button', { name: 'Edit E2E tm milk' }));
+        const sheet = a.page.getByTestId('item-edit-sheet');
+        await expect(sheet, 'the edit sheet opens').toBeVisible();
+        await expect.poll(async () => { const box = (await sheet.boundingBox())!; return Math.round(box.y + box.height); }, { message: 'the edit sheet sits on the bottom edge' }).toBe(PHONE.height);
+      });
     } finally {
       await a.context.close();
     }
