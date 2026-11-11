@@ -658,13 +658,20 @@ service cloud.firestore {
 
     // --- Shopping ---------------------------------------------------------
 
+    // storeId (the store whose aisle order the list uses, or none) and createdByUid
+    // (the creator: the writer, set only on create, then neither changed nor
+    // removed) are optional, so lists of older clients stay valid and editable;
+    // their merge writes leave both untouched.
     function validShoppingListFields(data, keys) {
-      return keys.hasOnly(['name', 'description', 'icon', 'type', 'color']) &&
+      return keys.hasOnly(['name', 'description', 'icon', 'type', 'color', 'storeId', 'createdByUid']) &&
         (!('name' in keys) || nonEmptyString(data.name, 100)) &&
         (!('description' in keys) || optionalString(data.description, 500)) &&
         (!('icon' in keys) || boundedString(data.icon, 64)) &&
         (!('type' in keys) || boundedString(data.type, 40)) &&
-        (!('color' in keys) || optionalString(data.color, 64));
+        (!('color' in keys) || optionalString(data.color, 64)) &&
+        (!('storeId' in keys) || optionalString(data.storeId, 200)) &&
+        (!('createdByUid' in keys) || (resource == null && data.createdByUid == request.auth.uid)) &&
+        (resource == null || data.get('createdByUid', null) == resource.data.get('createdByUid', null));
     }
 
     // quantity is checked after any increment() is applied. nameKey, addedByUid,
@@ -717,7 +724,15 @@ service cloud.firestore {
         (!('restoreOpId' in keys) || (resource == null && nonEmptyString(data.restoreOpId, 64))) &&
         (!('restoredAt' in keys) || (resource == null && 'restoreOpId' in data)) &&
         (resource != null || !('restoreOpId' in data) || shoppingRestoreCreate(data)) &&
-        (resource == null || shoppingRestoreStampsKept(data));
+        (resource == null || (shoppingRestoreStampsKept(data) && shoppingServerFieldsKept(data)));
+    }
+
+    // pantryCreditedAt and creditTripId are written only by the server's put-away
+    // (Admin SDK): a client may never set them (validShoppingItemFields does not
+    // list them, so a create carrying them is refused), change them or remove them.
+    function shoppingServerFieldsKept(data) {
+      return data.get('pantryCreditedAt', null) == resource.data.get('pantryCreditedAt', null) &&
+        data.get('creditTripId', null) == resource.data.get('creditTripId', null);
     }
 
     // On an update, the stored restore stamps stay exactly as they are: a write that
@@ -770,8 +785,15 @@ service cloud.firestore {
         request.resource.data.get('restoredByUid', null) == resource.data.get('restoredByUid', null);
     }
 
+    // list: the categories as older clients write them (rewritten whole). ordered:
+    // the categories in aisle order, added and removed with arrayUnion/arrayRemove
+    // and reordered in a transaction; checked after the transform is applied.
+    // Rules cannot inspect list elements, so the app keeps each entry a string of at
+    // most 100 characters (the item category bound).
     function validShoppingConfig(data, keys) {
-      return keys.hasOnly(['list']) && (!('list' in keys) || boundedList(data.list, 200));
+      return keys.hasOnly(['list', 'ordered']) &&
+        (!('list' in keys) || boundedList(data.list, 200)) &&
+        (!('ordered' in keys) || boundedList(data.ordered, 200));
     }
 
     // The parent list document of an item or category write (one document read).
@@ -1115,13 +1137,58 @@ service cloud.firestore {
         url.matches('^https://(images|static)[.]openfoodfacts[.](org|net)/[^?#]*([?].*)?$');
     }
 
+    // createdAt and createdByUid (the writer, optional for older clients) are set on
+    // create only; an update may neither change nor remove them. An edit keeps the
+    // product's createdAt, while an Add written blindly over an existing product
+    // carries a new createdAt (or none) and is refused (BL-3).
     function validBarcodeItemFields(householdId, data, keys) {
-      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt']) &&
+      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt', 'createdByUid']) &&
         (!('name' in keys) || nonEmptyString(data.name, 200)) &&
         (!('imageUrl' in keys) || (boundedString(data.imageUrl, 2048) && validBarcodeImageUrl(householdId, data.imageUrl))) &&
         (!('imagePath' in keys) ||
           (boundedString(data.imagePath, 512) && data.imagePath.matches('^households/' + householdId + '/barcode-library/[^/]+$'))) &&
-        (!('createdAt' in keys) || boundedString(data.createdAt, 40));
+        (!('createdAt' in keys) || (resource == null && boundedString(data.createdAt, 40))) &&
+        (!('createdByUid' in keys) || (resource == null && data.createdByUid == request.auth.uid)) &&
+        (resource == null ||
+          (data.get('createdAt', null) == resource.data.get('createdAt', null) &&
+            data.get('createdByUid', null) == resource.data.get('createdByUid', null)));
+    }
+
+    // --- Shopping stores, settings and usuals (stage S5-S8 rules) -----------
+
+    // A store's aisle order. Rules cannot inspect list elements, so the app keeps
+    // each aisleOrder entry a category string of at most 100 characters.
+    function validShoppingStoreFields(data, keys) {
+      return keys.hasOnly(['name', 'aisleOrder', 'createdByUid', 'updatedAt']) &&
+        (!('name' in keys) || nonEmptyString(data.name, 120)) &&
+        (!('aisleOrder' in keys) || boundedList(data.aisleOrder, 200)) &&
+        (!('createdByUid' in keys) || (resource == null && data.createdByUid == request.auth.uid)) &&
+        // Every write stamps the server time; the creator is fixed once set.
+        data.get('updatedAt', null) == request.time &&
+        (resource == null || data.get('createdByUid', null) == resource.data.get('createdByUid', null));
+    }
+
+    // afterTrip: the remembered receipt choice (SH-17b), 'putAwayAndClear' or 'done'.
+    function validShoppingSettingsFields(data, keys) {
+      return keys.hasOnly(['afterTrip', 'defaultGroceryListId', 'updatedAt']) &&
+        (!('afterTrip' in keys) || data.afterTrip in ['putAwayAndClear', 'done']) &&
+        (!('defaultGroceryListId' in keys) || optionalString(data.defaultGroceryListId, 200)) &&
+        data.get('updatedAt', null) == request.time;
+    }
+
+    // A usual is written by the server's put-away; a client may only correct its
+    // name and category, removes nothing, and a category change records the writer
+    // and the server time.
+    function validShoppingUsualUpdate(data, keys) {
+      return keys.hasOnly(['name', 'category', 'categoryUpdatedAt', 'categoryUpdatedByUid']) &&
+        data.diff(resource.data).removedKeys().size() == 0 &&
+        (!('name' in keys) || nonEmptyString(data.name, 500)) &&
+        (!('category' in keys) || boundedString(data.category, 100)) &&
+        (!('categoryUpdatedAt' in keys) || data.categoryUpdatedAt == request.time) &&
+        (!('categoryUpdatedByUid' in keys) || data.categoryUpdatedByUid == request.auth.uid) &&
+        (!keys.hasAny(['category', 'categoryUpdatedAt', 'categoryUpdatedByUid']) ||
+          (data.get('categoryUpdatedAt', null) == request.time &&
+            data.get('categoryUpdatedByUid', null) == request.auth.uid));
     }
 
     // ---------------------------------------------------------------------
@@ -1353,6 +1420,43 @@ service cloud.firestore {
         allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           validBarcodeItemFields(householdId, request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+      }
+
+      // Stores and their aisle order (per-store category order, SH-34).
+      match /stores/{storeId} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          storeId.size() <= 200 &&
+          request.resource.data.keys().hasAll(['name', 'createdByUid', 'updatedAt']) &&
+          validShoppingStoreFields(request.resource.data, writtenKeys());
+        allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          validShoppingStoreFields(request.resource.data, writtenKeys());
+        allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
+      }
+
+      // Household shopping preferences: one document, `preferences`.
+      match /shopping-settings/{settingId} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          settingId == 'preferences' &&
+          validShoppingSettingsFields(request.resource.data, writtenKeys());
+        allow delete: if hasHouseholdPermission(householdId, 'shopping.delete') &&
+          settingId == 'preferences';
+      }
+
+      // Trip history: written only by the server's put-away and its Undo (Admin SDK).
+      match /trips/{tripId} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow write: if false;
+      }
+
+      // Usuals (one per item nameKey): created, counted and deleted only by the
+      // server; clients may correct the name and category.
+      match /shopping-usuals/{nameKey} {
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow create, delete: if false;
+        allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
+          validShoppingUsualUpdate(request.resource.data, writtenKeys());
       }
 
       match /pets/{petId} {
