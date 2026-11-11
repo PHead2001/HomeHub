@@ -108,10 +108,16 @@ export type ChoreFacts = {
 /** The most chores `todayWork` lists (the tile shows fewer; the rest is "+N more" to /chores). */
 export const TODAY_WORK_MAX = 20;
 
+/** The most needed items the Shopping tile lists (HP-36a: the top 6, each with a tick, HP-33c). */
+export const SHOPPING_TILE_ITEMS = 6;
+
+export type ShoppingTileItem = { id: string; name: string; listId: string; listName: string; quantity: number };
+
 export type ShoppingFacts = {
   activeLists: number;
   neededItems: number;
-  firstItems: Array<{ id: string; name: string; listId: string; listName: string }>;
+  /** The first needed items (lists by name, oldest first within a list), at most `SHOPPING_TILE_ITEMS`. */
+  firstItems: ShoppingTileItem[];
   lists: Array<{ id: string; name: string; needed: number }>;
 };
 
@@ -459,7 +465,10 @@ export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string
     [...needed]
       .sort((a, b) => (toDateValue(a.createdAt)?.getTime() ?? 0) - (toDateValue(b.createdAt)?.getTime() ?? 0))
       .forEach((item) => {
-        if (firstItems.length < 3) firstItems.push({ id: item.id, name: text(item.name, 'Item'), listId: list.id, listName });
+        if (firstItems.length < SHOPPING_TILE_ITEMS) {
+          const quantity = typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1;
+          firstItems.push({ id: item.id, name: text(item.name, 'Item'), listId: list.id, listName, quantity });
+        }
       });
     return { id: list.id, name: listName, needed: needed.length };
   });

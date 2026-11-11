@@ -824,6 +824,32 @@
   }
 }
 /*
+ * HP-33c with HP-12e: the Shopping tile's tick rows beside the house, by screen height
+ * (`WIDE_TICK_ROW_STEPS` in src/lib/dashboard/shopping-tile.ts has the arithmetic). One row
+ * takes the place of the item chips and keeps the tile no taller than the Chores tile
+ * beside it; a second shows from 50rem (800 px), with the first inline detail rows, and a
+ * third from 60rem (960 px). "+N more" is the tile link here (`.wideHide`).
+ */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .tileGrid .shoppingWork,
+  .tileGrid .shoppingRows {
+    gap: 0.25rem;
+  }
+  .tileGrid .shoppingRows > :nth-child(n + 2) {
+    display: none;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) and (min-height: 50rem) {
+  .tileGrid .shoppingRows > :nth-child(2) {
+    display: flex;
+  }
+}
+@media (min-width: 1024px) and (orientation: landscape) and (min-height: 60rem) {
+  .tileGrid .shoppingRows > :nth-child(3) {
+    display: flex;
+  }
+}
+/*
  * HP-33b with HP-12d: the Chores tile's Done row (48 px on touch) replaces its inline
  * detail row, so below 54rem, where at most one detail row fits, the ring shrinks to the
  * height of the headline and summary beside it (3.25rem).
