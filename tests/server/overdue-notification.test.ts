@@ -27,7 +27,9 @@ const at = (day: string, hour: number) => new Date(`${day}T${String(hour + 6).pa
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());
   await house().set({ name: 'Overdue', ownerUid: 'o1', timeZone: 'America/Chicago', memberEmails: [] });
-  await house().collection('members').doc('o1').set({ uid: 'o1', email: EMAIL, role: 'owner', status: 'active', displayName: 'Owner' });
+  // As the server writes members since member privacy release D: no email on the record, the email in the contact document.
+  await house().collection('members').doc('o1').set({ uid: 'o1', role: 'owner', status: 'active', displayName: 'Owner' });
+  await house().collection('members').doc('o1').collection('private').doc('contact').set({ email: EMAIL, updatedAt: 'x' });
   await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, choreSettings: { reminderEnabled: false } });
   await chore('sweep', 'Sweep floor', '2026-11-04');
 });
