@@ -297,12 +297,16 @@ test.describe('shopping trip mode: the open list in the store', () => {
         await expect.poll(async () => Math.round((await add.boundingBox())!.width), { message: 'Add Item is full width' }).toBe(PHONE.width);
         await press(a.page, add.getByRole('button', { name: 'Close' }));
         await expect(add, 'Add Item closes').toHaveCount(0);
+        // Focus returns to the trigger a moment after the sheet closes; wait for it, or the next
+        // Enter could land on the old trigger and reopen the sheet.
+        await expect(list.getByRole('button', { name: 'Add Item' }), 'focus is back on Add Item').toBeFocused();
         await press(a.page, list.getByRole('button', { name: 'Edit E2E tm milk' }));
         const sheet = a.page.getByTestId('item-edit-sheet');
         await expect(sheet, 'the edit sheet opens').toBeVisible();
         await expect.poll(async () => { const box = (await sheet.boundingBox())!; return Math.round(box.y + box.height); }, { message: 'the edit sheet sits on the bottom edge' }).toBe(PHONE.height);
         await press(a.page, sheet.getByRole('button', { name: 'Close' }));
         await expect(sheet, 'the edit sheet closes').toHaveCount(0);
+        await expect(list.getByRole('button', { name: 'Edit E2E tm milk' }), 'focus is back on the Edit button of the row').toBeFocused();
       });
 
       await test.step('a dialog opened from the menu never reopens on the next opening of a list', async () => {
