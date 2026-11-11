@@ -1051,19 +1051,21 @@ describe('household.view gates the Household Manager reads (HO-2a)', () => {
   const contact = (reader: Identity, subject: Identity, household = householdA) =>
     getDoc(doc(dbFor(reader), 'households', household, 'members', subject.uid, 'private', 'contact'));
 
+  // Someone else's contact document (your own is always readable).
+  const otherThan = (user: Identity) => (user.uid === users.guest.uid ? users.member : users.guest);
   const managerReadsSucceed = async (user: Identity) => {
     await assertSucceeds(codes(user));
     await assertSucceeds(code(user));
     await assertSucceeds(auditList(user));
     await assertSucceeds(auditEntry(user));
-    await assertSucceeds(contact(user, users.guest));
+    await assertSucceeds(contact(user, otherThan(user)));
   };
   const managerReadsFail = async (user: Identity) => {
     await assertFails(codes(user));
     await assertFails(code(user));
     await assertFails(auditList(user));
     await assertFails(auditEntry(user));
-    await assertFails(contact(user, users.guest));
+    await assertFails(contact(user, otherThan(user)));
   };
   // What every approved member keeps whatever household.view says: the household
   // document, the member list (names for attribution and pickers), their own record
@@ -1114,15 +1116,31 @@ describe('household.view gates the Household Manager reads (HO-2a)', () => {
     await sharedReadsSucceed(users.member);
   });
 
-  test('household.view alone grants none of them, and granting it back restores a manager', async () => {
+  test('household.view alone (member, child and guest defaults) grants none of them', async () => {
     for (const user of [users.member, users.child, users.guest]) {
       await managerReadsFail(user);
+    }
+  });
+
+  test('member, child and guest defaults keep the shared reads', async () => {
+    for (const user of [users.member, users.child, users.guest]) {
       await sharedReadsSucceed(user);
     }
+  });
+
+  test('a child granted the manager permissions reads them only while household.view holds', async () => {
     await setPermissions(users.child, { ...managerAll, 'household.view': false });
     await managerReadsFail(users.child);
     await setPermissions(users.child, { ...managerAll, 'household.view': true });
-    await managerReadsSucceed(users.child);
+    await assertSucceeds(codes(users.child));
+    await assertSucceeds(code(users.child));
+  });
+
+  test('a child granted the manager permissions with household.view reads the log and contacts', async () => {
+    await setPermissions(users.child, { ...managerAll, 'household.view': true });
+    await assertSucceeds(auditList(users.child));
+    await assertSucceeds(auditEntry(users.child));
+    await assertSucceeds(contact(users.child, users.guest));
   });
 
   test('pending people, legacy identities and other households read none of them', async () => {
