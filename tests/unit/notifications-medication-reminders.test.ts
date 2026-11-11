@@ -71,11 +71,24 @@ describe('medication reminders', () => {
 });
 
 describe('reopening a resolved reminder', () => {
-  test('only when it was resolved before the run started reading its sources', async () => {
+  const at = (seconds: number, nanoseconds = 0) => ({ seconds, nanoseconds });
+
+  test("only when it was resolved at or before the run's source reads (server time against server time)", async () => {
     const { shouldReopen } = await import('../../functions/src/reminders');
-    assert.equal(shouldReopen(1_000, 2_000), true, 'resolved earlier: the data read since shows it is actionable again');
-    assert.equal(shouldReopen(2_000, 2_000), false, 'resolved during the run: the run may not have seen why');
-    assert.equal(shouldReopen(3_000, 2_000), false);
-    assert.equal(shouldReopen(undefined, 2_000), false);
+    assert.equal(shouldReopen(at(1), at(2)), true, 'resolved earlier: the data read since shows it is actionable again');
+    assert.equal(shouldReopen(at(2, 500), at(2, 500)), true, 'committed at the read time: the read already reflects it');
+    assert.equal(shouldReopen(at(2, 499_999), at(2, 500_000)), true, 'sub-millisecond order is exact');
+    assert.equal(shouldReopen(at(2, 500_001), at(2, 500_000)), false, 'committed after the read, in the same millisecond');
+    assert.equal(shouldReopen(at(3), at(2, 999_999_999)), false, 'resolved during the run: the run may not have seen why');
+    assert.equal(shouldReopen(undefined, at(2)), false);
+    assert.equal(shouldReopen(at(1), undefined), false, 'no read time: never reopen');
+  });
+
+  test("the run's read point is the earliest read time of its source snapshots", async () => {
+    const { earliestReadTime } = await import('../../functions/src/reminders');
+    assert.deepEqual(earliestReadTime([{ readTime: at(5, 2) }, { readTime: at(5, 1) }, { readTime: at(6) }]), at(5, 1));
+    assert.deepEqual(earliestReadTime([{ readTime: at(7) }, {}, { readTime: at(4, 9) }]), at(4, 9), 'a snapshot without a read time is ignored');
+    assert.equal(earliestReadTime([{}, {}]), undefined);
+    assert.equal(earliestReadTime([]), undefined);
   });
 });
