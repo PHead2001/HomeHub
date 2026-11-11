@@ -90,6 +90,8 @@ export function useTripFlow({
   const afterTrip = useAfterTripPreference(householdId);
   const usuals = useShoppingUsuals(isGrocery && canEdit ? householdId : null);
   const [putAway, setPutAway] = useState<PutAwayTarget | null>(null);
+  // The trip history, opened from the open list's overflow menu (S8b).
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Openings that wait for a lookup: leaving the tab (or a newer opening) makes a pending one stale.
   const [openGate] = useState(createRequestGate);
   // The put-away dialog is portaled outside the tab panel: it closes with the tab,
@@ -254,6 +256,9 @@ export function useTripFlow({
 
   const history: ReactNode = householdId && isGrocery ? (
     <TripHistoryButton
+      showTrigger={false}
+      open={historyOpen}
+      onOpenChange={setHistoryOpen}
       householdId={householdId}
       memberNames={memberNames}
       currentUid={uid}
@@ -282,6 +287,9 @@ export function useTripFlow({
     snackbarEntry,
     chips,
     dialog,
+    /** The trip history dialog (rendered with the list; no button of its own). */
     history,
+    /** Opens the trip history (Grocery lists), or null where there is none. */
+    openHistory: history ? () => setHistoryOpen(true) : null,
   };
 }

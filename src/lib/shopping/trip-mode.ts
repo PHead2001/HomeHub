@@ -1,0 +1,67 @@
+/**
+ * Pure helpers for the open list's trip mode (S8b: SH-12, SH-18, SH-33): the
+ * "n left" pill, the aisle chips and the "type to find or add" filter.
+ */
+import { itemNameKey, parseQuickAdd, type AisleGroup } from './items';
+
+/** The pill in the compact header: "5 left", "All in the cart", or nothing for an empty list. */
+export function leftLabel(needed: number, total: number): string | null {
+  if (needed > 0) return `${needed} left`;
+  return total > 0 ? 'All in the cart' : null;
+}
+
+export type AisleChip = { key: string; label: string; count: number; targetId: string };
+
+const slug = (value: string) => value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'aisle';
+
+/** The heading id of every aisle group, unique even when two category names slug the same. */
+export function aisleTargetIds<T>(groups: readonly AisleGroup<T>[], idPrefix = 'aisle'): string[] {
+  const used = new Set<string>();
+  return groups.map((group) => {
+    const base = `${idPrefix}-${slug(group.category)}`;
+    let id = base;
+    for (let n = 2; used.has(id); n += 1) id = `${base}-${n}`;
+    used.add(id);
+    return id;
+  });
+}
+
+/**
+ * One chip per aisle group, in walk order, each pointing at its group's heading
+ * (`aisleTargetIds`). No chips for fewer than two groups: there is nowhere to jump.
+ */
+export function aisleChips<T>(groups: readonly AisleGroup<T>[], idPrefix = 'aisle'): AisleChip[] {
+  if (groups.length < 2) return [];
+  const ids = aisleTargetIds(groups, idPrefix);
+  return groups.map((group, index) => ({ key: ids[index], label: group.category, count: group.items.length, targetId: ids[index] }));
+}
+
+/**
+ * What the quick-add field's text means for the list (SH-18c): a single typed
+ * name filters the needed items (by a case-insensitive "contains" on the name,
+ * ignoring a leading or trailing quantity); several comma-separated items, or
+ * nothing, do not filter. Enter always adds through the normal save path.
+ */
+export function findQuery(text: string): string | null {
+  if (!text.trim()) return null;
+  const entries = parseQuickAdd(text);
+  if (entries.length !== 1) return null;
+  const key = itemNameKey(entries[0].name);
+  return key || null;
+}
+
+/** The groups narrowed to items whose name contains `query`; empty groups are dropped. */
+export function filterAisleGroups<T extends { name: string }>(groups: readonly AisleGroup<T>[], query: string | null): AisleGroup<T>[] {
+  if (!query) return groups as AisleGroup<T>[];
+  return groups
+    .map((group) => ({ category: group.category, items: group.items.filter((item) => itemNameKey(item.name).includes(query)) }))
+    .filter((group) => group.items.length > 0);
+}
+
+/** The line under the field while it filters: how many needed items match, and what Enter does. */
+export function findHint(query: string | null, matches: number, typed: string): string | null {
+  if (!query) return null;
+  const name = typed.trim();
+  if (matches === 0) return `No needed item matches. Press Enter to add ${name}.`;
+  return `${matches === 1 ? '1 needed item matches' : `${matches} needed items match`}. Press Enter to add ${name}.`;
+}

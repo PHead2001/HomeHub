@@ -74,6 +74,9 @@ export function CategoriesDialog({
   storesListed,
   uid,
   online,
+  open: openProp,
+  onOpenChange,
+  showTrigger = true,
 }: {
   householdId: string;
   list: ShoppingList;
@@ -85,8 +88,15 @@ export function CategoriesDialog({
   storesListed: boolean;
   uid: string | null;
   online: boolean;
+  /** Controlled open state (the open list's overflow menu opens it, S8b). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Draws the "Manage Categories" button (off when a menu item opens the dialog instead). */
+  showTrigger?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = openProp ?? ownOpen;
+  const setOpen = (next: boolean) => (onOpenChange ? onOpenChange(next) : setOwnOpen(next));
   const [newCategory, setNewCategory] = useState('');
   const [categoryError, setCategoryError] = useState<string | null>(null);
   const [creatingStore, setCreatingStore] = useState(false);
@@ -272,10 +282,12 @@ export function CategoriesDialog({
         }
       }}
     >
-      <DialogTrigger asChild>
-        <Button variant="outline" className="w-full sm:w-auto"><Settings className="mr-2 h-4 w-4" aria-hidden /> Manage Categories</Button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+      {showTrigger && (
+        <DialogTrigger asChild>
+          <Button variant="outline" className="w-full sm:w-auto"><Settings className="mr-2 h-4 w-4" aria-hidden /> Manage Categories</Button>
+        </DialogTrigger>
+      )}
+      <DialogContent phoneSheet className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-headline">Manage Categories</DialogTitle>
           <DialogDescription>

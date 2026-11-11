@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -49,6 +49,9 @@ export function QuickAddBar({
   className,
   large = false,
   loading = false,
+  placeholder = 'milk, eggs, 2 bread',
+  onTextChange,
+  hint,
 }: {
   listName: string;
   onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
@@ -63,6 +66,11 @@ export function QuickAddBar({
    * already-needed item can only be found once the items are known.
    */
   loading?: boolean;
+  placeholder?: string;
+  /** The field's text as it changes (the open list filters its needed items by it, SH-18c). */
+  onTextChange?: (text: string) => void;
+  /** A status line under the field ("2 needed items match. Press Enter to add milk."). */
+  hint?: string | null;
 }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +81,15 @@ export function QuickAddBar({
   const mountedRef = useRef(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const fieldId = `quick-add-${useId().replace(/:/g, '')}`;
+
+  // Every change, typed or put back after a failed save, reaches the filter.
+  const onTextChangeRef = useRef(onTextChange);
+  useLayoutEffect(() => {
+    onTextChangeRef.current = onTextChange;
+  });
+  useEffect(() => {
+    onTextChangeRef.current?.(value);
+  }, [value]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -157,7 +174,7 @@ export function QuickAddBar({
             setValue(event.target.value);
             if (error) setError(null);
           }}
-          placeholder="milk, eggs, 2 bread"
+          placeholder={placeholder}
           autoComplete="off"
           enterKeyHint="done"
           maxLength={MAX_QUICK_ADD_ITEMS * 40}
@@ -170,6 +187,7 @@ export function QuickAddBar({
         </Button>
       </div>
       <FieldError id={fieldId} className="mt-1.5 px-1">{error}</FieldError>
+      {hint && !error && <p role="status" aria-live="polite" className="mt-1.5 px-1 text-sm text-muted-foreground" data-testid="quick-add-hint">{hint}</p>}
       {loading && <p role="status" className="mt-1.5 px-1 text-sm text-muted-foreground" data-testid="quick-add-loading">Loading {listName}…</p>}
       {chips.length > 0 && (
         <ul className="mt-1.5 flex flex-wrap gap-1.5 px-1" role="status" aria-live="polite" data-testid="quick-add-pending">

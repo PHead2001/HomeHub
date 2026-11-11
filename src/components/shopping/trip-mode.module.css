@@ -1,0 +1,74 @@
+/*
+ * The open list's trip mode (S8b: SH-12c, SH-14a, SH-18a/b, SH-33b/c).
+ *
+ * The compact header sticks under the site header (`top-14`, 3.5rem) and
+ * publishes its own height as --trip-header-h on the open list, so aisle
+ * headings stick right under it and an aisle chip's jump lands below it.
+ */
+
+.header {
+  position: sticky;
+  top: 3.5rem;
+  z-index: 20;
+}
+
+/* The Needed section's Radix content is `overflow: hidden` (for its open/close
+   animation), which would make it the sticky headings' scroll container;
+   `clip` clips the same way without being one, so the headings stick to the page. */
+.needed :global([role='region']) {
+  overflow: clip;
+}
+
+/* The aisle groups size themselves by the list's own width, so the wall tablet
+   (1263 px) gets three columns and a 1024 px screen two, at any text size. */
+.groups {
+  container-type: inline-size;
+}
+
+.group {
+  break-inside: avoid;
+}
+
+.aisle {
+  position: sticky;
+  top: calc(3.5rem + var(--trip-header-h, 0px));
+  z-index: 5;
+  scroll-margin-top: calc(3.5rem + var(--trip-header-h, 0px));
+  background: hsl(var(--card));
+}
+
+@container (min-width: 880px) {
+  .flow {
+    columns: 2;
+    column-gap: 1.5rem;
+  }
+
+  /* Side by side every aisle is in view at once: headings stay in their column. */
+  .aisle {
+    position: static;
+  }
+
+  .group {
+    padding-top: 0.25rem;
+  }
+}
+
+@container (min-width: 1120px) {
+  .flow {
+    columns: 3;
+  }
+}
+
+/* The aisle chips scroll sideways inside the header, never the page. */
+.chips {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  scroll-padding-inline: 0.75rem;
+}
+
+.chips::-webkit-scrollbar {
+  display: none;
+}

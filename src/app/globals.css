@@ -362,3 +362,9 @@
   transition-delay: 0ms !important;
   scroll-behavior: auto !important;
 }
+
+/* SH-12d: while a shopping list is open (set by the open list), the tab bar's
+   floating "+" steps aside so it never covers the list's own quick add. */
+:root[data-shopping-trip] [data-quick-add-slot] {
+  display: none;
+}
