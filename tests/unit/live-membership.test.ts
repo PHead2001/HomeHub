@@ -15,6 +15,9 @@ import {
 import { getMemberPermissions } from '../../src/lib/permissions';
 import { clearJournal, forgetHouseholdJournal, readJournal, UNDO_JOURNAL_KEY, type UndoEntry } from '../../src/lib/shopping/undo';
 import type { HouseholdMember, User } from '../../src/lib/types';
+import { forgetHouseholdKeys, HOUSEHOLD_KEY_PREFIXES } from '../../src/lib/auth/household-scope';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const H = 'house-a';
 const UID = 'uid-1';
@@ -343,6 +346,26 @@ describe('household data on this device', () => {
   };
   const entry = (householdId: string, opId: string): UndoEntry => ({
     group: 'shopping-tick', uid: UID, householdId, listId: 'l', itemId: 'i', name: 'Milk', opId, expiresAt: 10_000,
+  });
+
+  test('per-household keys (the pantry recent list) are forgotten for one household, or all', () => {
+    const values = new Map<string, string>([
+      ['homehub.pantry.recentList.house-a', 'l1'],
+      ['homehub.pantry.recentList.house-b', 'l2'],
+      ['homehub.appearance', 'keep'],
+    ]);
+    const storage = {
+      get length() { return values.size; },
+      key: (index: number) => [...values.keys()][index] ?? null,
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    forgetHouseholdKeys(storage, H);
+    assert.deepEqual([...values.keys()], ['homehub.pantry.recentList.house-b', 'homehub.appearance']);
+    forgetHouseholdKeys(storage, null);
+    assert.deepEqual([...values.keys()], ['homehub.appearance']);
+    // The prefix is the one the pantry writes.
+    const pantry = readFileSync(resolve(__dirname, '../../src/components/pantry-inventory-client.tsx'), 'utf8');
+    for (const prefix of HOUSEHOLD_KEY_PREFIXES) assert.ok(pantry.includes(`\`${prefix}\${householdId}\``), prefix);
   });
 
   test('the Undo journal forgets one household, or everything at sign-out', () => {
