@@ -301,6 +301,31 @@ test.describe('shopping trip mode: the open list in the store', () => {
         const sheet = a.page.getByTestId('item-edit-sheet');
         await expect(sheet, 'the edit sheet opens').toBeVisible();
         await expect.poll(async () => { const box = (await sheet.boundingBox())!; return Math.round(box.y + box.height); }, { message: 'the edit sheet sits on the bottom edge' }).toBe(PHONE.height);
+        await press(a.page, sheet.getByRole('button', { name: 'Close' }));
+        await expect(sheet, 'the edit sheet closes').toHaveCount(0);
+      });
+
+      await test.step('a dialog opened from the menu never reopens on the next opening of a list', async () => {
+        // Opened from the overview, so browser Back returns there.
+        await press(a.page, list.getByRole('button', { name: 'Back to all lists' }));
+        await a.page.getByRole('button', { name: `Open List: ${LIST_NAME}` }).click();
+        await expect(a.page).toHaveURL(new RegExp(`[?&]list=${listIdFor(testInfo)}`));
+        const reopenedMenu = a.page.getByTestId('open-list').getByRole('button', { name: 'More list actions' });
+        await press(a.page, reopenedMenu);
+        const item = a.page.getByRole('menu').getByRole('menuitem', { name: 'Scan to tick', exact: true });
+        await item.focus();
+        await a.page.keyboard.press('Enter');
+        const scanner = a.page.getByRole('dialog', { name: 'Scan to tick' });
+        await expect(scanner, 'the scanner opens').toBeVisible();
+        // Browser Back to the overview with the scanner open: it unmounts with the list.
+        await a.page.goBack();
+        await expect(a.page.getByRole('button', { name: `Open List: ${LIST_NAME}` }), 'back on the overview').toBeVisible();
+        await expect(scanner, 'the scanner closed with the list').toHaveCount(0);
+        // From the keyboard: the camera's error toast may still sit over the top of the screen.
+        await press(a.page, a.page.getByRole('button', { name: `Open List: ${LIST_NAME}` }));
+        await expect(a.page.getByTestId('open-list').locator('#item-needed-tm-apples'), 'the list is open again').toBeAttached();
+        await expect(scanner, 'the scanner does not reopen').toHaveCount(0);
+        await expect(a.page.getByRole('dialog'), 'no dialog reopens').toHaveCount(0);
       });
     } finally {
       await a.context.close();
@@ -372,6 +397,18 @@ test.describe('shopping trip mode: the open list in the store', () => {
       await expect(list.getByText('E2E tm kiwi', { exact: true })).toBeVisible();
       await expect(list.getByTestId('trip-left')).toHaveText(`${SEED.length + 1} left`);
       await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E tm kiwi').get()).size).toBe(1);
+
+      // A filter belongs to that opening of the list: back to all lists and in again,
+      // the field is empty and every needed item and aisle chip is back.
+      await field.fill('milk');
+      await expect(list.locator('[data-row-section="needed"]'), 'filtered before leaving').toHaveCount(2);
+      await list.getByRole('button', { name: 'Back to all lists' }).click();
+      await a.page.getByRole('button', { name: `Open List: ${LIST_NAME}` }).click();
+      const reopened = a.page.getByTestId('open-list');
+      await expect(reopened.locator('[data-row-section="needed"]'), 'no leftover filter after reopening').toHaveCount(SEED.length + 1);
+      await expect(a.page.getByLabel(`Items to add to ${LIST_NAME}`), 'the field starts empty').toHaveValue('');
+      await expect(reopened.getByTestId('aisle-chips'), 'the aisle chips are back').toBeVisible();
+      await expect(a.page.getByTestId('quick-add-hint'), 'no find hint').toHaveCount(0);
     } finally {
       await a.context.close();
     }

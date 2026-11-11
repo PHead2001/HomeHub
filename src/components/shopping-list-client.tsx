@@ -47,6 +47,7 @@ import { ScanToTick } from './shopping/scan-to-tick';
 import { TripHeader } from './shopping/trip-header';
 import { TripNeededGroups } from './shopping/trip-needed-groups';
 import { useTripMode } from './shopping/use-trip-mode';
+import { scopeToList, type ListScoped } from '@/lib/shopping/trip-mode';
 import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { rowPhoto } from '@/lib/shopping/row-photo';
@@ -1313,7 +1314,14 @@ export function ShoppingListClient({
     config: categoryConfig,
     store: selectedList ? assignedStore(selectedList.storeId, storesState).store : null,
   });
-  const [listDialogOpen, setListDialogOpen] = useState<'scan' | 'categories' | null>(null);
+  // The dialog the actions menu opened, for this opening of this list only: going
+  // back to all lists (also by browser Back) or to another list drops it, so it
+  // never reopens on the next list (nor restarts the camera).
+  const [listDialogState, setListDialogState] = useState<ListScoped<'scan' | 'categories' | null>>({ listId: selectedListId, value: null });
+  const scopedListDialog = scopeToList(listDialogState, selectedListId, null);
+  if (scopedListDialog !== listDialogState) setListDialogState(scopedListDialog);
+  const listDialogOpen = scopedListDialog.value;
+  const setListDialogOpen = (value: 'scan' | 'categories' | null) => setListDialogState({ listId: selectedListId, value });
 
   // --- Render Logic ---
 

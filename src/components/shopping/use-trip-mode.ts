@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CategoryConfig } from '@/lib/shopping/category-order';
 import { neededAisleGroups } from '@/lib/shopping/overview';
-import { aisleChips, filterAisleGroups, findHint, findQuery, leftLabel } from '@/lib/shopping/trip-mode';
+import { aisleChips, filterAisleGroups, findHint, findQuery, leftLabel, scopeToList, type ListScoped } from '@/lib/shopping/trip-mode';
 import type { ShoppingListItem } from '@/lib/types';
 import { useTripWakeLock } from './use-trip-wake-lock';
 
@@ -38,9 +38,12 @@ export function useTripMode({
     return () => root.removeAttribute('data-shopping-trip');
   }, [open]);
 
-  // The field's text, per list: another list starts unfiltered.
-  const [find, setFind] = useState<{ listId: string | null; text: string }>({ listId: null, text: '' });
-  const text = find.listId === listId ? find.text : '';
+  // The field's text, per opening of a list: another list, or the same list opened
+  // again after going back to all lists, starts unfiltered (its field remounts empty).
+  const [find, setFind] = useState<ListScoped<string>>({ listId, value: '' });
+  const scoped = scopeToList(find, listId, '');
+  if (scoped !== find) setFind(scoped);
+  const text = scoped.value;
 
   const groups = useMemo(
     () => (listId ? neededAisleGroups(items, config, store) : []),
@@ -62,6 +65,6 @@ export function useTripMode({
     left: leftLabel(neededCount, items.length),
     filtering: query !== null,
     hint: findHint(query, matches, text),
-    setFindText: (next: string) => setFind((current) => (current.listId === listId && current.text === next ? current : { listId, text: next })),
+    setFindText: (next: string) => setFind((current) => (current.listId === listId && current.value === next ? current : { listId, value: next })),
   };
 }

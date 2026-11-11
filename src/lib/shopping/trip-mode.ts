@@ -65,3 +65,15 @@ export function findHint(query: string | null, matches: number, typed: string): 
   if (matches === 0) return `No needed item matches. Press Enter to add ${name}.`;
   return `${matches === 1 ? '1 needed item matches' : `${matches} needed items match`}. Press Enter to add ${name}.`;
 }
+
+/**
+ * State that belongs to one opening of one list (the find text, the dialog the
+ * actions menu opened): kept while the same list stays open, reset to `empty`
+ * whenever the open list changes or closes, so going back to all lists and
+ * reopening the same list starts clean.
+ */
+export type ListScoped<T> = { listId: string | null; value: T };
+
+export function scopeToList<T>(state: ListScoped<T>, listId: string | null, empty: T): ListScoped<T> {
+  return state.listId === listId ? state : { listId, value: empty };
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel } from '../../src/lib/shopping/trip-mode';
+import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel, scopeToList } from '../../src/lib/shopping/trip-mode';
 import { keyboardInset } from '../../src/lib/keyboard-inset';
 import { createWakeLockController, wakeLockWanted, type WakeLockSentinelLike } from '../../src/lib/shopping/wake-lock';
 import { LIST_TINT_LABELS } from '../../src/lib/shopping/list-style';
@@ -63,6 +63,21 @@ describe('trip mode: find or add (SH-18c)', () => {
     assert.equal(findHint('milk', 2, 'milk'), '2 needed items match. Press Enter to add milk.');
     assert.equal(findHint('milk', 1, ' milk '), '1 needed item matches. Press Enter to add milk.');
     assert.equal(findHint('kale', 0, 'kale'), 'No needed item matches. Press Enter to add kale.');
+  });
+});
+
+describe('trip mode: state scoped to one opening of a list', () => {
+  test('kept while the same list stays open', () => {
+    const state = { listId: 'a', value: 'milk' };
+    assert.equal(scopeToList(state, 'a', ''), state);
+  });
+  test('reset when another list opens', () => {
+    assert.deepEqual(scopeToList({ listId: 'a', value: 'milk' }, 'b', ''), { listId: 'b', value: '' });
+  });
+  test('reset when the list closes, so reopening the same list starts clean', () => {
+    const closed = scopeToList({ listId: 'a', value: 'scan' as 'scan' | null }, null, null);
+    assert.deepEqual(closed, { listId: null, value: null });
+    assert.deepEqual(scopeToList(closed, 'a', null), { listId: 'a', value: null });
   });
 });
 
