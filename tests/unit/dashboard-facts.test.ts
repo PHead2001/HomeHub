@@ -305,7 +305,8 @@ describe('buildMorningBrief', () => {
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });
     assert.equal(brief.text, "Good morning, Alex. 1 chore today (1 overdue), Pixel's next meal is due, and the Milk expiring tomorrow.");
-    assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores', '/pets/pixel?tab=feeding', '/shopping?tab=pantry']);
+    // HP-25: your chores open Chores filtered to you, the overdue count to your overdue work.
+    assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores?who=me', '/chores?due=overdue&who=me', '/pets/pixel?tab=feeding', '/shopping?tab=pantry']);
   });
 
   it('has a calm line when nothing needs attention', () => {
