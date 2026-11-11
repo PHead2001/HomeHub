@@ -102,6 +102,8 @@ async function firstActionHits(page: Page) {
 async function expectActionsOwnTheirTaps(page: Page) {
   const hits = await firstActionHits(page);
   expect(hits.length, 'the seed gives a one-tap tile an action button').toBeGreaterThanOrEqual(1);
+  // The seed lists needed shopping items: the first Tick is hit-tested too.
+  expect(hits.map((hit) => hit.tile), "the Shopping tile's first Tick is hit-tested").toContain('dashboard-tile-shopping-link');
   for (const hit of hits) expect(hit, `${hit.tile}: the first action button takes its own taps`).toEqual({ tile: hit.tile, centre: true, top: true });
 }
 
@@ -176,6 +178,16 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         expect(perTile.length, 'the seed gives some tiles inline details').toBeGreaterThanOrEqual(2);
         const allowed = viewport.height >= 864 ? 2 : viewport.height >= 800 ? 1 : 0;
         for (const tile of perTile) expect(tile.shown).toBe(Math.min(allowed, tile.total));
+        // HP-33c with HP-12e beside the house: the Shopping tile's tick rows (in place of its
+        // item chips and inline details) follow the same height steps: one row below 800 px
+        // (50rem), two from 800 px, three from 960 px (60rem); the seed has three needed items.
+        // Each is at least 44 px, 48 px on a coarse pointer.
+        const ticks = await page.getByTestId('dashboard-tile-shopping').locator('[data-tick-key]')
+          .evaluateAll((controls) => controls.filter((control) => control.getBoundingClientRect().height > 0).map((control) => control.getBoundingClientRect().height));
+        expect(ticks.length, 'Shopping tick rows shown').toBe(viewport.height >= 960 ? 3 : viewport.height >= 800 ? 2 : 1);
+        const coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);
+        for (const tickHeight of ticks) expect(tickHeight).toBeGreaterThanOrEqual(coarse ? 48 : 44);
+        await expect(page.getByTestId('dashboard-tile-shopping-details'), 'tick rows replace the inline list rows').toHaveCount(0);
         // HP-26a: the last tile reaches the grid's right edge (no empty slot), and tiles never overlap.
         const tiles = await tileBoxes(page);
         expect(tiles.length).toBeGreaterThanOrEqual(6);

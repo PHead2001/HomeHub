@@ -157,6 +157,14 @@ describe('restore document (Undo of a delete)', () => {
       name: 'Milk', quantity: 1, status: 'purchased', addedByUid: 'sam', purchaseOpId: 'op-1', restoredByUid: 'kim', restoreOpId: 'restore-9',
     });
   });
+
+  test('drops the server-only put-away stamps, which the rules refuse on a client create', () => {
+    const credited = { name: 'Bread', quantity: 1, status: 'purchased', pantryCreditedAt: 'ts', creditTripId: 'trip-1' };
+    assert.deepEqual(restoreItemData(credited, 'kim', 'restore-1'), {
+      name: 'Bread', quantity: 1, status: 'purchased', restoredByUid: 'kim', restoreOpId: 'restore-1',
+    });
+    assert.deepEqual(restoreItemData(credited, null), { name: 'Bread', quantity: 1, status: 'purchased' });
+  });
 });
 
 describe('focus after a tick or delete (SH-26a)', () => {

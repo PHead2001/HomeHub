@@ -14,8 +14,9 @@
  *
  * Touch (HP-13b, HP-14b): a tile's peek details come from one row list (`details`).
  * With a fine, hovering pointer they open as the peek; everywhere else the first rows
- * render inline in the tile (two in the wide layout), so next up, the shopping lists,
- * later maintenance and the streak names never need hover. The tile "+" and Retry are
+ * render inline in the tile (two in the wide layout), so next up, later maintenance and
+ * the streak names never need hover. The Shopping tile lists its needed items with a
+ * tick instead (HP-33c, `shopping-tick.tsx`); its lists stay in the peek. The tile "+" and Retry are
  * 44 px (48 px on touch).
  */
 import { useMemo, type PointerEvent, type ReactNode } from 'react';
@@ -33,12 +34,14 @@ import { MAINTENANCE_REMINDERS_HREF, PANTRY_HREF } from '@/lib/dashboard/links';
 import { streakDaysLabel, streakSummary } from '@/lib/dashboard/streaks';
 import { tiltFor } from '@/lib/dashboard/tilt';
 import { dashboardTiles, type TileId } from '@/lib/dashboard/tiles';
+import { shoppingRowKey, shoppingTileRows } from '@/lib/dashboard/shopping-tile';
 import { dailyLabel, temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
 import { useLiveWeatherState, useWeatherPreference } from '@/lib/dashboard/use-weather';
 import { useAuth } from '@/hooks/use-auth';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
 import { HouseholdChores, HouseholdSummaryLine, PetFedButton, useChoreDone } from './one-tap';
+import { ShoppingTickRows, useShoppingTick } from './shopping-tick';
 import { PeekCard } from './peek-card';
 import { TileCell, TileSkeleton } from './tile-grid-skeleton';
 import styles from './dashboard.module.css';
@@ -284,6 +287,10 @@ export function BentoGrid({
     ? (facts.chores.todayWork ?? []).map((chore) => chore.id)
     : undefined;
   const done = useChoreDone(liveChoreIds);
+  // HP-33c: the Shopping tile's rows are tickable only from live (or stale) listener data.
+  const shoppingLive = Boolean(facts.shopping && sections.shopping && sections.shopping.status !== 'loading');
+  const liveShoppingKeys = shoppingLive ? facts.shopping!.firstItems.map(shoppingRowKey) : undefined;
+  const shoppingTick = useShoppingTick(liveShoppingKeys);
   const { report: weather, stale: weatherStale, failed: weatherFailed } = useLiveWeatherState();
   const { preference: weatherPreference } = useWeatherPreference();
   const weatherEnabled = weatherPreference.enabled && Boolean(weatherPreference.city);
@@ -359,7 +366,8 @@ export function BentoGrid({
 
   if (permissions['shopping.view']) {
     const shopping = facts.shopping;
-    tiles.set('shopping', shopping ? (
+    const list = shopping ? shoppingTileRows(shopping.firstItems, shopping.neededItems) : null;
+    tiles.set('shopping', shopping && list ? (
       <Tile
         key="shopping"
         href="/shopping"
@@ -369,17 +377,20 @@ export function BentoGrid({
         hint={hint('shopping')}
         quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
         details={shopping.lists.map((list) => ({ key: list.id, label: list.name, value: String(list.needed) }))}
+        // HP-36a/HP-33c: the needed items with a tick replace the inline list rows.
+        inlineDetails={list.rows.length > 0 ? [] : undefined}
+        actions={list.rows.length > 0 ? (
+          <ShoppingTickRows
+            rows={list.rows}
+            more={list.more}
+            showLists={list.showLists}
+            canTick={Boolean(permissions['shopping.edit']) && shoppingLive}
+            tick={shoppingTick}
+          />
+        ) : undefined}
       >
         <Big value={shopping.neededItems} suffix={shopping.neededItems === 1 ? 'item needed' : 'items needed'} />
-        {shopping.firstItems.length > 0 ? (
-          <span className="flex flex-wrap gap-1.5">
-            {shopping.firstItems.map((item) => (
-              <span key={`${item.listId}-${item.id}`} className="max-w-full truncate rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">{item.name}</span>
-            ))}
-          </span>
-        ) : (
-          <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>
-        )}
+        {list.rows.length === 0 && <span className="text-sm text-muted-foreground">Lists are empty. Nice.</span>}
       </Tile>
     ) : failed.has('shopping') ? <UnavailableTile key="shopping" href="/shopping" title="Shopping" icon={ShoppingCart} testId="dashboard-tile-shopping" unauthorized={unauthorized('shopping')} onRetry={onRetry} /> : <TileSkeleton key="shopping" />);
   }
