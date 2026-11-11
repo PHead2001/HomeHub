@@ -271,8 +271,13 @@ describe('yearly stats are keyed by uid (member privacy release D)', () => {
     assert.equal(purgeMustWait({ assignedToEmail: 'gone@example.test' }, people, true), true);
     assert.equal(purgeMustWait({ completedByEmail: 'gone@example.test', assignedToUid: 'uid-ana' }, people, true), true);
     assert.equal(purgeMustWait({ assignedToUid: 'uid-ana', assignedToEmail: 'gone@example.test' }, people, true), true, 'a stale uid is no credit');
-    // The person's own uid is still there: credited by uid, purged.
-    assert.equal(purgeMustWait({ assignedToUid: 'uid-lee', assignedToEmail: 'gone@example.test' }, people, true), false);
+    // A uid next to an email of nobody here is not trusted (an older build may have left someone else's): it waits for the scrub.
+    assert.equal(purgeMustWait({ assignedToUid: 'uid-lee', assignedToEmail: 'gone@example.test' }, people, true), true);
+    // A current member's email decides, whatever uid sits next to it.
+    assert.equal(purgeMustWait({ assignedToUid: 'uid-gone', assignedToEmail: 'Sam@example.test' }, people, true), false);
+    assert.equal(purgeMustWait({ completedByEmail: 'ana@example.test', assignedToEmail: 'gone@example.test' }, people, true), false);
+    // No email at all: a departed uid alone still purges.
+    assert.equal(purgeMustWait({ assignedToUid: 'uid-lee' }, people, true), false);
     // No email involved: never waits, emails known or not.
     assert.equal(purgeMustWait({ assignedToUid: 'former-0123456789abcdef01234567' }, people, false), false);
     assert.equal(purgeMustWait({ completedByUid: 'uid-sam', completedByEmail: 'gone@example.test' }, [], false), false);

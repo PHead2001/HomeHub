@@ -4,6 +4,9 @@ import { adminDb } from '../../src/lib/server/firebase-admin';
 import { choreStatsAssigneeKey, choreStatsMemberKey } from '../../functions/src/shared/ids';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
 import { creditedPerson } from '../../functions/src/shared/chore-stats';
+import { Timestamp } from 'firebase-admin/firestore';
+import { runHouseholdReminders } from '../../functions/src/reminders';
+import { formerMemberKey } from '../../scripts/ops/former-member-key.mjs';
 import {
   hasLegacyKeys,
   householdLegacyKeys,
@@ -207,5 +210,41 @@ describe('release D ops: one identity per person who has left', () => {
     assert.equal(carl?.completedByEmail, undefined);
     assert.equal((await rekey(true)).written, 0);
     assert.deepEqual(await scrub(true), { stats: 0, chores: 0, kept: 0 });
+  });
+
+  // Review finding on #146 (4543665023): a uid next to an email of someone who left is not trusted for the credit.
+  test('a completion pairing a departed email with another departed uid waits for the scrub, then credits the person the email names', async () => {
+    const ts = (d: Date) => Timestamp.fromDate(d) as never;
+    const upkeep = (iso: string) => runHouseholdReminders(adminDb as never, HOUSE, new Date(iso), ts);
+    const CARL = 'carl@example.test';
+    // An older build reassigned this chore from Carl to Lee by email only: Carl's uid stayed. Both have left.
+    await house().collection('chores').doc('lee-stale').set({
+      task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToEmail: LEE, assignedToUid: 'uid-carl', assignedToDisplayName: 'Lee',
+    });
+    // Carl's own recorded completion (recent: not purged here).
+    await house().collection('chores').doc('carl-1').set({
+      task: 'Carl', isCompleted: true, completedAt: '2026-10-30T12:00:00.000Z', assignedToUid: 'uid-carl',
+      completedByEmail: CARL, completedByUid: 'uid-carl', completedByName: 'Carl',
+    });
+    // A departed uid alone (no email) purges as before; so does a current member's.
+    await house().collection('chores').doc('gone-uid').set({ task: 'Gone', isCompleted: true, completedAt: '2026-07-02T12:00:00.000Z', assignedToUid: 'uid-gone' });
+    await house().collection('chores').doc('owner-old').set({ task: 'Owner', isCompleted: true, completedAt: '2026-07-03T12:00:00.000Z', assignedToUid: 'o1', completedByUid: 'o1' });
+
+    const before = await upkeep('2026-11-05T15:00:00Z');
+    assert.equal(before.purgedChores, 2, 'the uid-only chore and the current member chore');
+    assert.equal((await house().collection('chores').doc('lee-stale').get()).exists, true, 'not purged before the scrub');
+    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.byAssignee?.[choreStatsMemberKey('uid-carl')], undefined);
+
+    await scrub(true);
+    const ops = (await house().collection('ops').doc('former-members').get()).data()!;
+    const lee = ops.identities[formerMemberKey(ops.secret, LEE)];
+    assert.ok(lee && lee !== 'uid-carl', 'Lee is not Carl');
+    assert.equal(ops.identities[formerMemberKey(ops.secret, CARL)], 'uid-carl', 'Carl by his recorded completion');
+    const after = await upkeep('2026-11-05T16:00:00Z');
+    assert.ok(after.purgedChores >= 1);
+    assert.equal((await house().collection('chores').doc('lee-stale').get()).exists, false);
+    const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats?.byAssignee?.[choreStatsMemberKey('uid-carl')], undefined, 'nothing archived for Carl');
+    assert.equal(stats?.byAssignee?.[choreStatsMemberKey(lee)], 7, 'Lee: 6 archived + this one');
   });
 });
