@@ -45,14 +45,18 @@ export type CompletionRecord = {
   completedSubTasks: string[];
 };
 
-export type Completer = { uid: string; email: string; name: string };
+/** Who completes a chore: their uid and public name (never their email). */
+export type Completer = { uid: string; name: string };
 
-/** The completion fields a server completion writes (plus `completedAtServer`). */
+/**
+ * The completion fields a server completion writes (plus `completedAtServer`).
+ * No `completedByEmail`: chores are readable by every member with chores.view,
+ * so the completer is recorded by uid and name only.
+ */
 export type CompletionWrite = {
   isCompleted: true;
   completedAt: string;
   completedByUid: string;
-  completedByEmail: string;
   completedByName: string;
   completionId: string;
   completedSubTasks?: string[];
@@ -162,7 +166,6 @@ export function planCompletion(
     isCompleted: true,
     completedAt: options.now.toISOString(),
     completedByUid: options.completer.uid,
-    completedByEmail: options.completer.email,
     completedByName: options.completer.name,
     completionId: options.completionId,
   };
@@ -181,7 +184,7 @@ export function planCompletion(
       completionId: fields.completionId,
       completedAt: fields.completedAt,
       completedByUid: fields.completedByUid,
-      completedByEmail: fields.completedByEmail,
+      completedByEmail: null,
       completedByName: fields.completedByName,
       completedSubTasks: fields.completedSubTasks ?? before,
     },

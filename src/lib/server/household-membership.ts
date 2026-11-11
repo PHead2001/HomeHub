@@ -47,6 +47,7 @@ export type MembershipErrorCode =
   | 'failed';
 import { notificationAudience } from '@functions/shared/notification-audience';
 import { unassignedChoreFields } from '@functions/shared/assignee';
+import { contactEmailOf } from '@functions/shared/member-contact';
 
 export class MembershipError extends Error {
   constructor(public readonly userMessage: string, public readonly code: MembershipErrorCode = 'failed') {
@@ -59,13 +60,19 @@ const NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * A member's protected contact document, `households/{id}/members/{uid}/private/contact`
  * (`{ email, updatedAt }`). Only the server writes it; the rules let the person
- * and holders of `household.manageMembers` read it. Written whenever a membership
- * is created or approved, deleted with the membership.
+ * and holders of `household.manageMembers` read it. It is the only place a
+ * member's email is kept in the household: membership records carry none. Written
+ * when a membership is created, deleted with the membership, and read by every
+ * server operation that needs the member's email (profile cache, removal, deletion).
  */
 const memberContactRef = (householdRef: FirebaseFirestore.DocumentReference, uid: string) =>
   householdRef.collection('members').doc(uid).collection('private').doc('contact');
 
 const memberContact = (email: string, now: Date) => ({ email, updatedAt: now.toISOString() });
+
+/** The email in a member's contact document, or "" (see functions/src/shared/member-contact.ts). */
+const contactEmail = (snapshot: FirebaseFirestore.DocumentSnapshot | null | undefined): string =>
+  contactEmailOf(snapshot?.exists ? snapshot.data() : undefined);
 const INVITE_MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 
 export type VerifiedCaller = { uid: string; email: string; displayName?: string; avatarUrl?: string };
@@ -162,9 +169,9 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     const householdName = typeof householdSnap.get('name') === 'string' ? householdSnap.get('name') as string : '';
     // A photo removed in Profile stays removed; see membershipAvatarUrl.
     const avatarUrl = membershipAvatarUrl(profileSnap.exists ? profileSnap.data() : undefined, caller.avatarUrl);
+    // No email on the record: it goes only into the protected contact document below.
     const member: HouseholdMember = {
       uid: caller.uid,
-      email: caller.email,
       // Public member data: never an email as the name (see syncMemberProfile).
       ...(publicMemberName(caller.displayName) ? { displayName: publicMemberName(caller.displayName) } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
@@ -178,8 +185,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
 
     transaction.set(memberRef, member);
     transaction.set(memberContactRef(householdRef, caller.uid), memberContact(caller.email, now));
-    // No email on the household document (member privacy release C): the email lives in
-    // the protected contact document above.
+    // No email on the household document either.
     transaction.update(householdRef, { updatedAt: joinedAt });
     transaction.set(profileRef, {
       email: caller.email,
@@ -411,7 +417,9 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
     householdRef.collection('members').get(),
     adminDb.collection('inviteCodes').where('householdId', '==', householdId).get(),
   ]);
-  const emails = members.docs.map(d => d.data().email).filter((e): e is string => typeof e === 'string');
+  // Each member's email (the key of their profile) comes from their contact document.
+  const contacts = await Promise.all(members.docs.map(d => memberContactRef(householdRef, d.id).get()));
+  const emails = [...new Set(contacts.map(contactEmail).filter(Boolean))];
   const profiles = await Promise.all(emails.map(email => adminDb.collection('users').doc(email).get()));
   const batch = adminDb.batch();
   profiles.forEach(profile => {
@@ -444,6 +452,7 @@ const INVITE_CODE_ATTEMPTS = 6;
 
 type Tx = FirebaseFirestore.Transaction;
 type DocRef = FirebaseFirestore.DocumentReference;
+/** A membership record as the server uses it; `email` is read from the contact document ("" when none). */
 type StoredMember = PolicyMember & { email: string; displayName?: string };
 
 const requireId = (value: unknown, message: string): string => {
@@ -460,7 +469,8 @@ const enforce = (decision: PolicyDecision) => {
 const KNOWN_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest', 'newuser'];
 
 // A role the rules do not recognize (legacy names included) grants nothing here either.
-const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot): StoredMember | null => {
+// The email comes from the member's contact document, never from the record.
+const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot, contact?: FirebaseFirestore.DocumentSnapshot | null): StoredMember | null => {
   const data = snapshot.exists ? snapshot.data() : null;
   if (!data) return null;
   return {
@@ -468,7 +478,7 @@ const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot): StoredMem
     role: KNOWN_ROLES.includes(data.role) ? data.role as HouseholdRole : 'newuser',
     status: data.status || 'active',
     permissions: (data.permissions && typeof data.permissions === 'object' ? data.permissions : {}) as PermissionOverrides,
-    email: typeof data.email === 'string' ? data.email : '',
+    email: contactEmail(contact),
     displayName: typeof data.displayName === 'string' && data.displayName ? data.displayName : undefined,
   };
 };
@@ -491,13 +501,15 @@ const loadActor = async (transaction: Tx, caller: VerifiedCaller, householdId: u
   if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.', 'household_deleting');
   const actor = toStoredMember(actorSnap);
   if (!actor) throw new MembershipError('You are not part of this household.', 'not_member');
-  return { householdRef, household: householdSnap.data() || {}, actor };
+  // The actor's own email is the verified one from their token.
+  return { householdRef, household: householdSnap.data() || {}, actor: { ...actor, email: caller.email } };
 };
 
 const loadTarget = async (transaction: Tx, householdRef: DocRef, targetUid: unknown): Promise<{ ref: DocRef; target: StoredMember }> => {
   const uid = requireId(targetUid, 'That person is no longer in this household.');
   const ref = householdRef.collection('members').doc(uid);
-  const target = toStoredMember(await transaction.get(ref));
+  const [memberSnap, contactSnap] = await Promise.all([transaction.get(ref), transaction.get(memberContactRef(householdRef, uid))]);
+  const target = toStoredMember(memberSnap, contactSnap);
   if (!target) throw new MembershipError('That person is no longer in this household.', 'not_found');
   return { ref, target };
 };
@@ -519,7 +531,7 @@ const writeAudit = (
     action: entry.action,
     ...(entry.target ? {
       targetUid: entry.target.uid,
-      targetEmail: entry.target.email,
+      targetEmail: entry.target.email || null,
       targetName: entry.target.displayName || null,
     } : {}),
     createdAt: now.toISOString(),
@@ -591,9 +603,9 @@ export const createHousehold = async (
       // Reminders and recurring chores run on the server in this time zone.
       ...(timeZone ? { timeZone } : {}),
     };
+    // No email on the record: it goes only into the protected contact document.
     const member = {
       uid: caller.uid,
-      email: caller.email,
       ...(displayName ? { displayName } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
       role: 'owner',
@@ -785,9 +797,6 @@ export const changeMemberRole = async (
       approvedAt: iso,
       approvedByUid: caller.uid,
     });
-    // Approval (re)writes the contact document, so a person who joined before it
-    // existed has one from then on (the backfill covers everyone else).
-    if (approving && target.email) transaction.set(memberContactRef(context.householdRef, target.uid), memberContact(target.email, now));
     setProfileCache(transaction, target.email, { role: nextRole, permissions: {} });
     writeAudit(transaction, context, caller, now, {
       action: approving ? 'member.approved' : 'member.role_changed',
@@ -926,7 +935,7 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
     transaction.update(ref, { role: 'owner', status: 'active', permissions: {} });
     transaction.update(context.householdRef.collection('members').doc(caller.uid), { role: 'admin', status: 'active', permissions: {} });
     setProfileCache(transaction, target.email, { role: 'owner', permissions: {} });
-    setProfileCache(transaction, context.actor.email || caller.email, { role: 'admin', permissions: {} });
+    setProfileCache(transaction, caller.email, { role: 'admin', permissions: {} });
     writeAudit(transaction, context, caller, now, { action: 'ownership.transferred', target });
     const householdName = typeof context.household.name === 'string' && context.household.name ? context.household.name : 'the household';
     // One household-wide notice per transfer; a transaction retry reuses the ID.

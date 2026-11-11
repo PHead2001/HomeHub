@@ -2,20 +2,24 @@
 // When upkeep deletes an old completed chore it adds it here first, in the
 // same transaction, so Home Wrapped can still count the whole year. Pure.
 import {localDay} from "./calendar";
-import {choreStatsAssigneeKey} from "./ids";
+import {choreStatsAssigneeKey, choreStatsMemberKey} from "./ids";
 import {choreCompletionInstant, type CompletionFields} from "./completion";
 
 export type ChoreStatsDoc = {
   year: number;
   completed: number;
-  /** Purged completions per assignee key (see choreStatsAssigneeKey). */
+  /**
+   * Purged completions per member key (`choreStatsMemberKey(uid)`). Documents
+   * written before the move may still hold legacy email-derived keys
+   * (`choreStatsAssigneeKey`) until scripts/ops/rekey-chore-stats.mjs runs.
+   */
   byAssignee: Record<string, number>;
   /** Display name per assignee key, for labels only. */
   names: Record<string, string>;
 };
 
 export type PurgedChore = {
-  /** Resolved to the member's email through `people` (see creditedPerson). */
+  /** See creditedPerson. */
   assignedToUid?: unknown;
   assignedToEmail?: unknown;
   assignedToDisplayName?: unknown;
@@ -29,42 +33,54 @@ export type PurgedChore = {
 const filled = (value: unknown): value is string =>
   typeof value === "string" && value.trim() !== "";
 
-/** A household member for crediting: uid and (where known) email. */
+const lower = (value: unknown): string =>
+  typeof value === "string" ? value.trim().toLowerCase() : "";
+
+/**
+ * A household member for crediting: uid and, where the reader knows it, the
+ * email (only to match chores written before uids were stored).
+ */
 export type CreditPerson = {uid: string; email?: string | null};
 
 /**
- * Who a completed chore counts for: the person who completed it when the
- * server recorded them (`completedByEmail`, else `completedByUid` resolved
- * through `people`), else its assignee (completions made before attribution
- * existed, or by an older client): `assignedToEmail`, else `assignedToUid`
- * resolved through `people`. Since member privacy release C chores carry the
- * uid only, so the uid is resolved to the member's email, keeping the stats
- * key (`choreStatsAssigneeKey(email)`) the same for every shape of the same
- * member until release E rekeys the stats by uid.
+ * Who a completed chore counts for, by account ID: the person who completed
+ * it when the server recorded them (`completedByUid`; an older
+ * `completedByEmail` without a uid is matched through `people`), else its
+ * assignee (completions made before attribution existed, or by an older
+ * client): an `assignedToEmail` that names one of `people`, else
+ * `assignedToUid`, unless a known email of that uid's member contradicts the
+ * stored email (an older build reassigned it by email only). Upkeep (with
+ * every member's email from their contact document) and Home Wrapped
+ * (usually without emails) credit the same uid for every chore stored since
+ * the uid was written.
  * @param {PurgedChore} chore Chore fields.
  * @param {CreditPerson[]} people Household members (emails where known).
- * @return {{email: string, name: unknown} | null} Credited person, or null.
+ * @return {{uid: string, name: unknown} | null} Credited person, or null.
  */
 export const creditedPerson = (
   chore: Omit<PurgedChore, "completedAt">,
   people: readonly CreditPerson[] = [],
-): {email: string; name: unknown} | null => {
-  const emailOf = (uid: unknown): string => {
-    if (!filled(uid)) return "";
-    const email = people.find((person) => person.uid === uid)?.email;
-    return filled(email) ? email : "";
-  };
+): {uid: string; name: unknown} | null => {
+  const uidOf = (email: unknown): string =>
+    people.find((person) => lower(person.email) === lower(email))?.uid ?? "";
+  if (filled(chore.completedByUid)) {
+    return {uid: chore.completedByUid.trim(), name: chore.completedByName};
+  }
   if (filled(chore.completedByEmail)) {
-    return {email: chore.completedByEmail, name: chore.completedByName};
+    const uid = uidOf(chore.completedByEmail);
+    return uid ? {uid, name: chore.completedByName} : null;
   }
-  const completer = emailOf(chore.completedByUid);
-  if (completer) return {email: completer, name: chore.completedByName};
-  if (filled(chore.completedByUid)) return null;
+  const name = chore.assignedToDisplayName;
   if (filled(chore.assignedToEmail)) {
-    return {email: chore.assignedToEmail, name: chore.assignedToDisplayName};
+    const uid = uidOf(chore.assignedToEmail);
+    if (uid) return {uid, name};
   }
-  const assignee = emailOf(chore.assignedToUid);
-  return assignee ? {email: assignee, name: chore.assignedToDisplayName} : null;
+  if (!filled(chore.assignedToUid)) return null;
+  const uid = chore.assignedToUid.trim();
+  const known = lower(people.find((person) => person.uid === uid)?.email);
+  if (filled(chore.assignedToEmail) && known &&
+    known !== lower(chore.assignedToEmail)) return null;
+  return {uid, name};
 };
 
 /**
@@ -119,8 +135,42 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
 };
 
 /**
- * Adds purged chores to a year's stats. Each counts for its completer, else
- * its assignee (`creditedPerson`).
+ * Moves the counts and labels kept under a legacy email-derived key
+ * (`choreStatsAssigneeKey(email)`) to the member's uid key, for every person
+ * whose email the reader knows. Legacy keys of anyone else are left as they
+ * are (scripts/ops/rekey-chore-stats.mjs replaces them).
+ * @param {ChoreStatsDoc} stats Stats as read.
+ * @param {CreditPerson[]} people Household members (emails where known).
+ * @return {ChoreStatsDoc} Stats keyed by uid where possible.
+ */
+export const foldLegacyStatsKeys = (
+  stats: ChoreStatsDoc,
+  people: readonly CreditPerson[] = [],
+): ChoreStatsDoc => {
+  const byAssignee = {...stats.byAssignee};
+  const names = {...stats.names};
+  for (const person of people) {
+    if (!filled(person.email) || !filled(person.uid)) continue;
+    const legacy = choreStatsAssigneeKey(person.email);
+    const key = choreStatsMemberKey(person.uid);
+    if (legacy === key) continue;
+    if (legacy in byAssignee) {
+      byAssignee[key] = (byAssignee[key] ?? 0) + byAssignee[legacy];
+      delete byAssignee[legacy];
+    }
+    if (legacy in names) {
+      if (!(key in names)) names[key] = names[legacy];
+      delete names[legacy];
+    }
+  }
+  return {...stats, byAssignee, names};
+};
+
+/**
+ * Adds purged chores to a year's stats, keyed by uid (`choreStatsMemberKey`).
+ * Each counts for its completer, else its assignee (`creditedPerson`). Legacy
+ * email-derived keys of the members in `people` are folded into their uid key
+ * first (`foldLegacyStatsKeys`).
  * @param {ChoreStatsDoc} stats Current stats.
  * @param {PurgedChore[]} chores Chores being deleted, all in that year.
  * @param {CreditPerson[]} people Household members, to resolve uid-only
@@ -132,12 +182,13 @@ export const addPurgedChores = (
   chores: PurgedChore[],
   people: readonly CreditPerson[] = [],
 ): ChoreStatsDoc => {
-  const byAssignee = {...stats.byAssignee};
-  const names = {...stats.names};
+  const folded = foldLegacyStatsKeys(stats, people);
+  const byAssignee = {...folded.byAssignee};
+  const names = {...folded.names};
   for (const chore of chores) {
     const person = creditedPerson(chore, people);
     if (!person) continue;
-    const key = choreStatsAssigneeKey(person.email);
+    const key = choreStatsMemberKey(person.uid);
     byAssignee[key] = (byAssignee[key] ?? 0) + 1;
     // Labels only, readable by everyone who sees chores: never the email.
     if (filled(person.name) && !person.name.includes("@")) {

@@ -88,7 +88,6 @@ export async function completeChoresAs(
     const memberName = member.get('displayName');
     const completer = {
       uid: caller.uid,
-      email: caller.email,
       // Shown to every member ("Done by Sam"): a name, never an email (HO-9).
       name: publicDisplayName(memberName, '') || publicDisplayName(caller.displayName),
     };

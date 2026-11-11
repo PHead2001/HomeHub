@@ -64,8 +64,8 @@ export const sendPushOnNewNotification = onDocumentCreated(
     const membersSnap = await house.collection("members").get();
     const records: MemberRecord[] = membersSnap.docs
       .map((doc) => ({uid: doc.id, ...doc.data()}));
-    // Emails come from each approved member's contact document first, then
-    // the membership record (the contact document is being backfilled).
+    // Emails come only from each approved member's contact document; any
+    // legacy email on a membership record is ignored.
     const members = withContactEmails(records, await readMemberContacts(
       house, records.filter(isApprovedMember).map((m) => m.uid)));
     // Members who cannot see this category in the app (for example no

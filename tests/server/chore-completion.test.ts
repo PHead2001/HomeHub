@@ -32,8 +32,12 @@ const read = async (id: string) => (await chores().doc(id).get()).data()!;
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());
   await house().set({ name: 'Completion', ownerUid: owner.uid, timeZone: 'America/Chicago', memberEmails: [] });
-  await house().collection('members').doc(owner.uid).set({ uid: owner.uid, email: owner.email, role: 'owner', status: 'active', displayName: 'Olive Owner' });
-  await house().collection('members').doc(sam.uid).set({ uid: sam.uid, email: sam.email, role: 'child', status: 'active', displayName: 'Sam' });
+  // As the server writes members: the email only in the protected contact document.
+  for (const [person, role, displayName] of [[owner, 'owner', 'Olive Owner'], [sam, 'child', 'Sam']] as const) {
+    const ref = house().collection('members').doc(person.uid);
+    await ref.set({ uid: person.uid, role, status: 'active', displayName });
+    await ref.collection('private').doc('contact').set({ email: person.email, updatedAt: 'x' });
+  }
 });
 
 after(async () => {
@@ -59,7 +63,8 @@ describe('completing chores on the server', () => {
     assert.equal(outcome.status, 'completed');
     const stored = await read('dishes');
     assert.equal(stored.completedByUid, sam.uid);
-    assert.equal(stored.completedByEmail, sam.email);
+    // Chores are read by everyone with chores.view: the completer is recorded by uid and name, never by email.
+    assert.equal('completedByEmail' in stored, false);
     assert.equal(stored.completedByName, 'Sam', 'the member record names the completer');
     assert.equal(typeof stored.completionId, 'string');
     assert.ok(stored.completedAtServer instanceof Timestamp);

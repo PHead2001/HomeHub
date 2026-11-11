@@ -93,8 +93,9 @@ const notificationBody = (
 
 /**
  * The protected contact documents (`members/{uid}/private/contact`) of these
- * members, by uid. A failed read yields no contacts, so callers fall back to
- * the email on the membership record.
+ * members, by uid: the only source of a member's email. A failed read yields
+ * no contacts, so this run makes no email-keyed lookup (push tokens, reminder
+ * settings) rather than a wrong one; the next run tries again.
  * @param {DocumentReference} house Household document.
  * @param {string[]} uids Members to read.
  * @return {Promise<Map<string, unknown>>} Contact data by uid.
@@ -230,8 +231,8 @@ export const runHouseholdReminders = async (
       statsYears.forEach((year, index) => {
         const chores = purgedByYear.get(year);
         if (!chores || chores.length === 0) return;
-        // Uid-only chores (member privacy release C) are credited through the
-        // members' emails, the same stats key as before.
+        // Keyed by uid. Members' emails (from their contact documents) match
+        // older email-only chores and fold any legacy email-derived key.
         const stats = addPurgedChores(
           readChoreStats(statsSnaps[index]?.data(), year), chores, members);
         tx.set(statsRefs[index], {...stats, updatedAt: ts(now)});
@@ -262,7 +263,7 @@ export const runHouseholdReminders = async (
       (m.status === undefined || m.status === "active")) as Array<{
         uid: string; email?: string; displayName?: string;
       }>;
-  // Emails come from each member's contact document first, then the record.
+  // Emails come only from each member's contact document.
   const members = withContactEmails(approvedRecords, await readMemberContacts(
     house, approvedRecords.map((m) => m.uid)));
   const memberByUid = new Map(members.map((m) => [m.uid, m]));
@@ -512,8 +513,8 @@ export const runHouseholdReminders = async (
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
-  // Reminder settings live on the email-keyed profile, so members with no
-  // email in either their contact document or their record are skipped.
+  // Reminder settings live on the email-keyed profile, so members without a
+  // contact document email are skipped.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
     typeof m.email === "string" && m.email.length > 0);
   const profiles = await Promise.all(reachable.map((m) =>

@@ -44,9 +44,12 @@ export const recurringChoreId = (
 ): string => stableSlugify(`${templateId}-${roomId}-${day}-${assignedToEmail}`);
 
 /**
- * Map key for one assignee in yearly chore stats. Emails cannot be Firestore
- * map keys (they contain dots), so the lower-cased email is hashed, with a
- * readable slug of its local part in front: "sam-member-1x2y3z".
+ * The legacy map key for one person in yearly chore stats, written before the
+ * stats were keyed by account ID: a slug of the email's local part and a hash
+ * of the whole email ("sam_member_1x2y3z"). It reveals the local part and lets
+ * anyone confirm a guessed email, so nothing writes it any more; Home Wrapped
+ * still reads it during the move and scripts/ops/rekey-chore-stats.mjs
+ * replaces it with `choreStatsMemberKey`.
  * @param {string} email Assignee email.
  * @return {string} Stable, field-path-safe key.
  */
@@ -56,6 +59,16 @@ export const choreStatsAssigneeKey = (email: string): string => {
     .replace(/-/g, "_").slice(0, 24) || "member";
   return `${slug}_${hashIdentity(normalized)}`;
 };
+
+/**
+ * Map key for one member in yearly chore stats: "uid-" and their Auth uid
+ * (characters other than letters, digits, "_" and "-" become "_"). Legacy
+ * keys (`choreStatsAssigneeKey`) never contain "-", so the two cannot collide.
+ * @param {string} uid Member's Auth uid.
+ * @return {string} Stable, field-path-safe key.
+ */
+export const choreStatsMemberKey = (uid: string): string =>
+  `uid-${uid.trim().replace(/[^A-Za-z0-9_-]/g, "_")}`;
 
 /**
  * Identity of one generated occurrence of a repeating chore, independent of

@@ -5,7 +5,7 @@ import { adminDb } from '../../src/lib/server/firebase-admin';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { parseNotificationDoc } from '../../src/lib/notifications';
 import { activeBellNotifications } from '../../src/lib/dashboard/notification-display';
-import { choreStatsAssigneeKey, deterministicNotificationId, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey, deterministicNotificationId, recurringChoreId } from '../../functions/src/shared/ids';
 
 // The hourly Cloud Function's per-household step, against the Firestore emulator.
 const HOUSE = 'upkeep-house';
@@ -38,8 +38,11 @@ const staleChoresDb = () => staleListingDb('chores', { docs: [] });
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());
   await house().set({ name: 'Upkeep', ownerUid: 'o1', timeZone: 'America/Chicago', memberEmails: [] });
-  await house().collection('members').doc('o1').set({ uid: 'o1', email: 'owner@example.test', role: 'owner', status: 'active', displayName: 'Owner' });
-  await house().collection('members').doc('p1').set({ uid: 'p1', email: 'pending@example.test', role: 'newuser', status: 'pending' });
+  // As the server writes members: no email on the record, the email in the contact document.
+  await house().collection('members').doc('o1').set({ uid: 'o1', role: 'owner', status: 'active', displayName: 'Owner' });
+  await house().collection('members').doc('o1').collection('private').doc('contact').set({ email: 'owner@example.test', updatedAt: 'x' });
+  await house().collection('members').doc('p1').set({ uid: 'p1', role: 'newuser', status: 'pending' });
+  await house().collection('members').doc('p1').collection('private').doc('contact').set({ email: 'pending@example.test', updatedAt: 'x' });
   await adminDb.collection('users').doc('owner@example.test').set({ email: 'owner@example.test', choreSettings: { reminderEnabled: true, reminderTime: '17:00' } });
   await house().collection('chore-templates').doc('trash').set({
     task: 'Trash', assignedToEmail: 'owner@example.test', roomIds: [],
@@ -192,19 +195,19 @@ describe('household upkeep', () => {
     assert.equal(data.readBy.o1, true, 'read state kept');
   });
 
-  test('the reminder email comes from the contact document first, then the membership record', async () => {
-    // A record without its email (as after the move): the contact document still reaches the profile.
+  test('the reminder email comes from the contact document; a legacy record email is ignored', async () => {
     await house().collection('members').doc('o1').update({ email: 'stale@example.test' });
-    await house().collection('members').doc('o1').collection('private').doc('contact').set({ email: 'owner@example.test', updatedAt: 'x' });
     await run(new Date('2026-11-05T23:30:00Z'));
     const reminders = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
     assert.deepEqual(reminders.docs.map(d => d.id), ['o1-reminder-2026-11-05']);
   });
 
-  test('without a contact document the membership record email is used', async () => {
+  test('without a contact document there is no email, even if the record still has one', async () => {
+    await house().collection('members').doc('o1').update({ email: 'owner@example.test' });
+    await house().collection('members').doc('o1').collection('private').doc('contact').delete();
     await run(new Date('2026-11-05T23:30:00Z'));
     const reminders = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
-    assert.deepEqual(reminders.docs.map(d => d.id), ['o1-reminder-2026-11-05']);
+    assert.equal(reminders.size, 0);
   });
 
   test('chore reminders respect the member’s reminder time and never duplicate', async () => {
@@ -283,8 +286,13 @@ describe('household upkeep', () => {
 
   test("a purged chore is added to its year's stats exactly once, even when upkeep runs twice", async () => {
     const chores = house().collection('chores');
-    await chores.doc('old-sam').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToEmail: 'Sam.Member@example.test', assignedToDisplayName: 'Sam Member' });
-    await chores.doc('old-sam-2').set({ task: 'Older', isCompleted: true, completedAt: '2026-06-01T12:00:00.000Z', assignedToEmail: 'sam.member@example.test', assignedToDisplayName: 'Sam Member' });
+    // Sam has left: chores recorded by uid still count for that uid.
+    await chores.doc('old-sam').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToUid: 's1', assignedToDisplayName: 'Sam Member' });
+    await chores.doc('old-sam-2').set({ task: 'Older', isCompleted: true, completedAt: '2026-06-01T12:00:00.000Z', assignedToUid: 's1', completedByUid: 's1', completedByName: 'Sam Member' });
+    // Stats written before they were keyed by uid: the owner's legacy key is folded in.
+    await house().collection('stats').doc('chores-2026').set({
+      year: 2026, completed: 5, byAssignee: { [choreStatsAssigneeKey('Owner@example.test')]: 5 }, names: { [choreStatsAssigneeKey('owner@example.test')]: 'Owner' },
+    });
     // Completed just after New Year in UTC, but still Dec 31 in the household's timezone (Chicago).
     await chores.doc('new-year').set({ task: 'Party', isCompleted: true, completedAt: '2026-01-01T03:00:00.000Z', assignedToEmail: 'owner@example.test' });
     await chores.doc('recent').set({ task: 'Recent', isCompleted: true, completedAt: '2026-10-30T12:00:00.000Z', assignedToEmail: 'owner@example.test' });
@@ -294,23 +302,25 @@ describe('household upkeep', () => {
       task: 'Stamped', isCompleted: true, assignedToEmail: 'owner@example.test',
       completedAt: '2026-01-01T05:30:00.000Z', completedAtServer: Timestamp.fromDate(new Date('2026-01-01T07:00:00.000Z')),
     });
-    const key = choreStatsAssigneeKey('sam.member@example.test');
-    const owner = choreStatsAssigneeKey('owner@example.test');
+    // Keyed by uid; the owner's email-only chore is matched through their contact document.
+    const key = choreStatsMemberKey('s1');
+    const owner = choreStatsMemberKey('o1');
 
     const first = await run(new Date('2026-11-05T15:00:00Z'));
     assert.equal(first.purgedChores, 4);
     const stats2026 = (await house().collection('stats').doc('chores-2026').get()).data();
     assert.equal(stats2026?.year, 2026);
-    assert.equal(stats2026?.completed, 3);
-    assert.deepEqual(stats2026?.byAssignee, { [key]: 2, [owner]: 1 });
-    assert.equal(stats2026?.names?.[key], 'Sam Member');
+    assert.equal(stats2026?.completed, 8);
+    assert.deepEqual(stats2026?.byAssignee, { [key]: 2, [owner]: 6 });
+    assert.deepEqual(stats2026?.names, { [key]: 'Sam Member', [owner]: 'Owner' });
+    assert.ok(!JSON.stringify(stats2026).includes('example'), 'nothing derived from an email is left');
     const stats2025 = (await house().collection('stats').doc('chores-2025').get()).data();
     assert.equal(stats2025?.completed, 1);
 
     // Nothing left to purge: a second run counts nothing again.
     const second = await run(new Date('2026-11-05T16:00:00Z'));
     assert.equal(second.purgedChores, 0);
-    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 3);
+    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 8);
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
   });
 

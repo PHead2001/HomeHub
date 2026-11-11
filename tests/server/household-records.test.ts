@@ -92,6 +92,8 @@ describe('create household', () => {
     });
     const owned = (await memberRef(creator, id).get()).data();
     assert.equal(owned?.role, 'owner');
+    // No email on the record: it is only in the protected contact document below.
+    assert.equal('email' in (owned ?? {}), false);
     assert.equal(owned?.status, 'active');
     assert.equal(owned?.approvedByUid, creator.uid);
     // The name chosen in the HomeHub profile wins over the token's.
