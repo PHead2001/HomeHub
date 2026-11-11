@@ -2,6 +2,7 @@ import { expect, test, type Browser, type BrowserContext, type Page, type TestIn
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
+import { watchReactConsole } from './react-console-guard';
 
 // S8b trip mode on an open list (SH-12, SH-14, SH-18, SH-19b, SH-27c, SH-33):
 // a compact sticky header with "n left", the page header, tabs and the tab bar's
@@ -88,6 +89,10 @@ const WAKE_LOCK_STUB = () => {
   });
 };
 
+// Every page this spec opens is watched for React key and hydration errors
+// (siblings sharing a key, hydration mismatches); each test fails on any.
+let consoleGuards: Array<ReturnType<typeof watchReactConsole>> = [];
+
 async function session(browser: Browser, viewport: { width: number; height: number }, { mobile = false } = {}): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({
     baseURL: 'http://127.0.0.1:9002',
@@ -98,7 +103,9 @@ async function session(browser: Browser, viewport: { width: number; height: numb
     ...(mobile ? { isMobile: true } : {}),
   });
   await context.addInitScript(WAKE_LOCK_STUB);
-  return { context, page: await context.newPage() };
+  const page = await context.newPage();
+  consoleGuards.push(watchReactConsole(page));
+  return { context, page };
 }
 
 async function openList(page: Page, testInfo: TestInfo) {
@@ -137,6 +144,13 @@ const wake = (page: Page) => page.evaluate(() => (window as unknown as { __wake:
 const setHidden = (page: Page, hidden: boolean) => page.evaluate((next) => (window as unknown as { __setHidden: (value: boolean) => void }).__setHidden(next), hidden);
 
 test.describe('shopping trip mode: the open list in the store', () => {
+  test.beforeEach(() => {
+    consoleGuards = [];
+  });
+  test.afterEach(() => {
+    for (const guard of consoleGuards) guard.expectClean('the open list');
+  });
+
   test('phone: compact sticky header with "n left", page header, tabs and the floating "+" out of the way, first item near the top', async ({ browser }, testInfo) => {
     phoneOnly(testInfo);
     const listRef = await seed(testInfo);
