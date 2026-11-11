@@ -26,7 +26,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
@@ -67,8 +66,7 @@ import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, lis
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
-import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
-import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
+import { offerEmptyListDelete } from '@/lib/shopping/trip-plan';
 import { deleteStillPurchasedItems } from '@/lib/shopping/item-transactions';
 import type { ShoppingListItem, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
@@ -86,7 +84,7 @@ import { CartIndicator } from './shopping/cart-indicator';
 import { useCartFlight } from './shopping/cart-flight';
 import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
-import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
+import { useTripFlow } from './shopping/use-trip-flow';
 import { useInPageMorph } from './shopping/use-in-page-morph';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
@@ -194,10 +192,10 @@ export function ShoppingListClient({
   listsRef.current = lists;
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
-  const [isArchiveAlertOpen, setIsArchiveAlertOpen] = useState(false);
+  // The "Delete empty list?" prompt's list (SH-3): cleared whenever the prompt closes.
+  const [emptyList, setEmptyList] = useState<ShoppingList | null>(null);
   const [openSections, setOpenSections] = useState<string[]>(['needed']);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
-  const [handoffMode, setHandoffMode] = useState<null | 'pantry' | 'then-clear'>(null);
   // The purchased items shown when Clear was pressed, with the household and list
   // they came from: exactly those are cleared, even if the live list changes while
   // the dialog is open, and never on another list (`clearIdsFor`).
@@ -256,9 +254,8 @@ export function ShoppingListClient({
     setIsListDialogOpen(false);
     setListToDelete(null);
     setIsClearAlertOpen(false);
-    setIsArchiveAlertOpen(false);
+    setEmptyList(null);
     setIsReceiptOpen(false);
-    setHandoffMode(null);
     setEditingItemId(null);
   });
 
@@ -1001,7 +998,33 @@ export function ShoppingListClient({
     now,
   });
 
-  const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-tick'
+  // After-trip flow (S5): receipt choice, put away, trip Undo, usual chips, history.
+  const tripFlow = useTripFlow({
+    householdId,
+    uid,
+    list: selectedList,
+    purchasedItems: listItems.filter((item) => item.status === 'purchased'),
+    neededItems: listItems.filter((item) => item.status === 'needed'),
+    canEdit,
+    canDelete,
+    online,
+    now,
+    memberNames,
+    addUndo,
+    dropUndo,
+    // Called after the put-away resolves, so `afterCleared` (below) is defined by then.
+    onCleared: (listId) => {
+      const list = lists.find((entry) => entry.id === listId);
+      if (list) void afterCleared(list);
+    },
+    onOpenPantry,
+    onQuickAdd,
+    closeReceipt: () => setIsReceiptOpen(false),
+  });
+
+  const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-trip'
+    ? tripFlow.snackbarEntry(entry)
+    : entry.group === 'shopping-tick'
     ? {
       key: entry.opId,
       message: `${entry.name} is in the cart`,
@@ -1061,53 +1084,16 @@ export function ShoppingListClient({
   const afterCleared = async (list: ShoppingList) => {
     if (selectedListIdRef.current !== list.id || !householdId) return;
     setIsReceiptOpen(false);
+    // Never offered for Grocery lists (SH-3a): the weekly list is reused.
+    if (list.type === 'Grocery') return;
     const remaining = await countAllOnServer(householdId, list.id).catch(() => null);
-    if (remaining === 0 && selectedListIdRef.current === list.id) {
-      setListToDelete(list);
-      setIsArchiveAlertOpen(true);
-    }
-  };
-
-  // `shownIds` are the purchased items listed in the dialog (ticked or not): with
-  // "then clear", exactly those are cleared after the pantry write succeeds.
-  const sendToPantry = async (choices: PantryHandoffChoice[], shownIds: string[]): Promise<boolean> => {
-    if (!householdId) return false;
-    if (isBrowserOffline()) {
-      toast({ title: 'You are offline', description: 'Add items to the pantry once you are back online.' });
-      return false;
-    }
-    const list = selectedList;
-    // "Then clear" only clears the list on screen (the ids came from it).
-    const thenClear = handoffMode === 'then-clear' && list !== null && selectedListIdRef.current === list.id;
-    try {
-      // One transaction: with "then clear" the pantry writes and the clear succeed or
-      // fail together, so a retry can never add the same purchases twice.
-      if (!list) return false;
-      // Only purchases the transaction confirms are credited (and, with "then clear",
-      // deleted in the same commit), so concurrent handoffs never double-credit.
-      const { written, cleared, skipped } = await addPurchasesToPantry(
-        householdId,
-        list.id,
-        choices,
-        thenClear ? { clearItemIds: shownIds } : undefined,
-      );
-      toast({
-        title: thenClear ? 'Added to the pantry and cleared' : 'Added to the pantry',
-        description: `${pluralize(written, 'item')} on the shelves.${skipped.length > 0 ? ` Skipped ${skipped.join(', ')}: no longer bought or already cleared.` : ''}`,
-        action: onOpenPantry ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
-      });
-      setIsReceiptOpen(false);
-      if (thenClear && cleared.length > 0) await afterCleared(list);
-      return true;
-    } catch (error) {
-      toastError(error, 'Could not add to the pantry');
-      return false;
-    }
+    if (offerEmptyListDelete(list.type, remaining) && selectedListIdRef.current === list.id) setEmptyList(list);
   };
 
   const archiveList = async () => {
-    setIsArchiveAlertOpen(false);
-    await handleDeleteList(listToDelete);
+    const list = emptyList;
+    setEmptyList(null);
+    await handleDeleteList(list);
   };
 
   const openClear = () => {
@@ -1221,14 +1207,14 @@ export function ShoppingListClient({
                         {canHandoff ? 'Clear only' : 'Clear Purchased'}
                     </AlertDialogAction>
                     {canHandoff && (
-                      <AlertDialogAction onClick={() => setHandoffMode('then-clear')}>
-                        Add to pantry, then clear
+                      <AlertDialogAction onClick={() => tripFlow.openPutAway('putAwayAndClear')}>
+                        Put away & clear
                       </AlertDialogAction>
                     )}
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-            <AlertDialog open={isArchiveAlertOpen} onOpenChange={setIsArchiveAlertOpen}>
+            <AlertDialog open={emptyList !== null} onOpenChange={(open) => { if (!open) setEmptyList(null); }}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
                     <AlertDialogTitle>Delete Empty List?</AlertDialogTitle>
@@ -1237,7 +1223,7 @@ export function ShoppingListClient({
                     </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                    <AlertDialogCancel onClick={() => setListToDelete(null)}>No, keep it</AlertDialogCancel>
+                    <AlertDialogCancel>No, keep it</AlertDialogCancel>
                     <AlertDialogAction onClick={() => void archiveList()} className={buttonVariants({ variant: "destructive"})}>
                         Yes, delete it
                     </AlertDialogAction>
@@ -1249,8 +1235,12 @@ export function ShoppingListClient({
               onOpenChange={setIsReceiptOpen}
               listName={selectedList.name}
               items={purchasedItems}
-              onSendToPantry={canHandoff ? () => { setIsReceiptOpen(false); setHandoffMode('pantry'); } : undefined}
-              onClearPurchased={canDelete ? () => { setIsReceiptOpen(false); openClear(); } : undefined}
+              afterTrip={tripFlow.afterTrip}
+              offline={!online}
+              putAwayLabel={tripFlow.putAwayLabel}
+              onPutAway={tripFlow.receiptPutAway}
+              onClearPurchased={canDelete && !tripFlow.receiptPutAway ? () => { tripFlow.remember('putAwayAndClear'); setIsReceiptOpen(false); openClear(); } : undefined}
+              onDone={tripFlow.receiptDone}
             />
             <ItemEditSheet
               item={editingItem}
@@ -1276,15 +1266,7 @@ export function ShoppingListClient({
                 }
               }}
             />
-            {handoffMode !== null && (
-            <PantryHandoffDialog
-              open
-              onOpenChange={(open) => { if (!open) setHandoffMode(null); }}
-              items={purchasedItems}
-              confirmLabel={handoffMode === 'then-clear' ? 'Add and clear' : 'Add to pantry'}
-              onConfirm={sendToPantry}
-            />
-            )}
+            {tripFlow.dialog}
             <div
               className="rounded-xl border bg-card text-card-foreground shadow-raised"
               data-testid="open-list"
@@ -1308,6 +1290,7 @@ export function ShoppingListClient({
                     </div>
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
+                        {tripFlow.history}
                         {householdId && (
                           <CategoriesDialog
                             // One instance per list: a late answer for list A never fills list B's fields.
@@ -1479,8 +1462,8 @@ export function ShoppingListClient({
                                     </Button>
                                 )}
                                 {purchasedItems.length > 0 && !canDelete && canHandoff && (
-                                    <Button variant="ghost" size="sm" onClick={() => setHandoffMode('pantry')} className="text-muted-foreground">
-                                        Add to pantry
+                                    <Button variant="ghost" size="sm" onClick={() => tripFlow.openPutAway('putAway')} className="text-muted-foreground">
+                                        Put away
                                     </Button>
                                 )}
                             </div>
@@ -1510,7 +1493,12 @@ export function ShoppingListClient({
                             key={selectedList.id}
                             listName={selectedList.name}
                             onAdd={onQuickAdd}
-                            above={snackbarEntries.length > 0 ? <UndoSnackbar entries={snackbarEntries} /> : undefined}
+                            above={tripFlow.chips || snackbarEntries.length > 0 ? (
+                              <>
+                                {tripFlow.chips}
+                                {snackbarEntries.length > 0 && <UndoSnackbar entries={snackbarEntries} />}
+                              </>
+                            ) : undefined}
                           />
                         )}
                       </>
