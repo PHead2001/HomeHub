@@ -35,7 +35,7 @@ import {
   type TripChoice,
 } from '../../src/lib/shopping/trip-plan';
 import { pantryBatchFields } from '../../src/lib/shopping/pantry-batches';
-import { createRequestGate } from '../../src/lib/shopping/request-gate';
+import { closeIfCurrent, createRequestGate } from '../../src/lib/shopping/request-gate';
 import { usualDigest, usualId } from '../../src/lib/shopping/usual-id';
 import { pushJournal, readJournal, type JournalStorage, type UndoEntry } from '../../src/lib/shopping/undo';
 
@@ -457,6 +457,17 @@ describe('opening the put-away dialog after a lookup', () => {
     assert.equal(gate.isCurrent(third), true);
   });
 
+  test('a dialog closes only its own opening: a slow earlier submission never closes a newer dialog', () => {
+    const older = { openingId: 1 };
+    const newer = { openingId: 2 };
+    assert.equal(closeIfCurrent(older, older), null);
+    assert.equal(closeIfCurrent(newer, older), newer);
+    assert.equal(closeIfCurrent(null, older), null);
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping', 'use-trip-flow.tsx'), 'utf8');
+    assert.ok(source.includes('onOpenChange={(open) => { if (!open) setPutAway((current) => closeIfCurrent(current, opening)); }}'));
+    assert.ok(source.includes('key={opening.openingId}'));
+  });
+
   test('a pending opening is stale once the household or list changes; the same scope keeps it', () => {
     const gate = createRequestGate();
     assert.equal(gate.setScope('house/weekly'), true);
@@ -477,7 +488,7 @@ describe('opening the put-away dialog after a lookup', () => {
     assert.ok(open.indexOf('await purchasesAlreadyPutAway') < open.indexOf('if (!openGate.isCurrent(ticket)) return;'));
     assert.ok(open.indexOf('if (!openGate.isCurrent(ticket)) return;') < open.indexOf('setPutAway('));
     assert.match(source, /useOnTabDeactivate\(\(\) => \{\s*openGate\.invalidate\(\);\s*setPutAway\(null\);/);
-    assert.match(source, /const dialog: ReactNode = putAway && tabActive &&/);
+    assert.match(source, /const dialog: ReactNode = opening && tabActive &&/);
     assert.match(source, /useLayoutEffect\(\(\) => \{\s*openGate\.setScope\(scope\);[\s\S]*?return \(\) => openGate\.invalidate\(\);\s*\}, \[openGate, scope\]\);/);
   });
 });

@@ -16,6 +16,15 @@ export type RequestGate = {
   setScope: (scope: string) => boolean;
 };
 
+/**
+ * Closing an opening: `current` becomes null only when it is still `target`, the
+ * opening that asked. A slow submission of an earlier (unmounted) dialog that
+ * finishes later never closes a newer one.
+ */
+export function closeIfCurrent<T>(current: T | null, target: T): T | null {
+  return current === target ? null : current;
+}
+
 export function createRequestGate(): RequestGate {
   let generation = 0;
   let current: string | null = null;
