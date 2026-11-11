@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,8 +44,11 @@ type PendingChip = { id: number; names: string; label: string };
  * - Focus stays in the field. Mount it with a key per list: if it unmounts while
  *   saving (another list or page was opened), failed entries are reported in a
  *   toast instead, since there is no field to put them back into.
+ *
+ * The Undo snackbar (SH-15a) is passed as `above` and drawn in the same sticky
+ * dock, directly above the field (outside the form).
  */
-export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome> }) {
+export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>; above?: ReactNode }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -120,9 +123,11 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
   };
 
   return (
+    <div className="sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-10 -mx-2 mt-4 space-y-2 md:bottom-2">
+    {above}
     <form
       onSubmit={submit}
-      className="surface-glass sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-10 -mx-2 mt-4 rounded-xl border p-2 shadow-overlay md:bottom-2"
+      className="surface-glass rounded-xl border p-2 shadow-overlay"
       aria-label={`Quick add to ${listName}`}
       aria-busy={busy}
     >
@@ -139,10 +144,10 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
           autoComplete="off"
           enterKeyHint="done"
           maxLength={MAX_QUICK_ADD_ITEMS * 40}
-          className="flex-1"
+          className="h-11 flex-1 [@media(pointer:coarse)]:h-12"
           {...fieldErrorProps(fieldId, error)}
         />
-        <Button type="submit" disabled={busy} aria-label={`Add to ${listName}`} className="shrink-0">
+        <Button type="submit" disabled={busy} aria-label={`Add to ${listName}`} className="h-11 min-w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:min-w-12">
           {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Plus className="h-4 w-4" aria-hidden />}
           <span className="ml-1 hidden sm:inline">Add</span>
         </Button>
@@ -159,5 +164,6 @@ export function QuickAddBar({ listName, onAdd }: { listName: string; onAdd: (ent
         </ul>
       )}
     </form>
+    </div>
   );
 }

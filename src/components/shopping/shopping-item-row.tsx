@@ -1,10 +1,10 @@
 'use client';
 
 import { formatPackageSize } from '@/lib/shopping/scan';
-import { forwardRef, useEffect, useState } from 'react';
+import { forwardRef, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Image from 'next/image';
 import { motion, useMotionValue, useTransform, type PanInfo } from 'motion/react';
-import { Check, ExternalLink, Trash2 } from 'lucide-react';
+import { Check, ChevronRight, ExternalLink } from 'lucide-react';
 import { PeekCard } from '@/components/dashboard/peek-card';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -16,6 +16,10 @@ import { useTabActive } from './tab-activity';
 
 /** Distance (px) a phone swipe must travel to tick an item. */
 const SWIPE_TICK_DISTANCE = 72;
+/** A touch held this long (ms) without moving opens the edit sheet (SH-8b). */
+const LONG_PRESS_MS = 500;
+/** Movement (px) that turns a press into a swipe or scroll. */
+const LONG_PRESS_SLOP = 10;
 
 function ItemSourceLink({ item }: { item: ShoppingListItem }) {
   // Re-validate on render: stored data is not trusted to be http(s).
@@ -32,7 +36,7 @@ function ItemSourceLink({ item }: { item: ShoppingListItem }) {
     </div>
   );
   const link = (
-    <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+    <Button asChild variant="ghost" size="icon" className="h-11 w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12">
       <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`Open saved link for ${item.name}`}>
         <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden />
       </a>
@@ -65,25 +69,31 @@ function useCoarsePointer() {
 
 type RowProps = {
   item: ShoppingListItem;
-  /** Shows the tick checkbox (members with `shopping.edit`). */
+  /** The row ticks (members with `shopping.edit`). */
   canToggle: boolean;
-  /** Shows the delete button (members with `shopping.delete`). */
-  canDelete: boolean;
+  /** Shows the trailing Edit control and long-press (members who can edit or delete). */
+  canOpenEditor: boolean;
   onToggle: (item: ShoppingListItem) => void;
-  onDelete: (item: ShoppingListItem) => void;
+  onEdit: (item: ShoppingListItem) => void;
+  /** "Sam added · 2d" (SH-28b), or null. */
+  attribution?: string | null;
   /** Seconds: set on the rows of a freshly opened list for the staggered entrance (H12). */
   enterDelay?: number;
 };
 
 /**
- * One item row. Needed rows tick by checkbox anywhere, and by swiping right on
- * touch devices (the row follows the finger and a green "In the cart" strip shows
- * underneath; the checkbox stays put). Leaving the Needed list draws a
- * strike-through across the name before the row fades. Purchased rows drop in
+ * One item row (S3, SH-13a/b, SH-8b). The whole row is the tick target: a label
+ * for the 24 px circle that is at least 44 px tall (48 px on touch), so tapping the
+ * name, the attribution or the empty space ticks. On touch the row can also be
+ * swiped right to tick (it follows the finger over a green "In the cart" strip; the
+ * circle stays put). Editing is a separate control: the trailing 48 px "Edit
+ * {item}" button, or a long-press on touch; Delete lives in the edit sheet, so
+ * there is no bare trash button beside each row. Leaving the Needed list draws a
+ * strike-through across the name before the row fades; purchased rows drop in
  * from above. Reduced motion shows every end state at once (MotionConfig).
  */
 export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function ShoppingItemRow(
-  { item, canToggle, canDelete, onToggle, onDelete, enterDelay },
+  { item, canToggle, canOpenEditor, onToggle, onEdit, attribution, enterDelay },
   ref,
 ) {
   const purchased = item.status === 'purchased';
@@ -97,25 +107,71 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
     if (info.offset.x >= SWIPE_TICK_DISTANCE) onToggle(item);
   };
 
+  // Long-press on touch opens the editor; the click that ends it must not tick.
+  const pressRef = useRef<{ timer: number; x: number; y: number } | null>(null);
+  const longPressedRef = useRef(false);
+  const clearPress = () => {
+    if (pressRef.current) window.clearTimeout(pressRef.current.timer);
+    pressRef.current = null;
+  };
+  useEffect(() => () => {
+    if (pressRef.current) window.clearTimeout(pressRef.current.timer);
+  }, []);
+  const onPointerDown = (event: ReactPointerEvent) => {
+    longPressedRef.current = false;
+    if (!canOpenEditor || event.pointerType === 'mouse') return;
+    clearPress();
+    const timer = window.setTimeout(() => {
+      pressRef.current = null;
+      longPressedRef.current = true;
+      onEdit(item);
+    }, LONG_PRESS_MS);
+    pressRef.current = { timer, x: event.clientX, y: event.clientY };
+  };
+  const onPointerMove = (event: ReactPointerEvent) => {
+    const press = pressRef.current;
+    if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > LONG_PRESS_SLOP) clearPress();
+  };
+  const swallowLongPressClick = (event: ReactMouseEvent) => {
+    if (!longPressedRef.current) return;
+    longPressedRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   // A scanned package size is a note, never the count (BL-1).
   const packageNote = formatPackageSize(item.size, item.sizeUnit);
-  const label = (
-    <span className="relative min-w-0 break-words text-sm font-medium leading-snug">
-      <span className={cn(purchased && 'text-muted-foreground line-through')}>{item.name}</span>{' '}
-      <span className="text-muted-foreground">(x{item.quantity})</span>
-      {packageNote && <span className="text-muted-foreground"> · {packageNote}</span>}
-      {!purchased && (
-        // The strike-through that draws across when the item is ticked (exit only).
-        <motion.span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-1/2 h-0.5 w-full origin-left rounded-full bg-foreground/70"
-          initial={{ scaleX: 0 }}
-          animate={{ scaleX: 0 }}
-          exit={{ scaleX: 1, transition: { duration: DURATION.micro, ease: EASE.standard } }}
-        />
-      )}
+  const text = (
+    <span className="min-w-0 text-left">
+      <span className="relative block break-words text-sm font-medium leading-snug">
+        <span data-item-name className={cn(purchased && 'text-muted-foreground line-through')}>{item.name}</span>{' '}
+        <span className="text-muted-foreground">(x{item.quantity})</span>
+        {packageNote && <span className="text-muted-foreground"> · {packageNote}</span>}
+        {!purchased && (
+          // The strike-through that draws across when the item is ticked (exit only).
+          <motion.span
+            aria-hidden
+            className="pointer-events-none absolute left-0 top-1/2 h-0.5 w-full origin-left rounded-full bg-foreground/70"
+            initial={{ scaleX: 0 }}
+            animate={{ scaleX: 0 }}
+            exit={{ scaleX: 1, transition: { duration: DURATION.micro, ease: EASE.standard } }}
+          />
+        )}
+      </span>
+      {attribution && <span className="block text-xs text-muted-foreground" data-testid="item-attribution">{attribution}</span>}
     </span>
   );
+  const image = item.imageUrl && (
+    <Image
+      src={item.imageUrl}
+      alt=""
+      width={40}
+      height={40}
+      sizes="40px"
+      className={cn('h-10 w-10 shrink-0 rounded-md object-cover', purchased && 'opacity-50')}
+    />
+  );
+  const rowTarget = 'flex min-h-11 min-w-0 flex-1 items-center gap-3 px-2 py-1.5 [@media(pointer:coarse)]:min-h-12';
 
   return (
     <motion.div
@@ -126,6 +182,8 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
       exit={{ opacity: 0, pointerEvents: 'none', transition: { duration: 0.12, delay: DURATION.micro, ease: EASE.exit } }}
       className="relative overflow-hidden rounded-md"
       data-testid={`shopping-item-${item.id}`}
+      data-row-id={item.id}
+      data-row-section={purchased ? 'purchased' : 'needed'}
     >
       {swipeEnabled && (
         <motion.div
@@ -143,36 +201,56 @@ export const ShoppingItemRow = forwardRef<HTMLDivElement, RowProps>(function Sho
         dragConstraints={{ left: 0, right: 0 }}
         dragElastic={{ left: 0, right: 0.7 }}
         dragSnapToOrigin
+        onDragStart={clearPress}
         onDragEnd={swipeEnabled ? handleDragEnd : undefined}
-        className="relative flex items-center justify-between gap-2 rounded-md bg-card p-2 transition-colors hover:bg-secondary"
+        className="relative flex items-center gap-1 rounded-md bg-card transition-colors hover:bg-secondary"
       >
-        <div className="flex min-w-0 items-center gap-3">
-          {canToggle ? (
-            <Checkbox id={checkboxId} checked={purchased} onCheckedChange={() => onToggle(item)} className="shrink-0" />
-          ) : (
+        {canToggle ? (
+          <label
+            htmlFor={checkboxId}
+            className={cn(rowTarget, 'cursor-pointer select-none')}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={clearPress}
+            onPointerCancel={clearPress}
+            onPointerLeave={clearPress}
+            onClickCapture={swallowLongPressClick}
+            onContextMenu={(event) => { if (coarse && canOpenEditor) event.preventDefault(); }}
+          >
+            {/* The visual circle is 24 px; the whole row (this label) is the target. */}
+            <Checkbox
+              id={checkboxId}
+              checked={purchased}
+              onCheckedChange={() => onToggle(item)}
+              className="h-6 w-6 rounded-full"
+            />
+            {image}
+            {text}
+          </label>
+        ) : (
+          <span className={rowTarget}>
             <span
-              className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border border-border', purchased && 'border-primary bg-primary text-primary-foreground')}
+              className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border', purchased && 'border-primary bg-primary text-primary-foreground')}
               aria-hidden
             >
-              {purchased && <Check className="h-3 w-3" />}
+              {purchased && <Check className="h-4 w-4" />}
             </span>
-          )}
-          {item.imageUrl && (
-            <Image
-              src={item.imageUrl}
-              alt=""
-              width={40}
-              height={40}
-              sizes="40px"
-              className={cn('h-10 w-10 shrink-0 rounded-md object-cover', purchased && 'opacity-50')}
-            />
-          )}
-          {canToggle ? <label htmlFor={checkboxId} className="min-w-0 cursor-pointer">{label}</label> : <span className="min-w-0">{label}</span>}
-          <ItemSourceLink item={item} />
-        </div>
-        {canDelete && (
-          <Button variant="ghost" size="icon" aria-label={`Delete ${item.name}`} className="h-8 w-8 shrink-0" onClick={() => onDelete(item)}>
-            <Trash2 className="h-4 w-4 text-muted-foreground" aria-hidden />
+            {image}
+            {text}
+          </span>
+        )}
+        <ItemSourceLink item={item} />
+        {canOpenEditor && (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`Edit ${item.name}`}
+            aria-haspopup="dialog"
+            data-edit-control=""
+            className="h-11 w-11 shrink-0 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12"
+            onClick={() => onEdit(item)}
+          >
+            <ChevronRight className="h-5 w-5 text-muted-foreground" aria-hidden />
           </Button>
         )}
       </motion.div>

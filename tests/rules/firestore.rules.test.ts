@@ -28,6 +28,8 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
+import { restoreItemData } from '../../src/lib/shopping/items';
+import { restoreDocument } from '../../src/lib/shopping/item-writes';
 
 const projectId = 'demo-homehub-e2e';
 const householdA = 'household-a-e2e';
@@ -1447,16 +1449,9 @@ describe('content shapes: chores and templates', () => {
   });
 });
 
-// The restore document the S3 client writes (src/lib/shopping/items.ts restoreItemData +
-// item-writes.ts restoreDocument on the S3 branch): the item as read, without the
-// writer-only stamps, plus restoredByUid, restoreOpId and restoredAt.
-const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt'];
-const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) => ({
-  ...Object.fromEntries(Object.entries(snapshot).filter(([key]) => !RESTORE_DROPS.includes(key))),
-  restoredByUid: restorerUid,
-  ...(restoreOpId ? { restoreOpId } : {}),
-  restoredAt: serverTimestamp(),
-});
+// The restore document the client writes (items.ts restoreItemData + item-writes.ts restoreDocument).
+const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) =>
+  restoreDocument(restoreItemData(snapshot, restorerUid, restoreOpId));
 
 describe('content shapes: shopping', () => {
   const items = (user: Identity, list = 'groceries') => collection(dbFor(user), 'households', householdA, 'shopping-lists', list, 'items');

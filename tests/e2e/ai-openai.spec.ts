@@ -65,7 +65,7 @@ test.describe('OpenAI migration workflows', () => {
 
   test('shopping categorization succeeds and all fallback paths save exactly once', async ({ page }) => {
     await openAuthenticated(page, '/shopping', 'Shopping Center');
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
 
     // QA-6: items save at once; "milk" is known locally, an unknown name waits for
     // one batched AI call, and a failed or timed-out call leaves it under Other.
@@ -102,7 +102,7 @@ test.describe('OpenAI migration workflows', () => {
 
   test('a barcode scan adds one package with its size as a note, and a second scan adds 1 (BL-1)', async ({ page }) => {
     await openAuthenticated(page, '/shopping', 'Shopping Center');
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
     const scanInto = async () => {
       await page.getByRole('button', { name: 'Add Item' }).click();
       const dialog = page.getByRole('dialog', { name: 'Add Item to List' });
