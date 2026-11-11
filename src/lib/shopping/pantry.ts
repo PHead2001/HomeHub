@@ -7,7 +7,7 @@
 
 import type { PantryItem, PantryItemLocation, ShoppingListItem } from '@/lib/types';
 import { itemNameKey } from './items';
-import { daysUntilDay, householdToday, pantryMergeKey, readPantryBatch } from './pantry-batches';
+import { clampPantryName, daysUntilDay, householdToday, pantryMergeKey, readPantryBatch } from './pantry-batches';
 
 export const PANTRY_LOCATIONS: readonly PantryItemLocation[] = ['Pantry', 'Fridge', 'Freezer'];
 
@@ -74,9 +74,9 @@ export type PantryWritePlan =
   | { kind: 'increment'; id: string; name: string; add: number; location: PantryItemLocation }
   | { kind: 'create'; name: string; quantity: number; location: PantryItemLocation };
 
-/** The batch a purchase becomes: counted in `items`, no package size, no expiry (Pantry v2 merge key). */
+/** The batch a purchase becomes: counted in `items`, no package size, no expiry (Pantry v2 merge key), named as the pantry stores it. */
 const purchaseKey = (name: string, location: PantryItemLocation) =>
-  pantryMergeKey({ nameKey: itemNameKey(name), location, packageSize: null, unit: 'items', expiryDate: null });
+  pantryMergeKey({ nameKey: itemNameKey(clampPantryName(name)), location, packageSize: null, unit: 'items', expiryDate: null });
 
 /**
  * Plans the pantry writes for a batch of purchased items. A purchase is a batch
@@ -92,7 +92,7 @@ export function planPantryHandoff(
 ): PantryWritePlan[] {
   const combined = new Map<string, { name: string; quantity: number; location: PantryItemLocation }>();
   for (const { item, location } of choices) {
-    const name = item.name.trim();
+    const name = clampPantryName(item.name);
     if (!name) continue;
     const quantity = Math.max(1, Math.round(Number(item.quantity) || 1));
     const key = `${itemNameKey(name)}|${location}`;
