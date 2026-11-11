@@ -235,7 +235,13 @@ test.describe('View household unticked (HO-2a)', () => {
         'household.manageMembers': true,
       },
     });
-    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark' });
+    // An empty storage state: the project's stored owner session would otherwise be
+    // signed in first, and its listeners denied once /e2e-login switches the account.
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:9002',
+      colorScheme: 'dark',
+      storageState: { cookies: [], origins: [] },
+    });
     try {
       const page = await context.newPage();
       const problems: string[] = [];
@@ -248,6 +254,8 @@ test.describe('View household unticked (HO-2a)', () => {
       await page.clock.setFixedTime(fixedNow);
       await page.goto('/e2e-login?uid=e2e-limited-uid');
       await expect(page).toHaveURL('/');
+      // The guest has no notifications.view (seed), so no bell and no notification listener.
+      await expect(page.getByTestId('notification-bell')).toHaveCount(0);
 
       await page.goto('/household?tab=invites');
       await expect(page.getByText('Household settings are not available to you')).toBeVisible();
