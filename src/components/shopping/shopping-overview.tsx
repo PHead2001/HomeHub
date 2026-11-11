@@ -10,7 +10,7 @@ import { EmptyState } from '@/components/empty-state';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { Stagger } from '@/components/motion/stagger';
 import type { AisleGroup } from '@/lib/shopping/items';
-import { neededEmptyCopy, shoppingActivity } from '@/lib/shopping/overview';
+import { neededEmptyCopy, shoppingActivity, writeWaitText } from '@/lib/shopping/overview';
 import { listTint } from '@/lib/shopping/list-style';
 import type { ShoppingList, ShoppingListItem, ShoppingStore } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -37,8 +37,8 @@ export type OverviewGrocery = {
   store: ShoppingStore | null;
   attributionFor: (item: ShoppingListItem) => string | null;
   onToggle: (item: ShoppingListItem) => void;
-  /** The page's listener follows this list and has answered (`overviewWriteReady`): adds and ticks may run. */
-  writeReady: boolean;
+  /** Why adds and ticks must wait (`writeWait`), or null when they may run. */
+  writeWait: 'loading' | 'retrying' | null;
   onQuickAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
   onOpen: (event: MouseEvent<HTMLButtonElement>) => void;
 };
@@ -186,7 +186,8 @@ export function ShoppingOverview({
                 listName={grocery.list.name}
                 onAdd={grocery.onQuickAdd}
                 large
-                loading={!grocery.writeReady}
+                loading={grocery.writeWait !== null}
+                loadingText={grocery.writeWait ? writeWaitText(grocery.writeWait, grocery.list.name) : undefined}
                 className={cn(styles.quickAdd, 'space-y-2')}
                 above={dockSnackbar && snackbarEntries.length > 0 ? <UndoSnackbar entries={snackbarEntries} /> : undefined}
               />
