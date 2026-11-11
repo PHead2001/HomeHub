@@ -62,7 +62,7 @@ import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveShoppingPreferences, useLiveStores } from '@/lib/shopping/live';
-import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, preferencesKnown, readRecentGrocery, rememberRecentGrocery } from '@/lib/shopping/overview';
+import { browserStorage, chooseOverviewList, neededAisleGroups, neededEmptyCopy, overviewWriteReady, preferencesKnown, readLocalTicks, readRecentGrocery, recordLocalTick, rememberRecentGrocery } from '@/lib/shopping/overview';
 import { assignedStore, storesListed } from '@/lib/shopping/assigned-store';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
@@ -308,7 +308,28 @@ export function ShoppingListClient({
   const itemsListIdRef = useRef<string | null>(null);
   itemsListIdRef.current = itemsListId;
   // Ticks made on this device: they are never "someone is shopping" (SH-28c).
+  // Kept in device storage for the activity window, so a reload or a return to
+  // /shopping still knows them; `localTicksFailedRef` notes a tick that could not be stored.
   const localPurchaseOpsRef = useRef<Set<string>>(new Set());
+  const localTicksFailedRef = useRef(false);
+  const [localTicksVersion, setLocalTicksVersion] = useState(0);
+  // Re-read on a list switch, every minute (pruning) and after each own tick.
+  const localTicks = useMemo(
+    () => readLocalTicks(browserStorage(), householdId, itemsListId, now),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [householdId, itemsListId, now, localTicksVersion],
+  );
+  // Overview writes wait until the listener follows the target list and has answered (`overviewWriteReady`).
+  const itemsStatusRef = useRef(itemsState.status);
+  itemsStatusRef.current = itemsState.status;
+  const categoriesStatusRef = useRef(categoriesState.status);
+  categoriesStatusRef.current = categoriesState.status;
+  const writeReadyFor = (listId: string | null | undefined) => overviewWriteReady({
+    targetListId: listId,
+    itemsListId: itemsListIdRef.current,
+    itemsStatus: itemsStatusRef.current,
+    categoriesStatus: categoriesStatusRef.current,
+  });
   const householdIdRef = useRef<string | null>(null);
   const listItemsRef = useRef<ShoppingListItem[]>([]);
   const purchasedSectionRef = useRef<HTMLDivElement>(null);
@@ -565,6 +586,8 @@ export function ShoppingListClient({
   ): Promise<EntryOutcome[] | null> => {
     const list = target;
     if (!householdId || !list) return null;
+    // Merges look only at the known items: never add against an unloaded or another list's items.
+    if (!writeReadyFor(list.id)) return null;
     const { outcomes, categorization } = await addItemsToList({
       householdId,
       listId: list.id,
@@ -868,7 +891,11 @@ export function ShoppingListClient({
       // listener shows the write at once; offline it waits in Firestore's queue and
       // syncs when the connection returns.
       const purchaseOpId = isCheckingOff ? newOpId() : null;
-      if (purchaseOpId) localPurchaseOpsRef.current.add(purchaseOpId);
+      if (purchaseOpId) {
+        localPurchaseOpsRef.current.add(purchaseOpId);
+        if (!recordLocalTick(browserStorage(), householdId, list.id, purchaseOpId, Date.now())) localTicksFailedRef.current = true;
+        setLocalTicksVersion((version) => version + 1);
+      }
       const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
       const write = updateDoc(itemRef, purchaseOpId ? tickUpdate(uid, purchaseOpId) : untickUpdate());
 
@@ -1617,14 +1644,19 @@ export function ShoppingListClient({
           hasPendingWrites: itemsState.hasPendingWrites,
           store: overviewAssigned?.store ?? null,
           attributionFor,
-          onToggle: (item) => void toggleItemStatus(item, overviewList),
+          // Rows show only once loaded; a click racing a list switch is dropped.
+          onToggle: (item) => {
+            if (writeReadyFor(overviewList.id) && listItemsRef.current.some((entry) => entry.id === item.id)) void toggleItemStatus(item, overviewList);
+          },
+          writeReady: writeReadyFor(overviewList.id),
           onQuickAdd: (entries) => onQuickAdd(entries, overviewList),
           onOpen: () => onSelectList(overviewList.id),
         } : null}
         groceryWaiting={overviewChoice.waiting}
         uid={uid}
         memberNames={memberNames}
-        localOpIds={new Set([...localPurchaseOpsRef.current, ...undoEntries.map((entry) => entry.opId)])}
+        localOpIds={new Set([...localTicks.opIds, ...localPurchaseOpsRef.current, ...undoEntries.map((entry) => entry.opId)])}
+        selfKnown={localTicks.reliable && !localTicksFailedRef.current}
         now={now}
         expiring={pantryItems && onOpenPantryItem && onOpenPantry
           ? <ExpiringChips items={pantryItems} onOpenItem={onOpenPantryItem} onOpenPantry={onOpenPantry} />

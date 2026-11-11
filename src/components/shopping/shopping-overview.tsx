@@ -37,6 +37,8 @@ export type OverviewGrocery = {
   store: ShoppingStore | null;
   attributionFor: (item: ShoppingListItem) => string | null;
   onToggle: (item: ShoppingListItem) => void;
+  /** The page's listener follows this list and has answered (`overviewWriteReady`): adds and ticks may run. */
+  writeReady: boolean;
   onQuickAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
   onOpen: (event: MouseEvent<HTMLButtonElement>) => void;
 };
@@ -75,6 +77,7 @@ export function ShoppingOverview({
   uid,
   memberNames,
   localOpIds,
+  selfKnown,
   now,
   expiring,
   snackbarEntries,
@@ -90,6 +93,8 @@ export function ShoppingOverview({
   memberNames: ReadonlyMap<string, string>;
   /** purchaseOpIds of ticks made on this device (they are not "someone shopping"). */
   localOpIds: ReadonlySet<string>;
+  /** `localOpIds` is complete (device storage works): otherwise the member's own ticks never read as "another device". */
+  selfKnown: boolean;
   now: number;
   /** The expiring-soon chips (rendered by the page, from the pantry listener). */
   expiring?: ReactNode;
@@ -102,8 +107,8 @@ export function ShoppingOverview({
   const narrow = useNarrow(root);
   const items = grocery?.items;
   const activity = useMemo(
-    () => (items ? shoppingActivity({ items, now, uid, localOpIds, names: memberNames }) : null),
-    [items, now, uid, localOpIds, memberNames],
+    () => (items ? shoppingActivity({ items, now, uid, localOpIds, names: memberNames, selfKnown }) : null),
+    [items, now, uid, localOpIds, memberNames, selfKnown],
   );
 
   if (lists.length === 0) {
@@ -181,6 +186,7 @@ export function ShoppingOverview({
                 listName={grocery.list.name}
                 onAdd={grocery.onQuickAdd}
                 large
+                loading={!grocery.writeReady}
                 className={cn(styles.quickAdd, 'space-y-2')}
                 above={dockSnackbar && snackbarEntries.length > 0 ? <UndoSnackbar entries={snackbarEntries} /> : undefined}
               />

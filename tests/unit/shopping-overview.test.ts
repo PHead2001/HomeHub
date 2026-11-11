@@ -4,8 +4,13 @@ import {
   RECENT_GROCERY_KEY,
   SHOPPING_WINDOW_MS,
   chooseOverviewList,
+  LOCAL_TICKS_KEEP_MS,
+  LOCAL_TICKS_KEY,
   expiringChips,
   expiryWhen,
+  overviewWriteReady,
+  readLocalTicks,
+  recordLocalTick,
   groceryListsOf,
   neededAisleGroups,
   neededEmptyCopy,
@@ -234,5 +239,86 @@ describe('quick-add shortcut is never a silent no-op (SH-10h)', () => {
   test('no lists: empty (the screen offers a Groceries list); a viewer: read-only', () => {
     assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: true, lists: [] }), { kind: 'empty' });
     assert.deepEqual(quickAddDecision({ requested: true, confirmed: true, canEdit: false, lists: [] }), { kind: 'read-only' });
+  });
+});
+
+describe('overview: writes wait for the shown list to load (no duplicate instead of a merge)', () => {
+  test('ready only when the listener follows the target list and items and categories answered', () => {
+    const ready = { targetListId: 'weekly', itemsListId: 'weekly', itemsStatus: 'ready', categoriesStatus: 'ready' } as const;
+    assert.equal(overviewWriteReady(ready), true);
+    assert.equal(overviewWriteReady({ ...ready, itemsStatus: 'loading' }), false);
+    assert.equal(overviewWriteReady({ ...ready, categoriesStatus: 'loading' }), false);
+    // Just after a switch: the listener already follows the new list, the old target is refused.
+    assert.equal(overviewWriteReady({ ...ready, itemsListId: 'costco' }), false);
+    assert.equal(overviewWriteReady({ ...ready, targetListId: null, itemsListId: null }), false);
+    // A failed listener keeps its last value: writes still go (the rules decide), as in the open list.
+    assert.equal(overviewWriteReady({ ...ready, itemsStatus: 'error' }), true);
+  });
+});
+
+describe("overview: this device's own ticks survive a reload (SH-28c)", () => {
+  const memory = () => {
+    const data = new Map<string, string>();
+    return { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => void data.set(key, value), data };
+  };
+  const now = Date.parse('2026-11-11T18:00:00Z');
+  const names = new Map([['alex', 'Alex']]);
+  const tick = (by: string, minutesAgo: number, opId: string) => ({
+    status: 'purchased' as const,
+    purchasedByUid: by,
+    purchasedAt: { toMillis: () => now - minutesAgo * 60_000 },
+    purchaseOpId: opId,
+  });
+
+  test('recorded per household and list, restored after a reload, so own ticks are not "another device"', () => {
+    const storage = memory();
+    assert.equal(recordLocalTick(storage, 'house', 'weekly', 'op-1', now - 120_000), true);
+    assert.equal(recordLocalTick(storage, 'house', 'weekly', 'op-2', now - 60_000), true);
+    assert.equal(recordLocalTick(storage, 'house', 'costco', 'op-3', now), true);
+    // A reload: nothing in memory, everything from storage.
+    const restored = readLocalTicks(storage, 'house', 'weekly', now);
+    assert.deepEqual([...restored.opIds].sort(), ['op-1', 'op-2']);
+    assert.equal(restored.reliable, true);
+    assert.deepEqual([...readLocalTicks(storage, 'other-house', 'weekly', now).opIds], []);
+    const items = [tick('me', 2, 'op-1'), tick('me', 1, 'op-2'), { status: 'needed' as const }];
+    assert.equal(shoppingActivity({ items, now, uid: 'me', localOpIds: restored.opIds, names, selfKnown: restored.reliable }), null);
+  });
+
+  test('a real second device (purchase ids this device never made) still shows', () => {
+    const storage = memory();
+    recordLocalTick(storage, 'house', 'weekly', 'op-1', now);
+    const local = readLocalTicks(storage, 'house', 'weekly', now);
+    const items = [tick('me', 3, 'phone-1'), tick('me', 2, 'phone-2'), tick('alex', 1, 'a-1'), tick('alex', 2, 'a-2'), { status: 'needed' as const }];
+    assert.equal(
+      shoppingActivity({ items, now, uid: 'me', localOpIds: local.opIds, names, selfKnown: local.reliable })?.label,
+      'Alex and You are shopping · 1 left',
+    );
+  });
+
+  test('entries older than the keep window are pruned on read and on write', () => {
+    const storage = memory();
+    recordLocalTick(storage, 'house', 'weekly', 'old', now - LOCAL_TICKS_KEEP_MS - 1);
+    recordLocalTick(storage, 'house', 'weekly', 'new', now);
+    assert.deepEqual([...readLocalTicks(storage, 'house', 'weekly', now).opIds], ['new']);
+    assert.doesNotMatch(storage.data.get(LOCAL_TICKS_KEY) ?? '', /"old"/);
+  });
+
+  test('corrupt storage starts over; unavailable storage shows no "You … on another device" (other members still do)', () => {
+    const storage = memory();
+    storage.data.set(LOCAL_TICKS_KEY, '{not json');
+    assert.deepEqual(readLocalTicks(storage, 'house', 'weekly', now), { opIds: new Set(), reliable: true });
+    assert.equal(recordLocalTick(storage, 'house', 'weekly', 'op-1', now), true);
+    const blocked = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };
+    assert.equal(recordLocalTick(blocked, 'house', 'weekly', 'op-1', now), false);
+    const unavailable = readLocalTicks(blocked, 'house', 'weekly', now);
+    assert.equal(unavailable.reliable, false);
+    assert.equal(readLocalTicks(null, 'house', 'weekly', now).reliable, false);
+    const full = { getItem: () => null, setItem: () => { throw new Error('quota'); } };
+    assert.equal(recordLocalTick(full, 'house', 'weekly', 'op-1', now), false);
+    const items = [tick('me', 2, 'x-1'), tick('me', 1, 'x-2'), tick('alex', 1, 'a-1'), tick('alex', 2, 'a-2')];
+    assert.equal(
+      shoppingActivity({ items, now, uid: 'me', localOpIds: unavailable.opIds, names, selfKnown: false })?.label,
+      'Alex is shopping · all in the cart',
+    );
   });
 });

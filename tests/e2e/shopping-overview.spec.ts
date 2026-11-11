@@ -172,6 +172,23 @@ test.describe('shopping overview: the Grocery list on the overview', () => {
     }
   });
 
+  test("this device's own ticks are still its own after a reload (never \"another device\")", async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    const a = await session(browser);
+    try {
+      const section = await openOverview(a.page);
+      await section.locator('#item-needed-ov-milk').click();
+      await expect.poll(async () => (await items.doc('ov-milk').get()).data()?.purchasedAt).toBeTruthy();
+      await section.locator('#item-needed-ov-apples').click();
+      await expect.poll(async () => (await items.doc('ov-apples').get()).data()?.purchasedAt).toBeTruthy();
+      await a.page.reload();
+      await expect(a.page.getByTestId('grocery-overview').locator('#item-needed-ov-bread')).toBeVisible();
+      await expect(a.page.getByTestId('shopping-activity')).toHaveCount(0);
+    } finally {
+      await a.context.close();
+    }
+  });
+
   test('an expiring chip opens the pantry on that item', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);
     const a = await session(browser);

@@ -134,19 +134,28 @@ export function shoppingActivity({
   names,
   windowMs = SHOPPING_WINDOW_MS,
   minTicks = SHOPPING_MIN_TICKS,
+  selfKnown = true,
 }: {
   items: readonly Pick<ShoppingListItem, 'status' | 'purchasedByUid' | 'purchasedAt' | 'purchaseOpId'>[];
   now: number;
   uid: string | null | undefined;
+  /** This device's recent ticks (`readLocalTicks`, kept across reloads). */
   localOpIds: ReadonlySet<string>;
   names: ReadonlyMap<string, string>;
   windowMs?: number;
   minTicks?: number;
+  /**
+   * Whether `localOpIds` is complete (`readLocalTicks` `reliable`). When it is
+   * not (storage unavailable), the member's own ticks never count: no "You are
+   * shopping on another device" that may be this device before a reload.
+   */
+  selfKnown?: boolean;
 }): ShoppingActivity | null {
   const ticks = new Map<string, { count: number; latest: number }>();
   for (const item of items) {
     if (item.status !== 'purchased' || !item.purchasedByUid) continue;
     if (item.purchaseOpId && localOpIds.has(item.purchaseOpId)) continue;
+    if (!selfKnown && item.purchasedByUid === uid) continue;
     const at = toMillis(item.purchasedAt);
     if (at === null) continue;
     const age = now - at;
@@ -249,5 +258,102 @@ export function browserStorage(): KeyValueStorage | null {
     return typeof window !== 'undefined' ? window.localStorage : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether an overview write (a quick-add, a tick) may run against `targetListId`
+ * now: the page's items and categories listener must follow that list and both
+ * must have answered. Before that the known items are empty or another list's,
+ * so a duplicate name would not merge into the needed item (it would be added
+ * twice) and a category guess would use the wrong list.
+ */
+export const overviewWriteReady = ({
+  targetListId,
+  itemsListId,
+  itemsStatus,
+  categoriesStatus,
+}: {
+  targetListId: string | null | undefined;
+  itemsListId: string | null | undefined;
+  itemsStatus: 'loading' | 'ready' | 'error';
+  categoriesStatus: 'loading' | 'ready' | 'error';
+}): boolean => Boolean(targetListId) && targetListId === itemsListId && itemsStatus !== 'loading' && categoriesStatus !== 'loading';
+
+/** Where this device keeps the purchase ids of its own recent ticks (SH-28c), per household and list. */
+export const LOCAL_TICKS_KEY = 'homehub.shopping.localTicks.v1';
+/** Own ticks are kept a little longer than the activity window (server and device clocks may differ). */
+export const LOCAL_TICKS_KEEP_MS = 2 * SHOPPING_WINDOW_MS;
+
+type LocalTick = { opId: string; at: number };
+
+/** The stored map ("household/list" -> ticks), pruned; null when storage cannot be read. */
+function readLocalTickMap(storage: KeyValueStorage, now: number): Record<string, LocalTick[]> | null {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(LOCAL_TICKS_KEY);
+  } catch {
+    return null;
+  }
+  let parsed: unknown = {};
+  try {
+    parsed = JSON.parse(raw ?? '{}');
+  } catch {
+    parsed = {};
+  }
+  const map: Record<string, LocalTick[]> = {};
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return map;
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!Array.isArray(value)) continue;
+    const kept = value.filter((tick): tick is LocalTick => Boolean(tick)
+      && typeof (tick as LocalTick).opId === 'string'
+      && typeof (tick as LocalTick).at === 'number'
+      && now - (tick as LocalTick).at <= LOCAL_TICKS_KEEP_MS
+      && (tick as LocalTick).at - now <= LOCAL_TICKS_KEEP_MS);
+    if (kept.length > 0) map[key] = kept;
+  }
+  return map;
+}
+
+const localTicksKey = (householdId: string, listId: string) => `${householdId}/${listId}`;
+
+/**
+ * This device's own recent ticks on one list (their purchase ids), restored from
+ * storage and pruned to `LOCAL_TICKS_KEEP_MS`. `reliable` is false when storage
+ * cannot be read or written: then the device cannot tell its own earlier ticks
+ * (from before a reload) from another device's, and the overview shows no "You
+ * are shopping on another device" (other members still show).
+ */
+export function readLocalTicks(
+  storage: KeyValueStorage | null,
+  householdId: string | null | undefined,
+  listId: string | null | undefined,
+  now: number,
+): { opIds: Set<string>; reliable: boolean } {
+  if (!householdId || !listId) return { opIds: new Set(), reliable: true };
+  if (!storage) return { opIds: new Set(), reliable: false };
+  const map = readLocalTickMap(storage, now);
+  if (!map) return { opIds: new Set(), reliable: false };
+  return { opIds: new Set((map[localTicksKey(householdId, listId)] ?? []).map((tick) => tick.opId)), reliable: true };
+}
+
+/** Records one of this device's ticks; false when it could not be stored (storage blocked or full). */
+export function recordLocalTick(
+  storage: KeyValueStorage | null,
+  householdId: string | null | undefined,
+  listId: string | null | undefined,
+  opId: string,
+  now: number,
+): boolean {
+  if (!storage || !householdId || !listId || !opId) return false;
+  const map = readLocalTickMap(storage, now);
+  if (!map) return false;
+  const key = localTicksKey(householdId, listId);
+  map[key] = [...(map[key] ?? []).filter((tick) => tick.opId !== opId), { opId, at: now }].slice(-200);
+  try {
+    storage.setItem(LOCAL_TICKS_KEY, JSON.stringify(map));
+    return true;
+  } catch {
+    return false;
   }
 }
