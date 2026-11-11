@@ -73,10 +73,7 @@ export function reconcileTickStates(tracking: DoneTracking<TickRowState>, liveKe
 
 /**
  * Where focus goes after the row `key` leaves (its tick button had focus): the next
- * visible row's tick, else the previous one, else null (the tile link).
+ * visible row's tick, else the previous one, else null (the tile link). The dashboard's
+ * one rule for every one-tap action (`src/lib/dashboard/row-focus.ts`).
  */
-export function focusAfterTick(visibleKeys: readonly string[], key: string): string | null {
-  const index = visibleKeys.indexOf(key);
-  if (index === -1) return null;
-  return visibleKeys[index + 1] ?? visibleKeys[index - 1] ?? null;
-}
+export { nextActionKey as focusAfterTick } from './row-focus';
