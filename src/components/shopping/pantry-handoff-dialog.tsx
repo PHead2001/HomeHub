@@ -38,7 +38,7 @@ export function PantryHandoffDialog({
   // Mounted when opened, so the rows start from the items at that moment.
   const [rows, setRows] = useState<Row[]>(() => [...items]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((item) => ({ item, include: true, location: pantryLocationForCategory(item.category) })));
+    .map((item) => ({ item, include: true, location: pantryLocationForCategory(item.category, item.name) })));
   const [saving, setSaving] = useState(false);
 
   const chosen = rows.filter((row) => row.include);

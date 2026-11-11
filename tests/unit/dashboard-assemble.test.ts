@@ -128,3 +128,22 @@ describe('notifications: the unread count follows the clock, not the last snapsh
     assert.equal(unreadAt(), 0);
   });
 });
+
+describe('dashboard pantry expiry uses the household day (PR #129 review)', () => {
+  it('counts date-only and legacy ISO expiry in the household zone, not the device zone', () => {
+    // 00:30 on 11 Nov in Tokyo; still 10 Nov on a UTC or American device.
+    const tokyo = { ...context, now: new Date('2026-11-10T15:30:00.000Z'), timeZone: 'Asia/Tokyo' };
+    const raw: DashboardRaw = {
+      pantry: [
+        { id: 'v2', name: 'Milk', expiryDate: '2026-11-10', packages: 1, schemaVersion: 2 },
+        // The same day saved the legacy way: the instant of Tokyo midnight.
+        { id: 'legacy', name: 'Cream', expiryDate: '2026-11-09T15:00:00.000Z', quantity: 1 },
+        { id: 'today', name: 'Eggs', expiryDate: '2026-11-11', packages: 1, schemaVersion: 2 },
+      ],
+    };
+    const pantry = assembleDashboardFacts(raw, new Set(), { ...none, pantry: true }, tokyo).facts.pantry!;
+    assert.equal(pantry.expired, 2);
+    assert.equal(pantry.expiringSoon, 1);
+    assert.deepEqual(pantry.nearest.map((entry) => [entry.name, entry.days]), [['Eggs', 0]]);
+  });
+});

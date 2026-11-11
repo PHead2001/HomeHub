@@ -162,13 +162,31 @@ export const pantryItemUnitCategories = {
 
 export type PantryItemLocation = 'Pantry' | 'Fridge' | 'Freezer';
 
+/**
+ * A stored pantry document (`households/{h}/pantry-inventory/{id}`), one per
+ * batch in Pantry v2. Documents written before v2 carry only `name`, `quantity`,
+ * `unit`, `location` and an ISO `expiryDate`; read any document through
+ * `readPantryBatch` (src/lib/shopping/pantry-batches.ts), never these fields directly.
+ */
 export type PantryItem = {
   id: string;
   name: string;
-  quantity: number;
+  /** Legacy amount, still dual-written: packages for counted units, the package size for measured ones. */
+  quantity?: number;
   unit: PantryItemUnit;
   location: PantryItemLocation;
-  expiryDate?: string | null; // ISO string
+  /** v2: `yyyy-MM-dd` in the household zone; legacy documents hold an ISO instant of local midnight. */
+  expiryDate?: string | null;
+  nameKey?: string;
+  /** v2: number of packages (0..10000); 0 means used up. */
+  packages?: number;
+  /** v2: size of one package in `unit`, or null. */
+  packageSize?: number | null;
+  barcode?: string | null;
+  addedByUid?: string;
+  updatedByUid?: string;
+  updatedAt?: unknown;
+  schemaVersion?: number;
 };
 
 export type HomeAssetCategory =
