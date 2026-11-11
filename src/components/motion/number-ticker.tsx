@@ -37,6 +37,12 @@ type NumberTickerProps = {
  * digits are painted by CSS (`number-ticker.module.css`) and add no text, no
  * name and no width, so nothing shifts. Under reduced motion, during SSR and
  * before hydration the final value simply shows.
+ *
+ * Inside a flex container keep the label and the number in one element
+ * (`<span>To Do (<NumberTicker />)</span>`): as direct children of a flex box the
+ * text and this span become separate flex items, and the container's gap or
+ * `justify-between` spreads them apart ("To Do (   3   )"). `AccordionTrigger`
+ * wraps its label for that reason. `data-number-ticker` marks the element for tests.
  */
 export function NumberTicker({ value, format, locale, animateOnMount = true, duration = DURATION.data, className }: NumberTickerProps) {
   const reduced = useReducedMotion();
@@ -100,7 +106,7 @@ export function NumberTicker({ value, format, locale, animateOnMount = true, dur
   }, [value, reduced, animateOnMount, duration, formatter, roundToInteger]);
 
   return (
-    <span ref={element} className={cn(styles.ticker, className)}>
+    <span ref={element} className={cn(styles.ticker, className)} data-number-ticker="">
       {final}
     </span>
   );
