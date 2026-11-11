@@ -2577,10 +2577,12 @@ describe('content shapes: shopping S5–S8 stage', () => {
     await assertSucceeds(updateDoc(store(users.member, 'corner'), { name: 'Corner Market', updatedAt: serverTimestamp() }));
     await assertFails(updateDoc(store(users.guest, 'corner'), { name: 'Guest name', updatedAt: serverTimestamp() }));
     // Delete with the list's storeId cleared, one atomic write: needs shopping.delete.
+    // One Firestore instance per batch: dbFor() makes a new one on every call.
     const unassignAndDelete = (user: Identity) => {
-      const batch = writeBatch(dbFor(user));
-      batch.update(list(user, 'owned'), { storeId: null });
-      batch.delete(store(user, 'corner'));
+      const db = dbFor(user);
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'households', householdA, 'shopping-lists', 'owned'), { storeId: null });
+      batch.delete(doc(db, 'households', householdA, 'stores', 'corner'));
       return batch.commit();
     };
     await assertFails(unassignAndDelete(users.member));
@@ -2589,9 +2591,10 @@ describe('content shapes: shopping S5–S8 stage', () => {
     // Undo by someone other than the creator: the original creator is refused,
     // the restorer as creator is accepted, with the list pointed back.
     const restore = (user: Identity, createdByUid: string) => {
-      const batch = writeBatch(dbFor(user));
-      batch.set(store(user, 'corner'), { name: 'Corner Market', aisleOrder: [], createdByUid, updatedAt: serverTimestamp() });
-      batch.update(list(user, 'owned'), { storeId: 'corner' });
+      const db = dbFor(user);
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'households', householdA, 'stores', 'corner'), { name: 'Corner Market', aisleOrder: [], createdByUid, updatedAt: serverTimestamp() });
+      batch.update(doc(db, 'households', householdA, 'shopping-lists', 'owned'), { storeId: 'corner' });
       return batch.commit();
     };
     await assertFails(restore(users.admin, users.member.uid));
