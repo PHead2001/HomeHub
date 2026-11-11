@@ -99,6 +99,7 @@ The Profile form uploads a new photo to `users/{uid}/avatars/{uuid}.{extension}`
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after identity/profile changes.
+- `tests/e2e/tablet-pages.spec.ts` checks `/profile` on the wall tablet (1263 × 818, touch): no sideways scroll, every control's hit area at least 48 × 48 and none overlapping (see [Application Shell](../application-shell/README.md)).
 - Run `npm.cmd run test:e2e:local` to verify emulator custom-token sign-in and persisted authenticated state.
 - Manually test successful Google sign-in, popup cancellation, provider failure, profile creation, profile editing, avatar upload, Profile > Appearance (mode, presets, Text size at 115% and 130%, Reduce motion, Sound, Haptics; reload without a flash of the wrong theme or text size; sync to a second browser after sign-in), push subscription, and logout (in a production build, confirm the page reloads to `/` and DevTools > Application shows no `firestore/` IndexedDB database afterwards).
 - Verify self-profile updates reject membership-field spoofing and unrelated users cannot list profiles.

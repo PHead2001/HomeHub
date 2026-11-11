@@ -181,6 +181,9 @@ describe('deterministic OpenAI task provider', () => {
     });
     assert.equal(output.recipeTitle, 'Rice and Beans Skillet');
     assert.equal(output.instructions.length, 3);
+    // The stand-in claims "Fresh basil" from the pantry; it was not supplied, so it is missing.
+    assert.deepEqual(output.ingredients.used.map((entry) => entry.pantryItem), ['Rice', 'Beans']);
+    assert.deepEqual(output.ingredients.needed.map((entry) => entry.name), ['Fresh basil', 'Salt', 'Pepper', 'Cooking oil']);
     tasks.recipe.GenerateRecipeOutputSchema.parse(output);
   });
 

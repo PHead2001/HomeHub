@@ -21,7 +21,8 @@ export { UNDO_WINDOW_MS } from '@/lib/undo-window';
 /** The journal key in localStorage (one per device; entries are scoped by user, household and list). */
 export const UNDO_JOURNAL_KEY = 'homehub.shopping.undo.v1';
 
-export type UndoGroup = 'shopping-tick' | 'shopping-remove';
+/** `shopping-trip`: a put-away trip (S5), undone by the server's `undoTrip` (`itemId` and `opId` are the trip id). */
+export type UndoGroup = 'shopping-tick' | 'shopping-remove' | 'shopping-trip';
 
 type UndoBase = {
   group: UndoGroup;
@@ -42,7 +43,8 @@ type UndoBase = {
 export type TickUndo = UndoBase & { group: 'shopping-tick' };
 /** `data` is the restore document in journal form (`toJournalData`). */
 export type RemoveUndo = UndoBase & { group: 'shopping-remove'; data: Record<string, JournalValue> };
-export type UndoEntry = TickUndo | RemoveUndo;
+export type TripUndo = UndoBase & { group: 'shopping-trip' };
+export type UndoEntry = TickUndo | RemoveUndo | TripUndo;
 
 export type JournalValue = string | number | boolean | null | { $date: number };
 
@@ -127,7 +129,7 @@ function isEntry(value: unknown): value is UndoEntry {
   const entry = value as Record<string, unknown>;
   const strings = ['uid', 'householdId', 'listId', 'itemId', 'name', 'opId'].every((key) => typeof entry[key] === 'string' && (entry[key] as string).length > 0);
   if (!strings || typeof entry.expiresAt !== 'number') return false;
-  if (entry.group === 'shopping-tick') return true;
+  if (entry.group === 'shopping-tick' || entry.group === 'shopping-trip') return true;
   return entry.group === 'shopping-remove' && typeof entry.data === 'object' && entry.data !== null;
 }
 

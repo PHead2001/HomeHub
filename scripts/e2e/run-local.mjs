@@ -8,14 +8,25 @@ import {
   E2E_STORAGE_HOST,
   e2eEnvironment,
 } from "./environment.mjs";
+import { specSets } from "./spec-sets.mjs";
 
 const updateSnapshots = process.argv.includes("--visual-update");
 const smokeOnly = process.argv.includes("--smoke-only");
 const featureOnly = process.argv.includes("--feature-only");
 const aiOnly = process.argv.includes("--ai-only");
+const extendedOnly = process.argv.includes("--extended-only");
 
-if ([updateSnapshots, smokeOnly, featureOnly, aiOnly].filter(Boolean).length > 1) {
+if ([updateSnapshots, smokeOnly, featureOnly, aiOnly, extendedOnly].filter(Boolean).length > 1) {
   throw new Error("Choose only one focused E2E run mode.");
+}
+
+// Smoke list and extended set (every other non-local, non-visual spec), see spec-sets.mjs.
+// Computed before the emulators start so a stale smoke entry fails immediately.
+const { smoke: smokeSpecs, extended: extendedSpecs } = specSets();
+
+if (extendedOnly && extendedSpecs.length === 0) {
+  console.log("No E2E specs outside the smoke list; nothing to run in the extended suite.");
+  process.exit(0);
 }
 
 const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
@@ -165,11 +176,19 @@ try {
       "Playwright feature regression suite",
       suiteTimeoutMs
     );
+  } else if (extendedOnly) {
+    await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
+    await runChild(
+      process.execPath,
+      [playwrightCli, "test", ...extendedSpecs],
+      "Playwright extended suite",
+      suiteTimeoutMs
+    );
   } else if (smokeOnly) {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts", "tests/e2e/navigation-layout.spec.ts", "tests/e2e/appearance.spec.ts", "tests/e2e/dashboard-shell.spec.ts", "tests/e2e/pwa-share.spec.ts", "tests/e2e/pets-living-cards.spec.ts", "tests/e2e/household-ux.spec.ts", "tests/e2e/maintenance-ux.spec.ts", "tests/e2e/shopping-trip.spec.ts", "tests/e2e/chores-ux.spec.ts", "tests/e2e/dashboard-house.spec.ts", "tests/e2e/chores-room-filter.spec.ts", "tests/e2e/pets-hold-to-feed.spec.ts", "tests/e2e/maintenance-warranty-odometer.spec.ts", "tests/e2e/shopping-cart-flight.spec.ts", "tests/e2e/notifications-swipe.spec.ts", "tests/e2e/shell-wave4.spec.ts", "tests/e2e/dashboard-wide.spec.ts", "tests/e2e/live-membership.spec.ts"],
+      [playwrightCli, "test", ...smokeSpecs],
       "Playwright smoke suite",
       suiteTimeoutMs
     );
@@ -192,7 +211,7 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator reseed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", "tests/e2e/smoke.spec.ts", "tests/e2e/verification-findings.spec.ts", "tests/e2e/temporary-chores-maintenance-ui.spec.ts", "tests/e2e/ai-openai.spec.ts", "tests/e2e/ai-hardening.spec.ts", "tests/e2e/navigation-layout.spec.ts", "tests/e2e/appearance.spec.ts", "tests/e2e/dashboard-shell.spec.ts", "tests/e2e/pwa-share.spec.ts", "tests/e2e/pets-living-cards.spec.ts", "tests/e2e/household-ux.spec.ts", "tests/e2e/maintenance-ux.spec.ts", "tests/e2e/shopping-trip.spec.ts", "tests/e2e/chores-ux.spec.ts", "tests/e2e/dashboard-house.spec.ts", "tests/e2e/chores-room-filter.spec.ts", "tests/e2e/pets-hold-to-feed.spec.ts", "tests/e2e/maintenance-warranty-odometer.spec.ts", "tests/e2e/shopping-cart-flight.spec.ts", "tests/e2e/notifications-swipe.spec.ts", "tests/e2e/shell-wave4.spec.ts", "tests/e2e/dashboard-wide.spec.ts", "tests/e2e/live-membership.spec.ts"],
+      [playwrightCli, "test", ...smokeSpecs],
       "Playwright smoke suite",
       suiteTimeoutMs
     );

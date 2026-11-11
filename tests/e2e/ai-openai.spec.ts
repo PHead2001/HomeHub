@@ -33,6 +33,11 @@ async function cleanupShoppingItems() {
     'AI-TEST:timeout mystery meal',
     'AI-TEST:provider-error manual category',
     'E2E Yogurt Multipack',
+    // The deterministic recipe's missing ingredients (SH-22c/d).
+    'Salt',
+    'Pepper',
+    'Cooking oil',
+    'Fresh basil',
   ]) {
     const snapshot = await groceryItems.where('name', '==', name).get();
     await Promise.all(snapshot.docs.map(document => document.ref.delete()));
@@ -164,6 +169,52 @@ test.describe('OpenAI migration workflows', () => {
     await expect(page.getByText('Jasmine rice', { exact: true }).first()).toBeVisible();
     await expect(page.getByText(/Greek yogurt|Frozen berries/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Generate Recipe' })).toBeDisabled();
+  });
+
+  test('the recipe uses what goes off first and adds missing ingredients to the Grocery list (SH-31, SH-22c/d)', async ({ page }) => {
+    // Salt is already needed on the only Grocery list: its "+" raises it instead of adding a second Salt.
+    await groceryItems.doc('e2e-recipe-salt').set({
+      name: 'Salt', nameKey: 'salt', quantity: 1, category: 'Pantry', status: 'needed', createdAt: fixedNow,
+    });
+    const quantities = async (name: string) => (await groceryItems.where('name', '==', name).get()).docs
+      .map((document) => [document.data().quantity, document.data().status]);
+
+    await openAuthenticated(page, '/shopping', 'Shopping Center');
+    await page.getByRole('tab', { name: 'Inventory' }).click();
+    await page.getByRole('button', { name: 'Generate Recipe' }).click();
+    const dialog = page.getByRole('dialog', { name: 'AI Recipe Idea' });
+    // SH-31a: stock is sent soonest expiry first (yogurt in 3 days, berries in December,
+    // rice next year); the stand-in model builds the recipe from the first two.
+    await expect(dialog.getByRole('heading', { name: 'Greek yogurt and Frozen berries Skillet' })).toBeVisible();
+    // Amounts on hand come from HomeHub's pantry, not the model.
+    const fromPantry = dialog.getByRole('list', { name: 'From your pantry' });
+    await expect(fromPantry).toContainText('You have 3 items · Tue (Fridge)');
+    await expect(fromPantry).not.toContainText('Fresh basil');
+
+    // The model's "Fresh basil" pantry claim is not stock, so it is listed as missing.
+    const missing = dialog.getByTestId('recipe-missing');
+    await expect(missing).toContainText('Adds to Weekly Groceries.');
+    await expect(missing.getByRole('button', { name: 'Add Fresh basil to the list' })).toBeVisible();
+
+    // SH-22c: one "+" merges into the needed Salt.
+    await missing.getByRole('button', { name: 'Add Salt to the list' }).click();
+    await expect(missing.getByRole('button', { name: 'Salt added' })).toBeDisabled();
+    await expect.poll(() => quantities('Salt'), { timeout: 15_000 }).toEqual([[2, 'needed']]);
+
+    // A live pantry change neither clears the recipe nor re-requests it.
+    await household.collection('pantry-inventory').doc('rice').update({ quantity: 5 });
+    await expect(dialog.getByRole('heading', { name: 'Greek yogurt and Frozen berries Skillet' })).toBeVisible();
+    await expect(missing.getByRole('button', { name: 'Salt added' })).toBeVisible();
+
+    // SH-22d / SH-31b: "Add all missing" adds the rest in one action; Salt is not added again.
+    await missing.getByRole('button', { name: 'Add all missing' }).click();
+    for (const name of ['Fresh basil', 'Pepper', 'Cooking oil']) {
+      await expect(missing.getByRole('button', { name: `${name} added` })).toBeVisible();
+      await expect.poll(() => quantities(name), { timeout: 15_000 }).toEqual([[1, 'needed']]);
+    }
+    expect(await quantities('Salt')).toEqual([[2, 'needed']]);
+    await expect(missing.getByRole('button', { name: 'Add all missing' })).toBeDisabled();
+    await page.keyboard.press('Escape');
   });
 
   test('maintenance summaries are transient and provider failures remain retryable', async ({ page }) => {

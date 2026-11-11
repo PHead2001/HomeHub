@@ -7,7 +7,9 @@ import { cn } from "@/lib/utils"
 // Touch targets (D-2): the default size shares the form-control height
 // (--target-min: 44 px, 48 px on touch screens); every size, and any caller that
 // shrinks a button, also gets an invisible `hit-slop` area of that minimum, so
-// compact and icon buttons keep their look and stay tappable.
+// compact and icon buttons keep their look and stay tappable with a mouse. On a
+// touch screen the compact sizes (`sm`, `icon`) grow to the target themselves
+// (`touch-target`), so buttons a few px apart never share invisible areas (WT-28).
 const buttonVariants = cva(
   "hit-slop relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
@@ -25,9 +27,9 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-[var(--target-min)] px-4 py-2",
-        sm: "h-9 rounded-md px-3",
+        sm: "touch-target h-9 rounded-md px-3",
         lg: "h-12 rounded-md px-8",
-        icon: "h-10 w-10",
+        icon: "touch-target h-10 w-10",
       },
     },
     defaultVariants: {

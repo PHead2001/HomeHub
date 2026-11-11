@@ -21,7 +21,7 @@ import {
 import { getMemberPermissions } from '../../src/lib/permissions';
 import { clearJournal, forgetHouseholdJournal, readJournal, UNDO_JOURNAL_KEY, type UndoEntry } from '../../src/lib/shopping/undo';
 import type { HouseholdMember, User } from '../../src/lib/types';
-import { forgetHouseholdKeys, HOUSEHOLD_KEY_PREFIXES } from '../../src/lib/auth/household-scope';
+import { forgetHouseholdKeys, forgetHouseholdMapEntries, HOUSEHOLD_KEY_PREFIXES, HOUSEHOLD_MAP_KEYS, mapEntryOfHousehold } from '../../src/lib/auth/household-scope';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -369,9 +369,42 @@ describe('household data on this device', () => {
     assert.deepEqual([...values.keys()], ['homehub.pantry.recentList.house-b', 'homehub.appearance']);
     forgetHouseholdKeys(storage, null);
     assert.deepEqual([...values.keys()], ['homehub.appearance']);
-    // The prefix is the one the pantry writes.
-    const pantry = readFileSync(resolve(__dirname, '../../src/components/pantry-inventory-client.tsx'), 'utf8');
+    // The prefix is the one the pantry (and its recipe card) writes.
+    const pantry = readFileSync(resolve(__dirname, '../../src/lib/shopping/recent-list.ts'), 'utf8');
     for (const prefix of HOUSEHOLD_KEY_PREFIXES) assert.ok(pantry.includes(`\`${prefix}\${householdId}\``), prefix);
+  });
+
+  test('the shopping device maps (recent Grocery list, own recent ticks) forget one household, or everything at sign-out', () => {
+    const values = new Map<string, string>([
+      ['homehub.shopping.recentGrocery.v1', JSON.stringify({ [H]: 'list-1', 'house-b': 'list-9' })],
+      ['homehub.shopping.localTicks.v1', JSON.stringify({ [`${H}/list-1`]: [{ opId: 'a', at: 1 }], [`${H}x/list-2`]: [{ opId: 'b', at: 1 }], 'house-b/list-3': [{ opId: 'c', at: 1 }] })],
+      ['homehub.appearance', 'dark'],
+    ]);
+    const storage = {
+      get length() { return values.size; },
+      key: (index: number) => [...values.keys()][index] ?? null,
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    forgetHouseholdMapEntries(storage, H);
+    assert.deepEqual(JSON.parse(values.get('homehub.shopping.recentGrocery.v1')!), { 'house-b': 'list-9' });
+    // Only "<householdId>/..." entries: a household id that merely starts the same is kept.
+    assert.deepEqual(Object.keys(JSON.parse(values.get('homehub.shopping.localTicks.v1')!)), [`${H}x/list-2`, 'house-b/list-3']);
+    forgetHouseholdMapEntries(storage, 'house-b');
+    assert.equal(values.has('homehub.shopping.recentGrocery.v1'), false, 'an emptied map is removed');
+    forgetHouseholdMapEntries(storage, null);
+    assert.deepEqual([...values.keys()], ['homehub.appearance']);
+    // A corrupt map is removed; blocked storage never throws.
+    values.set('homehub.shopping.localTicks.v1', 'not json');
+    forgetHouseholdMapEntries(storage, H);
+    assert.equal(values.has('homehub.shopping.localTicks.v1'), false);
+    const blocked = { length: 0, key: () => null, getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => { throw new Error('blocked'); } };
+    assert.doesNotThrow(() => forgetHouseholdMapEntries(blocked, H));
+    assert.equal(mapEntryOfHousehold(`${H}/l`, H), true);
+    assert.equal(mapEntryOfHousehold(H, H), true);
+    assert.equal(mapEntryOfHousehold(`${H}2`, H), false);
+    assert.deepEqual([...HOUSEHOLD_MAP_KEYS], ['homehub.shopping.recentGrocery.v1', 'homehub.shopping.localTicks.v1']);
   });
 
   test('the Undo journal forgets one household, or everything at sign-out', () => {

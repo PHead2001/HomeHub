@@ -296,16 +296,25 @@ service cloud.firestore {
     }
 
     // `audience` names who the notification is for: [targetUserUid] for one
-    // member, ['*'] for the household. Optional for now (clients cached from
-    // before the field existed do not send it); when present it must match the
-    // targeting fields exactly. Reads do not check it yet.
+    // member, ['*'] for the household (the derivation of notificationAudience).
+    // Required on every client create, because reads return only documents
+    // whose audience names the reader or everyone. A client may not write an
+    // email-only target: without a uid it could not name anyone.
     function validNotificationAudience(data) {
-      return !('audience' in data) ||
-        (data.audience is list &&
-          ('targetUserUid' in data
-            ? (data.audience.size() == 1 && data.audience[0] is string &&
-                data.audience[0] == data.targetUserUid)
-            : (data.audience.size() == 1 && data.audience[0] == '*')));
+      return data.audience is list &&
+        data.audience.size() == 1 &&
+        data.audience[0] is string &&
+        ('targetUserUid' in data
+          ? data.audience[0] == data.targetUserUid
+          : (!('targetUserEmail' in data) && data.audience[0] == '*'));
+    }
+
+    // The reader is in the notification's audience. Used by the update rule;
+    // the read rule spells the same check out so list queries are proven
+    // against `audience` array-contains-any [uid, '*'].
+    function notificationAddressedToCaller() {
+      return resource.data.audience is list &&
+        resource.data.audience.hasAny([request.auth.uid, '*']);
     }
 
     function canSendCategory(householdId, category) {
@@ -333,7 +342,7 @@ service cloud.firestore {
         data.expiresAt <= request.time + duration.value(8, 'd') &&
         (!('createdByUid' in data) || data.createdByUid == request.auth.uid) &&
         data.householdId == householdId &&
-        data.keys().hasAll(['householdId', 'category', 'message', 'createdAt', 'expiresAt', 'readBy', 'dismissedBy']) &&
+        data.keys().hasAll(['householdId', 'category', 'message', 'createdAt', 'expiresAt', 'readBy', 'dismissedBy', 'audience']) &&
         data.keys().hasOnly([
           'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
           'deepLink', 'sourceType', 'sourceId', 'stateKey',
@@ -430,8 +439,11 @@ service cloud.firestore {
         !('targetUserUid' in data) && !('targetUserEmail' in data) &&
         data.keys().hasOnly([
           'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
-          'deepLink', 'sourceType', 'sourceId', 'stateKey', 'readBy', 'dismissedBy', 'createdByUid'
+          'deepLink', 'sourceType', 'sourceId', 'stateKey', 'readBy', 'dismissedBy', 'createdByUid',
+          'audience'
         ]) &&
+        // Untargeted, so the audience must be ['*'].
+        validNotificationAudience(data) &&
         (!('createdByUid' in data) || data.createdByUid == request.auth.uid) &&
         data.message is string && data.message.size() > 0 && data.message.size() <= 300 &&
         (!('title' in data) || (data.title is string && data.title.size() <= 120)) &&
@@ -1275,11 +1287,15 @@ service cloud.firestore {
       }
 
       match /notifications/{notificationId} {
-        allow read: if hasHouseholdPermission(householdId, 'notifications.view');
+        // Only documents addressed to the reader ([uid]) or to everyone (['*']).
+        // A list query must carry where('audience', 'array-contains-any', [uid, '*'])
+        // (or array-contains of either value); one without it is refused.
+        allow get, list: if hasHouseholdPermission(householdId, 'notifications.view') &&
+          resource.data.audience.hasAny([request.auth.uid, '*']);
         allow create: if validNewNotification(householdId) || validDepartureNotice(householdId);
-        allow update: if
+        allow update: if notificationAddressedToCaller() && (
           (hasHouseholdPermission(householdId, 'notifications.dismiss') && updatesOnlyOwnNotificationState()) ||
-          (hasHouseholdPermission(householdId, 'maintenance.edit') && resolvesMaintenanceNotification());
+          (hasHouseholdPermission(householdId, 'maintenance.edit') && resolvesMaintenanceNotification()));
         allow delete: if false;
       }
 

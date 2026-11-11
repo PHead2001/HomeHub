@@ -161,7 +161,8 @@ test.describe('H28: shortcut hints in tooltips', () => {
     await expect(page.getByTestId('shortcut-hint-go-chores')).toContainText('then');
 
     await addChore.click();
-    await expect(page.getByRole('dialog', { name: 'Search or quick add' }).getByRole('combobox')).toHaveValue('chore ');
+    // Chore mode, never a typed "chore " prefix (QA-15).
+    await expect(page.getByRole('dialog', { name: 'Search or quick add' }).getByTestId('palette-mode-chore')).toBeVisible();
   });
 });
 
