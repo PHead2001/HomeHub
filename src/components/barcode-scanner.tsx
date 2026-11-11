@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
+import { SCANNER_ERROR_COPY, newScannerErrorSession, reportScannerError, scannerErrorKind, type ScannerErrorKind } from '@/lib/barcode/scanner-errors';
 
 interface BarcodeScannerProps {
     onScan: (barcode: string) => void;
@@ -16,27 +17,26 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
   const { toast } = useToast();
   const [manualBarcode, setManualBarcode] = React.useState('');
   const [manualError, setManualError] = React.useState<string | null>(null);
-  
+  // The latest camera problem, shown under the camera for as long as the scanner is
+  // open (the toast goes after a few seconds; this says why nothing scans).
+  const [cameraError, setCameraError] = React.useState<ScannerErrorKind | null>(null);
+  // This open scanner's session: each kind of error toasts once (a screen reader
+  // hears it once), never again on every retry; a remounted scanner starts afresh.
+  const errorSession = React.useRef(newScannerErrorSession());
+
   const { ref } = useZxing({
     onDecodeResult(result) {
+      setCameraError(null);
       onScan(result.getText());
     },
     onError(error) {
-        if (error instanceof Error && error.name === 'NotAllowedError') {
-             toast({
-                variant: 'destructive',
-                title: 'Camera Access Denied',
-                description: 'Please enable camera permissions in your browser settings to use the scanner.',
-            });
-            return;
-        }
-
-        console.error("Scanner Error:", error);
-        toast({
-            variant: 'destructive',
-            title: 'Scan Error',
-            description: 'Could not decode the barcode. Please try again.',
-        });
+        const kind = scannerErrorKind(error);
+        const report = reportScannerError(errorSession.current, kind);
+        errorSession.current = report.session;
+        setCameraError(kind);
+        if (!report.toast) return;
+        if (kind !== 'permission') console.error("Scanner Error:", error);
+        toast({ variant: 'destructive', ...SCANNER_ERROR_COPY[kind] });
     },
   });
 
@@ -62,6 +62,12 @@ export function BarcodeScanner({ onScan }: BarcodeScannerProps) {
           <div className="h-1/3 w-3/4 rounded-lg border-2 border-destructive shadow-[0_0_0_9999px_hsl(var(--scrim)/0.5)]" />
         </div>
       </div>
+      {cameraError && (
+        // Not a live region: the first toast of this kind was already announced.
+        <p className="text-sm text-destructive" data-testid="scanner-camera-error">
+          {SCANNER_ERROR_COPY[cameraError].title}. {SCANNER_ERROR_COPY[cameraError].description}
+        </p>
+      )}
       <form
         className="flex items-end gap-2"
         onSubmit={(event) => {
