@@ -21,6 +21,11 @@ import { getMessaging, isSupported } from "firebase/messaging";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 import { app, auth, firebaseConfig, firebaseEmulatorMode } from "./firebase-app";
+import {
+  decideLocalPersistence,
+  inspectActiveCache,
+  type LocalPersistence,
+} from "./firestore-persistence";
 
 export { auth, firebaseConfig, firebaseEmulatorMode };
 
@@ -54,23 +59,23 @@ if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
 // queued writes such as ticked items survive reloads and sync on reconnect.
 // Server code (route handlers, server actions) keeps the default memory cache.
 // NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE=true opts a build out of persistence.
-export type LocalPersistence = "durable" | "memory" | "unknown";
+export type { LocalPersistence };
 
 /**
- * Whether writes this tab queues survive a reload (SH-4a). `durable` is set only
- * once the persistent IndexedDB cache has actually started (see
- * `confirmPersistentCache`); `memory` when this build or runtime uses the memory
- * cache; `unknown` until then, or when it cannot be told (for example a browser
- * without `indexedDB.databases()`, or a cache Firestore silently replaced with
- * memory). Only `durable` lets the UI say "Saved on this device, will sync".
+ * Whether writes this tab queues survive a reload (SH-4a). `durable` only when THIS
+ * Firestore instance was created with the persistent cache and its started client
+ * runs on IndexedDB persistence (`decideLocalPersistence`,
+ * `src/lib/firestore-persistence.ts`); `memory` when this build or runtime uses the
+ * memory cache, or the SDK fell back to it; `unknown` until the client has started,
+ * after it is terminated, for an instance reused after a hot reload, or whenever the
+ * cache cannot be told. An IndexedDB database existing in the browser profile is
+ * never proof. Only `durable` lets the UI say "Saved on this device, will sync".
  * A live binding: read it at the time of the write, never copy it at import.
  */
 export let localPersistence: LocalPersistence = "unknown";
 
-/** Function form of {@link localPersistence}, for code that takes it as a dependency. */
-export const getLocalPersistence = (): LocalPersistence => localPersistence;
-
-let persistentCacheRequested = false;
+let memoryConfigured = false;
+let persistentRequested = false;
 
 const createFirestore = (): Firestore => {
   // Emulator runs keep the memory cache: the E2E suite pins the browser clock, and
@@ -78,6 +83,7 @@ const createFirestore = (): Firestore => {
   // future, logging errors on every snapshot. Production devices have real clocks.
   if (typeof window === "undefined" || firebaseEmulatorMode
       || process.env.NEXT_PUBLIC_FIRESTORE_MEMORY_CACHE === "true") {
+    memoryConfigured = true;
     localPersistence = "memory";
     return getFirestore(app);
   }
@@ -85,7 +91,7 @@ const createFirestore = (): Firestore => {
     const firestore = initializeFirestore(app, {
       localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
     });
-    persistentCacheRequested = true;
+    persistentRequested = true;
     return firestore;
   } catch {
     // Already initialized (development hot reload) or the cache cannot be created:
@@ -97,28 +103,29 @@ const createFirestore = (): Firestore => {
 export const db = createFirestore();
 
 /**
- * Asking for the persistent cache is not proof it started: Firestore falls back to
- * memory (with a console warning) when IndexedDB cannot be opened, for example in
- * some private modes or when storage is blocked. A cache read starts the client;
- * afterwards the cache's IndexedDB database (`firestore/[DEFAULT]/<project>/main`)
- * must exist for `localPersistence` to become `durable`.
+ * Re-reads which cache the running client uses, so a later fallback, stop or
+ * termination is seen at the time of the write, not only at startup.
  */
-const confirmPersistentCache = async () => {
-  if (!persistentCacheRequested || typeof indexedDB === "undefined") return;
-  // The probe document never exists; the read only makes the client start.
-  await getDocFromCache(doc(db, "__homehub", "cache-probe")).catch(() => undefined);
-  const listDatabases = (indexedDB as IDBFactory & { databases?: () => Promise<Array<{ name?: string }>> }).databases;
-  if (typeof listDatabases !== "function") return;
-  const databases = await listDatabases.call(indexedDB).catch(() => null);
-  if (!databases) return;
-  const projectId = firebaseConfig.projectId;
-  const started = databases.some(({ name }) => typeof name === "string"
-    && name.startsWith("firestore/") && name.endsWith("/main")
-    && (!projectId || name.includes(`/${projectId}/`)));
-  localPersistence = started ? "durable" : "memory";
+const refreshLocalPersistence = (): LocalPersistence => {
+  localPersistence = decideLocalPersistence({
+    memoryConfigured,
+    persistentRequested,
+    activeCache: memoryConfigured ? "memory" : inspectActiveCache(db),
+  });
+  return localPersistence;
 };
 
-if (typeof window !== "undefined") void confirmPersistentCache();
+/** Function form of {@link localPersistence}, for code that takes it as a dependency. */
+export const getLocalPersistence = (): LocalPersistence => refreshLocalPersistence();
+
+// The Firestore client starts lazily; one cache read starts it (and with it the
+// IndexedDB persistence or the SDK's memory fallback) so the state is known before
+// the first write. The probe document never exists.
+if (typeof window !== "undefined" && persistentRequested) {
+  void getDocFromCache(doc(db, "__homehub", "cache-probe"))
+    .catch(() => undefined)
+    .then(refreshLocalPersistence);
+}
 export const storage = getStorage(app);
 
 /**

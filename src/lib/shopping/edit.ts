@@ -77,3 +77,35 @@ export function nextEditOpening(previous: EditOpening, item: (ItemEditBaseline &
 export function saveMayComplete(submittedSession: number, current: EditOpening): boolean {
   return current.itemId !== null && current.session === submittedSession;
 }
+
+/** The sheet's fields as the member typed them (quantity is the raw input text). */
+export type ItemEditDraft = { name: string; quantity: string; category: string };
+
+/**
+ * What a save's completion does with the sheet (S3 review). The fields stay
+ * editable while a save waits, so the member may change something meanwhile:
+ * closing then would drop that newer input. So the sheet closes only when the save
+ * succeeded and the draft is still the one submitted. If it changed, the sheet
+ * stays open with the newer input, and its baseline becomes the values just saved,
+ * so the next Save writes only what changed after the submit. A failed save keeps
+ * the sheet and its baseline as they were.
+ */
+export function settleItemSave(
+  baseline: ItemEditBaseline,
+  changes: ItemEditChanges,
+  submitted: ItemEditDraft,
+  current: ItemEditDraft,
+  saved: boolean,
+): { close: true } | { close: false; baseline: ItemEditBaseline } {
+  if (!saved) return { close: false, baseline };
+  const unchanged = submitted.name === current.name && submitted.quantity === current.quantity && submitted.category === current.category;
+  if (unchanged) return { close: true };
+  return {
+    close: false,
+    baseline: {
+      name: changes.name ?? baseline.name,
+      quantity: changes.quantity ?? baseline.quantity,
+      category: changes.category ?? baseline.category,
+    },
+  };
+}

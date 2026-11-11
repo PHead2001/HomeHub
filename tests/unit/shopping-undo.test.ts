@@ -19,7 +19,7 @@ import {
   type UndoEntry,
 } from '../../src/lib/shopping/undo';
 import { attributionLabel, memberNameMap, shortAge, toMillis } from '../../src/lib/shopping/attribution';
-import { CLOSED_EDIT, editBaseline, nextEditOpening, planItemEdit, saveMayComplete } from '../../src/lib/shopping/edit';
+import { CLOSED_EDIT, editBaseline, nextEditOpening, planItemEdit, saveMayComplete, settleItemSave } from '../../src/lib/shopping/edit';
 import { restoreItemData } from '../../src/lib/shopping/items';
 
 const memoryStorage = (): JournalStorage & { data: Map<string, string> } => {
@@ -258,5 +258,23 @@ describe('item edit (SH-8a)', () => {
     assert.deepEqual(reopened.baseline, { name: 'Rye bread', quantity: 2, category: 'Bakery' });
     // Closed: no session is current.
     assert.equal(saveMayComplete(reopened.session, nextEditOpening(reopened, null)), false);
+  });
+
+  test('a save closes the sheet only when nothing was typed while it waited', () => {
+    const baseline = { name: 'Milk', quantity: 1, category: 'Dairy' };
+    const submitted = { name: 'Oat milk', quantity: '1', category: 'Dairy' };
+    const plan = planItemEdit(baseline, { name: submitted.name, quantity: 1, category: submitted.category });
+    assert.ok('changes' in plan);
+    // Draft unchanged: close.
+    assert.deepEqual(settleItemSave(baseline, plan.changes, submitted, { ...submitted }, true), { close: true });
+    // Quantity changed during the save: stay open, the saved values are the new baseline.
+    const current = { ...submitted, quantity: '3' };
+    const outcome = settleItemSave(baseline, plan.changes, submitted, current, true);
+    assert.deepEqual(outcome, { close: false, baseline: { name: 'Oat milk', quantity: 1, category: 'Dairy' } });
+    assert.ok(!outcome.close);
+    // So the next Save writes only the newer change.
+    assert.deepEqual(planItemEdit(outcome.baseline, { name: current.name, quantity: 3, category: current.category }), { changes: { quantity: 3 } });
+    // A failed save keeps the sheet and its baseline.
+    assert.deepEqual(settleItemSave(baseline, plan.changes, submitted, submitted, false), { close: false, baseline });
   });
 });

@@ -15,7 +15,9 @@ import {
   nextEditOpening,
   planItemEdit,
   saveMayComplete,
+  settleItemSave,
   type ItemEditChanges,
+  type ItemEditDraft,
 } from '@/lib/shopping/edit';
 import type { ShoppingListCategory, ShoppingListItem } from '@/lib/types';
 
@@ -25,7 +27,8 @@ import type { ShoppingListCategory, ShoppingListItem } from '@/lib/types';
  * follows the live item (if it disappears meanwhile, deleted elsewhere, the owner
  * closes it), but Save writes only the fields the member changed from what the
  * sheet showed when it opened, so someone else's change to another field is kept.
- * Each open is a session: a slow save's completion closes only its own session. Every control is at least 44 px (48 px on touch, D-2); the
+ * Each open is a session: a slow save's completion closes only its own session, and
+ * only when nothing was typed while it waited (`settleItemSave`). Every control is at least 44 px (48 px on touch, D-2); the
  * close button is this sheet's own, since the dialog's built-in one is smaller.
  */
 export function ItemEditSheet({
@@ -70,10 +73,13 @@ export function ItemEditSheet({
       setSaving(false);
     }
   }
-  // The committed opening, for a save that completes later.
+  // The committed opening and draft, for a save that completes later.
   const openingRef = useRef(opening);
+  const draft: ItemEditDraft = { name, quantity, category };
+  const draftRef = useRef(draft);
   useLayoutEffect(() => {
     openingRef.current = opening;
+    draftRef.current = draft;
   });
 
   const quantityNumber = Number(quantity);
@@ -97,13 +103,19 @@ export function ItemEditSheet({
       return;
     }
     const session = opening.session;
+    const baseline = opening.baseline;
+    const submitted = draft;
     setSaving(true);
     const done = await onSave(item, plan.changes);
     // Closed (or reopened, perhaps for another item) while saving: that later sheet is
     // not this save's to close or to clear the spinner of.
     if (!saveMayComplete(session, openingRef.current)) return;
     setSaving(false);
-    if (done) onOpenChange(false);
+    // Input typed while the save waited stays in the sheet; the saved values become
+    // the baseline, so the next Save writes only that newer change.
+    const outcome = settleItemSave(baseline, plan.changes, submitted, draftRef.current, done);
+    if (outcome.close) onOpenChange(false);
+    else if (outcome.baseline !== baseline) setOpening((current) => (current.session === session ? { ...current, baseline: outcome.baseline } : current));
   };
 
   const categoryOptions = item && item.category && !categories.includes(item.category) ? [...categories, item.category] : categories;
