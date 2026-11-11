@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, LogOut } from 'lucide-react';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
-import { finishDeletingName } from '@/lib/auth/live-membership';
+import { deletionNameField, deletionNameSuggestion, finishDeletingError, finishDeletingName } from '@/lib/auth/live-membership';
 import { HOUSEHOLD_NAME_MAX, formatInviteInput, householdNameError, inviteCodeError } from '@/components/household/household-model';
 import {
   Card,
@@ -162,25 +162,28 @@ function JoinHouseholdForm({
 }
 
 /**
- * The frozen-household screen. "Finish deleting" needs the household's exact name (the
- * server checks it): with the name known it is one button; otherwise the owner types the
- * name first, and the button is offered only once something is typed.
+ * The frozen-household screen. "Finish deleting" must send the household's exact name
+ * (the server checks it, and the frozen household cannot be read), so the owner always
+ * sees an editable name field, prefilled with the best guess (`deletionNameSuggestion`);
+ * the action is offered only while the field holds a name, and a refusal is explained
+ * under the field, which stays editable.
  */
 function DeletingHouseholdDialog({
   isOwner,
-  knownName,
+  suggestedName,
   onFinish,
   onSignOut,
 }: {
   isOwner: boolean;
-  knownName: string;
+  suggestedName: string;
   onFinish: (confirmName: string) => Promise<boolean>;
   onSignOut: () => void;
 }) {
   const [finishing, setFinishing] = useState(false);
-  const [typedName, setTypedName] = useState('');
-  const needsName = !knownName.trim();
-  const confirmName = finishDeletingName(knownName, typedName);
+  const [typedName, setTypedName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const field = deletionNameField(typedName, suggestedName);
+  const confirmName = finishDeletingName(field);
   return (
     <Dialog open={true} onOpenChange={() => {}}>
       <DialogContent
@@ -192,11 +195,9 @@ function DeletingHouseholdDialog({
         <DialogHeader>
           <DialogTitle className="font-headline text-2xl text-center">This household is being deleted</DialogTitle>
           <DialogDescription className="text-center text-base">
-            {!isOwner
-              ? 'The owner is deleting this household. Its data is no longer available.'
-              : needsName
-                ? "Deletion did not finish. Type the household's name to finish deleting the remaining data."
-                : 'Deletion did not finish. Finish deleting to remove the remaining data.'}
+            {isOwner
+              ? "Deletion did not finish. Check the household's name, then finish deleting the remaining data."
+              : 'The owner is deleting this household. Its data is no longer available.'}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -206,20 +207,21 @@ function DeletingHouseholdDialog({
             event.preventDefault();
             if (!isOwner || !confirmName || finishing) return;
             setFinishing(true);
+            setError(null);
             try {
-              await onFinish(confirmName);
+              setError(finishDeletingError(await onFinish(confirmName)));
             } finally {
               setFinishing(false);
             }
           }}
         >
-          {isOwner && needsName && (
+          {isOwner && (
             <div className="space-y-2 text-left">
               <Label htmlFor="finishDeleteName">Household name</Label>
               <Input
-                id="finishDeleteName"
-                value={typedName}
-                onChange={(e) => setTypedName(e.target.value)}
+                {...fieldErrorProps('finishDeleteName', error)}
+                value={field}
+                onChange={(e) => { setTypedName(e.target.value); setError(null); }}
                 disabled={finishing}
                 autoComplete="off"
                 autoCorrect="off"
@@ -227,10 +229,11 @@ function DeletingHouseholdDialog({
                 spellCheck={false}
                 maxLength={HOUSEHOLD_NAME_MAX}
               />
+              <FieldError id="finishDeleteName">{error}</FieldError>
             </div>
           )}
-          {isOwner && confirmName && (
-            <Button type="submit" variant="destructive" disabled={finishing}>
+          {isOwner && (
+            <Button type="submit" variant="destructive" disabled={finishing || !confirmName}>
               {finishing ? 'Deleting…' : 'Finish deleting'}
             </Button>
           )}
@@ -338,7 +341,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
     return (
       <DeletingHouseholdDialog
         isOwner={currentMember?.role === 'owner'}
-        knownName={household.name}
+        suggestedName={deletionNameSuggestion(household.name, currentMember?.householdName)}
         onFinish={deleteHousehold}
         onSignOut={logout}
       />

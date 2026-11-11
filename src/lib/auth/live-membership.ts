@@ -185,9 +185,6 @@ export function membershipReducer(state: LiveMembershipState, event: MembershipE
         pendingView = pendingView && same(pendingView, view) ? pendingView : view;
         household = null;
         if (view.name) lastName = view.name;
-      } else if (!lastName && typeof nextMember.householdName === 'string' && nextMember.householdName.trim()) {
-        // Joined by invite: the record keeps the name (used while the household is frozen).
-        lastName = nextMember.householdName.trim();
       }
       if (
         nextMember === state.member && memberFromServer === state.memberFromServer && household === state.household &&
@@ -370,15 +367,35 @@ export function stalePointerFor(
 }
 
 /**
- * The name "Finish deleting" sends (the server requires the household's exact name):
- * the known name, else what the owner typed; null while neither is available, so the
- * action is not offered.
+ * The name prefilled on "Finish deleting" (the server requires the household's exact
+ * name, and nobody may read a frozen household's document). Only a suggestion, always
+ * shown in an editable field: the name this session last saw or this device's cached
+ * household document first; the record's `householdName` last, because it is the name
+ * at invitation time and a later rename does not update it. '' when nothing is known.
  */
-export function finishDeletingName(knownName: string | null | undefined, typedName: string): string | null {
+export function deletionNameSuggestion(knownName: string | null | undefined, recordName: string | null | undefined): string {
   const known = (knownName ?? '').trim();
   if (known) return known;
-  const typed = typedName.trim();
-  return typed || null;
+  return (recordName ?? '').trim();
+}
+
+/** The field's value: what the owner typed once they typed anything, else the suggestion. */
+export function deletionNameField(typed: string | null, suggestion: string): string {
+  return typed ?? suggestion;
+}
+
+/** The name sent, or null while the field is empty (Finish deleting is not offered then). */
+export function finishDeletingName(field: string): string | null {
+  const name = field.trim();
+  return name || null;
+}
+
+/** Shown under the field when Finish deleting was refused (a wrong name, or no connection); the field stays editable. */
+export const FINISH_DELETING_FAILED = "That didn't finish. The name must match the household's name exactly; check it and try again.";
+
+/** What the dialog shows after a Finish deleting attempt: null after success, else the plain explanation. */
+export function finishDeletingError(ok: boolean): string | null {
+  return ok ? null : FINISH_DELETING_FAILED;
 }
 
 /** Whether the household document may be read (and so listened to) for this state. */

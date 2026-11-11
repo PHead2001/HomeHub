@@ -3,7 +3,11 @@ import { describe, test } from 'node:test';
 import {
   canWatchHousehold,
   classifyListenerError,
+  deletionNameField,
+  deletionNameSuggestion,
+  finishDeletingError,
   finishDeletingName,
+  FINISH_DELETING_FAILED,
   stalePointerFor,
   initialMembershipState,
   liveProfile,
@@ -480,16 +484,33 @@ describe('live membership: finishing a deletion after a reload', () => {
     assert.equal(membershipReducer(named, { type: 'householdName', householdId: H, name: 'Else' }), named);
   });
 
-  test('a record that kept the household name (joined by invite) gives it directly', () => {
-    const state = run([watch(H), member(frozen({ householdName: 'The Foxes' }))]);
-    assert.equal(view(state).household?.name, 'The Foxes');
+  test("renamed after the invite: the record's invitation-time name never counts as known", () => {
+    // Joined by invite as 'Old Foxes', later owner; the household was renamed 'The Foxes'.
+    const state = run([watch(H), member(frozen({ householdName: 'Old Foxes' }))]);
+    assert.equal(view(state).household?.name, '', 'the cached-document lookup still runs');
+    // Cached document present: its current name wins over the record's.
+    const cached = membershipReducer(state, { type: 'householdName', householdId: H, name: 'The Foxes' });
+    assert.equal(deletionNameSuggestion(view(cached).household?.name, 'Old Foxes'), 'The Foxes');
+    // Cached document absent: the record's name is only a suggestion in an editable field.
+    assert.equal(deletionNameSuggestion(view(state).household?.name, 'Old Foxes'), 'Old Foxes');
+    assert.equal(deletionNameField(null, 'Old Foxes'), 'Old Foxes');
+    assert.equal(deletionNameField('The Foxes', 'Old Foxes'), 'The Foxes', 'what the owner types replaces it');
+    assert.equal(deletionNameField('', 'Old Foxes'), '', 'and can be cleared');
+    // Nothing known at all: an empty field.
+    assert.equal(deletionNameSuggestion('', undefined), '');
+    // A name this session saw live is preferred too.
+    assert.equal(deletionNameSuggestion(' The Foxes ', 'Old Foxes'), 'The Foxes');
   });
 
-  test('the name sent: the known one, else what the owner typed, else nothing (no action offered)', () => {
-    assert.equal(finishDeletingName('The Foxes', ''), 'The Foxes');
-    assert.equal(finishDeletingName('The Foxes', 'typo'), 'The Foxes');
-    assert.equal(finishDeletingName('', ' The Foxes '), 'The Foxes');
-    assert.equal(finishDeletingName('', '   '), null);
-    assert.equal(finishDeletingName(null, ''), null);
+  test('the name sent is the field; nothing is offered while it is empty; a refusal is explained and the field stays', () => {
+    assert.equal(finishDeletingName(' The Foxes '), 'The Foxes');
+    assert.equal(finishDeletingName('   '), null);
+    assert.equal(finishDeletingName(''), null);
+    // A mismatch (or no connection) answers false: a plain message under the field, which
+    // keeps the owner's text (the field value is deletionNameField, unchanged by the answer).
+    assert.equal(finishDeletingError(false), FINISH_DELETING_FAILED);
+    assert.match(FINISH_DELETING_FAILED, /must match the household's name exactly/);
+    assert.equal(finishDeletingError(true), null);
+    assert.equal(deletionNameField('Old Foxes', 'Old Foxes'), 'Old Foxes');
   });
 });
