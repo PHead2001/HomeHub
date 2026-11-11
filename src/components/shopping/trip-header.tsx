@@ -73,7 +73,9 @@ export const TripHeader = forwardRef<HTMLDivElement, {
   actions: ListAction[];
   chips: AisleChip[];
   onBack: (event: MouseEvent<HTMLButtonElement>) => void;
-}>(function TripHeader({ icon, iconClass, name, storeName, left, cart, addItem, actions, chips, onBack }, forwarded) {
+  /** Opens the Needed section (an aisle chip tapped while it is collapsed). */
+  onOpenNeeded: () => void;
+}>(function TripHeader({ icon, iconClass, name, storeName, left, cart, addItem, actions, chips, onBack, onOpenNeeded }, forwarded) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -88,12 +90,24 @@ export const TripHeader = forwardRef<HTMLDivElement, {
     return () => observer.disconnect();
   }, []);
 
-  const jump = (targetId: string) => {
+  const jump = async (targetId: string) => {
+    // A collapsed Needed section has no aisles in it: open it first, then wait (a
+    // bounded number of frames) for the aisle to mount and the section's opening
+    // animation to finish, so the page is tall enough to scroll to it.
+    onOpenNeeded();
+    let heading: HTMLElement | null = null;
+    for (let frame = 0; frame < 60 && !heading; frame += 1) {
+      heading = document.getElementById(targetId);
+      if (!heading) await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (!heading) return;
+    const region = heading.closest<HTMLElement>('[role="region"]');
+    const running = region && typeof region.getAnimations === 'function' ? region.getAnimations() : [];
+    await Promise.all(running.map((animation) => animation.finished.catch(() => undefined)));
+    if (!heading.isConnected) return;
     // The aisle's section (its scroll margin clears the sticky header), not the
     // sticky heading itself, whose own box moves while it sticks.
-    const heading = document.getElementById(targetId);
-    const target = heading?.closest('section') ?? heading;
-    if (!target) return;
+    const target = heading.closest('section') ?? heading;
     const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     target.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
   };
@@ -136,7 +150,7 @@ export const TripHeader = forwardRef<HTMLDivElement, {
             <button
               key={chip.key}
               type="button"
-              onClick={() => jump(chip.targetId)}
+              onClick={() => void jump(chip.targetId)}
               aria-label={`${chip.label}, ${chip.count} needed`}
               className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-full border bg-card px-3 text-sm font-medium transition-colors hover:bg-accent coarse:min-h-12"
             >

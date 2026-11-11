@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel, neededFocusOrder, scopeToList } from '../../src/lib/shopping/trip-mode';
+import { aisleChips, aisleTargetIds, filterAisleGroups, findHint, findQuery, leftLabel, neededFocusOrder, scopeToList, withSectionOpen } from '../../src/lib/shopping/trip-mode';
 import { keyboardInset } from '../../src/lib/keyboard-inset';
 import { createWakeLockController, wakeLockWanted, type WakeLockSentinelLike } from '../../src/lib/shopping/wake-lock';
 import { LIST_TINT_LABELS } from '../../src/lib/shopping/list-style';
@@ -77,6 +77,17 @@ describe('trip mode: focus order after a tick follows the rows on screen', () =>
   test('only the matches while the find filter is active (a hidden row cannot take focus)', () => {
     assert.deepEqual(neededFocusOrder(filterAisleGroups(groups, 'milk')), ['milk', 'oat']);
     assert.deepEqual(neededFocusOrder(filterAisleGroups(groups, 'kale')), []);
+  });
+});
+
+describe('trip mode: an aisle chip opens the Needed section', () => {
+  test('adds it when collapsed, keeps the other open sections', () => {
+    assert.deepEqual(withSectionOpen([], 'needed'), ['needed']);
+    assert.deepEqual(withSectionOpen(['purchased'], 'needed'), ['purchased', 'needed']);
+  });
+  test('returns the same array when it is already open (no re-render)', () => {
+    const open = ['needed', 'purchased'];
+    assert.equal(withSectionOpen(open, 'needed'), open);
   });
 });
 

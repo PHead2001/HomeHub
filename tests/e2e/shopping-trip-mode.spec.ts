@@ -402,6 +402,22 @@ test.describe('shopping trip mode: the open list in the store', () => {
         return Math.abs(headingBox.y - (headerBox.y + headerBox.height)) <= 4;
       }).toBe(true);
       await noHorizontalOverflow(a.page);
+
+      // With Needed collapsed, a chip opens it and still brings its aisle up under the header.
+      await a.page.evaluate(() => window.scrollTo(0, 0));
+      const needed = list.getByRole('button', { name: /^Needed/ });
+      await needed.click();
+      await expect(needed, 'Needed is collapsed').toHaveAttribute('aria-expanded', 'false');
+      await expect(list.getByRole('heading', { name: 'Dairy', level: 4 }), 'no aisles while collapsed').toHaveCount(0);
+      await header.getByTestId('aisle-chips').getByRole('button', { name: 'Dairy, 4 needed' }).click();
+      await expect(needed, 'the chip opens Needed').toHaveAttribute('aria-expanded', 'true');
+      const reopenedAisle = list.getByRole('heading', { name: 'Dairy', level: 4 });
+      await expect(reopenedAisle, 'the aisle mounts').toBeVisible();
+      await expect.poll(async () => {
+        const headerBox = (await header.boundingBox())!;
+        const headingBox = (await reopenedAisle.boundingBox())!;
+        return Math.abs(headingBox.y - (headerBox.y + headerBox.height)) <= 4;
+      }, { message: 'the aisle sits under the sticky header' }).toBe(true);
     } finally {
       await a.context.close();
     }

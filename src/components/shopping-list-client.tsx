@@ -47,7 +47,7 @@ import { ScanToTick } from './shopping/scan-to-tick';
 import { TripHeader } from './shopping/trip-header';
 import { TripNeededGroups } from './shopping/trip-needed-groups';
 import { useTripMode } from './shopping/use-trip-mode';
-import { neededFocusOrder, scopeToList, type ListScoped } from '@/lib/shopping/trip-mode';
+import { neededFocusOrder, scopeToList, withSectionOpen, type ListScoped } from '@/lib/shopping/trip-mode';
 import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { rowPhoto } from '@/lib/shopping/row-photo';
@@ -1543,6 +1543,7 @@ export function ShoppingListClient({
                   storeName={store?.name ?? null}
                   left={loadingItems ? null : trip.left}
                   chips={loadingItems ? [] : trip.chips}
+                  onOpenNeeded={() => setOpenSections((current) => withSectionOpen(current, 'needed'))}
                   onBack={(event) => listMorph.run(listMorphName, () => onSelectList(null), { event })}
                   cart={<CartIndicator ref={cartFlight.cartRef} count={purchasedItems.length} inFlight={cartFlight.inFlight} onClick={openPurchased} />}
                   actions={canEdit ? [

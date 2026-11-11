@@ -86,3 +86,8 @@ export function scopeToList<T>(state: ListScoped<T>, listId: string | null, empt
 export function neededFocusOrder<T extends { id: string }>(shownGroups: readonly AisleGroup<T>[]): string[] {
   return shownGroups.flatMap((group) => group.items.map((item) => item.id));
 }
+
+/** The accordion's open sections with `section` open too (unchanged, same array, when it already is). */
+export function withSectionOpen(open: readonly string[], section: string): string[] {
+  return open.includes(section) ? (open as string[]) : [...open, section];
+}
