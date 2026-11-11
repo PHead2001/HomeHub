@@ -212,7 +212,9 @@ test.describe('dashboard, shell and notifications', () => {
     await expect(menu.getByRole('menuitem', { name: 'Add chore' })).toBeVisible();
     await menu.getByRole('menuitem', { name: 'Add shopping item' }).click();
     const palette = page.getByRole('dialog', { name: 'Search or quick add' });
-    await expect(palette.getByRole('combobox')).toHaveValue('add ');
+    // Item mode, never a typed "add " prefix (QA-15).
+    await expect(palette.getByTestId('palette-mode-item')).toBeVisible();
+    await expect(palette.getByRole('combobox')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
     await tabs.getByRole('button', { name: 'More' }).click();
@@ -527,6 +529,130 @@ test.describe('H7: dashboard one-tap actions', () => {
       const state = await pet.collection('feeding-state').get();
       await Promise.all(state.docs.map((entry) => entry.ref.delete()));
       await pet.delete();
+    }
+  });
+});
+
+test.describe('QA-15 / QA-1: palette modes instead of typed prefixes', () => {
+  const groceries = household.collection('shopping-lists').doc('weekly-groceries');
+  const namedItems = (list: typeof groceries, name: string) => list.collection('items').where('name', '==', name).get();
+
+  test('Pets "+" opens Feeding mode with pet buttons and no text field; one tap logs a feeding with Undo', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // Feedings carry the emulator's server time, so this test runs the browser at the real time.
+    const petId = 'palette-mode-pet';
+    const pet = household.collection('pets').doc(petId);
+    await pet.set({ name: 'Waffle', type: 'Dog', foodSchedule: '1 cup twice daily' });
+    const logs = () => pet.collection('feeding-logs').get();
+    try {
+      await page.goto('/');
+      await expect(page.getByTestId('header-search')).toBeVisible();
+      await page.getByTestId('tile-quick-add-log-feeding').click();
+      const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+      const mode = palette.getByTestId('palette-mode-feeding');
+      await expect(mode).toBeVisible();
+      // No typing: no text field at all, so nothing can raise a touch keyboard.
+      await expect(palette.getByRole('combobox')).toHaveCount(0);
+      await expect(palette.locator('input, textarea')).toHaveCount(0);
+      const button = mode.getByTestId(`palette-feed-${petId}`);
+      await expect(button).toContainText('Feed Waffle');
+      const box = (await button.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(48);
+
+      await button.click();
+      await expect.poll(async () => (await logs()).size).toBe(1);
+      const log = (await logs()).docs[0].data();
+      expect(log.loggedByUid).toBe('e2e-owner-uid');
+      expect(log.foodType).toBe('Dry');
+      await expect(palette).toHaveCount(0);
+      await page.getByRole('button', { name: 'Undo' }).click();
+      await expect.poll(async () => (await logs()).size).toBe(0);
+
+      // The F shortcut opens the same mode.
+      await page.keyboard.press('f');
+      await expect(palette.getByTestId('palette-mode-feeding')).toBeVisible();
+      await expect(palette.getByRole('combobox')).toHaveCount(0);
+    } finally {
+      const all = await logs();
+      await Promise.all(all.docs.map((entry) => entry.ref.delete()));
+      const state = await pet.collection('feeding-state').get();
+      await Promise.all(state.docs.map((entry) => entry.ref.delete()));
+      await pet.delete();
+    }
+  });
+
+  test('typing a bare "fed" or "add" and Enter never saves "Fed" or "Add" as a shopping item', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await openDashboard(page);
+    const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+    const input = palette.getByRole('combobox', { name: 'Search or quick add' });
+
+    await page.keyboard.press('Control+k');
+    await input.fill('fed ');
+    // The pets are offered as choices; no grocery suggestion.
+    await expect(palette.getByRole('option', { name: /Log a meal for Maple/ })).toBeVisible();
+    await expect(palette.getByRole('option', { name: /Add Fed/ })).toHaveCount(0);
+    await expect(palette.getByTestId('palette-quick-add')).toHaveCount(0);
+    await input.press('Enter');
+    await expect(palette.getByTestId('quick-add-preview')).toContainText('Log a meal for');
+    await page.keyboard.press('Escape');
+    await expect(palette).toHaveCount(0);
+
+    await page.keyboard.press('Control+k');
+    await input.fill('add');
+    await expect(palette.getByRole('option', { name: /Add a shopping item/ })).toBeVisible();
+    await expect(palette.getByRole('option', { name: /Add Add/ })).toHaveCount(0);
+    await input.press('Enter');
+    await expect(palette.getByTestId('palette-mode-item')).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    expect((await namedItems(groceries, 'Fed')).size).toBe(0);
+    expect((await namedItems(groceries, 'Add')).size).toBe(0);
+  });
+
+  test('Shopping "+" opens Item mode with a list picker; Enter saves to the chosen list', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const second = household.collection('shopping-lists').doc('palette-mode-list');
+    await second.set({ name: 'E2E Mode Groceries', description: '', icon: 'ShoppingCart', type: 'Grocery', color: 'tint-3' });
+    try {
+      await openDashboard(page);
+      await page.getByTestId('tile-quick-add-add-item').click();
+      const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+      const mode = palette.getByTestId('palette-mode-item');
+      await expect(mode).toBeVisible();
+      await expect(palette.getByRole('combobox')).toHaveCount(0);
+      const field = mode.getByTestId('palette-item-input');
+      // Item mode needs typing, so its field has focus.
+      await expect(field).toBeFocused();
+      const picker = mode.getByRole('radiogroup', { name: 'Add to' });
+      await expect(picker.getByRole('radio', { name: 'Weekly Groceries' })).toBeVisible();
+      await picker.getByRole('radio', { name: 'E2E Mode Groceries' }).click();
+      await expect(picker.getByRole('radio', { name: 'E2E Mode Groceries' })).toHaveAttribute('aria-checked', 'true');
+      // The pick is kept by the palette, not the Item panel: leaving the mode
+      // (as the preview does after a failed save) and coming back keeps it.
+      await mode.getByTestId('palette-mode-type-instead').click();
+      await expect(mode).toHaveCount(0);
+      const input = palette.getByRole('combobox', { name: 'Search or quick add' });
+      await input.fill('add');
+      await palette.getByRole('option', { name: /Add a shopping item/ }).click();
+      await expect(picker.getByRole('radio', { name: 'E2E Mode Groceries' })).toHaveAttribute('aria-checked', 'true');
+      await field.fill('e2e mode towels');
+      await field.press('Enter');
+      await expect.poll(async () => (await namedItems(second, 'E2e mode towels')).size).toBe(1);
+      expect((await namedItems(groceries, 'E2e mode towels')).size).toBe(0);
+      await expect(palette).toHaveCount(0);
+
+      // A bare verb in Item mode is refused inline, never saved.
+      await page.keyboard.press('a');
+      await expect(mode).toBeVisible();
+      await mode.getByTestId('palette-item-input').fill('add');
+      await mode.getByTestId('palette-item-input').press('Enter');
+      await expect(mode).toContainText('Type what to add');
+      expect((await namedItems(groceries, 'Add')).size).toBe(0);
+    } finally {
+      const items = await second.collection('items').get();
+      await Promise.all(items.docs.map((item) => item.ref.delete()));
+      await second.delete();
     }
   });
 });
