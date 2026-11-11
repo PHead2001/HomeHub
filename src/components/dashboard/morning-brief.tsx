@@ -132,7 +132,8 @@ function PlainBrief({ facts, name, now, today, timeZone }: BriefProps) {
             href={segment.href}
             peek={briefPeek(segment.peek, facts)}
             wrapperClassName="inline"
-            className="text-primary underline-offset-4 hover:underline"
+            // D-2: an inline link in the sentence keeps its look; its hit area is 44 px (48 px on touch).
+            className={cn(styles.hitSlop, 'text-primary underline-offset-4 hover:underline')}
           >
             {segment.text}
           </PeekLink>
