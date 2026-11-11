@@ -33,6 +33,7 @@ import {
   capturedProduct,
   MAX_PRODUCT_NAME_LENGTH,
   newProductData,
+  photoUrlAcceptedOnCreate,
   productEdit,
   productName,
   productSubmitBlock,
@@ -470,12 +471,21 @@ export function BarcodeLibraryClient() {
     const uid = currentUser?.uid;
     if (!uid) return;
     // Stop the photo's delayed delete first. If it already ran (the toast was held
-    // open past the window), the product comes back without a photo.
-    const photoPath = getManagedBarcodeImagePath({ householdId, imagePath: item.imagePath, imageUrl: item.imageUrl });
+    // open past the window), the product comes back without a photo. A photo the
+    // create would refuse (an older URL, kept only on edits) is not restored: the
+    // product comes back without it and its delayed delete runs as scheduled.
+    const photoRestorable = Boolean(item.imageUrl) && photoUrlAcceptedOnCreate(householdId, item.imageUrl);
+    const photoPath = photoRestorable ? getManagedBarcodeImagePath({ householdId, imagePath: item.imagePath, imageUrl: item.imageUrl }) : null;
     const photoKept = !photoPath || libraryPhotoDeletes.cancel(photoDeleteKey(householdId, item.id)) === photoPath;
     try {
-      await createProduct(collectionRef, item.id, restoredProductData(item, uid, new Date(), { photoGone: !photoKept }));
-      toast({ title: 'Item restored', description: `${item.name} is back in the library.` });
+      const restored = restoredProductData(item, { householdId, uid, now: new Date(), photoGone: !photoKept });
+      await createProduct(collectionRef, item.id, restored.data);
+      toast({
+        title: 'Item restored',
+        description: restored.photo === 'gone' || restored.photo === 'not-accepted'
+          ? `${item.name} is back in the library, but its photo could not be restored. Edit it to add a new one.`
+          : `${item.name} is back in the library.`,
+      });
     } catch (error) {
       // Not restored: the photo is no longer needed.
       if (photoPath && photoKept) libraryPhotoDeletes.removeNow(photoPath);

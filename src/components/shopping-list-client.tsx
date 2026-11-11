@@ -37,10 +37,10 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
-import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
+import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, pendingSaveStatus, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry, type ScanEntry } from '@/lib/shopping/scan';
 import { currentItemForToggle } from '@/lib/shopping/scan-tick';
-import { addScannedProduct, dialogAfterScan } from '@/lib/shopping/scan-add';
+import { addScannedProduct, createScanAddGuard, dialogAfterScan, scanAddKey, withScanGuard } from '@/lib/shopping/scan-add';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
 import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
@@ -289,6 +289,9 @@ export function ShoppingListClient({
 
   const [isAddItemDialogOpen, setIsAddItemDialogOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // A scan from inside Add Item that is not confirmed yet (or refused as a repeat
+  // of one still being added), shown under the form like the typed add's status.
+  const [scanStatus, setScanStatus] = useState<{ key: string; text: string } | null>(null);
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
   const [listToEdit, setListToEdit] = useState<ShoppingList | null>(null);
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
@@ -365,6 +368,7 @@ export function ShoppingListClient({
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
   if (!isAddItemDialogOpen && addScanMiss.scanMiss) addScanMiss.clear();
+  if (!isAddItemDialogOpen && scanStatus) setScanStatus(null);
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
@@ -642,7 +646,7 @@ export function ShoppingListClient({
         // Not known yet: the values stay, Add stays blocked for this submission,
         // and the answer decides (other adds, such as quick add, keep working).
         keepGuard = true;
-        setDialogStatus(`${saveStateLabel(outcome.state)} ${outcome.name} is not confirmed yet.`);
+        setDialogStatus(pendingSaveStatus(outcome.state, outcome.name));
         void outcome.settled.then((final) => {
           guard.end(submissionId);
           setDialogStatus(null);
@@ -695,50 +699,82 @@ export function ShoppingListClient({
   // A scan adds ONE package (BL-1): the package size is a note on the row, never the count.
   // It is its own submission: it uses the category chosen when the scan started,
   // never consumes or resets the typed draft, and closes only that same opening
-  // of Add Item (`dialogAfterScan`).
+  // of Add Item (`dialogAfterScan`). A save not confirmed in time shows the typed
+  // add's "Still sending…" / "Checking…" line, and the scan stays outstanding until
+  // it settles: scanning the same product on the same list again meanwhile (here
+  // or through Scan to tick) is refused instead of queuing a second addition.
+  const scanGuardRef = useRef(createScanAddGuard());
   const handleBarcodeScan = async (barcode: string) => {
     if (!currentUser?.householdId) return;
+    const householdForLookup = currentUser.householdId;
     const started = currentDialogDraft();
     const category = getValues('category');
+    const key = scanAddKey(started.listId, barcode);
     addScanMiss.clear();
     setIsScannerOpen(false);
+    const inSameDialog = () => addDialogOpenRef.current && addDialogSessionRef.current === started.session;
     // Inline in the same opening of Add Item when it is still open, else a toast.
     const showMiss = (show: () => void, toastInstead: () => void) => {
-      if (addDialogOpenRef.current && addDialogSessionRef.current === started.session) show();
+      if (inSameDialog()) show();
       else toastInstead();
     };
-    toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
-    try {
-      const result = unwrapAiActionResult(await lookupBarcode(
-        { barcode },
-        await getAiActionContext(currentUser.householdId)
-      ));
-      const entry = scanToShoppingEntry(result);
-      const miss = result.libraryItem ? null : lookupMiss(result);
-      if (entry && !miss) {
-        const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, scanAddDeps);
-        if (final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close) {
-          setIsAddItemDialogOpen(false);
+    const showStatus = (text: string) => {
+      if (inSameDialog()) setScanStatus({ key, text });
+      else toast({ description: text });
+    };
+    const clearStatus = () => setScanStatus((current) => (current?.key === key ? null : current));
+    await withScanGuard(scanGuardRef.current, key, async (notePending) => {
+      toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
+      try {
+        const result = unwrapAiActionResult(await lookupBarcode(
+          { barcode },
+          await getAiActionContext(householdForLookup)
+        ));
+        const entry = scanToShoppingEntry(result);
+        const miss = result.libraryItem ? null : lookupMiss(result);
+        if (entry && !miss) {
+          const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, {
+            ...scanAddDeps,
+            pending: (status) => {
+              notePending(status);
+              showStatus(status);
+            },
+          });
+          if (final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close) {
+            setIsAddItemDialogOpen(false);
+          }
+        } else {
+          // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
+          const found = miss ?? { kind: 'not-found' as const };
+          showMiss(() => addScanMiss.reportMiss(found, barcode),
+            () => lookupFeedback.reportMiss(found, barcode, { fallback: 'type the name instead', canSave: canEdit }));
         }
-      } else {
-        // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
-        const found = miss ?? { kind: 'not-found' as const };
-        showMiss(() => addScanMiss.reportMiss(found, barcode),
-          () => lookupFeedback.reportMiss(found, barcode, { fallback: 'type the name instead', canSave: canEdit }));
+      } catch (error) {
+        showMiss(() => addScanMiss.reportError(error, barcode),
+          () => lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit }));
+      } finally {
+        clearStatus();
       }
-    } catch (error) {
-      showMiss(() => addScanMiss.reportError(error, barcode),
-        () => lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit }));
-    }
+    }, showStatus);
   };
   const scanAddDeps = {
     add: addEntries,
     report: reportAddResults,
     fail: (error: unknown) => toastError(error, 'Could not add the item'),
   };
-  // Scan to tick's "Add": outside the Add Item form entirely (no draft, no category from it).
+  // Scan to tick's "Add": outside the Add Item form entirely (no draft, no category
+  // from it); its pending status and a refused repeat are toasts.
   const addScannedEntry = (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) =>
-    addScannedProduct(entry, extras, scanAddDeps).then(() => undefined, (error: unknown) => { toastError(error, 'Could not add the item'); });
+    withScanGuard(scanGuardRef.current, scanAddKey(selectedListIdRef.current, extras.barcode), (notePending) =>
+      addScannedProduct(entry, extras, {
+        ...scanAddDeps,
+        pending: (status) => {
+          notePending(status);
+          toast({ description: status });
+        },
+      }),
+    (copy) => toast({ description: copy }),
+    ).then(() => undefined, (error: unknown) => { toastError(error, 'Could not add the item'); });
 
   // --- Undo (S3: SH-15a/b, UNDO-10s) ---
   // One 10 s Undo per group (the latest tick, the latest delete), shown in the
@@ -1449,6 +1485,7 @@ export function ShoppingListClient({
                                     </Button>
                                 </DialogFooter>
                                 {dialogStatus && <p role="status" className="text-sm text-muted-foreground">{dialogStatus}</p>}
+                                {scanStatus && <p role="status" className="text-sm text-muted-foreground">{scanStatus.text}</p>}
                                 <LookupMissNotice scanMiss={addScanMiss.scanMiss} fallback="type the name instead" canSave={canEdit} />
                                 </form>
                             </Form>

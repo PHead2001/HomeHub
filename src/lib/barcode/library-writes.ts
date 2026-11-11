@@ -39,27 +39,64 @@ export function newProductData({ name, photo, uid, now }: { name: string; photo:
   };
 }
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whether a create would accept this photo URL: the client's copy of
+ * `validBarcodeImageUrl` in firestore.rules (a download URL of this household's
+ * barcode-library folder in this project's Storage or the Storage emulator of a
+ * demo- project, or an Open Food Facts image; empty means no photo). An update
+ * that leaves an older URL unchanged is accepted; a create checks every field.
+ */
+export function photoUrlAcceptedOnCreate(householdId: string, url: string): boolean {
+  if (url === '') return true;
+  if (url.length > 2048) return false;
+  const folder = `/o/households%2F${escapeRegExp(householdId)}%2Fbarcode-library%2F[^/?#]+([?].*)?$`;
+  return new RegExp(`^https://firebasestorage[.]googleapis[.]com/v0/b/homehub-j91jb[.](appspot[.]com|firebasestorage[.]app)${folder}`).test(url)
+    || new RegExp(`^http://(127[.]0[.]0[.]1|localhost):9199/v0/b/demo-[a-z0-9-]+[.]appspot[.]com${folder}`).test(url)
+    || /^https:\/\/(images|static)[.]openfoodfacts[.](org|net)\/[^?#]*([?].*)?$/.test(url);
+}
+
+/** Whether a create would accept this `imagePath` (the household's barcode-library folder). */
+function photoPathAcceptedOnCreate(householdId: string, path: string): boolean {
+  return path.length <= 512 && new RegExp(`^households/${escapeRegExp(householdId)}/barcode-library/[^/]+$`).test(path);
+}
+
+/** What happened to the photo of a restored product. */
+export type RestoredPhoto = 'restored' | 'none' | 'gone' | 'not-accepted';
+
+/** Product names on create: non-empty, at most 200 characters (firestore.rules). */
+const MAX_STORED_NAME_LENGTH = 200;
+
 /**
  * The document an Undo of a delete re-creates (only while the code is still
- * free). It keeps the name, photo and date; `createdByUid` is the restorer,
- * because a create must name its writer. With `photoGone` (the photo's delayed
- * delete already ran) the product comes back without a photo rather than
- * pointing at a deleted object.
+ * free), checked against the create contract because the restore is a create.
+ * It keeps the name, photo and date; `createdByUid` is the restorer, because a
+ * create must name its writer. The product always comes back; its photo does
+ * not when the photo's delayed delete already ran (`photoGone`, `'gone'`) or when
+ * a create would refuse it (`'not-accepted'`: an older URL that is only kept
+ * on edits), so the caller can say the photo was not restored.
  */
 export function restoredProductData(
   item: { name: string; imageUrl?: string; imagePath?: string; createdAt?: string },
-  uid: string,
-  now: Date,
-  { photoGone = false }: { photoGone?: boolean } = {},
-): NewProductData {
-  if (photoGone) return restoredProductData({ name: item.name, imageUrl: '', createdAt: item.createdAt }, uid, now);
+  { householdId, uid, now, photoGone = false }: { householdId: string; uid: string; now: Date; photoGone?: boolean },
+): { data: NewProductData; photo: RestoredPhoto } {
   const createdAt = typeof item.createdAt === 'string' && item.createdAt && item.createdAt.length <= 40 ? item.createdAt : now.toISOString();
+  const name = Array.from(item.name).slice(0, MAX_STORED_NAME_LENGTH).join('');
+  const imageUrl = item.imageUrl ?? '';
+  const photo: RestoredPhoto = !imageUrl ? 'none'
+    : !photoUrlAcceptedOnCreate(householdId, imageUrl) ? 'not-accepted'
+      : photoGone ? 'gone' : 'restored';
+  const keepPath = photo === 'restored' && Boolean(item.imagePath) && photoPathAcceptedOnCreate(householdId, item.imagePath!);
   return {
-    name: item.name,
-    imageUrl: item.imageUrl ?? '',
-    ...(item.imagePath ? { imagePath: item.imagePath } : {}),
-    createdAt,
-    createdByUid: uid,
+    data: {
+      name,
+      imageUrl: photo === 'restored' ? imageUrl : '',
+      ...(keepPath ? { imagePath: item.imagePath } : {}),
+      createdAt,
+      createdByUid: uid,
+    },
+    photo,
   };
 }
 

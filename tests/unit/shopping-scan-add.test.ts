@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { addScannedProduct, dialogAfterScan, type ScanAddDeps } from '../../src/lib/shopping/scan-add';
+import { addScannedProduct, createScanAddGuard, dialogAfterScan, duplicateScanCopy, scanAddKey, withScanGuard, type ScanAddDeps } from '../../src/lib/shopping/scan-add';
 import type { AddEntry, EntryOutcome } from '../../src/lib/shopping/add-items';
 
 const entry = { name: 'E2E Yogurt Multipack', quantity: 1 as const, size: 450, sizeUnit: 'g' };
 
-function outcome(state: EntryOutcome['state'], settled: 'saved' | 'failed' = 'saved'): EntryOutcome {
+function outcome(state: EntryOutcome['state'], settled: 'saved' | 'failed' | Promise<'saved' | 'failed'> = 'saved'): EntryOutcome {
   return { entry: { name: entry.name, quantity: 1 }, name: entry.name, merged: false, state, category: 'Dairy', settled: Promise.resolve(settled), ...(state === 'failed' ? { error: new Error('nope') } : {}) };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function recorder(result: EntryOutcome[] | null) {
-  const calls: { added: { entries: AddEntry[]; options: Record<string, unknown> }[]; reported: EntryOutcome[][]; failed: unknown[] } = { added: [], reported: [], failed: [] };
+  const calls: { added: { entries: AddEntry[]; options: Record<string, unknown> }[]; reported: EntryOutcome[][]; failed: unknown[]; pending: string[] } = { added: [], reported: [], failed: [], pending: [] };
   const deps: ScanAddDeps<{ imageUrl?: string }> = {
     add: async (entries, options) => {
       calls.added.push({ entries, options });
@@ -18,6 +24,7 @@ function recorder(result: EntryOutcome[] | null) {
     },
     report: (outcomes) => calls.reported.push(outcomes),
     fail: (error) => calls.failed.push(error),
+    pending: (status) => calls.pending.push(status),
   };
   return { calls, deps };
 }
@@ -63,5 +70,69 @@ describe('a scanned product is added without the Add Item form (S7)', () => {
     assert.deepEqual(dialogAfterScan(started, { ...started, session: 4, open: true }), { reset: false, close: false });
     assert.deepEqual(dialogAfterScan(started, { ...started, listId: 'b', open: true }), { reset: false, close: false });
     assert.deepEqual(dialogAfterScan(started, { ...started, open: false }), { reset: false, close: false });
+  });
+});
+
+describe('a scan whose save is not confirmed in time (S7 review)', () => {
+  test('says "Still sending…" / "Checking…" (the status of a typed add) before waiting for the answer', async () => {
+    const answer = deferred<'saved' | 'failed'>();
+    const { calls, deps } = recorder([outcome('sending', answer.promise)]);
+    const running = addScannedProduct(entry, { barcode: '1' }, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Not silent while it waits: the pending line is out, nothing is reported as saved yet.
+    assert.deepEqual(calls.pending, ['Still sending… E2E Yogurt Multipack is not confirmed yet.']);
+    assert.equal(calls.reported.length, 0);
+    answer.resolve('saved');
+    assert.equal(await running, 'saved');
+    assert.equal(calls.reported[0][0].state, 'saved');
+
+    const uncertain = recorder([outcome('uncertain', 'failed')]);
+    await addScannedProduct(entry, { barcode: '1' }, uncertain.deps);
+    assert.deepEqual(uncertain.calls.pending, ['Checking… E2E Yogurt Multipack is not confirmed yet.']);
+    // A save confirmed in time has no pending line.
+    const saved = recorder([outcome('saved')]);
+    await addScannedProduct(entry, { barcode: '1' }, saved.deps);
+    assert.deepEqual(saved.calls.pending, []);
+  });
+
+  test('rescanning the same product while it is unconfirmed does not queue a second addition', async () => {
+    const guard = createScanAddGuard();
+    const answer = deferred<'saved' | 'failed'>();
+    const { calls, deps } = recorder([outcome('sending', answer.promise)]);
+    const refusals: string[] = [];
+    const scan = (listId: string) => withScanGuard(guard, scanAddKey(listId, '009900045000'), (notePending) =>
+      addScannedProduct(entry, { barcode: '009900045000' }, { ...deps, pending: (status) => { notePending(status); deps.pending(status); } }),
+    (copy) => refusals.push(copy));
+
+    const first = scan('groceries');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(await scan('groceries'), 'duplicate');
+    assert.equal(calls.added.length, 1);
+    assert.deepEqual(refusals, [duplicateScanCopy('Still sending… E2E Yogurt Multipack is not confirmed yet.')]);
+    // The same product on another list is its own addition.
+    const other = scan('hardware');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.added.length, 2);
+
+    answer.resolve('saved');
+    assert.equal(await first, 'saved');
+    await other;
+    // Once confirmed, scanning it again adds another package as usual.
+    await scan('groceries');
+    assert.equal(calls.added.length, 3);
+  });
+
+  test('a repeat during the lookup is refused too, and a failed or thrown scan frees the product', async () => {
+    const guard = createScanAddGuard();
+    const key = scanAddKey('groceries', '1');
+    const lookup = deferred<void>();
+    const refusals: string[] = [];
+    const first = withScanGuard(guard, key, async () => { await lookup.promise; return 'failed' as const; }, (copy) => refusals.push(copy));
+    assert.equal(await withScanGuard(guard, key, async () => 'saved' as const, (copy) => refusals.push(copy)), 'duplicate');
+    assert.deepEqual(refusals, [duplicateScanCopy(null)]);
+    lookup.resolve();
+    assert.equal(await first, 'failed');
+    await assert.rejects(withScanGuard(guard, key, async () => { throw new Error('lookup down'); }, () => undefined));
+    assert.equal(await withScanGuard(guard, key, async () => 'saved' as const, () => undefined), 'saved');
   });
 });

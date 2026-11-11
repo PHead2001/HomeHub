@@ -8,6 +8,7 @@ import {
   productEdit,
   productName,
   productSubmitBlock,
+  photoUrlAcceptedOnCreate,
   restoredProductData,
   saveToLibraryHref,
   staleProductPhoto,
@@ -15,7 +16,10 @@ import {
 import { createPendingPhotoDeletes } from '../../src/lib/barcode/pending-photo-deletes';
 
 const now = new Date('2026-11-10T12:00:00.000Z');
-const photo = { imageUrl: 'https://example.test/a.jpg', imagePath: 'households/h/barcode-library/a.jpg' };
+const storageUrl = (file: string, household = 'h') =>
+  `https://firebasestorage.googleapis.com/v0/b/homehub-j91jb.appspot.com/o/households%2F${household}%2Fbarcode-library%2F${file}?alt=media&token=1`;
+const photo = { imageUrl: storageUrl('a.jpg'), imagePath: 'households/h/barcode-library/a.jpg' };
+const restore = { householdId: 'h', uid: 'u2', now };
 const managed = (image: { imageUrl?: string; imagePath?: string }) => image.imagePath ?? null;
 
 describe('barcode library create (BL-3, BL-10)', () => {
@@ -34,10 +38,14 @@ describe('barcode library create (BL-3, BL-10)', () => {
   });
 
   test('a restore keeps the record but names the restorer', () => {
-    assert.deepEqual(restoredProductData({ name: 'Juice', imageUrl: photo.imageUrl, imagePath: photo.imagePath, createdAt: '2026-01-01T00:00:00.000Z' }, 'u2', now), {
-      name: 'Juice', imageUrl: photo.imageUrl, imagePath: photo.imagePath, createdAt: '2026-01-01T00:00:00.000Z', createdByUid: 'u2',
+    assert.deepEqual(restoredProductData({ name: 'Juice', imageUrl: photo.imageUrl, imagePath: photo.imagePath, createdAt: '2026-01-01T00:00:00.000Z' }, restore), {
+      data: { name: 'Juice', imageUrl: photo.imageUrl, imagePath: photo.imagePath, createdAt: '2026-01-01T00:00:00.000Z', createdByUid: 'u2' },
+      photo: 'restored',
     });
-    assert.equal(restoredProductData({ name: 'Old' }, 'u2', now).createdAt, now.toISOString());
+    assert.deepEqual(restoredProductData({ name: 'Old' }, restore), {
+      data: { name: 'Old', imageUrl: '', createdAt: now.toISOString(), createdByUid: 'u2' },
+      photo: 'none',
+    });
   });
 });
 
@@ -137,19 +145,20 @@ describe('photo deletes wait out the Undo window (BL-4)', () => {
   });
 
   test('an Undo after the photo was deleted restores the product without it', () => {
-    assert.deepEqual(restoredProductData({ name: 'Juice', ...photo, createdAt: '2026-01-01T00:00:00.000Z' }, 'u2', now, { photoGone: true }), {
-      name: 'Juice', imageUrl: '', createdAt: '2026-01-01T00:00:00.000Z', createdByUid: 'u2',
+    assert.deepEqual(restoredProductData({ name: 'Juice', ...photo, createdAt: '2026-01-01T00:00:00.000Z' }, { ...restore, photoGone: true }), {
+      data: { name: 'Juice', imageUrl: '', createdAt: '2026-01-01T00:00:00.000Z', createdByUid: 'u2' },
+      photo: 'gone',
     });
   });
 });
 
 describe('delete captures the current product (BL-4)', () => {
   test('the Undo restores what was deleted, not the older copy on the page', () => {
-    const pageCopy = { id: '1', name: 'Juice', imageUrl: 'https://example.test/old.jpg', imagePath: 'households/h/barcode-library/old.jpg', createdAt: '2026-01-01T00:00:00.000Z' };
-    const current = { name: 'Orange juice', imageUrl: 'https://example.test/new.jpg', imagePath: 'households/h/barcode-library/new.jpg', createdAt: pageCopy.createdAt, createdByUid: 'u1' };
+    const pageCopy = { id: '1', name: 'Juice', imageUrl: storageUrl('old.jpg'), imagePath: 'households/h/barcode-library/old.jpg', createdAt: '2026-01-01T00:00:00.000Z' };
+    const current = { name: 'Orange juice', imageUrl: storageUrl('new.jpg'), imagePath: 'households/h/barcode-library/new.jpg', createdAt: pageCopy.createdAt, createdByUid: 'u1' };
     const captured = capturedProduct('1', current);
     assert.deepEqual(captured, { id: '1', name: 'Orange juice', imageUrl: current.imageUrl, imagePath: current.imagePath, createdAt: pageCopy.createdAt });
-    assert.deepEqual(restoredProductData(captured!, 'u2', now), {
+    assert.deepEqual(restoredProductData(captured!, restore).data, {
       name: 'Orange juice', imageUrl: current.imageUrl, imagePath: current.imagePath, createdAt: pageCopy.createdAt, createdByUid: 'u2',
     });
     // The delayed cleanup targets the deleted photo, never the edit's already-deleted old one.
@@ -171,5 +180,43 @@ describe('Save is blocked while the shown photo is not the one that would be sav
     assert.equal(productSubmitBlock({ photoBusy: true, photoError: null }), 'busy');
     assert.equal(productSubmitBlock({ photoBusy: false, photoError: 'This photo is still larger than 5 MB after shrinking it.' }), 'photo-rejected');
     assert.equal(productSubmitBlock({ photoBusy: false, photoError: null }), null);
+  });
+});
+
+describe('an Undo restore is a create and meets the create contract (BL-4)', () => {
+  test('photo URLs are checked like validBarcodeImageUrl in firestore.rules', () => {
+    assert.equal(photoUrlAcceptedOnCreate('h', ''), true);
+    assert.equal(photoUrlAcceptedOnCreate('h', storageUrl('a.jpg')), true);
+    assert.equal(photoUrlAcceptedOnCreate('h', storageUrl('a.jpg').replace('appspot.com', 'firebasestorage.app')), true);
+    assert.equal(photoUrlAcceptedOnCreate('h', 'http://127.0.0.1:9199/v0/b/demo-homehub-e2e.appspot.com/o/households%2Fh%2Fbarcode-library%2Fa.jpg?alt=media&token=t'), true);
+    assert.equal(photoUrlAcceptedOnCreate('h', 'https://images.openfoodfacts.org/images/products/1/front.jpg'), true);
+    assert.equal(photoUrlAcceptedOnCreate('h', '/favicon.ico'), false);
+    assert.equal(photoUrlAcceptedOnCreate('h', 'https://evil.example.test/pixel.gif'), false);
+    assert.equal(photoUrlAcceptedOnCreate('h', storageUrl('a.jpg', 'other')), false);
+    assert.equal(photoUrlAcceptedOnCreate('h', storageUrl('a.jpg').replace('homehub-j91jb', 'attacker-project')), false);
+    assert.equal(photoUrlAcceptedOnCreate('h', 'javascript:alert(1)'), false);
+    assert.equal(photoUrlAcceptedOnCreate('h.', storageUrl('a.jpg', 'hx')), false);
+    assert.equal(photoUrlAcceptedOnCreate('h', `${storageUrl('a.jpg')}&${'x'.repeat(2048)}`), false);
+  });
+
+  test('a legacy photo the create would refuse is left out, and the product still comes back', () => {
+    // The seeded legacy product (scripts/e2e/seed.mjs): an older URL kept only on edits.
+    const legacy = capturedProduct('012345678905', { name: 'Seeded', imageUrl: '/favicon.ico', createdAt: '2026-07-25T15:00:00.000Z' });
+    assert.deepEqual(restoredProductData(legacy!, restore), {
+      data: { name: 'Seeded', imageUrl: '', createdAt: '2026-07-25T15:00:00.000Z', createdByUid: 'u2' },
+      photo: 'not-accepted',
+    });
+    // Another household's photo, with its path, is left out as a whole.
+    assert.deepEqual(restoredProductData({ name: 'Juice', imageUrl: storageUrl('a.jpg', 'other'), imagePath: 'households/other/barcode-library/a.jpg' }, restore).data,
+      { name: 'Juice', imageUrl: '', createdAt: now.toISOString(), createdByUid: 'u2' });
+  });
+
+  test('an accepted photo with a path the create would refuse keeps the photo without the path', () => {
+    assert.deepEqual(restoredProductData({ name: 'Juice', imageUrl: photo.imageUrl, imagePath: 'elsewhere/a.jpg' }, restore),
+      { data: { name: 'Juice', imageUrl: photo.imageUrl, createdAt: now.toISOString(), createdByUid: 'u2' }, photo: 'restored' });
+  });
+
+  test('a name longer than the create allows is shortened to 200 characters', () => {
+    assert.equal(restoredProductData({ name: 'x'.repeat(250) }, restore).data.name.length, 200);
   });
 });
