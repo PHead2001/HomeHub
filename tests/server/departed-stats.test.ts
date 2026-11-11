@@ -92,4 +92,34 @@ describe('yearly chore credit across a departure', () => {
     const after = (await house().collection('stats').doc('chores-2026').get()).data();
     assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 12, [choreStatsMemberKey(ana.uid)]: 7 });
   });
+
+  // Review finding on #140: the alias years are the household's, as for completionYear and Home Wrapped.
+  test('east of UTC: leaving just after local New Year aliases this local year and the last (Tokyo)', async () => {
+    await house().update({ timeZone: 'Asia/Tokyo' });
+    await house().collection('stats').doc('chores-2026').delete();
+    for (let index = 1; index <= 5; index += 1) await house().collection('chores').doc(`sam-${index}`).delete();
+    // That local morning (2027-01-01 in Tokyo, still 2026-12-31 UTC): one uid-only completion, one by email.
+    await house().collection('chores').doc('sam-uid').set({ task: 'Uid', assignedToUid: sam.uid, assignedToDisplayName: 'Sam', isCompleted: true, completedAt: '2026-12-31T15:10:00.000Z' });
+    await house().collection('chores').doc('sam-email').set({ task: 'Email', assignedToUid: owner.uid, isCompleted: true, completedAt: '2026-12-31T15:20:00.000Z', completedByEmail: sam.email, completedByUid: sam.uid, completedByName: 'Sam' });
+    await leaveHousehold(sam, HOUSE, new Date('2026-12-31T16:00:00Z'));
+    const aliased = async (year: number) => (await house().collection('stats').doc(`chores-${year}`).get()).data()?.aliases?.[sam.uid];
+    assert.equal(await aliased(2027), SAM);
+    assert.equal(await aliased(2026), SAM);
+    assert.equal(await aliased(2025), undefined);
+    const retained = (await house().collection('chores').get()).docs.map(d => ({ id: d.id, ...d.data() }));
+    const stats2027 = (await house().collection('stats').doc('chores-2027').get()).data();
+    assert.deepEqual(summarizeChores(retained, 2027, { stats: stats2027, timeZone: 'Asia/Tokyo', people: [owner, ana] }).champion, { name: 'Sam', count: 2 });
+    await runHouseholdReminders(adminDb as never, HOUSE, new Date('2027-04-15T03:00:00Z'), ts);
+    const after = (await house().collection('stats').doc('chores-2027').get()).data();
+    assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 2 }, 'one bucket after the purge');
+  });
+
+  test('west of UTC: leaving on the local last evening of the year (UTC already Jan 1) aliases that local year and the one before (Los Angeles)', async () => {
+    await house().update({ timeZone: 'America/Los_Angeles' });
+    await leaveHousehold(sam, HOUSE, new Date('2027-01-01T05:00:00Z'));
+    const aliased = async (year: number) => (await house().collection('stats').doc(`chores-${year}`).get()).data()?.aliases?.[sam.uid];
+    assert.equal(await aliased(2026), SAM);
+    assert.equal(await aliased(2025), SAM);
+    assert.equal((await house().collection('stats').doc('chores-2027').get()).exists, false, 'no local 2027 yet');
+  });
 });
