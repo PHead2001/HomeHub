@@ -164,7 +164,7 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await expectAisleOrder(page, 'Party', 'Bakery');
   });
 
-  test("a list at a store follows the store's aisle order; a new store starts from the list", async ({ page }, testInfo) => {
+  test("a list at a store follows the store's aisle order; a new store starts from the order on screen", async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, `/shopping?list=${LIST_ID}`);
     await expectAisleOrder(page, 'Bakery', 'Party');
@@ -188,7 +188,8 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await expectAisleOrder(page, 'Party', 'Bakery');
     await expectAisleOrder(page, 'Bakery', 'Dairy');
 
-    // A new store starts with the list's own order and is the list's store at once.
+    // A new store starts with the order the dialog shows (here the Corner Shop's
+    // aisle order, not the list's own Bakery, Dairy, Party) and is the list's store at once.
     await page.getByRole('button', { name: 'Manage Categories' }).click();
     await dialog.getByRole('combobox', { name: 'Store for this list' }).click();
     await page.getByRole('option', { name: 'New store…' }).click();
@@ -197,8 +198,9 @@ test.describe('shopping: list types, category order and store aisles', () => {
     await expect(dialog.getByTestId('categories-save-status')).toHaveText(`${NEW_STORE_NAME} created · Saved`);
     const created = await stores.where('name', '==', NEW_STORE_NAME).get();
     expect(created.size).toBe(1);
-    expect(created.docs[0].data()).toMatchObject({ aisleOrder: ['Bakery', 'Dairy', 'Party'], createdByUid: OWNER_UID });
+    expect(created.docs[0].data()).toMatchObject({ aisleOrder: ['Party', 'Bakery', 'Dairy'], createdByUid: OWNER_UID });
     await expect.poll(async () => (await listRef.get()).data()?.storeId).toBe(created.docs[0].id);
+    await expect(dialog.getByRole('heading', { name: `Aisle order at ${NEW_STORE_NAME}` })).toBeVisible();
 
     // Back to the list's own order.
     await dialog.getByRole('combobox', { name: 'Store for this list' }).click();

@@ -32,6 +32,7 @@ import {
   writeCategoryPlan,
   writeSeededCategoryChange,
 } from '@/lib/shopping/category-writes';
+import type { AssignedStore } from '@/lib/shopping/assigned-store';
 import type { ShoppingList, ShoppingStore } from '@/lib/types';
 import { useOnTabDeactivate } from './tab-activity';
 import { useSaveLine } from './use-save-line';
@@ -60,14 +61,17 @@ const reportFailure = (error: unknown, title: string) => {
  * while the list is at a store the move changes that store's aisle order, shared
  * by every list at the store. Everything shown comes from the live listeners, so
  * another member's edits appear as they land. Each write reports through the S2
- * save path in the dialog's status line.
+ * save path in the dialog's status line. While the list names a store that has
+ * not loaded yet (`assignedStore`), moves, the store select and New store wait:
+ * neither the move's target nor the order a new store would start from is known.
  */
 export function CategoriesDialog({
   householdId,
   list,
   config,
   stores,
-  store,
+  assigned,
+  storesListed,
   uid,
   online,
 }: {
@@ -75,8 +79,10 @@ export function CategoriesDialog({
   list: ShoppingList;
   config: CategoryConfig;
   stores: ShoppingStore[];
-  /** The store the list follows (null: its own order). */
-  store: ShoppingStore | null;
+  /** The store the list follows (`store` null: its own order), and whether that is known yet. */
+  assigned: AssignedStore<ShoppingStore>;
+  /** A stores snapshot has arrived, so `stores` can be picked from and names checked against. */
+  storesListed: boolean;
   uid: string | null;
   online: boolean;
 }) {
@@ -100,14 +106,19 @@ export function CategoriesDialog({
 
   useOnTabDeactivate(() => setOpen(false));
 
+  const store = assigned.store;
+  // Moves only once the list's store is loaded or confirmed gone (or it names none);
+  // store changes and New store also need the stores listed (choices, name check).
+  const movesReady = assigned.resolved;
+  const storeChoiceReady = assigned.resolved && storesListed;
   const order = store ? listOrderAtStore(store.aisleOrder, config.list) : config.list;
   const movable = order.filter((category) => !isOtherCategory(category));
   // A queued move runs later: it reads the store and categories as they are then,
   // not as they were when it was clicked.
-  const latest = useRef({ store, listOrder: config.list });
+  const latest = useRef({ store, resolved: assigned.resolved, listOrder: config.list });
   useEffect(() => {
-    latest.current = { store, listOrder: config.list };
-  }, [store, config.list]);
+    latest.current = { store, resolved: assigned.resolved, listOrder: config.list };
+  }, [store, assigned.resolved, config.list]);
 
   // React may re-insert the moved row, which drops focus: put it back on the same
   // control once the new order is drawn, unless the member has moved on.
@@ -172,7 +183,7 @@ export function CategoriesDialog({
   };
 
   const move = (category: string, direction: MoveDirection) => {
-    if (!online) return;
+    if (!online || !movesReady) return;
     const index = movable.findIndex((entry) => categoryKey(entry) === categoryKey(category));
     const target = index + direction;
     if (index < 0 || target < 0 || target >= movable.length) return;
@@ -182,9 +193,13 @@ export function CategoriesDialog({
       const now = latest.current;
       // A move that can no longer apply (gone, already at the end, store removed)
       // rejects with CategoryChangeDeclined and is reported, never shown as saved.
-      const write = now.store
-        ? reorderStoreAisle(householdId, now.store.id, now.listOrder, category, direction)
-        : reorderListCategory(householdId, list.id, category, direction);
+      // So does one whose list was meanwhile moved to a store not loaded yet: it
+      // must not fall through to the list's own order.
+      const write = !now.resolved
+        ? Promise.reject(new CategoryChangeDeclined('stale'))
+        : now.store
+          ? reorderStoreAisle(householdId, now.store.id, now.listOrder, category, direction)
+          : reorderListCategory(householdId, list.id, category, direction);
       const tracked = await save.track(write, {
         kind: 'transaction',
         subject: `${category} moved ${where}`,
@@ -203,8 +218,10 @@ export function CategoriesDialog({
       return;
     }
     setCreatingStore(false);
+    if (!storeChoiceReady) return;
     const storeId = value === NO_STORE ? null : value;
-    if ((store?.id ?? null) === storeId) return;
+    // Compared with the list's `storeId`, so No store also clears a store that was deleted.
+    if (assigned.storeId === storeId) return;
     const chosen = stores.find((entry) => entry.id === storeId);
     void save.track(assignListStore(householdId, list.id, storeId), {
       kind: 'write',
@@ -214,7 +231,7 @@ export function CategoriesDialog({
   };
 
   const createStore = async () => {
-    if (!uid) return;
+    if (!uid || !storeChoiceReady) return;
     const check = checkStoreName(storeName, stores);
     if (!check.ok) {
       setStoreError(check.error);
@@ -238,7 +255,8 @@ export function CategoriesDialog({
     });
   };
 
-  const selectValue = creatingStore ? NEW_STORE : store?.id ?? NO_STORE;
+  // Empty (the placeholder) until the list's store is known: never "No store" for a store still loading.
+  const selectValue = !storeChoiceReady ? '' : creatingStore ? NEW_STORE : store?.id ?? NO_STORE;
 
   return (
     <Dialog
@@ -261,18 +279,20 @@ export function CategoriesDialog({
         <DialogHeader>
           <DialogTitle className="font-headline">Manage Categories</DialogTitle>
           <DialogDescription>
-            {store
-              ? `Items are grouped in the order you walk ${store.name}. Every list at ${store.name} shares this aisle order. Other is always last.`
-              : 'Items are grouped in this order. Move categories to match how you walk the store. Other is always last and cannot be removed.'}
+            {!movesReady
+              ? 'Loading this list’s store. The list is grouped in that store’s aisle order.'
+              : store
+                ? `Items are grouped in the order you walk ${store.name}. Every list at ${store.name} shares this aisle order. Other is always last.`
+                : 'Items are grouped in this order. Move categories to match how you walk the store. Other is always last and cannot be removed.'}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5 py-2">
           <section className="space-y-2" aria-labelledby="store-heading">
             <h3 id="store-heading" className="flex items-center gap-2 font-medium"><Store className="h-4 w-4" aria-hidden /> Store</h3>
-            <Select value={selectValue} onValueChange={chooseStore}>
+            <Select value={selectValue} onValueChange={chooseStore} disabled={!storeChoiceReady}>
               <SelectTrigger aria-label="Store for this list" className="h-11 [@media(pointer:coarse)]:h-12">
-                <SelectValue />
+                <SelectValue placeholder="Loading stores…" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={NO_STORE}>No store (this list&apos;s own order)</SelectItem>
@@ -298,7 +318,7 @@ export function CategoriesDialog({
                   <Button type="button" onClick={() => void createStore()}>Create store</Button>
                 </div>
                 <FieldError id="new-store-name">{storeError}</FieldError>
-                <p className="text-sm text-muted-foreground">It starts with this list&apos;s current order.</p>
+                <p className="text-sm text-muted-foreground">It starts with the order shown below.</p>
               </div>
             )}
           </section>
@@ -321,14 +341,15 @@ export function CategoriesDialog({
           </section>
 
           <section className="space-y-2" aria-labelledby="order-heading">
-            <h3 id="order-heading" className="font-medium">{store ? `Aisle order at ${store.name}` : 'Category order'}</h3>
+            <h3 id="order-heading" className="font-medium">{store ? `Aisle order at ${store.name}` : movesReady ? 'Category order' : 'Aisle order'}</h3>
             {!online && <p className="text-sm text-muted-foreground">Moving categories needs a connection. Adding and removing still work.</p>}
+            {online && !movesReady && <p className="text-sm text-muted-foreground" data-testid="categories-store-loading">Loading this list&apos;s store. Moving categories waits until it has loaded.</p>}
             <ol ref={listRef} aria-labelledby="order-heading" className="divide-y rounded-lg border">
               {order.map((category) => {
                 const other = isOtherCategory(category);
                 const index = movable.findIndex((entry) => categoryKey(entry) === categoryKey(category));
-                const upDisabled = other || !online || index <= 0;
-                const downDisabled = other || !online || index < 0 || index >= movable.length - 1;
+                const upDisabled = other || !online || !movesReady || index <= 0;
+                const downDisabled = other || !online || !movesReady || index < 0 || index >= movable.length - 1;
                 return (
                   <li key={categoryKey(category)} data-category={category} className="flex items-center gap-1 py-0.5 pl-3 pr-1">
                     <span className="min-w-0 flex-1 break-words">{category}</span>

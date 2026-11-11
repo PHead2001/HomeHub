@@ -62,7 +62,8 @@ import { attributionLabel } from '@/lib/shopping/attribution';
 import { useMemberNames } from '@/lib/shopping/member-names';
 import type { ItemEditChanges, ItemSaveResult } from '@/lib/shopping/edit';
 import { countAllOnServer, countNeededOnServer, useLiveCategoryConfig, useLiveListCounts, useLiveListItems, useLiveShoppingLists, useLiveStores } from '@/lib/shopping/live';
-import { groupingOrder, storeForList } from '@/lib/shopping/category-order';
+import { groupingOrder } from '@/lib/shopping/category-order';
+import { assignedStore, storesListed } from '@/lib/shopping/assigned-store';
 import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, listsConfirmed, quickAddDecision, type ClearTarget } from '@/lib/shopping/live-state';
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
@@ -1181,7 +1182,9 @@ export function ShoppingListClient({
     const neededItems = listItems.filter(i => i.status === 'needed');
     const purchasedItems = listItems.filter(i => i.status === 'purchased').sort((a, b) => a.name.localeCompare(b.name));
     // A list at a store follows the store's aisle order; a reordered list its own order (S6).
-    const store = storeForList(selectedList.storeId, storesState.value);
+    // Until the stores listener has answered, a named store is "loading", never "no store".
+    const assigned = assignedStore(selectedList.storeId, storesState);
+    const store = assigned.store;
     const groups = groupItemsByAisle(neededItems, categories, store || categoryConfig.ordered ? { order: groupingOrder(categories, store) } : {});
     rowOrderRef.current = { needed: groups.flatMap((group) => group.items.map((item) => item.id)), purchased: purchasedItems.map((item) => item.id) };
     const tint = listTint(selectedList);
@@ -1302,7 +1305,8 @@ export function ShoppingListClient({
                             list={selectedList}
                             config={categoryConfig}
                             stores={storesState.value}
-                            store={store}
+                            assigned={assigned}
+                            storesListed={storesListed(storesState)}
                             uid={uid}
                             online={online}
                           />
@@ -1404,7 +1408,7 @@ export function ShoppingListClient({
                     )}
                 </div>
                 <div className="px-4 pb-4 sm:px-6 sm:pb-6">
-                    {loadingItems ? (
+                    {loadingItems || assigned.waitForStore ? (
                       <div className="space-y-2" role="status" aria-label="Loading items">
                         <Skeleton className="h-6 w-32" />
                         <Skeleton className="h-11 w-full" />
