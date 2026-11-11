@@ -219,3 +219,57 @@ test.describe('household tabs and invites', () => {
     }
   });
 });
+
+test.describe('View household unticked (HO-2a)', () => {
+  test('a member without household.view sees no Household Manager data and no error', async ({ browser }) => {
+    // The seeded guest, granted the manager permissions but with View household
+    // unticked: the rules deny invite codes, the activity log and contact documents,
+    // and the page must not open a listener for them.
+    const limited = household.collection('members').doc('e2e-limited-uid');
+    const original = (await limited.get()).data()?.permissions ?? {};
+    await limited.update({
+      permissions: {
+        ...original,
+        'household.view': false,
+        'household.manageInvites': true,
+        'household.manageMembers': true,
+      },
+    });
+    // An empty storage state: the project's stored owner session would otherwise be
+    // signed in first, and its listeners denied once /e2e-login switches the account.
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:9002',
+      colorScheme: 'dark',
+      storageState: { cookies: [], origins: [] },
+    });
+    try {
+      const page = await context.newPage();
+      const problems: string[] = [];
+      page.on('console', (message) => {
+        if (['error', 'warning'].includes(message.type()) && /permission|insufficient|invite|audit/i.test(message.text())) {
+          problems.push(message.text());
+        }
+      });
+      page.on('pageerror', (error) => problems.push(error.message));
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto('/e2e-login?uid=e2e-limited-uid');
+      await expect(page).toHaveURL('/');
+      // The guest has no notifications.view (seed), so no bell and no notification listener.
+      await expect(page.getByTestId('notification-bell')).toHaveCount(0);
+
+      await page.goto('/household?tab=invites');
+      await expect(page.getByText('Household settings are not available to you')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Manage Household', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('tab')).toHaveCount(0);
+      await expect(page.getByText(/[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{2}/)).toHaveCount(0);
+      await expect(page.getByText('@example.test')).toHaveCount(0);
+      await expect(page.getByRole('region', { name: /notification/i }).getByText(/couldn.t|failed|error/i)).toHaveCount(0);
+      // Give any listener time to fail before checking the console.
+      await page.waitForTimeout(1500);
+      expect(problems).toEqual([]);
+    } finally {
+      await context.close();
+      await limited.update({ permissions: original });
+    }
+  });
+});

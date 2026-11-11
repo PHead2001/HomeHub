@@ -1087,6 +1087,128 @@ describe('audit log', () => {
   });
 });
 
+describe('household.view gates the Household Manager reads (HO-2a)', () => {
+  const managerAll = { 'household.manageInvites': true, 'household.manageMembers': true };
+  const setPermissions = (user: Identity, permissions: Record<string, boolean>, extra: Record<string, unknown> = {}) =>
+    environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'households', householdA, 'members', user.uid), { permissions, ...extra }));
+  const codes = (user: Identity, household = householdA) =>
+    getDocs(query(collection(dbFor(user), 'inviteCodes'), where('householdId', '==', household)));
+  const code = (user: Identity) => getDoc(doc(dbFor(user), 'inviteCodes', 'AAAA-BBBB-CC'));
+  const auditList = (user: Identity, household = householdA) =>
+    getDocs(collection(dbFor(user), 'households', household, 'auditLogs'));
+  const auditEntry = (user: Identity) => getDoc(doc(dbFor(user), 'households', householdA, 'auditLogs', 'created'));
+  const contact = (reader: Identity, subject: Identity, household = householdA) =>
+    getDoc(doc(dbFor(reader), 'households', household, 'members', subject.uid, 'private', 'contact'));
+
+  // Someone else's contact document (your own is always readable).
+  const otherThan = (user: Identity) => (user.uid === users.guest.uid ? users.member : users.guest);
+  const managerReadsSucceed = async (user: Identity) => {
+    await assertSucceeds(codes(user));
+    await assertSucceeds(code(user));
+    await assertSucceeds(auditList(user));
+    await assertSucceeds(auditEntry(user));
+    await assertSucceeds(contact(user, otherThan(user)));
+  };
+  const managerReadsFail = async (user: Identity) => {
+    await assertFails(codes(user));
+    await assertFails(code(user));
+    await assertFails(auditList(user));
+    await assertFails(auditEntry(user));
+    await assertFails(contact(user, otherThan(user)));
+  };
+  // What every approved member keeps whatever household.view says: the household
+  // document, the member list (names for attribution and pickers), their own record
+  // and contact document.
+  const sharedReadsSucceed = async (user: Identity) => {
+    const db = dbFor(user);
+    await assertSucceeds(getDoc(doc(db, 'households', householdA)));
+    await assertSucceeds(getDocs(collection(db, 'households', householdA, 'members')));
+    await assertSucceeds(getDoc(doc(db, 'households', householdA, 'members', user.uid)));
+    await assertSucceeds(contact(user, user));
+  };
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'households', householdA, 'auditLogs', 'created'), {
+        actorUid: users.owner.uid, action: 'household.created', createdAt: '2026-08-01T12:00:00.000Z',
+      });
+      for (const user of [users.owner, users.admin, users.member, users.child, users.guest, users.pending]) {
+        await setDoc(doc(db, 'households', householdA, 'members', user.uid, 'private', 'contact'), {
+          email: user.email, updatedAt: '2026-08-01T12:00:00.000Z',
+        });
+      }
+    });
+  });
+
+  test('owners and admins (household.view by role) read invites, the log and contacts', async () => {
+    await managerReadsSucceed(users.owner);
+    await managerReadsSucceed(users.admin);
+  });
+
+  test('the owner keeps them even with household.view unticked (owners hold everything)', async () => {
+    await setPermissions(users.owner, { 'household.view': false });
+    await managerReadsSucceed(users.owner);
+  });
+
+  test('an admin with household.view unticked reads none of them but keeps the shared reads', async () => {
+    await setPermissions(users.admin, { 'household.view': false });
+    await managerReadsFail(users.admin);
+    await sharedReadsSucceed(users.admin);
+  });
+
+  test('a member granted the manager permissions reads them only while household.view holds', async () => {
+    await setPermissions(users.member, managerAll);
+    await managerReadsSucceed(users.member);
+    await setPermissions(users.member, { ...managerAll, 'household.view': false });
+    await managerReadsFail(users.member);
+    await sharedReadsSucceed(users.member);
+  });
+
+  test('household.view alone (member, child and guest defaults) grants none of them', async () => {
+    for (const user of [users.member, users.child, users.guest]) {
+      await managerReadsFail(user);
+    }
+  });
+
+  test('member, child and guest defaults keep the shared reads', async () => {
+    for (const user of [users.member, users.child, users.guest]) {
+      await sharedReadsSucceed(user);
+    }
+  });
+
+  test('a child granted the manager permissions reads them only while household.view holds', async () => {
+    await setPermissions(users.child, { ...managerAll, 'household.view': false });
+    await managerReadsFail(users.child);
+    await setPermissions(users.child, { ...managerAll, 'household.view': true });
+    await assertSucceeds(codes(users.child));
+    await assertSucceeds(code(users.child));
+  });
+
+  test('a child granted the manager permissions with household.view reads the log and contacts', async () => {
+    await setPermissions(users.child, { ...managerAll, 'household.view': true });
+    await assertSucceeds(auditList(users.child));
+    await assertSucceeds(auditEntry(users.child));
+    await assertSucceeds(contact(users.child, users.guest));
+  });
+
+  test('pending people, legacy identities and other households read none of them', async () => {
+    // A pending record's overrides grant nothing.
+    await setPermissions(users.pending, { ...managerAll, 'household.view': true });
+    for (const user of [users.pending, users.legacy, users.ownerB, users.stranger]) {
+      await managerReadsFail(user);
+    }
+    // The pending person still reads their own record and contact document.
+    await assertSucceeds(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.pending.uid)));
+    await assertSucceeds(contact(users.pending, users.pending));
+    // Household B's owner reads nothing of A, and A's owner nothing of B.
+    await assertFails(codes(users.owner, householdB));
+    await assertFails(auditList(users.owner, householdB));
+    await assertFails(contact(users.owner, users.ownerB, householdB));
+  });
+});
+
 describe('AI usage counters', () => {
   test('no client can read, create or reset AI quota counters', async () => {
     for (const user of [users.owner, users.admin, users.member]) {

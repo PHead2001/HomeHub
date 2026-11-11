@@ -94,6 +94,15 @@ service cloud.firestore {
       return hasMemberDoc(householdId) && memberHasPermission(myMember(householdId), permission);
     }
 
+    // Reads that exist only for the Household Manager (invite codes, the activity
+    // log, other members' contact documents) also need household.view, so a member
+    // with View household unticked reads none of them, whatever else they hold.
+    // Owners always hold it; for everyone else the role default or override decides.
+    function hasHouseholdManagerPermission(householdId, permission) {
+      return hasHouseholdPermission(householdId, 'household.view') &&
+        hasHouseholdPermission(householdId, permission);
+    }
+
     // ---------------------------------------------------------------------
     // Household document invariants
     // ---------------------------------------------------------------------
@@ -1061,11 +1070,12 @@ service cloud.firestore {
         allow create, update, delete: if false;
 
         // The member's contact document (`contact`: their email), written only by
-        // the server. Readable by the person and by holders of household.manageMembers.
+        // the server. Readable by the person and by holders of household.manageMembers
+        // who also hold household.view.
         match /private/{docId} {
           allow get: if docId == 'contact' &&
             ((signedIn() && request.auth.uid == memberUid) ||
-              hasHouseholdPermission(householdId, 'household.manageMembers'));
+              hasHouseholdManagerPermission(householdId, 'household.manageMembers'));
           allow list, write: if false;
         }
       }
@@ -1091,8 +1101,9 @@ service cloud.firestore {
       }
 
       match /auditLogs/{auditId} {
-        // Written only by the server, next to the change it records.
-        allow read: if hasHouseholdPermission(householdId, 'household.manageMembers');
+        // Written only by the server, next to the change it records. Read by holders
+        // of household.manageMembers who also hold household.view (the Activity tab).
+        allow read: if hasHouseholdManagerPermission(householdId, 'household.manageMembers');
         allow write: if false;
       }
 
@@ -1374,12 +1385,13 @@ service cloud.firestore {
     // ---------------------------------------------------------------------
     // Invite codes: created, revoked and redeemed only by the server, which checks
     // household.manageInvites, expiry, revocation and use count. Holders of
-    // household.manageInvites read their household's codes (the Invite Codes tab).
+    // household.manageInvites who also hold household.view read their household's
+    // codes (the Invite Codes tab).
     // ---------------------------------------------------------------------
 
     match /inviteCodes/{code} {
       allow read: if resource.data.householdId is string &&
-        hasHouseholdPermission(resource.data.householdId, 'household.manageInvites');
+        hasHouseholdManagerPermission(resource.data.householdId, 'household.manageInvites');
       allow write: if false;
     }
 
