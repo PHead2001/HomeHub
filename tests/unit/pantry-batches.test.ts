@@ -26,13 +26,23 @@ import {
   readPantryBatch,
   shortExpiryLabel,
   shouldDeleteEmptyBatch,
-  upgradeLegacyBatch,
+  chooseAddOneBatch,
+  EMPTY_BATCH_GRACE_MS,
+  LEGACY_OFFLINE_MESSAGE,
+  NEEDS_REPAIR_MESSAGE,
+  NOTHING_LEFT_MESSAGE,
+  PantryChangeRefused,
+  packageChangeRoute,
+  planLegacyUpgrade,
+  shoppingWriteNotice,
+  undoFits,
   usableRecipeItems,
   usedUpOutcome,
   type PantryBatch,
 } from '../../src/lib/shopping/pantry-batches';
 import { daysUntilExpiry, expiryState, pantryLocationForCategory, pantryMergeStillValid, planPantryHandoff } from '../../src/lib/shopping/pantry';
 import { MAX_PACKAGES, fillBatch, packageChangeToast, planMergeAdd, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
+import { notifyDataChanged, onDataChanged } from '../../src/lib/data-changed';
 
 const CENTRAL = 'America/Chicago';
 /** 23:30 Central on Tue 10 Nov 2026 (05:30 UTC on the 11th). */
@@ -40,7 +50,7 @@ const LATE_EVENING = new Date('2026-11-11T05:30:00.000Z');
 
 const batch = (id: string, overrides: Partial<PantryBatch> = {}): PantryBatch => ({
   id, name: 'Rice', nameKey: 'rice', location: 'Pantry', unit: 'g', packages: 1, packageSize: 450,
-  expiryDate: null, barcode: null, legacy: false, updatedAtMs: null, ...overrides,
+  expiryDate: null, barcode: null, legacy: false, needsRepair: false, repairAmount: null, updatedAtMs: null, ...overrides,
 });
 
 describe('legacy documents are read as v2 batches', () => {
@@ -92,11 +102,11 @@ describe('legacy documents are read as v2 batches', () => {
 
   test('the first change to a legacy document writes absolute upgraded values', () => {
     const legacy = readPantryBatch('milk', { name: 'Milk', quantity: 2, unit: 'items', location: 'Fridge', expiryDate: '2026-11-14T06:00:00.000Z' }, CENTRAL);
-    assert.deepEqual(upgradeLegacyBatch(legacy, -1), {
+    assert.deepEqual(planLegacyUpgrade(legacy, -1).fields, {
       name: 'Milk', nameKey: 'milk', location: 'Fridge', unit: 'items', packages: 1, packageSize: null,
       expiryDate: '2026-11-14', quantity: 1, schemaVersion: 2,
     });
-    assert.equal(upgradeLegacyBatch(legacy, -5).packages, 0);
+    assert.equal(planLegacyUpgrade(legacy, -2).fields.packages, 0);
   });
 });
 
@@ -294,7 +304,7 @@ describe('every v2 update carries the attribution the rules check', () => {
     }
     const handoff = read('pantry-writes.ts');
     assert.match(handoff, /const stamp = \(\) => \(\{ updatedByUid: uid, updatedAt: serverTimestamp\(\) \}\)/);
-    assert.match(handoff, /upgradeLegacyBatch\(batch, toTarget\), \.\.\.stamp\(\)/);
+    assert.match(handoff, /planLegacyUpgrade\(batch, toTarget\)\.fields, \.\.\.stamp\(\)/);
     assert.match(handoff, /quantity: increment\(toTarget\), \.\.\.stamp\(\)/);
   });
 });
@@ -381,11 +391,11 @@ describe('"Out of this" and its Undo commit together; late prompts stay off othe
 
   test('the package changes of one tap, and of its Undo, go through one write batch', () => {
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
-    const together = writes.slice(writes.indexOf('export function changePackagesTogether'), writes.indexOf('export type SaveBatchResult'));
+    const together = writes.slice(writes.indexOf('export async function changePackagesTogether'), writes.indexOf('export type SaveBatchResult'));
     assert.match(together, /const batch = writeBatch\(db\);/);
     assert.match(together, /batch\.commit\(\)/);
     const apply = client.slice(client.indexOf('const applyChanges'), client.indexOf('// SH-22a / SH-29a'));
-    assert.match(apply, /await changePackagesTogether\(householdId, changes, uid, onError\);/);
+    assert.match(apply, /await changePackagesTogether\(householdId, changes, uid, onError, timeZone\)/);
     assert.doesNotMatch(apply, /Promise\.all/);
     const undo = client.slice(client.indexOf('const undoChanges'), client.indexOf('const applyChanges'));
     assert.match(undo, /changePackagesTogether\(/);
@@ -435,8 +445,8 @@ describe('Undo is offered only for a change the server acknowledged (SH-29c)', (
   });
   test('the client shows the Undo action only when packageChangeToast allows it', () => {
     const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'pantry-inventory-client.tsx'), 'utf8');
-    assert.match(client, /outcome = await changePackagesTogether\(householdId, changes, uid, onError\);/);
-    assert.match(client, /const shown = packageChangeToast\(outcome, title, description\);\s*if \(shown\.offerUndo\) \{/);
+    assert.match(client, /\(\{ outcome, undoable \} = await changePackagesTogether\(householdId, changes, uid, onError, timeZone\)\);/);
+    assert.match(client, /const shown = packageChangeToast\(outcome, title, description\);\s*if \(shown\.offerUndo && undoable\) \{/);
   });
 });
 
@@ -541,8 +551,166 @@ describe('an online add to a matching batch never passes 10,000 (saveBatch)', ()
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
     const transaction = writes.slice(writes.indexOf('const merged = await runTransaction('), writes.indexOf("return { outcome: 'saved', merged };"));
     assert.match(transaction, /const plan = planMergeAdd\(decision\.target\.packages, input\);/);
-    assert.match(transaction, /if \(plan\.toTarget > 0\) transaction\.update\(ref, packageChange\(decision\.target, plan\.toTarget, uid\)\);/);
+    assert.match(transaction, /transaction\.update\(ref, packageChange\(decision\.target, plan\.toTarget, uid\)\);/);
+    assert.match(transaction, /planLegacyUpgrade\(decision\.target, plan\.toTarget\)\.fields/);
     assert.match(transaction, /for \(const extra of plan\.newBatches\)/);
     assert.doesNotMatch(transaction, /packageChange\(decision\.target, fields\.packages/);
+  });
+});
+
+describe('a legacy count above 10,000 is split on its first change, never truncated (PR #129 review)', () => {
+  const legacy = readPantryBatch('rice', { name: 'Rice', quantity: 15_000, unit: 'items', location: 'Pantry' }, CENTRAL);
+
+  test('it reads in full', () => {
+    assert.equal(legacy.packages, 15_000);
+    assert.equal(legacy.needsRepair, false);
+  });
+
+  test('Used one keeps all 14,999: the document keeps the remainder and a new batch holds 10,000', () => {
+    const plan = planLegacyUpgrade(legacy, -1);
+    assert.equal(plan.fields.packages, 4_999);
+    assert.equal(plan.fields.quantity, 4_999);
+    assert.deepEqual(plan.newBatches.map((fields) => fields.packages), [10_000]);
+    assert.ok([plan.fields, ...plan.newBatches].every((fields) => fields.packages <= MAX_PACKAGES && fields.name === 'Rice' && fields.schemaVersion === 2));
+    assert.equal(plan.fields.packages + plan.newBatches.reduce((sum, fields) => sum + fields.packages, 0), 14_999);
+    assert.ok(undoFits(plan.fields.packages, -1), 'undoing the tap still fits the document');
+  });
+
+  test('larger counts split into full batches; small ones are not split', () => {
+    const big = planLegacyUpgrade({ ...legacy, packages: 30_001 }, -1);
+    assert.deepEqual([big.fields.packages, ...big.newBatches.map((fields) => fields.packages)], [10_000, 10_000, 10_000]);
+    const small = readPantryBatch('milk', { name: 'Milk', quantity: 2, unit: 'items', location: 'Fridge', expiryDate: '2026-11-14T06:00:00.000Z' }, CENTRAL);
+    assert.deepEqual(planLegacyUpgrade(small, -1), {
+      fields: {
+        name: 'Milk', nameKey: 'milk', location: 'Fridge', unit: 'items', packages: 1, packageSize: null,
+        expiryDate: '2026-11-14', quantity: 1, schemaVersion: 2,
+      },
+      newBatches: [],
+    });
+  });
+
+  test('Out of this empties it (no Undo: +15,000 would not fit one batch); going below zero is refused', () => {
+    const out = planLegacyUpgrade(legacy, -15_000);
+    assert.deepEqual([out.fields.packages, out.newBatches.length], [0, 0]);
+    assert.equal(undoFits(out.fields.packages, -15_000), false);
+    assert.throws(() => planLegacyUpgrade(legacy, -15_001), (error: unknown) => error instanceof PantryChangeRefused && error.message === NOTHING_LEFT_MESSAGE);
+  });
+
+  test('the transaction writes the split-off batches with attribution, from its own read', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
+    const together = writes.slice(writes.indexOf('export async function changePackagesTogether'), writes.indexOf('export type SaveBatchResult'));
+    assert.match(together, /const plan = planLegacyUpgrade\(stored, delta\);/);
+    assert.match(together, /transaction\.update\(refs\[index\], \{ \.\.\.plan\.fields, \.\.\.touched\(uid\) \}\)/);
+    assert.match(together, /for \(const extra of plan\.newBatches\) transaction\.set\(doc\(pantry, slugify\(extra\.name\)\), \{ \.\.\.extra, addedByUid: uid, \.\.\.touched\(uid\) \}\)/);
+  });
+});
+
+describe('a legacy measured amount above 100,000 needs repair; it is not empty stock (PR #129 review)', () => {
+  const oversized = readPantryBatch('flour', { name: 'Flour', quantity: 150_000, unit: 'g', location: 'Pantry' }, CENTRAL);
+
+  test('it is read as needing repair, with its stored amount, and shown honestly', () => {
+    assert.deepEqual([oversized.needsRepair, oversized.repairAmount, oversized.packages, oversized.packageSize], [true, 150_000, 0, null]);
+    assert.match(batchAmountLabel(oversized), /^150000 g, too large for one package: edit to fix$/);
+    const normal = readPantryBatch('rice', { name: 'Rice', quantity: 450, unit: 'g', location: 'Pantry' }, CENTRAL);
+    assert.deepEqual([normal.needsRepair, normal.repairAmount], [false, null]);
+    const emptyLegacy = readPantryBatch('milk', { name: 'Milk', quantity: 0, unit: 'L', location: 'Fridge' }, CENTRAL);
+    assert.equal(emptyLegacy.needsRepair, false);
+  });
+
+  test('it stays on its tile, is never deleted by the idle cleanup, and is never used or added to', () => {
+    const [product] = groupPantryBatches([oversized]);
+    assert.equal(product.batches.length, 1);
+    assert.equal(product.totalPackages, 0);
+    assert.equal(shouldDeleteEmptyBatch({ ...oversized, updatedAtMs: null }, Date.now()), false);
+    assert.equal(shouldDeleteEmptyBatch({ ...oversized, updatedAtMs: 0 }, 10 * EMPTY_BATCH_GRACE_MS), false);
+    assert.equal(chooseUsedUpBatch([oversized]), undefined);
+    assert.equal(usedUpOutcome(product), null);
+    assert.equal(chooseAddOneBatch([oversized]), undefined);
+    const rice = batch('r', { name: 'Flour', nameKey: 'flour', packages: 2 });
+    assert.equal(usedUpOutcome({ batches: [oversized, rice] })?.batch.id, 'r');
+    assert.equal(usedUpOutcome({ batches: [oversized, rice] })?.remaining, 1);
+    assert.equal(chooseAddOneBatch([oversized, rice])?.id, 'r');
+    assert.throws(() => planLegacyUpgrade(oversized, 1), PantryChangeRefused);
+    assert.deepEqual(packageChangeRoute(oversized, false), { kind: 'refuse', message: NEEDS_REPAIR_MESSAGE });
+  });
+
+  test('nothing merges into it', () => {
+    const incoming = { nameKey: 'flour', location: 'Pantry' as const, packageSize: null, unit: 'g' as const, expiryDate: null };
+    assert.equal(findPantryMergeTarget([oversized], incoming), undefined);
+    assert.equal(decidePantryMerge({ offline: false, targetId: 'flour', stored: { name: 'Flour', quantity: 150_000, unit: 'g', location: 'Pantry' }, incoming }).kind, 'create');
+  });
+
+  test('the page skips it in the cleanup timer', () => {
+    const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'pantry-inventory-client.tsx'), 'utf8');
+    assert.match(client, /\.filter\(\(batch\) => batch\.packages <= 0 && !batch\.needsRepair\)/);
+  });
+});
+
+describe('a legacy batch is upgraded only online, from a fresh read (PR #129 review)', () => {
+  const legacy = readPantryBatch('milk', { name: 'Milk', quantity: 2, unit: 'items', location: 'Fridge' }, CENTRAL);
+
+  test('the route: v2 increments (offline too), legacy online in a transaction, legacy offline refused', () => {
+    assert.deepEqual(packageChangeRoute(batch('a'), false), { kind: 'increment' });
+    assert.deepEqual(packageChangeRoute(batch('a'), true), { kind: 'increment' });
+    assert.deepEqual(packageChangeRoute(legacy, false), { kind: 'transaction' });
+    assert.deepEqual(packageChangeRoute(legacy, true), { kind: 'refuse', message: LEGACY_OFFLINE_MESSAGE });
+    assert.equal(LEGACY_OFFLINE_MESSAGE, 'Connect to update this older item.');
+  });
+
+  test('two taps on quantity 2 deduct two: the second upgrade is computed from the re-read document', () => {
+    // First device: the transaction reads the legacy doc (2) and upgrades it to 1.
+    const first = planLegacyUpgrade(readPantryBatch('milk', { name: 'Milk', quantity: 2, unit: 'items', location: 'Fridge' }, CENTRAL), -1);
+    assert.equal(first.fields.packages, 1);
+    // Second device: its retry re-reads the now-v2 doc, so it takes the increment route.
+    const reread = readPantryBatch('milk', { ...first.fields, updatedAt: null }, CENTRAL);
+    assert.equal(reread.legacy, false);
+    assert.deepEqual(packageChangeRoute(reread, false), { kind: 'increment' });
+    assert.equal(reread.packages - 1, 0);
+  });
+
+  test('changePackagesTogether refuses before writing and re-reads legacy documents inside a transaction', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
+    const together = writes.slice(writes.indexOf('export async function changePackagesTogether'), writes.indexOf('export type SaveBatchResult'));
+    const refuse = together.indexOf('throw new PantryChangeRefused(refused.message)');
+    assert.ok(refuse > 0 && refuse < together.indexOf('writeBatch(db)') && refuse < together.indexOf('runTransaction('));
+    assert.match(together, /routes\.every\(\(route\) => route\.kind === 'increment'\)/);
+    assert.match(together, /await Promise\.all\(refs\.map\(\(ref\) => transaction\.get\(ref\)\)\)/);
+    assert.match(together, /if \(!stored\.legacy && !stored\.needsRepair\) return \(\) => transaction\.update\(refs\[index\], packageChange\(stored, delta, uid\)\);/);
+    assert.doesNotMatch(writes, /upgradeLegacyBatch/);
+    const client = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'pantry-inventory-client.tsx'), 'utf8');
+    assert.doesNotMatch(client, /changePackages\(/);
+    assert.match(client, /error instanceof PantryChangeRefused/);
+  });
+});
+
+describe('a pantry → shopping write refreshes the Lists tab counts (PR #129 review)', () => {
+  test('only a write the server confirmed is announced', () => {
+    assert.deepEqual(shoppingWriteNotice('h1', 'list-21', 'saved'), { module: 'shopping', householdId: 'h1', listId: 'list-21' });
+    assert.deepEqual(shoppingWriteNotice('h1', 'list-21', 'merged'), { module: 'shopping', householdId: 'h1', listId: 'list-21' });
+    assert.equal(shoppingWriteNotice('h1', 'list-21', 'queued'), null);
+  });
+
+  test('the notice reaches onDataChanged listeners (the fallback counts subscribe to it)', () => {
+    const target = new EventTarget();
+    const previous = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = target;
+    try {
+      const seen: unknown[] = [];
+      const stop = onDataChanged('shopping', 'h1', (detail) => seen.push(detail));
+      notifyDataChanged(shoppingWriteNotice('h1', 'list-21', 'saved')!);
+      notifyDataChanged({ module: 'shopping', householdId: 'other' });
+      stop();
+      assert.deepEqual(seen, [{ module: 'shopping', householdId: 'h1', listId: 'list-21' }]);
+    } finally {
+      (globalThis as { window?: unknown }).window = previous;
+    }
+  });
+
+  test('addToGroceryList announces after the merge and after the item write', () => {
+    const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
+    const add = writes.slice(writes.indexOf('export async function addToGroceryList'));
+    assert.match(add, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), quantity\)\) \{\s+announceShoppingWrite\(householdId, list\.id, 'merged'\);/);
+    assert.match(add, /const outcome = await awaitWriteUnlessOffline\(setDoc\(doc\(itemsRef, itemId\), data\), onLateError\);\s+announceShoppingWrite\(householdId, list\.id, outcome\);/);
+    assert.match(add, /if \(notice\) notifyDataChanged\(notice\);/);
   });
 });

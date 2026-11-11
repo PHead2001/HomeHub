@@ -4,7 +4,7 @@ import { slugify } from '@/lib/utils';
 import type { PantryItem } from '@/lib/types';
 import { confirmedHandoffChoices, pantryMergeStillValid, planPantryHandoff, type PantryHandoffChoice } from './pantry';
 import { isStillPurchased } from './items';
-import { fillBatch, pantryBatchFields, readPantryBatch, splitPackages, upgradeLegacyBatch } from './pantry-batches';
+import { fillBatch, pantryBatchFields, planLegacyUpgrade, readPantryBatch, splitPackages } from './pantry-batches';
 
 /**
  * The most documents one handoff writes (Firestore allows 500 per transaction,
@@ -43,7 +43,8 @@ export type PantryHandoffResult = {
  * Pantry v2: a purchase is a batch counted in `items` (packages = quantity bought,
  * no package size, no expiry). A v2 target grows by `increment()` on both
  * `packages` and the dual-written `quantity`; a legacy target (no `packages` yet)
- * is upgraded with absolute values computed from this transaction's own read.
+ * is upgraded with absolute values computed from this transaction's own read
+ * (`planLegacyUpgrade`; `fillBatch` keeps its total within 10,000, so nothing splits).
  * A batch holds at most 10,000 packages (the rules' limit), so a larger amount is
  * never clamped: what fits goes to the merge target (`fillBatch`) and the rest,
  * or a new purchase above 10,000, is split across new batches of at most 10,000
@@ -114,7 +115,7 @@ export async function addPurchasesToPantry(
       const { toTarget, newBatches } = fillBatch(plan.add, batch.packages);
       if (toTarget > 0) {
         writes.push(() => transaction.update(read.ref, batch.legacy
-          ? { ...upgradeLegacyBatch(batch, toTarget), ...stamp() }
+          ? { ...planLegacyUpgrade(batch, toTarget).fields, ...stamp() }
           : { packages: increment(toTarget), quantity: increment(toTarget), ...stamp() }));
       }
       for (const packages of newBatches) createOne(plan.name, packages, plan.location);

@@ -12,8 +12,8 @@ import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
-import { addToGroceryList, changePackages, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, chooseAddOneBatch, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
@@ -904,7 +904,8 @@ export function PantryInventoryClient() {
   useEffect(() => {
     if (!householdId || !canDelete) return;
     const timers = batches
-      .filter((batch) => batch.packages <= 0)
+      // A batch that needs repair is not empty stock and is never cleaned up.
+      .filter((batch) => batch.packages <= 0 && !batch.needsRepair)
       .map((batch) => {
         const idleFor = batch.updatedAtMs === null ? 0 : Date.now() - batch.updatedAtMs;
         const wait = Math.max(0, EMPTY_BATCH_GRACE_MS - idleFor) + 1000;
@@ -1050,11 +1051,22 @@ export function PantryInventoryClient() {
     setAskAdd((current) => (current?.token === token ? null : current));
     const onError = (error: unknown) => toastError(error, `Could not undo ${name}`);
     try {
-      await changePackagesTogether(householdId, changes.map(({ batch, delta }) => ({ batch: { ...batch, legacy: false }, delta: -delta })), uid, onError);
+      await changePackagesTogether(householdId, changes.map(({ batch, delta }) => ({ batch: { ...batch, legacy: false, needsRepair: false }, delta: -delta })), uid, onError, timeZone);
     } catch (error) {
       onError(error);
     }
-  }, [householdId, uid, toastError]);
+  }, [householdId, uid, toastError, timeZone]);
+
+  // A change refused before writing (an older item offline, an amount that needs
+  // fixing, an item already gone) says why in plain words; anything else is a
+  // sanitized error.
+  const reportChangeError = useCallback((error: unknown, fallback: string) => {
+    if (error instanceof PantryChangeRefused) {
+      toast({ variant: 'destructive', title: 'Not changed', description: error.message });
+      return;
+    }
+    toastError(error, fallback);
+  }, [toast, toastError]);
 
   // Every change of one tap commits in one write batch (all or nothing); the Undo
   // is offered only once the server has acknowledged it (never for a write queued
@@ -1063,11 +1075,12 @@ export function PantryInventoryClient() {
   // (promptRequestRef).
   const applyChanges = async (name: string, changes: PackageChange[], reachedZero: boolean, title: string, description: string) => {
     if (!householdId || !uid || changes.length === 0) return;
-    const onError = (error: unknown) => toastError(error, `Could not update ${name}`);
+    const onError = (error: unknown) => reportChangeError(error, `Could not update ${name}`);
     const request = promptRequestRef.current;
     let outcome: 'saved' | 'queued';
+    let undoable: boolean;
     try {
-      outcome = await changePackagesTogether(householdId, changes, uid, onError);
+      ({ outcome, undoable } = await changePackagesTogether(householdId, changes, uid, onError, timeZone));
     } catch (error) {
       onError(error);
       return;
@@ -1075,8 +1088,9 @@ export function PantryInventoryClient() {
     const token = ++askTokenRef.current;
     // Undo only for a write the server acknowledged; a queued offline write gets no Undo
     // (a queued +n could apply even though the queued -n is refused on reconnect).
+    // Undo also needs to fit the 10,000 per batch (an older count above it emptied at once does not).
     const shown = packageChangeToast(outcome, title, description);
-    if (shown.offerUndo) {
+    if (shown.offerUndo && undoable) {
       const handle = toast({
         title: shown.title,
         description: shown.description,
@@ -1119,10 +1133,10 @@ export function PantryInventoryClient() {
 
   // SH-22b's counterpart: one more package of the soonest batch.
   const addOne = (product: PantryProduct) => {
-    const batch = product.batches[0];
+    const batch = chooseAddOneBatch(product.batches);
     if (!householdId || !uid || !batch) return;
-    const onError = (error: unknown) => toastError(error, `Could not update ${product.name}`);
-    changePackages(householdId, batch, 1, uid, onError).catch(onError);
+    const onError = (error: unknown) => reportChangeError(error, `Could not update ${product.name}`);
+    changePackagesTogether(householdId, [{ batch, delta: 1 }], uid, onError, timeZone).catch(onError);
   };
 
   const handleDeleteItem = async () => {

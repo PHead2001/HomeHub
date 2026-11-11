@@ -53,6 +53,16 @@ export type PantryBatch = {
   barcode: string | null;
   /** True when the stored document is still the pre-v2 shape (no `packages`). */
   legacy: boolean;
+  /**
+   * True for a legacy measured document whose `quantity` is above
+   * `MAX_PACKAGE_SIZE`, so it cannot be one package of that size. It is not empty
+   * stock: `packages` reads 0 (nothing to use) but the batch is shown with
+   * `repairAmount`, never deleted by the idle cleanup, never chosen by "used
+   * one" or "One more", and changed only by editing it.
+   */
+  needsRepair: boolean;
+  /** The stored amount of a `needsRepair` batch (its legacy `quantity`), else null. */
+  repairAmount: number | null;
   /** Last write time in ms, or null when unknown (pending server timestamp, legacy document). */
   updatedAtMs: number | null;
 };
@@ -92,17 +102,21 @@ export function readPantryBatch(id: string, data: Record<string, unknown> | null
   const legacy = storedPackages === null;
   let packages: number;
   let packageSize: number | null;
+  let repairAmount: number | null = null;
   if (!legacy) {
     packages = clampPackages(storedPackages);
     packageSize = validSize(finiteNumber(record.packageSize));
   } else {
     const quantity = Math.max(0, finiteNumber(record.quantity) ?? 0);
     if (isCountUnit(unit)) {
-      packages = clampPackages(quantity);
+      // Not clamped: a legacy count above 10,000 is read in full, and its first
+      // change splits it across batches (`planLegacyUpgrade`), so nothing is lost.
+      packages = quantity;
       packageSize = null;
     } else {
       packageSize = validSize(quantity);
       packages = packageSize === null ? 0 : 1;
+      if (quantity > MAX_PACKAGE_SIZE) repairAmount = quantity;
     }
   }
   return {
@@ -116,6 +130,8 @@ export function readPantryBatch(id: string, data: Record<string, unknown> | null
     expiryDate: toDay(record.expiryDate, zone),
     barcode: typeof record.barcode === 'string' && record.barcode ? record.barcode : null,
     legacy,
+    needsRepair: repairAmount !== null,
+    repairAmount,
     updatedAtMs: timestampMs(record.updatedAt),
   };
 }
@@ -179,7 +195,7 @@ export function pantryMergeKey(batch: PantryMergeFields): string {
  */
 export function findPantryMergeTarget<T extends PantryBatch>(batches: readonly T[], incoming: PantryMergeFields): T | undefined {
   const key = pantryMergeKey(incoming);
-  const matches = batches.filter((batch) => pantryMergeKey(batch) === key);
+  const matches = batches.filter((batch) => !batch.needsRepair && pantryMergeKey(batch) === key);
   return matches.find((batch) => batch.packages > 0 && batch.packages < MAX_PACKAGES)
     ?? matches.find((batch) => batch.packages < MAX_PACKAGES)
     ?? matches[0];
@@ -213,7 +229,7 @@ export function decidePantryMerge({
 }): PantryMergeDecision {
   if (offline || !stored) return { kind: 'create' };
   const target = readPantryBatch(targetId, stored, timeZone);
-  if (!target.nameKey || pantryMergeKey(target) !== pantryMergeKey(incoming)) return { kind: 'create' };
+  if (!target.nameKey || target.needsRepair || pantryMergeKey(target) !== pantryMergeKey(incoming)) return { kind: 'create' };
   return { kind: 'merge', target };
 }
 
@@ -243,11 +259,15 @@ export function compareBatchesForUse(a: PantryBatch, b: PantryBatch): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-/** Groups visible batches (packages > 0) into products, sorted by name. Empty batches are hidden. */
+/**
+ * Groups visible batches (packages > 0, or `needsRepair`) into products, sorted
+ * by name. Empty batches are hidden; a batch that needs repair is shown (it is
+ * not empty) but adds nothing to `totalPackages`.
+ */
 export function groupPantryBatches(batches: readonly PantryBatch[]): PantryProduct[] {
   const groups = new Map<string, PantryProduct>();
   for (const batch of batches) {
-    if (batch.packages <= 0 || !batch.nameKey) continue;
+    if ((batch.packages <= 0 && !batch.needsRepair) || !batch.nameKey) continue;
     const key = `${batch.nameKey}|${batch.location}`;
     let group = groups.get(key);
     if (!group) {
@@ -265,9 +285,14 @@ export function groupPantryBatches(batches: readonly PantryBatch[]): PantryProdu
   return products.sort((a, b) => a.name.localeCompare(b.name) || a.location.localeCompare(b.location));
 }
 
-/** The batch "used one" takes a package from: the soonest-expiring batch that still has stock. */
+/** The batch "used one" takes a package from: the soonest-expiring batch that still has stock (never one that needs repair). */
 export function chooseUsedUpBatch(batches: readonly PantryBatch[]): PantryBatch | undefined {
-  return [...batches].filter((batch) => batch.packages > 0).sort(compareBatchesForUse)[0];
+  return [...batches].filter((batch) => batch.packages > 0 && !batch.needsRepair).sort(compareBatchesForUse)[0];
+}
+
+/** The batch "One more" adds to: the soonest batch that does not need repair. */
+export function chooseAddOneBatch(batches: readonly PantryBatch[]): PantryBatch | undefined {
+  return [...batches].filter((batch) => !batch.needsRepair).sort(compareBatchesForUse)[0];
 }
 
 export type UsedUpOutcome = {
@@ -282,7 +307,7 @@ export type UsedUpOutcome = {
 export function usedUpOutcome(product: Pick<PantryProduct, 'batches'>): UsedUpOutcome | null {
   const batch = chooseUsedUpBatch(product.batches);
   if (!batch) return null;
-  const total = product.batches.reduce((sum, entry) => sum + Math.max(0, entry.packages), 0);
+  const total = product.batches.reduce((sum, entry) => sum + (entry.needsRepair ? 0 : Math.max(0, entry.packages)), 0);
   const remaining = Math.max(0, total - 1);
   return { batch, remaining, askAddToList: remaining === 0 };
 }
@@ -312,9 +337,12 @@ export function packageChangeToast(outcome: 'saved' | 'queued', title: string, d
   };
 }
 
-/** Whether a used-up batch may be deleted: no packages left and nobody touched it in the last minute. */
-export function shouldDeleteEmptyBatch(batch: Pick<PantryBatch, 'packages' | 'updatedAtMs'>, nowMs: number): boolean {
-  if (batch.packages > 0) return false;
+/**
+ * Whether a used-up batch may be deleted: no packages left and nobody touched it
+ * in the last minute. A batch that needs repair is never empty stock, so never.
+ */
+export function shouldDeleteEmptyBatch(batch: Pick<PantryBatch, 'packages' | 'updatedAtMs'> & Partial<Pick<PantryBatch, 'needsRepair'>>, nowMs: number): boolean {
+  if (batch.packages > 0 || batch.needsRepair) return false;
   return batch.updatedAtMs === null || nowMs - batch.updatedAtMs >= EMPTY_BATCH_GRACE_MS;
 }
 
@@ -426,8 +454,12 @@ const restateSmall = (quantity: number, unit: PantryItemUnit): { quantity: numbe
 };
 
 
-/** One batch's amount: "3 cans", "2 × 450 g", or "1 pack (g)" when a measured size is unknown. */
-export function batchAmountLabel(batch: Pick<PantryBatch, 'packages' | 'packageSize' | 'unit'>): string {
+/**
+ * One batch's amount: "3 cans", "2 × 450 g", or "1 pack (g)" when a measured
+ * size is unknown; a batch that needs repair says so with its stored amount.
+ */
+export function batchAmountLabel(batch: Pick<PantryBatch, 'packages' | 'packageSize' | 'unit'> & Partial<Pick<PantryBatch, 'needsRepair' | 'repairAmount'>>): string {
+  if (batch.needsRepair) return `${batch.repairAmount ?? '?'} ${batch.unit}, too large for one package: edit to fix`;
   const count = formatAmount(batch.packages);
   if (isCountUnit(batch.unit)) return `${count} ${batch.unit}`;
   if (batch.packageSize !== null) return `${count} × ${formatAmount(batch.packageSize)} ${batch.unit}`;
@@ -583,18 +615,97 @@ export function planMergeAdd(targetPackages: number, input: PantryBatchInput): {
 }
 
 /**
- * The absolute fields that upgrade a legacy document while changing its package
- * count by `delta` (a legacy document has no `packages` to increment). Used only
- * for the first write to a pre-v2 document; the migration removes this case.
+ * A package change the page refuses before writing anything, with a message
+ * meant for the member (the toast shows `message` as is).
  */
-export function upgradeLegacyBatch(batch: PantryBatch, delta: number) {
-  return pantryBatchFields({
+export class PantryChangeRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PantryChangeRefused';
+  }
+}
+
+export const LEGACY_OFFLINE_MESSAGE = 'Connect to update this older item.';
+export const NEEDS_REPAIR_MESSAGE = 'This item\'s amount is too large for one package. Edit it to fix the size first.';
+export const NOTHING_LEFT_MESSAGE = 'There is nothing left of this item to use.';
+export const BATCH_GONE_MESSAGE = 'This item was removed on another device.';
+
+/** How many packages of a split legacy count the document itself keeps: the remainder, so undoing a "used one" still fits. */
+const keptByDocument = (total: number) => (total <= 0 ? 0 : ((total - 1) % MAX_PACKAGES) + 1);
+
+/**
+ * The absolute fields that upgrade a legacy document while changing its package
+ * count by `delta` (a legacy document has no `packages` to increment), computed
+ * from the document as just re-read in the caller's transaction. Nothing is
+ * lost: a total above 10,000 (a legacy count may be larger) is split, the
+ * document keeping the remainder (1 to 10,000, so undoing a "used one" still
+ * fits) and `newBatches` holding full 10,000-package batches of the same product,
+ * written in the same transaction. Refuses (`PantryChangeRefused`) a batch that
+ * needs repair and a change that would go below zero. Used only for the first
+ * write to a pre-v2 document; the migration removes this case.
+ */
+export function planLegacyUpgrade(batch: PantryBatch, delta: number): {
+  fields: ReturnType<typeof pantryBatchFields>;
+  newBatches: ReturnType<typeof pantryBatchFields>[];
+} {
+  if (batch.needsRepair) throw new PantryChangeRefused(NEEDS_REPAIR_MESSAGE);
+  const total = Math.round(batch.packages + delta);
+  if (total < 0) throw new PantryChangeRefused(NOTHING_LEFT_MESSAGE);
+  const kept = keptByDocument(total);
+  const input: PantryBatchInput = {
     name: batch.name,
     location: batch.location,
     unit: batch.unit,
-    packages: Math.max(0, batch.packages + delta),
+    packages: kept,
     packageSize: batch.packageSize,
     expiryDate: batch.expiryDate,
     barcode: batch.barcode,
-  });
+  };
+  return {
+    fields: pantryBatchFields(input),
+    newBatches: splitPackages(total - kept).map((packages) => pantryBatchFields({ ...input, packages })),
+  };
+}
+
+export type PackageChangeRoute =
+  /** A v2 batch: an `increment(delta)`, which queues offline and adds up across devices. */
+  | { kind: 'increment' }
+  /** A legacy batch, online: re-read it in a transaction and upgrade it from that read (`planLegacyUpgrade`). */
+  | { kind: 'transaction' }
+  /** Refused before writing: `message` is shown to the member. */
+  | { kind: 'refuse'; message: string };
+
+/**
+ * How a package change on a batch is written (PR #129 review). A v2 batch takes
+ * an increment. A legacy batch has no `packages` to increment, so it needs
+ * absolute values; written from the screen, two devices' taps would both write
+ * the same count (deducting one) and a stale offline device could overwrite
+ * newer stock. So it is upgraded only online, inside a transaction that re-reads
+ * the document; offline the change is refused with "Connect to update this
+ * older item." A batch that needs repair is refused everywhere.
+ */
+export function packageChangeRoute(batch: Pick<PantryBatch, 'legacy' | 'needsRepair'>, offline: boolean): PackageChangeRoute {
+  if (batch.needsRepair) return { kind: 'refuse', message: NEEDS_REPAIR_MESSAGE };
+  if (!batch.legacy) return { kind: 'increment' };
+  if (offline) return { kind: 'refuse', message: LEGACY_OFFLINE_MESSAGE };
+  return { kind: 'transaction' };
+}
+
+/**
+ * Whether undoing a change (`increment(-delta)` on the same document) is still
+ * within the rules' 10,000 per batch, given the document's count right after
+ * the change. False only when a legacy count above 10,000 was emptied at once.
+ */
+export function undoFits(packagesAfter: number, delta: number): boolean {
+  return packagesAfter - delta <= MAX_PACKAGES;
+}
+
+/**
+ * The data-change event a pantry → shopping write announces (`notifyDataChanged`),
+ * so the Lists tab's fallback counts refresh: only for a write the server
+ * confirmed (`merged`, `saved`); a queued offline write is not on the server
+ * yet, so a server count would not include it.
+ */
+export function shoppingWriteNotice(householdId: string, listId: string, outcome: 'merged' | 'saved' | 'queued') {
+  return outcome === 'queued' ? null : { module: 'shopping' as const, householdId, listId };
 }

@@ -8,8 +8,10 @@
  * members' taps add up); the rules keep `packages` between 0 and 10000, so a
  * second "used one" on a batch someone else just emptied is refused and rolled
  * back by the listener. A batch still in the legacy shape has no `packages` to
- * increment, so its first change writes absolute upgraded values from what is on
- * screen (the migration, scripts/ops/migrate-pantry-v2.mjs, removes this case).
+ * increment, so its first change needs absolute values: those are computed only
+ * online, inside a transaction that re-reads the document (`planLegacyUpgrade`),
+ * and refused offline (`packageChangeRoute`); the migration,
+ * scripts/ops/migrate-pantry-v2.mjs, removes this case.
  */
 import {
   collection, deleteDoc, doc, getDocs, increment, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch,
@@ -17,6 +19,7 @@ import {
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { db } from '@/lib/firebase';
+import { notifyDataChanged } from '@/lib/data-changed';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { resolveShoppingCategory } from '@/lib/shopping-categorization';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
@@ -25,42 +28,79 @@ import { slugify } from '@/lib/utils';
 import { findMergeTarget } from './items';
 import { mergeIntoNeededItem } from './item-transactions';
 import {
-  decidePantryMerge, isCountUnit, pantryBatchFields, planMergeAdd, readPantryBatch, shouldDeleteEmptyBatch, upgradeLegacyBatch,
+  BATCH_GONE_MESSAGE, PantryChangeRefused, decidePantryMerge, isCountUnit, packageChangeRoute, pantryBatchFields, planLegacyUpgrade,
+  planMergeAdd, readPantryBatch, shoppingWriteNotice, shouldDeleteEmptyBatch, undoFits,
   type PantryBatch, type PantryBatchInput,
 } from './pantry-batches';
 
 const pantryCollection = (householdId: string) => collection(db, 'households', householdId, 'pantry-inventory');
 const touched = (uid: string) => ({ updatedByUid: uid, updatedAt: serverTimestamp() });
 
-/** The update that changes a batch's package count by `delta` (negative to use, positive to add or undo). */
-export function packageChange(batch: PantryBatch, delta: number, uid: string) {
-  if (batch.legacy) return { ...upgradeLegacyBatch(batch, delta), ...touched(uid) };
+/** The increment that changes a v2 batch's package count by `delta` (negative to use, positive to add or undo). */
+export function packageChange(batch: Pick<PantryBatch, 'unit'>, delta: number, uid: string) {
   // Counted units dual-write quantity = packages; measured ones keep quantity = package size.
   return isCountUnit(batch.unit)
     ? { packages: increment(delta), quantity: increment(delta), ...touched(uid) }
     : { packages: increment(delta), ...touched(uid) };
 }
 
-/** Changes one batch's packages; offline the write is queued. Late rejections go to `onLateError`. */
-export function changePackages(householdId: string, batch: PantryBatch, delta: number, uid: string, onLateError: (error: unknown) => void) {
-  return awaitWriteUnlessOffline(updateDoc(doc(pantryCollection(householdId), batch.id), packageChange(batch, delta, uid)), onLateError);
-}
+export type PackageChangeResult = {
+  outcome: 'saved' | 'queued';
+  /** Undo (`increment(-delta)` on each document) still fits the rules' 10,000 per batch. */
+  undoable: boolean;
+};
 
 /**
- * Changes several batches' packages in ONE write batch ("Out of this" across a
- * product's batches, and its Undo): either every change commits or none does, so
- * a refused write never leaves part of a product used up with no Undo. Offline
- * the batch is queued as one unit.
+ * Changes several batches' packages together ("used one", "One more", "Out of
+ * this" across a product's batches, and its Undo): either every change commits
+ * or none does, so a refused write never leaves part of a product used up with
+ * no Undo. Each batch is routed by `packageChangeRoute`:
+ * - all v2: ONE write batch of increments (queued as one unit offline);
+ * - any legacy, online: ONE transaction that re-reads every document and writes
+ *   increments for those now v2 and `planLegacyUpgrade` values (plus split-off
+ *   batches above 10,000) for those still legacy, so two devices' taps both
+ *   count and nothing on screen overwrites newer stock;
+ * - any legacy offline, or any batch that needs repair: refused with a
+ *   `PantryChangeRefused` before anything is written.
  */
-export function changePackagesTogether(
+export async function changePackagesTogether(
   householdId: string,
   changes: readonly { batch: PantryBatch; delta: number }[],
   uid: string,
   onLateError: (error: unknown) => void,
-) {
-  const batch = writeBatch(db);
-  for (const { batch: entry, delta } of changes) batch.update(doc(pantryCollection(householdId), entry.id), packageChange(entry, delta, uid));
-  return awaitWriteUnlessOffline(batch.commit(), onLateError);
+  timeZone?: string | null,
+): Promise<PackageChangeResult> {
+  const pantry = pantryCollection(householdId);
+  const offline = isBrowserOffline();
+  const routes = changes.map(({ batch }) => packageChangeRoute(batch, offline));
+  const refused = routes.find((route) => route.kind === 'refuse');
+  if (refused?.kind === 'refuse') throw new PantryChangeRefused(refused.message);
+  if (routes.every((route) => route.kind === 'increment')) {
+    const batch = writeBatch(db);
+    for (const { batch: entry, delta } of changes) batch.update(doc(pantry, entry.id), packageChange(entry, delta, uid));
+    return { outcome: await awaitWriteUnlessOffline(batch.commit(), onLateError), undoable: true };
+  }
+  const undoable = await runTransaction(db, async (transaction) => {
+    const refs = changes.map(({ batch }) => doc(pantry, batch.id));
+    const snapshots = await Promise.all(refs.map((ref) => transaction.get(ref)));
+    let fits = true;
+    // Every read happens before any write; a retry recomputes from fresh reads.
+    const writes = snapshots.map((snapshot, index) => {
+      if (!snapshot.exists()) throw new PantryChangeRefused(BATCH_GONE_MESSAGE);
+      const stored = readPantryBatch(snapshot.id, snapshot.data(), timeZone);
+      const { delta } = changes[index];
+      if (!stored.legacy && !stored.needsRepair) return () => transaction.update(refs[index], packageChange(stored, delta, uid));
+      const plan = planLegacyUpgrade(stored, delta);
+      fits &&= undoFits(plan.fields.packages, delta);
+      return () => {
+        transaction.update(refs[index], { ...plan.fields, ...touched(uid) });
+        for (const extra of plan.newBatches) transaction.set(doc(pantry, slugify(extra.name)), { ...extra, addedByUid: uid, ...touched(uid) });
+      };
+    });
+    for (const write of writes) write();
+    return fits;
+  });
+  return { outcome: 'saved', undoable };
 }
 
 export type SaveBatchResult = {
@@ -107,7 +147,12 @@ export async function saveBatch(
           // The rules cap a batch at 10,000: fill the target up to that and put
           // the rest in new batches, so a nearly full target never refuses the add.
           const plan = planMergeAdd(decision.target.packages, input);
-          if (plan.toTarget > 0) transaction.update(ref, packageChange(decision.target, plan.toTarget, uid));
+          if (plan.toTarget > 0 && decision.target.legacy) {
+            // A legacy target is upgraded from this transaction's own read (its count fits: planMergeAdd).
+            transaction.update(ref, { ...planLegacyUpgrade(decision.target, plan.toTarget).fields, ...touched(uid) });
+          } else if (plan.toTarget > 0) {
+            transaction.update(ref, packageChange(decision.target, plan.toTarget, uid));
+          }
           for (const extra of plan.newBatches) {
             transaction.set(doc(pantry, slugify(extra.name)), { ...extra, addedByUid: uid, ...touched(uid) });
           }
@@ -144,7 +189,8 @@ export function deleteBatches(householdId: string, ids: readonly string[]) {
 /**
  * Deletes a used-up batch, online only: a transaction re-reads it and deletes it
  * only if it still has no packages and nobody touched it in the last minute (an
- * Undo, a +1 or a hand-off revives it instead). Resolves whether it was deleted.
+ * Undo, a +1 or a hand-off revives it instead). A batch that needs repair is
+ * never deleted (`shouldDeleteEmptyBatch`). Resolves whether it was deleted.
  */
 export function deleteEmptyBatchIfIdle(householdId: string, id: string, timeZone?: string | null): Promise<boolean> {
   const ref = doc(pantryCollection(householdId), id);
@@ -187,7 +233,9 @@ export type AddToListResult = {
  * merge path (`findMergeTarget` + `mergeIntoNeededItem`, which re-checks it is
  * still needed), so "we're out of milk" never adds a second Milk. Otherwise (or
  * offline, where nothing merges) a new needed item is created with the shared
- * category resolution.
+ * category resolution. A write the server confirmed (merged or saved) is
+ * announced with `notifyDataChanged` (`shoppingWriteNotice`), so the Lists tab's
+ * fallback counts (lists beyond the first 20 live ones) refresh.
  */
 export async function addToGroceryList(
   householdId: string,
@@ -203,7 +251,10 @@ export async function addToGroceryList(
     const needed = (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
       ?.docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingListItem, 'id'>), id: entry.id })) ?? [];
     const target = findMergeTarget(needed, name);
-    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), quantity)) return { listName: list.name, outcome: 'merged', usedFallback: false };
+    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), quantity)) {
+      announceShoppingWrite(householdId, list.id, 'merged');
+      return { listName: list.name, outcome: 'merged', usedFallback: false };
+    }
   }
   const categoriesSnapshot = await getDocOfflineAware(doc(listRef, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
@@ -215,5 +266,11 @@ export async function addToGroceryList(
   });
   const { itemId, data } = buildShoppingListItem({ name, quantity, category });
   const outcome = await awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
+  announceShoppingWrite(householdId, list.id, outcome);
   return { listName: list.name, outcome, usedFallback: usedFallback && !offline };
+}
+
+function announceShoppingWrite(householdId: string, listId: string, outcome: AddToListResult['outcome']) {
+  const notice = shoppingWriteNotice(householdId, listId, outcome);
+  if (notice) notifyDataChanged(notice);
 }
