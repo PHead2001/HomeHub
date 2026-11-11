@@ -274,7 +274,8 @@ describe('chore folding', () => {
     // Ana (another member) had the series; an older build reassigned the overdue one to the
     // viewer by email only, leaving Ana's uid behind. A later instance is still Ana's.
     const ana = { uid: 'ana-uid', email: 'ana@example.test' };
-    const people = [viewer, ana];
+    // Membership records, as the dashboard store loads them (approved members).
+    const people = [viewer, ana].map((person) => ({ id: person.uid, ...person, role: 'member' }));
     const base = { task: 'Water plants', templateId: 'water', isCompleted: false, roomIds: ['kitchen'] };
     const records = [
       { ...base, id: 'w1', dueDate: '2026-07-31', originalDueDate: '2026-07-31', assignedToUid: ana.uid, assignedToEmail: viewer.email },
@@ -314,7 +315,8 @@ describe('buildMorningBrief', () => {
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });
     assert.equal(brief.text, "Good morning, Alex. 1 chore today (1 overdue), Pixel's next meal is due, and the Milk expiring tomorrow.");
-    assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores', '/pets/pixel?tab=feeding', '/shopping?tab=pantry']);
+    // HP-25: your chores open Chores filtered to you, the overdue count to your overdue work.
+    assert.deepEqual(brief.segments.filter((segment) => segment.href).map((segment) => segment.href), ['/chores?who=me', '/chores?due=overdue&who=me', '/pets/pixel?tab=feeding', '/shopping?tab=pantry']);
   });
 
   it('has a calm line when nothing needs attention', () => {

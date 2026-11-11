@@ -57,6 +57,7 @@ import { useDayLight, WeatherLayer } from './time-of-day';
 import { useWeatherSettings, WeatherCityForm } from './weather-controls';
 import { HouseMenu } from './house-menu';
 import { PeekCard } from './peek-card';
+import { PetFedButton } from './one-tap';
 import styles from './dashboard.module.css';
 
 const SEASONAL_KEY = 'homehub.dashboard.seasonal';
@@ -796,7 +797,11 @@ export function LivingHouse({
           )}
           <span className="flex-1" aria-hidden />
           {pets.map((pet) => (
-            <PetChip key={pet.id} pet={pet} describedBy="house-pet-sound-hint" onSound={onPetSound} />
+            // HP-33a: a hungry pet's chip has "Fed" beside it (a sibling, never inside the link).
+            <span key={pet.id} className="flex shrink-0 items-center gap-1">
+              <PetChip pet={pet} describedBy="house-pet-sound-hint" onSound={onPetSound} />
+              <PetFedButton pet={pet} className="text-xs" />
+            </span>
           ))}
         </div>
       </div>

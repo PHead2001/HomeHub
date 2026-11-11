@@ -10,11 +10,14 @@ import type { BarcodeLibraryItem, PantryItem, PantryItemUnit, PantryItemLocation
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
-import { collection, doc, deleteDoc, writeBatch, query, orderBy, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, deleteDoc, writeBatch, query, setDoc, updateDoc } from 'firebase/firestore';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import { expiryState, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
+import { useLivePantry } from '@/lib/shopping/live';
+import { useOnTabDeactivate } from './shopping/tab-activity';
+import { justOpened } from '@/lib/shopping/live-state';
 import { DURATION, EASE } from '@/lib/motion';
 import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
 import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
@@ -103,6 +106,11 @@ function PantryItemDialog({
   itemToEdit: PantryItem | null,
 }) {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // The scanner is a sibling portaled dialog, not inside the item dialog: it closes
+  // (unmounting BarcodeScanner, which releases the camera) when the Pantry tab is
+  // hidden and whenever the item dialog itself closes.
+  useOnTabDeactivate(() => setIsScannerOpen(false));
+  if (!isOpen && isScannerOpen) setIsScannerOpen(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
   const { toast, toastError } = useToast();
@@ -419,6 +427,12 @@ function RecipeGeneratorDialog({
     const [phase, setPhase] = useState<'shown' | 'lifting'>('shown');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const requestInFlight = useRef(false);
+    // The pantry is live: read the items when a recipe is requested, so a snapshot
+    // (even a metadata-only one) never re-creates the request and re-runs it.
+    const pantryItemsRef = useRef(pantryItems);
+    useEffect(() => {
+        pantryItemsRef.current = pantryItems;
+    }, [pantryItems]);
 
     const handleGenerateRecipe = useCallback(async () => {
         if (requestInFlight.current) return;
@@ -430,7 +444,7 @@ function RecipeGeneratorDialog({
         onRecipe?.(null);
         try {
             const result = unwrapAiActionResult(await generateRecipe(
-              { items: pantryItems.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
+              { items: pantryItemsRef.current.map(i => ({ name: i.name, quantity: i.quantity, unit: i.unit })) },
               await getAiActionContext(householdId)
             ));
             const liftedOnScreen = onRecipe?.(result) ?? 0;
@@ -445,7 +459,7 @@ function RecipeGeneratorDialog({
             requestInFlight.current = false;
             setIsLoading(false);
         }
-    }, [householdId, pantryItems, toast, onRecipe, reduced]);
+    }, [householdId, toast, onRecipe, reduced]);
 
     // The lift holds briefly; any key or pointer press skips straight to the card.
     useEffect(() => {
@@ -462,11 +476,15 @@ function RecipeGeneratorDialog({
     }, [phase]);
     const lifting = phase === 'lifting';
 
-    // Automatically trigger generation when dialog opens
+    // Generate once when the dialog opens (closed -> open), never again while it
+    // stays open: a new pantry snapshot or a re-created callback changes nothing,
+    // so the shown recipe stays and no second AI request is made. "Try again" is
+    // the way to ask for another.
+    const wasOpenRef = useRef(false);
     useEffect(() => {
-        if (isOpen) {
-            handleGenerateRecipe();
-        }
+        const opened = justOpened(wasOpenRef.current, isOpen);
+        wasOpenRef.current = isOpen;
+        if (opened) void handleGenerateRecipe();
     }, [isOpen, handleGenerateRecipe]);
 
     return (
@@ -724,8 +742,12 @@ export function PantryInventoryClient() {
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
 
-  const [items, setItems] = useState<PantryItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Live (SH-1c): one listener on the pantry, so another member's additions, moves
+  // and deletions show without a reload, and this device's own writes show at once
+  // (a rejected one is rolled back in the listener). No re-read after a write.
+  const pantryState = useLivePantry(currentUser?.householdId);
+  const items = pantryState.value;
+  const loading = pantryState.status === 'loading';
   // The chosen view is a per-device convenience (this tab only renders client-side, after sign-in).
   const [view, setView] = useState<PantryView>(() => {
     try {
@@ -749,6 +771,22 @@ export function PantryInventoryClient() {
   const [isAddToListDialogOpen, setIsAddToListDialogOpen] = useState(false);
   const [itemNameToAddToList, setItemNameToAddToList] = useState<string | null>(null);
 
+  // Every portaled overlay of this tab closes when the tab is hidden (a tab click or
+  // browser Back to the lists), so none stays on screen or traps focus there. The
+  // pantry listener keeps running.
+  // Bumped when the tab is hidden: a "Put on a shopping list" still reading the
+  // lists then never opens its picker over the other tab.
+  const addToListRequestRef = useRef(0);
+  const tabActive = useOnTabDeactivate(() => {
+    addToListRequestRef.current += 1;
+    setIsItemDialogOpen(false);
+    setItemToEdit(null);
+    setItemToDelete(null);
+    setIsRecipeGenOpen(false);
+    setIsBulkDeleteAlertOpen(false);
+    setIsAddToListDialogOpen(false);
+  });
+
   const changeView = (next: PantryView) => {
     setView(next);
     try {
@@ -768,25 +806,14 @@ export function PantryInventoryClient() {
     return collection(db, 'households', currentUser.householdId, 'pantry-inventory');
   }, [currentUser]);
 
-  const fetchItems = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    const pantryCollection = getPantryCollectionRef();
-    if (!pantryCollection) {
-      setItems([]);
-      setLoading(false);
-      return;
-    }
-    if (!silent) setLoading(true);
-    try {
-      const q = query(pantryCollection, orderBy('name'));
-      const querySnapshot = await getDocsOfflineAware(q);
-      const itemsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PantryItem));
-      setItems(itemsData);
-    } catch (error) {
-      toastError(error, 'Could not load the pantry');
-    } finally {
-      setLoading(false);
-    }
-  }, [getPantryCollectionRef, toastError]);
+  // A pantry that cannot load says so once (the listener keeps retrying).
+  const reportedPantryErrorRef = useRef<unknown>(null);
+  useEffect(() => {
+    const error = pantryState.error;
+    if (!error || reportedPantryErrorRef.current === error) return;
+    reportedPantryErrorRef.current = error;
+    toastError(error, 'Could not load the pantry');
+  }, [pantryState.error, toastError]);
 
   const fetchShoppingLists = useCallback(async () => {
     if (!currentUser?.householdId) return;
@@ -808,13 +835,11 @@ export function PantryInventoryClient() {
     }
   }, [currentUser]);
 
+  // Shopping lists are read on demand (when an item is put on a list); the photo
+  // library once per household.
   useEffect(() => {
-    if (currentUser?.householdId) {
-      fetchItems();
-      fetchShoppingLists().catch(() => undefined);
-      fetchLibrary();
-    }
-  }, [currentUser, fetchItems, fetchShoppingLists, fetchLibrary]);
+    if (currentUser?.householdId) fetchLibrary();
+  }, [currentUser, fetchLibrary]);
 
   const photos = useMemo(() => Object.fromEntries(items.map(item => [item.id, productPhotoForName(item.name, library)])), [items, library]);
 
@@ -890,7 +915,6 @@ export function PantryInventoryClient() {
       const itemRef = doc(pantryCollection, itemId);
       await setDoc(itemRef, itemData, { merge: true });
       toast({ title: 'Item Saved', description: `${itemData.name} has been saved to your inventory.` });
-      await fetchItems({ silent: true });
       return true;
     } catch (error) {
       toastError(error, 'Could not save the item');
@@ -901,15 +925,13 @@ export function PantryInventoryClient() {
   const moveItem = async (item: PantryItem, location: PantryItemLocation) => {
     const pantryCollection = getPantryCollectionRef();
     if (!pantryCollection || item.location === location) return;
-    setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing, location } : existing));
+    // The listener moves the tile at once; a rejected write moves it back.
     try {
       await awaitWriteUnlessOffline(updateDoc(doc(pantryCollection, item.id), { location }), (error) => {
         toastError(error, `Could not move ${item.name}`);
-        void fetchItems({ silent: true });
       });
     } catch (error) {
       toastError(error, `Could not move ${item.name}`);
-      await fetchItems({ silent: true });
     }
   };
 
@@ -920,7 +942,6 @@ export function PantryInventoryClient() {
 
     try {
       await deleteDoc(doc(pantryCollection, itemToDelete.id));
-      await fetchItems({ silent: true });
       toast({ title: "Item Deleted", description: `${itemToDelete.name} removed from pantry.` });
       setItemToDelete(null);
     } catch (error) {
@@ -940,7 +961,6 @@ export function PantryInventoryClient() {
     try {
         await batch.commit();
         toast({ title: 'Items Deleted', description: `${pluralize(selectedItems.length, 'item')} removed.` });
-        await fetchItems({ silent: true });
         setSelectedItems([]);
     } catch (error) {
         toastError(error, 'Could not delete the selected items');
@@ -952,8 +972,11 @@ export function PantryInventoryClient() {
   // Opens the list picker for a pantry item (Grocery lists; creates "Groceries" if there is none).
   const offerAddToList = async (itemName: string) => {
     if (!currentUser?.householdId) return;
+    const request = addToListRequestRef.current;
     const allLists = await fetchShoppingLists().catch(() => undefined) ?? [];
     const groceryLists = allLists.filter(list => list.type === 'Grocery');
+    // The tab was hidden while the lists loaded: drop the request.
+    if (request !== addToListRequestRef.current) return;
 
     if (groceryLists.length === 0) {
       try {
@@ -981,7 +1004,6 @@ export function PantryInventoryClient() {
       toastError(error, 'Could not delete the item');
       return;
     }
-    await fetchItems({ silent: true });
     setItemToDelete(null);
     await offerAddToList(originalItemName);
   };
@@ -1051,7 +1073,7 @@ export function PantryInventoryClient() {
       )}
        {itemNameToAddToList && (
         <AddToListDialog
-          isOpen={isAddToListDialogOpen}
+          isOpen={isAddToListDialogOpen && tabActive}
           onOpenChange={setIsAddToListDialogOpen}
           onItemAdd={handleAddToSpecificList}
           itemName={itemNameToAddToList}

@@ -5,7 +5,7 @@
 import type { HouseholdPermission } from '../types';
 import { choreDueKey, type ChoreRecord } from './dates';
 import { stableSlugify } from '../../../functions/src/shared/ids';
-import { resolveAssigneeUid, type AssigneePerson } from '../../../functions/src/shared/assignee';
+import { isAssignedTo, resolveAssigneeUid, type AssigneePerson } from '../../../functions/src/shared/assignee';
 
 export type ChoreCapabilities = {
   /** Mark chores done, tick sub-tasks, undo a completion. */
@@ -30,6 +30,15 @@ export function choreCapabilities(permissions: Partial<Record<HouseholdPermissio
     canDelete: has('chores.delete'),
     canAssign: has('chores.assign'),
   };
+}
+
+/**
+ * `?who=me` (the Mine filter): whether a chore stays listed. With `who: 'me'` only the
+ * reader's chores do, matched with `isAssignedTo` like every other reader: a uid-only
+ * chore (written since member privacy release C) by uid, an older one by email.
+ */
+export function matchesWhoFilter(chore: ChoreRecord, who: 'all' | 'me', reader: AssigneePerson): boolean {
+  return who !== 'me' || isAssignedTo(chore, reader);
 }
 
 /** A To Do entry: the chore to show, plus older missed instances folded into it. */
