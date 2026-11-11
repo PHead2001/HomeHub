@@ -76,6 +76,42 @@ test.describe('chores wave 2', () => {
     }
   });
 
+  test('a completed chore\'s leaving row is truly inert during its exit slide, with no inert warning', async ({ page }) => {
+    const id = 'chores-ux-leaving-inert';
+    const ref = household.collection('chores').doc(id);
+    await seedChore(id, { task: 'Chores UX leaving row' });
+    const inertWarnings: string[] = [];
+    page.on('console', (message) => {
+      if (/\binert\b/.test(message.text())) inertWarnings.push(message.text());
+    });
+    try {
+      await open(page, '/chores', 'Chore Chart');
+      const check = page.getByRole('checkbox', { name: 'Mark Chores UX leaving row done' });
+      await expect(check).toBeVisible();
+      // Record each row as it starts leaving (aria-hidden is set in the same commit as inert).
+      await page.evaluate(() => {
+        const seen: { inert: boolean }[] = [];
+        (window as unknown as { __leavingRows: typeof seen }).__leavingRows = seen;
+        new MutationObserver((records) => {
+          for (const record of records) {
+            const row = record.target as HTMLElement;
+            if (row.tagName !== 'LI' || row.getAttribute('aria-hidden') !== 'true' || !row.textContent?.includes('Chores UX leaving row')) continue;
+            seen.push({ inert: row.inert });
+          }
+        }).observe(document.querySelector('main')!, { subtree: true, attributes: true, attributeFilter: ['aria-hidden'] });
+      });
+      await check.click();
+      await expect.poll(async () => (await ref.get()).data()?.isCompleted).toBe(true);
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __leavingRows: unknown[] }).__leavingRows.length)).toBeGreaterThan(0);
+      const leaving = await page.evaluate(() => (window as unknown as { __leavingRows: { inert: boolean }[] }).__leavingRows);
+      // The row still holds its buttons while it slides out; inert keeps Tab and clicks out of them.
+      for (const row of leaving) expect(row.inert, 'the leaving row is inert in the browser').toBe(true);
+      expect(inertWarnings, 'React logs no warning about the inert attribute').toEqual([]);
+    } finally {
+      await ref.delete();
+    }
+  });
+
   test('Add Chore validates inline, defaults to me and does not notify me', async ({ page }) => {
     const taskName = 'Chores UX quick add';
     const existing = await household.collection('chores').where('task', '==', taskName).get();

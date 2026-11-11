@@ -182,7 +182,7 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         // item chips and inline details) follow the same height steps: one row below 800 px
         // (50rem), two from 800 px, three from 960 px (60rem); the seed has three needed items.
         // Each is at least 44 px, 48 px on a coarse pointer.
-        const ticks = await page.getByTestId('dashboard-tile-shopping').locator('[data-tick-key]')
+        const ticks = await page.getByTestId('dashboard-tile-shopping').locator('[data-action-key]')
           .evaluateAll((controls) => controls.filter((control) => control.getBoundingClientRect().height > 0).map((control) => control.getBoundingClientRect().height));
         expect(ticks.length, 'Shopping tick rows shown').toBe(viewport.height >= 960 ? 3 : viewport.height >= 800 ? 2 : 1);
         const coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);

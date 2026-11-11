@@ -14,7 +14,8 @@
  *   Offline nothing is queued: "You're offline. Not completed."
  *
  * Every control is a real button beside the tile's link (never inside it), at least 44 px
- * and 48 px on coarse pointers (`styles.target`), with a saving and a failed state.
+ * and 48 px on coarse pointers (`styles.target`), with a saving and a failed state, and
+ * pressed from the keyboard it leaves focus in its tile when it goes.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -39,6 +40,7 @@ import { formatPortion } from '@/lib/pets/care';
 import { memberName, type ChoreEntry, type PetState } from '@/lib/dashboard/facts';
 import { householdSummary, summaryPhrase } from '@/lib/dashboard/household-summary';
 import { cn } from '@/lib/utils';
+import { keepFocusInTile } from './focus-after-action';
 import { useDoneTracking } from './use-done-tracking';
 import styles from './dashboard.module.css';
 
@@ -131,8 +133,13 @@ export function useChoreDone(liveIds?: readonly string[]) {
 
 export type ChoreDone = ReturnType<typeof useChoreDone>;
 
+/**
+ * A one-tap action's button. Pressed while focused, it keeps focus in its tile when it
+ * leaves (`keepFocusInTile`: the next row's action, else the previous one, else the tile
+ * link), so keyboard and switch users never land on the page body.
+ */
 export function ActionButton({
-  state, label, idle, onClick, testId, className, dataKey,
+  state, label, idle, onClick, testId, className, actionKey,
 }: {
   state: ActionState | undefined;
   /** Accessible name in the idle state ("Mark Dishes done"). */
@@ -142,8 +149,8 @@ export function ActionButton({
   onClick: (button: HTMLButtonElement) => void;
   testId: string;
   className?: string;
-  /** `data-tick-key` (the Shopping tile finds the next row's control by it). */
-  dataKey?: string;
+  /** `data-action-key`: the row's key in its tile, by which focus finds the next row's action. */
+  actionKey: string;
 }) {
   const saving = state === 'saving';
   const done = state === 'done';
@@ -152,12 +159,15 @@ export function ActionButton({
     <button
       type="button"
       data-testid={testId}
-      data-tick-key={dataKey}
+      data-action-key={actionKey}
       data-state={state ?? 'idle'}
       aria-label={failed ? `Retry: ${label}` : label}
       aria-busy={saving || undefined}
       disabled={saving || done}
-      onClick={(event) => onClick(event.currentTarget)}
+      onClick={(event) => {
+        keepFocusInTile(event.currentTarget);
+        onClick(event.currentTarget);
+      }}
       className={cn(
         styles.target,
         'inline-flex shrink-0 items-center justify-center gap-1 rounded-md border px-3 text-sm font-medium transition-ui',
@@ -226,6 +236,7 @@ export function HouseholdChores({ work, total, canComplete, done }: { work: Chor
                   idle="Done"
                   label={`Mark ${chore.task} done`}
                   testId={`chore-done-${chore.id}`}
+                  actionKey={chore.id}
                   onClick={(button) => void done.complete(chore, button)}
                 />
               )}
@@ -274,6 +285,7 @@ export function PetFedButton({ pet, className }: { pet: PetState; className?: st
         idle="Fed"
         label={`Mark ${pet.name} fed`}
         testId={`pet-fed-${pet.id}`}
+        actionKey={pet.id}
         onClick={() => void run()}
         className={className}
       />
