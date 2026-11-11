@@ -107,7 +107,9 @@ test.describe('shopping: put away and clear', () => {
     await expect(page.getByTestId('undo-snackbar')).toContainText('E2E Put Away put away');
 
     // Receipt history (SH-32c): the trip, what went where, and its Undo for 15 minutes.
-    await page.getByRole('button', { name: 'Trips' }).click();
+    // Trips is in the open list's actions menu (S8b).
+    await page.getByTestId('open-list').getByRole('button', { name: 'More list actions' }).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: 'Trips', exact: true }).click();
     const history = page.getByRole('dialog', { name: 'Recent trips' });
     await expect(history.getByRole('list', { name: 'Recent trips' })).toContainText(YOGURT);
     await expect(history).toContainText(`Fridge · ${PLUS_3_DAYS}`);

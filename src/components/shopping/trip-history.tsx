@@ -23,6 +23,10 @@ export function TripHistoryButton({
   currentUid,
   canUndo,
   onUndo,
+  open: openProp,
+  onOpenChange,
+  showTrigger = true,
+  onCloseAutoFocus,
 }: {
   householdId: string;
   memberNames: ReadonlyMap<string, string>;
@@ -30,14 +34,25 @@ export function TripHistoryButton({
   /** `shopping.edit` and online. */
   canUndo: boolean;
   onUndo: (tripId: string) => Promise<void>;
+  /** Controlled open state (the open list's overflow menu opens it, S8b). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Draws the "Trips" button (off when a menu item opens the history instead). */
+  showTrigger?: boolean;
+  /** Where focus goes when the dialog closes (opened from a menu, it has no trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = openProp ?? ownOpen;
+  const setOpen = (next: boolean) => (onOpenChange ? onOpenChange(next) : setOwnOpen(next));
   useOnTabDeactivate(() => setOpen(false));
   return (
     <>
-      <Button variant="outline" onClick={() => setOpen(true)} className="min-h-11 [@media(pointer:coarse)]:min-h-12">
-        <History className="mr-2 h-4 w-4" aria-hidden /> Trips
-      </Button>
+      {showTrigger && (
+        <Button variant="outline" onClick={() => setOpen(true)} className="min-h-11 [@media(pointer:coarse)]:min-h-12">
+          <History className="mr-2 h-4 w-4" aria-hidden /> Trips
+        </Button>
+      )}
       {open && (
         <TripHistoryDialog
           householdId={householdId}
@@ -46,6 +61,7 @@ export function TripHistoryButton({
           canUndo={canUndo}
           onUndo={onUndo}
           onClose={() => setOpen(false)}
+          onCloseAutoFocus={onCloseAutoFocus}
         />
       )}
     </>
@@ -53,7 +69,7 @@ export function TripHistoryButton({
 }
 
 function TripHistoryDialog({
-  householdId, memberNames, currentUid, canUndo, onUndo, onClose,
+  householdId, memberNames, currentUid, canUndo, onUndo, onClose, onCloseAutoFocus,
 }: {
   householdId: string;
   memberNames: ReadonlyMap<string, string>;
@@ -61,6 +77,7 @@ function TripHistoryDialog({
   canUndo: boolean;
   onUndo: (tripId: string) => Promise<void>;
   onClose: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const trips = useRecentTrips(householdId);
   const [now, setNow] = useState(() => Date.now());
@@ -74,7 +91,7 @@ function TripHistoryDialog({
 
   return (
     <Dialog open onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent phoneSheet className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="font-headline">Recent trips</DialogTitle>
           <DialogDescription>What was put away after each trip. The latest trip can be undone for 15 minutes.</DialogDescription>

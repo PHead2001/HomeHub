@@ -25,13 +25,8 @@
 }
 
 /* Narrow (a phone): the quick-add dock comes after the items and sticks above the
-   tab bar, within reach of the thumb. `--dock-clearance` clears the tab bar (4rem)
-   and its raised centre button (1.25rem above the bar plus its 4 px ring), so the
-   button never covers the field. */
-.root {
-  --dock-clearance: calc(5.75rem + env(safe-area-inset-bottom));
-}
-
+   tab bar, within reach of the thumb, `--dock-clearance` (globals.css) above the
+   bottom, so the tab bar and its raised centre button never cover the field. */
 .quickAdd {
   order: 3;
   position: sticky;
