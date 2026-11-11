@@ -56,7 +56,7 @@ Primary topology:
 - `users/{email}/private/push` (owner-only push tokens)
 - `households/{householdId}`
 - `households/{householdId}/members/{uid}` (also the public member data housemates read: name, photo, role, status, join time; `householdName` for people who joined by invite)
-- `households/{householdId}/members/{uid}/private/contact` (the member's email; server-written, readable by the person and `household.manageMembers`; see [Household Governance](../household-governance/README.md), "Member contact")
+- `households/{householdId}/members/{uid}/private/contact` (the member's email; server-written, readable by the person and holders of `household.manageMembers` with `household.view`; see [Household Governance](../household-governance/README.md), "Member contact")
 - `households/{householdId}/notifications/{notificationId}`
 - `households/{householdId}/auditLogs/{auditId}`
 - `households/{householdId}/chores/{choreId}`
@@ -84,7 +84,7 @@ Chores and chore templates carry `assignedToUid` next to the legacy `assignedToE
 
 Rules use Firebase Auth UID/email and UID membership documents only; `households.memberEmails` and profile household fields grant nothing. Pending `newuser` members are blocked from ordinary household subcollections. Storage rules read the same membership records through cross-service `firestore.get()`, apply the same role presets and overrides, and enforce image-only uploads (5–10 MB) for pets, barcode images and avatars and a 15 MB document/image allowlist for maintenance attachments; every other path is denied. Cross-service reads require the Storage service agent to hold `roles/firebaserules.firestoreServiceAgent` (granted on `homehub-j91jb` 2026-11-06).
 
-Household management is server-only in the rules: clients cannot create or delete households, change a household's `name`, `ownerUid`, `ownerEmail` or `memberEmails` (owners and admins may still set `timeZone`), write membership records (their own included), write `inviteCodes` or `auditLogs`, or write anyone's profile household fields except clearing their own stale pointer. Holders of `household.manageInvites` read their household's invite codes and holders of `household.manageMembers` read the audit log (role defaults and overrides both count). The server actions write all of these with the Admin SDK; see [Household Governance](../household-governance/README.md), "Household writes are server-only in the rules".
+Household management is server-only in the rules: clients cannot create or delete households, change a household's `name`, `ownerUid`, `ownerEmail` or `memberEmails` (owners and admins may still set `timeZone`), write membership records (their own included), write `inviteCodes` or `auditLogs`, or write anyone's profile household fields except clearing their own stale pointer. Holders of `household.manageInvites` read their household's invite codes and holders of `household.manageMembers` read the audit log, each only while they also hold `household.view` (role defaults and overrides both count; the owner always holds both). The server actions write all of these with the Admin SDK; see [Household Governance](../household-governance/README.md), "Household writes are server-only in the rules".
 
 Home Assistant credentials under `home-automation/*` are denied to every client, owners included; only the authorized server actions read and write them with the Admin SDK.
 
