@@ -413,6 +413,8 @@ export type BarcodeLibraryItem = {
   imageUrl: string;
   imagePath?: string;
   createdAt: string; // ISO String
+  /** Who saved the product (the writer of the create; immutable). Absent on older products. */
+  createdByUid?: string;
 };
 
 

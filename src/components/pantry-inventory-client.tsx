@@ -64,6 +64,8 @@ import { PlusCircle, Trash2, Edit, CalendarIcon, Loader2, ScanBarcode, Plus, Min
 import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
+import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Checkbox } from './ui/checkbox';
@@ -112,8 +114,10 @@ function PantryItemDialog({
   if (!isOpen && isScannerOpen) setIsScannerOpen(false);
   const [unitCategory, setUnitCategory] = useState<UnitCategory>('Count');
   const pendingScannedUnit = useRef<PantryItemUnit | null>(null);
-  const { toast, toastError } = useToast();
-  const { currentUser } = useAuth();
+  const { toast } = useToast();
+  const { currentUser, permissions } = useAuth();
+  const lookupFeedback = useLookupFeedback();
+  const scanOptions = { fallback: 'type the name instead', canSave: Boolean(permissions['shopping.edit']) };
   
   const form = useForm<PantryItemFormValues>({
     resolver: zodResolver(pantryItemSchema),
@@ -200,7 +204,8 @@ function PantryItemDialog({
           await getAiActionContext(currentUser.householdId)
         ));
         const { productName } = result;
-        if (productName) {
+        const miss = result.libraryItem ? null : lookupMiss(result);
+        if (productName && !miss) {
             if (!form.formState.dirtyFields.name) form.setValue('name', productName);
             if (result.quantity && result.unit
               && !form.formState.dirtyFields.quantity
@@ -216,10 +221,11 @@ function PantryItemDialog({
                 : `${productName} has been filled in. Enter the package quantity manually.`,
             });
         } else {
-            toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. Type the name instead.' });
+            // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
+            lookupFeedback.reportMiss(miss ?? { kind: 'not-found' }, barcode, scanOptions);
         }
     } catch (error) {
-        toastError(error, 'Barcode lookup failed');
+        lookupFeedback.reportError(error, barcode, scanOptions);
     }
   };
 

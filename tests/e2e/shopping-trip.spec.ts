@@ -511,7 +511,7 @@ test.describe('pantry shelves', () => {
 });
 
 test.describe('barcode library', () => {
-  test('photo-first cards, a real count and a placeholder for missing photos', async ({ page }, testInfo) => {
+  test('photo-first cards, a real count, a placeholder for missing photos and an optional photo', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const library = household.collection('barcode-library');
     await library.doc('100000000099').set({ name: 'E2E photoless product', imageUrl: '', createdAt: fixedNow.toISOString() });
@@ -527,14 +527,14 @@ test.describe('barcode library', () => {
       await page.getByLabel('Search the library').fill('photoless');
       await expect(page.getByRole('article')).toHaveCount(1);
 
-      // A missing photo is an inline field error, not a toast.
+      // The photo is optional (BL-10): a barcode can map to just a name.
       await page.getByRole('button', { name: 'Add Item' }).click();
       const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
       await dialog.getByLabel('Barcode (UPC)').fill('100000000098');
-      await dialog.getByLabel('Product Name').fill('E2E needs a photo');
+      await dialog.getByLabel('Product Name').fill('E2E name only');
       await dialog.getByRole('button', { name: 'Save Item' }).click();
-      await expect(dialog.getByRole('alert').filter({ hasText: 'Add a photo of the product.' })).toBeVisible();
-      expect((await library.doc('100000000098').get()).exists).toBe(false);
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async () => (await library.doc('100000000098').get()).data()?.imageUrl, { timeout: 10_000 }).toBe('');
     } finally {
       await library.doc('100000000099').delete();
       await library.doc('100000000098').delete();

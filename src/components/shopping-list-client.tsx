@@ -38,7 +38,10 @@ import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
 import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
-import { scanToShoppingEntry } from '@/lib/shopping/scan';
+import { scanToShoppingEntry, type ScanEntry } from '@/lib/shopping/scan';
+import { lookupMiss } from '@/lib/barcode/lookup-outcome';
+import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { ScanToTick } from './shopping/scan-to-tick';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
 import { editUpdate, restoreDocument, restoreIfAbsent, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
 import {
@@ -242,6 +245,7 @@ export function ShoppingListClient({
 }) {
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
+  const lookupFeedback = useLookupFeedback();
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
@@ -685,18 +689,21 @@ export function ShoppingListClient({
         await getAiActionContext(currentUser.householdId)
       ));
       const entry = scanToShoppingEntry(result);
-      if (entry) {
-        await onAddItemSubmit(
-          { name: entry.name, quantity: entry.quantity, category: getValues('category') },
-          { libraryItem: result.libraryItem, barcode, size: entry.size, sizeUnit: entry.sizeUnit },
-        );
+      const miss = result.libraryItem ? null : lookupMiss(result);
+      if (entry && !miss) {
+        await addScannedEntry(entry, { libraryItem: result.libraryItem, barcode });
       } else {
-        toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. You can add it to your Barcode Library.' });
+        // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
+        lookupFeedback.reportMiss(miss ?? { kind: 'not-found' }, barcode, { fallback: 'type the name instead', canSave: canEdit });
       }
     } catch (error) {
-      toastError(error, 'Barcode lookup failed');
+      lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit });
     }
   };
+  const addScannedEntry = (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) => onAddItemSubmit(
+    { name: entry.name, quantity: entry.quantity, category: getValues('category') },
+    { ...extras, size: entry.size, sizeUnit: entry.sizeUnit },
+  );
 
   // --- Undo (S3: SH-15a/b, UNDO-10s) ---
   // One 10 s Undo per group (the latest tick, the latest delete), shown in the
@@ -1295,6 +1302,7 @@ export function ShoppingListClient({
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
                         {householdId && <ManageCategoriesDialog categories={categories} householdId={householdId} listId={selectedList.id} />}
+                        {householdId && <ScanToTick householdId={householdId} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
