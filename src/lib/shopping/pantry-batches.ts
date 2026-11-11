@@ -466,6 +466,46 @@ export function batchAmountLabel(batch: Pick<PantryBatch, 'packages' | 'packageS
   return `${count} ${batch.packages === 1 ? 'pack' : 'packs'} (${batch.unit})`;
 }
 
+/** Larger units a repair edit restates an oversized amount in (150,000 g is 150 kg). */
+const LARGER_UNIT: Partial<Record<PantryItemUnit, { unit: PantryItemUnit; factor: number }>> = {
+  g: { unit: 'kg', factor: 1000 },
+  ml: { unit: 'L', factor: 1000 },
+};
+
+/**
+ * The form values a repair edit of a `needsRepair` batch starts with: always 1
+ * package (never 0, which would store no stock and let the cleanup delete it) and,
+ * when the stored amount converts cleanly to a larger unit within one package's
+ * limit (g to kg, ml to L), that unit and size; otherwise the stored unit with no
+ * size, which the member must enter (`repairEditError`).
+ */
+export function repairEditPrefill(batch: Pick<PantryBatch, 'unit' | 'repairAmount'>): { packages: number; unit: PantryItemUnit; packageSize: number | null } {
+  const larger = LARGER_UNIT[batch.unit];
+  const amount = batch.repairAmount;
+  if (larger && amount !== null && amount > 0) {
+    const converted = amount / larger.factor;
+    if (validSize(converted) !== null) return { packages: 1, unit: larger.unit, packageSize: converted };
+  }
+  return { packages: 1, unit: batch.unit, packageSize: null };
+}
+
+export const REPAIR_PACKAGES_MESSAGE = 'Keep at least 1 package: this item still has stock.';
+export const REPAIR_SIZE_MESSAGE = `Enter the size of one package, above 0 and up to ${MAX_PACKAGE_SIZE}.`;
+
+/**
+ * Why a repair edit cannot be saved yet, or null when it can: it needs at least
+ * one package and, for a weight or volume, a valid size of one package, so
+ * correcting the size can never store zero stock.
+ */
+export function repairEditError(values: { packages: number; unit: string; packageSize: string }): { field: 'packages' | 'packageSize'; message: string } | null {
+  if (!(Number(values.packages) >= 1)) return { field: 'packages', message: REPAIR_PACKAGES_MESSAGE };
+  if (!isCountUnit(values.unit)) {
+    const size = values.packageSize.trim() === '' ? null : Number(values.packageSize);
+    if (validSize(size !== null && Number.isFinite(size) ? size : null) === null) return { field: 'packageSize', message: REPAIR_SIZE_MESSAGE };
+  }
+  return null;
+}
+
 /** A tile's summary: each batch's amount with its expiry ("2 × 450 g · next Fri, 1 × 450 g"). */
 export function productSummary(product: Pick<PantryProduct, 'batches'>, today: string): string {
   return product.batches

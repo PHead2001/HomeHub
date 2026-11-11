@@ -41,7 +41,7 @@ import {
   type PantryBatch,
 } from '../../src/lib/shopping/pantry-batches';
 import { daysUntilExpiry, expiryState, pantryLocationForCategory, pantryMergeStillValid, planPantryHandoff } from '../../src/lib/shopping/pantry';
-import { MAX_PACKAGES, fillBatch, packageChangeToast, planMergeAdd, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
+import { MAX_PACKAGES, REPAIR_PACKAGES_MESSAGE, REPAIR_SIZE_MESSAGE, fillBatch, packageChangeToast, planMergeAdd, repairEditError, repairEditPrefill, roundAmount, splitPackages } from '../../src/lib/shopping/pantry-batches';
 import { notifyDataChanged, onDataChanged } from '../../src/lib/data-changed';
 
 const CENTRAL = 'America/Chicago';
@@ -712,5 +712,37 @@ describe('a pantry → shopping write refreshes the Lists tab counts (PR #129 re
     assert.match(add, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), quantity\)\) \{\s+announceShoppingWrite\(householdId, list\.id, 'merged'\);/);
     assert.match(add, /const outcome = await awaitWriteUnlessOffline\(setDoc\(doc\(itemsRef, itemId\), data\), onLateError\);\s+announceShoppingWrite\(householdId, list\.id, outcome\);/);
     assert.match(add, /if \(notice\) notifyDataChanged\(notice\);/);
+  });
+});
+
+describe('editing a batch that needs repair can never store zero stock (PR #129 review)', () => {
+  test('a repair edit starts at 1 package with a clean larger-unit size where one exists', () => {
+    const grams = readPantryBatch('flour', { name: 'Flour', quantity: 150_000, unit: 'g', location: 'Pantry' }, CENTRAL);
+    assert.deepEqual(repairEditPrefill(grams), { packages: 1, unit: 'kg', packageSize: 150 });
+    const millilitres = readPantryBatch('water', { name: 'Water', quantity: 150_000, unit: 'ml', location: 'Pantry' }, CENTRAL);
+    assert.deepEqual(repairEditPrefill(millilitres), { packages: 1, unit: 'L', packageSize: 150 });
+  });
+
+  test('without a clean conversion it keeps the unit, starts at 1 package and leaves the size empty', () => {
+    const ounces = readPantryBatch('oats', { name: 'Oats', quantity: 150_000, unit: 'oz', location: 'Pantry' }, CENTRAL);
+    assert.deepEqual(repairEditPrefill(ounces), { packages: 1, unit: 'oz', packageSize: null });
+    const kilos = readPantryBatch('sand', { name: 'Sand', quantity: 150_000, unit: 'kg', location: 'Pantry' }, CENTRAL);
+    assert.deepEqual(repairEditPrefill(kilos), { packages: 1, unit: 'kg', packageSize: null });
+    assert.deepEqual(repairEditPrefill({ unit: 'g', repairAmount: 200_000_000 }), { packages: 1, unit: 'g', packageSize: null });
+  });
+
+  test('saving a repair edit is refused at 0 packages or without a valid size', () => {
+    assert.deepEqual(repairEditError({ packages: 0, unit: 'kg', packageSize: '150' }), { field: 'packages', message: REPAIR_PACKAGES_MESSAGE });
+    assert.deepEqual(repairEditError({ packages: 1, unit: 'oz', packageSize: '' }), { field: 'packageSize', message: REPAIR_SIZE_MESSAGE });
+    assert.deepEqual(repairEditError({ packages: 1, unit: 'g', packageSize: '150000' }), { field: 'packageSize', message: REPAIR_SIZE_MESSAGE });
+    assert.deepEqual(repairEditError({ packages: 1, unit: 'g', packageSize: '0' }), { field: 'packageSize', message: REPAIR_SIZE_MESSAGE });
+    assert.equal(repairEditError({ packages: 1, unit: 'kg', packageSize: '150' }), null);
+    assert.equal(repairEditError({ packages: 3, unit: 'items', packageSize: '' }), null);
+  });
+
+  test('the edit dialog uses the prefill and refuses an invalid repair save inline', () => {
+    const client = readFileSync(join(process.cwd(), 'src/components/pantry-inventory-client.tsx'), 'utf8');
+    assert.match(client, /itemToEdit\.needsRepair \? repairEditPrefill\(itemToEdit\) : itemToEdit/);
+    assert.match(client, /itemToEdit\?\.needsRepair \? repairEditError\(data\) : null;\s+if \(repairProblem\) \{\s+form\.setError\(repairProblem\.field/);
   });
 });

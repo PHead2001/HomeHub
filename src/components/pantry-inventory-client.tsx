@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, chooseAddOneBatch, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
+import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, chooseAddOneBatch, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
@@ -165,12 +165,14 @@ function PantryItemDialog({
   useEffect(() => {
     pendingScannedUnit.current = null;
     if (itemToEdit) {
-      setUnitCategory(getCategoryFromUnit(itemToEdit.unit));
+      // A batch that needs repair starts at 1 package with a suggested size, never 0 (stock kept).
+      const start = itemToEdit.needsRepair ? repairEditPrefill(itemToEdit) : itemToEdit;
+      setUnitCategory(getCategoryFromUnit(start.unit));
       reset({
         name: itemToEdit.name,
-        packages: itemToEdit.packages,
-        unit: itemToEdit.unit,
-        packageSize: itemToEdit.packageSize === null ? '' : String(itemToEdit.packageSize),
+        packages: start.packages,
+        unit: start.unit,
+        packageSize: start.packageSize === null ? '' : String(start.packageSize),
         location: itemToEdit.location,
         expiryDate: itemToEdit.expiryDate,
         barcode: itemToEdit.barcode ?? undefined,
@@ -198,6 +200,11 @@ function PantryItemDialog({
 
 
   const handleSubmit = async (data: PantryItemFormValues) => {
+    const repairProblem = itemToEdit?.needsRepair ? repairEditError(data) : null;
+    if (repairProblem) {
+      form.setError(repairProblem.field, { type: 'repair', message: repairProblem.message }, { shouldFocus: true });
+      return;
+    }
     const success = await onSave(data, itemToEdit?.id);
     if (success) {
       onOpenChange(false);
@@ -370,7 +377,7 @@ function PantryItemDialog({
                 name="packageSize"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Size of one package ({currentUnit}, optional)</FormLabel>
+                    <FormLabel>Size of one package ({currentUnit}{itemToEdit?.needsRepair ? '' : ', optional'})</FormLabel>
                     <FormControl>
                       <Input type="number" inputMode="decimal" min={0} step="any" placeholder="e.g. 450" {...field} />
                     </FormControl>
