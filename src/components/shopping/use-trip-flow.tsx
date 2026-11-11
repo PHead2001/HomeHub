@@ -12,6 +12,7 @@ import type { QuickAddEntry } from '@/lib/shopping/items';
 import { purchasesAlreadyPutAway, rememberAfterTrip, useAfterTripPreference, useShoppingUsuals } from '@/lib/shopping/trip-live';
 import { tripGroup, tripOutcomeText, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
 import type { TripUndo, UndoEntry } from '@/lib/shopping/undo';
+import { createRequestGate } from '@/lib/shopping/request-gate';
 import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import type { ShoppingList, ShoppingListItem } from '@/lib/types';
 import { PutAwayDialog } from './put-away-dialog';
@@ -86,8 +87,14 @@ export function useTripFlow({
   const afterTrip = useAfterTripPreference(householdId);
   const usuals = useShoppingUsuals(isGrocery && canEdit ? householdId : null);
   const [putAway, setPutAway] = useState<PutAwayTarget | null>(null);
-  // The put-away dialog is portaled outside the tab panel: it closes with the tab.
-  useOnTabDeactivate(() => setPutAway(null));
+  // Openings that wait for a lookup: leaving the tab (or a newer opening) makes a pending one stale.
+  const [openGate] = useState(createRequestGate);
+  // The put-away dialog is portaled outside the tab panel: it closes with the tab,
+  // and an opening still waiting for its lookup never shows it afterwards.
+  const tabActive = useOnTabDeactivate(() => {
+    openGate.invalidate();
+    setPutAway(null);
+  });
 
   /** Put away & clear needs both permissions the rules ask for; members who cannot delete put away only. */
   const putAwayMode: TripMode | null = isGrocery && canEdit ? (canDelete ? 'putAwayAndClear' : 'putAway') : null;
@@ -103,16 +110,18 @@ export function useTripFlow({
     const listId = list.id;
     const listName = list.name;
     const items = purchasedItems;
+    const ticket = openGate.begin();
     // A purchase already in the pantry: by its credit stamp, or by an earlier trip
     // that credited its purchase id (a deleted and restored item has no stamp).
     const credited = await purchasesAlreadyPutAway(householdId, items.flatMap((item) => (item.purchaseOpId ? [item.purchaseOpId] : [])));
+    if (!openGate.isCurrent(ticket)) return;
     const group = tripGroup(items, mode, credited);
     if (group.items.length === 0) {
       toast({ title: 'Already put away', description: 'These purchases are already on the pantry shelves.' });
       return;
     }
     setPutAway({ mode, householdId, listId, listName, items: group.items, shelvedIds: group.shelvedIds, left: group.left });
-  }, [householdId, list, purchasedItems, toast]);
+  }, [householdId, list, openGate, purchasedItems, toast]);
 
   const confirm = async (target: PutAwayTarget, tripId: string, choices: TripChoice[]): Promise<boolean> => {
     if (isBrowserOffline()) {
@@ -207,7 +216,7 @@ export function useTripFlow({
     ? <UsualChips suggestions={suggestions} onAdd={(name) => void onQuickAdd([{ name, quantity: 1 }])} />
     : null;
 
-  const dialog: ReactNode = putAway && householdId === putAway.householdId && list?.id === putAway.listId ? (
+  const dialog: ReactNode = putAway && tabActive && householdId === putAway.householdId && list?.id === putAway.listId ? (
     <PutAwayDialog
       open
       onOpenChange={(open) => { if (!open) setPutAway(null); }}

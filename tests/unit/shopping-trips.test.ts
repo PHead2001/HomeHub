@@ -33,6 +33,7 @@ import {
   type TripChoice,
 } from '../../src/lib/shopping/trip-plan';
 import { pantryBatchFields } from '../../src/lib/shopping/pantry-batches';
+import { createRequestGate } from '../../src/lib/shopping/request-gate';
 import { pushJournal, readJournal, type JournalStorage, type UndoEntry } from '../../src/lib/shopping/undo';
 
 const ts = (ms: number) => ({ toMillis: () => ms });
@@ -378,5 +379,29 @@ describe('wiring (source checks)', () => {
     const client = read('components', 'shopping-list-client.tsx');
     assert.match(client, /open=\{emptyList !== null\} onOpenChange=\{\(open\) => \{ if \(!open\) setEmptyList\(null\); \}\}/);
     assert.doesNotMatch(client, /setIsArchiveAlertOpen/);
+  });
+});
+
+describe('opening the put-away dialog after a lookup', () => {
+  test('a pending opening is stale once the tab is left or a newer opening starts', () => {
+    const gate = createRequestGate();
+    const first = gate.begin();
+    assert.equal(gate.isCurrent(first), true);
+    gate.invalidate();
+    assert.equal(gate.isCurrent(first), false, 'left the tab while the lookup was pending');
+    const second = gate.begin();
+    const third = gate.begin();
+    assert.equal(gate.isCurrent(second), false, 'a newer opening wins');
+    assert.equal(gate.isCurrent(third), true);
+  });
+
+  test('the hook checks the gate after the lookup and only shows the dialog on the active tab', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'components', 'shopping', 'use-trip-flow.tsx'), 'utf8');
+    const open = source.slice(source.indexOf('const openPutAway'), source.indexOf('const confirm'));
+    assert.ok(open.indexOf('openGate.begin()') < open.indexOf('await purchasesAlreadyPutAway'));
+    assert.ok(open.indexOf('await purchasesAlreadyPutAway') < open.indexOf('if (!openGate.isCurrent(ticket)) return;'));
+    assert.ok(open.indexOf('if (!openGate.isCurrent(ticket)) return;') < open.indexOf('setPutAway('));
+    assert.match(source, /useOnTabDeactivate\(\(\) => \{\s*openGate\.invalidate\(\);\s*setPutAway\(null\);/);
+    assert.match(source, /const dialog: ReactNode = putAway && tabActive &&/);
   });
 });
