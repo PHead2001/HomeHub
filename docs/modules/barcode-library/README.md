@@ -37,7 +37,7 @@ Simple supported quantities (`g`, `kg`, `oz`, `lbs`, `ml`, `L`, `fl oz`, and una
 
 - Firestore: `households/{householdId}/barcode-library/{barcode}`.
 - Storage: `households/{householdId}/barcode-library/{uuid}.{extension}`.
-- `BarcodeLibraryItem` contains barcode `id`, `name`, `imageUrl`, optional managed `imagePath`, ISO `createdAt`, and (accepted by the rules; written by the app from the release that uses it) `createdByUid`.
+- `BarcodeLibraryItem` contains barcode `id`, `name`, `imageUrl`, optional managed `imagePath`, ISO `createdAt`, and `createdByUid` (accepted by the rules and fixed once stored; the library page does not set it on a new product yet, and an edit, which replaces the document, writes a stored creator back so the product stays editable).
 - The barcode value is the Firestore document ID.
 
 Deleting a mapping removes Firestore metadata first. Storage cleanup runs only for a recognized household barcode path and is best effort; external URLs and empty image values are not passed to Firebase Storage.
