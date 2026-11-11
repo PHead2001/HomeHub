@@ -18,7 +18,7 @@ import {
   canRenameHousehold,
   canTransferOwnership,
 } from '@/lib/household-policy';
-import { assignableRoles, hasPermission } from '@/lib/permissions';
+import { assignableRoles } from '@/lib/permissions';
 import { memberColorMap } from '@/lib/member-colors';
 import type { HouseholdMember, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 import { EmptyState } from '@/components/empty-state';
@@ -60,6 +60,7 @@ import {
   changedPermissions,
   INVITE_STATE_LABELS,
   describeAuditAction,
+  householdManagerReads,
   householdNameError,
   inviteState,
   isActiveInvite,
@@ -89,7 +90,10 @@ export function HouseholdManagementClient() {
   const canManageMembers = permissions['household.manageMembers'];
   const canManageInvites = mayManageInvites(currentMember).ok;
   const canRename = canRenameHousehold(currentMember).ok;
-  const canRemind = canRemindPendingMembers(currentMember).ok;
+  // Without `household.view` the page is not shown and reads nothing; invite codes,
+  // the activity log and contact documents also need it under firestore.rules.
+  const reads = householdManagerReads(permissions);
+  const canRemind = reads.page && canRemindPendingMembers(currentMember).ok;
   const isOwner = currentMember?.role === 'owner';
   // firestore.rules: audit entries are readable with `household.manageMembers`, the
   // invite list with `household.manageInvites` (role defaults and overrides both count).
@@ -119,11 +123,12 @@ export function HouseholdManagementClient() {
 
   const live = useHouseholdLiveData({
     householdId: household?.id,
+    enabled: reads.page,
     currentMember,
-    canListInvites: canManageInvites,
-    canReadAudit,
-    canViewChores: Boolean(permissions['chores.view']),
-    canManageMembers: canSeeMemberEmails(permissions),
+    canListInvites: reads.invites && canManageInvites,
+    canReadAudit: reads.audit && canReadAudit,
+    canViewChores: reads.choreStats,
+    canManageMembers: reads.contacts && canSeeMemberEmails(permissions),
     ownEmail: currentUser?.email ?? null,
   });
   const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
@@ -381,12 +386,17 @@ export function HouseholdManagementClient() {
     );
   }
 
-  if (!hasPermission(currentMember?.role, 'household.view', currentMember?.permissions)) {
+  if (!reads.page) {
+    const pending = !currentMember || currentMember.role === 'newuser' || currentMember.status === 'pending';
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Waiting for approval</CardTitle>
-          <CardDescription>An owner or admin needs to choose your role before you can see household settings.</CardDescription>
+          <CardTitle>{pending ? 'Waiting for approval' : 'Household settings are not available to you'}</CardTitle>
+          <CardDescription>
+            {pending
+              ? 'An owner or admin needs to choose your role before you can see household settings.'
+              : 'An owner or admin can turn on View household for you.'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Button asChild variant="outline">

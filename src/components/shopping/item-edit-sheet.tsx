@@ -146,7 +146,7 @@ export function ItemEditSheet({
 
   return (
     <Dialog open={item !== null} onOpenChange={onOpenChange}>
-      <DialogContent hideClose onCloseAutoFocus={onCloseAutoFocus} data-testid="item-edit-sheet">
+      <DialogContent phoneSheet hideClose onCloseAutoFocus={onCloseAutoFocus} data-testid="item-edit-sheet">
         <DialogHeader className="pr-12">
           <DialogTitle className="font-headline">Edit {item?.name}</DialogTitle>
           <DialogDescription>Change the name, quantity or category. Delete removes it for everyone, with 10 seconds to undo.</DialogDescription>

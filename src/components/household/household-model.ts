@@ -340,3 +340,36 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
   const words = log.action.replace(/[._]+/g, ' ').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Household activity';
 }
+
+/** Which Household Manager listeners the viewer opens (`householdManagerReads`). */
+export type HouseholdManagerReads = {
+  /** `household.view`: the page itself, and with it the household and member listeners. */
+  page: boolean;
+  /** Invite codes: `household.view` and `household.manageInvites`. */
+  invites: boolean;
+  /** Activity log: `household.view` and `household.manageMembers`. */
+  audit: boolean;
+  /** Other members' contact documents: `household.view` and `household.manageMembers`. */
+  contacts: boolean;
+  /** Member chore counts: `household.view` and `chores.view`. */
+  choreStats: boolean;
+};
+
+/**
+ * What the Household Manager reads, from the viewer's effective permissions
+ * (`getMemberPermissions`). It mirrors firestore.rules, where invite codes, the
+ * activity log and other members' contact documents need `household.view` as well
+ * as their own permission, so no listener is opened that the rules would deny.
+ * Without `household.view` the page reads nothing.
+ */
+export function householdManagerReads(permissions: Partial<Record<HouseholdPermission, boolean>> | null | undefined): HouseholdManagerReads {
+  const page = Boolean(permissions?.['household.view']);
+  const manageMembers = page && Boolean(permissions?.['household.manageMembers']);
+  return {
+    page,
+    invites: page && Boolean(permissions?.['household.manageInvites']),
+    audit: manageMembers,
+    contacts: manageMembers,
+    choreStats: page && Boolean(permissions?.['chores.view']),
+  };
+}
