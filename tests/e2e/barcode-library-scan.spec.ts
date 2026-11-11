@@ -65,9 +65,10 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
     desktopOnly(testInfo);
     await open(page, `/shopping?list=${LIST_ID}`, 'Shopping Center');
     await scanIntoAddItem(page, UNKNOWN);
-    const toast = page.getByRole('status').filter({ hasText: 'Product not found' });
-    await expect(toast).toBeVisible();
-    await page.getByRole('button', { name: 'Save to library' }).click();
+    // Shown inside Add Item (a toast's action would be unreachable behind the modal).
+    const addDialog = page.getByRole('dialog', { name: 'Add Item to List' });
+    await expect(addDialog.getByRole('alert').filter({ hasText: 'Product not found' })).toBeVisible();
+    await addDialog.getByRole('link', { name: 'Save to library' }).click();
 
     await expect(page).toHaveURL(/\/library$/);
     const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
@@ -125,15 +126,19 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
     desktopOnly(testInfo);
     await open(page, `/shopping?list=${LIST_ID}`, 'Shopping Center');
     await scanIntoAddItem(page, TIMEOUT);
-    await expect(page.getByRole('status').filter({ hasText: 'Lookup unavailable' })).toBeVisible();
+    const addDialog = page.getByRole('dialog', { name: 'Add Item to List' });
+    await expect(addDialog.getByRole('alert').filter({ hasText: 'Lookup unavailable' })).toBeVisible();
     await expect(page.getByText('Product not found')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Save to library' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Save to library' })).toHaveCount(0);
   });
 
   test('scanning a needed product ticks it with Undo; a product not on the list is offered as an Add (SH-33f)', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const juice = listRef.collection('items').doc('juice');
     await juice.set({ name: 'E2E Family Juice', quantity: 1, category: 'Drinks', status: 'needed', createdAt: fixedNow });
+    // A second needed item, so ticking the juice does not complete the trip (that
+    // opens the trip receipt over the list, as any last tick does).
+    await listRef.collection('items').doc('tea').set({ name: 'E2E tea', quantity: 1, category: 'Other', status: 'needed', createdAt: fixedNow });
     await open(page, `/shopping?list=${LIST_ID}`, 'Shopping Center');
     await expect(page.getByRole('checkbox', { name: /E2E Family Juice/ })).toBeVisible();
 

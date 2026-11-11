@@ -43,6 +43,7 @@ import { currentItemForToggle } from '@/lib/shopping/scan-tick';
 import { addScannedProduct, dialogAfterScan } from '@/lib/shopping/scan-add';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
 import { ScanToTick } from './shopping/scan-to-tick';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { rowPhoto } from '@/lib/shopping/row-photo';
@@ -251,6 +252,9 @@ export function ShoppingListClient({
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
   const lookupFeedback = useLookupFeedback();
+  // A miss from the scanner inside Add Item is shown in that dialog (a toast's
+  // action would be unreachable behind the modal).
+  const addScanMiss = useScanMiss();
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
@@ -360,6 +364,7 @@ export function ShoppingListClient({
   // The Add Item scanner is nested in the Add Item dialog: it never outlives it
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
+  if (!isAddItemDialogOpen && addScanMiss.scanMiss) addScanMiss.clear();
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
@@ -695,7 +700,13 @@ export function ShoppingListClient({
     if (!currentUser?.householdId) return;
     const started = currentDialogDraft();
     const category = getValues('category');
+    addScanMiss.clear();
     setIsScannerOpen(false);
+    // Inline in the same opening of Add Item when it is still open, else a toast.
+    const showMiss = (show: () => void, toastInstead: () => void) => {
+      if (addDialogOpenRef.current && addDialogSessionRef.current === started.session) show();
+      else toastInstead();
+    };
     toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
     try {
       const result = unwrapAiActionResult(await lookupBarcode(
@@ -711,10 +722,13 @@ export function ShoppingListClient({
         }
       } else {
         // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
-        lookupFeedback.reportMiss(miss ?? { kind: 'not-found' }, barcode, { fallback: 'type the name instead', canSave: canEdit });
+        const found = miss ?? { kind: 'not-found' as const };
+        showMiss(() => addScanMiss.reportMiss(found, barcode),
+          () => lookupFeedback.reportMiss(found, barcode, { fallback: 'type the name instead', canSave: canEdit }));
       }
     } catch (error) {
-      lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit });
+      showMiss(() => addScanMiss.reportError(error, barcode),
+        () => lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit }));
     }
   };
   const scanAddDeps = {
@@ -1435,6 +1449,7 @@ export function ShoppingListClient({
                                     </Button>
                                 </DialogFooter>
                                 {dialogStatus && <p role="status" className="text-sm text-muted-foreground">{dialogStatus}</p>}
+                                <LookupMissNotice scanMiss={addScanMiss.scanMiss} fallback="type the name instead" canSave={canEdit} />
                                 </form>
                             </Form>
                         </DialogContent>

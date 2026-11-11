@@ -65,6 +65,7 @@ import { buttonVariants } from './ui/button';
 import { slugify } from '@/lib/utils';
 import { BarcodeScanner } from './barcode-scanner';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
@@ -118,6 +119,8 @@ function PantryItemDialog({
   const { toast } = useToast();
   const { currentUser, permissions } = useAuth();
   const lookupFeedback = useLookupFeedback();
+  // A miss is shown inside this modal dialog (a toast's action would be unreachable).
+  const scanMiss = useScanMiss();
   const scanOptions = { fallback: 'type the name instead', canSave: Boolean(permissions['shopping.edit']) };
   const scanSessionRef = useRef(0);
   
@@ -151,6 +154,7 @@ function PantryItemDialog({
     pendingScannedUnit.current = null;
     // A lookup still running belongs to the previous opening: its answer is dropped.
     scanSessionRef.current += 1;
+    scanMiss.clear();
     if (itemToEdit) {
       const category = getCategoryFromUnit(itemToEdit.unit);
       setUnitCategory(category);
@@ -198,6 +202,7 @@ function PantryItemDialog({
   
   const handleBarcodeScan = async (barcode: string) => {
     const session = scanSessionRef.current;
+    scanMiss.clear();
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
     try {
@@ -229,10 +234,12 @@ function PantryItemDialog({
             });
         } else {
             // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
-            lookupFeedback.reportMiss(miss ?? { kind: 'not-found' }, barcode, scanOptions);
+            scanMiss.reportMiss(miss ?? { kind: 'not-found' }, barcode);
         }
     } catch (error) {
-        lookupFeedback.reportError(error, barcode, scanOptions);
+        // Inline only in the same opening; otherwise a toast (the dialog is gone).
+        if (session === scanSessionRef.current) scanMiss.reportError(error, barcode);
+        else lookupFeedback.reportError(error, barcode, scanOptions);
     }
   };
 
@@ -402,6 +409,7 @@ function PantryItemDialog({
                 {form.formState.isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Save Item'}
               </Button>
             </DialogFooter>
+            <LookupMissNotice scanMiss={scanMiss.scanMiss} fallback="type the name instead" canSave={scanOptions.canSave} />
           </form>
         </Form>
       </DialogContent>
