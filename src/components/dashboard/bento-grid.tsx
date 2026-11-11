@@ -142,7 +142,7 @@ function Tile({
   if (actions) {
     return (
       <PeekCard peek={peek} className={cn('relative h-full min-w-0', className)}>
-        <div data-testid={testId} className={cn(styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>
+        <div data-testid={testId} data-action-tile="" className={cn(styles.tileBody, 'glow-card flex h-full flex-col gap-2 rounded-xl border bg-card p-4 shadow-raised')}>
           {/* D-2: with nothing but the title inside (Pets), the link itself is at least 44 px
               tall (48 px on touch); no overflowing hit area, so it never covers the action
               buttons below it. */}
