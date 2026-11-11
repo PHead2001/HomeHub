@@ -2,7 +2,9 @@
 
 /**
  * Command palette (H13) with natural-language quick-add and voice add (H14).
- * Ctrl/Cmd+K, "/", the header search button or the tab bar's quick-add open it.
+ * Ctrl/Cmd+K, "/" or the header search button open it for typing; the dashboard
+ * tile "+" buttons, the N/A/F shortcuts and the tab bar's quick-add open it in a
+ * mode (Feeding, Item, Chore: `palette-modes.tsx`, QA-15).
  * Typing searches pages, chores, lists, items, pets and maintenance records; a
  * sentence the deterministic parser understands becomes a quick-add suggestion.
  * A sentence it cannot read can be read by AI on request ("Read it with AI", the
@@ -59,6 +61,8 @@ import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
+import { ChoreMode, FeedingMode, ItemMode } from './palette-modes';
+import { bareVerbOffer, feedingModeState, itemModeState, modeBlocker, MODE_PERMISSION, type PaletteMode } from '@/lib/dashboard/palette-mode';
 
 type Page = { href: string; label: string; icon: LucideIcon; permission?: HouseholdPermission; keywords?: string };
 
@@ -106,15 +110,18 @@ export type PreviewChoices = {
   target: MaintenanceTarget | null;
 };
 
+const NO_CHOICES: PreviewChoices = { assignee: null, room: null, target: null };
+
 export function CommandPalette({
   open,
   onOpenChange,
-  initialText,
+  initialMode,
   startVoice,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  initialText: string;
+  /** Open in Feeding, Item or Chore mode (QA-15); null opens the typing palette. */
+  initialMode: PaletteMode | null;
   startVoice: boolean;
 }) {
   const router = useRouter();
@@ -123,8 +130,11 @@ export function CommandPalette({
   const index = useCommandIndex(open);
   const voice = useVoiceInput();
   // The command center remounts the palette (new `key`) each time it opens, so the
-  // initial text comes straight from props.
-  const [text, setText] = useState(initialText);
+  // initial mode comes straight from props.
+  const [mode, setMode] = useState<PaletteMode | null>(initialMode);
+  // What is typed in Item or Chore mode (kept when a preview goes Back).
+  const [modeText, setModeText] = useState('');
+  const [text, setText] = useState('');
   const [activeChoice, setActive] = useState(0);
   const [pending, setPending] = useState<QuickAddIntent | null>(null);
   const [saving, setSaving] = useState(false);
@@ -197,7 +207,13 @@ export function CommandPalette({
   const [aiState, setAiState] = useState<{ status: 'idle' | 'reading' | 'none' | 'error'; message?: string }>({ status: 'idle' });
   const [pendingFromAi, setPendingFromAi] = useState(false);
   const canQuickAdd = Object.values(INTENT_PERMISSION).some((permission) => permissions[permission]);
-  const offerAi = canQuickAdd && !index.loading && shouldOfferAiParse(text, intent);
+  // A bare command verb ("fed", "add ") is never an entry (QA-1): it offers the
+  // pets to feed, or the Item or Chore mode, and is never sent to the AI reader.
+  const bareOffer = useMemo(
+    () => (index.loading ? null : bareVerbOffer(text, index.pets, (candidate) => Boolean(permissions[MODE_PERMISSION[candidate]]))),
+    [text, index.loading, index.pets, permissions],
+  );
+  const offerAi = canQuickAdd && !index.loading && !bareOffer && shouldOfferAiParse(text, intent);
 
   // Each AI read belongs to one input revision. Editing the text, opening another
   // preview or going back starts a new revision, so a slower, older answer (or
@@ -273,6 +289,38 @@ export function CommandPalette({
       : [];
 
     const quick: Option[] = [];
+    if (bareOffer?.kind === 'feed') {
+      for (const feeding of bareOffer.intents) {
+        const description = describeIntent(feeding, self);
+        quick.push({
+          id: `quick-add-feed-${feeding.pet.id}`,
+          group: 'Quick add',
+          label: description.title,
+          detail: description.detail,
+          hint: 'Enter',
+          icon: PawPrint,
+          run: () => {
+            invalidateAi();
+            setPendingFromAi(false);
+            setPending(feeding);
+          },
+        });
+      }
+    } else if (bareOffer?.kind === 'mode') {
+      const target = bareOffer.mode;
+      quick.push({
+        id: `quick-add-mode-${target}`,
+        group: 'Quick add',
+        label: target === 'item' ? 'Add a shopping item…' : 'Add a chore…',
+        hint: 'Enter',
+        icon: target === 'item' ? ShoppingCart : CheckSquare,
+        run: () => {
+          invalidateAi();
+          setModeText('');
+          setMode(target);
+        },
+      });
+    }
     // Bare words ("milk and eggs") become a shopping suggestion only when search finds nothing.
     if (intent && !(intent.kind === 'shopping' && !intent.explicit && records.length + pageOptions.length > 0)) {
       const description = describeIntent(intent, self);
@@ -302,7 +350,7 @@ export function CommandPalette({
       run: () => void readWithAi(),
     }] : [];
     return [...quick, ...records, ...pageOptions, ...ai];
-  }, [text, permissions, index.entries, intent, self, navigate, offerAi, readWithAi, invalidateAi]);
+  }, [text, permissions, index.entries, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer]);
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
@@ -333,15 +381,18 @@ export function CommandPalette({
     if (!open && voice.listening) voice.stop();
   }, [open, voice]);
 
-  const confirm = async (choices: PreviewChoices) => {
+  // `entry` is what to save when it is not yet the state's `pending` (Item mode
+  // saves on Enter: it shows the preview for the save status and calls this).
+  const confirm = async (choices: PreviewChoices, entry?: QuickAddIntent) => {
     const householdId = currentUser?.householdId;
-    if (!pending || !householdId || !currentUser) return;
+    const current = entry ?? pending;
+    if (!current || !householdId || !currentUser) return;
     const lateError = (error: unknown) => toastError(error, 'Could not sync');
     setSaving(true);
     try {
-      if (pending.kind === 'shopping' && pending.list) {
-        const list = pending.list;
-        const outcome = await addShoppingItems(householdId, list, pending.items, lateError);
+      if (current.kind === 'shopping' && current.list) {
+        const list = current.list;
+        const outcome = await addShoppingItems(householdId, list, current.items, lateError);
         if (outcome.saved.length > 0) {
           notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
           // Only a durable local copy may say "saved on this device".
@@ -355,7 +406,7 @@ export function CommandPalette({
           // decide when they settle. Closing the palette meanwhile drops nothing:
           // a late failure is still reported through lateError.
           const token = shoppingSettles.begin();
-          setPending({ ...pending, items: [...outcome.unconfirmed, ...outcome.failed] });
+          setPending({ ...current, items: [...outcome.unconfirmed, ...outcome.failed] });
           setUnconfirmedMessage(unconfirmedShoppingMessage(outcome));
           setRetryMessage(outcome.failed.length > 0 ? `${quickAddRetryMessage(outcome.failed)} ${friendlyError(outcome.firstError)}` : null);
           void outcome.settled.then(({ failed: lateFailed }) => {
@@ -380,15 +431,15 @@ export function CommandPalette({
         }
         if (outcome.failed.length > 0) {
           // Keep only what failed, so Confirm retries those and never re-adds the saved ones.
-          setPending({ ...pending, items: outcome.failed });
+          setPending({ ...current, items: outcome.failed });
           setRetryMessage(`${quickAddRetryMessage(outcome.failed)} ${friendlyError(outcome.firstError)}`);
           return;
         }
         close();
         return;
-      } else if (pending.kind === 'feeding') {
-        const portion = feedingPortion(pending);
-        const pet = pending.pet;
+      } else if (current.kind === 'feeding') {
+        const portion = feedingPortion(current);
+        const pet = current.pet;
         const timeZone = household?.timeZone ?? null;
         const result = await logFeeding({
           householdId,
@@ -402,7 +453,7 @@ export function CommandPalette({
         });
         if (result.status === 'needsConfirm') {
           // Ask in the preview; Confirm then reads "Feed again".
-          setFeedAgain({ intent: pending, prompt: feedAgainPrompt(result, pet.name, new Date(), currentUser.uid) });
+          setFeedAgain({ intent: current, prompt: feedAgainPrompt(result, pet.name, new Date(), currentUser.uid) });
           return;
         }
         notifyDataChanged({ module: 'pets', householdId, petId: pet.id });
@@ -427,25 +478,25 @@ export function CommandPalette({
             </ToastAction>
           ),
         });
-      } else if (pending.kind === 'chore') {
+      } else if (current.kind === 'chore') {
         // Without chores.assign the chore can only be yours (as in the Add Chore dialog).
-        const { assignee } = resolveChoreAssignee(choices.assignee ?? pending.assignee, assignable, self);
+        const { assignee } = resolveChoreAssignee(choices.assignee ?? current.assignee, assignable, self);
         if (!assignee) throw new Error('missing-assignee');
         const room = choices.room;
-        if (pending.repeat) {
-          const { status } = await createRepeatingChore({ householdId, viewer: currentUser, task: pending.task, repeat: pending.repeat, firstDay: pending.dueDate, assignee, room, onLateError: lateError });
+        if (current.repeat) {
+          const { status } = await createRepeatingChore({ householdId, viewer: currentUser, task: current.task, repeat: current.repeat, firstDay: current.dueDate, assignee, room, onLateError: lateError });
           notifyDataChanged({ module: 'chores', householdId });
-          toast({ title: status === 'queued' ? 'Saved offline' : 'Repeating chore added', description: status === 'queued' ? `${pending.task} will sync when you're back online.` : `${pending.task}, ${describeRepeat(pending.repeat)}, for ${assignee.name}.` });
+          toast({ title: status === 'queued' ? 'Saved offline' : 'Repeating chore added', description: status === 'queued' ? `${current.task} will sync when you're back online.` : `${current.task}, ${describeRepeat(current.repeat)}, for ${assignee.name}.` });
         } else {
-          const { choreId, status } = await createOneTimeChore({ householdId, viewer: currentUser, task: pending.task, dueDate: pending.dueDate, assignee, room, onLateError: lateError });
+          const { choreId, status } = await createOneTimeChore({ householdId, viewer: currentUser, task: current.task, dueDate: current.dueDate, assignee, room, onLateError: lateError });
           notifyDataChanged({ module: 'chores', householdId, choreId });
-          toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${pending.task} will sync when you're back online.` : `${pending.task} for ${assignee.name}.` });
+          toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${current.task} will sync when you're back online.` : `${current.task} for ${assignee.name}.` });
         }
-      } else if (pending.kind === 'maintenance') {
-        const { status } = await logMaintenance({ householdId, title: pending.title, mileage: pending.mileage, target: choices.target, onLateError: lateError });
+      } else if (current.kind === 'maintenance') {
+        const { status } = await logMaintenance({ householdId, title: current.title, mileage: current.mileage, target: choices.target, onLateError: lateError });
         notifyDataChanged({ module: 'maintenance', householdId });
         const where = targetName(choices.target);
-        toast({ title: status === 'queued' ? 'Saved offline' : 'Maintenance logged', description: `${pending.title}${where ? ` for ${where}` : ''}${pending.mileage ? ` at ${pending.mileage.toLocaleString()} miles` : ''}.` });
+        toast({ title: status === 'queued' ? 'Saved offline' : 'Maintenance logged', description: `${current.title}${where ? ` for ${where}` : ''}${current.mileage ? ` at ${current.mileage.toLocaleString()} miles` : ''}.` });
       }
       playFeedback('add');
       close();
@@ -454,6 +505,26 @@ export function CommandPalette({
     } finally {
       setSaving(false);
     }
+  };
+
+  // Item mode: Enter saves at once through the same shopping save as Confirm; the
+  // preview shows its status (still sending, failures to retry) when there is one.
+  const saveFromMode = (entry: QuickAddIntent) => {
+    invalidateAi();
+    setPendingFromAi(false);
+    setRetryMessage(null);
+    setPending(entry);
+    void confirm(NO_CHOICES, entry);
+  };
+  const toPreview = (entry: QuickAddIntent) => {
+    invalidateAi();
+    setPendingFromAi(false);
+    setRetryMessage(null);
+    setPending(entry);
+  };
+  const typeInstead = () => {
+    setMode(null);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -558,7 +629,46 @@ export function CommandPalette({
               setRetryMessage(null);
               window.setTimeout(() => inputRef.current?.focus(), 0);
             }}
-            onConfirm={confirm}
+            onConfirm={(choices) => void confirm(choices)}
+          />
+        ) : mode === 'feeding' ? (
+          <FeedingMode
+            state={feedingModeState({
+              canFeed: Boolean(permissions['pets.addLogs']),
+              canViewPets: Boolean(permissions['pets.view']),
+              loading: index.loading,
+              failed: index.failed.includes('pets'),
+              pets: index.pets,
+            })}
+            onRetry={index.retry}
+            onFed={close}
+            onTypeInstead={typeInstead}
+          />
+        ) : mode === 'item' ? (
+          <ItemMode
+            state={itemModeState({
+              canAdd: Boolean(permissions['shopping.edit']),
+              canViewLists: Boolean(permissions['shopping.view']),
+              loading: index.loading,
+              failed: index.failed.includes('lists'),
+              lists: index.lists,
+            })}
+            text={modeText}
+            onText={setModeText}
+            onRetry={index.retry}
+            onSave={saveFromMode}
+            onOpenShopping={() => navigate('/shopping')}
+            onTypeInstead={typeInstead}
+          />
+        ) : mode === 'chore' ? (
+          <ChoreMode
+            blocker={modeBlocker('chore', permissions)}
+            context={quickContext}
+            loading={index.loading}
+            text={modeText}
+            onText={setModeText}
+            onPreview={toPreview}
+            onTypeInstead={typeInstead}
           />
         ) : (
           <>
