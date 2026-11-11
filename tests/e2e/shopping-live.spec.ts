@@ -110,8 +110,10 @@ test.describe('shopping: live across sessions', () => {
 
       // Everything under the list is gone, not only its document (SH-9a).
       await expect.poll(async () => (await listRef.get()).exists).toBe(false);
-      expect((await listRef.collection('items').get()).size).toBe(0);
-      expect((await listRef.collection('config').get()).size).toBe(0);
+      // The parent goes first (it is the write barrier), then the descendants in pages, so
+      // the subcollections empty a moment later: poll them rather than read once.
+      await expect.poll(async () => (await listRef.collection('items').get()).size, { timeout: 15_000 }).toBe(0);
+      await expect.poll(async () => (await listRef.collection('config').get()).size, { timeout: 15_000 }).toBe(0);
 
       // B's open list says so and offers no way to write (SH-1e).
       const openList = b.page.getByTestId('open-list');
