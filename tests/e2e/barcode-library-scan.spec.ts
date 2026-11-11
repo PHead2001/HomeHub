@@ -32,7 +32,13 @@ async function open(page: Page, path: string, heading: string) {
 }
 
 async function scanWith(page: Page, opener: string, scannerName: string, barcode: string) {
-  await page.getByRole('button', { name: opener, exact: true }).click();
+  if (opener === 'Scan to tick') {
+    // Scan to tick is in the open list's actions menu (S8b).
+    await page.getByTestId('open-list').getByRole('button', { name: 'More list actions' }).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: opener, exact: true }).click();
+  } else {
+    await page.getByRole('button', { name: opener, exact: true }).click();
+  }
   const scanner = page.getByRole('dialog', { name: scannerName });
   await scanner.getByLabel('Barcode number').fill(barcode);
   await scanner.getByRole('button', { name: 'Use barcode' }).click();

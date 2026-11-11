@@ -59,6 +59,20 @@
   }
 }
 
+/* A row brought into view (focus after a tick, scrollIntoView) stops below the
+   sticky header and its aisle heading and above the quick-add dock with its Undo
+   (about 4.5rem, plus up to two 3.5rem snackbar rows). */
+.list [data-row-id] {
+  scroll-margin-top: calc(3.5rem + var(--trip-header-h, 0px) + 2.5rem);
+  scroll-margin-bottom: calc(var(--dock-clearance) + 9rem);
+}
+
+@media (min-width: 768px) {
+  .list [data-row-id] {
+    scroll-margin-bottom: 9.5rem;
+  }
+}
+
 /* The aisle chips scroll sideways inside the header, never the page. */
 .chips {
   display: flex;

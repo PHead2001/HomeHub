@@ -49,8 +49,9 @@ test.describe('shopping trip', () => {
 
       await page.locator('#item-needed-apples').click();
       await expect(page.locator('#item-needed-apples')).toHaveCount(0);
-      // No tab switch and no pantry form.
-      await expect(page.getByRole('tab', { name: 'Shopping Lists' })).toHaveAttribute('aria-selected', 'true');
+      // No tab switch and no pantry form: the list stays open (its tabs are hidden while it is, S8b).
+      await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
+      await expect(page.getByTestId('open-list')).toBeVisible();
       await expect(page.getByRole('dialog')).toHaveCount(0);
       await expect.poll(async () => (await apples.get()).data()?.status).toBe('purchased');
 

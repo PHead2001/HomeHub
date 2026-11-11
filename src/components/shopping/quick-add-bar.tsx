@@ -39,8 +39,11 @@ type PendingChip = { id: number; names: string; label: string };
  * The Undo snackbar (SH-15a) is passed as `above` and drawn in the same sticky
  * dock, directly above the field (outside the form).
  */
-/** The dock under an open list: sticky above the phone tab bar, near the thumb. */
-const DOCK_CLASSES = 'sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] z-10 -mx-2 mt-4 space-y-2 md:bottom-2';
+/**
+ * The dock under an open list: sticky above the phone tab bar, near the thumb.
+ * `--dock-clearance` (globals.css) clears the tab bar, and its raised "+" where shown.
+ */
+const DOCK_CLASSES = 'sticky bottom-[var(--dock-clearance)] z-10 -mx-2 mt-4 space-y-2 md:bottom-2';
 
 export function QuickAddBar({
   listName,

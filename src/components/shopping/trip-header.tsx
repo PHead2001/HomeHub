@@ -11,8 +11,8 @@ import styles from './trip-mode.module.css';
 
 export type ListAction = { key: string; label: string; icon: LucideIcon; onSelect: () => void };
 
-/** 44 px, 48 px on touch (D-2), without depending on the Button size utilities. */
-const ICON_BUTTON = 'h-11 w-11 shrink-0 coarse:h-12 coarse:w-12';
+/** 44 px; the icon size's `touch-target` makes it 48 px on touch (D-2). */
+const ICON_BUTTON = 'h-11 w-11 shrink-0';
 
 /**
  * The open list's secondary actions in one menu (SH-12b): Scan to tick, Trips,

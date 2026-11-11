@@ -1456,7 +1456,7 @@ export function ShoppingListClient({
             />
             {tripFlow.dialog}
             <div
-              className="rounded-xl border bg-card text-card-foreground shadow-raised"
+              className={`${tripStyles.list} rounded-xl border bg-card text-card-foreground shadow-raised`}
               data-testid="open-list"
               data-from-cache={itemsState.fromCache ? 'true' : 'false'}
               data-pending-writes={itemsState.hasPendingWrites ? 'true' : 'false'}
@@ -1480,7 +1480,7 @@ export function ShoppingListClient({
                     <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
-                            <Button variant="ghost" size="icon" aria-label="Add Item" className="h-11 w-11 shrink-0 coarse:h-12 coarse:w-12"><PlusCircle className="h-5 w-5" aria-hidden /></Button>
+                            <Button variant="ghost" size="icon" aria-label="Add Item" className="h-11 w-11 shrink-0"><PlusCircle className="h-5 w-5" aria-hidden /></Button>
                         </DialogTrigger>
                         </ShortcutHint>
                         <DialogContent phoneSheet>

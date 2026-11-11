@@ -111,6 +111,7 @@ The UI follows the same permissions and hides what a member cannot do: Add Item,
 - Pantry, fridge, and freezer mobile lists must keep item actions and long names within the document bounds at 360 px and wider supported viewports.
 - Expiry styling (tilt, glow, frost, lift) is applied to a decorative layer or the whole tile as a state change, never as a hover effect; nothing moves on hover. Expiry states use household-zone calendar days (`daysUntilDay` from `useHouseholdToday`): `soon` is today through three days out.
 - Every move has a non-pointer path (keyboard, tap-then-Move here, menu) and is announced through a polite live region.
+- A tile's expiry pill ("Expires tomorrow", "Expired yesterday", "In the recipe") is 12 px text in its status colour on a 10% tint of that colour, a pair checked at 4.5:1 in every theme (`tests/unit/theme-contrast.test.ts`, `tests/unit/shopping-trip-mode.test.ts`; SH-26f). The recipe dialog's decorative icons are hidden from assistive technology (SH-26e).
 - Errors use `toastError`, so raw Firebase text never reaches users.
 
 ## Validation
