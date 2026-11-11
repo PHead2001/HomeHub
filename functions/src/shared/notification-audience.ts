@@ -68,9 +68,8 @@ export const memberUidByEmail = (
 /**
  * The `audience` values a member's list queries ask for:
  * `where("audience", "array-contains-any", audienceQueryValues(uid))`.
- * The read rule (release 3) accepts exactly the documents whose audience
- * names the caller or everyone, so every client list query carries this
- * filter.
+ * The read rule accepts exactly the documents whose audience names the
+ * caller or everyone, so every client list query carries this filter.
  * @param {string} uid The signed-in member's uid.
  * @return {string[]} `[uid, "*"]`.
  */
