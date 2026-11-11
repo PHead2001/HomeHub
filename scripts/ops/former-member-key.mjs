@@ -4,6 +4,10 @@
 // and retained completions add up to one score whichever script runs first.
 //
 // A departed person is known only by an email on older chores. Their identity is:
+// - the uid their departure recorded (release C's stats alias), else
+// - the uid of their recorded completions (`completedByEmail` with `completedByUid`,
+//   written together by the server) when those name exactly one uid, used by no
+//   other email, else
 // - their account uid, when the household's chores and templates pair that email
 //   with exactly one uid that is not a current member's, and that uid with no
 //   other email (an older build's email-only reassignment can pair an email with
@@ -69,20 +73,29 @@ export function formerEvidence(records, current) {
   const emails = new Set();
   const uidsByEmail = new Map();
   const emailsByUid = new Map();
-  const pair = (email, uid) => {
+  // Completions recorded by the server name the completer by email and uid together.
+  const completerUidsByEmail = new Map();
+  const completerEmailsByUid = new Map();
+  const add = (byKey, key, value) => {
+    if (!byKey.has(key)) byKey.set(key, new Set());
+    byKey.get(key).add(value);
+  };
+  const pair = (email, uid, completer) => {
     if (!email || current.emails.has(email)) return;
     emails.add(email);
     if (!uid || current.uids.has(uid)) return;
-    if (!uidsByEmail.has(email)) uidsByEmail.set(email, new Set());
-    if (!emailsByUid.has(uid)) emailsByUid.set(uid, new Set());
-    uidsByEmail.get(email).add(uid);
-    emailsByUid.get(uid).add(email);
+    add(uidsByEmail, email, uid);
+    add(emailsByUid, uid, email);
+    if (completer) {
+      add(completerUidsByEmail, email, uid);
+      add(completerEmailsByUid, uid, email);
+    }
   };
   for (const data of records) {
-    pair(assigneeEmailOfJs(data), text(data?.assignedToUid));
-    pair(lower(data?.completedByEmail), text(data?.completedByUid));
+    pair(assigneeEmailOfJs(data), text(data?.assignedToUid), false);
+    pair(lower(data?.completedByEmail), text(data?.completedByUid), true);
   }
-  return { emails, uidsByEmail, emailsByUid };
+  return { emails, uidsByEmail, emailsByUid, completerUidsByEmail, completerEmailsByUid };
 }
 
 /**
@@ -97,6 +110,15 @@ export function proposeFormerIdentity(email, evidence, secret) {
   // The departure recorded who this was (release C's stats alias): that uid.
   const aliased = evidence.aliasUids?.get(email);
   if (aliased) return aliased;
+  // A completion the server recorded (email and uid written together) is authoritative,
+  // over assignee pairings an older build's email-only reassignment can leave stale:
+  // one uid for the email, and no other email for that uid.
+  const recorded = evidence.completerUidsByEmail?.get(email);
+  if (recorded?.size === 1) {
+    const [uid] = recorded;
+    if (evidence.completerEmailsByUid?.get(uid)?.size === 1) return uid;
+  }
+  if (recorded && recorded.size > 1) return formerMemberKey(secret, email);
   const uids = evidence.uidsByEmail.get(email);
   if (uids?.size === 1) {
     const [uid] = uids;

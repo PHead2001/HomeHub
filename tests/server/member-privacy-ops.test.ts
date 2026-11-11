@@ -161,4 +161,51 @@ describe('release D ops: one identity per person who has left', () => {
     assert.ok(!JSON.stringify(y2025).includes(gil));
     assert.equal((await rekey(true)).written, 0, 'a re-run finds nothing');
   });
+
+  // Review finding on #146 (4543378430): a recorded completion decides the identity over a stale template pairing.
+  const leeCompletedAndStaleTemplate = async () => {
+    await house().collection('chores').doc('lee-1').update({ completedByEmail: LEE, completedByUid: 'uid-lee', completedByName: 'Lee' });
+    await house().collection('chore-templates').doc('tpl').set({ task: 'Bins', assignedToEmail: LEE, assignedToUid: 'uid-carl', roomIds: [] });
+  };
+
+  test('a recorded completion beats a stale pairing: one bucket for Lee, re-key first', async () => {
+    await leeCompletedAndStaleTemplate();
+    await rekey(true);
+    await scrub(true);
+    await assertOneScore(choreStatsMemberKey('uid-lee'));
+    assert.equal((await rekey(true)).written, 0);
+    assert.deepEqual(await scrub(true), { stats: 0, chores: 0, kept: 0 });
+  });
+
+  test('a recorded completion beats a stale pairing: one bucket for Lee, scrub first', async () => {
+    await leeCompletedAndStaleTemplate();
+    await scrub(true);
+    await rekey(true);
+    await assertOneScore(choreStatsMemberKey('uid-lee'));
+    assert.equal((await rekey(true)).written, 0);
+    assert.deepEqual(await scrub(true), { stats: 0, chores: 0, kept: 0 });
+  });
+
+  test('two people who left and once shared a stale pairing stay two scores', async () => {
+    const CARL = 'carl@example.test';
+    await leeCompletedAndStaleTemplate();
+    await house().collection('stats').doc('chores-2026').update({
+      completed: 9, [`byAssignee.${choreStatsAssigneeKey(CARL)}`]: 3, [`names.${choreStatsAssigneeKey(CARL)}`]: 'Carl',
+    });
+    await house().collection('chores').doc('carl-1').set({
+      task: 'Carl 1', isCompleted: true, completedAt: '2026-10-08T12:00:00.000Z', assignedToEmail: CARL, assignedToUid: 'uid-carl',
+      completedByEmail: CARL, completedByUid: 'uid-carl', completedByName: 'Carl',
+    });
+    await scrub(true);
+    await rekey(true);
+    const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.deepEqual(stats?.byAssignee, { [choreStatsMemberKey('uid-lee')]: 6, [choreStatsMemberKey('uid-carl')]: 3 });
+    const { summary } = await wrapped();
+    assert.deepEqual(summary.champion, { name: 'Lee', count: 11 });
+    const carl = (await house().collection('chores').doc('carl-1').get()).data();
+    assert.equal(carl?.completedByUid, 'uid-carl');
+    assert.equal(carl?.completedByEmail, undefined);
+    assert.equal((await rekey(true)).written, 0);
+    assert.deepEqual(await scrub(true), { stats: 0, chores: 0, kept: 0 });
+  });
 });
