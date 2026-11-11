@@ -1,16 +1,14 @@
-import { CardSkeleton, PageHeaderSkeleton, RouteSkeleton, TabsSkeleton } from '@/components/route-skeletons';
+import { PageHeaderSkeleton, RouteSkeleton, TabsSkeleton } from '@/components/route-skeletons';
+import { ListCardsSkeleton } from '@/components/shopping/shopping-skeletons';
 
-// Shopping Center: header + Barcode Library, two tabs, then list cards.
+// Shopping Center: header + Barcode Library, two tabs, then the list cards. The
+// page and the lists tab draw the same skeleton until data arrives (SH-25a).
 export default function Loading() {
   return (
     <RouteSkeleton label="shopping">
       <PageHeaderSkeleton action titleWidth="w-64" />
       <TabsSkeleton />
-      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 3 }, (_, i) => (
-          <CardSkeleton key={i} className="h-40" />
-        ))}
-      </div>
+      <ListCardsSkeleton className="mt-2 min-h-[24rem]" />
     </RouteSkeleton>
   );
 }

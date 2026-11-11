@@ -8,15 +8,23 @@
  *
  * Layout (HP-12): stacked on phones, portrait and narrow screens (subtitle, house,
  * brief, tiles, footer); on every wide landscape screen two panes, the house on the
- * left and the brief and tiles on the right (dashboard.module.css `.page`). The DOM
- * order is the same in both, so focus order follows the reading order.
+ * left and the brief and tiles on the right (dashboard.module.css `.page`), one screen
+ * tall (HP-12e): the house card and the tile rows share the height the screen has. The
+ * DOM order is the same in both, so focus order follows the reading order.
  */
+import { useCallback, useEffect, useState } from 'react';
 import { Keyboard } from 'lucide-react';
+import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { openShortcutHelp } from '@/components/command/events';
 import { ShortcutHint, ShortcutKeys } from '@/components/ui/shortcut-hint';
 import { useAuth } from '@/hooks/use-auth';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
 import { isGoldenRoof } from '@/lib/dashboard/ambience';
+import { houseCleanReady } from '@/lib/dashboard/celebration';
+import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, type CleanRoom } from '@/lib/chores/house-clean';
+import { playFeedback } from '@/lib/feedback';
+import { GENERAL_ROOM_ID, UNKNOWN_ROOM_ID, type DashboardFacts } from '@/lib/dashboard/facts';
+import type { SectionState } from '@/lib/dashboard/dashboard-store';
 import { cn } from '@/lib/utils';
 import { BentoGrid } from './bento-grid';
 import { DashboardSubtitle } from './dashboard-subtitle';
@@ -31,10 +39,12 @@ export function Dashboard() {
   // HP-11b: counted from the completions listener that is already running (streaks), so a
   // page that never reloads turns gold at the 100th chore. Unknown is never gold.
   const golden = facts.completedChores !== undefined && isGoldenRoof(facts.completedChores);
+  const houseClean = useHouseClean(facts, sections.chores, currentUser?.householdId ?? null, today);
 
   return (
     <div className={cn('container mx-auto px-4', styles.page)} data-testid="dashboard-page">
-      <div className="min-w-0">
+      <HouseCleanMoment open={houseClean.rooms !== null} rooms={houseClean.rooms ?? []} onDone={houseClean.close} />
+      <div className={cn(styles.housePane, 'min-w-0')}>
         <div className={cn(styles.lead, 'mb-4 min-w-0')}>
           {/* HP-12c: visually hidden on wide landscape screens, kept for screen readers. */}
           <h1 className={cn(styles.wideSrOnly, 'font-headline text-3xl font-bold tracking-tight')}>Welcome Home</h1>
@@ -43,7 +53,7 @@ export function Dashboard() {
         <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} />
       </div>
 
-      <div className="min-w-0">
+      <div className={cn(styles.tilesPane, 'min-w-0')}>
         {/* Keyed by the context: a household or member change resets the brief and its AI
             rewrite; the household day rolling over does not (HP-4b). */}
         <div className={styles.briefSlot}>
@@ -71,3 +81,33 @@ export function Dashboard() {
   );
 }
 
+
+/**
+ * HP-34: "House is clean" once per household per day (the key the Chores page uses too),
+ * only on live chores data with today's work all done, nothing overdue and nothing missed
+ * (`houseCleanReady`). The moment itself is Chores' `HouseCleanMoment` (rooms sparkle one
+ * by one; reduced motion shows the finished house).
+ */
+function useHouseClean(facts: DashboardFacts, state: SectionState | undefined, householdId: string | null, today: string) {
+  const [moment, setMoment] = useState<{ key: string; rooms: CleanRoom[] } | null>(null);
+  const [checked, setChecked] = useState<string | null>(null);
+  const chores = facts.chores;
+  const key = householdId ? houseCleanStorageKey(householdId, today) : null;
+  // Decided during render (once per key) when the gate opens; recorded and voiced in the effect.
+  if (key && chores && checked !== key && houseCleanReady(state, chores)) {
+    setChecked(key);
+    if (!houseCleanShown(key)) {
+      const real = chores.rooms.filter((room) => room.id !== GENERAL_ROOM_ID && room.id !== UNKNOWN_ROOM_ID);
+      const worked = new Set(real.filter((room) => room.doneToday > 0).map((room) => room.id));
+      setMoment({ key, rooms: cleanHouseRooms(real.map((room) => ({ id: room.id, name: room.name, icon: room.icon })), worked) });
+    }
+  }
+  const shownKey = moment?.key ?? null;
+  useEffect(() => {
+    if (!shownKey) return;
+    markHouseCleanShown(shownKey);
+    playFeedback('celebrate');
+  }, [shownKey]);
+  const close = useCallback(() => setMoment((current) => (current ? { ...current, rooms: [] } : current)), []);
+  return { rooms: moment && moment.rooms.length > 0 ? moment.rooms : null, close };
+}

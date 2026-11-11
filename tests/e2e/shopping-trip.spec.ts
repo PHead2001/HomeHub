@@ -34,7 +34,7 @@ test.describe('shopping trip', () => {
     await apples.update({ status: 'needed' });
     try {
       await open(page, '/shopping');
-      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
       await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
 
       await page.locator('#item-needed-apples').click();
@@ -50,7 +50,7 @@ test.describe('shopping trip', () => {
 
       // Back returns to the overview, which shows counts on each card.
       await page.goBack();
-      await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Open List: Weekly Groceries' })).toBeVisible();
       await expect(page.getByText(/\d+ to buy/).first()).toBeVisible();
     } finally {
       await apples.update({ status: 'needed' });
@@ -63,13 +63,13 @@ test.describe('shopping trip', () => {
     await apples.update({ status: 'needed' });
     try {
       await open(page, '/shopping');
-      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+      await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
       await page.locator('#item-needed-apples').click();
       await expect.poll(async () => (await apples.get()).data()?.status).toBe('purchased');
 
       // In-app switch (no reload), so the Undo toast from Weekly Groceries is still showing.
       await page.getByRole('button', { name: 'Back to all lists' }).click();
-      await page.getByRole('button', { name: 'Open Hardware Run' }).click();
+      await page.getByRole('button', { name: 'Open List: Hardware Run' }).click();
       await expect(page.getByRole('heading', { name: 'Hardware Run', exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Undo' }).click();
 
@@ -91,12 +91,14 @@ test.describe('shopping trip', () => {
     const original = (await apples.get()).data()!;
     try {
       await open(page, '/shopping');
-      await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
-      await page.getByRole('button', { name: /^Delete Honeycrisp apples$/ }).click();
+      await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
+      // Delete lives in the item's edit sheet (SH-13b).
+      await page.getByRole('button', { name: 'Edit Honeycrisp apples', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Edit Honeycrisp apples' }).getByRole('button', { name: 'Delete', exact: true }).click();
       await expect.poll(async () => (await apples.get()).exists).toBe(false);
 
       await page.getByRole('button', { name: 'Back to all lists' }).click();
-      await page.getByRole('button', { name: 'Open Hardware Run' }).click();
+      await page.getByRole('button', { name: 'Open List: Hardware Run' }).click();
       await expect(page.getByRole('heading', { name: 'Hardware Run', exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Undo' }).click();
 
@@ -149,10 +151,19 @@ test.describe('shopping trip', () => {
       await expect(page.getByRole('checkbox', { name: /E2E stale bread/ })).toBeVisible();
       await expect(field).toHaveValue('');
 
-      // Another member buys it; this device still shows it as needed.
-      const [created] = (await groceryItems.where('name', '==', name).get()).docs;
-      await created.ref.update({ status: 'purchased' });
-      await expect(page.locator(`#item-needed-${created.id}`)).toBeVisible();
+      // The row shows as soon as the write is queued (the listener applies local
+      // writes at once), before the server has it: wait for the server document.
+      let createdId = '';
+      await expect.poll(async () => {
+        const [document] = (await groceryItems.where('name', '==', name).get()).docs;
+        createdId = document?.id ?? '';
+        return createdId;
+      }).not.toBe('');
+      const created = groceryItems.doc(createdId);
+
+      // Another member buys it; the live list moves it out of Needed (SH-1).
+      await created.update({ status: 'purchased' });
+      await expect(page.locator(`#item-needed-${created.id}`)).toHaveCount(0);
 
       await field.fill(name);
       await field.press('Enter');
@@ -282,13 +293,13 @@ test.describe('shopping trip', () => {
     await page.getByRole('banner').getByRole('link', { name: 'Shopping', exact: true }).click();
     await expect(page).toHaveURL(/\/shopping$/);
     await expect(page.getByRole('tab', { name: 'Shopping Lists' })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open List: Weekly Groceries' })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
     await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
     await page.getByRole('banner').getByRole('link', { name: 'Shopping', exact: true }).click();
     await expect(page).toHaveURL(/\/shopping$/);
-    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open List: Weekly Groceries' })).toBeVisible();
   });
 
   test('quick-add takes several items and merges duplicates into one item', async ({ page }, testInfo) => {
@@ -310,8 +321,10 @@ test.describe('shopping trip', () => {
         const snapshot = await groceryItems.where('name', '==', name).get();
         return snapshot.docs.map((document) => document.data().quantity);
       }).toEqual([4]);
-      // The add has finished once the field is cleared.
+      // The field clears at submit, before the save finishes; the save has finished
+      // once the Add button is enabled again (an empty Enter while it saves is ignored).
       await expect(field).toHaveValue('');
+      await expect(page.getByRole('button', { name: 'Add to Weekly Groceries' })).toBeEnabled();
 
       // Empty input is an inline field error, not a toast.
       await field.fill(' , ');
@@ -373,7 +386,7 @@ test.describe('shopping trip', () => {
     });
     const morphs = () => page.evaluate(() => (window as unknown as { __morphs: string[] }).__morphs);
 
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
     await expect(page).toHaveURL(/[?&]list=weekly-groceries/);
     await expect(page.getByTestId('open-list')).toBeVisible();
     expect(await morphs()).toEqual(['list-weekly-groceries-card']);
@@ -384,7 +397,7 @@ test.describe('shopping trip', () => {
     await page.mouse.move(0, 0);
 
     await page.getByRole('button', { name: 'Back to all lists' }).click();
-    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open List: Weekly Groceries' })).toBeVisible();
     expect(await morphs()).toEqual(['list-weekly-groceries-card', 'list-weekly-groceries-card']);
     await expect.poll(() => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('*')].filter((el) => el.style.viewTransitionName).length)).toBe(0);
   });
@@ -403,14 +416,14 @@ test.describe('shopping trip', () => {
         return start(update);
       }) as typeof document.startViewTransition;
     });
-    await page.getByRole('button', { name: 'Open Weekly Groceries' }).click();
+    await page.getByRole('button', { name: 'Open List: Weekly Groceries' }).click();
     await expect(page.getByTestId('open-list')).toBeVisible();
     expect(await page.evaluate(() => (window as unknown as { __morphCount: number }).__morphCount)).toBe(0);
   });
 
   test('switching tabs keeps the page width steady and lists use token tints', async ({ page }) => {
     await open(page, '/shopping');
-    await expect(page.getByRole('button', { name: 'Open Weekly Groceries' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open List: Weekly Groceries' })).toBeVisible();
     const before = await page.evaluate(() => document.documentElement.clientWidth);
     await page.getByRole('tab', { name: 'Inventory' }).click();
     await expect(page.getByRole('button', { name: 'Generate Recipe' })).toBeVisible();
@@ -552,7 +565,7 @@ test.describe('list templates and peeks', () => {
     try {
       await open(page, '/shopping');
       const peek = page.locator('[data-peek-card]');
-      const openList = page.getByRole('button', { name: 'Open Weekly Groceries' });
+      const openList = page.getByRole('button', { name: 'Open List: Weekly Groceries' });
       await openList.hover();
       await expect(peek).toBeVisible();
       await expect(peek).toContainText('Weekly Groceries');

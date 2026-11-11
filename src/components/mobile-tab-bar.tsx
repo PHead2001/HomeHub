@@ -29,6 +29,7 @@ import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import { isComposingKey } from '@/lib/dashboard/shortcuts';
 import styles from './dashboard/dashboard.module.css';
 import type { HouseholdPermission } from '@/lib/types';
+import type { PaletteMode } from '@/lib/dashboard/palette-mode';
 
 type NavItem = { href: string; label: string; icon: LucideIcon; permission?: HouseholdPermission };
 
@@ -50,14 +51,14 @@ const MORE: NavItem[] = [
   { href: '/profile', label: 'Profile', icon: User },
 ];
 
-type QuickAction = { label: string; short: string; icon: LucideIcon; permission: HouseholdPermission } & ({ text: string } | { href: string });
+type QuickAction = { label: string; short: string; icon: LucideIcon; permission: HouseholdPermission } & ({ mode: PaletteMode } | { href: string });
 
-// The floating quick-add fan (H18). Each opens the palette pre-filled for that kind
-// of entry (same parser and confirm step), or the module's own form.
+// The floating quick-add fan (H18). Each opens the palette in that kind's mode
+// (Chore, Item, Feeding; QA-15), or the module's own form.
 const QUICK_ACTIONS: QuickAction[] = [
-  { label: 'Add chore', short: 'Chore', icon: CheckSquare, permission: 'chores.create', text: 'chore ' },
-  { label: 'Add shopping item', short: 'Item', icon: ShoppingCart, permission: 'shopping.edit', text: 'add ' },
-  { label: 'Log feeding', short: 'Feeding', icon: UtensilsCrossed, permission: 'pets.addLogs', text: 'fed ' },
+  { label: 'Add chore', short: 'Chore', icon: CheckSquare, permission: 'chores.create', mode: 'chore' },
+  { label: 'Add shopping item', short: 'Item', icon: ShoppingCart, permission: 'shopping.edit', mode: 'item' },
+  { label: 'Log feeding', short: 'Feeding', icon: UtensilsCrossed, permission: 'pets.addLogs', mode: 'feeding' },
   { label: 'Log maintenance', short: 'Service', icon: Wrench, permission: 'maintenance.createLogs', href: MAINTENANCE_LOGS_HREF },
 ];
 
@@ -100,7 +101,7 @@ function QuickAddFab({ actions }: { actions: QuickAction[] }) {
   const run = (action: QuickAction) => {
     setOpen(false);
     if ('href' in action) router.push(action.href);
-    else openCommandPalette({ text: action.text });
+    else openCommandPalette({ mode: action.mode });
   };
 
   // Long-press opens voice add (H14); the palette hides the mic where unsupported.

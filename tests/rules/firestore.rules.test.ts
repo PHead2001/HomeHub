@@ -10,6 +10,8 @@ import {
 import {
   Timestamp,
   addDoc,
+  arrayRemove,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -26,6 +28,8 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
+import { restoreItemData } from '../../src/lib/shopping/items';
+import { restoreDocument } from '../../src/lib/shopping/item-writes';
 
 const projectId = 'demo-homehub-e2e';
 const householdA = 'household-a-e2e';
@@ -1557,16 +1561,9 @@ describe('content shapes: chores and templates', () => {
   });
 });
 
-// The restore document the S3 client writes (src/lib/shopping/items.ts restoreItemData +
-// item-writes.ts restoreDocument on the S3 branch): the item as read, without the
-// writer-only stamps, plus restoredByUid, restoreOpId and restoredAt.
-const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt'];
-const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) => ({
-  ...Object.fromEntries(Object.entries(snapshot).filter(([key]) => !RESTORE_DROPS.includes(key))),
-  restoredByUid: restorerUid,
-  ...(restoreOpId ? { restoreOpId } : {}),
-  restoredAt: serverTimestamp(),
-});
+// The restore document the client writes (items.ts restoreItemData + item-writes.ts restoreDocument).
+const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) =>
+  restoreDocument(restoreItemData(snapshot, restorerUid, restoreOpId));
 
 describe('content shapes: shopping', () => {
   const items = (user: Identity, list = 'groceries') => collection(dbFor(user), 'households', householdA, 'shopping-lists', list, 'items');
@@ -1644,6 +1641,8 @@ describe('content shapes: shopping', () => {
     // original attribution, recording the restorer; a restore cannot invent a member or
     // be credited to someone else.
     await assertSucceeds(setDoc(item(users.owner, 's2-restore'), built({ addedByUid: users.member.uid, restoredByUid: users.owner.uid })));
+    // Restoring one's own item (restoreItemData adds the writer as restorer too).
+    await assertSucceeds(setDoc(item(users.member, 's2-restore-own'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-unmarked'), built({ addedByUid: users.member.uid })));
@@ -1820,6 +1819,168 @@ describe('content shapes: shopping', () => {
     await assertSucceeds(setDoc(categories, { list: ['Dairy', 'Other', 'Produce'] }));
     await assertFails(setDoc(categories, { list: 'Dairy' }));
     await assertFails(setDoc(categories, { list: [], extra: true }));
+  });
+
+  test('items and categories of a list that does not exist (deleted) are refused', async () => {
+    const gone = (user: Identity, ...path: string[]) => doc(dbFor(user), 'households', householdA, 'shopping-lists', 'deleted-list', ...path);
+    await environment.withSecurityRulesDisabled(async context => {
+      // An orphan left by an older client that deleted only the list document.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'shopping-lists', 'deleted-list', 'items', 'orphan'), {
+        name: 'Orphan', quantity: 1, category: 'Other', status: 'needed', createdAt: now(),
+      });
+    });
+    // No add, tick, quantity merge, restore or category edit lands on a missing list.
+    await assertFails(setDoc(gone(users.member, 'items', 'milk'), built()));
+    await assertFails(updateDoc(gone(users.member, 'items', 'orphan'), { status: 'purchased' }));
+    await assertFails(updateDoc(gone(users.member, 'items', 'orphan'), { quantity: increment(1) }));
+    await assertFails(setDoc(gone(users.owner, 'items', 'orphan'), built()));
+    await assertFails(setDoc(gone(users.member, 'config', 'categories'), { list: ['Other'] }));
+    // Cleanup of what is left stays allowed.
+    await assertSucceeds(deleteDoc(gone(users.owner, 'items', 'orphan')));
+
+    // The same writes on a list that exists are allowed.
+    await assertSucceeds(setDoc(item(users.member, 'fresh'), built()));
+    await assertSucceeds(updateDoc(item(users.member, 'fresh'), { status: 'purchased' }));
+    await assertSucceeds(setDoc(doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'groceries', 'config', 'categories'), { list: ['Other'] }));
+
+    // A list deleted after it was written to refuses further writes.
+    await assertSucceeds(setDoc(doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'short-lived'), { name: 'Short-lived' }));
+    const shortLived = doc(dbFor(users.member), 'households', householdA, 'shopping-lists', 'short-lived', 'items', 'bread');
+    await assertSucceeds(setDoc(shortLived, built({ name: 'Bread' })));
+    await assertSucceeds(deleteDoc(doc(dbFor(users.owner), 'households', householdA, 'shopping-lists', 'short-lived')));
+    await assertFails(updateDoc(shortLived, { status: 'purchased' }));
+  });
+});
+
+describe('content shapes: pantry (Pantry v2, stage S4a)', () => {
+  const pantry = (user: Identity) => collection(dbFor(user), 'households', householdA, 'pantry-inventory');
+  const batch = (user: Identity, id: string) => doc(pantry(user), id);
+  // pantry-batches.ts pantryBatchFields + pantry-batch-writes.ts saveBatch (v2, dual-writing quantity)
+  const v2 = (user: Identity, overrides: Record<string, unknown> = {}) => ({
+    name: 'Rice', nameKey: 'rice', location: 'Pantry', unit: 'g', packages: 2, packageSize: 450, expiryDate: '2026-11-20',
+    quantity: 450, schemaVersion: 2, addedByUid: user.uid, updatedByUid: user.uid, updatedAt: serverTimestamp(), ...overrides,
+  });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      // A legacy document (pre-v2 client): quantity and an ISO expiry of local midnight.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'pantry-inventory', 'legacy-milk'), {
+        name: 'Milk', quantity: 2, unit: 'items', location: 'Fridge', expiryDate: '2026-11-14T06:00:00.000Z',
+      });
+      await setDoc(doc(context.firestore(), 'households', householdA, 'pantry-inventory', 'owned'), {
+        name: 'Beans', nameKey: 'beans', quantity: 1, packages: 1, packageSize: null, unit: 'cans', location: 'Pantry',
+        expiryDate: null, schemaVersion: 2, addedByUid: users.owner.uid,
+      });
+      // A v2 batch last written by the owner, some time ago.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'pantry-inventory', 'foreign'), {
+        name: 'Oats', nameKey: 'oats', quantity: 3, packages: 3, packageSize: null, unit: 'items', location: 'Pantry',
+        expiryDate: null, schemaVersion: 2, addedByUid: users.owner.uid, updatedByUid: users.owner.uid, updatedAt: now(),
+      });
+    });
+  });
+
+  test('v2 and legacy write shapes are accepted', async () => {
+    await assertSucceeds(setDoc(batch(users.member, 'rice'), v2(users.member)));
+    await assertSucceeds(setDoc(batch(users.member, 'undated'), v2(users.member, { expiryDate: null, packageSize: null, unit: 'items', quantity: 2 })));
+    await assertSucceeds(setDoc(batch(users.member, 'scanned'), v2(users.member, { barcode: '012345678905' })));
+    // Used one / +1 / Undo are increments; packages may reach exactly 0.
+    await assertSucceeds(updateDoc(batch(users.member, 'rice'), { packages: increment(-1), updatedByUid: users.member.uid, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(batch(users.member, 'rice'), { packages: increment(-1), updatedByUid: users.member.uid, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(batch(users.member, 'rice'), { packages: increment(1), updatedByUid: users.member.uid, updatedAt: serverTimestamp() }));
+    // Older pages: legacy create, quantity increment and merge-save with an ISO expiry.
+    await assertSucceeds(setDoc(batch(users.member, 'old-create'), { name: 'Eggs', quantity: 1, unit: 'items', location: 'Fridge', expiryDate: null }));
+    await assertSucceeds(updateDoc(batch(users.member, 'legacy-milk'), { quantity: increment(1) }));
+    await assertSucceeds(setDoc(batch(users.member, 'legacy-milk'), {
+      name: 'Milk', quantity: 3, unit: 'items', location: 'Fridge', expiryDate: '2026-11-15T06:00:00.000Z',
+    }, { merge: true }));
+    // A v2 client's first write to a legacy document upgrades it (absolute values).
+    await assertSucceeds(updateDoc(batch(users.member, 'legacy-milk'), {
+      name: 'Milk', nameKey: 'milk', location: 'Fridge', unit: 'items', packages: 2, packageSize: null, expiryDate: '2026-11-15',
+      quantity: 2, schemaVersion: 2, updatedByUid: users.member.uid, updatedAt: serverTimestamp(),
+    }));
+    // Moving a batch.
+    await assertSucceeds(updateDoc(batch(users.member, 'owned'), { location: 'Fridge', updatedByUid: users.member.uid, updatedAt: serverTimestamp() }));
+  });
+
+  test('pantry shapes and bounds are validated', async () => {
+    const member = users.member;
+    await assertFails(setDoc(batch(member, 'x1'), v2(member, { category: 'Dairy' })));
+    await assertFails(setDoc(batch(member, 'x2'), v2(member, { packages: -1 })));
+    await assertFails(setDoc(batch(member, 'x3'), v2(member, { packages: 10001 })));
+    await assertFails(setDoc(batch(member, 'x4'), v2(member, { packages: '2' })));
+    await assertFails(setDoc(batch(member, 'x5'), v2(member, { packageSize: 0 })));
+    await assertFails(setDoc(batch(member, 'x6'), v2(member, { packageSize: 100001 })));
+    await assertFails(setDoc(batch(member, 'x7'), v2(member, { unit: 'dozen' })));
+    await assertFails(setDoc(batch(member, 'x8'), v2(member, { location: 'Garage' })));
+    await assertFails(setDoc(batch(member, 'x9'), v2(member, { expiryDate: 'next friday' })));
+    await assertFails(setDoc(batch(member, 'x10'), v2(member, { expiryDate: `2026-11-20T${'0'.repeat(40)}` })));
+    await assertFails(setDoc(batch(member, 'x11'), v2(member, { schemaVersion: 3 })));
+    await assertFails(setDoc(batch(member, 'x12'), v2(member, { name: '' })));
+    await assertFails(setDoc(batch(member, 'x12b'), v2(member, { name: 'n'.repeat(121) })));
+    await assertSucceeds(setDoc(batch(member, 'x12c'), v2(member, { name: 'n'.repeat(120) })));
+    await assertFails(setDoc(batch(member, 'x13'), v2(member, { quantity: -1 })));
+    await assertFails(setDoc(batch(member, 'x14'), v2(member, { updatedAt: new Date('2020-01-01') })));
+    await assertFails(setDoc(batch(member, 'x15'), { quantity: 1, unit: 'items', location: 'Pantry' }));
+    // A used-up batch cannot go below zero.
+    await assertSucceeds(setDoc(batch(member, 'last'), v2(member, { packages: 1 })));
+    await assertSucceeds(updateDoc(batch(member, 'last'), { packages: increment(-1), updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(batch(member, 'last'), { packages: increment(-1), updatedAt: serverTimestamp() }));
+    // A legacy ISO expiry is still accepted in stage S4a.
+    await assertSucceeds(setDoc(batch(member, 'iso'), v2(member, { expiryDate: '2026-11-20T06:00:00.000Z' })));
+  });
+
+  test('attribution: addedByUid is the creator and fixed; updatedByUid is the writer', async () => {
+    await assertFails(setDoc(batch(users.member, 'forged'), v2(users.member, { addedByUid: users.owner.uid })));
+    await assertFails(setDoc(batch(users.member, 'forged-2'), v2(users.member, { updatedByUid: users.owner.uid })));
+    await assertFails(updateDoc(batch(users.member, 'owned'), { addedByUid: users.member.uid }));
+    await assertFails(updateDoc(batch(users.member, 'owned'), { addedByUid: deleteField() }));
+    await assertFails(updateDoc(batch(users.member, 'owned'), { packages: increment(1), updatedByUid: users.owner.uid }));
+    await assertFails(updateDoc(batch(users.member, 'legacy-milk'), { addedByUid: users.member.uid }));
+    await assertSucceeds(updateDoc(batch(users.member, 'owned'), { packages: increment(1), updatedByUid: users.member.uid, updatedAt: serverTimestamp() }));
+  });
+
+  test('a v2 update must leave the batch attributed to the writer at request time', async () => {
+    const stamp = { updatedByUid: users.member.uid, updatedAt: serverTimestamp() };
+    // A changed count under another member's updatedByUid and the old updatedAt is refused.
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1) }));
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1), updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1), updatedByUid: users.member.uid }));
+    // Removing the attribution is refused, alone or with a count change.
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { updatedByUid: deleteField() }));
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { updatedAt: deleteField(), packages: increment(-1), updatedByUid: users.member.uid }));
+    await assertFails(updateDoc(batch(users.owner, 'foreign'), { packages: increment(-1), updatedByUid: deleteField(), updatedAt: serverTimestamp() }));
+    // A v2 field on a batch without attribution yet needs it too.
+    await assertFails(updateDoc(batch(users.member, 'owned'), { packages: increment(1) }));
+    // With the writer and server time it is allowed.
+    await assertSucceeds(updateDoc(batch(users.member, 'foreign'), { packages: increment(-1), ...stamp }));
+    await assertSucceeds(updateDoc(batch(users.owner, 'foreign'), { location: 'Fridge', updatedByUid: users.owner.uid, updatedAt: serverTimestamp() }));
+  });
+
+  test('older pages keep working: legacy-only updates, on legacy and v2 batches', async () => {
+    // Legacy document, legacy update (quantity increment and merge-save), no attribution.
+    await assertSucceeds(updateDoc(batch(users.member, 'legacy-milk'), { quantity: increment(1) }));
+    await assertSucceeds(setDoc(batch(users.member, 'legacy-milk'), {
+      name: 'Whole milk', quantity: 2, unit: 'items', location: 'Fridge', expiryDate: null,
+    }, { merge: true }));
+    // An older page editing a v2 batch changes only legacy fields; packages and attribution stay.
+    await assertSucceeds(updateDoc(batch(users.member, 'foreign'), { quantity: increment(1) }));
+    await assertSucceeds(setDoc(batch(users.member, 'foreign'), {
+      name: 'Rolled oats', quantity: 4, unit: 'items', location: 'Pantry', expiryDate: '2026-12-01T06:00:00.000Z',
+    }, { merge: true }));
+    // A legacy-looking update that also removes a field is not legacy-only.
+    await assertFails(updateDoc(batch(users.member, 'foreign'), { quantity: 5, nameKey: deleteField() }));
+    // Upgrading a legacy document to v2 needs the attribution.
+    await assertFails(updateDoc(batch(users.member, 'legacy-milk'), { packages: 2, schemaVersion: 2 }));
+    await assertSucceeds(updateDoc(batch(users.member, 'legacy-milk'), {
+      packages: 2, schemaVersion: 2, updatedByUid: users.member.uid, updatedAt: serverTimestamp(),
+    }));
+  });
+
+  test('pantry permissions: view to read, edit to write, delete to delete', async () => {
+    await assertFails(getDoc(batch(users.denied, 'owned')));
+    await assertFails(setDoc(batch(users.denied, 'denied'), v2(users.denied)));
+    await assertFails(deleteDoc(batch(users.member, 'owned')));
+    await assertSucceeds(deleteDoc(batch(users.owner, 'owned')));
   });
 });
 
@@ -2359,7 +2520,8 @@ describe('content shapes: barcode library', () => {
 
   test('an existing product keeps a legacy image URL when edited', async () => {
     await assertSucceeds(setDoc(item(users.member, '012345678905'), { name: 'Renamed', imageUrl: '/favicon.ico', createdAt: '2026-07-25T15:00:00.000Z' }));
-    await assertSucceeds(setDoc(item(users.member, '012345678905'), saved({ name: 'New photo' })));
+    // An edit writes the product's own createdAt back (barcode-library-client.tsx handleSave).
+    await assertSucceeds(setDoc(item(users.member, '012345678905'), saved({ name: 'New photo', createdAt: '2026-07-25T15:00:00.000Z' })));
   });
 
   test('image URLs, paths and fields are restricted', async () => {
@@ -2373,5 +2535,268 @@ describe('content shapes: barcode library', () => {
     await assertFails(setDoc(item(users.member, '207'), saved({ price: 3 })));
     await assertFails(setDoc(item(users.member, '208'), saved({ name: 7 })));
     await assertFails(setDoc(item(users.member, 'x'.repeat(129)), saved()));
+  });
+});
+
+describe('content shapes: shopping S5–S8 stage', () => {
+  const hh = (user: Identity, household = householdA) => doc(dbFor(user), 'households', household);
+  const list = (user: Identity, id: string, household = householdA) => doc(hh(user, household), 'shopping-lists', id);
+  const categories = (user: Identity, listId = 'groceries') => doc(list(user, listId), 'config', 'categories');
+  const listItem = (user: Identity, id: string) => doc(list(user, 'groceries'), 'items', id);
+  const store = (user: Identity, id: string, household = householdA) => doc(hh(user, household), 'stores', id);
+  const settings = (user: Identity, id = 'preferences', household = householdA) => doc(hh(user, household), 'shopping-settings', id);
+  const trip = (user: Identity, id = 'trip-1', household = householdA) => doc(hh(user, household), 'trips', id);
+  const usual = (user: Identity, id = 'milk', household = householdA) => doc(hh(user, household), 'shopping-usuals', id);
+  const barcode = (user: Identity, id: string) => doc(hh(user), 'barcode-library', id);
+  const storeData = (user: Identity, overrides: Record<string, unknown> = {}) => ({
+    name: 'Corner market', aisleOrder: ['Produce', 'Dairy'], createdByUid: user.uid, updatedAt: serverTimestamp(), ...overrides,
+  });
+  const barcodeUrl = `https://firebasestorage.googleapis.com/v0/b/homehub-j91jb.appspot.com/o/households%2F${householdA}%2Fbarcode-library%2Fabc.jpg?alt=media&token=1`;
+  const product = (overrides: Record<string, unknown> = {}) => ({
+    name: 'Oat cereal', imageUrl: barcodeUrl, imagePath: `households/${householdA}/barcode-library/abc.jpg`,
+    createdAt: '2026-08-01T12:00:00.000Z', ...overrides,
+  });
+  const stamp = () => ({ updatedAt: serverTimestamp() });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      const a = doc(db, 'households', householdA);
+      await setDoc(doc(a, 'shopping-lists', 'owned'), { name: 'Owned', type: 'Grocery', createdByUid: users.member.uid, storeId: 'corner' });
+      await setDoc(doc(a, 'shopping-lists', 'groceries', 'items', 'credited'), {
+        name: 'Bread', quantity: 1, category: 'Bakery', status: 'purchased', createdAt: now(),
+        pantryCreditedAt: now(), creditTripId: 'trip-1',
+      });
+      await setDoc(doc(a, 'shopping-lists', 'groceries', 'items', 'plain'), {
+        name: 'Rice', quantity: 1, category: 'Pantry', status: 'needed', createdAt: now(),
+      });
+      await setDoc(doc(a, 'stores', 'corner'), { name: 'Corner', aisleOrder: [], createdByUid: users.member.uid, updatedAt: now() });
+      await setDoc(doc(a, 'shopping-settings', 'preferences'), { afterTrip: 'done', defaultGroceryListId: null, updatedAt: now() });
+      await setDoc(doc(a, 'trips', 'trip-1'), {
+        listId: 'groceries', listName: 'A groceries', appliedAt: now(), appliedByUid: users.member.uid, items: [],
+      });
+      await setDoc(doc(a, 'shopping-usuals', 'milk'), { name: 'Milk', nameKey: 'milk', category: 'Dairy', count: 3, lastPurchasedAt: now() });
+      await setDoc(doc(a, 'barcode-library', 'owned'), { ...product(), createdByUid: users.member.uid });
+      await setDoc(doc(a, 'barcode-library', 'legacy'), product({ name: 'Legacy' }));
+      await setDoc(doc(db, 'households', householdB, 'stores', 'b-store'), {
+        name: 'B', aisleOrder: [], createdByUid: users.ownerB.uid, updatedAt: now(),
+      });
+    });
+  });
+
+  test('the shipped list, category, item and barcode writes still pass', async () => {
+    // List create and edit (shopping-list-client.tsx handleSaveList merges) and the pantry's Groceries list.
+    await assertSucceeds(setDoc(list(users.member, 'hardware'), { name: 'Hardware', icon: 'Wrench', type: 'Hardware', description: '', color: 'tint-4' }, { merge: true }));
+    await assertSucceeds(setDoc(list(users.member, 'hardware'), { name: 'Tools', icon: 'Wrench', type: 'Hardware', description: 'Garage', color: 'tint-4' }, { merge: true }));
+    await assertSucceeds(setDoc(list(users.owner, 'owned'), { name: 'Renamed', icon: 'Home', type: 'Grocery', description: '', color: '' }, { merge: true }));
+    await assertSucceeds(setDoc(list(users.member, 'pantry-groceries'), { name: 'Groceries', icon: 'ShoppingCart', type: 'Grocery', description: '' }));
+    // Category add and remove rewrite the whole list.
+    await assertSucceeds(setDoc(categories(users.member), { list: ['Dairy', 'Produce'] }));
+    await assertSucceeds(setDoc(categories(users.member), { list: ['Dairy'] }));
+    // Item writes, including on an item the server has credited.
+    await assertSucceeds(setDoc(listItem(users.member, 'new'), { name: 'Milk', quantity: 1, category: 'Dairy', createdAt: new Date(), status: 'needed' }));
+    await assertSucceeds(updateDoc(listItem(users.member, 'plain'), { status: 'purchased' }));
+    await assertSucceeds(updateDoc(listItem(users.member, 'credited'), { status: 'needed' }));
+    await assertSucceeds(updateDoc(listItem(users.member, 'credited'), { quantity: increment(1) }));
+    // Barcode create with a photo, then an edit with a new photo that writes createdAt back.
+    await assertSucceeds(setDoc(barcode(users.member, '400'), product()));
+    await assertSucceeds(setDoc(barcode(users.member, '400'), product({ name: 'Renamed', imagePath: `households/${householdA}/barcode-library/new.jpg` })));
+  });
+
+  test('lists accept storeId and a creator that is the writer and never changes', async () => {
+    await assertSucceeds(setDoc(list(users.member, 's6'), { name: 'S6', type: 'Grocery', storeId: 'corner', createdByUid: users.member.uid }));
+    await assertSucceeds(updateDoc(list(users.member, 's6'), { storeId: null }));
+    await assertSucceeds(updateDoc(list(users.owner, 's6'), { storeId: 'x'.repeat(200), type: 'Custom', description: 'd' }));
+    await assertFails(updateDoc(list(users.member, 's6'), { storeId: 'x'.repeat(201) }));
+    await assertFails(updateDoc(list(users.member, 's6'), { storeId: 7 }));
+    await assertFails(setDoc(list(users.member, 'spoof'), { name: 'Spoof', createdByUid: users.owner.uid }));
+    await assertFails(setDoc(list(users.member, 'empty'), { name: 'Empty', createdByUid: '' }));
+    await assertFails(updateDoc(list(users.owner, 'owned'), { createdByUid: users.owner.uid }));
+    await assertFails(updateDoc(list(users.member, 'owned'), { createdByUid: deleteField() }));
+    await assertFails(setDoc(list(users.member, 'owned'), { name: 'Overwrite' }));
+    await assertFails(updateDoc(list(users.member, 'groceries'), { createdByUid: users.member.uid }));
+    await assertFails(setDoc(list(users.guest, 'guest'), { name: 'Guest', createdByUid: users.guest.uid }));
+    await assertFails(setDoc(list(users.denied, 'denied'), { name: 'Denied', createdByUid: users.denied.uid }));
+    await assertFails(setDoc(list(users.pending, 'pending'), { name: 'Pending', createdByUid: users.pending.uid }));
+    await assertFails(setDoc(list(users.ownerB, 'cross'), { name: 'Cross', createdByUid: users.ownerB.uid }));
+  });
+
+  test('category config accepts an ordered list changed with arrayUnion and arrayRemove', async () => {
+    await assertSucceeds(setDoc(categories(users.member), { list: ['Dairy'], ordered: ['Dairy'] }));
+    await assertSucceeds(updateDoc(categories(users.member), { ordered: arrayUnion('Produce') }));
+    await assertSucceeds(updateDoc(categories(users.owner), { ordered: arrayRemove('Dairy') }));
+    await assertSucceeds(updateDoc(categories(users.member), { ordered: ['Produce', 'Bakery'] }));
+    const full = Array.from({ length: 200 }, (_, i) => `Aisle ${i}`);
+    await assertSucceeds(updateDoc(categories(users.member), { ordered: full }));
+    await assertFails(updateDoc(categories(users.member), { ordered: arrayUnion('Aisle 200') }));
+    await assertFails(updateDoc(categories(users.member), { ordered: [...full, 'Aisle 200'] }));
+    await assertFails(updateDoc(categories(users.member), { ordered: 'Dairy' }));
+    await assertFails(updateDoc(categories(users.member), { sorted: true }));
+    await assertFails(updateDoc(categories(users.guest), { ordered: arrayUnion('Guest') }));
+    await assertFails(updateDoc(categories(users.denied), { ordered: arrayUnion('Denied') }));
+    await assertFails(updateDoc(categories(users.pending), { ordered: arrayUnion('Pending') }));
+  });
+
+  test('stores: shape, creator and server time', async () => {
+    await assertSucceeds(setDoc(store(users.member, 'market'), storeData(users.member)));
+    await assertSucceeds(setDoc(store(users.member, 'bare'), { name: 'Bare', createdByUid: users.member.uid, ...stamp() }));
+    await assertSucceeds(updateDoc(store(users.owner, 'market'), { name: 'Market', ...stamp() }));
+    await assertSucceeds(updateDoc(store(users.member, 'market'), { aisleOrder: arrayUnion('Bakery'), ...stamp() }));
+    await assertSucceeds(updateDoc(store(users.member, 'market'), { aisleOrder: arrayRemove('Produce'), ...stamp() }));
+    await assertSucceeds(updateDoc(store(users.member, 'market'), { aisleOrder: Array.from({ length: 200 }, (_, i) => `A${i}`), ...stamp() }));
+    await assertFails(updateDoc(store(users.member, 'market'), { aisleOrder: Array.from({ length: 201 }, (_, i) => `A${i}`), ...stamp() }));
+    await assertFails(updateDoc(store(users.member, 'market'), { aisleOrder: 'Dairy', ...stamp() }));
+    // Every write stamps the server time.
+    await assertFails(updateDoc(store(users.member, 'market'), { name: 'No stamp' }));
+    await assertFails(updateDoc(store(users.member, 'market'), { name: 'Old stamp', updatedAt: now() }));
+    await assertFails(setDoc(store(users.member, 'oldstamp'), storeData(users.member, { updatedAt: now() })));
+    // Shape.
+    await assertFails(setDoc(store(users.member, 'noname'), storeData(users.member, { name: '' })));
+    await assertFails(setDoc(store(users.member, 'longname'), storeData(users.member, { name: 'x'.repeat(121) })));
+    await assertSucceeds(setDoc(store(users.member, 'maxname'), storeData(users.member, { name: 'x'.repeat(120) })));
+    await assertFails(setDoc(store(users.member, 'extra'), storeData(users.member, { city: 'Austin' })));
+    await assertFails(setDoc(store(users.member, 'x'.repeat(201)), storeData(users.member)));
+    // Creator: required, the writer, fixed.
+    await assertFails(setDoc(store(users.member, 'nocreator'), { name: 'N', aisleOrder: [], ...stamp() }));
+    await assertFails(setDoc(store(users.member, 'spoof'), storeData(users.owner)));
+    await assertFails(updateDoc(store(users.owner, 'corner'), { createdByUid: users.owner.uid, ...stamp() }));
+    await assertFails(updateDoc(store(users.member, 'corner'), { createdByUid: deleteField(), ...stamp() }));
+    await assertFails(setDoc(store(users.member, 'corner'), { name: 'Over', aisleOrder: [], ...stamp() }));
+  });
+
+  test('stores: view, edit and delete permissions by role and household', async () => {
+    await assertSucceeds(getDoc(store(users.member, 'corner')));
+    await assertSucceeds(getDoc(store(users.guest, 'corner')));
+    await assertSucceeds(getDocs(collection(hh(users.guest), 'stores')));
+    await assertFails(getDoc(store(users.denied, 'corner')));
+    await assertFails(getDoc(store(users.pending, 'corner')));
+    await assertFails(getDoc(store(users.ownerB, 'corner')));
+    await assertFails(getDoc(store(users.owner, 'b-store', householdB)));
+    await assertFails(setDoc(store(users.guest, 'g'), storeData(users.guest)));
+    await assertFails(setDoc(store(users.child, 'c'), storeData(users.child)));
+    await assertFails(setDoc(store(users.denied, 'd'), storeData(users.denied)));
+    await assertFails(setDoc(store(users.pending, 'p'), storeData(users.pending)));
+    await assertFails(setDoc(store(users.ownerB, 'x'), storeData(users.ownerB)));
+    await assertFails(updateDoc(store(users.guest, 'corner'), { name: 'G', ...stamp() }));
+    await assertFails(updateDoc(store(users.owner, 'b-store', householdB), { name: 'X', ...stamp() }));
+    await assertFails(deleteDoc(store(users.member, 'corner')));
+    await assertSucceeds(deleteDoc(store(users.admin, 'corner')));
+  });
+
+  test('shopping settings: one preferences document with a bounded shape', async () => {
+    await assertSucceeds(getDoc(settings(users.guest)));
+    await assertFails(getDoc(settings(users.denied)));
+    await assertFails(getDoc(settings(users.pending)));
+    await assertFails(getDoc(settings(users.ownerB)));
+    await assertSucceeds(setDoc(settings(users.member), { afterTrip: 'putAwayAndClear', ...stamp() }, { merge: true }));
+    await assertSucceeds(updateDoc(settings(users.member), { afterTrip: 'done', ...stamp() }));
+    await assertSucceeds(updateDoc(settings(users.member), { defaultGroceryListId: 'groceries', ...stamp() }));
+    await assertSucceeds(updateDoc(settings(users.member), { defaultGroceryListId: null, ...stamp() }));
+    await assertSucceeds(updateDoc(settings(users.member), { defaultGroceryListId: 'x'.repeat(200), ...stamp() }));
+    await assertFails(updateDoc(settings(users.member), { defaultGroceryListId: 'x'.repeat(201), ...stamp() }));
+    await assertFails(updateDoc(settings(users.member), { defaultGroceryListId: 3, ...stamp() }));
+    await assertFails(updateDoc(settings(users.member), { afterTrip: 'ask', ...stamp() }));
+    await assertFails(updateDoc(settings(users.member), { afterTrip: 'done' }));
+    await assertFails(updateDoc(settings(users.member), { afterTrip: 'done', updatedAt: now() }));
+    await assertFails(updateDoc(settings(users.member), { theme: 'dark', ...stamp() }));
+    await assertFails(setDoc(settings(users.member, 'other'), { afterTrip: 'done', ...stamp() }));
+    await assertFails(setDoc(settings(users.guest), { afterTrip: 'done', ...stamp() }, { merge: true }));
+    await assertFails(setDoc(settings(users.denied), { afterTrip: 'done', ...stamp() }, { merge: true }));
+    await assertFails(setDoc(settings(users.pending), { afterTrip: 'done', ...stamp() }, { merge: true }));
+    await assertFails(setDoc(settings(users.ownerB), { afterTrip: 'done', ...stamp() }, { merge: true }));
+    await assertFails(deleteDoc(settings(users.member)));
+    await assertSucceeds(deleteDoc(settings(users.owner)));
+  });
+
+  test('trips are readable with shopping.view and never written by clients', async () => {
+    await assertSucceeds(getDoc(trip(users.member)));
+    await assertSucceeds(getDocs(collection(hh(users.guest), 'trips')));
+    await assertFails(getDoc(trip(users.denied)));
+    await assertFails(getDoc(trip(users.pending)));
+    await assertFails(getDoc(trip(users.ownerB)));
+    await assertFails(setDoc(trip(users.owner, 'trip-2'), { listId: 'groceries', items: [] }));
+    await assertFails(updateDoc(trip(users.owner), { undoneAt: serverTimestamp(), undoneByUid: users.owner.uid }));
+    await assertFails(deleteDoc(trip(users.owner)));
+  });
+
+  test('usuals: clients only correct the name and category, stamped', async () => {
+    await assertSucceeds(getDoc(usual(users.guest)));
+    await assertFails(getDoc(usual(users.denied)));
+    await assertFails(getDoc(usual(users.pending)));
+    await assertFails(getDoc(usual(users.ownerB)));
+    await assertSucceeds(updateDoc(usual(users.member), { name: 'Whole milk' }));
+    await assertSucceeds(updateDoc(usual(users.member), {
+      category: 'Dairy & eggs', categoryUpdatedAt: serverTimestamp(), categoryUpdatedByUid: users.member.uid,
+    }));
+    // The same member correcting again: the uid is unchanged, the time is new.
+    await assertSucceeds(updateDoc(usual(users.member), {
+      category: 'Dairy', categoryUpdatedAt: serverTimestamp(), categoryUpdatedByUid: users.member.uid,
+    }));
+    await assertFails(updateDoc(usual(users.member), { category: 'Bakery' }));
+    // Another member's correction must name its writer (the stored uid is the member's).
+    await assertFails(updateDoc(usual(users.owner), { category: 'Bakery', categoryUpdatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(usual(users.owner), {
+      category: 'Bakery', categoryUpdatedAt: serverTimestamp(), categoryUpdatedByUid: users.member.uid,
+    }));
+    await assertFails(updateDoc(usual(users.member), {
+      category: 'Bakery', categoryUpdatedAt: now(), categoryUpdatedByUid: users.member.uid,
+    }));
+    await assertFails(updateDoc(usual(users.member), {
+      category: 'x'.repeat(101), categoryUpdatedAt: serverTimestamp(), categoryUpdatedByUid: users.member.uid,
+    }));
+    await assertFails(updateDoc(usual(users.member), { name: '' }));
+    await assertFails(updateDoc(usual(users.member), { count: 99 }));
+    await assertFails(updateDoc(usual(users.member), { lastPurchasedAt: deleteField() }));
+    await assertFails(updateDoc(usual(users.guest), { name: 'Guest' }));
+    await assertFails(updateDoc(usual(users.denied), { name: 'Denied' }));
+    await assertFails(updateDoc(usual(users.pending), { name: 'Pending' }));
+    await assertFails(updateDoc(usual(users.ownerB), { name: 'Cross' }));
+    await assertFails(setDoc(usual(users.owner, 'eggs'), { name: 'Eggs', category: 'Dairy' }));
+    await assertFails(deleteDoc(usual(users.owner)));
+  });
+
+  test('items: the pantry credit fields are server-only', async () => {
+    await assertFails(setDoc(listItem(users.member, 'forged'), {
+      name: 'Milk', quantity: 1, category: 'Dairy', createdAt: new Date(), status: 'needed', pantryCreditedAt: serverTimestamp(),
+    }));
+    await assertFails(setDoc(listItem(users.member, 'forged2'), {
+      name: 'Milk', quantity: 1, category: 'Dairy', createdAt: new Date(), status: 'needed', creditTripId: 'trip-1',
+    }));
+    await assertFails(updateDoc(listItem(users.owner, 'plain'), { pantryCreditedAt: serverTimestamp() }));
+    await assertFails(updateDoc(listItem(users.owner, 'plain'), { creditTripId: 'trip-1' }));
+    await assertFails(updateDoc(listItem(users.owner, 'credited'), { creditTripId: 'trip-2' }));
+    await assertFails(updateDoc(listItem(users.owner, 'credited'), { pantryCreditedAt: serverTimestamp() }));
+    await assertFails(updateDoc(listItem(users.owner, 'credited'), { pantryCreditedAt: deleteField() }));
+    await assertFails(updateDoc(listItem(users.owner, 'credited'), { creditTripId: deleteField() }));
+    await assertFails(setDoc(listItem(users.owner, 'credited'), { name: 'Bread', quantity: 1, category: 'Bakery', status: 'needed', createdAt: now() }));
+    // Deleting a credited item stays a shopping.delete operation.
+    await assertFails(deleteDoc(listItem(users.member, 'credited')));
+    await assertSucceeds(deleteDoc(listItem(users.owner, 'credited')));
+  });
+
+  test('barcode library: creator on create, and no blind Add over an existing product (BL-3)', async () => {
+    await assertSucceeds(setDoc(barcode(users.member, '500'), product({ createdByUid: users.member.uid })));
+    await assertFails(setDoc(barcode(users.member, '501'), product({ createdByUid: users.owner.uid })));
+    await assertFails(setDoc(barcode(users.member, '502'), product({ createdByUid: '' })));
+    // A blind Add over an existing product carries a new createdAt, or none.
+    await assertFails(setDoc(barcode(users.owner, 'owned'), product({ name: 'Replaced', createdAt: '2026-09-01T12:00:00.000Z', createdByUid: users.member.uid })));
+    await assertFails(setDoc(barcode(users.owner, 'legacy'), product({ name: 'Replaced', createdAt: '2026-09-01T12:00:00.000Z' })));
+    await assertFails(setDoc(barcode(users.owner, 'legacy'), { name: 'No date', imageUrl: barcodeUrl }));
+    await assertFails(updateDoc(barcode(users.member, '500'), { createdAt: '2026-09-01T12:00:00.000Z' }));
+    await assertFails(updateDoc(barcode(users.member, '500'), { createdAt: deleteField() }));
+    // The creator never changes, is never removed, and is not added later.
+    await assertFails(updateDoc(barcode(users.owner, 'owned'), { createdByUid: users.owner.uid }));
+    await assertFails(updateDoc(barcode(users.member, 'owned'), { createdByUid: deleteField() }));
+    await assertFails(setDoc(barcode(users.member, 'owned'), product()));
+    await assertFails(updateDoc(barcode(users.member, 'legacy'), { createdByUid: users.member.uid }));
+    // Edits that keep createdAt and createdByUid pass; the image restriction still applies.
+    await assertSucceeds(setDoc(barcode(users.owner, 'owned'), { ...product({ name: 'Edited' }), createdByUid: users.member.uid }));
+    await assertSucceeds(updateDoc(barcode(users.owner, 'owned'), { name: 'Edited again' }));
+    await assertSucceeds(setDoc(barcode(users.member, 'legacy'), product({ name: 'Legacy edited' })));
+    await assertFails(updateDoc(barcode(users.owner, 'owned'), { imageUrl: 'https://evil.example.test/x.png' }));
+    await assertFails(setDoc(barcode(users.guest, '503'), product({ createdByUid: users.guest.uid })));
+    await assertFails(setDoc(barcode(users.denied, '504'), product({ createdByUid: users.denied.uid })));
+    await assertFails(setDoc(barcode(users.pending, '505'), product({ createdByUid: users.pending.uid })));
+    await assertFails(setDoc(doc(dbFor(users.ownerB), 'households', householdA, 'barcode-library', '506'), product({ createdByUid: users.ownerB.uid })));
   });
 });

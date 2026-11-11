@@ -87,6 +87,23 @@ export type ShoppingList = {
     icon: string; // Lucide icon name
     type: ShoppingListType;
     color?: string; // Hex color code
+    /** The store whose aisle order the open list follows (`stores/{storeId}`); null or absent: the list's own order. */
+    storeId?: string | null;
+    /** Who created the list (the signed-in uid at creation). Absent on lists made by older clients. */
+    createdByUid?: string;
+};
+
+/**
+ * A store the household shops at (`households/{householdId}/stores/{storeId}`),
+ * with the order its aisles are walked in (category names, at most 200). Lists
+ * that name it in `storeId` group their needed items in this order.
+ */
+export type ShoppingStore = {
+    id: string;
+    name: string;
+    aisleOrder: string[];
+    createdByUid?: string;
+    updatedAt?: unknown;
 };
 
 export type ShoppingListItem = {
@@ -100,6 +117,32 @@ export type ShoppingListItem = {
   barcode?: string;
   /** Link saved with an item shared into HomeHub (recipe or product page). http(s) only. */
   sourceUrl?: string;
+  /** Normalized name (`itemNameKey`), written on new items (SH-28a). */
+  nameKey?: string;
+  /** Who added the item (the signed-in uid at creation; immutable). Shown on rows from S3. */
+  addedByUid?: string;
+  /** Who restored the item with Undo after a delete (the writer of that re-create); `addedByUid` stays the original adder. */
+  restoredByUid?: string;
+  /** Where `category` came from (QA-6): manual, remembered, local, ai, fallback or pending. */
+  categorySource?: 'manual' | 'remembered' | 'local' | 'ai' | 'fallback' | 'pending';
+  /** Package size of a scanned product ("450" of 450 g); never the quantity (BL-1). */
+  size?: number;
+  /** Unit of `size` ("g", "fl oz"). */
+  sizeUnit?: string;
+  /** Who ticked it (the writer's uid) and when (server time); cleared by an un-tick or Undo (S3). */
+  purchasedByUid?: string | null;
+  purchasedAt?: unknown;
+  /** Fresh id of the latest tick; its Undo must name it (`undoOpId`), so a newer tick by anyone wins. */
+  purchaseOpId?: string;
+  /** The `purchaseOpId` an Undo reversed (rules: only while it is still the current purchase). */
+  undoOpId?: string;
+  /** Id of the Undo-after-delete that re-created this item (rules: create only). */
+  /** When that restore was written (server time; rules: create only, so a replayed restore is refused). */
+  restoredAt?: unknown;
+  restoreOpId?: string;
+  /** Who last edited it in the item sheet (the writer's uid) and when (server time) (SH-8a/b). */
+  editedByUid?: string;
+  editedAt?: unknown;
 };
 
 export type ShoppingListCategory = string;
@@ -118,13 +161,31 @@ export const pantryItemUnitCategories = {
 
 export type PantryItemLocation = 'Pantry' | 'Fridge' | 'Freezer';
 
+/**
+ * A stored pantry document (`households/{h}/pantry-inventory/{id}`), one per
+ * batch in Pantry v2. Documents written before v2 carry only `name`, `quantity`,
+ * `unit`, `location` and an ISO `expiryDate`; read any document through
+ * `readPantryBatch` (src/lib/shopping/pantry-batches.ts), never these fields directly.
+ */
 export type PantryItem = {
   id: string;
   name: string;
-  quantity: number;
+  /** Legacy amount, still dual-written: packages for counted units, the package size for measured ones. */
+  quantity?: number;
   unit: PantryItemUnit;
   location: PantryItemLocation;
-  expiryDate?: string | null; // ISO string
+  /** v2: `yyyy-MM-dd` in the household zone; legacy documents hold an ISO instant of local midnight. */
+  expiryDate?: string | null;
+  nameKey?: string;
+  /** v2: number of packages (0..10000); 0 means used up. */
+  packages?: number;
+  /** v2: size of one package in `unit`, or null. */
+  packageSize?: number | null;
+  barcode?: string | null;
+  addedByUid?: string;
+  updatedByUid?: string;
+  updatedAt?: unknown;
+  schemaVersion?: number;
 };
 
 export type HomeAssetCategory =
@@ -387,6 +448,8 @@ export type BarcodeLibraryItem = {
   imageUrl: string;
   imagePath?: string;
   createdAt: string; // ISO String
+  /** Who added the product (written on create by newer builds; fixed afterwards by the rules). */
+  createdByUid?: string;
 };
 
 

@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import { z } from 'zod';
 import { toStrictOutputSchema, type JsonSchema } from '../../src/ai/strict-output-schema';
 import { CategorizeGroceryItemOutputSchema } from '../../src/ai/tasks/categorize-grocery-item';
+import { CategorizeGroceryItemsModelOutputSchema } from '../../src/ai/tasks/categorize-grocery-items';
 import { GenerateRecipeOutputSchema } from '../../src/ai/tasks/generate-recipe';
 import { SummarizeMaintenanceLogOutputSchema } from '../../src/ai/tasks/summarize-maintenance-log';
 import { HomeOverviewNarrativeSchema, OverviewSectionSchema } from '../../src/ai/overview-schemas';
@@ -31,6 +32,7 @@ const assertStrict = (schema: JsonSchema, path = '#') => {
 
 const flowOutputSchemas = {
   categorization: CategorizeGroceryItemOutputSchema,
+  'categorization-batch': CategorizeGroceryItemsModelOutputSchema,
   recipe: GenerateRecipeOutputSchema,
   'maintenance-summary': SummarizeMaintenanceLogOutputSchema,
   overview: HomeOverviewNarrativeSchema,
@@ -87,7 +89,7 @@ describe('strict OpenAI output schemas', () => {
       [GenerateRecipeOutputSchema, {
         recipeTitle: 'Rice and Beans',
         description: 'Simple.',
-        ingredients: { used: ['rice', 'beans'], needed: [] },
+        ingredients: { used: [{ pantryItem: 'Rice', line: '1 cup rice' }], needed: [{ name: 'Salt', line: 'a pinch of salt' }] },
         instructions: ['Cook.'],
         prepTime: '5 minutes',
         cookTime: '20 minutes',

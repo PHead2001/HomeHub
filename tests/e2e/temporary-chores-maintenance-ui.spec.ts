@@ -427,7 +427,10 @@ test.describe('temporary chores and maintenance UI regressions', () => {
       // The module carousel was replaced by the living house and the tile grid.
       await expect(page.getByTestId('living-house')).toBeVisible();
       await expect(page.getByTestId('dashboard-tile-shopping')).toBeVisible();
-      await expect(page.getByTestId('dashboard-tile-shopping')).toHaveAttribute('href', '/shopping');
+      // With needed items the tile carries one-tap tick rows, so its link is the title link inside it;
+      // an empty tile is itself the link.
+      const shoppingLink = page.getByTestId('dashboard-tile-shopping-link').or(page.locator('a[data-testid="dashboard-tile-shopping"]'));
+      await expect(shoppingLink).toHaveAttribute('href', '/shopping');
       await assertNoDocumentOverflow(page);
     }
   });

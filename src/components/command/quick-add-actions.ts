@@ -4,10 +4,10 @@
  * Writes for natural-language quick-add (H13). Each one uses the same document
  * contract as the module that owns the data, so Firestore rules and the module's
  * screens treat the result exactly like something added there:
- * - shopping items: merged into a still-needed item of the same name with the
- *   Shopping list's own transaction (`findMergeTarget` + `mergeIntoNeededItem`),
- *   otherwise created with `buildShoppingListItem` and the shared category
- *   resolution (the guarded, quota-counted categorizer; "Other" offline);
+ * - shopping items: the Shopping list's own save path (`addItemsToList`): merged
+ *   online into a still-needed item of the same name, otherwise created at once
+ *   with a remembered or local category, then one batched, quota-counted AI call
+ *   for the rest;
  * - feedings: the Pets module's shared feed operation (`feedPet`), defaulting to
  *   the pet's usual portion (`feedingPlan`) and the latest feeding's food type
  *   (`knownFoodType`), exactly like the one-tap feed button, including its
@@ -22,13 +22,11 @@
  * Firestore rules check the same permissions as on those screens (chores.create,
  * maintenance.createLogs). Nothing is written until the person confirms the preview.
  */
-import { Timestamp, collection, doc, getDocs, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import { Timestamp, collection, doc, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { format } from 'date-fns';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
-import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { auth, db } from '@/lib/firebase';
-import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
+import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware } from '@/lib/firestore-offline';
 import { petLogsCollection } from '@/components/pets/pet-log-api';
 import { knownFromLogs } from '@/lib/pets/feed-decision';
 import { feedPet, type FeedPetResult } from '@/lib/pets/feed-operation';
@@ -36,14 +34,13 @@ import { foodTypeFromLatest } from '@/lib/dashboard/quick-add';
 import type { RawDoc } from '@/lib/dashboard/facts';
 import { loggerName } from '@/lib/pets/care';
 import type { PortionUnit } from '@/lib/pets/types';
-import { findMergeTarget, type QuickAddEntry } from '@/lib/shopping/items';
+import type { QuickAddEntry } from '@/lib/shopping/items';
+import { addItemsToList } from '@/lib/shopping/add-items';
 import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
-import { mergeIntoNeededItem } from '@/lib/shopping/item-transactions';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
+import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
 import { assigneeFields } from '@functions/shared/assignee';
 import { publicDisplayName } from '@/lib/member-directory';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { Chore, ShoppingListItem, User } from '@/lib/types';
 import type { MaintenanceTarget, QuickAddList, QuickAddMember, QuickAddRepeat, QuickAddRoom } from '@/lib/dashboard/quick-add';
 import { quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '@/lib/dashboard/quick-add-writes';
@@ -53,31 +50,36 @@ export async function addShoppingItems(
   list: QuickAddList,
   items: QuickAddEntry[],
   onLateError: (error: unknown) => void,
-): Promise<ShoppingAddOutcome> {
+): Promise<ShoppingAddOutcome & { settled: Promise<{ failed: QuickAddEntry[] }> }> {
   const categoriesSnapshot = await getDocOfflineAware(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
-  const offline = isBrowserOffline();
   const itemsRef = collection(db, 'households', householdId, 'shopping-lists', list.id, 'items');
-  // As on the Shopping list: online, a name that is still needed merges into that
-  // item (the transaction re-checks it is still needed); offline nothing merges.
-  const needed = offline ? [] : (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
+  // The list's items give merge targets (needed ones, merged online only) and
+  // remembered categories; offline they come from the cache.
+  const knownItems = (await getDocsOfflineAware(itemsRef).catch(() => null))
     ?.docs.map((entry) => ({ id: entry.id, ...(entry.data() as Omit<ShoppingListItem, 'id'>) })) ?? [];
-  // Each entry is its own write, settled independently (Shopping's quick-add
-  // contract): one failure never hides which entries were saved, and a retry
-  // sends only the failed ones, so nothing is added twice.
-  const settled = await Promise.allSettled(items.map(async (item): Promise<'saved' | 'queued'> => {
-    const target = findMergeTarget(needed, item.name);
-    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), item.quantity)) return 'saved';
-    const { category } = await resolveShoppingCategory({
-      itemName: item.name,
-      categories,
-      selectedCategory: offline ? 'Other' : undefined,
-      categorize: async (input) => unwrapAiActionResult(await categorizeGroceryItem(input, await getAiActionContext(householdId))),
-    });
-    const { itemId, data } = buildShoppingListItem({ name: item.name, quantity: item.quantity, category });
-    return awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
-  }));
-  return shoppingAddOutcome(items, settled);
+  // The Shopping list's own save path: saved at once with a remembered or local
+  // category, one batched AI call afterwards, each write classified honestly.
+  const { outcomes } = await addItemsToList({
+    householdId,
+    listId: list.id,
+    uid: auth.currentUser?.uid,
+    entries: items,
+    categories,
+    knownItems,
+    // Late AI answers only while the same household is signed in (the palette has no open list).
+    active: () => ({ householdId: auth.currentUser ? householdId : null, listId: list.id }),
+    onLateError: (_name, error) => onLateError(error),
+  });
+  // Each save state is kept: only `saved` and `stored-locally` are confirmed;
+  // `sending` and `uncertain` stay unconfirmed until `settled` says how they ended.
+  const outcome = shoppingAddOutcome(items, outcomes);
+  const settled = Promise.all(outcomes.map(async (entryOutcome, index) => (
+    entryOutcome.state === 'sending' || entryOutcome.state === 'uncertain'
+      ? ((await entryOutcome.settled) === 'failed' ? items[index] : null)
+      : null
+  ))).then((late) => ({ failed: late.filter((entry): entry is QuickAddEntry => entry !== null) }));
+  return { ...outcome, settled };
 }
 
 // Feedings go through the Pets module's shared feed operation, so quick-add
@@ -105,21 +107,29 @@ export async function logFeeding({
 }): Promise<FeedPetResult> {
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
   // type of the pet's latest feeding, and no comment.
-  const latest = await latestFeedings(householdId, petId);
-  // The newest 20 per date shape, as the pet cards read them: today's count
-  // (household day) feeds the complete-day check when the state lags behind.
-  const known = knownFromLogs(latest.flat(), new Date(), timeZone);
+  const { food, known } = await feedingHistory(householdId, petId, timeZone);
   return feedPet({
     householdId,
     petId,
     portion: { amount, unit },
-    food: foodTypeFromLatest(latest),
+    food,
     confirm,
     timeZone,
     known,
     user: { uid: viewer.uid, name: loggerName(viewer) },
     onLateError,
   });
+}
+
+/**
+ * What a quick feeding reuses from the pet's history: the food type of its latest
+ * feeding and, from the newest 20 per date shape as the pet cards read them,
+ * today's count (household day) for the complete-day check when the state lags
+ * behind. Shared by the typed quick add and the palette's Feeding mode buttons.
+ */
+export async function feedingHistory(householdId: string, petId: string, timeZone?: string | null) {
+  const latest = await latestFeedings(householdId, petId);
+  return { food: foodTypeFromLatest(latest), known: knownFromLogs(latest.flat(), new Date(), timeZone) };
 }
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
