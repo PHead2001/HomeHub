@@ -7,18 +7,9 @@ import { Input } from '@/components/ui/input';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { toast } from '@/hooks/use-toast';
 import { MAX_QUICK_ADD_ITEMS, mergeRetryText, parseQuickAdd, quickAddFailureMessage, type QuickAddEntry } from '@/lib/shopping/items';
+import { failedEntries, notAddedNotice, type QuickAddOutcome } from '@/lib/shopping/quick-add-outcome';
 
-/**
- * What happened to a quick-add submission: `failed` are the entries that could not
- * be saved. `pending` are entries without an answer yet (save-status.ts `sending`
- * or `uncertain`): they show in a status chip and `settled` resolves with those of
- * them that finally failed. The others were saved. `null` means nothing was
- * saved, so every submitted entry counts as failed.
- */
-export type QuickAddOutcome = {
-  failed: QuickAddEntry[];
-  pending?: { entries: QuickAddEntry[]; label: string; settled: Promise<QuickAddEntry[]> };
-} | null;
+export type { QuickAddOutcome };
 
 type PendingChip = { id: number; names: string; label: string };
 
@@ -84,7 +75,7 @@ export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAd
     let failed: QuickAddEntry[] = entries;
     try {
       const outcome = await onAdd(entries);
-      failed = outcome ? outcome.failed : entries;
+      failed = failedEntries(outcome, entries);
       if (outcome?.pending) trackPending(outcome.pending);
     } catch {
       failed = entries;
@@ -95,8 +86,9 @@ export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAd
         setValue((current) => mergeRetryText(failed, current));
         setError(quickAddFailureMessage(failed));
         inputRef.current?.focus();
-      } else if (failed.length > 0) {
-        toast({ variant: 'destructive', title: `Not added to ${listName}`, description: failed.map((entry) => entry.name).join(', ') });
+      } else {
+        const notice = notAddedNotice(listName, failed);
+        if (notice) toast(notice);
       }
     }
   };
@@ -109,9 +101,8 @@ export function QuickAddBar({ listName, onAdd, above }: { listName: string; onAd
     setChips((current) => [...current, { id, names: pending.entries.map((entry) => entry.name).join(', '), label: pending.label }]);
     void pending.settled.catch(() => pending.entries).then((lateFailed) => {
       if (!mountedRef.current) {
-        if (lateFailed.length > 0) {
-          toast({ variant: 'destructive', title: `Not added to ${listName}`, description: lateFailed.map((entry) => entry.name).join(', ') });
-        }
+        const notice = notAddedNotice(listName, lateFailed);
+        if (notice) toast(notice);
         return;
       }
       setChips((current) => current.filter((chip) => chip.id !== id));

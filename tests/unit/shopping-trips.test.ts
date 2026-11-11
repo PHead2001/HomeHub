@@ -8,6 +8,9 @@ import {
   cadenceDays,
   chunked,
   decideTripItems,
+  firestoreDocumentBytes,
+  firestoreValueBytes,
+  MAX_TRIP_DOCUMENT_BYTES,
   expiryForPick,
   isAlreadyCredited,
   largestFittingCount,
@@ -27,13 +30,13 @@ import {
   tripUndoOpen,
   undoableTripId,
   usualAfterTrip,
-  usualId,
   usualSuggestions,
   usualWithoutTrip,
   type TripChoice,
 } from '../../src/lib/shopping/trip-plan';
 import { pantryBatchFields } from '../../src/lib/shopping/pantry-batches';
 import { createRequestGate } from '../../src/lib/shopping/request-gate';
+import { usualDigest, usualId } from '../../src/lib/shopping/usual-id';
 import { pushJournal, readJournal, type JournalStorage, type UndoEntry } from '../../src/lib/shopping/undo';
 
 const ts = (ms: number) => ({ toMillis: () => ms });
@@ -210,6 +213,27 @@ describe('one trip at a time (MAX_TRIP_ITEMS)', () => {
     assert.deepEqual([...clear.shelvedIds].sort(), ['milk', 'rice']);
   });
 
+  test('trip size is counted in Firestore storage bytes (UTF-8), not characters', () => {
+    // Firestore's published examples (no allowance): "Task 1" is 7, a document name of users/jeff/tasks/my_task_id is 44.
+    assert.equal(firestoreValueBytes('Task 1', 0), 7);
+    assert.equal(firestoreValueBytes({ done: false, priority: 1 }, 0), 5 + 1 + 9 + 8);
+    assert.equal(firestoreDocumentBytes('users/jeff/tasks/my_task_id', {}) - firestoreValueBytes({}) - 32, 44);
+    assert.equal(firestoreValueBytes('牛', 0), 4, 'three UTF-8 bytes + 1');
+    assert.equal(firestoreValueBytes({ toMillis: () => 0 }, 0), 8);
+    // 149 purchases with 100-character Japanese names and two 2,000-character Japanese links:
+    // under 700,000 JSON characters, but well over 1 MiB as stored.
+    const record = (index: number) => ({
+      itemId: `i${index}`, name: '和'.repeat(100), quantity: 1, category: 'Other', purchaseOpId: `op-${index}`, location: null, expiryDate: null,
+      credited: false, cleared: true, data: { name: '和'.repeat(100), sourceUrl: `https://example.test/${'道'.repeat(2_000)}`, imageUrl: `https://example.test/${'画'.repeat(2_000)}`, status: 'purchased', quantity: 1 },
+    });
+    const documentFor = (count: number) => ({ items: Array.from({ length: count }, (_, index) => record(index)) });
+    assert.ok(JSON.stringify(documentFor(149)).length < 700_000);
+    assert.ok(firestoreDocumentBytes('households/h/trips/t', documentFor(149)) > 1_048_576);
+    const count = largestFittingCount(149, (size) => firestoreDocumentBytes('households/h/trips/t', documentFor(size)) <= MAX_TRIP_DOCUMENT_BYTES);
+    assert.ok(count > 0 && count < 149);
+    assert.ok(firestoreDocumentBytes('households/h/trips/t', documentFor(count)) <= MAX_TRIP_DOCUMENT_BYTES);
+  });
+
   test('the server takes the longest run of items that fits', () => {
     assert.equal(largestFittingCount(200, (size) => size * 3 + 1 <= 450), 149);
     assert.equal(largestFittingCount(10, () => true), 10);
@@ -288,11 +312,27 @@ describe('usuals (SH-32)', () => {
     assert.equal(back.action === 'set' && back.fields.lastBoughtAtMs, 0);
   });
 
-  test('ids are safe document ids', () => {
+  test('ids are safe document ids: readable when short, otherwise a prefix and a SHA-256 digest of the whole name key', () => {
     assert.equal(usualId('Whole  Milk'), 'whole%20milk');
     assert.equal(usualId('a/b'), 'a%2Fb');
-    assert.equal(usualId('..'), 'k-..');
     assert.equal(usualId('   '), null);
+    // SHA-256 test vector (FIPS 180-2 "abc"), first 128 bits.
+    assert.equal(usualDigest('abc'), 'ba7816bf8f01cfea414140de5dae2223');
+    assert.equal(usualId('..'), `..~${usualDigest('..')}`);
+    assert.equal(usualId('__x__'), `__x__~${usualDigest('__x__')}`);
+    // "~" is never in a readable id, so a readable id cannot equal a digested one.
+    assert.equal(usualId('a~b'), `a~b~${usualDigest('a~b')}`);
+    // Distinct long names sharing a long prefix (CJK: 9 encoded characters each) stay distinct.
+    const shared = '牛乳'.repeat(30);
+    const a = usualId(`${shared}A`)!;
+    const b = usualId(`${shared}B`)!;
+    assert.notEqual(a, b);
+    assert.equal(usualId(`${shared}A`), a, 'stable');
+    assert.equal(usualId(`  ${shared}a `), a, 'from the name key (case and spaces)');
+    for (const id of [a, b, usualId('x'.repeat(500))!, usualId('長'.repeat(500))!]) {
+      assert.ok(Buffer.byteLength(id, 'utf8') <= 100, id);
+      assert.ok(!id.includes('/') && !/^__.*__$/.test(id));
+    }
   });
 
   test('suggestions: due within a day, bought at least twice, not already needed, most overdue first', () => {

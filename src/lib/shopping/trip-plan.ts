@@ -24,10 +24,47 @@ export const MAX_TRIP_ITEMS = 200;
 /** The most document writes one trip's transaction may make (pantry, items, usuals and the trip itself). */
 export const MAX_TRIP_WRITES = 450;
 /**
- * The most a trip document may carry, as an estimate of its item snapshots and
- * pantry effects in JSON (Firestore's document limit is 1 MiB; this leaves room).
+ * The most a new trip document may be, in Firestore's storage size
+ * (`firestoreDocumentBytes`). Firestore refuses documents over 1,048,576 bytes;
+ * this leaves room for the Undo summary written onto the trip later (its
+ * `kept` names are at most one 120-character pantry name per effect, about
+ * 216,000 bytes at the very most) and for any error in the estimate.
  */
-export const MAX_TRIP_RECORD_BYTES = 700_000;
+export const MAX_TRIP_DOCUMENT_BYTES = 760_000;
+const utf8 = new TextEncoder();
+const utf8Bytes = (value: string) => utf8.encode(value).length;
+
+/**
+ * A value's size as Firestore counts it for the document limit: a string is its
+ * UTF-8 bytes + 1, a number, timestamp or server-value sentinel 8, a boolean
+ * or null 1, an array the sum of its elements, a map the sum of its field names
+ * (UTF-8 + 1) and values; plus `allowance` per value as a margin for encoding
+ * overhead the published rules do not list.
+ */
+export function firestoreValueBytes(value: unknown, allowance = 2): number {
+  if (value === null || value === undefined || typeof value === 'boolean') return 1 + allowance;
+  if (typeof value === 'number' || typeof value === 'bigint') return 8 + allowance;
+  if (typeof value === 'string') return utf8Bytes(value) + 1 + allowance;
+  if (value instanceof Date) return 8 + allowance;
+  if (Array.isArray(value)) return value.reduce((sum: number, entry) => sum + firestoreValueBytes(entry, allowance), allowance);
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.toMillis === 'function') return 8 + allowance;
+    if (typeof record.latitude === 'number' && typeof record.longitude === 'number') return 16 + allowance;
+    const prototype = Object.getPrototypeOf(value);
+    // A FieldValue sentinel (server time, increment): counted as the value it becomes.
+    if (prototype !== Object.prototype && prototype !== null) return 8 + allowance;
+    return Object.entries(record).reduce((sum, [key, entry]) => sum + utf8Bytes(key) + 1 + firestoreValueBytes(entry, allowance), allowance);
+  }
+  return 8 + allowance;
+}
+
+/** A document's size as Firestore counts it: its name (each path segment's UTF-8 + 1, + 16), its fields, + 32. */
+export function firestoreDocumentBytes(path: string, data: Record<string, unknown>): number {
+  const name = path.split('/').reduce((sum, segment) => sum + utf8Bytes(segment) + 1, 16);
+  return name + firestoreValueBytes(data) + 32;
+}
+
 /** Purchase ids per `array-contains-any` lookup of earlier trips (Firestore allows 30). */
 export const CREDITED_LOOKUP_CHUNK = 30;
 /** How long after it was applied a trip can still be undone (the server's window). */
@@ -337,13 +374,7 @@ export function tripUndoOpen(appliedAtMs: number | null, nowMs: number): boolean
 
 // --- Usuals (SH-32) ---------------------------------------------------------------
 
-/** The `shopping-usuals` document id for a name: its name key, made safe as a document id. */
-export function usualId(name: string): string | null {
-  const key = itemNameKey(name);
-  if (!key) return null;
-  const id = encodeURIComponent(key).slice(0, 400).replace(/%[0-9A-F]?$/i, '');
-  return isDocId(id) ? id : `k-${id}`;
-}
+// The usual's document id is `usualId` in `./usual-id.ts` (server-only: SHA-256).
 
 export type UsualRecent = { tripId: string; atMs: number };
 

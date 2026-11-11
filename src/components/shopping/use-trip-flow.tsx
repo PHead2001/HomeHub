@@ -9,6 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { isBrowserOffline } from '@/lib/firestore-offline';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import type { QuickAddEntry } from '@/lib/shopping/items';
+import { addAndReportDetached, type QuickAddOutcome } from '@/lib/shopping/quick-add-outcome';
 import { purchasesAlreadyPutAway, rememberAfterTrip, useAfterTripPreference, useShoppingUsuals } from '@/lib/shopping/trip-live';
 import { tripGroup, tripOutcomeText, usualSuggestions, type AfterTrip, type TripChoice, type TripMode } from '@/lib/shopping/trip-plan';
 import type { TripUndo, UndoEntry } from '@/lib/shopping/undo';
@@ -77,7 +78,7 @@ export function useTripFlow({
   /** After a trip cleared items from `listId` (the empty-list check). */
   onCleared: (listId: string) => void;
   onOpenPantry?: () => void;
-  onQuickAdd: (entries: QuickAddEntry[]) => Promise<unknown>;
+  onQuickAdd: (entries: QuickAddEntry[]) => Promise<QuickAddOutcome>;
   closeReceipt: () => void;
 }) {
   const { household } = useAuth();
@@ -213,7 +214,8 @@ export function useTripFlow({
   );
 
   const chips: ReactNode = isGrocery && canEdit && suggestions.length > 0
-    ? <UsualChips suggestions={suggestions} onAdd={(name) => void onQuickAdd([{ name, quantity: 1 }])} />
+    // No field to put a failure back into: what was not added is said in a toast (the chip stays, so a tap retries).
+    ? <UsualChips suggestions={suggestions} onAdd={(name) => void addAndReportDetached(list?.name ?? 'the list', [{ name, quantity: 1 }], onQuickAdd, toast)} />
     : null;
 
   const dialog: ReactNode = putAway && tabActive && householdId === putAway.householdId && list?.id === putAway.listId ? (

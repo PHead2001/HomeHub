@@ -305,6 +305,30 @@ describe('putAwayAndClear', () => {
     assert.equal((await items.get()).size, 0);
     assert.equal((await pantry.get()).size, 200);
   });
+
+  test('a trip whose snapshots would pass 1 MiB in UTF-8 applies the run that fits instead of failing', async () => {
+    await items.doc('milk').delete();
+    await items.doc('rice').delete();
+    const writer = adminDb.bulkWriter();
+    const names = Array.from({ length: 150 }, (_, index) => `${'和'.repeat(96)}${String(index).padStart(3, '0')}`);
+    names.forEach((name, index) => void writer.set(items.doc(`j${index}`), {
+      ...bought(name, 1, 'Other', `op-j${index}`),
+      sourceUrl: `https://example.test/${'道'.repeat(2_000)}`,
+      imageUrl: `https://example.test/${'画'.repeat(2_000)}`,
+    }));
+    await writer.close();
+    // Cleared without a shelf: few writes, so only the document size limits the trip.
+    const result = await run('owner', 'trip-utf8-0001', 'putAwayAndClear', names.map((name, index) => pick(`j${index}`, name, 1, null, null, `op-j${index}`)));
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const trip = result.ok ? result.trip : null;
+    assert.ok(trip && trip.cleared.length > 0 && trip.deferred.length > 0);
+    assert.equal(trip!.cleared.length + trip!.deferred.length, 150);
+    assert.equal((await trips.doc('trip-utf8-0001').get()).exists, true);
+    assert.equal((await items.get()).size, trip!.deferred.length);
+    // Its Undo (which adds a summary to the trip) still fits and puts them back.
+    const back = await undo('owner', 'trip-utf8-0001');
+    assert.equal(back.ok && back.undo.restored, trip!.cleared.length);
+  });
 });
 
 describe('undoTrip', () => {

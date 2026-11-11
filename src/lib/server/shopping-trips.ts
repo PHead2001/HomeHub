@@ -2,12 +2,14 @@ import 'server-only';
 
 import { FieldValue, Timestamp, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore';
 import { slugify } from '@/lib/utils';
+import { usualId } from '@/lib/shopping/usual-id';
 import { pantryBatchFields, planLegacyUpgrade, readPantryBatch } from '@/lib/shopping/pantry-batches';
 import {
-  MAX_TRIP_RECORD_BYTES,
+  MAX_TRIP_DOCUMENT_BYTES,
   MAX_TRIP_WRITES,
   chunked,
   decideTripItems,
+  firestoreDocumentBytes,
   largestFittingCount,
   planPantryReversal,
   planTripPantry,
@@ -16,7 +18,6 @@ import {
   tripTargetStillValid,
   tripUndoOpen,
   usualAfterTrip,
-  usualId,
   usualWithoutTrip,
   type PantryEffect,
   type SkipReason,
@@ -126,7 +127,8 @@ const usualWrite = (fields: UsualFields) => ({
  * 3. Re-reads each planned pantry merge target (planned from a read made just
  *    before the transaction) and the usuals.
  * 4. Takes the longest run of those items, in the order sent, whose writes fit
- *    `MAX_TRIP_WRITES` and whose snapshots fit `MAX_TRIP_RECORD_BYTES`; the
+ *    `MAX_TRIP_WRITES` and whose trip document fits `MAX_TRIP_DOCUMENT_BYTES`
+ *    (Firestore's storage size in UTF-8 bytes, `firestoreDocumentBytes`); the
  *    others are left exactly as they are and reported as `deferred`, for
  *    another trip.
  * 5. Writes: the pantry credit (Pantry v2 batches, split at 10,000 packages per
@@ -268,35 +270,42 @@ export async function applyTrip(
       const creditedPurchaseOpIds = [...new Set(records.flatMap((record) => (record.credited && record.purchaseOpId ? [record.purchaseOpId] : [])))];
       return { writes, effects, records, usualIds: [...usuals.keys()], creditedPurchaseOpIds };
     };
-    const fits = (count: number) => {
+    // The trip document for the first `count` items (the rest are deferred).
+    const tripOf = (count: number) => {
       const plan = build(eligible.slice(0, count));
-      return plan.writes.length + 1 <= MAX_TRIP_WRITES
-        && JSON.stringify([plan.records, plan.effects, plan.creditedPurchaseOpIds, decision.skipped]).length <= MAX_TRIP_RECORD_BYTES;
+      const deferred = eligible.slice(count).map(({ choice, data }) => ({ itemId: choice.itemId, name: String(data.name) }));
+      const document = {
+        listId: input.listId,
+        listName: typeof listData.name === 'string' ? listData.name : '',
+        listType: typeof listData.type === 'string' ? listData.type : null,
+        mode: input.mode,
+        appliedAt: FieldValue.serverTimestamp(),
+        appliedByUid: uid,
+        items: plan.records,
+        creditedPurchaseOpIds: plan.creditedPurchaseOpIds,
+        pantryEffects: plan.effects,
+        skipped: decision.skipped,
+        deferred,
+        usualIds: plan.usualIds,
+        undoneAt: null,
+        undoneByUid: null,
+      };
+      return { plan, document };
+    };
+    // Monotone in `count`: each item adds writes, and its record is larger than its deferred entry.
+    const fits = (count: number) => {
+      const { plan, document } = tripOf(count);
+      return plan.writes.length + 1 <= MAX_TRIP_WRITES && firestoreDocumentBytes(tripRef.path, document) <= MAX_TRIP_DOCUMENT_BYTES;
     };
     const count = largestFittingCount(eligible.length, fits);
     // Thrown before any write is applied: the transaction commits nothing.
     if (count === 0) throw new TripRefused('too_large');
-    const { writes, effects, records, usualIds, creditedPurchaseOpIds } = build(eligible.slice(0, count));
-    const deferred = eligible.slice(count).map(({ choice, data }) => ({ itemId: choice.itemId, name: String(data.name) }));
+    const { plan: { writes, records }, document } = tripOf(count);
+    const { deferred } = document;
 
     // --- Writes ---
     for (const write of writes) write();
-    transaction.create(tripRef, {
-      listId: input.listId,
-      listName: typeof listData.name === 'string' ? listData.name : '',
-      listType: typeof listData.type === 'string' ? listData.type : null,
-      mode: input.mode,
-      appliedAt: FieldValue.serverTimestamp(),
-      appliedByUid: uid,
-      items: records,
-      creditedPurchaseOpIds,
-      pantryEffects: effects,
-      skipped: decision.skipped,
-      deferred,
-      usualIds,
-      undoneAt: null,
-      undoneByUid: null,
-    });
+    transaction.create(tripRef, document);
     return summaryOf(input.tripId, { listId: input.listId, mode: input.mode, items: records, skipped: decision.skipped, deferred }, false);
   });
 }
