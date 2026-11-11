@@ -1605,7 +1605,8 @@ export function ShoppingListClient({
                 )}
                 {canEdit && householdId && (
                   <ScanToTick
-                    key={`${householdId}/${selectedList.id}`}
+                    // Distinct from the sibling CategoriesDialog's key (siblings never share a key).
+                    key={`scan:${householdId}/${selectedList.id}`}
                     householdId={householdId}
                     listId={selectedList.id}
                     items={listItems}
