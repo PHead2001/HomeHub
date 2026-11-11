@@ -2928,3 +2928,81 @@ describe('content shapes: shopping S5–S8 stage', () => {
     await assertFails(setDoc(doc(dbFor(users.ownerB), 'households', householdA, 'barcode-library', '506'), product({ createdByUid: users.ownerB.uid })));
   });
 });
+
+// Review finding on #140: before the scrub repairs them, chores and templates assigned
+// only by email are edited by release C clients, which replace the email by the uid of
+// the member it names in the same write. An editor without chores.assign may do that
+// (the assignee is kept) but still may not change the assignee.
+describe('legacy email assignee replaced by its uid without chores.assign', () => {
+  const editor = { uid: 'legacy-editor', email: 'legacy.editor@example.test' };
+  const sam = { uid: 'legacy-sam', email: 'Legacy.Sam@example.test' };
+  const template = (id: string) => doc(dbFor(editor), 'households', householdA, 'chore-templates', id);
+  const chore = (id: string) => doc(dbFor(editor), 'households', householdA, 'chores', id);
+  const recurrence = (email?: string) => ({
+    frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, ...(email ? { assignedToEmail: email } : {}),
+  });
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'households', householdA, 'members', editor.uid), {
+        uid: editor.uid, email: editor.email, role: 'member', status: 'active', permissions: { 'chores.assign': false },
+      });
+      // Joined after release C: no email on the record, the email in the contact document.
+      await setDoc(doc(db, 'households', householdA, 'members', sam.uid), { uid: sam.uid, role: 'member', status: 'active' });
+      await setDoc(doc(db, 'households', householdA, 'members', sam.uid, 'private', 'contact'), { email: sam.email.toLowerCase(), updatedAt: 'x' });
+      // Release D: only the contact document counts (never an email left on a record).
+      await setDoc(doc(db, 'households', householdA, 'members', users.member.uid, 'private', 'contact'), { email: users.member.email, updatedAt: 'x' });
+      await setDoc(doc(db, 'households', householdA, 'chore-templates', 'legacy-sam'), {
+        task: 'Bins', notes: '', roomIds: [], subTasks: [], assignedToEmail: sam.email, recurrence: recurrence(sam.email),
+      });
+      await setDoc(doc(db, 'households', householdA, 'chore-templates', 'legacy-member'), {
+        task: 'Mop', notes: '', roomIds: [], subTasks: [], assignedToEmail: users.member.email, recurrence: recurrence(users.member.email),
+      });
+      await setDoc(doc(db, 'households', householdA, 'chores', 'legacy-sam'), {
+        task: 'Bins', assignedToEmail: sam.email, assignedToDisplayName: 'Sam', dueDate: '2026-08-01', isCompleted: false,
+      });
+    });
+  });
+
+  test('templates: a schedule-only edit keeps the assignee by uid', async () => {
+    // Contact document match (case-insensitive), and a member-record match.
+    await assertSucceeds(updateDoc(template('legacy-sam'), {
+      task: 'Bins (Tuesday)', recurrence: recurrence(), assignedToUid: sam.uid, assignedToEmail: deleteField(),
+    }));
+    await assertSucceeds(updateDoc(template('legacy-member'), {
+      recurrence: recurrence(), assignedToUid: users.member.uid, assignedToEmail: deleteField(),
+    }));
+  });
+
+  test('templates: the assignee still cannot be changed without chores.assign', async () => {
+    await assertFails(updateDoc(template('legacy-sam'), {
+      recurrence: recurrence(), assignedToUid: users.member.uid, assignedToEmail: deleteField(),
+    }));
+    // The email must go: keeping a copy beside a uid it does not name is refused.
+    await assertFails(updateDoc(template('legacy-sam'), {
+      recurrence: recurrence(users.member.email), assignedToUid: sam.uid, assignedToEmail: deleteField(),
+    }));
+    await assertFails(updateDoc(template('legacy-member'), {
+      recurrence: recurrence(), assignedToUid: sam.uid, assignedToEmail: deleteField(),
+    }));
+    // A member record that still carries the email is not evidence (release D).
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'members', 'legacy-rec'), { uid: 'legacy-rec', email: 'legacy.rec@example.test', role: 'member', status: 'active' });
+      await setDoc(doc(context.firestore(), 'households', householdA, 'chore-templates', 'legacy-rec'), { task: 'Rec', notes: '', roomIds: [], subTasks: [], assignedToEmail: 'legacy.rec@example.test' });
+    });
+    await assertFails(updateDoc(template('legacy-rec'), { assignedToUid: 'legacy-rec', assignedToEmail: deleteField() }));
+  });
+
+  test('chores: the same, by uid kept, never changed', async () => {
+    await assertSucceeds(updateDoc(chore('legacy-sam'), { task: 'Bins out', assignedToUid: sam.uid, assignedToEmail: deleteField() }));
+    await environment.withSecurityRulesDisabled(context =>
+      setDoc(doc(context.firestore(), 'households', householdA, 'chores', 'legacy-sam'), {
+        task: 'Bins', assignedToEmail: sam.email, assignedToDisplayName: 'Sam', dueDate: '2026-08-01', isCompleted: false,
+      }));
+    await assertFails(updateDoc(chore('legacy-sam'), { assignedToUid: users.member.uid, assignedToEmail: deleteField() }));
+    await assertFails(updateDoc(chore('legacy-sam'), { assignedToUid: sam.uid, assignedToEmail: users.member.email }));
+    // Not even to themselves.
+    await assertFails(updateDoc(chore('legacy-sam'), { assignedToUid: editor.uid, assignedToEmail: deleteField() }));
+  });
+});

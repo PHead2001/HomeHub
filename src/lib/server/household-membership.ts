@@ -4,6 +4,8 @@ import { randomInt } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { normalizeInviteCode } from '@/lib/invite-codes';
+import { choreStatsAssigneeKey } from '@functions/shared/ids';
+import { choreStatsDocId } from '@functions/shared/chore-stats';
 import {
   canAssignRole,
   canEditPermissions,
@@ -318,6 +320,30 @@ const unassignChoreFields = (): FirebaseFirestore.UpdateData<FirebaseFirestore.D
   assignedToEmail: FieldValue.delete(),
 });
 
+/**
+ * A departing person's yearly chore stats identity: their completions were
+ * counted under `choreStatsAssigneeKey(email)` while they were a member, and
+ * once their membership and contact documents are gone their uid can no longer
+ * be resolved to that email. `aliases.<uid>` in the stats documents of this
+ * and last year (every completion still stored is at most 90 days old) keeps
+ * crediting it to the same key (`creditedStatsKey`), so their score is one
+ * bucket before and after they leave. The alias holds no email.
+ */
+const keepStatsIdentity = (
+  transaction: FirebaseFirestore.Transaction,
+  householdRef: FirebaseFirestore.DocumentReference,
+  uid: string,
+  email: string | null | undefined,
+  now: Date,
+) => {
+  if (!uid || typeof email !== 'string' || !email.trim()) return;
+  const key = choreStatsAssigneeKey(email);
+  const year = now.getUTCFullYear();
+  for (const statsYear of [year - 1, year]) {
+    transaction.set(householdRef.collection('stats').doc(choreStatsDocId(statsYear)), { aliases: { [uid]: key } }, { merge: true });
+  }
+};
+
 /** Unassigns a recurring template (it stops generating chores). */
 const unassignTemplateFields = (d: QueryDoc): FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> => {
   const recurrence = d.get('recurrence');
@@ -355,6 +381,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
+    keepStatsIdentity(transaction, householdRef, caller.uid, caller.email, now);
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
@@ -882,12 +909,13 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
       : Promise.resolve(null);
     const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
-    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid] = await Promise.all([
+    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
       byEmail('chores'),
       byUid('chores'),
       byEmail('chore-templates'),
       byUid('chore-templates'),
+      transaction.get(memberContactRef(context.householdRef, target.uid)),
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, target.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
@@ -896,6 +924,8 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const denied = target.role === 'newuser';
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
+    // The email upkeep credited them by: the contact document's, else the record's.
+    if (!denied) keepStatsIdentity(transaction, context.householdRef, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email, now);
     transaction.update(context.householdRef, {
       ...legacyMemberEmailRemoval(context.household, target.email),
       updatedAt: iso,

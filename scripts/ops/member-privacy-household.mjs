@@ -8,7 +8,7 @@
 import { FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { householdUidsByEmail } from './shared-email-scrub.mjs';
 import { choreMemberEmailPlan } from './member-email-scrub.mjs';
-import { addFormerLegacyKeys, isLegacyStatsKey, legacyKeyMap, statsRekeyPlan } from './chore-stats-rekey.mjs';
+import { addFormerLegacyKeys, choreStatsAssigneeKeyJs, isLegacyStatsKey, legacyKeyMap, statsRekeyPlan } from './chore-stats-rekey.mjs';
 import { formerEvidence, settleFormerIdentities } from './former-member-key.mjs';
 
 const PAGE_SIZE = 400;
@@ -59,6 +59,17 @@ export async function settleHouseholdFormerPeople(db, householdRef, people, { ap
     for (const doc of snapshot.docs) records.push(doc.data());
   }
   const evidence = formerEvidence(records, people.current);
+  // Departure aliases (uid -> legacy key, release C) name the uid of an email whose legacy key they hold.
+  const uidByLegacy = new Map();
+  for (const statsDoc of await householdStats(householdRef)) {
+    const aliases = statsDoc.get('aliases');
+    if (!aliases || typeof aliases !== 'object') continue;
+    for (const [uid, legacyKey] of Object.entries(aliases)) if (uid && typeof legacyKey === 'string') uidByLegacy.set(legacyKey, uid);
+  }
+  evidence.aliasUids = new Map([...evidence.emails].flatMap(email => {
+    const uid = uidByLegacy.get(choreStatsAssigneeKeyJs(email));
+    return uid ? [[email, uid]] : [];
+  }));
   const settled = await settleFormerIdentities(db, householdRef, { apply, evidence, needSecret, now: () => FieldValue.serverTimestamp() });
   return { evidence, ...settled };
 }

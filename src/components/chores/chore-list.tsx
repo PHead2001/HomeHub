@@ -14,6 +14,7 @@ import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chor
 import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
+import { inertProps } from '@/lib/inert';
 import { cn, stableSlugify } from '@/lib/utils';
 import { memberName } from './assignee-select';
 import { CompletionCheck } from './completion-check';
@@ -100,8 +101,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
       )}
       data-chore-id={leaving ? undefined : chore.id}
       aria-hidden={leaving || undefined}
-      // React 18 sets `inert` only from a string value (its types say boolean).
-      {...(leaving ? { inert: '' as unknown as boolean } : {})}
+      {...inertProps(leaving)}
     >
       <div className="flex items-start gap-1 p-1 md:gap-2 md:p-1.5">
         {props.selectMode && !isCompleted ? (
