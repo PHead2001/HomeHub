@@ -609,7 +609,7 @@ function RecipeGeneratorDialog({
             >
                 <DialogHeader>
                     <DialogTitle className="font-headline flex items-center gap-2">
-                        <Sparkles className="text-primary" />
+                        <Sparkles className="text-primary" aria-hidden />
                         AI Recipe Idea
                     </DialogTitle>
                     <DialogDescription>
@@ -619,7 +619,7 @@ function RecipeGeneratorDialog({
 
                 {isLoading && (
                     <div className="flex flex-col items-center justify-center gap-4 py-16">
-                        <Loader2 className="h-12 w-12 animate-spin text-primary" />
+                        <Loader2 className="h-12 w-12 animate-spin text-primary" aria-hidden />
                         <p className="text-muted-foreground">Your personal AI chef is thinking...</p>
                     </div>
                 )}
@@ -640,14 +640,14 @@ function RecipeGeneratorDialog({
                         
                         <div className="flex gap-8 text-sm">
                             <div className="flex items-center gap-2">
-                                <Clock className="h-4 w-4" />
+                                <Clock className="h-4 w-4" aria-hidden />
                                 <div>
                                     <span className="font-semibold">Prep: </span>
                                     <span>{recipe.prepTime}</span>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
-                                <ChefHat className="h-4 w-4" />
+                                <ChefHat className="h-4 w-4" aria-hidden />
                                 <div>
                                     <span className="font-semibold">Cook: </span>
                                     <span>{recipe.cookTime}</span>
@@ -692,11 +692,11 @@ function RecipeGeneratorDialog({
                  <DialogFooter>
                     <Button variant="secondary" onClick={() => onOpenChange(false)}>Close</Button>
                     <Button onClick={handleGenerateRecipe} disabled={isLoading}>
-                       {isLoading ? <Loader2 className="mr-2 animate-spin" /> :  <><Sparkles className="mr-2" /> Regenerate</>}
+                       {isLoading ? <Loader2 className="mr-2 animate-spin" aria-hidden /> :  <><Sparkles className="mr-2" aria-hidden /> Regenerate</>}
                     </Button>
                 </DialogFooter>
                 <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none">
-                    <X className="h-4 w-4" />
+                    <X className="h-4 w-4" aria-hidden />
                     <span className="sr-only">Close</span>
                 </DialogPrimitive.Close>
             </DialogPrimitive.Content>

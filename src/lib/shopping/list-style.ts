@@ -13,9 +13,13 @@ import type { ShoppingList, ShoppingListType } from '@/lib/types';
 export const LIST_TINT_COUNT = 8;
 export const LIST_TINT_VALUES = Array.from({ length: LIST_TINT_COUNT }, (_, i) => `tint-${i + 1}`);
 
-/** Names a member hears for each slot in the color picker. */
+/**
+ * Names a member hears for each slot in the color picker (SH-26c): the colour,
+ * from the member hues every theme shares (teal 172°, sky 205°, blue 238°,
+ * violet 272°, pink 322°, red 8°, orange 36°, lime 96°).
+ */
 export const LIST_TINT_LABELS: Record<MemberColorIndex, string> = {
-  1: 'Tint 1', 2: 'Tint 2', 3: 'Tint 3', 4: 'Tint 4', 5: 'Tint 5', 6: 'Tint 6', 7: 'Tint 7', 8: 'Tint 8',
+  1: 'Teal', 2: 'Sky blue', 3: 'Blue', 4: 'Violet', 5: 'Pink', 6: 'Red', 7: 'Orange', 8: 'Lime',
 };
 
 /** True for a stored `tint-N` value (N = 1..8). */

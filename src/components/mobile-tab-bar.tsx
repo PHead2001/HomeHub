@@ -126,7 +126,8 @@ function QuickAddFab({ actions }: { actions: QuickAction[] }) {
   });
 
   return (
-    <li ref={root} className="relative flex w-16 shrink-0 items-start justify-center">
+    // data-quick-add-slot: hidden while a shopping list is open (SH-12d), whose own quick add is at the thumb.
+    <li ref={root} data-quick-add-slot className="relative flex w-16 shrink-0 items-start justify-center">
       <div
         id="tabbar-quick-add-menu"
         role="menu"
