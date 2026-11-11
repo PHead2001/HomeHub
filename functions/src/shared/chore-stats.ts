@@ -135,6 +135,20 @@ export const readChoreStats = (data: unknown, year: number): ChoreStatsDoc => {
 };
 
 /**
+ * Whether crediting a completed chore in the yearly stats may depend on
+ * members' emails: it has no `completedByUid` and carries an email
+ * (`completedByEmail`, or `assignedToEmail`, which can also overrule a stale
+ * `assignedToUid`). Upkeep purges such a chore only when it could read the
+ * members' contact documents; otherwise the credit would be lost with it.
+ * @param {object} chore Chore fields.
+ * @return {boolean} True when emails are needed to credit it.
+ */
+export const purgeNeedsMemberEmails = (
+  chore: Omit<PurgedChore, "completedAt">,
+): boolean => !filled(chore.completedByUid) &&
+  (filled(chore.completedByEmail) || filled(chore.assignedToEmail));
+
+/**
  * Moves the counts and labels kept under a legacy email-derived key
  * (`choreStatsAssigneeKey(email)`) to the member's uid key, for every person
  * whose email the reader knows. Legacy keys of anyone else are left as they

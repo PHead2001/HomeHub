@@ -284,6 +284,39 @@ describe('household upkeep', () => {
     assert.equal((await house().collection('chores').doc('recent').get()).exists, true);
   });
 
+  test('a failed contact read defers purging chores credited by email; the next run credits them once', async () => {
+    // The household reference's Firestore fails getAll, the call only the contact read makes.
+    const failingContactsDb = bind(adminDb, key => key === 'collection'
+      ? (name: string) => bind(adminDb.collection(name), k => k === 'doc'
+        ? (id: string) => bind(adminDb.collection(name).doc(id), d => d === 'firestore'
+          ? bind(adminDb, f => f === 'getAll' ? async () => { throw new Error('unavailable'); } : undefined)
+          : undefined)
+        : undefined)
+      : undefined);
+    const chores = house().collection('chores');
+    // Credited only through the owner's email (no uid, no recorded completer).
+    await chores.doc('old-email').set({ task: 'Old', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToEmail: 'owner@example.test' });
+    // Credited by uid: purged even without emails.
+    await chores.doc('old-uid').set({ task: 'Old uid', isCompleted: true, completedAt: '2026-07-02T12:00:00.000Z', assignedToUid: 'o1', completedByUid: 'o1', completedByName: 'Owner' });
+    const owner = choreStatsMemberKey('o1');
+
+    const failed = await runHouseholdReminders(failingContactsDb as never, HOUSE, new Date('2026-11-05T15:00:00Z'), ts);
+    assert.equal(failed.purgedChores, 1);
+    assert.equal((await chores.doc('old-email').get()).exists, true, 'left for a run that has the emails');
+    let stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats?.completed, 1);
+    assert.deepEqual(stats?.byAssignee, { [owner]: 1 });
+
+    const next = await run(new Date('2026-11-05T16:00:00Z'));
+    assert.equal(next.purgedChores, 1);
+    assert.equal((await chores.doc('old-email').get()).exists, false);
+    stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    assert.equal(stats?.completed, 2);
+    assert.deepEqual(stats?.byAssignee, { [owner]: 2 });
+    assert.equal((await run(new Date('2026-11-05T17:00:00Z'))).purgedChores, 0);
+    assert.equal((await house().collection('stats').doc('chores-2026').get()).data()?.completed, 2);
+  });
+
   test("a purged chore is added to its year's stats exactly once, even when upkeep runs twice", async () => {
     const chores = house().collection('chores');
     // Sam has left: chores recorded by uid still count for that uid.

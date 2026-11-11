@@ -8,7 +8,7 @@ import {
   unassignedChoreFields,
 } from '../../functions/src/shared/assignee';
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
-import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, readChoreStats } from '../../functions/src/shared/chore-stats';
+import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, purgeNeedsMemberEmails, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
 import { choreStatsAssigneeKey, choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
@@ -251,6 +251,15 @@ describe('yearly stats are keyed by uid (member privacy release D)', () => {
     const next = addPurgedChores(stats, [uidOnly], people);
     assert.deepEqual(next.byAssignee, { [choreStatsMemberKey('uid-sam')]: 6, other_1x: 2 });
     assert.equal(next.completed, 8);
+  });
+
+  test('a purge waits for members\' emails only when the credit can depend on one', () => {
+    assert.equal(purgeNeedsMemberEmails({ assignedToEmail: 'sam@example.test' }), true);
+    assert.equal(purgeNeedsMemberEmails({ assignedToUid: 'uid-sam', assignedToEmail: 'sam@example.test' }), true, 'the email can overrule a stale uid');
+    assert.equal(purgeNeedsMemberEmails({ completedByEmail: 'sam@example.test', assignedToUid: 'uid-ana' }), true);
+    assert.equal(purgeNeedsMemberEmails({ completedByUid: 'uid-sam', completedByEmail: 'sam@example.test', assignedToEmail: 'ana@example.test' }), false);
+    assert.equal(purgeNeedsMemberEmails({ assignedToUid: 'uid-sam', assignedToEmail: '' }), false);
+    assert.equal(purgeNeedsMemberEmails({}), false);
   });
 
   test('uid keys are field-path safe and never collide with legacy keys', () => {

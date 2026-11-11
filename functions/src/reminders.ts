@@ -13,7 +13,8 @@ import {
 } from "./shared/calendar";
 import {choreNotificationsFor, type ChoreInput} from "./shared/chore-reminders";
 import {
-  addPurgedChores, choreStatsDocId, completionYear, readChoreStats,
+  addPurgedChores, choreStatsDocId, completionYear, purgeNeedsMemberEmails,
+  readChoreStats,
   type PurgedChore,
 } from "./shared/chore-stats";
 import {
@@ -93,17 +94,17 @@ const notificationBody = (
 
 /**
  * The protected contact documents (`members/{uid}/private/contact`) of these
- * members, by uid: the only source of a member's email. A failed read yields
- * no contacts, so this run makes no email-keyed lookup (push tokens, reminder
- * settings) rather than a wrong one; the next run tries again.
+ * members, by uid: the only source of a member's email. A failed read
+ * yields `null`, distinct from "no contacts" (an empty map).
  * @param {DocumentReference} house Household document.
  * @param {string[]} uids Members to read.
- * @return {Promise<Map<string, unknown>>} Contact data by uid.
+ * @return {Promise<Map<string, unknown> | null>} Contact data by uid, or
+ *   null when the read failed.
  */
-export const readMemberContacts = async (
+export const readMemberContactsOrNull = async (
   house: DocumentReference,
   uids: string[],
-): Promise<Map<string, unknown>> => {
+): Promise<Map<string, unknown> | null> => {
   if (uids.length === 0) return new Map();
   const refs = uids.map((uid) =>
     house.collection("members").doc(uid).collection("private").doc("contact"));
@@ -111,9 +112,23 @@ export const readMemberContacts = async (
     const snaps = await house.firestore.getAll(...refs);
     return new Map(snaps.map((snap, index) => [uids[index], snap.data()]));
   } catch {
-    return new Map();
+    return null;
   }
 };
+
+/**
+ * As readMemberContactsOrNull, but a failed read yields no contacts, so the
+ * caller makes no email-keyed lookup (push tokens, reminder settings) rather
+ * than a wrong one; the next run tries again.
+ * @param {DocumentReference} house Household document.
+ * @param {string[]} uids Members to read.
+ * @return {Promise<Map<string, unknown>>} Contact data by uid.
+ */
+export const readMemberContacts = async (
+  house: DocumentReference,
+  uids: string[],
+): Promise<Map<string, unknown>> =>
+  (await readMemberContactsOrNull(house, uids)) ?? new Map();
 
 /**
  * Runs reminders and recurring-chore upkeep for one household.
@@ -210,7 +225,8 @@ export const runHouseholdReminders = async (
             if (typeof key === "string") takenKeys.set(key, op.ref.id);
           }
         } else if (snap.exists && snap.get("isCompleted") === true &&
-            snap.get("completedAt") === op.completedAt) {
+            snap.get("completedAt") === op.completedAt &&
+            (emailsKnown || !purgeNeedsMemberEmails(snap.data() ?? {}))) {
           tx.delete(op.ref);
           purged++;
           // Counted only when actually deleted, so repeated or overlapping
@@ -263,9 +279,14 @@ export const runHouseholdReminders = async (
       (m.status === undefined || m.status === "active")) as Array<{
         uid: string; email?: string; displayName?: string;
       }>;
-  // Emails come only from each member's contact document.
-  const members = withContactEmails(approvedRecords, await readMemberContacts(
-    house, approvedRecords.map((m) => m.uid)));
+  // Emails come only from each member's contact document. When that read
+  // fails, reminders simply skip email-keyed lookups this run, but purges of
+  // chores that can only be credited through an email wait for a run that
+  // has the emails (purgeNeedsMemberEmails), so no credit is lost.
+  const contacts = await readMemberContactsOrNull(
+    house, approvedRecords.map((m) => m.uid));
+  const emailsKnown = contacts !== null;
+  const members = withContactEmails(approvedRecords, contacts ?? new Map());
   const memberByUid = new Map(members.map((m) => [m.uid, m]));
 
   // Recurring chores: create the next occurrences that do not exist yet. An
@@ -344,8 +365,11 @@ export const runHouseholdReminders = async (
     // Retention keys off completedAt (unchanged policy); the stats year comes
     // from the authoritative completion instant (completedAtServer first).
     const year = completedAt ? completionYear(chore, timeZone) : null;
+    // Without members' emails, a chore credited only through an email is
+    // left for a later run (see purgeNeedsMemberEmails).
     if (chore.isCompleted && completedAt && year !== null &&
-        completedAt < purgeBefore && choreOps.length < 450) {
+        completedAt < purgeBefore && choreOps.length < 450 &&
+        (emailsKnown || !purgeNeedsMemberEmails(chore))) {
       choreOps.push({
         kind: "purge", ref: choreDoc.ref, completedAt: chore.completedAt, year,
       });
