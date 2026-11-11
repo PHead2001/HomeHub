@@ -16,7 +16,8 @@ type CompletionCheckProps = {
 
 /**
  * The "done" checkbox (H05): the box fills and a check draws itself (≤ 150 ms).
- * A 40 px hit area around a 24 px box; the box never moves. Under reduced motion
+ * A touch-target hit area (44 px, 48 px on touch screens, D-2) around a 24 px box;
+ * the box never moves. Under reduced motion
  * the end state shows instantly.
  */
 export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProps>(function CompletionCheck(
@@ -33,7 +34,7 @@ export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProp
       aria-label={label}
       disabled={disabled}
       onClick={onToggle}
-      className={cn('group grid h-10 w-10 shrink-0 place-items-center rounded-md disabled:cursor-not-allowed', className)}
+      className={cn('group grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md disabled:cursor-not-allowed', className)}
     >
       <span
         aria-hidden

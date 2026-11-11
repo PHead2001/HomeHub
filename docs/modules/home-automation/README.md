@@ -63,6 +63,7 @@ The homepage overview intentionally omits automation facts in the current implem
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.
+- `tests/e2e/tablet-pages.spec.ts` checks `/automation` on the wall tablet (1263 × 818, touch): no sideways scroll, every control's hit area at least 48 × 48 and none overlapping (see [Application Shell](../application-shell/README.md)).
 - Manually test missing/incomplete credentials, valid connection, invalid token, unreachable URL, state listing, disconnect, and cross-household credential denial.
 - Runtime-test the server action under deployed authentication before asserting its Firestore credential read always succeeds.
 
