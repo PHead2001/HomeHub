@@ -22,6 +22,16 @@ async function open(page: Page, path: string) {
   await expect(page.getByRole('heading', { name: 'Shopping Center', exact: true })).toBeVisible();
 }
 
+// Put-away trips (S5) also write trip history and usuals: removed with the test's list.
+async function deleteTrips(listId: string) {
+  const snapshot = await household.collection('trips').where('listId', '==', listId).get();
+  await Promise.all(snapshot.docs.map((document) => document.ref.delete()));
+}
+
+async function deleteUsual(name: string) {
+  await household.collection('shopping-usuals').doc(encodeURIComponent(name.toLowerCase())).delete();
+}
+
 async function deleteWhere(collection: CollectionReference, name: string) {
   const snapshot = await collection.where('name', '==', name).get();
   await Promise.all(snapshot.docs.map((document) => document.ref.delete()));
@@ -211,7 +221,7 @@ test.describe('shopping trip', () => {
     }
   });
 
-  test('add to pantry, then clear credits only items still purchased when it commits', async ({ page }, testInfo) => {
+  test('put away & clear from Clear credits only items still purchased when it commits', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const listId = 'e2e-handoff-list';
     const listRef = lists.doc(listId);
@@ -223,13 +233,13 @@ test.describe('shopping trip', () => {
     try {
       await open(page, `/shopping?list=${listId}`);
       await page.getByRole('button', { name: 'Clear', exact: true }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: 'Add to pantry, then clear' }).click();
-      const handoff = page.getByRole('dialog', { name: 'Add to pantry' });
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Put away & clear' }).click();
+      const handoff = page.getByRole('dialog', { name: 'Put away' });
       await expect(handoff.getByText(unticked)).toBeVisible();
 
       // Another member un-ticks one item while the dialog is open.
       await listRef.collection('items').doc('crackers').update({ status: 'needed' });
-      await handoff.getByRole('button', { name: /^Add and clear \(2 items\)$/ }).click();
+      await handoff.getByRole('button', { name: /^Put away & clear \(2 items\)$/ }).click();
       await expect(handoff).toHaveCount(0);
 
       await expect.poll(async () => (await pantry.where('name', '==', kept).get()).docs.map((d) => d.data().quantity)).toEqual([2]);
@@ -238,7 +248,7 @@ test.describe('shopping trip', () => {
       expect((await listRef.collection('items').doc('crackers').get()).data()?.status).toBe('needed');
       await expect(page.locator('#item-needed-crackers')).toBeVisible();
     } finally {
-      await Promise.all([deleteWhere(pantry, kept), deleteWhere(pantry, unticked)]);
+      await Promise.all([deleteWhere(pantry, kept), deleteWhere(pantry, unticked), deleteTrips(listId), deleteUsual(kept)]);
       await Promise.all(['cheese', 'crackers'].map((id) => listRef.collection('items').doc(id).delete()));
       await listRef.delete();
     }
@@ -352,11 +362,11 @@ test.describe('shopping trip', () => {
       const receipt = page.getByRole('dialog', { name: 'Trip complete' });
       await expect(receipt).toBeVisible();
       await expect(receipt.getByRole('list', { name: 'Items bought' })).toContainText(itemName);
-      await receipt.getByRole('button', { name: 'Add to pantry' }).click();
+      await receipt.getByRole('button', { name: 'Put away & clear' }).click();
 
-      const handoff = page.getByRole('dialog', { name: 'Add to pantry' });
+      const handoff = page.getByRole('dialog', { name: 'Put away' });
       await expect(handoff.getByRole('combobox', { name: `Shelf for ${itemName}` })).toHaveText('Fridge');
-      await handoff.getByRole('button', { name: /^Add to pantry \(1 item\)$/ }).click();
+      await handoff.getByRole('button', { name: /^Put away & clear \(1 item\)$/ }).click();
       await expect(handoff).toHaveCount(0);
 
       await expect.poll(async () => {
@@ -364,7 +374,7 @@ test.describe('shopping trip', () => {
         return snapshot.docs.map((document) => ({ location: document.data().location, quantity: document.data().quantity, unit: document.data().unit }));
       }).toEqual([{ location: 'Fridge', quantity: 2, unit: 'items' }]);
     } finally {
-      await deleteWhere(pantry, itemName);
+      await Promise.all([deleteWhere(pantry, itemName), deleteTrips(listId), deleteUsual(itemName)]);
       await listRef.collection('items').doc('yogurt').delete();
       await listRef.delete();
     }

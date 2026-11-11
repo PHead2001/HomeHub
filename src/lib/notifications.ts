@@ -226,8 +226,8 @@ export const buildNotificationDocument = ({
     sourceId,
     stateKey,
     targetUserUid: targetUser?.uid,
-    // Who may see it: [uid] for one member, ['*'] for the household. The read rule
-    // enforces it from release 3 on.
+    // Who may see it: [uid] for one member, ['*'] for the household. Required on
+    // create; the read rule returns a document only to the members it names.
     audience: notificationAudience({ targetUserUid: targetUser?.uid }),
     readBy: {},
     dismissedBy: {},

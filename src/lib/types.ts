@@ -143,6 +143,9 @@ export type ShoppingListItem = {
   /** Who last edited it in the item sheet (the writer's uid) and when (server time) (SH-8a/b). */
   editedByUid?: string;
   editedAt?: unknown;
+  /** Server-only (S5): when a "Put away" trip credited this purchase to the pantry, and that trip's id. */
+  pantryCreditedAt?: unknown;
+  creditTripId?: string;
 };
 
 export type ShoppingListCategory = string;
