@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useAuth } from '@/hooks/use-auth';
 import { isComposingKey, isTypingTarget, matchShortcut, SHORTCUTS } from '@/lib/dashboard/shortcuts';
 import type { HouseholdPermission } from '@/lib/types';
+import type { PaletteMode } from '@/lib/dashboard/palette-mode';
 import dynamic from 'next/dynamic';
 import { ShortcutKeys } from '@/components/ui/shortcut-keys';
 
@@ -43,7 +44,7 @@ export function CommandCenter() {
   const { currentUser, currentMember, permissions } = useAuth();
   const enabled = Boolean(currentUser?.householdId && currentMember && currentMember.role !== 'newuser');
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [paletteText, setPaletteText] = useState('');
+  const [paletteMode, setPaletteMode] = useState<PaletteMode | null>(null);
   const [paletteVoice, setPaletteVoice] = useState(false);
   const [paletteKey, setPaletteKey] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -53,7 +54,7 @@ export function CommandCenter() {
   const allowed = useCallback((permission?: HouseholdPermission) => !permission || Boolean(permissions[permission]), [permissions]);
 
   const openPalette = useCallback((request: PaletteRequest = {}) => {
-    setPaletteText(request.text ?? '');
+    setPaletteMode(request.mode ?? null);
     setPaletteVoice(Boolean(request.voice));
     setHelpOpen(false);
     setPaletteKey((key) => key + 1);
@@ -94,7 +95,7 @@ export function CommandCenter() {
       if (!action) return;
       event.preventDefault();
       if (action.type === 'palette') openPalette();
-      else if (action.type === 'quick-add') openPalette({ text: action.prefix });
+      else if (action.type === 'quick-add') openPalette({ mode: action.mode });
       else if (action.type === 'help') setHelpOpen(true);
       else if (action.type === 'go') router.push(action.href);
     };
@@ -108,7 +109,7 @@ export function CommandCenter() {
 
   return (
     <>
-      <CommandPalette key={paletteKey} open={paletteOpen} onOpenChange={setPaletteOpen} initialText={paletteText} startVoice={paletteVoice} />
+      <CommandPalette key={paletteKey} open={paletteOpen} onOpenChange={setPaletteOpen} initialMode={paletteMode} startVoice={paletteVoice} />
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>

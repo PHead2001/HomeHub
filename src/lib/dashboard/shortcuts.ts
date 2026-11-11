@@ -3,11 +3,13 @@
  * `ShortcutsProvider` wires them to the palette, quick-add and navigation.
  */
 import type { HouseholdPermission } from '@/lib/types';
+import type { PaletteMode } from './palette-mode';
 
 export type ShortcutAction =
   | { type: 'palette' }
   | { type: 'help' }
-  | { type: 'quick-add'; prefix: string }
+  /** Opens the palette in a mode (Feeding, Item, Chore), never with typed text (QA-15). */
+  | { type: 'quick-add'; mode: PaletteMode }
   | { type: 'go'; href: string };
 
 /** Stable names for the bindings, used by `ShortcutHint` so hints never drift. */
@@ -42,9 +44,9 @@ export const GO_TARGETS: Record<string, { id: ShortcutId; href: string; label: s
 export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'palette', keys: ['Ctrl', 'K'], label: 'Search or quick-add', action: { type: 'palette' } },
   { id: 'palette-slash', keys: ['/'], label: 'Search or quick-add', action: { type: 'palette' } },
-  { id: 'new-chore', keys: ['N'], label: 'New chore', action: { type: 'quick-add', prefix: 'chore ' }, permission: 'chores.create' },
-  { id: 'add-item', keys: ['A'], label: 'Add a shopping item', action: { type: 'quick-add', prefix: 'add ' }, permission: 'shopping.edit' },
-  { id: 'log-feeding', keys: ['F'], label: 'Log a feeding', action: { type: 'quick-add', prefix: 'fed ' }, permission: 'pets.addLogs' },
+  { id: 'new-chore', keys: ['N'], label: 'New chore', action: { type: 'quick-add', mode: 'chore' }, permission: 'chores.create' },
+  { id: 'add-item', keys: ['A'], label: 'Add a shopping item', action: { type: 'quick-add', mode: 'item' }, permission: 'shopping.edit' },
+  { id: 'log-feeding', keys: ['F'], label: 'Log a feeding', action: { type: 'quick-add', mode: 'feeding' }, permission: 'pets.addLogs' },
   ...Object.entries(GO_TARGETS).map(([letter, target]): ShortcutDefinition => ({
     id: target.id,
     keys: ['G', letter.toUpperCase()],

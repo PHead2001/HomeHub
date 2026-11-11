@@ -277,9 +277,9 @@ describe('keyboard shortcuts', () => {
     assert.deepEqual(matchShortcut({ key: 'h' }, true, none).action, { type: 'go', href: '/' });
   });
 
-  it('maps N, A and F to quick add with permission checks', () => {
-    assert.deepEqual(matchShortcut({ key: 'n' }, false, all).action, { type: 'quick-add', prefix: 'chore ' });
-    assert.deepEqual(matchShortcut({ key: 'a' }, false, all).action, { type: 'quick-add', prefix: 'add ' });
+  it('maps N, A and F to palette modes with permission checks (QA-15)', () => {
+    assert.deepEqual(matchShortcut({ key: 'n' }, false, all).action, { type: 'quick-add', mode: 'chore' });
+    assert.deepEqual(matchShortcut({ key: 'a' }, false, all).action, { type: 'quick-add', mode: 'item' });
     assert.equal(matchShortcut({ key: 'f' }, false, none).action, null);
     assert.deepEqual(matchShortcut({ key: '?', shiftKey: true }, false, all).action, { type: 'help' });
     assert.equal(matchShortcut({ key: 'n', altKey: true }, false, all).action, null);

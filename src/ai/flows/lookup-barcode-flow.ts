@@ -10,6 +10,12 @@ import type { AiActionResult } from '@/ai/errors';
 import { parseOpenFoodFactsQuantity } from '@/ai/barcode-quantity';
 import { adminDb } from '@/lib/server/firebase-admin';
 import type { BarcodeLibraryItem, PantryItemUnit } from '@/lib/types';
+import {
+  classifyOpenFoodFactsError,
+  classifyOpenFoodFactsReply,
+  type OpenFoodFactsOutcome,
+  type UnavailableReason,
+} from '@/lib/barcode/lookup-outcome';
 
 const LookupBarcodeInputSchema = z.object({
   barcode: z.string().trim().regex(/^\d{6,32}$/),
@@ -19,7 +25,9 @@ export type LookupBarcodeInput = z.infer<typeof LookupBarcodeInputSchema>;
 export type LookupBarcodeOutput = {
   productName: string | null;
   libraryItem: BarcodeLibraryItem | null;
-  source: 'household' | 'open_food_facts' | 'none';
+  /** `none`: the public database does not know the code; `unavailable`: it could not answer (BL-9). */
+  source: 'household' | 'open_food_facts' | 'none' | 'unavailable';
+  unavailableReason?: UnavailableReason;
   quantity?: number;
   unit?: PantryItemUnit;
   rawQuantity?: string;
@@ -57,13 +65,13 @@ const sanitizeLibraryItem = (id: string, data: Record<string, unknown>): Barcode
   createdAt: typeof data.createdAt === 'string' ? data.createdAt : new Date(0).toISOString(),
 });
 
-const fetchOpenFoodFacts = async (barcode: string): Promise<OpenFoodFactsProduct | null> => {
+const fetchOpenFoodFacts = async (barcode: string): Promise<OpenFoodFactsOutcome<OpenFoodFactsProduct>> => {
   if (isSafeDeterministicMode()) {
     const fixture = deterministicFixtures[barcode] ?? null;
-    if (fixture === 'timeout') throw new Error('Open Food Facts request timed out.');
-    if (fixture === 'rate-limit') throw new Error('Open Food Facts request was rate limited.');
-    if (fixture === 'malformed') throw new Error('Open Food Facts returned malformed data.');
-    return fixture;
+    if (fixture === 'timeout') return { kind: 'unavailable', reason: 'timeout' };
+    if (fixture === 'rate-limit') return { kind: 'unavailable', reason: 'rate_limited' };
+    if (fixture === 'malformed') return { kind: 'unavailable', reason: 'error' };
+    return fixture ? { kind: 'found', product: fixture } : { kind: 'not-found' };
   }
 
   const controller = new AbortController();
@@ -75,11 +83,10 @@ const fetchOpenFoodFacts = async (barcode: string): Promise<OpenFoodFactsProduct
       redirect: 'follow',
       signal: controller.signal,
     });
-    if (response.status === 404 || response.status === 429 || !response.ok) return null;
-    const payload = await response.json() as { status?: unknown; product?: OpenFoodFactsProduct };
-    return payload.status === 'success' || payload.status === 1 ? payload.product || null : null;
-  } catch {
-    return null;
+    const payload = await response.json().catch(() => null);
+    return classifyOpenFoodFactsReply<OpenFoodFactsProduct>(response.status, payload);
+  } catch (error) {
+    return classifyOpenFoodFactsError(error);
   } finally {
     clearTimeout(timeout);
   }
@@ -102,7 +109,11 @@ export const lookupBarcodeForAuthorizedUser = async (
     return { productName: libraryItem.name, libraryItem, source: 'household' };
   }
 
-  const product = await fetchOpenFoodFacts(barcode);
+  const outcome = await fetchOpenFoodFacts(barcode);
+  if (outcome.kind === 'unavailable') {
+    return { productName: null, libraryItem: null, source: 'unavailable', unavailableReason: outcome.reason };
+  }
+  const product = outcome.kind === 'found' ? outcome.product : null;
   const productName = typeof product?.product_name === 'string' ? product.product_name.trim().slice(0, 160) : null;
   if (!productName) return { productName: null, libraryItem: null, source: 'none' };
   const productData = product as OpenFoodFactsProduct;

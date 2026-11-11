@@ -26,7 +26,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
@@ -36,21 +35,29 @@ import { slugify, cn } from '@/lib/utils';
 import { playFeedback } from '@/lib/feedback';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '@/lib/firestore-offline';
 import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOutcome } from '@/lib/shopping/add-items';
-import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
-import { scanToShoppingEntry } from '@/lib/shopping/scan';
+import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, pendingSaveStatus, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
+import { scanToShoppingEntry, type ScanEntry } from '@/lib/shopping/scan';
+import { currentItemForToggle } from '@/lib/shopping/scan-tick';
+import { addScannedProduct, createScanAddGuard, dialogAfterScan, scanAddKey, withScanGuard } from '@/lib/shopping/scan-add';
+import { lookupMiss } from '@/lib/barcode/lookup-outcome';
+import { useLookupFeedback } from './barcode/use-lookup-feedback';
+import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
+import { ScanToTick } from './shopping/scan-to-tick';
+import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { rowPhoto } from '@/lib/shopping/row-photo';
+import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
-import { editUpdate, restoreDocument, restoreIfAbsent, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
+import { editUpdate, restoreDocument, restoreIfAbsent, untickUpdate } from '@/lib/shopping/item-writes';
+import { notUndoneNotice, planTick, tickShoppingItem, undoShoppingTick, type TickCurrent } from '@/lib/shopping/tick';
+import { shoppingTickIO } from '@/lib/shopping/tick-firestore';
 import {
-  CHANGED_ELSEWHERE_TITLE,
   browserJournalStorage,
   dropJournal,
   fromJournalData,
-  isChangedElsewhere,
   journalFor,
   newOpId,
   nextFocusId,
   planRemoveUndo,
-  planTickUndo,
   pushJournal,
   readJournal,
   remainingMs,
@@ -68,8 +75,7 @@ import { clearIdsFor, deletionSettled, isListLinkMissing, isOpenListDeleted, lis
 import { useOnTabDeactivate } from './shopping/tab-activity';
 import { deleteShoppingList } from '@/app/shopping/actions';
 import { listTint } from '@/lib/shopping/list-style';
-import type { PantryHandoffChoice } from '@/lib/shopping/pantry';
-import { addPurchasesToPantry } from '@/lib/shopping/pantry-writes';
+import { offerEmptyListDelete } from '@/lib/shopping/trip-plan';
 import { deleteStillPurchasedItems } from '@/lib/shopping/item-transactions';
 import type { ShoppingListItem, ShoppingList, BarcodeLibraryItem } from '@/lib/types';
 import { BarcodeScanner } from './barcode-scanner';
@@ -87,7 +93,7 @@ import { CartIndicator } from './shopping/cart-indicator';
 import { useCartFlight } from './shopping/cart-flight';
 import { QuickAddBar, type QuickAddOutcome } from './shopping/quick-add-bar';
 import { TripReceiptDialog } from './shopping/trip-receipt-dialog';
-import { PantryHandoffDialog } from './shopping/pantry-handoff-dialog';
+import { useTripFlow } from './shopping/use-trip-flow';
 import { useInPageMorph } from './shopping/use-in-page-morph';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
@@ -150,6 +156,10 @@ export function ShoppingListClient({
 }) {
   const { currentUser, permissions } = useAuth();
   const { toast, toastError } = useToast();
+  const lookupFeedback = useLookupFeedback();
+  // A miss from the scanner inside Add Item is shown in that dialog (a toast's
+  // action would be unreachable behind the modal).
+  const addScanMiss = useScanMiss();
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
@@ -179,9 +189,16 @@ export function ShoppingListClient({
   const categories = categoryConfig.list;
   const loadingItems = Boolean(selectedListId) && (itemsState.status === 'loading' || categoriesState.status === 'loading');
   const counts = useLiveListCounts(householdId, lists.map((list) => list.id), selectedListId ?? '');
+  // Rows show the Barcode Library's current photo for scanned items (one source of truth).
+  const libraryPhotos = useLibraryPhotos(householdId);
+  const photoFor = (item: ShoppingListItem) => rowPhoto(item, libraryPhotos,
+    (url) => Boolean(householdId && getManagedBarcodeImagePath({ householdId, imageUrl: url })));
 
   const [isAddItemDialogOpen, setIsAddItemDialogOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // A scan from inside Add Item that is not confirmed yet (or refused as a repeat
+  // of one still being added), shown under the form like the typed add's status.
+  const [scanStatus, setScanStatus] = useState<{ key: string; text: string } | null>(null);
   const [isListDialogOpen, setIsListDialogOpen] = useState(false);
   const [listToEdit, setListToEdit] = useState<ShoppingList | null>(null);
   // A list form whose save was rejected, shown again (`rejectedDraftRestore`).
@@ -195,10 +212,10 @@ export function ShoppingListClient({
   listsRef.current = lists;
   const [listToDelete, setListToDelete] = useState<ShoppingList | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
-  const [isArchiveAlertOpen, setIsArchiveAlertOpen] = useState(false);
+  // The "Delete empty list?" prompt's list (SH-3): cleared whenever the prompt closes.
+  const [emptyList, setEmptyList] = useState<ShoppingList | null>(null);
   const [openSections, setOpenSections] = useState<string[]>(['needed']);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
-  const [handoffMode, setHandoffMode] = useState<null | 'pantry' | 'then-clear'>(null);
   // The purchased items shown when Clear was pressed, with the household and list
   // they came from: exactly those are cleared, even if the live list changes while
   // the dialog is open, and never on another list (`clearIdsFor`).
@@ -257,15 +274,16 @@ export function ShoppingListClient({
     setIsListDialogOpen(false);
     setListToDelete(null);
     setIsClearAlertOpen(false);
-    setIsArchiveAlertOpen(false);
+    setEmptyList(null);
     setIsReceiptOpen(false);
-    setHandoffMode(null);
     setEditingItemId(null);
   });
 
   // The Add Item scanner is nested in the Add Item dialog: it never outlives it
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
+  if (!isAddItemDialogOpen && addScanMiss.scanMiss) addScanMiss.clear();
+  if (!isAddItemDialogOpen && scanStatus) setScanStatus(null);
 
   const offlineNoticeShownRef = useRef(false);
   const selectedListIdRef = useRef<string | null>(null);
@@ -584,7 +602,7 @@ export function ShoppingListClient({
         // Not known yet: the values stay, Add stays blocked for this submission,
         // and the answer decides (other adds, such as quick add, keep working).
         keepGuard = true;
-        setDialogStatus(`${saveStateLabel(outcome.state)} ${outcome.name} is not confirmed yet.`);
+        setDialogStatus(pendingSaveStatus(outcome.state, outcome.name));
         void outcome.settled.then((final) => {
           guard.end(submissionId);
           setDialogStatus(null);
@@ -635,28 +653,84 @@ export function ShoppingListClient({
   };
 
   // A scan adds ONE package (BL-1): the package size is a note on the row, never the count.
+  // It is its own submission: it uses the category chosen when the scan started,
+  // never consumes or resets the typed draft, and closes only that same opening
+  // of Add Item (`dialogAfterScan`). A save not confirmed in time shows the typed
+  // add's "Still sending…" / "Checking…" line, and the scan stays outstanding until
+  // it settles: scanning the same product on the same list again meanwhile (here
+  // or through Scan to tick) is refused instead of queuing a second addition.
+  const scanGuardRef = useRef(createScanAddGuard());
   const handleBarcodeScan = async (barcode: string) => {
     if (!currentUser?.householdId) return;
+    const householdForLookup = currentUser.householdId;
+    const started = currentDialogDraft();
+    const category = getValues('category');
+    const key = scanAddKey(started.listId, barcode);
+    addScanMiss.clear();
     setIsScannerOpen(false);
-    toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
-    try {
-      const result = unwrapAiActionResult(await lookupBarcode(
-        { barcode },
-        await getAiActionContext(currentUser.householdId)
-      ));
-      const entry = scanToShoppingEntry(result);
-      if (entry) {
-        await onAddItemSubmit(
-          { name: entry.name, quantity: entry.quantity, category: getValues('category') },
-          { libraryItem: result.libraryItem, barcode, size: entry.size, sizeUnit: entry.sizeUnit },
-        );
-      } else {
-        toast({ variant: 'destructive', title: 'Product not found', description: 'No product matches that barcode. You can add it to your Barcode Library.' });
+    const inSameDialog = () => addDialogOpenRef.current && addDialogSessionRef.current === started.session;
+    // Inline in the same opening of Add Item when it is still open, else a toast.
+    const showMiss = (show: () => void, toastInstead: () => void) => {
+      if (inSameDialog()) show();
+      else toastInstead();
+    };
+    const showStatus = (text: string) => {
+      if (inSameDialog()) setScanStatus({ key, text });
+      else toast({ description: text });
+    };
+    const clearStatus = () => setScanStatus((current) => (current?.key === key ? null : current));
+    await withScanGuard(scanGuardRef.current, key, async (notePending) => {
+      toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
+      try {
+        const result = unwrapAiActionResult(await lookupBarcode(
+          { barcode },
+          await getAiActionContext(householdForLookup)
+        ));
+        const entry = scanToShoppingEntry(result);
+        const miss = result.libraryItem ? null : lookupMiss(result);
+        if (entry && !miss) {
+          const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, {
+            ...scanAddDeps,
+            pending: (status) => {
+              notePending(status);
+              showStatus(status);
+            },
+          });
+          if (final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close) {
+            setIsAddItemDialogOpen(false);
+          }
+        } else {
+          // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
+          const found = miss ?? { kind: 'not-found' as const };
+          showMiss(() => addScanMiss.reportMiss(found, barcode),
+            () => lookupFeedback.reportMiss(found, barcode, { fallback: 'type the name instead', canSave: canEdit }));
+        }
+      } catch (error) {
+        showMiss(() => addScanMiss.reportError(error, barcode),
+          () => lookupFeedback.reportError(error, barcode, { fallback: 'type the name instead', canSave: canEdit }));
+      } finally {
+        clearStatus();
       }
-    } catch (error) {
-      toastError(error, 'Barcode lookup failed');
-    }
+    }, showStatus);
   };
+  const scanAddDeps = {
+    add: addEntries,
+    report: reportAddResults,
+    fail: (error: unknown) => toastError(error, 'Could not add the item'),
+  };
+  // Scan to tick's "Add": outside the Add Item form entirely (no draft, no category
+  // from it); its pending status and a refused repeat are toasts.
+  const addScannedEntry = (entry: ScanEntry, extras: { libraryItem?: BarcodeLibraryItem | null; barcode: string }) =>
+    withScanGuard(scanGuardRef.current, scanAddKey(selectedListIdRef.current, extras.barcode), (notePending) =>
+      addScannedProduct(entry, extras, {
+        ...scanAddDeps,
+        pending: (status) => {
+          notePending(status);
+          toast({ description: status });
+        },
+      }),
+    (copy) => toast({ description: copy }),
+    ).then(() => undefined, (error: unknown) => { toastError(error, 'Could not add the item'); });
 
   // --- Undo (S3: SH-15a/b, UNDO-10s) ---
   // One 10 s Undo per group (the latest tick, the latest delete), shown in the
@@ -697,25 +771,27 @@ export function ShoppingListClient({
   };
 
   const notUndone = (name: string, error?: unknown) => {
-    if (error === undefined || isChangedElsewhere(error)) {
-      toast({ title: CHANGED_ELSEWHERE_TITLE, description: `${name} was changed on another device after this, so that change stays.` });
-    } else {
-      toastError(error, `Could not undo ${name}`);
-    }
+    const notice = notUndoneNotice(name, error);
+    if (notice) toast(notice);
+    else toastError(error, `Could not undo ${name}`);
   };
 
   const undoTick = async (entry: UndoEntry) => {
     dropUndo(entry.opId);
-    const plan = planTickUndo(knownItem(entry), entry.opId);
-    if (plan === 'already') return;
-    if (plan === 'refused') {
+    // The shared Undo (tick.ts, also the dashboard's): only the status and the purchase
+    // stamps, never a copy of the item, accepted only while this tick's purchaseOpId stands.
+    const started = undoShoppingTick(shoppingTickIO, {
+      path: { householdId: entry.householdId, listId: entry.listId, itemId: entry.itemId },
+      opId: entry.opId,
+      known: knownItem(entry),
+    });
+    if (started.status === 'already') return;
+    if (started.status === 'refused') {
       notUndone(entry.name);
       return;
     }
     if (entry.listId === selectedListIdRef.current) setIsReceiptOpen(false);
-    // Only the status and the purchase stamps, never a copy of the item.
-    const itemRef = doc(db, 'households', entry.householdId, 'shopping-lists', entry.listId, 'items', entry.itemId);
-    await sendWrite(updateDoc(itemRef, undoTickUpdate(entry.opId)), (error) => notUndone(entry.name, error));
+    await sendWrite(started.write, (error) => notUndone(entry.name, error));
     focusRowWhenShown(`item-needed-${entry.itemId}`);
   };
 
@@ -774,8 +850,13 @@ export function ShoppingListClient({
     focusRowWhenShown(nextRowFocusId(item));
   };
 
-  const toggleItemStatus = async (item: ShoppingListItem) => {
+  const toggleItemStatus = async (staleItem: ShoppingListItem) => {
       if (!householdId || !selectedList) return;
+      // Decide from the listener's latest copy, never a stale one (a scan's lookup,
+      // an old render): ticking an item someone else already bought would overwrite
+      // their purchasedByUid, time and purchaseOpId (and void their Undo).
+      const item = currentItemForToggle(staleItem, listItemsRef.current);
+      if (!item) return;
 
       const isCheckingOff = item.status === 'needed';
       const newStatus = isCheckingOff ? 'purchased' : 'needed';
@@ -783,6 +864,12 @@ export function ShoppingListClient({
       // The write always targets the item's own list; the screen is only touched while
       // that list is still the open one.
       const isListOpen = () => selectedListIdRef.current === list.id;
+      // The item as the open list's listener shows it now (not as the row last rendered
+      // it): a tick never lands on an item already purchased (or deleted) meanwhile.
+      const current: TickCurrent = isListOpen() && itemsReadyRef.current
+        ? listItemsRef.current.find((listItem) => listItem.id === item.id) ?? null
+        : item;
+      if (isCheckingOff && planTick(current) !== 'tick') return;
       const lastNeeded = isCheckingOff && isListOpen()
         && listItemsRef.current.filter(listItem => listItem.status === 'needed' && listItem.id !== item.id).length === 0;
       // A rejected write is rolled back by Firestore in the listener, so the screen
@@ -803,13 +890,17 @@ export function ShoppingListClient({
       }
       moveFocusAfter(item);
 
-      // A tick names its buyer, the server's time and a fresh purchaseOpId (the one
-      // its Undo must match); un-ticking from Purchased clears the purchase. The
-      // listener shows the write at once; offline it waits in Firestore's queue and
-      // syncs when the connection returns.
-      const purchaseOpId = isCheckingOff ? newOpId() : null;
+      // A tick is the shared operation (tick.ts, also used by the dashboard): its buyer,
+      // the server's time and a fresh purchaseOpId (the one its Undo must match);
+      // un-ticking from Purchased clears the purchase. The listener shows the write at
+      // once; offline it waits in Firestore's queue and syncs when the connection returns.
       const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
-      const write = updateDoc(itemRef, purchaseOpId ? tickUpdate(uid, purchaseOpId) : untickUpdate());
+      const ticked = isCheckingOff
+        ? tickShoppingItem(shoppingTickIO, { path: { householdId, listId: list.id, itemId: item.id }, uid, current })
+        : null;
+      if (ticked && ticked.status !== 'ticked') return;
+      const purchaseOpId = ticked ? ticked.opId : null;
+      const write = ticked ? ticked.write : updateDoc(itemRef, untickUpdate());
 
       // Ticking never leaves the list: the pantry is offered at the end of the trip
       // (receipt) or when clearing purchased items, never per tick.
@@ -826,7 +917,7 @@ export function ShoppingListClient({
         // note says "saved on this device" only when the durable cache shows it.
         const firstOffline = !offlineNoticeShownRef.current;
         offlineNoticeShownRef.current = true;
-        const stored = firstOffline && await tickStoredLocally(itemRef, newStatus);
+        const stored = firstOffline && await (ticked ? ticked.storedLocally() : tickStoredLocally(itemRef, newStatus));
         const note = firstOffline ? offlineTickNote(stored) : undefined;
         if (purchaseOpId) showTickUndo(item, list.id, purchaseOpId, note);
         else if (note) toast({ title: 'You are offline', description: note });
@@ -837,7 +928,7 @@ export function ShoppingListClient({
 
       // Online, a weak signal can leave the write unanswered; the listener already
       // shows it, so only a rejection (now or later) is reported.
-      const tracked = await trackWrite(write, {
+      const tracked = ticked ? await ticked.track() : await trackWrite(write, {
         kind: 'write',
         persistence: getLocalPersistence,
         offline: isBrowserOffline,
@@ -990,7 +1081,33 @@ export function ShoppingListClient({
     now,
   });
 
-  const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-tick'
+  // After-trip flow (S5): receipt choice, put away, trip Undo, usual chips, history.
+  const tripFlow = useTripFlow({
+    householdId,
+    uid,
+    list: selectedList,
+    purchasedItems: listItems.filter((item) => item.status === 'purchased'),
+    neededItems: listItems.filter((item) => item.status === 'needed'),
+    canEdit,
+    canDelete,
+    online,
+    now,
+    memberNames,
+    addUndo,
+    dropUndo,
+    // Called after the put-away resolves, so `afterCleared` (below) is defined by then.
+    onCleared: (listId) => {
+      const list = lists.find((entry) => entry.id === listId);
+      if (list) void afterCleared(list);
+    },
+    onOpenPantry,
+    onQuickAdd,
+    closeReceipt: () => setIsReceiptOpen(false),
+  });
+
+  const snackbarEntries: SnackbarEntry[] = undoEntries.map((entry) => entry.group === 'shopping-trip'
+    ? tripFlow.snackbarEntry(entry)
+    : entry.group === 'shopping-tick'
     ? {
       key: entry.opId,
       message: `${entry.name} is in the cart`,
@@ -1050,53 +1167,16 @@ export function ShoppingListClient({
   const afterCleared = async (list: ShoppingList) => {
     if (selectedListIdRef.current !== list.id || !householdId) return;
     setIsReceiptOpen(false);
+    // Never offered for Grocery lists (SH-3a): the weekly list is reused.
+    if (list.type === 'Grocery') return;
     const remaining = await countAllOnServer(householdId, list.id).catch(() => null);
-    if (remaining === 0 && selectedListIdRef.current === list.id) {
-      setListToDelete(list);
-      setIsArchiveAlertOpen(true);
-    }
-  };
-
-  // `shownIds` are the purchased items listed in the dialog (ticked or not): with
-  // "then clear", exactly those are cleared after the pantry write succeeds.
-  const sendToPantry = async (choices: PantryHandoffChoice[], shownIds: string[]): Promise<boolean> => {
-    if (!householdId) return false;
-    if (isBrowserOffline()) {
-      toast({ title: 'You are offline', description: 'Add items to the pantry once you are back online.' });
-      return false;
-    }
-    const list = selectedList;
-    // "Then clear" only clears the list on screen (the ids came from it).
-    const thenClear = handoffMode === 'then-clear' && list !== null && selectedListIdRef.current === list.id;
-    try {
-      // One transaction: with "then clear" the pantry writes and the clear succeed or
-      // fail together, so a retry can never add the same purchases twice.
-      if (!list) return false;
-      // Only purchases the transaction confirms are credited (and, with "then clear",
-      // deleted in the same commit), so concurrent handoffs never double-credit.
-      const { written, cleared, skipped } = await addPurchasesToPantry(
-        householdId,
-        list.id,
-        choices,
-        thenClear ? { clearItemIds: shownIds } : undefined,
-      );
-      toast({
-        title: thenClear ? 'Added to the pantry and cleared' : 'Added to the pantry',
-        description: `${pluralize(written, 'item')} on the shelves.${skipped.length > 0 ? ` Skipped ${skipped.join(', ')}: no longer bought or already cleared.` : ''}`,
-        action: onOpenPantry ? <ToastAction altText="View the pantry" onClick={onOpenPantry}>View pantry</ToastAction> : undefined,
-      });
-      setIsReceiptOpen(false);
-      if (thenClear && cleared.length > 0) await afterCleared(list);
-      return true;
-    } catch (error) {
-      toastError(error, 'Could not add to the pantry');
-      return false;
-    }
+    if (offerEmptyListDelete(list.type, remaining) && selectedListIdRef.current === list.id) setEmptyList(list);
   };
 
   const archiveList = async () => {
-    setIsArchiveAlertOpen(false);
-    await handleDeleteList(listToDelete);
+    const list = emptyList;
+    setEmptyList(null);
+    await handleDeleteList(list);
   };
 
   const openClear = () => {
@@ -1210,14 +1290,14 @@ export function ShoppingListClient({
                         {canHandoff ? 'Clear only' : 'Clear Purchased'}
                     </AlertDialogAction>
                     {canHandoff && (
-                      <AlertDialogAction onClick={() => setHandoffMode('then-clear')}>
-                        Add to pantry, then clear
+                      <AlertDialogAction onClick={() => tripFlow.openPutAway('putAwayAndClear')}>
+                        Put away & clear
                       </AlertDialogAction>
                     )}
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-            <AlertDialog open={isArchiveAlertOpen} onOpenChange={setIsArchiveAlertOpen}>
+            <AlertDialog open={emptyList !== null} onOpenChange={(open) => { if (!open) setEmptyList(null); }}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
                     <AlertDialogTitle>Delete Empty List?</AlertDialogTitle>
@@ -1226,7 +1306,7 @@ export function ShoppingListClient({
                     </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                    <AlertDialogCancel onClick={() => setListToDelete(null)}>No, keep it</AlertDialogCancel>
+                    <AlertDialogCancel>No, keep it</AlertDialogCancel>
                     <AlertDialogAction onClick={() => void archiveList()} className={buttonVariants({ variant: "destructive"})}>
                         Yes, delete it
                     </AlertDialogAction>
@@ -1238,8 +1318,12 @@ export function ShoppingListClient({
               onOpenChange={setIsReceiptOpen}
               listName={selectedList.name}
               items={purchasedItems}
-              onSendToPantry={canHandoff ? () => { setIsReceiptOpen(false); setHandoffMode('pantry'); } : undefined}
-              onClearPurchased={canDelete ? () => { setIsReceiptOpen(false); openClear(); } : undefined}
+              afterTrip={tripFlow.afterTrip}
+              offline={!online}
+              putAwayLabel={tripFlow.putAwayLabel}
+              onPutAway={tripFlow.receiptPutAway}
+              onClearPurchased={canDelete && !tripFlow.receiptPutAway ? () => { tripFlow.remember('putAwayAndClear'); setIsReceiptOpen(false); openClear(); } : undefined}
+              onDone={tripFlow.receiptDone}
             />
             <ItemEditSheet
               item={editingItem}
@@ -1265,15 +1349,7 @@ export function ShoppingListClient({
                 }
               }}
             />
-            {handoffMode !== null && (
-            <PantryHandoffDialog
-              open
-              onOpenChange={(open) => { if (!open) setHandoffMode(null); }}
-              items={purchasedItems}
-              confirmLabel={handoffMode === 'then-clear' ? 'Add and clear' : 'Add to pantry'}
-              onConfirm={sendToPantry}
-            />
-            )}
+            {tripFlow.dialog}
             <div
               className="rounded-xl border bg-card text-card-foreground shadow-raised"
               data-testid="open-list"
@@ -1297,6 +1373,7 @@ export function ShoppingListClient({
                     </div>
                     {canEdit && (
                     <div className="flex w-full flex-col gap-2 min-[400px]:flex-row sm:w-auto sm:items-center">
+                        {tripFlow.history}
                         {householdId && (
                           <CategoriesDialog
                             // One instance per list: a late answer for list A never fills list B's fields.
@@ -1311,6 +1388,7 @@ export function ShoppingListClient({
                             online={online}
                           />
                         )}
+                        {householdId && <ScanToTick key={`scan:${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
@@ -1400,6 +1478,8 @@ export function ShoppingListClient({
                                     </Button>
                                 </DialogFooter>
                                 {dialogStatus && <p role="status" className="text-sm text-muted-foreground">{dialogStatus}</p>}
+                                {scanStatus && <p role="status" className="text-sm text-muted-foreground">{scanStatus.text}</p>}
+                                <LookupMissNotice scanMiss={addScanMiss.scanMiss} fallback="type the name instead" canSave={canEdit} />
                                 </form>
                             </Form>
                         </DialogContent>
@@ -1451,6 +1531,7 @@ export function ShoppingListClient({
                                           onToggle={toggleItemStatus}
                                           onEdit={openEditor}
                                           attribution={attributionFor(item)}
+                                          photoUrl={photoFor(item)}
                                         />
                                       )),
                                     ])}
@@ -1468,8 +1549,8 @@ export function ShoppingListClient({
                                     </Button>
                                 )}
                                 {purchasedItems.length > 0 && !canDelete && canHandoff && (
-                                    <Button variant="ghost" size="sm" onClick={() => setHandoffMode('pantry')} className="text-muted-foreground">
-                                        Add to pantry
+                                    <Button variant="ghost" size="sm" onClick={() => tripFlow.openPutAway('putAway')} className="text-muted-foreground">
+                                        Put away
                                     </Button>
                                 )}
                             </div>
@@ -1485,6 +1566,7 @@ export function ShoppingListClient({
                                       onToggle={toggleItemStatus}
                                       onEdit={openEditor}
                                       attribution={attributionFor(item)}
+                                      photoUrl={photoFor(item)}
                                     />
                                 ))}
                                 </AnimatePresence>
@@ -1499,7 +1581,12 @@ export function ShoppingListClient({
                             key={selectedList.id}
                             listName={selectedList.name}
                             onAdd={onQuickAdd}
-                            above={snackbarEntries.length > 0 ? <UndoSnackbar entries={snackbarEntries} /> : undefined}
+                            above={tripFlow.chips || snackbarEntries.length > 0 ? (
+                              <>
+                                {tripFlow.chips}
+                                {snackbarEntries.length > 0 && <UndoSnackbar entries={snackbarEntries} />}
+                              </>
+                            ) : undefined}
                           />
                         )}
                       </>
