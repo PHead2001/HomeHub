@@ -42,7 +42,7 @@ import { reconcileDoneStates } from '@/lib/dashboard/done-states';
 import { cn } from '@/lib/utils';
 import styles from './dashboard.module.css';
 
-type ActionState = 'saving' | 'done' | 'failed';
+export type ActionState = 'saving' | 'done' | 'failed';
 
 /**
  * Done for dashboard chores. The dashboard reads chores with live listeners, so it
@@ -147,8 +147,8 @@ export function useChoreDone(liveIds?: readonly string[]) {
 
 export type ChoreDone = ReturnType<typeof useChoreDone>;
 
-function ActionButton({
-  state, label, idle, onClick, testId, className,
+export function ActionButton({
+  state, label, idle, onClick, testId, className, dataKey,
 }: {
   state: ActionState | undefined;
   /** Accessible name in the idle state ("Mark Dishes done"). */
@@ -158,6 +158,8 @@ function ActionButton({
   onClick: (button: HTMLButtonElement) => void;
   testId: string;
   className?: string;
+  /** `data-tick-key` (the Shopping tile finds the next row's control by it). */
+  dataKey?: string;
 }) {
   const saving = state === 'saving';
   const done = state === 'done';
@@ -166,6 +168,7 @@ function ActionButton({
     <button
       type="button"
       data-testid={testId}
+      data-tick-key={dataKey}
       data-state={state ?? 'idle'}
       aria-label={failed ? `Retry: ${label}` : label}
       aria-busy={saving || undefined}

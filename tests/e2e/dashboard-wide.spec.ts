@@ -89,6 +89,12 @@ test.describe('H5: wide landscape dashboard (HP-12, HP-26a)', () => {
         const tilesWithDetails = await page.getByTestId('dashboard-grid').locator('[data-testid$="-details"]').count();
         expect(tilesWithDetails, 'the seed gives some tiles inline details').toBeGreaterThanOrEqual(2);
         expect(detailRows).toBe(viewport.height >= 800 ? tilesWithDetails : 0);
+        // HP-33c beside the house: one Shopping tick row (44 px, 48 px on a coarse pointer) in
+        // place of the item chips below 60rem of screen height, the rest on the tile link.
+        const ticks = await page.getByTestId('dashboard-tile-shopping').locator('[data-tick-key]')
+          .evaluateAll((controls) => controls.filter((control) => control.getBoundingClientRect().height > 0).map((control) => control.getBoundingClientRect().height));
+        expect(ticks.length).toBe(1);
+        expect(ticks[0]).toBeGreaterThanOrEqual(44);
         // HP-26a: the last tile reaches the grid's right edge (no empty slot), and tiles never overlap.
         const tiles = await tileBoxes(page);
         expect(tiles.length).toBeGreaterThanOrEqual(6);

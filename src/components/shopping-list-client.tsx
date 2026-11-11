@@ -40,18 +40,17 @@ import { addItemsToList, type AddEntry, type CategorizationReport, type EntryOut
 import { categorizationNotice, createSubmissionGuard, dialogAfterSave, isPendingState, isSettledForInput, newSubmissionId, offlineTickNote, once, saveStateLabel, settledTickFollowUp, summarizeStates, tickFollowUp, trackWrite, type DialogDraft } from '@/lib/shopping/save-status';
 import { scanToShoppingEntry } from '@/lib/shopping/scan';
 import { groupItemsByAisle, normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
-import { editUpdate, restoreDocument, restoreIfAbsent, tickUpdate, undoTickUpdate, untickUpdate } from '@/lib/shopping/item-writes';
+import { editUpdate, restoreDocument, restoreIfAbsent, untickUpdate } from '@/lib/shopping/item-writes';
+import { notUndoneNotice, planTick, tickShoppingItem, undoShoppingTick, type TickCurrent } from '@/lib/shopping/tick';
+import { shoppingTickIO } from '@/lib/shopping/tick-firestore';
 import {
-  CHANGED_ELSEWHERE_TITLE,
   browserJournalStorage,
   dropJournal,
   fromJournalData,
-  isChangedElsewhere,
   journalFor,
   newOpId,
   nextFocusId,
   planRemoveUndo,
-  planTickUndo,
   pushJournal,
   readJournal,
   remainingMs,
@@ -737,25 +736,27 @@ export function ShoppingListClient({
   };
 
   const notUndone = (name: string, error?: unknown) => {
-    if (error === undefined || isChangedElsewhere(error)) {
-      toast({ title: CHANGED_ELSEWHERE_TITLE, description: `${name} was changed on another device after this, so that change stays.` });
-    } else {
-      toastError(error, `Could not undo ${name}`);
-    }
+    const notice = notUndoneNotice(name, error);
+    if (notice) toast(notice);
+    else toastError(error, `Could not undo ${name}`);
   };
 
   const undoTick = async (entry: UndoEntry) => {
     dropUndo(entry.opId);
-    const plan = planTickUndo(knownItem(entry), entry.opId);
-    if (plan === 'already') return;
-    if (plan === 'refused') {
+    // The shared Undo (tick.ts, also the dashboard's): only the status and the purchase
+    // stamps, never a copy of the item, accepted only while this tick's purchaseOpId stands.
+    const started = undoShoppingTick(shoppingTickIO, {
+      path: { householdId: entry.householdId, listId: entry.listId, itemId: entry.itemId },
+      opId: entry.opId,
+      known: knownItem(entry),
+    });
+    if (started.status === 'already') return;
+    if (started.status === 'refused') {
       notUndone(entry.name);
       return;
     }
     if (entry.listId === selectedListIdRef.current) setIsReceiptOpen(false);
-    // Only the status and the purchase stamps, never a copy of the item.
-    const itemRef = doc(db, 'households', entry.householdId, 'shopping-lists', entry.listId, 'items', entry.itemId);
-    await sendWrite(updateDoc(itemRef, undoTickUpdate(entry.opId)), (error) => notUndone(entry.name, error));
+    await sendWrite(started.write, (error) => notUndone(entry.name, error));
     focusRowWhenShown(`item-needed-${entry.itemId}`);
   };
 
@@ -823,6 +824,12 @@ export function ShoppingListClient({
       // The write always targets the item's own list; the screen is only touched while
       // that list is still the open one.
       const isListOpen = () => selectedListIdRef.current === list.id;
+      // The item as the open list's listener shows it now (not as the row last rendered
+      // it): a tick never lands on an item already purchased (or deleted) meanwhile.
+      const current: TickCurrent = isListOpen() && itemsReadyRef.current
+        ? listItemsRef.current.find((listItem) => listItem.id === item.id) ?? null
+        : item;
+      if (isCheckingOff && planTick(current) !== 'tick') return;
       const lastNeeded = isCheckingOff && isListOpen()
         && listItemsRef.current.filter(listItem => listItem.status === 'needed' && listItem.id !== item.id).length === 0;
       // A rejected write is rolled back by Firestore in the listener, so the screen
@@ -843,13 +850,17 @@ export function ShoppingListClient({
       }
       moveFocusAfter(item);
 
-      // A tick names its buyer, the server's time and a fresh purchaseOpId (the one
-      // its Undo must match); un-ticking from Purchased clears the purchase. The
-      // listener shows the write at once; offline it waits in Firestore's queue and
-      // syncs when the connection returns.
-      const purchaseOpId = isCheckingOff ? newOpId() : null;
+      // A tick is the shared operation (tick.ts, also used by the dashboard): its buyer,
+      // the server's time and a fresh purchaseOpId (the one its Undo must match);
+      // un-ticking from Purchased clears the purchase. The listener shows the write at
+      // once; offline it waits in Firestore's queue and syncs when the connection returns.
       const itemRef = doc(db, 'households', householdId, 'shopping-lists', list.id, 'items', item.id);
-      const write = updateDoc(itemRef, purchaseOpId ? tickUpdate(uid, purchaseOpId) : untickUpdate());
+      const ticked = isCheckingOff
+        ? tickShoppingItem(shoppingTickIO, { path: { householdId, listId: list.id, itemId: item.id }, uid, current })
+        : null;
+      if (ticked && ticked.status !== 'ticked') return;
+      const purchaseOpId = ticked ? ticked.opId : null;
+      const write = ticked ? ticked.write : updateDoc(itemRef, untickUpdate());
 
       // Ticking never leaves the list: the pantry is offered at the end of the trip
       // (receipt) or when clearing purchased items, never per tick.
@@ -866,7 +877,7 @@ export function ShoppingListClient({
         // note says "saved on this device" only when the durable cache shows it.
         const firstOffline = !offlineNoticeShownRef.current;
         offlineNoticeShownRef.current = true;
-        const stored = firstOffline && await tickStoredLocally(itemRef, newStatus);
+        const stored = firstOffline && await (ticked ? ticked.storedLocally() : tickStoredLocally(itemRef, newStatus));
         const note = firstOffline ? offlineTickNote(stored) : undefined;
         if (purchaseOpId) showTickUndo(item, list.id, purchaseOpId, note);
         else if (note) toast({ title: 'You are offline', description: note });
@@ -877,7 +888,7 @@ export function ShoppingListClient({
 
       // Online, a weak signal can leave the write unanswered; the listener already
       // shows it, so only a rejection (now or later) is reported.
-      const tracked = await trackWrite(write, {
+      const tracked = ticked ? await ticked.track() : await trackWrite(write, {
         kind: 'write',
         persistence: getLocalPersistence,
         offline: isBrowserOffline,
