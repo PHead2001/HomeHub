@@ -1405,7 +1405,7 @@ export function ShoppingListClient({
                             online={online}
                           />
                         )}
-                        {householdId && <ScanToTick key={`${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
+                        {householdId && <ScanToTick key={`scan:${householdId}/${selectedList.id}`} householdId={householdId} listId={selectedList.id} items={listItems} onTick={toggleItemStatus} onAdd={addScannedEntry} />}
                         <Dialog open={isAddItemDialogOpen} onOpenChange={setIsAddItemDialogOpen}>
                         <ShortcutHint shortcut="add-item" label="Add an item from anywhere">
                         <DialogTrigger asChild>
