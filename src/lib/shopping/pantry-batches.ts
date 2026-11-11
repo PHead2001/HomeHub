@@ -20,6 +20,7 @@ import { addDays, diffDays, isDayString, localDay, localMinutes, safeTimeZone, t
 import type { PantryItemLocation, PantryItemUnit } from '@/lib/types';
 import { pantryItemUnitCategories } from '../types';
 import { itemNameKey } from './items';
+import type { SaveState } from './save-status';
 
 export const PANTRY_SCHEMA_VERSION = 2;
 export const MAX_PACKAGES = 10_000;
@@ -742,10 +743,10 @@ export function undoFits(packagesAfter: number, delta: number): boolean {
 
 /**
  * The data-change event a pantry → shopping write announces (`notifyDataChanged`),
- * so the Lists tab's fallback counts refresh: only for a write the server
- * confirmed (`merged`, `saved`); a queued offline write is not on the server
- * yet, so a server count would not include it.
+ * so the Lists tab's fallback counts refresh: only once the server confirmed the
+ * write (`saved`, the merge or the new item); a write still on this device, still
+ * sending or failed is not counted by the server yet, so it announces nothing.
  */
-export function shoppingWriteNotice(householdId: string, listId: string, outcome: 'merged' | 'saved' | 'queued') {
-  return outcome === 'queued' ? null : { module: 'shopping' as const, householdId, listId };
+export function shoppingWriteNotice(householdId: string, listId: string, state: SaveState) {
+  return state === 'saved' ? { module: 'shopping' as const, householdId, listId } : null;
 }

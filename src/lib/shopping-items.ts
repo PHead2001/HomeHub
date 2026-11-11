@@ -1,5 +1,8 @@
 import type { ShoppingListItem } from '@/lib/types';
 import { slugify } from '@/lib/utils';
+import { itemNameKey } from '@/lib/shopping/items';
+import type { CategorySource } from '@/lib/shopping/local-categories';
+import { packageSize } from '@/lib/shopping/scan';
 
 export const DEFAULT_SHOPPING_CATEGORIES = ['Produce', 'Dairy', 'Meat', 'Bakery', 'Pantry', 'Frozen', 'Snacks', 'Drinks', 'Household', 'Other'];
 
@@ -26,35 +29,51 @@ export function normalizeSourceUrl(value: string | null | undefined): string | u
 
 /**
  * Builds the Firestore document for a new shopping-list item. This is the one
- * item-creation contract shared by the Shopping Lists tab and the share target:
- * the document ID is `slugify(name)` (a slug plus a random suffix, so repeated
- * names create separate items) and optional fields are omitted, never undefined.
+ * item-creation contract shared by the Shopping Lists tab, the command palette,
+ * the pantry and the share target (all through `addItemsToList`): the document ID
+ * is `slugify(name)` (a slug plus a random suffix, so repeated names create
+ * separate items) and optional fields are omitted, never undefined. New items carry
+ * `nameKey` and, when known, `addedByUid` (SH-28a) and `categorySource` (QA-6); a
+ * scanned package size goes to `size`/`sizeUnit`, never into `quantity` (BL-1).
  */
 export function buildShoppingListItem({
   name,
   quantity,
   category,
+  categorySource,
+  addedByUid,
   imageUrl,
   barcode,
   sourceUrl,
+  size,
+  sizeUnit,
 }: {
   name: string;
   quantity: number;
   category: string;
+  categorySource?: CategorySource;
+  addedByUid?: string | null;
   imageUrl?: string;
   barcode?: string;
   sourceUrl?: string;
+  size?: number;
+  sizeUnit?: string;
 }): { itemId: string; data: Omit<ShoppingListItem, 'id'> } {
+  const packaged = packageSize(size, sizeUnit);
   return {
     itemId: slugify(name),
     data: {
       name,
+      nameKey: itemNameKey(name),
       quantity,
       category,
+      ...(categorySource ? { categorySource } : {}),
+      ...(addedByUid ? { addedByUid } : {}),
       createdAt: new Date(),
       ...(imageUrl ? { imageUrl } : {}),
       ...(barcode ? { barcode } : {}),
       ...(sourceUrl ? { sourceUrl } : {}),
+      ...(packaged ? packaged : {}),
       status: 'needed',
     },
   };

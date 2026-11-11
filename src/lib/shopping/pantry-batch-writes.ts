@@ -16,17 +16,14 @@
 import {
   collection, deleteDoc, doc, getDocs, increment, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch,
 } from 'firebase/firestore';
-import { categorizeGroceryItem } from '@/ai/flows/categorize-grocery-item-flow';
-import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import { db } from '@/lib/firebase';
 import { notifyDataChanged } from '@/lib/data-changed';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
-import { resolveShoppingCategory } from '@/lib/shopping-categorization';
-import { DEFAULT_SHOPPING_CATEGORIES, buildShoppingListItem, normalizeStoredCategories } from '@/lib/shopping-items';
+import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
 import type { PantryItemLocation, ShoppingList, ShoppingListItem } from '@/lib/types';
 import { slugify } from '@/lib/utils';
-import { findMergeTarget } from './items';
-import { mergeIntoNeededItem } from './item-transactions';
+import { addItemsToList, type ActiveTarget, type CategorizationReport } from './add-items';
+import type { SaveState } from './save-status';
 import {
   BATCH_GONE_MESSAGE, PantryChangeRefused, decidePantryMerge, isCountUnit, packageChangeRoute, pantryBatchFields, planLegacyUpgrade,
   planMergeAdd, readPantryBatch, shoppingWriteNotice, shouldDeleteEmptyBatch, undoFits,
@@ -222,55 +219,71 @@ export async function createGroceriesList(householdId: string, onLateError: (err
 
 export type AddToListResult = {
   listName: string;
-  outcome: 'merged' | 'saved' | 'queued';
-  /** The new item went under Other because categorization was unavailable (online only). */
-  usedFallback: boolean;
+  /** Display name (the needed item's own name when merged). */
+  name: string;
+  merged: boolean;
+  /** `trackWrite`'s classification of the one write (merge transaction or create). */
+  state: SaveState;
+  error?: unknown;
+  /** The batched AI call for a new item saved under a pending `Other` (resolves at once otherwise). */
+  categorization: Promise<CategorizationReport>;
 };
 
 /**
- * Puts a pantry product on a Grocery list (SH-6, SH-29b). Online, a still-needed
- * item with the same name is raised by `quantity` through the Shopping list's own
- * merge path (`findMergeTarget` + `mergeIntoNeededItem`, which re-checks it is
- * still needed), so "we're out of milk" never adds a second Milk. Otherwise (or
- * offline, where nothing merges) a new needed item is created with the shared
- * category resolution. A write the server confirmed (merged or saved) is
- * announced with `notifyDataChanged` (`shoppingWriteNotice`), so the Lists tab's
- * fallback counts (lists beyond the first 20 live ones) refresh.
+ * Puts a pantry product on a Grocery list (SH-6, SH-29b) through the Shopping
+ * list's own save path, `addItemsToList`: online, a still-needed item with the
+ * same name is raised by `quantity` in a transaction (`mergeIntoNeededItem`
+ * re-checks it is still needed), so "we're out of milk" never adds a second Milk;
+ * otherwise (or offline, where nothing merges) a new needed item is saved at once
+ * with a local category and sorted later by one AI call. The write's honest state
+ * (`trackWrite`) comes back for the toast. Once the server has confirmed the
+ * write (at once, or when a pending one settles) it is announced with
+ * `notifyDataChanged` (`shoppingWriteNotice`), so the Lists tab's fallback counts
+ * (lists beyond the first 20 live ones) refresh.
  */
-export async function addToGroceryList(
-  householdId: string,
-  list: Pick<ShoppingList, 'id' | 'name'>,
-  name: string,
-  quantity: number,
-  onLateError: (error: unknown) => void,
-): Promise<AddToListResult> {
+export async function addToGroceryList({
+  householdId,
+  uid,
+  list,
+  name,
+  quantity,
+  active,
+  onLateError,
+}: {
+  householdId: string;
+  uid: string | null | undefined;
+  list: Pick<ShoppingList, 'id' | 'name'>;
+  name: string;
+  quantity: number;
+  /** The household and list a late AI answer may still touch. */
+  active: () => ActiveTarget;
+  /** A write that was still pending and later failed. */
+  onLateError: (error: unknown) => void;
+}): Promise<AddToListResult> {
   const listRef = doc(db, 'households', householdId, 'shopping-lists', list.id);
   const itemsRef = collection(listRef, 'items');
-  const offline = isBrowserOffline();
-  if (!offline) {
-    const needed = (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
+  const needed = isBrowserOffline()
+    ? []
+    : (await getDocs(query(itemsRef, where('status', '==', 'needed'))).catch(() => null))
       ?.docs.map((entry) => ({ ...(entry.data() as Omit<ShoppingListItem, 'id'>), id: entry.id })) ?? [];
-    const target = findMergeTarget(needed, name);
-    if (target && await mergeIntoNeededItem(doc(itemsRef, target.id), quantity)) {
-      announceShoppingWrite(householdId, list.id, 'merged');
-      return { listName: list.name, outcome: 'merged', usedFallback: false };
-    }
-  }
   const categoriesSnapshot = await getDocOfflineAware(doc(listRef, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
-  const { category, usedFallback } = await resolveShoppingCategory({
-    itemName: name,
+  const { outcomes, categorization } = await addItemsToList({
+    householdId,
+    listId: list.id,
+    uid,
+    entries: [{ name, quantity }],
     categories,
-    selectedCategory: offline ? 'Other' : undefined,
-    categorize: async (input) => unwrapAiActionResult(await categorizeGroceryItem(input, await getAiActionContext(householdId))),
+    knownItems: needed,
+    active,
+    onLateError: (_name, error) => onLateError(error),
   });
-  const { itemId, data } = buildShoppingListItem({ name, quantity, category });
-  const outcome = await awaitWriteUnlessOffline(setDoc(doc(itemsRef, itemId), data), onLateError);
-  announceShoppingWrite(householdId, list.id, outcome);
-  return { listName: list.name, outcome, usedFallback: usedFallback && !offline };
+  const [outcome] = outcomes;
+  void outcome.settled.then((final) => announceShoppingWrite(householdId, list.id, final));
+  return { listName: list.name, name: outcome.name, merged: outcome.merged, state: outcome.state, error: outcome.error, categorization };
 }
 
-function announceShoppingWrite(householdId: string, listId: string, outcome: AddToListResult['outcome']) {
-  const notice = shoppingWriteNotice(householdId, listId, outcome);
+function announceShoppingWrite(householdId: string, listId: string, state: SaveState) {
+  const notice = shoppingWriteNotice(householdId, listId, state);
   if (notice) notifyDataChanged(notice);
 }

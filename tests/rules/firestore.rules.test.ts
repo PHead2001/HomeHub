@@ -28,6 +28,8 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
+import { restoreItemData } from '../../src/lib/shopping/items';
+import { restoreDocument } from '../../src/lib/shopping/item-writes';
 
 const projectId = 'demo-homehub-e2e';
 const householdA = 'household-a-e2e';
@@ -1447,16 +1449,9 @@ describe('content shapes: chores and templates', () => {
   });
 });
 
-// The restore document the S3 client writes (src/lib/shopping/items.ts restoreItemData +
-// item-writes.ts restoreDocument on the S3 branch): the item as read, without the
-// writer-only stamps, plus restoredByUid, restoreOpId and restoredAt.
-const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt'];
-const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) => ({
-  ...Object.fromEntries(Object.entries(snapshot).filter(([key]) => !RESTORE_DROPS.includes(key))),
-  restoredByUid: restorerUid,
-  ...(restoreOpId ? { restoreOpId } : {}),
-  restoredAt: serverTimestamp(),
-});
+// The restore document the client writes (items.ts restoreItemData + item-writes.ts restoreDocument).
+const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) =>
+  restoreDocument(restoreItemData(snapshot, restorerUid, restoreOpId));
 
 describe('content shapes: shopping', () => {
   const items = (user: Identity, list = 'groceries') => collection(dbFor(user), 'households', householdA, 'shopping-lists', list, 'items');
@@ -1534,6 +1529,8 @@ describe('content shapes: shopping', () => {
     // original attribution, recording the restorer; a restore cannot invent a member or
     // be credited to someone else.
     await assertSucceeds(setDoc(item(users.owner, 's2-restore'), built({ addedByUid: users.member.uid, restoredByUid: users.owner.uid })));
+    // Restoring one's own item (restoreItemData adds the writer as restorer too).
+    await assertSucceeds(setDoc(item(users.member, 's2-restore-own'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-forged'), built({ addedByUid: users.member.uid, restoredByUid: users.member.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-stranger'), built({ addedByUid: 'not-a-member', restoredByUid: users.owner.uid })));
     await assertFails(setDoc(item(users.owner, 's2-restore-unmarked'), built({ addedByUid: users.member.uid })));

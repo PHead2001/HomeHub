@@ -5,7 +5,7 @@ import { getOpenAiClient } from '@/ai/openai-client';
 import { toStrictOutputSchema } from '@/ai/strict-output-schema';
 import { buildUntrustedDataPrompt, HOMEHUB_AI_SYSTEM_INSTRUCTION } from '@/ai/system-instruction';
 
-export type ModelBackedFlowName = 'categorization' | 'recipe' | 'maintenance-summary' | 'overview' | 'command-parse';
+export type ModelBackedFlowName = 'categorization' | 'categorization-batch' | 'recipe' | 'maintenance-summary' | 'overview' | 'command-parse';
 export type AiReasoningEffort = 'low' | 'medium' | 'high';
 
 export type AiGenerationUsage = {
@@ -72,6 +72,23 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
   const scenario = getScenario(input);
   throwDeterministicFailure(scenario);
   if (scenario === 'malformed') return { malformed: true };
+
+  if (flowName === 'categorization-batch') {
+    // Same choice per name as single categorization; names carrying their own
+    // `ai-test:` scenario fail the whole batch through getScenario above.
+    const batchInput = input as { itemNames: string[]; categories: string[] };
+    return {
+      results: batchInput.itemNames.map((name, index) => {
+        const lower = name.toLowerCase();
+        const preferred = lower.includes('milk') ? 'Dairy'
+          : lower.includes('apple') ? 'Produce'
+            : batchInput.categories.find(category => category !== 'Other');
+        const category = scenario === 'outside-category' ? 'Not A Supplied Category'
+          : preferred && batchInput.categories.includes(preferred) ? preferred : 'Other';
+        return { index, category };
+      }),
+    };
+  }
 
   if (flowName === 'categorization') {
     const categoryInput = input as { itemName: string; categories: string[] };

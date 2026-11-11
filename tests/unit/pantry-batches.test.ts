@@ -198,8 +198,8 @@ describe('tiles group a product and "used one" takes from the soonest batch (SH-
     assert.match(client, /<AlertDialogCancel>Not now<\/AlertDialogCancel>/);
     assert.match(client, /if \(reachedZero && request === promptRequestRef\.current\) setAskAdd\(/);
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
-    assert.match(writes, /findMergeTarget\(needed, name\)/);
-    assert.match(writes, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), quantity\)/);
+    // The merge is the Shopping list's own (addItemsToList: findMergeTarget + mergeIntoNeededItem).
+    assert.match(writes, /addItemsToList\(\{[\s\S]*knownItems: needed,/);
     assert.match(writes, /packages: increment\(delta\)/);
   });
 
@@ -686,8 +686,9 @@ describe('a legacy batch is upgraded only online, from a fresh read (PR #129 rev
 describe('a pantry → shopping write refreshes the Lists tab counts (PR #129 review)', () => {
   test('only a write the server confirmed is announced', () => {
     assert.deepEqual(shoppingWriteNotice('h1', 'list-21', 'saved'), { module: 'shopping', householdId: 'h1', listId: 'list-21' });
-    assert.deepEqual(shoppingWriteNotice('h1', 'list-21', 'merged'), { module: 'shopping', householdId: 'h1', listId: 'list-21' });
-    assert.equal(shoppingWriteNotice('h1', 'list-21', 'queued'), null);
+    for (const state of ['stored-locally', 'sending', 'uncertain', 'failed'] as const) {
+      assert.equal(shoppingWriteNotice('h1', 'list-21', state), null, state);
+    }
   });
 
   test('the notice reaches onDataChanged listeners (the fallback counts subscribe to it)', () => {
@@ -706,11 +707,13 @@ describe('a pantry → shopping write refreshes the Lists tab counts (PR #129 re
     }
   });
 
-  test('addToGroceryList announces after the merge and after the item write', () => {
+  test('addToGroceryList goes through the Shopping list save path and announces once the server confirmed', () => {
     const writes = readFileSync(join(__dirname, '..', '..', 'src', 'lib', 'shopping', 'pantry-batch-writes.ts'), 'utf8');
     const add = writes.slice(writes.indexOf('export async function addToGroceryList'));
-    assert.match(add, /mergeIntoNeededItem\(doc\(itemsRef, target\.id\), quantity\)\) \{\s+announceShoppingWrite\(householdId, list\.id, 'merged'\);/);
-    assert.match(add, /const outcome = await awaitWriteUnlessOffline\(setDoc\(doc\(itemsRef, itemId\), data\), onLateError\);\s+announceShoppingWrite\(householdId, list\.id, outcome\);/);
+    assert.match(add, /await addItemsToList\(\{[\s\S]*knownItems: needed,/);
+    assert.doesNotMatch(add, /allowMerge: false/);
+    assert.doesNotMatch(add, /setDoc\(|mergeIntoNeededItem\(|resolveShoppingCategory/);
+    assert.match(add, /outcome\.settled\.then\(\(final\) => announceShoppingWrite\(householdId, list\.id, final\)\)/);
     assert.match(add, /if \(notice\) notifyDataChanged\(notice\);/);
   });
 });

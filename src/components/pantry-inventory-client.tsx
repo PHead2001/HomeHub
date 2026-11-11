@@ -9,11 +9,12 @@ import { format } from 'date-fns';
 import type { BarcodeLibraryItem, PantryItemUnit, PantryItemLocation, ShoppingList } from '@/lib/types';
 import { pantryItemUnitCategories } from '@/lib/types';
 import { useAuth } from '@/hooks/use-auth';
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { collection, query } from 'firebase/firestore';
 import { getDocsOfflineAware, isBrowserOffline } from '@/lib/firestore-offline';
 import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, MAX_PACKAGES, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, chooseAddOneBatch, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
+import { categorizationNotice } from '@/lib/shopping/save-status';
 import { expiryStateForDays, matchRecipeIngredients, productPhotoForName } from '@/lib/shopping/pantry';
 import { pluralize } from '@/lib/shopping/items';
 import { useLivePantry } from '@/lib/shopping/live';
@@ -971,21 +972,35 @@ export function PantryInventoryClient() {
   const addToList = useCallback(async (list: Pick<ShoppingList, 'id' | 'name'>, name: string, quantity: number) => {
     if (!householdId) return;
     try {
-      const result = await addToGroceryList(householdId, list, name, quantity, (error) => toastError(error, `Could not sync ${name}`));
+      const result = await addToGroceryList({
+        householdId,
+        uid,
+        list,
+        name,
+        quantity,
+        active: () => ({ householdId: auth.currentUser ? householdId : null, listId: list.id }),
+        onLateError: (error) => toastError(error, `Could not sync ${name}`),
+      });
+      if (result.state === 'failed') throw result.error ?? new Error('save-failed');
       rememberRecentList(householdId, list.id);
       const where = result.listName;
-      toast({
-        title: result.outcome === 'queued' ? 'Saved offline' : 'On the list',
-        description: result.outcome === 'merged'
-          ? `${name} was already on ${where}; it now needs ${quantity} more.`
-          : result.usedFallback
-            ? `${name} is on ${where}, under Other (automatic sorting was unavailable).`
-            : `${name} is on ${where}.`,
+      // Only what is known (SH-4): "Saved, will sync" needs the durable cache to show the write.
+      toast(result.state === 'saved'
+        ? {
+            title: 'On the list',
+            description: result.merged ? `${result.name} was already on ${where}; it now needs ${quantity} more.` : `${name} is on ${where}.`,
+          }
+        : result.state === 'stored-locally'
+          ? { title: 'Saved, will sync', description: `${name} is saved on this device and reaches ${where} when the connection is back.` }
+          : { title: 'Still sending…', description: `${name} has not reached ${where} yet. An error shows here if it fails.` });
+      void result.categorization.then((report) => {
+        const notice = categorizationNotice({ savedNames: report.unavailable, unconfirmedNames: report.unconfirmed }, 'Automatic sorting was unavailable.');
+        if (notice) toast(notice);
       });
     } catch (error) {
       toastError(error, 'Could not add to the shopping list');
     }
-  }, [householdId, toast, toastError]);
+  }, [householdId, uid, toast, toastError]);
 
   /**
    * SH-6 / SH-29b: puts a product on a Grocery list through the Shopping list's

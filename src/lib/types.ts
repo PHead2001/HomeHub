@@ -100,6 +100,32 @@ export type ShoppingListItem = {
   barcode?: string;
   /** Link saved with an item shared into HomeHub (recipe or product page). http(s) only. */
   sourceUrl?: string;
+  /** Normalized name (`itemNameKey`), written on new items (SH-28a). */
+  nameKey?: string;
+  /** Who added the item (the signed-in uid at creation; immutable). Shown on rows from S3. */
+  addedByUid?: string;
+  /** Who restored the item with Undo after a delete (the writer of that re-create); `addedByUid` stays the original adder. */
+  restoredByUid?: string;
+  /** Where `category` came from (QA-6): manual, remembered, local, ai, fallback or pending. */
+  categorySource?: 'manual' | 'remembered' | 'local' | 'ai' | 'fallback' | 'pending';
+  /** Package size of a scanned product ("450" of 450 g); never the quantity (BL-1). */
+  size?: number;
+  /** Unit of `size` ("g", "fl oz"). */
+  sizeUnit?: string;
+  /** Who ticked it (the writer's uid) and when (server time); cleared by an un-tick or Undo (S3). */
+  purchasedByUid?: string | null;
+  purchasedAt?: unknown;
+  /** Fresh id of the latest tick; its Undo must name it (`undoOpId`), so a newer tick by anyone wins. */
+  purchaseOpId?: string;
+  /** The `purchaseOpId` an Undo reversed (rules: only while it is still the current purchase). */
+  undoOpId?: string;
+  /** Id of the Undo-after-delete that re-created this item (rules: create only). */
+  /** When that restore was written (server time; rules: create only, so a replayed restore is refused). */
+  restoredAt?: unknown;
+  restoreOpId?: string;
+  /** Who last edited it in the item sheet (the writer's uid) and when (server time) (SH-8a/b). */
+  editedByUid?: string;
+  editedAt?: unknown;
 };
 
 export type ShoppingListCategory = string;
