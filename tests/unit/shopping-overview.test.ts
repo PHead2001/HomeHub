@@ -193,19 +193,21 @@ describe('overview: "Alex is shopping · 7 left" (SH-28c)', () => {
   });
 });
 
-describe('overview: expiring pantry chips (SH-11c)', () => {
+describe('overview: expiring pantry chips on Pantry v2 batches (SH-11c)', () => {
+  const batch = (id: string, name: string, expiryDate: string | null, packages = 1, location = 'Fridge') =>
+    ({ id, name, location, unit: 'items', packages, packageSize: null, expiryDate, schemaVersion: 2 });
   const pantry = [
-    { id: 'yogurt', name: 'Greek yogurt', expiryDate: '2026-11-13' },
-    { id: 'milk', name: 'Milk', expiryDate: '2026-11-11' },
-    { id: 'old', name: 'Old cheese', expiryDate: '2026-11-09' },
-    { id: 'rice', name: 'Rice', expiryDate: '2027-02-01' },
-    { id: 'none', name: 'Salt', expiryDate: null },
-    { id: 'bread', name: 'Bread', expiryDate: '2026-11-14' },
-    { id: 'eggs', name: 'Eggs', expiryDate: '2026-11-15' },
+    batch('yogurt', 'Greek yogurt', '2026-11-13'),
+    batch('milk', 'Milk', '2026-11-11'),
+    batch('old', 'Old cheese', '2026-11-09'),
+    batch('rice', 'Rice', '2027-02-01', 2, 'Pantry'),
+    batch('salt', 'Salt', null, 1, 'Pantry'),
+    batch('bread', 'Bread', '2026-11-14', 1, 'Pantry'),
+    batch('eggs', 'Eggs', '2026-11-15'),
   ];
 
   test('expired and within three days of the household today, soonest first, with when', () => {
-    const { chips, more } = expiringChips(pantry, '2026-11-11');
+    const { chips, more } = expiringChips(pantry, '2026-11-11', { timeZone: 'America/Chicago' });
     assert.deepEqual(chips.map((chip) => [chip.id, chip.when]), [
       ['old', 'expired'],
       ['milk', 'today'],
@@ -215,15 +217,37 @@ describe('overview: expiring pantry chips (SH-11c)', () => {
     assert.equal(more, 0);
   });
 
-  test('the household day decides, not the device day', () => {
-    assert.deepEqual(expiringChips(pantry, '2026-11-12').chips.map((chip) => chip.id), ['old', 'milk', 'yogurt', 'bread', 'eggs']);
+  test('the household day decides', () => {
+    assert.deepEqual(expiringChips(pantry, '2026-11-12', { timeZone: 'America/Chicago' }).chips.map((chip) => chip.id), ['old', 'milk', 'yogurt', 'bread', 'eggs']);
+  });
+
+  test('one chip per product, for its soonest batch with packages left; that batch is the one opened', () => {
+    const items = [
+      batch('milk-late', 'Milk', '2026-11-13'),
+      batch('milk-soon', 'Milk', '2026-11-12'),
+      batch('milk-empty', 'Milk', '2026-11-10', 0),
+      batch('milk-freezer', 'Milk', '2026-11-12', 1, 'Freezer'),
+    ];
+    const { chips } = expiringChips(items, '2026-11-11', { timeZone: 'America/Chicago' });
+    // Two products (Fridge and Freezer); the used-up batch is ignored, though it expired.
+    assert.deepEqual(chips.map((chip) => [chip.id, chip.when]), [['milk-freezer', 'tomorrow'], ['milk-soon', 'tomorrow']]);
+  });
+
+  test('a used-up batch alone makes no chip', () => {
+    assert.deepEqual(expiringChips([batch('gone', 'Cream', '2026-11-11', 0)], '2026-11-11', { timeZone: 'America/Chicago' }).chips, []);
+  });
+
+  test('legacy documents are read like the pantry reads them (quantity as packages, ISO expiry in the zone)', () => {
+    const legacy = [{ id: 'legacy', name: 'Butter', quantity: 2, unit: 'items', location: 'Fridge', expiryDate: '2026-11-12T06:00:00.000Z' }];
+    assert.deepEqual(expiringChips(legacy, '2026-11-11', { timeZone: 'America/Chicago' }).chips.map((chip) => [chip.id, chip.when]), [['legacy', 'tomorrow']]);
+    const legacyEmpty = [{ id: 'none', name: 'Jam', quantity: 0, unit: 'items', location: 'Pantry', expiryDate: '2026-11-11' }];
+    assert.deepEqual(expiringChips(legacyEmpty, '2026-11-11', { timeZone: 'America/Chicago' }).chips, []);
   });
 
   test('capped, with the rest counted; a missing name and a bad day are safe', () => {
-    const { chips, more } = expiringChips(pantry, '2026-11-11', { limit: 2 });
+    const { chips, more } = expiringChips(pantry, '2026-11-11', { timeZone: 'America/Chicago', limit: 2 });
     assert.equal(chips.length, 2);
     assert.equal(more, 2);
-    assert.equal(expiringChips([{ id: 'x', expiryDate: '2026-11-11' }], '2026-11-11').chips[0].name, 'Pantry item');
     assert.deepEqual(expiringChips(pantry, 'not a day'), { chips: [], more: 0 });
   });
 

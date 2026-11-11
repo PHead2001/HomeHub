@@ -4,30 +4,34 @@ import { useMemo } from 'react';
 import { Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/use-auth';
-import { useHouseholdToday } from '@/components/chores/use-today';
+import { useHouseholdToday } from '@/lib/shopping/use-household-today';
 import { expiringChips } from '@/lib/shopping/overview';
 import { cn } from '@/lib/utils';
 
 /**
  * The pantry's expiring-soon items on the Shopping overview (SH-11c): one chip
- * per item that expired or expires within three days of the household's today
- * ("Greek yogurt · tomorrow"), soonest first. A chip opens the Pantry Inventory
- * tab on that item. Kept apart from the pantry's own screens: it reads only the
- * item id, name and expiry, and expiry only through `daysUntilExpiry`.
+ * per product whose soonest batch with packages left expired or expires within
+ * three days of the household's today ("Greek yogurt · tomorrow"), soonest first.
+ * A chip opens the Pantry Inventory tab on that batch (`expiringChips`).
  */
 export function ExpiringChips({
   items,
   onOpenItem,
   onOpenPantry,
 }: {
-  items: readonly { id: string; name?: unknown; expiryDate?: unknown }[];
+  /** The pantry documents (Pantry v2 batches, legacy documents too). */
+  items: readonly { id: string }[];
   onOpenItem: (itemId: string) => void;
   onOpenPantry: () => void;
 }) {
   const { household } = useAuth();
   // The household's day, rolling over at its midnight (an always-on tablet).
-  const today = useHouseholdToday(household?.timeZone);
-  const { chips, more } = useMemo(() => expiringChips(items, today), [items, today]);
+  const timeZone = household?.timeZone ?? null;
+  const today = useHouseholdToday(timeZone);
+  const { chips, more } = useMemo(
+    () => expiringChips(items as readonly ({ id: string } & Record<string, unknown>)[], today, { timeZone }),
+    [items, today, timeZone],
+  );
   if (chips.length === 0) return null;
 
   return (

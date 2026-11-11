@@ -9,7 +9,7 @@ import type { ShoppingList, ShoppingListItem } from '@/lib/types';
 import { groupItemsByAisle, type AisleGroup } from './items';
 import { groupingOrder, type CategoryConfig } from './category-order';
 import { toMillis } from './attribution';
-import { daysUntilExpiry } from './pantry';
+import { daysUntilDay, groupPantryBatches, readPantryBatch } from './pantry-batches';
 
 /** The household's Grocery lists, in the order the lists are shown (by name). */
 export const groceryListsOf = <T extends Pick<ShoppingList, 'type'>>(lists: readonly T[]): T[] =>
@@ -193,25 +193,35 @@ export function expiryWhen(days: number): string {
 export const EXPIRING_HORIZON_DAYS = 3;
 
 /**
- * The pantry chips on the overview (SH-11c): items that expired or expire within
- * `horizonDays` of the household's today (`today`, YYYY-MM-DD in the household
- * zone), soonest first, at most `limit` (the rest are counted in `more`). Expiry
- * is read only through the pantry's own `daysUntilExpiry`, with the household day
- * as its "now", so a date-only expiry is a household calendar day.
+ * The pantry chips on the overview (SH-11c), on Pantry v2: one chip per product
+ * (a name on one shelf, `groupPantryBatches`) whose soonest-expiring batch with
+ * packages left expired or expires within `horizonDays` of the household's today
+ * (`today`, YYYY-MM-DD). Batches are read with `readPantryBatch` (legacy documents
+ * included) and their day counted with `daysUntilDay` in the household zone (what
+ * `daysUntilExpiry` uses with a zone). A used-up batch (0 packages) never makes a
+ * chip. The chip's id is that batch's id, the batch the Pantry tab opens, as a
+ * tile tap opens its soonest batch. Soonest first, at most `limit`; the rest are
+ * counted in `more`.
  */
 export function expiringChips(
-  items: readonly { id: string; name?: unknown; expiryDate?: unknown }[],
+  items: readonly ({ id: string } & Record<string, unknown>)[],
   today: string,
-  { horizonDays = EXPIRING_HORIZON_DAYS, limit = 8 }: { horizonDays?: number; limit?: number } = {},
+  { timeZone = null, horizonDays = EXPIRING_HORIZON_DAYS, limit = 8 }: { timeZone?: string | null; horizonDays?: number; limit?: number } = {},
 ): { chips: ExpiringChip[]; more: number } {
-  const dayStart = new Date(`${today}T00:00:00`);
-  if (Number.isNaN(dayStart.getTime())) return { chips: [], more: 0 };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) return { chips: [], more: 0 };
+  const products = groupPantryBatches(items.map((item) => readPantryBatch(item.id, item, timeZone)));
   const soon: ExpiringChip[] = [];
-  for (const item of items) {
-    const days = daysUntilExpiry(typeof item.expiryDate === 'string' ? item.expiryDate : null, dayStart);
-    if (days === null || days > horizonDays) continue;
-    const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim() : 'Pantry item';
-    soon.push({ id: item.id, name, days, when: expiryWhen(days) });
+  for (const product of products) {
+    let best: { id: string; days: number } | null = null;
+    for (const batch of product.batches) {
+      if (batch.packages <= 0) continue;
+      const days = daysUntilDay(batch.expiryDate, today, timeZone);
+      if (days === null || days > horizonDays) continue;
+      if (!best || days < best.days) best = { id: batch.id, days };
+    }
+    if (!best) continue;
+    const name = product.name.trim() || 'Pantry item';
+    soon.push({ id: best.id, name, days: best.days, when: expiryWhen(best.days) });
   }
   soon.sort((a, b) => a.days - b.days || a.name.localeCompare(b.name));
   return { chips: soon.slice(0, limit), more: Math.max(0, soon.length - limit) };

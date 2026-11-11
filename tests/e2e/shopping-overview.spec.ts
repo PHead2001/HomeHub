@@ -23,7 +23,6 @@ const LIST_NAME = 'E2E Overview';
 const listRef = lists.doc(LIST_ID);
 const items = listRef.collection('items');
 const PANTRY_ID = 'e2e-overview-spinach';
-const pantryRef = household.collection('pantry-inventory').doc(PANTRY_ID);
 
 const SEED = [
   { id: 'ov-milk', name: 'E2E ov milk', category: 'Dairy' },
@@ -33,8 +32,19 @@ const SEED = [
   { id: 'ov-cheese', name: 'E2E ov cheese', category: 'Dairy' },
 ];
 
-/** Tomorrow as a date-only string: within the three-day horizon in any household zone. */
-const soonDay = () => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+/** A date-only day `days` from now (UTC): tomorrow is within the three-day horizon in any household zone. */
+const dayFromNow = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+/** A Pantry v2 batch as the app writes it (`pantryBatchFields`). */
+const pantryBatch = (packages: number, expiryDate: string) => ({
+  name: 'E2E ov spinach', nameKey: 'e2e ov spinach', location: 'Fridge', unit: 'items',
+  packages, packageSize: null, expiryDate, quantity: packages, schemaVersion: 2,
+});
+// One product, three batches: the chip names the soonest batch with packages left.
+const PANTRY_BATCHES: Array<[string, ReturnType<typeof pantryBatch>]> = [
+  [PANTRY_ID, pantryBatch(1, dayFromNow(1))],
+  [`${PANTRY_ID}-used-up`, pantryBatch(0, dayFromNow(-1))],
+  [`${PANTRY_ID}-later`, pantryBatch(1, dayFromNow(12))],
+];
 
 async function seed() {
   await firestore.recursiveDelete(listRef);
@@ -45,13 +55,13 @@ async function seed() {
   }
   // The overview shows this list whatever other Grocery lists exist.
   await preferences.set({ defaultGroceryListId: LIST_ID, updatedAt: FieldValue.serverTimestamp() });
-  await pantryRef.set({ name: 'E2E ov spinach', quantity: 1, unit: 'items', location: 'Fridge', expiryDate: soonDay() });
+  for (const [id, data] of PANTRY_BATCHES) await household.collection('pantry-inventory').doc(id).set(data);
 }
 
 async function cleanup() {
   await firestore.recursiveDelete(listRef);
   await preferences.delete();
-  await pantryRef.delete();
+  for (const [id] of PANTRY_BATCHES) await household.collection('pantry-inventory').doc(id).delete();
 }
 
 async function session(browser: Browser, options: { viewport?: { width: number; height: number }; hasTouch?: boolean } = {}): Promise<{ context: BrowserContext; page: Page }> {
@@ -194,12 +204,16 @@ test.describe('shopping overview: the Grocery list on the overview', () => {
     const a = await session(browser);
     try {
       await openOverview(a.page);
+      // One chip for the product (not the used-up or later batch), not "expired".
       const chip = a.page.getByTestId('expiring-chips').getByRole('button', { name: /^E2E ov spinach, / });
-      await expect(chip).toBeVisible();
+      await expect(chip).toHaveCount(1);
+      await expect(chip).not.toContainText('expired');
       await chip.click();
       await expect(a.page).toHaveURL(/[?&]tab=pantry/);
       await expect(a.page.getByRole('tab', { name: 'Pantry Inventory' })).toHaveAttribute('aria-selected', 'true');
+      // The soonest batch's edit dialog (as a tile tap opens it).
       await expect(a.page.getByRole('dialog', { name: 'Edit Item' })).toBeVisible();
+      await expect(a.page.getByRole('dialog', { name: 'Edit Item' }).getByLabel('Item Name')).toHaveValue('E2E ov spinach');
     } finally {
       await a.context.close();
     }
