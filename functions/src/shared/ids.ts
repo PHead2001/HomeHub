@@ -58,6 +58,18 @@ export const choreStatsAssigneeKey = (email: string): string => {
 };
 
 /**
+ * Map key for one member in yearly chore stats when only their account ID is
+ * known (they left, so no email can be read for them): "uid-" and their Auth
+ * uid (characters other than letters, digits, "_" and "-" become "_").
+ * Email-derived keys (`choreStatsAssigneeKey`) never contain "-", so the two
+ * cannot collide; the stats move to these keys for everyone in a later release.
+ * @param {string} uid Member's Auth uid.
+ * @return {string} Stable, field-path-safe key.
+ */
+export const choreStatsMemberKey = (uid: string): string =>
+  `uid-${uid.trim().replace(/[^A-Za-z0-9_-]/g, "_")}`;
+
+/**
  * Identity of one generated occurrence of a repeating chore, independent of
  * the assignee: "templateId|roomId|day". Upkeep writes it on every generated
  * chore and never creates a second chore with the same key, so reassigning

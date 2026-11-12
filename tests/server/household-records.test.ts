@@ -84,9 +84,8 @@ describe('create household', () => {
     const data = (await house(id).get()).data();
     assert.deepEqual(data, {
       name: 'Maple Street',
+      // No emails on the household document (member privacy release C).
       ownerUid: creator.uid,
-      ownerEmail: creator.email,
-      memberEmails: [creator.email],
       createdAt: NOW.toISOString(),
       updatedAt: NOW.toISOString(),
       timeZone: 'America/New_York',

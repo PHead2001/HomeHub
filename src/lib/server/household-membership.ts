@@ -4,6 +4,10 @@ import { randomInt } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { normalizeInviteCode } from '@/lib/invite-codes';
+import { choreStatsAssigneeKey } from '@functions/shared/ids';
+import { choreStatsDocId } from '@functions/shared/chore-stats';
+import { localDay, safeTimeZone } from '@functions/shared/calendar';
+import { contactEmailOf } from '@functions/shared/member-contact';
 import {
   canAssignRole,
   canEditPermissions,
@@ -178,7 +182,9 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
 
     transaction.set(memberRef, member);
     transaction.set(memberContactRef(householdRef, caller.uid), memberContact(caller.email, now));
-    transaction.update(householdRef, { memberEmails: FieldValue.arrayUnion(caller.email), updatedAt: joinedAt });
+    // No email on the household document (member privacy release C): the email lives in
+    // the protected contact document above.
+    transaction.update(householdRef, { updatedAt: joinedAt });
     transaction.set(profileRef, {
       email: caller.email,
       uid: caller.uid,
@@ -295,6 +301,50 @@ const assignedDocs = (byEmail: QuerySnap | null, byUid: QuerySnap, email: string
   return [...found.values()];
 };
 
+/**
+ * Households no longer list member emails (member privacy release C). A household
+ * written earlier may still carry the legacy `memberEmails` list (until
+ * scripts/ops/scrub-shared-emails.mjs removes it): a departing member's email is
+ * removed from it, and nothing is written when there is no list.
+ */
+const legacyMemberEmailRemoval = (household: FirebaseFirestore.DocumentData | undefined, email: string) =>
+  email && Array.isArray(household?.memberEmails) ? { memberEmails: FieldValue.arrayRemove(email) } : {};
+
+/** Unassigns an open chore; no email is left on it (member privacy release C). */
+const unassignChoreFields = (): FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> => ({
+  ...unassignedChoreFields(),
+  assignedToEmail: FieldValue.delete(),
+});
+
+/**
+ * A departing person's yearly chore stats identity: their completions were
+ * counted under `choreStatsAssigneeKey(email)` while they were a member, and
+ * once their membership and contact documents are gone their uid can no longer
+ * be resolved to that email. `aliases.<uid>` in the stats documents of this
+ * and last year keeps crediting it to the same key (`creditedStatsKey`), so
+ * their score is one bucket before and after they leave. The alias holds no
+ * email. The years are the household's (`timeZone`, defaulted by
+ * `safeTimeZone` exactly as upkeep's `completionYear` and Home Wrapped
+ * do): a completion of theirs still stored is in the past and at most 90 days
+ * old, so its stats year is this local year or the one before; next year can
+ * receive none of theirs (they no longer complete chores here).
+ */
+const keepStatsIdentity = (
+  transaction: FirebaseFirestore.Transaction,
+  householdRef: FirebaseFirestore.DocumentReference,
+  uid: string,
+  email: string | null | undefined,
+  now: Date,
+  timeZone: unknown,
+) => {
+  if (!uid || typeof email !== 'string' || !email.trim()) return;
+  const key = choreStatsAssigneeKey(email);
+  const year = Number(localDay(now, safeTimeZone(typeof timeZone === 'string' ? timeZone : undefined)).slice(0, 4));
+  for (const statsYear of [year - 1, year]) {
+    transaction.set(householdRef.collection('stats').doc(choreStatsDocId(statsYear)), { aliases: { [uid]: key } }, { merge: true });
+  }
+};
+
 /** Unassigns a recurring template (it stops generating chores). */
 const unassignTemplateFields = (d: QueryDoc): FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> => {
   const recurrence = d.get('recurrence');
@@ -332,9 +382,10 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
-    transaction.update(householdRef, { memberEmails: FieldValue.arrayRemove(caller.email), updatedAt: iso });
+    keepStatsIdentity(transaction, householdRef, caller.uid, caller.email, now, householdSnap.get('timeZone'));
+    transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
-    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignedChoreFields()));
+    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
     templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     transaction.set(householdRef.collection('auditLogs').doc(), {
       actorUid: caller.uid, actorEmail: caller.email, actorName: caller.displayName || null,
@@ -565,11 +616,10 @@ export const createHousehold = async (
     // Public member data: never an email as the name (see syncMemberProfile).
     const displayName = publicMemberName(profile.displayName) || publicMemberName(caller.displayName) || undefined;
     const avatarUrl = membershipAvatarUrl(profile, caller.avatarUrl);
+    // No emails on the household document (member privacy release C).
     const householdData: Omit<Household, 'id'> = {
       name,
-      ownerEmail: caller.email,
       ownerUid: caller.uid,
-      memberEmails: [caller.email],
       createdAt: iso,
       updatedAt: iso,
       // Reminders and recurring chores run on the server in this time zone.
@@ -857,12 +907,13 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
       : Promise.resolve(null);
     const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
-    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid] = await Promise.all([
+    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
       byEmail('chores'),
       byUid('chores'),
       byEmail('chore-templates'),
       byUid('chore-templates'),
+      transaction.get(memberContactRef(context.householdRef, target.uid)),
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, target.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
@@ -871,15 +922,17 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const denied = target.role === 'newuser';
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
+    // The email upkeep credited them by: the contact document's, else the record's.
+    if (!denied) keepStatsIdentity(transaction, context.householdRef, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email, now, context.household.timeZone);
     transaction.update(context.householdRef, {
-      ...(target.email ? { memberEmails: FieldValue.arrayRemove(target.email) } : {}),
+      ...legacyMemberEmailRemoval(context.household, target.email),
       updatedAt: iso,
     });
     // Only a profile that still points here is cleared.
     if (profileRef && profileSnap?.exists && profileSnap.data()?.householdId === context.householdRef.id) {
       setProfileCache(transaction, target.email, { householdId: null, role: 'member', permissions: {} });
     }
-    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignedChoreFields()));
+    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
     templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     writeAudit(transaction, context, caller, now, {
       action: 'member.removed',
@@ -901,7 +954,12 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
     const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
     enforce(canTransferOwnership(context.actor, target));
     const iso = now.toISOString();
-    transaction.update(context.householdRef, { ownerEmail: target.email, ownerUid: target.uid, updatedAt: iso });
+    // The owner is `ownerUid`; a legacy `ownerEmail` (the previous owner's) is removed, never rewritten.
+    transaction.update(context.householdRef, {
+      ownerUid: target.uid,
+      ...('ownerEmail' in context.household ? { ownerEmail: FieldValue.delete() } : {}),
+      updatedAt: iso,
+    });
     transaction.update(ref, { role: 'owner', status: 'active', permissions: {} });
     transaction.update(context.householdRef.collection('members').doc(caller.uid), { role: 'admin', status: 'active', permissions: {} });
     setProfileCache(transaction, target.email, { role: 'owner', permissions: {} });

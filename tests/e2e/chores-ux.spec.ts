@@ -129,7 +129,9 @@ test.describe('chores wave 2', () => {
     await expect(dialog).toHaveCount(0);
     await expect.poll(async () => (await household.collection('chores').where('task', '==', taskName).get()).size).toBe(1);
     const created = (await household.collection('chores').where('task', '==', taskName).get()).docs[0];
-    expect(created.data()).toMatchObject({ assignedToEmail: ownerEmail, sourceType: 'temporary', isCompleted: false });
+    expect(created.data()).toMatchObject({ assignedToUid: 'e2e-owner-uid', sourceType: 'temporary', isCompleted: false });
+    // Member privacy release C: stored by uid only.
+    expect(created.data().assignedToEmail).toBeUndefined();
     expect((await household.collection('notifications').where('sourceId', '==', created.id).get()).size).toBe(0);
     await created.ref.delete();
   });
@@ -174,8 +176,20 @@ test.describe('chores wave 2', () => {
       await expect(row.getByText('+1 earlier missed')).toBeVisible();
       await expect(row.getByText('Thu, Jul 30')).toBeVisible();
     } finally {
+      // The page runs household upkeep (which generates this series) whenever it reloads its
+      // data. Close it first, then wait until the series' generated chores stop changing, so
+      // the Admin deletes below never race an upkeep transaction still holding these documents.
+      await page.close();
+      const series = () => household.collection('chores').where('templateId', '==', 'chores-ux-series').get();
+      let previous = -1;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const count = (await series()).size;
+        if (count === previous) break;
+        previous = count;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
       await template.delete();
-      const generated = await household.collection('chores').where('templateId', '==', 'chores-ux-series').get();
+      const generated = await series();
       await Promise.all([...ids.map((id) => household.collection('chores').doc(id).delete()), ...generated.docs.map((d) => d.ref.delete())]);
     }
   });

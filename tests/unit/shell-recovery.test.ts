@@ -13,7 +13,11 @@ import {
 import {
   BUILD_MESSAGE,
   buildIdFromMessage,
+  buildInfoFromMessage,
   decideUpdatePrompt,
+  isBelowMinimumBuild,
+  MINIMUM_SUPPORTED_BUILD_ID,
+  minimumBuildId,
   formatBuildId,
   isBuildId,
   shouldCheckOnVisible,
@@ -154,6 +158,51 @@ describe('update detection', () => {
     assert.ok(UPDATE_CHECK_INTERVAL_MS >= 30 * 60_000 && UPDATE_CHECK_INTERVAL_MS <= 60 * 60_000);
     assert.equal(shouldCheckOnVisible(0, VISIBLE_RECHECK_MIN_MS - 1), false);
     assert.equal(shouldCheckOnVisible(0, VISIBLE_RECHECK_MIN_MS), true);
+  });
+});
+
+describe('minimum supported build (member privacy release C)', () => {
+  const old = '20261101T000000000Z';
+  const current = '20261112T000000000Z';
+
+  test('the floor is the release A merge time, and an override can only raise it', () => {
+    assert.ok(isBuildId(MINIMUM_SUPPORTED_BUILD_ID));
+    assert.equal(MINIMUM_SUPPORTED_BUILD_ID, '20261110T203402000Z');
+    assert.equal(minimumBuildId(undefined), MINIMUM_SUPPORTED_BUILD_ID);
+    assert.equal(minimumBuildId('not-a-build'), MINIMUM_SUPPORTED_BUILD_ID);
+    assert.equal(minimumBuildId(old), MINIMUM_SUPPORTED_BUILD_ID);
+    assert.equal(minimumBuildId(current), current);
+  });
+
+  test('reads the published minimum from the build message (older workers send none)', () => {
+    assert.deepEqual(buildInfoFromMessage({ type: BUILD_MESSAGE, buildId: current, minimumBuildId: MINIMUM_SUPPORTED_BUILD_ID }),
+      { buildId: current, minimumBuildId: MINIMUM_SUPPORTED_BUILD_ID });
+    assert.deepEqual(buildInfoFromMessage({ type: BUILD_MESSAGE, buildId: current }), { buildId: current, minimumBuildId: null });
+    assert.deepEqual(buildInfoFromMessage({ type: BUILD_MESSAGE, buildId: current, minimumBuildId: 'x' }), { buildId: current, minimumBuildId: null });
+    assert.equal(buildInfoFromMessage({ type: 'other', buildId: current }), null);
+  });
+
+  test('only a build older than the minimum needs the update banner; it never reloads by itself', () => {
+    assert.equal(isBelowMinimumBuild(old, MINIMUM_SUPPORTED_BUILD_ID), true);
+    assert.equal(isBelowMinimumBuild(MINIMUM_SUPPORTED_BUILD_ID, MINIMUM_SUPPORTED_BUILD_ID), false);
+    assert.equal(isBelowMinimumBuild(current, MINIMUM_SUPPORTED_BUILD_ID), false);
+    assert.equal(isBelowMinimumBuild(undefined, MINIMUM_SUPPORTED_BUILD_ID), false);
+    assert.equal(isBelowMinimumBuild(old, null), false);
+    assert.equal(isBelowMinimumBuild(old, 'not-a-build'), false);
+  });
+});
+
+describe('busy listeners (review finding on #140)', () => {
+  test('a listener added during a busy dispatch is not called in that dispatch', () => {
+    let calls = 0;
+    const release = markBusy('save');
+    const first = subscribeShellBusy(() => {
+      first();
+      const second = subscribeShellBusy(() => { calls += 1; });
+      queueMicrotask(second);
+    });
+    release();
+    assert.equal(calls, 0);
   });
 });
 

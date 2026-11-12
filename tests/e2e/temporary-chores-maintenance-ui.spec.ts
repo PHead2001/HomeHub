@@ -176,12 +176,12 @@ test.describe('temporary chores and maintenance UI regressions', () => {
       sourceType: 'temporary',
       notes: 'Use the spare MERV 11 filter from the hall closet.',
       originalDueDate: '2026-08-04',
-      // Dual-write (member privacy release A): the uid with the email.
+      // Member privacy release C: the uid only.
       assignedToUid: 'e2e-member-uid',
-      assignedToEmail: 'sam.member@example.test',
       roomIds: ['living-room'],
       isCompleted: false,
     });
+    expect(chore.data().assignedToEmail).toBeUndefined();
     expect(chore.data().templateId).toBeUndefined();
     expect((await household.collection('chore-templates').get()).size).toBe(templateCount);
     const notifications = await household.collection('notifications').where('sourceId', '==', chore.id).get();

@@ -5,6 +5,7 @@
 import type { HouseholdPermission } from '../types';
 import { choreDueKey, type ChoreRecord } from './dates';
 import { stableSlugify } from '../../../functions/src/shared/ids';
+import { isAssignedTo, resolveAssigneeUid, type AssigneePerson } from '../../../functions/src/shared/assignee';
 
 export type ChoreCapabilities = {
   /** Mark chores done, tick sub-tasks, undo a completion. */
@@ -31,6 +32,15 @@ export function choreCapabilities(permissions: Partial<Record<HouseholdPermissio
   };
 }
 
+/**
+ * `?who=me` (the Mine filter): whether a chore stays listed. With `who: 'me'` only the
+ * reader's chores do, matched with `isAssignedTo` like every other reader: a uid-only
+ * chore (written since member privacy release C) by uid, an older one by email.
+ */
+export function matchesWhoFilter(chore: ChoreRecord, who: 'all' | 'me', reader: AssigneePerson): boolean {
+  return who !== 'me' || isAssignedTo(chore, reader);
+}
+
 /** A To Do entry: the chore to show, plus older missed instances folded into it. */
 export type ToDoEntry<T extends ChoreRecord = ChoreRecord> = {
   chore: T;
@@ -45,11 +55,23 @@ export type ToDoEntry<T extends ChoreRecord = ChoreRecord> = {
  * have no `sourceType` either; they fold only while their template currently has
  * a repeating schedule (`recurringTemplateIds`).
  */
-const seriesKey = (chore: ChoreRecord, recurringTemplateIds: ReadonlySet<string>) =>
+const seriesKey = (chore: ChoreRecord, recurringTemplateIds: ReadonlySet<string>, people?: readonly AssigneePerson[]) =>
   chore.templateId && !chore.sourceType && recurringTemplateIds.has(chore.templateId)
-    // Email first while records carry it (it is the field older builds still rewrite), else the uid.
-    ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${chore.assignedToEmail?.toLowerCase() || chore.assignedToUid || ''}`
+    ? `${chore.templateId}|${(chore.roomIds || []).join(',')}|${seriesAssignee(chore, people)}`
     : null;
+
+/**
+ * The assignee part of a series key. With the household's people it is the member
+ * `resolveAssigneeUid` names (the same rule every reader uses), so a series stays one
+ * series whether its instances carry the email and uid (older) or the uid only
+ * (generated since member privacy release C), and an older build's reassignment by
+ * email (a stale uid left behind) counts for the member the email names. Without
+ * people: the email while the record has one (it decides in that case), else the uid.
+ */
+const seriesAssignee = (chore: ChoreRecord, people?: readonly AssigneePerson[]) => {
+  if (people) return resolveAssigneeUid(chore, people) ?? '';
+  return chore.assignedToEmail?.toLowerCase() || chore.assignedToUid || '';
+};
 
 /**
  * Collapses missed recurring instances. For each recurring series (same template,
@@ -59,12 +81,17 @@ const seriesKey = (chore: ChoreRecord, recurringTemplateIds: ReadonlySet<string>
  * Instances due on the same day are never folded into each other, and one-time
  * and temporary chores are never collapsed.
  */
-export function collapseMissedRecurring<T extends ChoreRecord>(dueChores: readonly T[], recurringTemplateIds: ReadonlySet<string>): ToDoEntry<T>[] {
+export function collapseMissedRecurring<T extends ChoreRecord>(
+  dueChores: readonly T[],
+  recurringTemplateIds: ReadonlySet<string>,
+  /** The household's people (uid, email where known): assignees are resolved with `resolveAssigneeUid`. */
+  people?: readonly AssigneePerson[],
+): ToDoEntry<T>[] {
   const latest = new Map<string, ToDoEntry<T>>();
   const entries: ToDoEntry<T>[] = [];
   const sorted = [...dueChores].sort((a, b) => choreDueKey(a).localeCompare(choreDueKey(b)));
   for (const chore of sorted) {
-    const key = seriesKey(chore, recurringTemplateIds);
+    const key = seriesKey(chore, recurringTemplateIds, people);
     if (!key) {
       entries.push({ chore, missed: [] });
       continue;

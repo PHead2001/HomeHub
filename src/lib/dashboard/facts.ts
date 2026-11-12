@@ -294,8 +294,13 @@ export function computeChoreFacts(
   now: Date,
   recurringTemplateIds: ReadonlySet<string> = new Set(),
   timeZone?: string | null,
-  /** Household membership records (names for HP-32a); without them the chore's stored name is used. */
-  members: readonly RawDoc[] = [],
+  /**
+   * Household membership records: names for HP-32a, and the people folding resolves
+   * assignees against (uid, email where known), as the Chores page does. Without them
+   * (not loaded) the chore's stored name is used and folding matches by the stored
+   * email or uid.
+   */
+  members?: readonly RawDoc[],
 ): ChoreFacts {
   // D-6: "today" and "completed today" are the household's day (device zone only when the
   // household has none); due dates are date-only keys and are compared as stored.
@@ -304,10 +309,10 @@ export function computeChoreFacts(
   const records = chores as unknown as ChoreRecord[];
   // Same folding as the Chores page: only the latest instance of each recurring series counts.
   const dueByToday = records.filter((chore) => chore.isCompleted !== true && choreDueKey(chore) !== '' && choreDueKey(chore) <= today);
-  const collapsed = collapseMissedRecurring(dueByToday, recurringTemplateIds);
+  const people = peopleFrom(members ?? []);
+  const collapsed = collapseMissedRecurring(dueByToday, recurringTemplateIds, members ? people : undefined);
   const folded = new Set(collapsed.flatMap((entry) => entry.missed.map((missed) => missed.id)));
   const missedBy = new Map(collapsed.filter((entry) => entry.missed.length > 0).map((entry) => [entry.chore.id, entry.missed.length]));
-  const people = peopleFrom(members);
   const assigneeOf = (chore: ChoreRecord): { key: string; name: string | null } => {
     const record = chore as unknown as Record<string, unknown>;
     const uid = resolveAssigneeUid(record, people);

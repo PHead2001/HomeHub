@@ -79,9 +79,11 @@ test.describe('H13: natural-language quick add writes what it says', () => {
         task: 'Trash',
         roomIds: ['garage'],
         assignedToUid: 'e2e-member-uid',
-        assignedToEmail: 'sam.member@example.test',
-        recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, assignedToEmail: 'sam.member@example.test' },
+        recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] } },
       });
+      // Member privacy release C: no email copies on the template.
+      expect(template.assignedToEmail).toBeUndefined();
+      expect(template.recurrence.assignedToEmail).toBeUndefined();
     } finally {
       await removeTemplates('Trash');
     }
