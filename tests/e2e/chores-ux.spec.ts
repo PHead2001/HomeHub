@@ -129,7 +129,9 @@ test.describe('chores wave 2', () => {
     await expect(dialog).toHaveCount(0);
     await expect.poll(async () => (await household.collection('chores').where('task', '==', taskName).get()).size).toBe(1);
     const created = (await household.collection('chores').where('task', '==', taskName).get()).docs[0];
-    expect(created.data()).toMatchObject({ assignedToEmail: ownerEmail, sourceType: 'temporary', isCompleted: false });
+    expect(created.data()).toMatchObject({ assignedToUid: 'e2e-owner-uid', sourceType: 'temporary', isCompleted: false });
+    // Member privacy release C: stored by uid only.
+    expect(created.data().assignedToEmail).toBeUndefined();
     expect((await household.collection('notifications').where('sourceId', '==', created.id).get()).size).toBe(0);
     await created.ref.delete();
   });

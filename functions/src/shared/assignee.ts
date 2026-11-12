@@ -1,16 +1,20 @@
 // Who a chore or chore template is assigned to. Shared by the web app, the
 // household server actions and the upkeep function (pure, no Firebase).
 //
-// Assignees are moving from the member's email (`assignedToEmail`) to their
-// Auth uid (`assignedToUid`). During the move every writer sets both, and
+// Assignees moved from the member's email (`assignedToEmail`) to their Auth
+// uid (`assignedToUid`). Release A dual-wrote both; since member privacy
+// release C writers store the uid only (and remove any email they replace),
+// and scripts/ops/scrub-shared-emails.mjs removes the email from stored
+// records. Until every stored email is gone (release F drops the fallback),
 // every reader goes through these helpers:
 // - a record with only an email (written before the uid existed, or by a
-//   browser still running an older build) is matched by email;
+//   browser still running a build from before release A) is matched by
+//   email;
 // - a record with both is matched by email whenever the reader knows the
-//   email, because an older build that reassigns a chore rewrites only the
-//   email and leaves the previous assignee's uid behind;
-// - a record whose email is empty, or whose email the reader cannot see,
-//   is matched by uid;
+//   email, because a build from before release A that reassigns a chore
+//   rewrites only the email and leaves the previous assignee's uid behind;
+// - a record whose email is empty or absent (every record written since
+//   release C), or whose email the reader cannot see, is matched by uid;
 // - a uid whose member's (readable) email differs from the stored email is
 //   stale and matches nobody, even when the email names a former member.
 
@@ -97,37 +101,40 @@ export const isAssignedTo = (
 };
 
 /**
- * Fields a writer sets to assign a chore or template (dual-write): the uid
- * always, the email while the writer still knows it ("" otherwise, so an
- * older assignee's email is never left behind).
+ * Fields a writer sets to assign a chore or template: the uid only (member
+ * privacy release C). A writer that updates an existing record must also
+ * remove its `assignedToEmail` (and a template's `recurrence.assignedToEmail`)
+ * with its SDK's delete sentinel, or an older assignee's email would be left
+ * behind and, being matched first, win over the new uid.
  * @param {AssigneePerson} person The new assignee.
- * @return {{assignedToUid: string, assignedToEmail: string}} The fields.
+ * @return {{assignedToUid: string}} The fields.
  */
 export const assigneeFields = (
   person: AssigneePerson,
-): {assignedToUid: string; assignedToEmail: string} => ({
+): {assignedToUid: string} => ({
   assignedToUid: person.uid,
-  assignedToEmail: text(person.email),
 });
 
 /**
- * Fields that leave an open chore unassigned.
+ * Fields that leave an open chore unassigned (the writer also deletes
+ * `assignedToEmail`, see assigneeFields).
  * @return {object} The fields.
  */
 export const unassignedChoreFields = (): {
-  assignedToUid: string; assignedToEmail: string;
-  assignedToDisplayName: string;
+  assignedToUid: string; assignedToDisplayName: string;
 } => ({
   assignedToUid: "",
-  assignedToEmail: "",
   assignedToDisplayName: "Unassigned",
 });
 
 /**
- * The assignee part of a generated occurrence's id. Existing templates keep
- * the email they were generated with (changing it would regenerate every
- * upcoming occurrence under a new id); a template that has no email (written
- * once emails are no longer known to the writer) uses the uid.
+ * The assignee part of a generated occurrence's id: a template that still
+ * carries an email keeps it (ids generated so far used it), a template without
+ * one (every template written since release C, and every scrubbed one) uses
+ * the uid. A template whose key changes never gets a second copy of a day it
+ * already has: upkeep and calendar planning also skip any occurrence whose
+ * occurrence key (`templateId|roomId|day`, functions/src/shared/ids.ts) a
+ * chore already holds.
  * @param {AssigneeRecord} template Template fields.
  * @return {string} The key, or "" when unassigned.
  */

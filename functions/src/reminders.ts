@@ -248,6 +248,7 @@ export const runHouseholdReminders = async (
             assignedToUid: snap.get("assignedToUid"),
             assignedToEmail: snap.get("assignedToEmail"),
             assignedToDisplayName: snap.get("assignedToDisplayName"),
+            completedByUid: snap.get("completedByUid"),
             completedByEmail: snap.get("completedByEmail"),
             completedByName: snap.get("completedByName"),
             completedAt: op.completedAt,
@@ -258,8 +259,10 @@ export const runHouseholdReminders = async (
       statsYears.forEach((year, index) => {
         const chores = purgedByYear.get(year);
         if (!chores || chores.length === 0) return;
+        // Uid-only chores (member privacy release C) are credited through the
+        // members' emails, the same stats key as before.
         const stats = addPurgedChores(
-          readChoreStats(statsSnaps[index]?.data(), year), chores);
+          readChoreStats(statsSnaps[index]?.data(), year), chores, members);
         tx.set(statsRefs[index], {...stats, updatedAt: ts(now)});
       });
       return {created, purged};
@@ -310,7 +313,8 @@ export const runHouseholdReminders = async (
     const template = templateDoc.data();
     const recurrence = normalizeRecurrence(template.recurrence, today);
     // Assigned by uid or (older templates) by email; the id keeps the key
-    // each template was generated with (occurrenceAssigneeKey).
+    // each template was generated with (occurrenceAssigneeKey). Generated
+    // chores store the uid only (member privacy release C).
     const assignee = occurrenceAssigneeKey(template);
     if (!recurrence || !assignee) continue;
     // Never generate work for someone who is no longer an approved member.

@@ -1,7 +1,7 @@
 
 import { NextResponse } from 'next/server';
 import { safePushLink } from './push-link';
-import { BUILD_MESSAGE, BUILD_QUERY_MESSAGE } from '@/lib/shell/update-check';
+import { BUILD_MESSAGE, BUILD_QUERY_MESSAGE, minimumBuildId } from '@/lib/shell/update-check';
 
 // HomeHub's single service worker, served from /api/sw with a root scope.
 //
@@ -25,6 +25,10 @@ const SHELL_VERSION = 'v1';
 // precached shells) on their next update check; open pages compare it with
 // their own build to offer "HomeHub updated" (src/lib/shell/update-check.ts).
 const BUILD_ID = process.env.NEXT_PUBLIC_HOMEHUB_BUILD_ID || '';
+
+// The oldest build allowed to keep running (member privacy release C): sent with
+// every build message, so pages older than it reload once idle (update-watcher.tsx).
+const MINIMUM_BUILD_ID = minimumBuildId(process.env.HOMEHUB_MINIMUM_BUILD_ID);
 
 export async function GET() {
   const firebaseConfig = {
@@ -213,17 +217,18 @@ export async function GET() {
         await self.clients.claim();
         // Tell open pages which build is now active (they offer a Reload when newer).
         const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-        windows.forEach((client) => client.postMessage({ type: BUILD_MESSAGE, buildId: BUILD_ID }));
+        windows.forEach((client) => client.postMessage({ type: BUILD_MESSAGE, buildId: BUILD_ID, minimumBuildId: MINIMUM_BUILD_ID }));
       })());
     });
 
     // ---- Build id (update detection) -----------------------------------------
     const BUILD_ID = ${JSON.stringify(BUILD_ID)};
+    const MINIMUM_BUILD_ID = ${JSON.stringify(MINIMUM_BUILD_ID)};
     const BUILD_MESSAGE = ${JSON.stringify(BUILD_MESSAGE)};
     const BUILD_QUERY_MESSAGE = ${JSON.stringify(BUILD_QUERY_MESSAGE)};
     self.addEventListener('message', (event) => {
       if (!event.data || event.data.type !== BUILD_QUERY_MESSAGE || !event.source) return;
-      event.source.postMessage({ type: BUILD_MESSAGE, buildId: BUILD_ID });
+      event.source.postMessage({ type: BUILD_MESSAGE, buildId: BUILD_ID, minimumBuildId: MINIMUM_BUILD_ID });
     });
 
     const offlineFallback = async (pathname) => {
