@@ -69,3 +69,43 @@ export function decideUpdatePrompt(input: {
 export function shouldCheckOnVisible(lastCheckAt: number, now: number, minGapMs = VISIBLE_RECHECK_MIN_MS): boolean {
   return now - lastCheckAt >= minGapMs;
 }
+
+/**
+ * Minimum supported build (member privacy release C). The server publishes it
+ * through the service worker (`/api/sw` embeds it and sends it with every build
+ * message); a page built before it must reload before it keeps writing, because
+ * it may still write data in a shape newer releases no longer read. Release A
+ * (#120, the first build that writes chore assignees by uid) merged at
+ * 2026-11-10T20:34:02Z, so every build stamped before then predates it. Raise it
+ * in the release that needs every open tab on a newer build; the
+ * `HOMEHUB_MINIMUM_BUILD_ID` environment variable (read when the worker route is
+ * built or served) can only raise it further.
+ *
+ * Only pages that contain this check (release C and later) honour it: a page
+ * from an older build ignores the field and keeps its "HomeHub updated" prompt.
+ */
+export const MINIMUM_SUPPORTED_BUILD_ID = '20261110T203402000Z';
+
+/** The minimum build the worker publishes: the code's floor, or a later valid override. */
+export function minimumBuildId(override?: string | null): string {
+  return isBuildId(override) && override > MINIMUM_SUPPORTED_BUILD_ID ? override : MINIMUM_SUPPORTED_BUILD_ID;
+}
+
+/** Reads a worker build message with its published minimum (null when absent or malformed). */
+export function buildInfoFromMessage(data: unknown): { buildId: string; minimumBuildId: string | null } | null {
+  const buildId = buildIdFromMessage(data);
+  if (!buildId) return null;
+  const { minimumBuildId: minimum } = data as { minimumBuildId?: unknown };
+  return { buildId, minimumBuildId: isBuildId(minimum) ? minimum : null };
+}
+
+/**
+ * Whether this page is older than the published minimum build. Never a reason to
+ * reload by itself: most forms keep their drafts only in component state and do
+ * not mark the shell busy, so an automatic reload could discard what the member
+ * is typing. The page shows a persistent "HomeHub needs to update" banner with a
+ * Reload button instead, and the member reloads when they are done.
+ */
+export function isBelowMinimumBuild(pageBuildId: string | null | undefined, minimum: string | null | undefined): boolean {
+  return isBuildId(pageBuildId) && isBuildId(minimum) && pageBuildId < minimum;
+}

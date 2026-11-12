@@ -143,6 +143,11 @@ export function HomeWrapped() {
           const data = member.data() as { email?: unknown; displayName?: unknown };
           return typeof data.email === 'string' && typeof data.displayName === 'string' ? [[data.email.trim().toLowerCase(), data.displayName] as const] : [];
         }));
+        // Uid-only chores (member privacy release C) are credited through the members' emails.
+        const people = (members?.docs ?? []).map((member) => {
+          const email = (member.data() as { email?: unknown }).email;
+          return { uid: member.id, email: typeof email === 'string' ? email : null };
+        });
         // Completions upkeep already removed (kept 90 days) live in the yearly stats.
         // Stats and retained chores are read as one consistent snapshot (stats,
         // chores, stats again; retried if a purge lands in between), so no chore is
@@ -157,7 +162,7 @@ export function HomeWrapped() {
           readRetained: () => getDocs(query(base('chores'), where('isCompleted', '==', true))).then(docs),
         }).then((totals) => {
           const stats = totals.consistent ? totals.stats : undefined;
-          Object.assign(summary, summarizeChores(totals.retained, year, { names, stats, timeZone: household?.timeZone }));
+          Object.assign(summary, summarizeChores(totals.retained, year, { names, stats, timeZone: household?.timeZone, people }));
           // The champion card ranks members, so it follows the Chores "Show leaderboard"
           // setting: shown only when it is known to be on (missing means on, as on Chores).
           if (!showRanking) summary.champion = null;

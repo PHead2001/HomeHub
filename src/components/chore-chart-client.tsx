@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { AlarmClock, CalendarDays, CheckSquare, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy, User as UserIcon } from 'lucide-react';
-import { type DocumentData, collection, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy, User as UserIcon } from 'lucide-react';
+import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
 import { format } from 'date-fns';
@@ -21,7 +21,6 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ChevronDown } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
@@ -32,7 +31,7 @@ import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
-import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
+import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, isPodiumDay, statsMemberFrom } from '@/lib/chores/stats';
@@ -53,7 +52,6 @@ import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
-import { isAssignedTo } from '@functions/shared/assignee';
 import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, type CleanRoom } from '@/lib/chores/house-clean';
 
 
@@ -254,15 +252,14 @@ export function ChoreChartClient() {
       } else {
         // Readable slug + auto-id: never collides with a template this page has not seen.
         const templateId = newChoreDocId(input.task, doc(templatesCollection).id);
-        const fields = assigneeFields(assignee);
-        const recurrence: Recurrence = { ...input.recurrence, assignedToEmail: fields.assignedToEmail };
+        const recurrence: Recurrence = { ...input.recurrence };
         await setDoc(doc(templatesCollection, templateId), {
           task: input.task,
           notes: input.notes,
           roomIds,
           subTasks: [],
           recurrence,
-          ...fields,
+          ...assigneeFields(assignee),
         });
         if (shouldNotify(assignee.uid)) {
           await setDoc(doc(notificationsCollection), buildNotificationDocument({
@@ -362,8 +359,13 @@ export function ChoreChartClient() {
     const batch = writeBatch(db);
     if (schedule.type === 'recurring') {
       for (const template of templatesToAssign) {
-        const recurrence: Recurrence = { ...schedule.recurrence, assignedToEmail: fields.assignedToEmail };
-        batch.set(doc(templatesCollection, template.id), { recurrence, ...fields }, { merge: true });
+        // A merge keeps fields it does not name, so an older assignee's email (top level
+        // and inside `recurrence`) is removed explicitly: it would otherwise win over the uid.
+        batch.set(doc(templatesCollection, template.id), {
+          recurrence: { ...schedule.recurrence, assignedToEmail: deleteField() },
+          ...fields,
+          assignedToEmail: deleteField(),
+        }, { merge: true });
       }
     } else {
       const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
@@ -483,12 +485,12 @@ export function ChoreChartClient() {
       toastError({ code: 'not-found' }, "Couldn't update the schedule");
       return false;
     }
-    const fields = assigneeFields(user);
-    return replaceRecurrence(choreId, { ...fields, recurrence: { ...recurrence, assignedToEmail: fields.assignedToEmail } }, 'Repeating chore updated', "Couldn't update the schedule");
+    // The recurrence map is replaced as a whole; the top-level legacy email is removed.
+    return replaceRecurrence(choreId, { ...assigneeFields(user), assignedToEmail: deleteField(), recurrence: { ...recurrence } }, 'Repeating chore updated', "Couldn't update the schedule");
   };
 
   const handleDeleteRecurringTask = async (choreId: string) => {
-    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: null, assignedToUid: null }, 'Stopped repeating', "Couldn't stop the schedule");
+    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: deleteField(), assignedToUid: null }, 'Stopped repeating', "Couldn't stop the schedule");
   };
 
   /* ---------------------------------------------------------------------- */
@@ -709,9 +711,10 @@ export function ChoreChartClient() {
     if (!choresCollection || !user || uid === chore.assignedToUid) return;
     const updates = { ...assigneeFields(user), assignedToDisplayName: memberName(user) };
     const previous = { assignedToUid: chore.assignedToUid ?? '', assignedToEmail: chore.assignedToEmail, assignedToDisplayName: chore.assignedToDisplayName };
-    patchChores([chore.id], c => ({ ...c, ...updates }));
+    patchChores([chore.id], c => ({ ...c, ...updates, assignedToEmail: undefined }));
     try {
-      await updateDoc(doc(choresCollection, chore.id), updates);
+      // An older assignee's email is removed: it would otherwise win over the new uid.
+      await updateDoc(doc(choresCollection, chore.id), { ...updates, assignedToEmail: deleteField() });
       toast({ title: 'Chore reassigned', description: `${chore.task} is now ${memberName(user)}'s.` });
     } catch (error) {
       patchChores([chore.id], c => ({ ...c, ...previous }));
@@ -782,7 +785,7 @@ export function ChoreChartClient() {
   const reader = { uid: currentUser.uid, email: currentUser.email };
   const filteredChores = assignedChores.filter(chore => {
     // `?who=me`: the reader's chores (assignee by uid or email, as everywhere).
-    if (filters.who === 'me' && !isAssignedTo(chore as unknown as Record<string, unknown>, reader)) return false;
+    if (!matchesWhoFilter(chore, filters.who, reader)) return false;
     if (filterRoomId === 'all') return true;
     if (filterRoomId === 'general') return !chore.roomIds || chore.roomIds.length === 0;
     return chore.roomIds?.includes(filterRoomId);
@@ -791,7 +794,7 @@ export function ChoreChartClient() {
   const byDue = (a: ChoreRecord, b: ChoreRecord) => choreDueKey(a).localeCompare(choreDueKey(b)) || a.task.localeCompare(b.task);
   const recurringTemplateIds = new Set(choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence)).map(t => t.id));
   // `?due=overdue`: To Do keeps only chores due before today (folded missed instances stay with their row).
-  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds)
+  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds, householdUsers)
     .filter(entry => filters.due !== 'overdue' || choreDueKey(entry.chore) < today || entry.missed.length > 0);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);

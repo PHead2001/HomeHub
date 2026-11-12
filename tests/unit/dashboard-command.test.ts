@@ -112,14 +112,13 @@ describe('quick add writes: same shapes as the module screens', () => {
       notes: '',
       roomIds: ['kitchen'],
       subTasks: [],
-      recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, assignedToEmail: 'sam.member@example.test' },
-      // Dual-write: the uid always, the email while it is known.
+      recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] } },
+      // Member privacy release C: the uid only, never the email (even when the writer knows it).
       assignedToUid: 'uid-sam',
-      assignedToEmail: 'sam.member@example.test',
     });
     assert.deepEqual(
       { ...repeatingChoreTemplate({ task: 'X', roomId: null, recurrence: { frequency: 'daily', interval: 1 }, assignee: { uid: 'u2' } }), task: undefined },
-      { task: undefined, notes: '', roomIds: [], subTasks: [], recurrence: { frequency: 'daily', interval: 1, assignedToEmail: '' }, assignedToUid: 'u2', assignedToEmail: '' },
+      { task: undefined, notes: '', roomIds: [], subTasks: [], recurrence: { frequency: 'daily', interval: 1 }, assignedToUid: 'u2' },
     );
     assert.deepEqual(repeatingChoreTemplate({ task: 'X', roomId: 'general', recurrence: { frequency: 'daily', interval: 1 }, assignee: { uid: 'u1', email: 'a@b.c' } }).roomIds, []);
   });
