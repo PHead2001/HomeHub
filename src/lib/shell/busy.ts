@@ -24,7 +24,8 @@ const listeners = new Set<Listener>();
 
 function emit() {
   const busy = marks.size > 0;
-  listeners.forEach((listener) => listener(busy));
+  // A snapshot: a listener that subscribes during this dispatch is first told on the next one.
+  [...listeners].forEach((listener) => listener(busy));
 }
 
 /**

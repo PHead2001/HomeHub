@@ -9,6 +9,8 @@ import { buildMorningBrief } from '../../src/lib/dashboard/brief';
 import { choresFilteredHref } from '../../src/lib/dashboard/links';
 import { applyAnswer, emptyStore, sectionStates } from '../../src/lib/dashboard/dashboard-store';
 import { choresFiltersHref, choresFiltersKey, parseChoresFilters } from '../../src/lib/chores/url-state';
+import { matchesWhoFilter } from '../../src/lib/chores/list';
+import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { houseCleanShown, houseCleanStorageKey, markHouseCleanShown } from '../../src/lib/chores/house-clean';
 
 // Local noon on 2026-08-01 (the E2E seed's day in any time zone).
@@ -259,5 +261,60 @@ describe('HP-33: one-tap actions use the shared operations', () => {
     assert.match(source, /styles\.target/);
     const grid = readFileSync(resolve(process.cwd(), 'src/components/dashboard/bento-grid.tsx'), 'utf8');
     assert.match(grid, /data-testid=\{`\$\{testId\}-link`\}/);
+  });
+});
+
+describe('member privacy release C: uid-only chores (no assignedToEmail) on the H7 paths', () => {
+  // Written since release C: the uid only, no `assignedToEmail` field at all.
+  const uidOnly = (id: string, uid: string, data: Record<string, unknown> = {}) => chore(id, { assignedToUid: uid, ...data });
+
+  it("today's work lists a uid-only chore with its member's name and uid key, mine by uid", () => {
+    const facts = computeChoreFacts([
+      uidOnly('dishes', 'sam-uid', { originalDueDate: '2026-07-31', assignedToDisplayName: 'Samuel' }),
+      uidOnly('trash', 'alex-uid', { originalDueDate: '2026-08-01' }),
+      chore('sweep', { originalDueDate: '2026-08-01', assignedToEmail: 'sam@example.test' }),
+    ], rooms, viewer, now, new Set(), null, members);
+    const byId = new Map(facts.todayWork!.map((item) => [item.id, item]));
+    assert.deepEqual(facts.todayWork!.map((item) => item.id), ['dishes', 'trash', 'sweep']);
+    assert.equal(byId.get('dishes')!.assignee, 'Sam');
+    assert.equal(byId.get('dishes')!.assigneeKey, 'sam-uid');
+    assert.equal(byId.get('sweep')!.assigneeKey, 'sam-uid', 'an email-only chore groups with the same member');
+    assert.equal(byId.get('trash')!.mine, true);
+    assert.equal(facts.mineDueToday, 1);
+  });
+
+  it('folds a series whose older instance has the email and newer one the uid only', () => {
+    const series = { templateId: 'dishes-tpl', roomIds: ['kitchen'] };
+    const facts = computeChoreFacts([
+      chore('dishes-1', { ...series, originalDueDate: '2026-07-30', assignedToEmail: 'sam@example.test', assignedToUid: 'sam-uid' }),
+      uidOnly('dishes-2', 'sam-uid', { ...series, originalDueDate: '2026-08-01' }),
+    ], rooms, viewer, now, new Set(['dishes-tpl']), null, members);
+    assert.deepEqual(facts.todayWork!.map((item) => item.id), ['dishes-2']);
+    assert.equal(facts.todayWork![0].missed, 1);
+    assert.equal(facts.missed, 1);
+  });
+
+  it('the household summary names uid-only assignees, never an email', () => {
+    const facts = computeChoreFacts([
+      uidOnly('dishes', 'sam-uid', { originalDueDate: '2026-07-31' }),
+      chore('laundry', { originalDueDate: '2026-08-01', assignedToEmail: 'sam@example.test' }),
+      uidOnly('sweep', 'pat-uid', { originalDueDate: '2026-08-01' }),
+      uidOnly('trash', 'alex-uid', { originalDueDate: '2026-08-01' }),
+    ], rooms, viewer, now, new Set(), null, members);
+    const summary = householdSummary(facts.todayWork!);
+    assert.equal(summary.text, 'Sam: dishes (overdue) and 1 more · You: trash (today) · Someone: sweep (today)');
+    assert.doesNotMatch(summary.text, /@/);
+  });
+
+  it("the Mine filter (?who=me) keeps a uid-only chore of the reader and drops a housemate's", () => {
+    const mine = uidOnly('trash', 'alex-uid') as unknown as ChoreRecord;
+    const theirs = uidOnly('dishes', 'sam-uid') as unknown as ChoreRecord;
+    const legacy = chore('sweep', { assignedToEmail: 'alex@example.test' }) as unknown as ChoreRecord;
+    assert.equal(matchesWhoFilter(mine, 'me', viewer), true);
+    assert.equal(matchesWhoFilter(theirs, 'me', viewer), false);
+    assert.equal(matchesWhoFilter(legacy, 'me', viewer), true);
+    assert.equal(matchesWhoFilter(theirs, 'all', viewer), true);
+    const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
+    assert.match(page, /matchesWhoFilter\(chore, filters\.who, reader\)/);
   });
 });

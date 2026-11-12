@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
-import { Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import {
   MembershipError,
@@ -456,6 +456,7 @@ describe('remove member', () => {
     assert.equal((await memberRef(guest).get()).exists, false);
     assert.equal((await memberRef(guest).collection('private').doc('contact').get()).exists, false);
     const data = (await house().get()).data();
+    // A legacy list loses the removed member's email; nothing else is written to it.
     assert.ok(!data?.memberEmails.includes(guest.email));
     assert.ok(data?.memberEmails.includes(member.email));
     assert.equal(data?.updatedAt, NOW.toISOString());
@@ -465,7 +466,8 @@ describe('remove member', () => {
     assert.deepEqual(cached?.permissions, {});
 
     const open = (await house().collection('chores').doc('open').get()).data();
-    assert.equal(open?.assignedToEmail, '');
+    assert.equal(open?.assignedToEmail, undefined, 'no email is left on an unassigned chore');
+    assert.equal(open?.assignedToUid, '');
     assert.equal(open?.assignedToDisplayName, 'Unassigned');
     const done = (await house().collection('chores').doc('done').get()).data();
     assert.equal(done?.assignedToEmail, guest.email, 'completed chores keep who did them');
@@ -499,6 +501,14 @@ describe('remove member', () => {
     assert.equal(template?.assignedToUid, undefined);
     assert.equal(template?.assignedToEmail, undefined);
     assert.deepEqual(template?.recurrence, { frequency: 'daily' });
+  });
+
+  test('a household without the legacy email list gets none on removal', async () => {
+    await house().update({ memberEmails: FieldValue.delete(), ownerEmail: FieldValue.delete() });
+    await removeMember(admin, HOUSE, guest.uid, NOW);
+    const data = (await house().get()).data();
+    assert.equal('memberEmails' in (data || {}), false);
+    assert.equal('ownerEmail' in (data || {}), false);
   });
 
   test('denying a pending request removes it and says so in the log', async () => {
@@ -546,7 +556,8 @@ describe('transfer ownership and delete', () => {
     assert.deepEqual(await transferOwnership(owner, HOUSE, member.uid, NOW), { ownerUid: member.uid });
     const data = (await house().get()).data();
     assert.equal(data?.ownerUid, member.uid);
-    assert.equal(data?.ownerEmail, member.email);
+    // No email on the household document (member privacy release C): the legacy one is removed.
+    assert.equal('ownerEmail' in (data || {}), false);
     assert.equal(data?.updatedAt, NOW.toISOString());
     const next = await memberData(member);
     assert.equal(next?.role, 'owner');

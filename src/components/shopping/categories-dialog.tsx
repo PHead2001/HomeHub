@@ -34,7 +34,9 @@ import {
 } from '@/lib/shopping/category-writes';
 import type { AssignedStore } from '@/lib/shopping/assigned-store';
 import type { ShoppingList, ShoppingStore } from '@/lib/types';
+import { StoreChangeDeclined, storeDeclinedMessage } from '@/lib/shopping/store-manage';
 import { useOnTabDeactivate } from './tab-activity';
+import { StoreManageControls } from './store-manage-controls';
 import { useSaveLine } from './use-save-line';
 import { createSettledQueue, rejectedInputRestore } from '@/lib/shopping/save-line';
 
@@ -49,6 +51,10 @@ const ICON_CONTROL = 'flex h-11 w-11 shrink-0 items-center justify-center rounde
 const reportFailure = (error: unknown, title: string) => {
   if (error instanceof CategoryChangeDeclined) {
     toast({ variant: 'destructive', title, description: declinedMessage(error.reason) });
+    return;
+  }
+  if (error instanceof StoreChangeDeclined) {
+    toast({ variant: 'destructive', title, description: storeDeclinedMessage(error.reason, error.storeName) });
     return;
   }
   toastError(error, title);
@@ -336,6 +342,15 @@ export function CategoriesDialog({
                 <p className="text-sm text-muted-foreground">It starts with the order shown below.</p>
               </div>
             )}
+            <StoreManageControls
+              householdId={householdId}
+              store={store}
+              stores={stores}
+              uid={uid}
+              online={online}
+              ready={storeChoiceReady && !creatingStore}
+              track={save.track}
+            />
           </section>
 
           <section className="space-y-2" aria-labelledby="add-category-heading">

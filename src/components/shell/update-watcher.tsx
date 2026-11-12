@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import { SERVICE_WORKER_SCOPE, shouldAutoRegisterServiceWorker } from '@/lib/service-worker';
@@ -9,8 +10,9 @@ import {
   BUILD_QUERY_MESSAGE,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_PROMPTED_KEY,
-  buildIdFromMessage,
+  buildInfoFromMessage,
   decideUpdatePrompt,
+  isBelowMinimumBuild,
   shouldCheckOnVisible,
 } from '@/lib/shell/update-check';
 
@@ -50,15 +52,44 @@ function showUpdatedToast() {
 }
 
 /**
+ * Minimum build (member privacy release C): shown while this page is older than the
+ * build the worker publishes as the minimum. It stays (no close button, no timeout)
+ * until the member reloads; it never reloads by itself, so nothing being typed is lost.
+ */
+function UpdateRequiredBanner() {
+  return (
+    <div
+      role="alert"
+      data-testid="update-required-banner"
+      className="fixed inset-x-0 top-0 z-[100] flex flex-wrap items-center justify-center gap-3 border-b border-border bg-card px-4 py-3 text-card-foreground shadow-md"
+      style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+    >
+      <p className="text-sm">
+        <span className="font-semibold">HomeHub needs to update.</span>{' '}
+        Finish what you are doing, then reload to keep using HomeHub.
+      </p>
+      <Button size="sm" onClick={() => window.location.reload()}>Reload</Button>
+    </div>
+  );
+}
+
+/**
  * SL-2: keeps the service worker fresh while a page stays open and offers a
  * Reload once a newer build is live. Checks `registration.update()` every 45
  * minutes and when the tab returns to the foreground (at most every 5 minutes),
  * asks the active worker for its build id, and listens for the worker's
  * activation message. The toast appears once per build per tab, waits while the
  * shell is busy (a save, an Undo, unsaved input), and never reloads on its own.
+ *
+ * Minimum build (member privacy release C): the worker also publishes the
+ * oldest build allowed to keep running (`minimumBuildId`). A page older than it
+ * shows a persistent "HomeHub needs to update" banner with Reload
+ * (`isBelowMinimumBuild`); it never reloads by itself.
  * Production only (the worker is not auto-registered in development).
  */
 export function UpdateWatcher() {
+  const [updateRequired, setUpdateRequired] = useState(false);
+
   useEffect(() => {
     if (!PAGE_BUILD_ID || !shouldAutoRegisterServiceWorker() || !('serviceWorker' in navigator)) return;
     const container = navigator.serviceWorker;
@@ -100,8 +131,10 @@ export function UpdateWatcher() {
     };
 
     const onMessage = (event: MessageEvent) => {
-      const buildId = buildIdFromMessage(event.data);
-      if (buildId) consider(buildId);
+      const info = buildInfoFromMessage(event.data);
+      if (!info) return;
+      if (isBelowMinimumBuild(PAGE_BUILD_ID, info.minimumBuildId)) setUpdateRequired(true);
+      consider(info.buildId);
     };
     const onVisibility = () => {
       if (document.visibilityState === 'visible' && shouldCheckOnVisible(lastCheckAt, Date.now())) void check();
@@ -124,5 +157,5 @@ export function UpdateWatcher() {
     };
   }, []);
 
-  return null;
+  return updateRequired ? <UpdateRequiredBanner /> : null;
 }
