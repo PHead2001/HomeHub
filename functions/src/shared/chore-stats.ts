@@ -165,7 +165,11 @@ export const purgeNeedsMemberEmails = (
  * email (the completer's, else the assignee's) does not name a current member
  * whose contact document upkeep read (the read failed, or the person has left).
  * A uid stored next to such an email is not trusted for the credit: an older
- * build's email-only reassignment can leave someone else's uid there. The
+ * build's email-only reassignment can leave someone else's uid there. A
+ * completion that records both `completedByEmail` and `completedByUid` of
+ * someone who has left waits as well: that pair is the only evidence tying
+ * their archived email-derived stats key to their uid, and the scrub settles
+ * it (moving the key) before removing the email. The
  * chore waits for scripts/ops/scrub-member-emails.mjs (a step of member
  * privacy release D), which replaces the email by the person's settled
  * identity; then it is purged and credited to that identity.
@@ -179,10 +183,14 @@ export const purgeMustWait = (
   people: readonly CreditPerson[],
   emailsKnown: boolean,
 ): boolean => {
-  if (!purgeNeedsMemberEmails(chore)) return false;
+  // A recorded completer's email is the evidence the stats migration uses to
+  // connect a legacy (email-derived) bucket to their uid: a completion that
+  // still carries it waits too, even with `completedByUid`, unless the email
+  // is a current member's (the fold then joins the two keys).
+  const email = filled(chore.completedByEmail) ? chore.completedByEmail :
+    purgeNeedsMemberEmails(chore) ? chore.assignedToEmail : "";
+  if (!filled(email)) return false;
   if (!emailsKnown) return true;
-  const email = filled(chore.completedByEmail) ?
-    chore.completedByEmail : chore.assignedToEmail;
   return !people.some((person) =>
     filled(person.email) && lower(person.email) === lower(email));
 };

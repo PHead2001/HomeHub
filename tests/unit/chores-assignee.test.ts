@@ -280,7 +280,12 @@ describe('yearly stats are keyed by uid (member privacy release D)', () => {
     assert.equal(purgeMustWait({ assignedToUid: 'uid-lee' }, people, true), false);
     // No email involved: never waits, emails known or not.
     assert.equal(purgeMustWait({ assignedToUid: 'former-0123456789abcdef01234567' }, people, false), false);
-    assert.equal(purgeMustWait({ completedByUid: 'uid-sam', completedByEmail: 'gone@example.test' }, [], false), false);
+    // A recorded completer pair of someone who has left is the migration's evidence: it waits for the scrub.
+    assert.equal(purgeMustWait({ completedByUid: 'uid-gone', completedByEmail: 'gone@example.test' }, people, true), true);
+    assert.equal(purgeMustWait({ completedByUid: 'uid-gone', completedByEmail: 'gone@example.test' }, [], false), true);
+    // A current member's completer pair purges as before; a completer uid alone too.
+    assert.equal(purgeMustWait({ completedByUid: 'uid-sam', completedByEmail: 'sam@example.test' }, people, true), false);
+    assert.equal(purgeMustWait({ completedByUid: 'uid-gone', completedByName: 'Gil' }, people, true), false);
     assert.equal(purgeMustWait({}, [], false), false);
   });
 
