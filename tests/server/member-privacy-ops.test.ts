@@ -247,4 +247,37 @@ describe('release D ops: one identity per person who has left', () => {
     assert.equal(stats?.byAssignee?.[choreStatsMemberKey('uid-carl')], undefined, 'nothing archived for Carl');
     assert.equal(stats?.byAssignee?.[choreStatsMemberKey(lee)], 7, 'Lee: 6 archived + this one');
   });
+
+  // Review finding on #146 (4544940133): the last record pairing a departed completer's email and uid is kept until the scripts used it.
+  for (const order of ['re-key first', 'scrub first'] as const) {
+    test(`someone who left before C, with archived email credit and one completion recording both completer fields: one score (${order})`, async () => {
+      const ts = (d: Date) => Timestamp.fromDate(d) as never;
+      const upkeep = (iso: string) => runHouseholdReminders(adminDb as never, HOUSE, new Date(iso), ts);
+      const GIL = 'gil@example.test';
+      const gilLegacy = choreStatsAssigneeKey(GIL);
+      await house().collection('stats').doc('chores-2026').update({ completed: 10, [`byAssignee.${gilLegacy}`]: 4, [`names.${gilLegacy}`]: 'Gil' });
+      await house().collection('chores').doc('gil-done').set({
+        task: 'Gil', isCompleted: true, completedAt: '2026-07-01T12:00:00.000Z', assignedToUid: 'o1',
+        completedByEmail: GIL, completedByUid: 'uid-gil', completedByName: 'Gil',
+      });
+      // A current member's completion recording both fields purges as before.
+      const ownerEmail = (await house().collection('members').doc('o1').collection('private').doc('contact').get()).data()?.email;
+      await house().collection('chores').doc('owner-done').set({
+        task: 'Owner', isCompleted: true, completedAt: '2026-07-02T12:00:00.000Z', assignedToUid: 'o1',
+        completedByEmail: ownerEmail, completedByUid: 'o1', completedByName: 'Owner',
+      });
+      await upkeep('2026-11-05T15:00:00Z');
+      assert.equal((await house().collection('chores').doc('gil-done').get()).exists, true, 'waits: it is the evidence for the archived key of Gil');
+      assert.equal((await house().collection('chores').doc('owner-done').get()).exists, false, 'a current member purges as before');
+      if (order === 're-key first') { await rekey(true); await scrub(true); } else { await scrub(true); await rekey(true); }
+      await upkeep('2026-11-05T16:00:00Z');
+      assert.equal((await house().collection('chores').doc('gil-done').get()).exists, false);
+      const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+      assert.equal(stats?.byAssignee?.[choreStatsMemberKey('uid-gil')], 5, 'Gil: 4 archived + this one, one bucket');
+      assert.equal(stats?.byAssignee?.[gilLegacy], undefined);
+      assert.ok(!JSON.stringify(stats).includes('gil@'));
+      assert.equal((await rekey(true)).written, 0);
+      assert.deepEqual(await scrub(true), { stats: 0, chores: 0, kept: 0 });
+    });
+  }
 });
