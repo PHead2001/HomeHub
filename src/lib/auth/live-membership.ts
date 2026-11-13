@@ -316,8 +316,14 @@ export function membershipView(state: LiveMembershipState, profileUid: string | 
         member: state.member,
         ended: null,
       };
-    case 'member':
-      return { phase, household: state.household, member: state.member, ended: null };
+    case 'member': {
+      // This device's own leave or delete request is still running (`endingHere`): the household's
+      // freeze marker is that request at work, not a deletion that failed, so it is not shown
+      // (the manager would otherwise offer "Finish deleting" while the first request still runs).
+      const ownRequestRunning = state.endingHere === state.householdId && state.household?.deletingAt;
+      const household = ownRequestRunning && state.household ? { ...state.household, deletingAt: undefined } : state.household;
+      return { phase, household, member: state.member, ended: null };
+    }
   }
 }
 

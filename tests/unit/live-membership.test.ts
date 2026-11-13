@@ -580,3 +580,22 @@ describe('live membership: finishing a deletion after a reload', () => {
     assert.equal(deletionNameField('Old Foxes', 'Old Foxes'), 'Old Foxes');
   });
 });
+
+describe('a deletion started on this device (review finding 4567967921)', () => {
+  const OWNER_UID = UID;
+  const freeze = { name: 'The Foxes', ownerUid: OWNER_UID, deletingAt: '2026-11-13T20:00:00.000Z' };
+  test('while this device\'s own request runs, the freeze marker is not shown as a failed deletion', () => {
+    const state = run([{ type: 'endingHere', householdId: H }, householdDoc(freeze)], approved('owner'));
+    const shown = view(state);
+    assert.equal(shown.phase, 'member');
+    assert.equal(shown.household?.deletingAt, undefined, 'no "Finish deleting" while the first request is still running');
+  });
+  test('once the request is cancelled (it failed), the frozen household shows again so the owner can finish it', () => {
+    const state = run([{ type: 'endingHere', householdId: H }, householdDoc(freeze), { type: 'endingHereCancelled' }], approved('owner'));
+    assert.ok(view(state).household?.deletingAt);
+  });
+  test('another device sees the freeze marker as before', () => {
+    const state = run([householdDoc(freeze)], approved('owner'));
+    assert.ok(view(state).household?.deletingAt);
+  });
+});
