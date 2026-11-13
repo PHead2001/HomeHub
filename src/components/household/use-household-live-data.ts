@@ -43,6 +43,8 @@ type Options = {
    * cards and the approval banner. Nobody else ever requests it.
    */
   canManageMembers?: boolean;
+  /** The caller's own email (from their sign-in), shown on their own card. */
+  ownEmail?: string | null;
 };
 
 const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
@@ -53,7 +55,7 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
  * role can read that path under the rules, and each fails independently, so a
  * denied invite or audit read never blanks the member list.
  */
-export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false }: Options): HouseholdLiveData {
+export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null }: Options): HouseholdLiveData {
   const householdId = enabled ? requestedHouseholdId : undefined;
   const [name, setName] = useState<string | null>(null);
   const [rawMembers, setRawMembers] = useState<HouseholdMember[] | null>(null);
@@ -170,8 +172,8 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
   }, [canViewChores, choresKey, householdId, weekStart]);
 
   // One listener per member, only for member managers. A missing or unreadable
-  // contact document is simply absent: the card then falls back to the email on
-  // the membership record (still written during the move) or shows none.
+  // contact document is simply absent: the card then shows no email. Membership
+  // records carry no email.
   const contactUids = useMemo(
     () => (canManageMembers && rawMembers ? rawMembers.map((m) => m.uid).sort().join('|') : ''),
     [canManageMembers, rawMembers],
@@ -202,8 +204,11 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
     const list = readable ? withContactEmails(rawMembers, readable) : [...rawMembers];
     // Without list access (or before it loads) the caller still sees themselves.
     if (currentMember && !list.some((m) => m.uid === currentMember.uid)) list.push(currentMember);
+    // Everyone sees their own email on their own card, from their sign-in.
+    const own = ownEmail && currentMember ? list.findIndex((m) => m.uid === currentMember.uid && !m.email) : -1;
+    if (own >= 0) list[own] = { ...list[own], email: ownEmail! };
     return sortMembers(list);
-  }, [canManageMembers, contacts, currentMember, householdId, rawMembers]);
+  }, [canManageMembers, contacts, currentMember, householdId, ownEmail, rawMembers]);
 
   // Stats exist only when all three chore listeners answered for this household and
   // week, and none failed: a failed or pending read is never shown as 0 done / 0 open.

@@ -170,8 +170,8 @@ describe('barcode library images', () => {
 });
 
 describe('avatars', () => {
-  test('users manage only their own avatar images', async () => {
-    await assertSucceeds(uploadBytes(ref(storageFor(users.member), `users/${users.member.email}/avatars/me.png`), png, image));
+  test('nobody writes new photos under an email, their own included', async () => {
+    await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.member.email}/avatars/me.png`), png, image));
     await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.owner.email}/avatars/spoof.png`), png, image));
     await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.member.email}/avatars/doc.pdf`), pdf, { contentType: 'application/pdf' }));
   });
@@ -191,10 +191,13 @@ describe('avatars', () => {
     await assertSucceeds(deleteObject(own('me.png')));
   });
 
-  test('the email path still works for its owner during the move', async () => {
+  test('older photos under the email stay readable and their owner may delete them', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await uploadBytes(ref(context.storage(), `users/${users.member.email}/avatars/old.png`), png, image);
+    });
     const legacy = ref(storageFor(users.member), `users/${users.member.email}/avatars/old.png`);
-    await assertSucceeds(uploadBytes(legacy, png, image));
     await assertSucceeds(getBytes(ref(storageFor(users.guest), `users/${users.member.email}/avatars/old.png`)));
+    await assertFails(uploadBytes(legacy, png, image));
     await assertFails(deleteObject(ref(storageFor(users.guest), `users/${users.member.email}/avatars/old.png`)));
     await assertSucceeds(deleteObject(legacy));
   });

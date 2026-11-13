@@ -81,16 +81,18 @@ service firebase.storage {
       allow delete: if hasPermission(householdId, 'pets.editProfiles');
     }
 
-    // Profile photos. New uploads use the account ID (`users/{uid}/avatars/...`);
-    // older photos sit under the email (`users/{email}/avatars/...`). Google sign-in
-    // uids never contain '@' and an email always does, so the keys cannot collide.
+    // Profile photos. Uploads go to the account-ID folder (`users/{uid}/avatars/...`).
+    // Older photos under the email (`users/{email}/avatars/...`) stay readable until
+    // they are deleted, and their owner may delete them, but nothing new is written
+    // there. Google sign-in uids never contain '@' and an email always does, so the
+    // keys cannot collide.
     function ownsAvatarFolder(owner) {
       return signedIn() && (request.auth.uid == owner || request.auth.token.email == owner);
     }
 
     match /users/{owner}/avatars/{allPaths=**} {
       allow read: if signedIn();
-      allow create, update: if ownsAvatarFolder(owner) && isImage(5 * 1024 * 1024);
+      allow create, update: if signedIn() && request.auth.uid == owner && isImage(5 * 1024 * 1024);
       allow delete: if ownsAvatarFolder(owner);
     }
 

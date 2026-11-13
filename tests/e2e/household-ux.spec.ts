@@ -220,6 +220,36 @@ test.describe('household tabs and invites', () => {
   });
 });
 
+test.describe('pending requests shown to member managers only (HO-10b)', () => {
+  test('a member who can view the household but not manage members sees no pending count, banner or card', async ({ browser }) => {
+    // The seeded limited member, with View household ticked and Manage members unticked.
+    const limited = household.collection('members').doc('e2e-limited-uid');
+    const original = (await limited.get()).data()?.permissions ?? {};
+    await limited.update({ permissions: { ...original, 'household.view': true, 'household.manageMembers': false } });
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:9002',
+      colorScheme: 'dark',
+      storageState: { cookies: [], origins: [] },
+    });
+    try {
+      const page = await context.newPage();
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto('/e2e-login?uid=e2e-limited-uid');
+      await expect(page).toHaveURL('/');
+      await page.goto('/household');
+      await expect(page.getByRole('heading', { name: 'Manage Household', exact: true })).toBeVisible();
+      // The seed has a pending request (Jamie): neither its count nor the person shows.
+      await expect(page.getByText(/pending/i)).toHaveCount(0);
+      await page.goto('/household?tab=members');
+      await expect(page.getByRole('region', { name: 'Approve Jamie?' })).toHaveCount(0);
+      await expect(page.getByText('Jamie')).toHaveCount(0);
+    } finally {
+      await context.close();
+      await limited.update({ permissions: original });
+    }
+  });
+});
+
 test.describe('View household unticked (HO-2a)', () => {
   test('a member without household.view sees no Household Manager data and no error', async ({ browser }) => {
     // The seeded guest, granted the manager permissions but with View household

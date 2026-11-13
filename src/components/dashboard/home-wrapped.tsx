@@ -137,17 +137,18 @@ export function HomeWrapped() {
         unavailable.push(name);
       }));
       if (permissions['chores.view']) {
-        // Member names label the champion; scores are grouped by email (see summarizeChores).
+        // Member names label the champion; scores are grouped by uid (see summarizeChores).
         const members = await getDocs(base('members')).catch(() => null);
         const names = new Map((members?.docs ?? []).flatMap((member) => {
-          const data = member.data() as { email?: unknown; displayName?: unknown };
-          return typeof data.email === 'string' && typeof data.displayName === 'string' ? [[data.email.trim().toLowerCase(), data.displayName] as const] : [];
+          const data = member.data() as { displayName?: unknown };
+          return typeof data.displayName === 'string' ? [[member.id, data.displayName] as const] : [];
         }));
-        // Uid-only chores (member privacy release C) are credited through the members' emails.
-        const people = (members?.docs ?? []).map((member) => {
-          const email = (member.data() as { email?: unknown }).email;
-          return { uid: member.id, email: typeof email === 'string' ? email : null };
-        });
+        // Only the viewer's own email is known here (membership records carry none):
+        // it folds the viewer's legacy email-derived stats key into their uid key.
+        const people = (members?.docs ?? []).map((member) => ({
+          uid: member.id,
+          email: member.id === currentUser?.uid ? currentUser?.email ?? null : null,
+        }));
         // Completions upkeep already removed (kept 90 days) live in the yearly stats.
         // Stats and retained chores are read as one consistent snapshot (stats,
         // chores, stats again; retried if a purge lands in between), so no chore is

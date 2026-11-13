@@ -41,16 +41,21 @@ const memberRef = (person: VerifiedCaller) => house().collection('members').doc(
 const memberData = async (person: VerifiedCaller) => (await memberRef(person).get()).data();
 const profile = async (person: VerifiedCaller) => (await adminDb.collection('users').doc(person.email).get()).data();
 
-const seedMember = (person: VerifiedCaller, role: HouseholdRole, permissions: PermissionOverrides = {}, householdId = HOUSE) =>
-  adminDb.collection('households').doc(householdId).collection('members').doc(person.uid).set({
+// As the server writes members since release D: no email on the record, the email
+// in the protected contact document.
+const SEEDED_CONTACT_AT = '2026-07-01T00:00:00.000Z';
+const seedMember = async (person: VerifiedCaller, role: HouseholdRole, permissions: PermissionOverrides = {}, householdId = HOUSE) => {
+  const ref = adminDb.collection('households').doc(householdId).collection('members').doc(person.uid);
+  await ref.set({
     uid: person.uid,
-    email: person.email,
     ...(person.displayName ? { displayName: person.displayName } : {}),
     role,
     status: role === 'newuser' ? 'pending' : 'active',
     permissions,
     joinedAt: '2026-07-01T00:00:00.000Z',
   });
+  await ref.collection('private').doc('contact').set({ email: person.email, updatedAt: SEEDED_CONTACT_AT });
+};
 
 /** Gives an existing member permission overrides, as an owner would have. */
 const grant = (person: VerifiedCaller, permissions: PermissionOverrides) => memberRef(person).update({ permissions });
@@ -275,9 +280,20 @@ describe('approve and change role', () => {
     assert.equal(entry.targetEmail, pending.email);
     assert.equal(entry.targetName, pending.displayName);
     assert.deepEqual(entry.details, { role: 'member', previousRole: 'newuser' });
-    // Approval writes the protected contact document for people who joined before it existed.
+    // The email comes from the protected contact document; approval leaves it as it is
+    // and never puts an email on the record.
     const contact = (await memberRef(pending).collection('private').doc('contact').get()).data();
-    assert.deepEqual(contact, { email: pending.email, updatedAt: NOW.toISOString() });
+    assert.deepEqual(contact, { email: pending.email, updatedAt: SEEDED_CONTACT_AT });
+    assert.equal('email' in (data ?? {}), false);
+  });
+
+  test('a legacy email on the record is never used: without a contact document there is no email', async () => {
+    await memberRef(pending).update({ email: 'legacy.record@example.test' });
+    await memberRef(pending).collection('private').doc('contact').delete();
+    await changeMemberRole(admin, HOUSE, pending.uid, 'member', NOW);
+    const [entry] = await audits('member.approved');
+    assert.equal(entry.targetEmail, null);
+    assert.equal((await adminDb.collection('users').doc('legacy.record@example.test').get()).exists, false);
   });
 
   test('a role change of an approved member leaves the contact document alone', async () => {

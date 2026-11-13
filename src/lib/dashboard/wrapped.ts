@@ -6,8 +6,8 @@ import { toDateValue } from './dates';
 import { completionInstant, type ChoreRecord } from '../chores/dates';
 import type { RawDoc } from './facts';
 import { localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
-import { choreStatsAssigneeKey } from '../../../functions/src/shared/ids';
-import { creditedPerson, creditedStatsKey, foldAliasedUidKeys, readChoreStats, type CreditPerson, type PurgedChore } from '../../../functions/src/shared/chore-stats';
+import { choreStatsMemberKey } from '../../../functions/src/shared/ids';
+import { creditedPerson, foldLegacyStatsKeys, readChoreStats, type CreditPerson, type PurgedChore } from '../../../functions/src/shared/chore-stats';
 
 export type WrappedSummary = {
   year: number;
@@ -67,13 +67,14 @@ export function countInYear(dates: readonly unknown[], year: number, timeZone?: 
  * module's `completionInstant`, read in the household's timezone, like the stats.
  *
  * Each retained completion counts for its completer, else its assignee
- * (`creditedPerson`, the rule upkeep uses when it moves it into the stats; a
- * uid-only chore is credited through `people`).
- * Scores are grouped by the stable key (`creditedStatsKey`: `choreStatsAssigneeKey`
- * of that email, or the uid key of someone whose email is not known), so two members who share a first name never pool their chores and a
- * renamed member keeps one score; only the winner's label is shortened to a first
- * name (member record, then the credited person's name on the chore, then the
- * stats' name; never the email).
+ * (`creditedPerson`, the rule upkeep uses when it moves it into the stats).
+ * Scores are grouped by the member's uid key (`choreStatsMemberKey`), so two
+ * members who share a first name never pool their chores and a renamed member
+ * keeps one score; only the winner's label is shortened to a first name (member
+ * record, then the credited person's name on the chore, then the stats' name;
+ * never the email). Stats written before they were keyed by uid may still hold
+ * legacy email-derived keys: those of `people` whose email is known are folded
+ * into their uid key (`foldLegacyStatsKeys`), any other counts on its own.
  *
  * Without a stats document (older households, or a failed read) only retained
  * chores can be counted: `choresWindow` is then `'last90days'` and the card says so.
@@ -82,18 +83,19 @@ export function summarizeChores(
   chores: RawDoc[],
   year: number,
   options: {
+    /** Display names by member uid (membership records). */
     names?: ReadonlyMap<string, string>;
     stats?: unknown;
     timeZone?: string | null;
-    /** Household members (uid, email where known): uid-only chores are credited through them. */
+    /** Household members (uid; email where known, to match older email-only records). */
     people?: readonly CreditPerson[];
   } = {},
 ): Pick<WrappedSummary, 'choresDone' | 'champion' | 'choresWindow'> {
   const zone = safeTimeZone(options.timeZone);
   const yearOf = (date: Date | null) => (date ? Number(localDay(date, zone).slice(0, 4)) : null);
-  const stats = options.stats ? foldAliasedUidKeys(readChoreStats(options.stats, year)) : null;
+  const stats = options.stats ? foldLegacyStatsKeys(readChoreStats(options.stats, year), options.people) : null;
   const names = new Map<string, string>();
-  options.names?.forEach((name, email) => names.set(choreStatsAssigneeKey(email), name));
+  options.names?.forEach((name, uid) => names.set(choreStatsMemberKey(uid), name));
 
   const counts = new Map<string, number>(Object.entries(stats?.byAssignee ?? {}));
   const labels = new Map<string, unknown>(Object.entries(stats?.names ?? {}));
@@ -106,7 +108,7 @@ export function summarizeChores(
     // 90-day boundary.
     const person = creditedPerson(chore as Omit<PurgedChore, 'completedAt'>, options.people);
     if (!person) continue;
-    const key = creditedStatsKey(person, stats?.aliases);
+    const key = choreStatsMemberKey(person.uid);
     counts.set(key, (counts.get(key) ?? 0) + 1);
     // Labels only: a name that looks like an email is never used.
     if (!labels.has(key) && typeof person.name === 'string' && person.name.trim() && !person.name.includes('@')) labels.set(key, person.name);

@@ -72,6 +72,8 @@ describe('invite redemption', () => {
     const member = (await house.collection('members').doc(newcomer.uid).get()).data();
     assert.equal(member?.role, 'newuser');
     assert.equal(member?.status, 'pending');
+    // No email on the record (it is in the protected contact document only).
+    assert.equal('email' in (member ?? {}), false);
     // The household document gets no email (member privacy release C); the legacy list is untouched.
     assert.deepEqual((await house.get()).data()?.memberEmails, [owner.email, admin.email, guest.email]);
     const used = (await adminDb.collection('inviteCodes').doc('ABCD-EFGH-JK').get()).data();

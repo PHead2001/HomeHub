@@ -3,20 +3,20 @@ import { describe, test } from 'node:test';
 import { contactEmailOf, memberEmailOf, withContactEmails } from '../../functions/src/shared/member-contact';
 import { contactBackfillDecision, contactDocument } from '../../scripts/ops/member-contact.mjs';
 
-describe('member email: contact document first, then the membership record', () => {
-  test('the contact document wins when it holds an email', () => {
+describe('member email: the contact document only (member privacy release D)', () => {
+  test('the contact document holds the email', () => {
     assert.equal(memberEmailOf({ email: 'record@example.test' }, { email: ' contact@example.test ' }), 'contact@example.test');
   });
 
-  test('a missing, empty or malformed contact falls back to the record', () => {
+  test('a missing, empty or malformed contact means no email; the record is never used', () => {
     for (const contact of [undefined, null, {}, { email: '' }, { email: '  ' }, { email: 42 }, 'contact@example.test']) {
-      assert.equal(memberEmailOf({ email: 'record@example.test' }, contact), 'record@example.test');
+      assert.equal(memberEmailOf({ email: 'record@example.test' }, contact), '');
     }
     assert.equal(memberEmailOf({}, undefined), '');
     assert.equal(contactEmailOf(null), '');
   });
 
-  test('withContactEmails replaces only the members that have a contact email', () => {
+  test('withContactEmails sets each email from the contact document and drops record emails', () => {
     const members = [
       { uid: 'a', email: 'a.old@example.test', role: 'owner' },
       { uid: 'b', email: 'b@example.test', role: 'member' },
@@ -25,10 +25,11 @@ describe('member email: contact document first, then the membership record', () 
     const contacts = new Map<string, unknown>([['a', { email: 'a@example.test' }], ['c', { email: 'c@example.test' }], ['b', { email: '' }]]);
     assert.deepEqual(withContactEmails(members, contacts), [
       { uid: 'a', email: 'a@example.test', role: 'owner' },
-      { uid: 'b', email: 'b@example.test', role: 'member' },
+      { uid: 'b', role: 'member' },
       { uid: 'c', email: 'c@example.test', role: 'guest' },
     ]);
-    assert.equal(withContactEmails(members, new Map())[1], members[1], 'records without a contact are passed through');
+    assert.equal(withContactEmails(members, new Map())[2], members[2], 'a record without any email is passed through');
+    assert.equal('email' in withContactEmails(members, new Map())[1], false);
   });
 });
 

@@ -17,11 +17,12 @@ import {
 } from "./shared/chore-reminders";
 import {syncOverdueNotification} from "./overdue-chores";
 import {
-  addPurgedChores, choreStatsDocId, completionYear, readChoreStats,
+  addPurgedChores, choreStatsDocId, completionYear, purgeMustWait,
+  readChoreStats,
   type PurgedChore,
 } from "./shared/chore-stats";
 import {
-  assigneeFields, occurrenceAssigneeKey, resolveAssigneeUid,
+  assigneeEmailOf, assigneeFields, occurrenceAssigneeKey, resolveAssigneeUid,
 } from "./shared/assignee";
 import {
   choreOccurrenceKey, deterministicNotificationId, recurringChoreId,
@@ -122,16 +123,17 @@ const notificationBody = (
 
 /**
  * The protected contact documents (`members/{uid}/private/contact`) of these
- * members, by uid. A failed read yields no contacts, so callers fall back to
- * the email on the membership record.
+ * members, by uid: the only source of a member's email. A failed read
+ * yields `null`, distinct from "no contacts" (an empty map).
  * @param {DocumentReference} house Household document.
  * @param {string[]} uids Members to read.
- * @return {Promise<Map<string, unknown>>} Contact data by uid.
+ * @return {Promise<Map<string, unknown> | null>} Contact data by uid, or
+ *   null when the read failed.
  */
-export const readMemberContacts = async (
+export const readMemberContactsOrNull = async (
   house: DocumentReference,
   uids: string[],
-): Promise<Map<string, unknown>> => {
+): Promise<Map<string, unknown> | null> => {
   if (uids.length === 0) return new Map();
   const refs = uids.map((uid) =>
     house.collection("members").doc(uid).collection("private").doc("contact"));
@@ -139,7 +141,48 @@ export const readMemberContacts = async (
     const snaps = await house.firestore.getAll(...refs);
     return new Map(snaps.map((snap, index) => [uids[index], snap.data()]));
   } catch {
-    return new Map();
+    return null;
+  }
+};
+
+/** Thrown when the members' contact documents could not be read. */
+export class MemberContactsUnavailable extends Error {
+  attempts: number;
+  /** @param {number} attempts How many reads were tried. */
+  constructor(attempts: number) {
+    super(`Member contact documents unreadable after ${attempts} attempts.`);
+    this.name = "MemberContactsUnavailable";
+    this.attempts = attempts;
+  }
+}
+
+/**
+ * As readMemberContactsOrNull, for a caller that nothing will revisit (the
+ * push trigger on a new notification): a failed read is tried again after
+ * each of `delaysMs` (by default three reads, 250 ms and 1 s apart), and if
+ * every read fails it throws, so the caller fails visibly rather than
+ * finishing with no recipients. It never falls back to an email kept on a
+ * membership record.
+ * @param {DocumentReference} house Household document.
+ * @param {string[]} uids Members to read.
+ * @param {number[]} delaysMs Waits before each retry.
+ * @param {Function} wait Sleeps for a number of milliseconds (tests).
+ * @return {Promise<Map<string, unknown>>} Contact data by uid.
+ */
+export const readMemberContacts = async (
+  house: DocumentReference,
+  uids: string[],
+  delaysMs: readonly number[] = [250, 1000],
+  wait: (ms: number) => Promise<unknown> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<Map<string, unknown>> => {
+  for (let attempt = 0; ; attempt++) {
+    const contacts = await readMemberContactsOrNull(house, uids);
+    if (contacts) return contacts;
+    if (attempt >= delaysMs.length) {
+      throw new MemberContactsUnavailable(attempt + 1);
+    }
+    await wait(delaysMs[attempt]);
   }
 };
 
@@ -238,7 +281,8 @@ export const runHouseholdReminders = async (
             if (typeof key === "string") takenKeys.set(key, op.ref.id);
           }
         } else if (snap.exists && snap.get("isCompleted") === true &&
-            snap.get("completedAt") === op.completedAt) {
+            snap.get("completedAt") === op.completedAt &&
+            !purgeMustWait(snap.data() ?? {}, members, emailsKnown)) {
           tx.delete(op.ref);
           purged++;
           // Counted only when actually deleted, so repeated or overlapping
@@ -259,8 +303,8 @@ export const runHouseholdReminders = async (
       statsYears.forEach((year, index) => {
         const chores = purgedByYear.get(year);
         if (!chores || chores.length === 0) return;
-        // Uid-only chores (member privacy release C) are credited through the
-        // members' emails, the same stats key as before.
+        // Keyed by uid. Members' emails (from their contact documents) match
+        // older email-only chores and fold any legacy email-derived key.
         const stats = addPurgedChores(
           readChoreStats(statsSnaps[index]?.data(), year), chores, members);
         tx.set(statsRefs[index], {...stats, updatedAt: ts(now)});
@@ -293,9 +337,16 @@ export const runHouseholdReminders = async (
       (m.status === undefined || m.status === "active")) as Array<{
         uid: string; email?: string; displayName?: string;
       }>;
-  // Emails come from each member's contact document first, then the record.
-  const members = withContactEmails(approvedRecords, await readMemberContacts(
-    house, approvedRecords.map((m) => m.uid)));
+  // Emails come only from each member's contact document. When that read
+  // fails, reminders simply skip email-keyed lookups this run; purges of
+  // chores that can only be credited through an email, and generation from
+  // templates that still carry an email, wait for a run that has the emails
+  // (purgeMustWait, and the template check below), so no credit is lost and
+  // no possibly stale uid is trusted.
+  const contacts = await readMemberContactsOrNull(
+    house, approvedRecords.map((m) => m.uid));
+  const emailsKnown = contacts !== null;
+  const members = withContactEmails(approvedRecords, contacts ?? new Map());
   const memberByUid = new Map(members.map((m) => [m.uid, m]));
 
   // Recurring chores: create the next occurrences that do not exist yet. An
@@ -318,7 +369,17 @@ export const runHouseholdReminders = async (
     const assignee = occurrenceAssigneeKey(template);
     if (!recurrence || !assignee) continue;
     // Never generate work for someone who is no longer an approved member.
-    const assigneeUid = resolveAssigneeUid(template, members);
+    // A template that still carries an assignee email (written before member
+    // privacy release C and not yet scrubbed) is generated only for the
+    // member whose contact document holds that email: its uid may be stale
+    // (an older build reassigned it by email only), and a day once written
+    // is never generated again. Without that match (the contact read failed,
+    // or the email names nobody) it waits for a later run.
+    const templateEmail = assigneeEmailOf(template);
+    const assigneeUid = templateEmail ?
+      members.find((m) => typeof m.email === "string" &&
+        m.email.trim().toLowerCase() === templateEmail)?.uid ?? null :
+      resolveAssigneeUid(template, members);
     const person = assigneeUid ? memberByUid.get(assigneeUid) : undefined;
     if (!person) continue;
     const rooms: string[] = Array.isArray(template.roomIds) &&
@@ -374,8 +435,11 @@ export const runHouseholdReminders = async (
     // Retention keys off completedAt (unchanged policy); the stats year comes
     // from the authoritative completion instant (completedAtServer first).
     const year = completedAt ? completionYear(chore, timeZone) : null;
+    // A chore credited only through an email is left for a later run when
+    // the members' emails are unknown or name nobody (see purgeMustWait).
     if (chore.isCompleted && completedAt && year !== null &&
-        completedAt < purgeBefore && choreOps.length < 450) {
+        completedAt < purgeBefore && choreOps.length < 450 &&
+        !purgeMustWait(chore, members, emailsKnown)) {
       choreOps.push({
         kind: "purge", ref: choreDoc.ref, completedAt: chore.completedAt, year,
       });
@@ -545,8 +609,8 @@ export const runHouseholdReminders = async (
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
     ChoreInput);
   const choreIdSet = new Set(choreDocs.map((d) => d.id));
-  // Reminder settings live on the email-keyed profile, so members with no
-  // email in either their contact document or their record are skipped.
+  // Reminder settings live on the email-keyed profile, so members without a
+  // contact document email are skipped.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
     typeof m.email === "string" && m.email.length > 0);
   const profiles = await Promise.all(reachable.map((m) =>

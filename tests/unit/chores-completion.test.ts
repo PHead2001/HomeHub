@@ -10,7 +10,7 @@ import { approvedPeople } from '../../src/lib/member-directory';
 import { streakMembersFrom } from '../../src/lib/dashboard/streaks';
 import { occurrences, plannedRecurringEvents } from '../../src/lib/chores/calendar';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
-import { choreOccurrenceKey, choreStatsAssigneeKey, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
+import { choreOccurrenceKey, choreStatsMemberKey, recurringChoreId, storedOccurrenceKey } from '../../functions/src/shared/ids';
 import { addPurgedChores, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { occurrenceKeyDecision, storedOccurrenceKey as opsStoredOccurrenceKey } from '../../scripts/ops/occurrence-key.mjs';
 
@@ -18,7 +18,7 @@ const ZONE = 'America/Chicago';
 // 23:30 Thu Nov 5 in Chicago (already Nov 6 in UTC), and 00:30 Fri Nov 6.
 const BEFORE_MIDNIGHT = new Date('2026-11-06T05:30:00Z');
 const AFTER_MIDNIGHT = new Date('2026-11-06T06:30:00Z');
-const completer = { uid: 'u-sam', email: 'sam@example.test', name: 'Sam' };
+const completer = { uid: 'u-sam', name: 'Sam' };
 
 describe('completion eligibility (CH-2)', () => {
   it('uses the household day, not UTC or the device', () => {
@@ -46,14 +46,15 @@ describe('completion planning', () => {
   const base = { isCompleted: false, originalDueDate: '2026-11-05', subTasks: ['Rinse', 'Dry'], completedSubTasks: ['Rinse'] };
   const options = { completer, now: AFTER_MIDNIGHT, timeZone: ZONE, completeSubTasks: true, completionId: 'c-1' };
 
-  it('records the completer and ticks open steps', () => {
+  it('records the completer (uid and name, never the email) and ticks open steps', () => {
     const plan = planCompletion(base, options);
     assert.equal(plan.kind, 'complete');
     if (plan.kind !== 'complete') return;
     assert.deepEqual(plan.fields, {
-      isCompleted: true, completedAt: AFTER_MIDNIGHT.toISOString(), completedByUid: 'u-sam', completedByEmail: 'sam@example.test',
+      isCompleted: true, completedAt: AFTER_MIDNIGHT.toISOString(), completedByUid: 'u-sam',
       completedByName: 'Sam', completionId: 'c-1', completedSubTasks: ['Rinse', 'Dry'],
     });
+    assert.equal(plan.completion.completedByEmail, null);
     assert.deepEqual(plan.previousCompletedSubTasks, ['Rinse']);
   });
 
@@ -162,13 +163,14 @@ describe('the completer gets the points (CH-12, D-7)', () => {
   });
 
   it('yearly stats credit the completer too', () => {
+    const people = [{ uid: 'u-sam', email: 'sam@example.test' }, { uid: 'u-alex', email: 'alex@example.test' }];
     const next = addPurgedChores(readChoreStats(undefined, 2026), [
-      { assignedToEmail: 'alex@example.test', assignedToDisplayName: 'Alex', completedByEmail: 'sam@example.test', completedByName: 'Sam', completedAt: '2026-08-01T12:00:00.000Z' },
+      { assignedToUid: 'u-alex', assignedToDisplayName: 'Alex', completedByUid: 'u-sam', completedByName: 'Sam', completedAt: '2026-08-01T12:00:00.000Z' },
       { assignedToEmail: 'alex@example.test', assignedToDisplayName: 'Alex', completedAt: '2026-08-01T12:00:00.000Z' },
-    ]);
-    assert.equal(next.byAssignee[choreStatsAssigneeKey('sam@example.test')], 1);
-    assert.equal(next.byAssignee[choreStatsAssigneeKey('alex@example.test')], 1);
-    assert.equal(next.names[choreStatsAssigneeKey('sam@example.test')], 'Sam');
+    ], people);
+    assert.equal(next.byAssignee[choreStatsMemberKey('u-sam')], 1);
+    assert.equal(next.byAssignee[choreStatsMemberKey('u-alex')], 1);
+    assert.equal(next.names[choreStatsMemberKey('u-sam')], 'Sam');
   });
 });
 

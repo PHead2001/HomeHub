@@ -46,6 +46,17 @@ service cloud.firestore {
       return hasMemberDoc(householdId) && isApprovedMemberData(myMember(householdId));
     }
 
+    // During a household deletion every membership is set to status `deleting`. A
+    // member who was approved (any role but a pending `newuser`) may still read the
+    // household document then, so a failed deletion can be seen and the owner can
+    // finish it (the server action checks owner and deleting state itself). Nothing
+    // else in the household is readable to them.
+    function isDeletingMember(householdId) {
+      return hasMemberDoc(householdId) &&
+        myMember(householdId).get('status', '') == 'deleting' &&
+        myMember(householdId).role in ['owner', 'admin', 'member', 'child', 'guest'];
+    }
+
     function isOwnerRole(householdId) {
       return isApprovedMember(householdId) && myMember(householdId).role == 'owner';
     }
@@ -184,10 +195,9 @@ service cloud.firestore {
     }
 
     function canReadProfile(userEmail) {
-      return isProfileOwner(userEmail) ||
-        (resource != null &&
-          resource.data.get('householdId', null) is string &&
-          isApprovedMember(resource.data.householdId));
+      // The person only. Housemates see each other through the membership
+      // records (public member data); the server reads profiles with the Admin SDK.
+      return isProfileOwner(userEmail);
     }
 
     // ---------------------------------------------------------------------
@@ -202,13 +212,11 @@ service cloud.firestore {
         (data.deepLink is string && data.deepLink.matches('^/([^/\\\\\\x00-\\x1f\\x7f][^\\x00-\\x1f\\x7f]*)?$') && data.deepLink.size() <= 300);
     }
 
+    // A notification names its target by account ID only (`targetUserUid`, a
+    // member of this household); `targetUserEmail` is not accepted.
     function validNotificationTarget(householdId, data) {
-      return (!('targetUserUid' in data) ||
-          (data.targetUserUid is string && exists(memberPath(householdId, data.targetUserUid)))) &&
-        (!('targetUserEmail' in data) ||
-          (data.targetUserEmail is string &&
-            exists(/databases/$(database)/documents/users/$(data.targetUserEmail)) &&
-            get(/databases/$(database)/documents/users/$(data.targetUserEmail)).data.get('householdId', null) == householdId));
+      return !('targetUserUid' in data) ||
+        (data.targetUserUid is string && exists(memberPath(householdId, data.targetUserUid)));
     }
 
     // `audience` names who the notification is for: [targetUserUid] for one
@@ -262,7 +270,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'householdId', 'category', 'title', 'message', 'createdAt', 'expiresAt',
           'deepLink', 'sourceType', 'sourceId', 'stateKey',
-          'targetUserUid', 'targetUserEmail', 'readBy', 'dismissedBy', 'createdByUid',
+          'targetUserUid', 'readBy', 'dismissedBy', 'createdByUid',
           'audience'
         ]) &&
         data.category in ['chores', 'shopping', 'pets', 'maintenance', 'automation', 'system', 'general'] &&
@@ -277,15 +285,32 @@ service cloud.firestore {
         validNotificationAudience(data);
     }
 
+    // Who read, dismissed or resolved a notification: `{ at, uid, displayName }`
+    // (src/lib/notifications.ts createNotificationAction), never an email.
+    function validNotificationAction(entry) {
+      return entry is map && entry.keys().hasOnly(['at', 'uid', 'displayName']);
+    }
+
+    // The caller's own entry in `readBy` / `dismissedBy`, when this write sets it,
+    // is an action entry; removing it (Undo) is allowed.
+    function ownNotificationStateValid(after, before) {
+      return !after.diff(before).affectedKeys().hasAny([request.auth.uid]) ||
+        !(request.auth.uid in after) ||
+        validNotificationAction(after[request.auth.uid]);
+    }
+
     function updatesOnlyOwnNotificationState() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy', 'dismissedBy']) &&
              request.resource.data.readBy.diff(resource.data.readBy).affectedKeys().hasOnly([request.auth.uid]) &&
-             request.resource.data.dismissedBy.diff(resource.data.dismissedBy).affectedKeys().hasOnly([request.auth.uid]);
+             request.resource.data.dismissedBy.diff(resource.data.dismissedBy).affectedKeys().hasOnly([request.auth.uid]) &&
+             ownNotificationStateValid(request.resource.data.readBy, resource.data.readBy) &&
+             ownNotificationStateValid(request.resource.data.dismissedBy, resource.data.dismissedBy);
     }
 
     function resolvesMaintenanceNotification() {
       return resource.data.category == 'maintenance' &&
              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolvedAt', 'resolvedBy']) &&
+             validNotificationAction(request.resource.data.resolvedBy) &&
              request.resource.data.resolvedBy.uid == request.auth.uid;
     }
 
@@ -362,28 +387,24 @@ service cloud.firestore {
       return email == null || email == '' || email == request.auth.token.email;
     }
 
-    // The uid assignee written alongside the email (member privacy release A). Without
-    // chores.assign a uid is accepted only when it is verifiably the assignee the email
-    // names: none, the caller's own uid beside the caller's own email, or a member of this
-    // household whose member document carries that email.
+    // The uid assignee written alongside an email (older records). Without chores.assign
+    // a uid is accepted only when it is verifiably the assignee the email names: none, or
+    // the caller's own uid beside the caller's own email. Membership records carry no
+    // email, so any other uid needs chores.assign.
     function choreAssigneeUidMatchesEmail(householdId, uid, email) {
       return uid == null || uid == '' ||
-        (uid == request.auth.uid && email == request.auth.token.email) ||
-        (email is string && email != '' &&
-          exists(/databases/$(database)/documents/households/$(householdId)/members/$(uid)) &&
-          get(/databases/$(database)/documents/households/$(householdId)/members/$(uid)).data.get('email', null) == email);
+        (uid == request.auth.uid && email == request.auth.token.email);
     }
 
     // `uid` is the member of this household whom a stored legacy assignee email names:
-    // their member document or their protected contact document holds that email
-    // (compared case-insensitively). The rules read the contact document themselves;
-    // the caller never sees it.
+    // their protected contact document holds that email (compared case-insensitively;
+    // never an email left on a membership record). The rules read the contact
+    // document themselves; the caller never sees it.
     function memberUidHasEmail(householdId, uid, email) {
       let member = /databases/$(database)/documents/households/$(householdId)/members/$(uid);
       let contact = /databases/$(database)/documents/households/$(householdId)/members/$(uid)/private/contact;
       return uid is string && uid != '' && email is string && email != '' && exists(member) &&
-        (get(member).data.get('email', '').lower() == email.lower() ||
-          (exists(contact) && get(contact).data.get('email', '').lower() == email.lower()));
+        exists(contact) && get(contact).data.get('email', '').lower() == email.lower();
     }
 
     // Release C writers replace a legacy assignee email by the uid of the member it
@@ -1087,11 +1108,12 @@ service cloud.firestore {
     // ---------------------------------------------------------------------
 
     match /households/{householdId} {
-      // Pending members may read the household document (name) for the waiting screen.
-      allow get: if hasMemberDoc(householdId);
+      // Approved members (and, during a deletion, members who were approved: see
+      // isDeletingMember). A pending person uses `householdName` on their own record.
+      allow get: if isApprovedMember(householdId) || isDeletingMember(householdId);
       allow list: if false;
       // Households are created, renamed, re-owned and deleted only by the server
-      // (Admin SDK); memberEmails and ownerEmail are server-written compatibility data.
+      // (Admin SDK); no one writes memberEmails or ownerEmail any more (release C).
       allow create: if false;
       allow update: if isOwnerOrAdmin(householdId) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['timeZone', 'updatedAt']) &&

@@ -88,7 +88,6 @@ export async function completeChoresAs(
     const memberName = member.get('displayName');
     const completer = {
       uid: caller.uid,
-      email: caller.email,
       // Shown to every member ("Done by Sam"): a name, never an email (HO-9).
       name: publicDisplayName(memberName, '') || publicDisplayName(caller.displayName),
     };
@@ -98,7 +97,10 @@ export async function completeChoresAs(
       const plan = planCompletion(snap.data()!, { completer, now, timeZone, completeSubTasks, completionId: randomUUID() });
       if (plan.kind === 'early') return { choreId, status: 'refused', refused: 'early', dueDay: plan.dueDay };
       if (plan.kind === 'already') return { choreId, status: 'already', completion: plan.completion };
-      tx.update(snap.ref, { ...plan.fields, completedAtServer: FieldValue.serverTimestamp() });
+      // A completion reopened by an older client can still carry the previous completer's
+      // email: remove it, so the shared chore never pairs someone else's email with this uid
+      // (the migration would read that pair as evidence of whose email it is).
+      tx.update(snap.ref, { ...plan.fields, completedByEmail: FieldValue.delete(), completedAtServer: FieldValue.serverTimestamp() });
       return { choreId, status: 'completed', completion: plan.completion, previousCompletedSubTasks: plan.previousCompletedSubTasks };
     });
   });

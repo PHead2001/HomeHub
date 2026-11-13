@@ -2,13 +2,25 @@ import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
-import { leaveHousehold, type VerifiedCaller } from '../../src/lib/server/household-membership';
+import { leaveHousehold, removeMember, type VerifiedCaller } from '../../src/lib/server/household-membership';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 import { choreStatsAssigneeKey, choreStatsMemberKey } from '../../functions/src/shared/ids';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
+import { formerMemberKey as formerMemberKeyTs } from '../../functions/src/shared/former-member';
+import { formerMemberKey } from '../../scripts/ops/former-member-key.mjs';
+import {
+  hasLegacyKeys,
+  householdLegacyKeys,
+  householdStats,
+  readHouseholdPeople,
+  rekeyHouseholdStats,
+  scrubChoreCollection,
+  settleHouseholdFormerPeople,
+} from '../../scripts/ops/member-privacy-household.mjs';
 
 // Review finding on #140: a member's yearly chore score stays one bucket when they
 // leave (archived before + retained after), so Home Wrapped's champion does not change.
+// Release D keys everyone by uid: the departure alias folds the archived legacy key into it.
 const HOUSE = 'departed-stats-house';
 const house = () => adminDb.collection('households').doc(HOUSE);
 const ts = (d: Date) => Timestamp.fromDate(d) as never;
@@ -55,31 +67,42 @@ after(async () => {
 });
 
 describe('yearly chore credit across a departure', () => {
+  // Nothing in any stats document is derived from Sam's email after the departure.
+  const noSamEmailKey = async () => {
+    for (const doc of (await house().collection('stats').get()).docs) {
+      const text = JSON.stringify(doc.data());
+      assert.ok(!text.includes(SAM), `${doc.id} holds no email-derived key for Sam`);
+      assert.equal(doc.data().aliases, undefined, `${doc.id} has no departure alias`);
+    }
+  };
+
   test('archived before + retained after are one bucket: the champion is unchanged by the departure and by the purge', async () => {
     const everyone = [owner, sam, ana];
-    const byEmail = new Map([[owner.email, 'Owner'], [sam.email, 'Sam'], [ana.email, 'Ana']]);
-    assert.deepEqual((await wrapped(everyone, byEmail)).champion, { name: 'Sam', count: 10 });
+    const byUid = new Map([[owner.uid, 'Owner'], [sam.uid, 'Sam'], [ana.uid, 'Ana']]);
+    assert.deepEqual((await wrapped(everyone, byUid)).champion, { name: 'Sam', count: 10 });
 
     await leaveHousehold(sam, HOUSE, new Date('2026-03-01T12:00:00Z'));
+    // Release D: the departure folds Sam's legacy key into his uid key and writes no alias.
     const stats = (await house().collection('stats').doc('chores-2026').get()).data();
-    assert.deepEqual(stats?.aliases, { [sam.uid]: SAM }, 'the departure keeps Sam\'s key, with no email');
-    assert.equal((await house().collection('stats').doc('chores-2025').get()).data()?.aliases?.[sam.uid], SAM);
+    assert.deepEqual(stats?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 5, [ANA]: 7 });
+    assert.deepEqual(stats?.names, { [choreStatsMemberKey(sam.uid)]: 'Sam', [ANA]: 'Ana' });
+    await noSamEmailKey();
+    assert.equal((await house().collection('stats').doc('chores-2025').get()).exists, false, 'no document created');
     const left = [owner, ana];
-    const leftNames = new Map([[owner.email, 'Owner'], [ana.email, 'Ana']]);
+    const leftNames = new Map([[owner.uid, 'Owner'], [ana.uid, 'Ana']]);
     assert.deepEqual((await wrapped(left, leftNames)).champion, { name: 'Sam', count: 10 }, 'not Ana (7)');
 
     // Upkeep purges Sam's five once they are 90 days old.
     const result = await runHouseholdReminders(adminDb as never, HOUSE, new Date('2026-06-01T15:00:00Z'), ts);
     assert.equal(result.purgedChores, 5);
     const after = (await house().collection('stats').doc('chores-2026').get()).data();
-    assert.deepEqual(after?.byAssignee, { [SAM]: 10, [ANA]: 7 });
+    assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 10, [choreStatsMemberKey(ana.uid)]: 7 });
     assert.equal(after?.completed, 17);
-    assert.equal(after?.byAssignee?.[choreStatsMemberKey(sam.uid)], undefined, 'no second bucket for Sam');
-    assert.deepEqual(after?.aliases, { [sam.uid]: SAM }, 'kept by upkeep');
+    await noSamEmailKey();
     assert.deepEqual((await wrapped(left, leftNames)).champion, { name: 'Sam', count: 10 });
   });
 
-  test('a uid bucket written before the alias existed is folded into it', async () => {
+  test('an alias written by release C (departure before D) still makes one score until the re-key removes it', async () => {
     await house().collection('stats').doc('chores-2026').set({
       year: 2026, completed: 14, byAssignee: { [SAM]: 5, [ANA]: 7, [choreStatsMemberKey(sam.uid)]: 2 }, names: { [SAM]: 'Sam', [ANA]: 'Ana' },
       aliases: { [sam.uid]: SAM },
@@ -89,36 +112,102 @@ describe('yearly chore credit across a departure', () => {
     assert.deepEqual((await wrapped(left, new Map())).champion, { name: 'Sam', count: 12 });
     await runHouseholdReminders(adminDb as never, HOUSE, new Date('2026-06-01T15:00:00Z'), ts);
     const after = (await house().collection('stats').doc('chores-2026').get()).data();
-    assert.deepEqual(after?.byAssignee, { [SAM]: 12, [ANA]: 7 });
+    assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 12, [choreStatsMemberKey(ana.uid)]: 7 });
   });
 
-  // Review finding on #140: the alias years are the household's, as for completionYear and Home Wrapped.
-  test('east of UTC: leaving just after local New Year aliases this local year and the last (Tokyo)', async () => {
+  test('every stats year is folded, whatever the household time zone (Tokyo, just after local New Year)', async () => {
     await house().update({ timeZone: 'Asia/Tokyo' });
-    await house().collection('stats').doc('chores-2026').delete();
+    await house().collection('stats').doc('chores-2025').set({ year: 2025, completed: 3, byAssignee: { [SAM]: 3 }, names: { [SAM]: 'Sam' } });
     for (let index = 1; index <= 5; index += 1) await house().collection('chores').doc(`sam-${index}`).delete();
     // That local morning (2027-01-01 in Tokyo, still 2026-12-31 UTC): one uid-only completion, one by email.
     await house().collection('chores').doc('sam-uid').set({ task: 'Uid', assignedToUid: sam.uid, assignedToDisplayName: 'Sam', isCompleted: true, completedAt: '2026-12-31T15:10:00.000Z' });
     await house().collection('chores').doc('sam-email').set({ task: 'Email', assignedToUid: owner.uid, isCompleted: true, completedAt: '2026-12-31T15:20:00.000Z', completedByEmail: sam.email, completedByUid: sam.uid, completedByName: 'Sam' });
     await leaveHousehold(sam, HOUSE, new Date('2026-12-31T16:00:00Z'));
-    const aliased = async (year: number) => (await house().collection('stats').doc(`chores-${year}`).get()).data()?.aliases?.[sam.uid];
-    assert.equal(await aliased(2027), SAM);
-    assert.equal(await aliased(2026), SAM);
-    assert.equal(await aliased(2025), undefined);
-    const retained = (await house().collection('chores').get()).docs.map(d => ({ id: d.id, ...d.data() }));
-    const stats2027 = (await house().collection('stats').doc('chores-2027').get()).data();
-    assert.deepEqual(summarizeChores(retained, 2027, { stats: stats2027, timeZone: 'Asia/Tokyo', people: [owner, ana] }).champion, { name: 'Sam', count: 2 });
+    assert.deepEqual((await house().collection('stats').doc('chores-2025').get()).data()?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 3 });
+    assert.deepEqual((await house().collection('stats').doc('chores-2026').get()).data()?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 5, [ANA]: 7 });
+    await noSamEmailKey();
+    const retained = (await house().collection('chores').get()).docs.map(d => ({ id: d.id, ...d.data() }) as Record<string, unknown> & { id: string });
+    assert.deepEqual(summarizeChores(retained, 2027, { timeZone: 'Asia/Tokyo', people: [owner, ana] }).champion, { name: 'Sam', count: 2 });
     await runHouseholdReminders(adminDb as never, HOUSE, new Date('2027-04-15T03:00:00Z'), ts);
+    // The completion recording Sam's email waits for the scrub (review finding 4544940133); the uid-only one purges.
+    assert.deepEqual((await house().collection('stats').doc('chores-2027').get()).data()?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 1 });
+    assert.equal((await house().collection('chores').doc('sam-email').get()).exists, true, 'waits for the scrub');
+    await scrub();
+    await runHouseholdReminders(adminDb as never, HOUSE, new Date('2027-04-15T04:00:00Z'), ts);
     const after = (await house().collection('stats').doc('chores-2027').get()).data();
-    assert.deepEqual(after?.byAssignee, { [SAM]: 2 }, 'one bucket after the purge');
+    assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 2 }, 'one bucket after the scrub and the purge');
   });
 
-  test('west of UTC: leaving on the local last evening of the year (UTC already Jan 1) aliases that local year and the one before (Los Angeles)', async () => {
+  test('a removal folds the same way and writes nothing derived from the email (Los Angeles, local last evening of the year)', async () => {
     await house().update({ timeZone: 'America/Los_Angeles' });
-    await leaveHousehold(sam, HOUSE, new Date('2027-01-01T05:00:00Z'));
-    const aliased = async (year: number) => (await house().collection('stats').doc(`chores-${year}`).get()).data()?.aliases?.[sam.uid];
-    assert.equal(await aliased(2026), SAM);
-    assert.equal(await aliased(2025), SAM);
-    assert.equal((await house().collection('stats').doc('chores-2027').get()).exists, false, 'no local 2027 yet');
+    await removeMember(owner, HOUSE, sam.uid, new Date('2027-01-01T05:00:00Z'));
+    assert.equal((await house().collection('members').doc(sam.uid).get()).exists, false);
+    assert.deepEqual((await house().collection('stats').doc('chores-2026').get()).data()?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 5, [ANA]: 7 });
+    assert.equal((await house().collection('stats').doc('chores-2027').get()).exists, false, 'no document created');
+    await noSamEmailKey();
+  });
+
+  // Review finding on #146 (4543546841): the departure records who an email-only completion belongs to.
+  const db = adminDb as never;
+  const rekey = async () => {
+    const stats = await householdStats(house());
+    if (!hasLegacyKeys(stats)) return;
+    const people = await readHouseholdPeople(db, house());
+    const former = await settleHouseholdFormerPeople(db, house(), people, { apply: true, needSecret: true });
+    await rekeyHouseholdStats(db, stats, { apply: true, byLegacy: householdLegacyKeys(people, former), unknownKeyOf: former.unknownKeyOf });
+  };
+  const scrub = async () => {
+    const people = await readHouseholdPeople(db, house());
+    const former = await settleHouseholdFormerPeople(db, house(), people, { apply: true });
+    await rekeyHouseholdStats(db, await householdStats(house()), { apply: true, byLegacy: householdLegacyKeys(people, former) });
+    const counts = { scanned: 0, clean: 0, kept: 0, scrub: 0, assignee: 0, completer: 0, former: 0, written: 0, changed: 0 };
+    for (const name of ['chores', 'chore-templates']) {
+      await scrubChoreCollection(db, house().collection(name), { apply: true, uidByEmail: people.uidByEmail, formerKeyOf: former.identityOf, counts });
+    }
+  };
+  // Sam\'s five retained completions name him by email only (written before release C).
+  const emailOnly = async () => {
+    for (let index = 1; index <= 5; index += 1) {
+      await house().collection('chores').doc(`sam-${index}`).update({ assignedToUid: '', assignedToEmail: sam.email });
+    }
+  };
+  const oneScore = async () => {
+    const stats = (await house().collection('stats').doc('chores-2026').get()).data();
+    const retained = (await house().collection('chores').get()).docs.map(d => ({ id: d.id, ...d.data() }) as Record<string, unknown> & { id: string });
+    assert.deepEqual(summarizeChores(retained, 2026, { stats, timeZone: 'America/Chicago', people: [owner, ana] }).champion, { name: 'Sam', count: 10 });
+    assert.ok(retained.filter(c => c.id.startsWith('sam-')).every(c => c.assignedToUid === sam.uid && c.assignedToEmail === undefined));
+    for (const doc of [...(await house().collection('stats').get()).docs, ...(await house().collection('chores').get()).docs]) {
+      assert.ok(!JSON.stringify(doc.data()).includes(sam.email) && !JSON.stringify(doc.data()).includes(SAM), `${doc.id}: nothing from Sam's email`);
+    }
+  };
+  const recorded = async () => {
+    const ops = (await house().collection('ops').doc('former-members').get()).data();
+    assert.ok(ops && typeof ops.secret === 'string');
+    assert.equal(ops.identities[formerMemberKey(ops.secret, sam.email)], sam.uid, 'the leaver\'s uid under the key of his email');
+    assert.equal(formerMemberKeyTs(ops.secret, sam.email), formerMemberKey(ops.secret, sam.email), 'server and scripts derive the same key');
+    assert.ok(!JSON.stringify(ops).includes('@'), 'no email stored');
+  };
+
+  test('leaving with email-only completions: re-key then scrub give one score', async () => {
+    await emailOnly();
+    await leaveHousehold(sam, HOUSE, new Date('2026-03-01T12:00:00Z'));
+    await recorded();
+    await rekey();
+    await scrub();
+    await oneScore();
+  });
+
+  test('removal with email-only completions: scrub then re-key give one score; re-runs change nothing', async () => {
+    await emailOnly();
+    await removeMember(owner, HOUSE, sam.uid, new Date('2026-03-01T12:00:00Z'));
+    await recorded();
+    await scrub();
+    await rekey();
+    await oneScore();
+    const before = JSON.stringify((await house().collection('chores').get()).docs.map(d => d.data()));
+    await scrub();
+    await rekey();
+    assert.equal(JSON.stringify((await house().collection('chores').get()).docs.map(d => d.data())), before);
+    await oneScore();
   });
 });

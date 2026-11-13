@@ -4,10 +4,9 @@ import { randomInt } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { normalizeInviteCode } from '@/lib/invite-codes';
-import { choreStatsAssigneeKey } from '@functions/shared/ids';
-import { choreStatsDocId } from '@functions/shared/chore-stats';
-import { localDay, safeTimeZone } from '@functions/shared/calendar';
-import { contactEmailOf } from '@functions/shared/member-contact';
+import { foldLegacyStatsKeys, readChoreStats } from '@functions/shared/chore-stats';
+import { formerMemberKey } from '@functions/shared/former-member';
+import { randomBytes } from 'node:crypto';
 import {
   canAssignRole,
   canEditPermissions,
@@ -51,6 +50,7 @@ export type MembershipErrorCode =
   | 'failed';
 import { notificationAudience } from '@functions/shared/notification-audience';
 import { unassignedChoreFields } from '@functions/shared/assignee';
+import { contactEmailOf } from '@functions/shared/member-contact';
 
 export class MembershipError extends Error {
   constructor(public readonly userMessage: string, public readonly code: MembershipErrorCode = 'failed') {
@@ -63,13 +63,19 @@ const NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * A member's protected contact document, `households/{id}/members/{uid}/private/contact`
  * (`{ email, updatedAt }`). Only the server writes it; the rules let the person
- * and holders of `household.manageMembers` read it. Written whenever a membership
- * is created or approved, deleted with the membership.
+ * and holders of `household.manageMembers` read it. It is the only place a
+ * member's email is kept in the household: membership records carry none. Written
+ * when a membership is created, deleted with the membership, and read by every
+ * server operation that needs the member's email (profile cache, removal, deletion).
  */
 const memberContactRef = (householdRef: FirebaseFirestore.DocumentReference, uid: string) =>
   householdRef.collection('members').doc(uid).collection('private').doc('contact');
 
 const memberContact = (email: string, now: Date) => ({ email, updatedAt: now.toISOString() });
+
+/** The email in a member's contact document, or "" (see functions/src/shared/member-contact.ts). */
+const contactEmail = (snapshot: FirebaseFirestore.DocumentSnapshot | null | undefined): string =>
+  contactEmailOf(snapshot?.exists ? snapshot.data() : undefined);
 const INVITE_MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 
 export type VerifiedCaller = { uid: string; email: string; displayName?: string; avatarUrl?: string };
@@ -166,9 +172,9 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     const householdName = typeof householdSnap.get('name') === 'string' ? householdSnap.get('name') as string : '';
     // A photo removed in Profile stays removed; see membershipAvatarUrl.
     const avatarUrl = membershipAvatarUrl(profileSnap.exists ? profileSnap.data() : undefined, caller.avatarUrl);
+    // No email on the record: it goes only into the protected contact document below.
     const member: HouseholdMember = {
       uid: caller.uid,
-      email: caller.email,
       // Public member data: never an email as the name (see syncMemberProfile).
       ...(publicMemberName(caller.displayName) ? { displayName: publicMemberName(caller.displayName) } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
@@ -182,8 +188,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
 
     transaction.set(memberRef, member);
     transaction.set(memberContactRef(householdRef, caller.uid), memberContact(caller.email, now));
-    // No email on the household document (member privacy release C): the email lives in
-    // the protected contact document above.
+    // No email on the household document either.
     transaction.update(householdRef, { updatedAt: joinedAt });
     transaction.set(profileRef, {
       email: caller.email,
@@ -317,31 +322,65 @@ const unassignChoreFields = (): FirebaseFirestore.UpdateData<FirebaseFirestore.D
 });
 
 /**
- * A departing person's yearly chore stats identity: their completions were
- * counted under `choreStatsAssigneeKey(email)` while they were a member, and
- * once their membership and contact documents are gone their uid can no longer
- * be resolved to that email. `aliases.<uid>` in the stats documents of this
- * and last year keeps crediting it to the same key (`creditedStatsKey`), so
- * their score is one bucket before and after they leave. The alias holds no
- * email. The years are the household's (`timeZone`, defaulted by
- * `safeTimeZone` exactly as upkeep's `completionYear` and Home Wrapped
- * do): a completion of theirs still stored is in the past and at most 90 days
- * old, so its stats year is this local year or the one before; next year can
- * receive none of theirs (they no longer complete chores here).
+ * A departing person's yearly chore stats: stats documents written before
+ * member privacy release D may still count them under their email-derived
+ * legacy key (`choreStatsAssigneeKey(email)`). Once their membership and
+ * contact documents are gone no one can match that key to them any more, so
+ * the departure folds it into their uid key (`choreStatsMemberKey(uid)`,
+ * `foldLegacyStatsKeys`) in every stats document of the household, in the
+ * same transaction. Their completions still stored are credited by uid
+ * (`creditedPerson`), so they stay one score. Nothing derived from the email
+ * is written (no departure alias, unlike release C).
+ * @param statsSnap The household's stats documents, read in this transaction.
  */
-const keepStatsIdentity = (
+const formerMembersRef = (householdRef: FirebaseFirestore.DocumentReference) =>
+  householdRef.collection('ops').doc('former-members');
+
+/**
+ * A departing person's chores may still name them only by email (written before
+ * member privacy release C, until scripts/ops/scrub-member-emails.mjs runs). Once
+ * their membership and contact documents are gone nothing ties that email to them,
+ * so the departure records their uid as the settled identity of the email in the
+ * household's private settlement document (`ops/former-members`, which no client
+ * can read): `identities.<former-member key of the email>` = uid. The key is an
+ * HMAC under the household's secret (created here if missing), so no email is
+ * stored. The ops scripts take a stored identity before any other evidence, in
+ * either order, so the person's archived credit (folded into their uid key above)
+ * and their retained completions end in one score.
+ */
+const recordDepartedIdentity = (
   transaction: FirebaseFirestore.Transaction,
   householdRef: FirebaseFirestore.DocumentReference,
+  opsSnap: FirebaseFirestore.DocumentSnapshot,
   uid: string,
   email: string | null | undefined,
   now: Date,
-  timeZone: unknown,
 ) => {
   if (!uid || typeof email !== 'string' || !email.trim()) return;
-  const key = choreStatsAssigneeKey(email);
-  const year = Number(localDay(now, safeTimeZone(typeof timeZone === 'string' ? timeZone : undefined)).slice(0, 4));
-  for (const statsYear of [year - 1, year]) {
-    transaction.set(householdRef.collection('stats').doc(choreStatsDocId(statsYear)), { aliases: { [uid]: key } }, { merge: true });
+  const stored = opsSnap.exists ? opsSnap.get('secret') : undefined;
+  const secret = typeof stored === 'string' && stored.trim() ? stored.trim() : randomBytes(32).toString('base64');
+  const key = formerMemberKey(secret, email);
+  transaction.set(formerMembersRef(householdRef), {
+    ...(typeof stored === 'string' && stored.trim() ? {} : { secret, createdAt: now }),
+    identities: { [key]: uid },
+  }, { merge: true });
+};
+
+const foldDepartingStatsKey = (
+  transaction: FirebaseFirestore.Transaction,
+  statsSnap: FirebaseFirestore.QuerySnapshot,
+  uid: string,
+  email: string | null | undefined,
+) => {
+  if (!uid || typeof email !== 'string' || !email.trim()) return;
+  for (const statsDoc of statsSnap.docs) {
+    const year = Number(statsDoc.id.replace(/^chores-/, ''));
+    if (!/^chores-\d{4}$/.test(statsDoc.id)) continue;
+    const before = readChoreStats(statsDoc.data(), year);
+    const after = foldLegacyStatsKeys({ ...before, aliases: undefined }, [{ uid, email }]);
+    if (JSON.stringify(after.byAssignee) === JSON.stringify(before.byAssignee) &&
+      JSON.stringify(after.names) === JSON.stringify(before.names)) continue;
+    transaction.update(statsDoc.ref, { byAssignee: after.byAssignee, names: after.names });
   }
 };
 
@@ -363,7 +402,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
   const householdRef = adminDb.collection('households').doc(householdId);
   const memberRef = householdRef.collection('members').doc(caller.uid);
   await adminDb.runTransaction(async transaction => {
-    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers] = await Promise.all([
+    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap, opsSnap] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
       transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email)),
@@ -371,6 +410,8 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
       transaction.get(householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', caller.uid)),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
+      transaction.get(householdRef.collection('stats')),
+      transaction.get(formerMembersRef(householdRef)),
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, caller.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, caller.email);
@@ -382,7 +423,8 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
-    keepStatsIdentity(transaction, householdRef, caller.uid, caller.email, now, householdSnap.get('timeZone'));
+    foldDepartingStatsKey(transaction, statsSnap, caller.uid, caller.email);
+    recordDepartedIdentity(transaction, householdRef, opsSnap, caller.uid, caller.email, now);
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
     transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
@@ -445,7 +487,9 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
     householdRef.collection('members').get(),
     adminDb.collection('inviteCodes').where('householdId', '==', householdId).get(),
   ]);
-  const emails = members.docs.map(d => d.data().email).filter((e): e is string => typeof e === 'string');
+  // Each member's email (the key of their profile) comes from their contact document.
+  const contacts = await Promise.all(members.docs.map(d => memberContactRef(householdRef, d.id).get()));
+  const emails = [...new Set(contacts.map(contactEmail).filter(Boolean))];
   const profiles = await Promise.all(emails.map(email => adminDb.collection('users').doc(email).get()));
   const batch = adminDb.batch();
   profiles.forEach(profile => {
@@ -478,6 +522,7 @@ const INVITE_CODE_ATTEMPTS = 6;
 
 type Tx = FirebaseFirestore.Transaction;
 type DocRef = FirebaseFirestore.DocumentReference;
+/** A membership record as the server uses it; `email` is read from the contact document ("" when none). */
 type StoredMember = PolicyMember & { email: string; displayName?: string };
 
 const requireId = (value: unknown, message: string): string => {
@@ -494,7 +539,8 @@ const enforce = (decision: PolicyDecision) => {
 const KNOWN_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest', 'newuser'];
 
 // A role the rules do not recognize (legacy names included) grants nothing here either.
-const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot): StoredMember | null => {
+// The email comes from the member's contact document, never from the record.
+const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot, contact?: FirebaseFirestore.DocumentSnapshot | null): StoredMember | null => {
   const data = snapshot.exists ? snapshot.data() : null;
   if (!data) return null;
   return {
@@ -502,7 +548,7 @@ const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot): StoredMem
     role: KNOWN_ROLES.includes(data.role) ? data.role as HouseholdRole : 'newuser',
     status: data.status || 'active',
     permissions: (data.permissions && typeof data.permissions === 'object' ? data.permissions : {}) as PermissionOverrides,
-    email: typeof data.email === 'string' ? data.email : '',
+    email: contactEmail(contact),
     displayName: typeof data.displayName === 'string' && data.displayName ? data.displayName : undefined,
   };
 };
@@ -525,13 +571,15 @@ const loadActor = async (transaction: Tx, caller: VerifiedCaller, householdId: u
   if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.', 'household_deleting');
   const actor = toStoredMember(actorSnap);
   if (!actor) throw new MembershipError('You are not part of this household.', 'not_member');
-  return { householdRef, household: householdSnap.data() || {}, actor };
+  // The actor's own email is the verified one from their token.
+  return { householdRef, household: householdSnap.data() || {}, actor: { ...actor, email: caller.email } };
 };
 
 const loadTarget = async (transaction: Tx, householdRef: DocRef, targetUid: unknown): Promise<{ ref: DocRef; target: StoredMember }> => {
   const uid = requireId(targetUid, 'That person is no longer in this household.');
   const ref = householdRef.collection('members').doc(uid);
-  const target = toStoredMember(await transaction.get(ref));
+  const [memberSnap, contactSnap] = await Promise.all([transaction.get(ref), transaction.get(memberContactRef(householdRef, uid))]);
+  const target = toStoredMember(memberSnap, contactSnap);
   if (!target) throw new MembershipError('That person is no longer in this household.', 'not_found');
   return { ref, target };
 };
@@ -553,7 +601,7 @@ const writeAudit = (
     action: entry.action,
     ...(entry.target ? {
       targetUid: entry.target.uid,
-      targetEmail: entry.target.email,
+      targetEmail: entry.target.email || null,
       targetName: entry.target.displayName || null,
     } : {}),
     createdAt: now.toISOString(),
@@ -625,9 +673,9 @@ export const createHousehold = async (
       // Reminders and recurring chores run on the server in this time zone.
       ...(timeZone ? { timeZone } : {}),
     };
+    // No email on the record: it goes only into the protected contact document.
     const member = {
       uid: caller.uid,
-      email: caller.email,
       ...(displayName ? { displayName } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
       role: 'owner',
@@ -819,9 +867,6 @@ export const changeMemberRole = async (
       approvedAt: iso,
       approvedByUid: caller.uid,
     });
-    // Approval (re)writes the contact document, so a person who joined before it
-    // existed has one from then on (the backfill covers everyone else).
-    if (approving && target.email) transaction.set(memberContactRef(context.householdRef, target.uid), memberContact(target.email, now));
     setProfileCache(transaction, target.email, { role: nextRole, permissions: {} });
     writeAudit(transaction, context, caller, now, {
       action: approving ? 'member.approved' : 'member.role_changed',
@@ -907,13 +952,15 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
       : Promise.resolve(null);
     const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
-    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap] = await Promise.all([
+    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap, statsSnap, opsSnap] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
       byEmail('chores'),
       byUid('chores'),
       byEmail('chore-templates'),
       byUid('chore-templates'),
       transaction.get(memberContactRef(context.householdRef, target.uid)),
+      transaction.get(context.householdRef.collection('stats')),
+      transaction.get(formerMembersRef(context.householdRef)),
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, target.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
@@ -923,7 +970,11 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
     // The email upkeep credited them by: the contact document's, else the record's.
-    if (!denied) keepStatsIdentity(transaction, context.householdRef, target.uid, contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email, now, context.household.timeZone);
+    const departingEmail = contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email;
+    if (!denied) {
+      foldDepartingStatsKey(transaction, statsSnap, target.uid, departingEmail);
+      recordDepartedIdentity(transaction, context.householdRef, opsSnap, target.uid, departingEmail, now);
+    }
     transaction.update(context.householdRef, {
       ...legacyMemberEmailRemoval(context.household, target.email),
       updatedAt: iso,
@@ -963,7 +1014,7 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
     transaction.update(ref, { role: 'owner', status: 'active', permissions: {} });
     transaction.update(context.householdRef.collection('members').doc(caller.uid), { role: 'admin', status: 'active', permissions: {} });
     setProfileCache(transaction, target.email, { role: 'owner', permissions: {} });
-    setProfileCache(transaction, context.actor.email || caller.email, { role: 'admin', permissions: {} });
+    setProfileCache(transaction, caller.email, { role: 'admin', permissions: {} });
     writeAudit(transaction, context, caller, now, { action: 'ownership.transferred', target });
     const householdName = typeof context.household.name === 'string' && context.household.name ? context.household.name : 'the household';
     // One household-wide notice per transfer; a transaction retry reuses the ID.

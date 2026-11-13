@@ -235,10 +235,17 @@ const members = [
   },
 ];
 for (const member of members) {
+  // Records written before member privacy release D still carry `email`; the
+  // app and server read each member's email only from the protected contact
+  // document, written here as the server writes it.
   batch.set(household.collection("members").doc(member.uid), {
     ...member,
     permissions: member.permissions || {},
     avatarUrl: null,
+  });
+  batch.set(household.collection("members").doc(member.uid).collection("private").doc("contact"), {
+    email: member.email,
+    updatedAt: "2026-01-15T15:00:00.000Z",
   });
 }
 
@@ -256,6 +263,10 @@ batch.set(householdB.collection("members").doc(HOUSEHOLD_B_OWNER.uid), {
   status: "active",
   permissions: {},
   joinedAt: "2026-01-20T15:00:00.000Z",
+});
+batch.set(householdB.collection("members").doc(HOUSEHOLD_B_OWNER.uid).collection("private").doc("contact"), {
+  email: HOUSEHOLD_B_OWNER.email,
+  updatedAt: "2026-01-20T15:00:00.000Z",
 });
 batch.set(householdB.collection("chores").doc("private-b-chore"), {
   task: "HOUSEHOLD-B-PRIVATE-CHORE",

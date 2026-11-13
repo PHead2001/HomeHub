@@ -237,9 +237,10 @@ describe('membership is authoritative; legacy fields grant nothing', () => {
     }
   });
 
-  test('a pending member reads their own record and the household, and cannot delete or rewrite either', async () => {
+  test('a pending member reads their own record (not the household), and cannot delete or rewrite either', async () => {
     const db = dbFor(users.pending);
-    await assertSucceeds(getDoc(doc(db, 'households', householdA)));
+    // Release D: the household document is for approved members only.
+    await assertFails(getDoc(doc(db, 'households', householdA)));
     await assertSucceeds(getDoc(doc(db, 'households', householdA, 'members', users.pending.uid)));
     await assertFails(getDoc(doc(db, 'households', householdA, 'members', users.owner.uid)));
     await assertFails(getDocs(collection(db, 'households', householdA, 'members')));
@@ -290,13 +291,11 @@ describe('household creation is server-only', () => {
     batch.set(doc(db, 'households', 'new-house'), {
       name: 'New House',
       ownerUid: users.stranger.uid,
-      ownerEmail: users.stranger.email,
-      memberEmails: [users.stranger.email],
       createdAt: '2026-08-01T12:00:00.000Z',
       updatedAt: '2026-08-01T12:00:00.000Z',
     });
     batch.set(doc(db, 'households', 'new-house', 'members', users.stranger.uid), {
-      uid: users.stranger.uid, email: users.stranger.email, role: 'owner', status: 'active', permissions: {},
+      uid: users.stranger.uid, role: 'owner', status: 'active', permissions: {},
     });
     await assertFails(batch.commit());
     await assertFails(setDoc(doc(db, 'households', 'orphan'), {
@@ -354,7 +353,7 @@ describe('membership and household writes are server-only', () => {
     const db = dbFor(users.owner);
     const batch = writeBatch(db);
     batch.update(doc(db, 'households', householdA), {
-      ownerUid: users.admin.uid, ownerEmail: users.admin.email, updatedAt: '2026-08-01T12:00:00.000Z',
+      ownerUid: users.admin.uid, updatedAt: '2026-08-01T12:00:00.000Z',
     });
     batch.update(doc(db, 'households', householdA, 'members', users.admin.uid), { role: 'owner', status: 'active', permissions: {} });
     batch.update(doc(db, 'households', householdA, 'members', users.owner.uid), { role: 'admin', status: 'active', permissions: {} });
@@ -432,9 +431,9 @@ describe('independent review regressions', () => {
 
   test('a member may remind themselves about chores, and only themselves', async () => {
     const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'notifications');
-    const reminder = (target: string) => notification({ sourceType: 'chore-reminder', sourceId: 'reminder-x', targetUserUid: target, targetUserEmail: users.child.email });
+    const reminder = (target: string) => notification({ sourceType: 'chore-reminder', sourceId: 'reminder-x', targetUserUid: target });
     await assertSucceeds(addDoc(col(users.child), reminder(users.child.uid)));
-    await assertFails(addDoc(col(users.child), { ...reminder(users.member.uid), targetUserEmail: users.member.email }));
+    await assertFails(addDoc(col(users.child), reminder(users.member.uid)));
     await assertFails(addDoc(col(users.child), notification({ sourceType: 'chore-assignment', targetUserUid: users.child.uid })));
     // Long temporary-task names still fit; unbounded text does not.
     await assertSucceeds(addDoc(col(users.member), notification({ message: 'x'.repeat(900) })));
@@ -586,8 +585,8 @@ describe('profiles', () => {
     await assertSucceeds(getDoc(doc(dbFor(users.lonerA), 'users', users.lonerA.email)));
   });
 
-  test('approved housemates can read each other; pending and outsiders cannot', async () => {
-    await assertSucceeds(getDoc(doc(dbFor(users.member), 'users', users.owner.email)));
+  test('housemates, pending people and outsiders cannot read each other’s profiles', async () => {
+    await assertFails(getDoc(doc(dbFor(users.member), 'users', users.owner.email)));
     await assertFails(getDoc(doc(dbFor(users.pending), 'users', users.owner.email)));
     await assertFails(getDoc(doc(dbFor(users.ownerB), 'users', users.owner.email)));
   });
@@ -618,7 +617,6 @@ describe('profile demographics (no longer collected)', () => {
   test('a profile that still holds birthday and gender stays readable and updatable', async () => {
     await seedLegacyDemographics();
     await assertSucceeds(getDoc(doc(dbFor(users.member), 'users', users.member.email)));
-    await assertSucceeds(getDoc(doc(dbFor(users.owner), 'users', users.member.email)));
     await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { displayName: 'Still works' }));
     await assertSucceeds(setDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Chicago' }, { merge: true }));
   });
@@ -770,7 +768,6 @@ describe('push tokens', () => {
 describe('notifications', () => {
   test('approved members create well-formed household notifications', async () => {
     await assertSucceeds(addDoc(collection(dbFor(users.member), 'households', householdA, 'notifications'), notification({
-      targetUserEmail: users.owner.email,
       targetUserUid: users.owner.uid,
       sourceType: 'chore-assignment',
       sourceId: 'task',
@@ -836,7 +833,7 @@ describe('notifications', () => {
   test('audience is required on create and must match the targeting', async () => {
     const col = collection(dbFor(users.member), 'households', householdA, 'notifications');
     const targeted = (overrides: Record<string, unknown> = {}) => notification({
-      targetUserUid: users.owner.uid, targetUserEmail: users.owner.email, ...overrides,
+      targetUserUid: users.owner.uid, ...overrides,
     });
     // Well formed: [targetUserUid] or ['*'].
     await assertSucceeds(addDoc(col, targeted({ audience: [users.owner.uid] })));
@@ -861,7 +858,7 @@ describe('notifications', () => {
     await assertFails(addDoc(col, notification({ audience: '*' })));
     await assertFails(addDoc(col, notification({ audience: [1] })));
     await assertFails(addDoc(col, notification({ audience: null })));
-    // An email-only target names nobody by uid: refused whatever the audience.
+    // An email target is not accepted, with or without an audience.
     for (const audience of [[], ['*'], [users.owner.uid]]) {
       await assertFails(addDoc(col, notification({ targetUserEmail: users.owner.email, audience })));
     }
@@ -1586,8 +1583,8 @@ describe('content shapes: chores and templates', () => {
     await assertFails(addDoc(chores(noAssign), oneTime(noAssign.email, { assignedToUid: users.member.uid })));
     await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { assignedToUid: 7 })));
     await assertFails(addDoc(chores(users.member), oneTime(users.member.email, { assignedToUid: 'x'.repeat(129) })));
-    // The backfill or a newer client filling in the uid of the existing assignee is not a reassignment.
-    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
+    // Membership records carry no email to match, so filling in someone else's uid needs chores.assign.
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
     // Once a uid is set, changing it to someone else needs chores.assign.
     await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
     // Review finding on #115: a uid that does not belong to the email beside it is refused,
@@ -1595,7 +1592,7 @@ describe('content shapes: chores and templates', () => {
     await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: '' }));
     await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.child.uid }));
     await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: noAssign.uid }));
-    await assertSucceeds(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
+    await assertFails(updateDoc(chore(noAssign, 'generated'), { assignedToUid: users.member.uid }));
     await assertFails(addDoc(chores(noAssign), oneTime('', { assignedToUid: users.member.uid })));
     await assertFails(setDoc(template(noAssign, 'uid-mismatch'), { ...repeating(noAssign.email), assignedToUid: users.child.uid }));
     await assertSucceeds(updateDoc(chore(users.member, 'generated'), { assignedToEmail: users.child.email, assignedToUid: users.child.uid, assignedToDisplayName: 'Child A' }));
@@ -2635,6 +2632,180 @@ describe('content shapes: barcode library', () => {
   });
 });
 
+// Member privacy release D: profiles and household documents are read only by
+// the people who need them, and no client write puts an email into a shared document.
+describe('member privacy: closed reads and no emails in shared documents', () => {
+  const approved = [users.owner, users.admin, users.member, users.child, users.guest, users.denied];
+
+  test('a profile is read by the person only: not housemates, managers, pending people or other households', async () => {
+    for (const user of [...approved, users.pending]) {
+      await assertSucceeds(getDoc(doc(dbFor(user), 'users', user.email)));
+    }
+    for (const reader of [users.owner, users.admin, users.child, users.guest, users.pending, users.ownerB, users.stranger]) {
+      await assertFails(getDoc(doc(dbFor(reader), 'users', users.member.email)));
+    }
+    // A manager cannot read a pending person's profile either, nor the pending person a manager's.
+    await assertFails(getDoc(doc(dbFor(users.owner), 'users', users.pending.email)));
+    await assertFails(getDoc(doc(dbFor(users.pending), 'users', users.owner.email)));
+    await assertFails(getDoc(doc(dbFor(users.member), 'users', users.ownerB.email)));
+  });
+
+  test('the household document is read by approved members only', async () => {
+    for (const user of approved) {
+      await assertSucceeds(getDoc(doc(dbFor(user), 'households', householdA)));
+    }
+    await assertFails(getDoc(doc(dbFor(users.pending), 'households', householdA)));
+    await assertFails(getDoc(doc(dbFor(users.ownerB), 'households', householdA)));
+    await assertFails(getDoc(doc(dbFor(users.stranger), 'households', householdA)));
+    await assertFails(getDoc(doc(dbFor(users.legacy), 'households', householdA)));
+    // The pending person still reads their own record (with householdName), and nothing else.
+    await assertSucceeds(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.pending.uid)));
+    await assertFails(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.owner.uid)));
+  });
+
+  // Review finding on #146 (4543465259): a failed deletion stays reachable for recovery.
+  test('during a deletion, members who were approved still read the household document, and nothing else', async () => {
+    const member = (user: Identity) => doc(dbFor(user), 'households', householdA, 'members', user.uid);
+    const setStatus = (uids: string[], status: string) => environment.withSecurityRulesDisabled(async context => {
+      for (const uid of uids) await updateDoc(doc(context.firestore(), 'households', householdA, 'members', uid), { status });
+    });
+    await setStatus([users.owner.uid, users.member.uid, users.pending.uid], 'deleting');
+    try {
+      await assertSucceeds(getDoc(doc(dbFor(users.owner), 'households', householdA)));
+      await assertSucceeds(getDoc(doc(dbFor(users.member), 'households', householdA)));
+      await assertSucceeds(getDoc(member(users.owner)));
+      // A pending person stays closed out, deleting or not.
+      await assertFails(getDoc(doc(dbFor(users.pending), 'households', householdA)));
+      // Nothing else of the household, and no list.
+      await assertFails(getDoc(doc(dbFor(users.owner), 'households', householdA, 'chores', 'task')));
+      await assertFails(getDocs(collection(dbFor(users.owner), 'households', householdA, 'chores')));
+      await assertFails(getDocs(query(collection(dbFor(users.owner), 'households'), where('ownerUid', '==', users.owner.uid))));
+      // Someone without a record (removed) reads nothing.
+      await assertFails(getDoc(doc(dbFor(users.stranger), 'households', householdA)));
+    } finally {
+      await setStatus([users.owner.uid, users.member.uid], 'active');
+      await setStatus([users.pending.uid], 'pending');
+    }
+  });
+
+  test('the former-member secret (ops scrub) is never read or written by a client, owners included', async () => {
+    await environment.withSecurityRulesDisabled(context =>
+      setDoc(doc(context.firestore(), 'households', householdA, 'ops', 'former-members'), { secret: 'server-only', createdAt: 'x' }));
+    for (const user of [...approved, users.pending, users.ownerB, users.stranger]) {
+      const ref = doc(dbFor(user), 'households', householdA, 'ops', 'former-members');
+      await assertFails(getDoc(ref));
+      await assertFails(setDoc(ref, { secret: 'chosen' }));
+    }
+    await assertFails(getDocs(collection(dbFor(users.owner), 'households', householdA, 'ops')));
+  });
+
+  test('household documents: no client write adds or changes ownerEmail or memberEmails', async () => {
+    for (const user of [users.owner, users.admin]) {
+      await assertFails(updateDoc(doc(dbFor(user), 'households', householdA), { memberEmails: [user.email], updatedAt: 'x' }));
+      await assertFails(updateDoc(doc(dbFor(user), 'households', householdA), { memberEmails: deleteField(), updatedAt: 'x' }));
+    }
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { ownerEmail: users.admin.email, updatedAt: 'x' }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { memberEmails: [], updatedAt: 'x' }));
+    // A household that still carries the legacy fields stays editable on its other fields.
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { timeZone: 'America/Denver', updatedAt: 'x' }));
+    // Creating a household with either field is refused.
+    for (const extra of [{ ownerEmail: users.stranger.email }, { memberEmails: [users.stranger.email] }]) {
+      const db = dbFor(users.stranger);
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'households', 'emails-house'), { name: 'Emails', ownerUid: users.stranger.uid, ...extra });
+      batch.set(doc(db, 'households', 'emails-house', 'members', users.stranger.uid), {
+        uid: users.stranger.uid, role: 'owner', status: 'active', permissions: {},
+      });
+      await assertFails(batch.commit());
+    }
+  });
+
+  test('membership records: no email on a new record, and none can be added or changed', async () => {
+    const db = dbFor(users.lonerA);
+    const withEmail = writeBatch(db);
+    withEmail.set(doc(db, 'households', 'loner-house'), { name: 'Loner', ownerUid: users.lonerA.uid });
+    withEmail.set(doc(db, 'households', 'loner-house', 'members', users.lonerA.uid), {
+      uid: users.lonerA.uid, email: users.lonerA.email, role: 'owner', status: 'active', permissions: {},
+    });
+    await assertFails(withEmail.commit());
+    await environment.withSecurityRulesDisabled(async context => {
+      // Records as the server writes them now: no email.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'members', users.pending.uid), {
+        uid: users.pending.uid, role: 'newuser', status: 'pending', householdName: 'Household A',
+      });
+    });
+    for (const writer of [users.owner, users.admin]) {
+      await assertFails(updateDoc(doc(dbFor(writer), 'households', householdA, 'members', users.pending.uid), { email: users.pending.email }));
+      await assertFails(updateDoc(doc(dbFor(writer), 'households', householdA, 'members', users.member.uid), { email: 'changed@example.test' }));
+      await assertFails(updateDoc(doc(dbFor(writer), 'households', householdA, 'members', users.member.uid), { email: deleteField() }));
+    }
+    await assertFails(updateDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.pending.uid), { email: users.pending.email }));
+    // Records without an email are read as before.
+    await assertSucceeds(getDoc(doc(dbFor(users.member), 'households', householdA, 'members', users.pending.uid)));
+    await assertSucceeds(getDoc(doc(dbFor(users.pending), 'households', householdA, 'members', users.pending.uid)));
+  });
+
+  test('notifications: no email target, from anyone', async () => {
+    const col = (user: Identity) => collection(dbFor(user), 'households', householdA, 'notifications');
+    for (const sender of [users.owner, users.admin, users.member]) {
+      await assertFails(addDoc(col(sender), notification({ targetUserEmail: users.member.email })));
+      await assertFails(addDoc(col(sender), notification({ targetUserUid: users.member.uid, targetUserEmail: users.member.email })));
+      await assertSucceeds(addDoc(col(sender), notification({ targetUserUid: users.member.uid, audience: [users.member.uid] })));
+    }
+    await assertFails(addDoc(col(users.child), notification({ sourceType: 'chore-reminder', targetUserUid: users.child.uid, targetUserEmail: users.child.email })));
+    await assertFails(addDoc(col(users.pending), notification({ targetUserUid: users.owner.uid })));
+    await assertFails(addDoc(col(users.ownerB), notification({ targetUserUid: users.owner.uid })));
+  });
+
+  test('notification action entries hold at, uid and displayName only', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      // Written before action entries lost their email: another person's entry carries one.
+      await setDoc(doc(context.firestore(), 'households', householdA, 'notifications', 'legacy-entries'), notification({
+        category: 'maintenance',
+        readBy: { [users.owner.uid]: { at: now(), uid: users.owner.uid, email: users.owner.email } },
+        dismissedBy: {},
+      }));
+    });
+    const ref = (user: Identity) => doc(dbFor(user), 'households', householdA, 'notifications', 'legacy-entries');
+    for (const user of [users.member, users.child]) {
+      await assertFails(updateDoc(ref(user), { [`readBy.${user.uid}`]: { at: now(), uid: user.uid, email: user.email } }));
+      await assertFails(updateDoc(ref(user), { [`dismissedBy.${user.uid}`]: { at: now(), uid: user.uid, email: user.email } }));
+      await assertFails(updateDoc(ref(user), { [`readBy.${user.uid}`]: user.email }));
+      await assertSucceeds(updateDoc(ref(user), { [`readBy.${user.uid}`]: { at: now(), uid: user.uid, displayName: 'Someone' } }));
+      await assertSucceeds(updateDoc(ref(user), { [`dismissedBy.${user.uid}`]: { at: now(), uid: user.uid } }));
+      // Undo removes the entry.
+      await assertSucceeds(updateDoc(ref(user), { [`dismissedBy.${user.uid}`]: deleteField() }));
+    }
+    // Resolving (maintenance.edit) follows the same shape.
+    await assertFails(updateDoc(ref(users.member), { resolvedAt: now(), resolvedBy: { at: now(), uid: users.member.uid, email: users.member.email } }));
+    await assertSucceeds(updateDoc(ref(users.member), { resolvedAt: now(), resolvedBy: { at: now(), uid: users.member.uid, displayName: 'Member' } }));
+  });
+
+  test('a chore uid is never matched through an email on a membership record', async () => {
+    const noAssign = { uid: 'no-assign-d', email: 'no.assign.d@example.test' };
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'households', householdA, 'members', noAssign.uid), {
+        uid: noAssign.uid, role: 'member', status: 'active', permissions: { 'chores.assign': false },
+      });
+      await setDoc(doc(db, 'households', householdA, 'chores', 'legacy-email'), {
+        task: 'Legacy', assignedToEmail: users.member.email, isCompleted: false,
+      });
+    });
+    const chore = (user: Identity) => doc(dbFor(user), 'households', householdA, 'chores', 'legacy-email');
+    // The seeded member record still carries the email; it no longer vouches for the uid.
+    await assertFails(updateDoc(chore(noAssign), { assignedToUid: users.member.uid }));
+    await assertFails(addDoc(collection(dbFor(noAssign), 'households', householdA, 'chores'), {
+      task: 'For member', assignedToEmail: users.member.email, assignedToUid: users.member.uid, isCompleted: false,
+    }));
+    // Yourself, unassigned, or with chores.assign: as before.
+    await assertSucceeds(addDoc(collection(dbFor(noAssign), 'households', householdA, 'chores'), {
+      task: 'Mine', assignedToUid: noAssign.uid, isCompleted: false,
+    }));
+    await assertSucceeds(updateDoc(chore(users.member), { assignedToUid: users.member.uid }));
+  });
+});
+
 describe('content shapes: shopping S5–S8 stage', () => {
   const hh = (user: Identity, household = householdA) => doc(dbFor(user), 'households', household);
   const list = (user: Identity, id: string, household = householdA) => doc(hh(user, household), 'shopping-lists', id);
@@ -2951,6 +3122,8 @@ describe('legacy email assignee replaced by its uid without chores.assign', () =
       // Joined after release C: no email on the record, the email in the contact document.
       await setDoc(doc(db, 'households', householdA, 'members', sam.uid), { uid: sam.uid, role: 'member', status: 'active' });
       await setDoc(doc(db, 'households', householdA, 'members', sam.uid, 'private', 'contact'), { email: sam.email.toLowerCase(), updatedAt: 'x' });
+      // Release D: only the contact document counts (never an email left on a record).
+      await setDoc(doc(db, 'households', householdA, 'members', users.member.uid, 'private', 'contact'), { email: users.member.email, updatedAt: 'x' });
       await setDoc(doc(db, 'households', householdA, 'chore-templates', 'legacy-sam'), {
         task: 'Bins', notes: '', roomIds: [], subTasks: [], assignedToEmail: sam.email, recurrence: recurrence(sam.email),
       });
@@ -2984,6 +3157,12 @@ describe('legacy email assignee replaced by its uid without chores.assign', () =
     await assertFails(updateDoc(template('legacy-member'), {
       recurrence: recurrence(), assignedToUid: sam.uid, assignedToEmail: deleteField(),
     }));
+    // A member record that still carries the email is not evidence (release D).
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'members', 'legacy-rec'), { uid: 'legacy-rec', email: 'legacy.rec@example.test', role: 'member', status: 'active' });
+      await setDoc(doc(context.firestore(), 'households', householdA, 'chore-templates', 'legacy-rec'), { task: 'Rec', notes: '', roomIds: [], subTasks: [], assignedToEmail: 'legacy.rec@example.test' });
+    });
+    await assertFails(updateDoc(template('legacy-rec'), { assignedToUid: 'legacy-rec', assignedToEmail: deleteField() }));
   });
 
   test('chores: the same, by uid kept, never changed', async () => {

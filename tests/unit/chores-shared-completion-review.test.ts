@@ -8,7 +8,7 @@ import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { newChoreDocId } from '../../src/lib/chores/list';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
 import { addPurgedChores, readChoreStats } from '../../functions/src/shared/chore-stats';
-import { choreStatsAssigneeKey, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
 
 describe('completion controls use the household day (browser vs household timezone)', () => {
   // 23:30 Thu Nov 5 in Los Angeles is already 01:30 Fri Nov 6 in Chicago.
@@ -47,8 +47,8 @@ describe('completion controls use the household day (browser vs household timezo
 describe('Home Wrapped credits retained completions like the stats (retention boundary)', () => {
   const completion = {
     id: 'c1', isCompleted: true, completedAt: '2026-03-01T10:00:00Z',
-    assignedToEmail: 'sam@example.test', assignedToDisplayName: 'Sam Member',
-    completedByEmail: 'alex@example.test', completedByName: 'Alex Helper',
+    assignedToUid: 'u-sam', assignedToDisplayName: 'Sam Member',
+    completedByUid: 'u-alex', completedByName: 'Alex Helper',
   };
 
   it('credits the completer, before and after the chore moves into the stats', () => {
@@ -58,11 +58,11 @@ describe('Home Wrapped credits retained completions like the stats (retention bo
     const stats = addPurgedChores(readChoreStats({}, 2026), [completion]);
     const after = summarizeChores([], 2026, { stats, timeZone: 'UTC' });
     assert.deepEqual(after.champion, before.champion);
-    assert.equal(stats.byAssignee[choreStatsAssigneeKey('alex@example.test')], 1);
+    assert.equal(stats.byAssignee[choreStatsMemberKey('u-alex')], 1);
   });
 
   it('falls back to the assignee for completions without a recorded completer', () => {
-    const legacy = { ...completion, completedByEmail: undefined, completedByName: undefined };
+    const legacy = { ...completion, completedByUid: undefined, completedByName: undefined };
     assert.deepEqual(summarizeChores([legacy], 2026, { timeZone: 'UTC' }).champion, { name: 'Sam', count: 1 });
   });
 });
