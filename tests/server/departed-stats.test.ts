@@ -129,8 +129,13 @@ describe('yearly chore credit across a departure', () => {
     const retained = (await house().collection('chores').get()).docs.map(d => ({ id: d.id, ...d.data() }) as Record<string, unknown> & { id: string });
     assert.deepEqual(summarizeChores(retained, 2027, { timeZone: 'Asia/Tokyo', people: [owner, ana] }).champion, { name: 'Sam', count: 2 });
     await runHouseholdReminders(adminDb as never, HOUSE, new Date('2027-04-15T03:00:00Z'), ts);
+    // The completion recording Sam's email waits for the scrub (review finding 4544940133); the uid-only one purges.
+    assert.deepEqual((await house().collection('stats').doc('chores-2027').get()).data()?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 1 });
+    assert.equal((await house().collection('chores').doc('sam-email').get()).exists, true, 'waits for the scrub');
+    await scrub();
+    await runHouseholdReminders(adminDb as never, HOUSE, new Date('2027-04-15T04:00:00Z'), ts);
     const after = (await house().collection('stats').doc('chores-2027').get()).data();
-    assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 2 }, 'one bucket after the purge');
+    assert.deepEqual(after?.byAssignee, { [choreStatsMemberKey(sam.uid)]: 2 }, 'one bucket after the scrub and the purge');
   });
 
   test('a removal folds the same way and writes nothing derived from the email (Los Angeles, local last evening of the year)', async () => {

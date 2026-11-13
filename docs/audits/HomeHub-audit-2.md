@@ -1,6 +1,6 @@
 # HomeHub audit 2: section by section
 
-> **Public copy.** 13 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-2, HO-6, HO-8, HO-9, HO-10, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
+> **Public copy.** 11 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-6, HO-9, HO-10, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
 
 One section at a time, nitpicked. The primary device is a **wall-mounted tablet in landscape, one per room** (always on, touch only, read from across the room). Phone portrait comes second, desktop third.
 
@@ -722,7 +722,7 @@ The experience is noisy and person-centric in a house of shared screens:
 
 The gaps:
 - your own role never updates live;
-- one item withheld;
+- some permission checkboxes do nothing;
 - pending and half-deleted states can trap people;
 - one item withheld;
 - nothing supports shared tablets, kids or babysitters.
@@ -732,13 +732,13 @@ The gaps:
 | # | Finding | Why it matters | Fix | Effort | Verified |
 |---|---|---|---|---|---|
 | HO-1 | **Your own membership never updates live.** It's read once (`auth-context.tsx:293-325`) with no listener, and permissions derive from that snapshot. | An approved person keeps seeing "Waiting for approval" until they reload, and nobody tells them they were approved. A demoted, removed or restricted member keeps the old UI, and every write fails. Other devices never see that the owner started deleting the household. On a wall tablet this lasts for days. | Listen to your own member doc and the household doc; reset on removal or deletion; send a targeted "You're in, as Member" notification on approval. | M | Code |
-| HO-2 | *Withheld from the public copy until the fix is live.* | | | | |
+| HO-2 | *(Fix tightened: see section 17.)* **Some permission checkboxes do nothing.** The rules gate invites, member management, roles and rename on *role*, never on the `household.*` permissions (verified: none appear in the rules; invites use `isOwnerOrAdmin`). The client gates some screens on the permissions and others on role. | A Member granted "Manage invites" gets the Invites tab and a Create button that fails. An admin with "Manage members" unticked can still remove people. An admin without "Manage roles" can still customize permissions. | Make four work and keep Delete and Transfer owner-only, enforced in the rules and the client (decided: see 17.1). | Q / M | Code |
 | HO-3 | **A pending joiner is stuck.** The waiting screen offers only "Open Profile" and "Sign Out", Profile has no cancel or leave, and joining another household is refused while any membership exists (`household-membership.ts:88-94`). | Someone who typed the wrong code, or was ignored, can never join another household until an admin denies them. | A "Cancel request" button (the server already lets non-owners leave). | Q | Code |
 | HO-4 | **Non-owners of a half-deleted household are stuck:** once deletion has started, leaving and joining elsewhere are both refused, and they only get "Sign Out". | If the owner never presses "Finish deleting", everyone else is locked out for good. | Let non-owners leave a household being deleted, or finish deletion on a schedule. | M | Code |
 | HO-5 | **Removing a member damages chores:** <br>• completed chores are unassigned too, erasing history and stats, and a long-standing member (about 495+ chores) makes the batch exceed 500 writes so they *can't* be removed (`:441-448`); <br>• repeating chores keep them as the assignee (`:454-456` clears only one of two fields), so removed people still appear on the calendar. | Lost history, unremovable members, ghost assignees. | Unassign only open chores, clear both fields, and do it server-side in chunks. | Q | Code |
 | HO-6 | *Withheld from the public copy until the fix is live.* | | | | |
 | HO-7 | **The pending-member reminder** fires on the first manager visit (a missing timestamp is treated as "long ago") and goes to everyone, kids and guests included (untargeted). | Noise, and the same issue as NO-10. | Use the join time as the baseline; target owners and admins. | Q | Code |
-| HO-8 | *Withheld from the public copy until the fix is live.* | | | | |
+| HO-8 | **Smaller bugs:** <br>• The page gate uses role, not resolved permissions, and ignores status (`:582`). <br>• It never waits for loading, so "Sign in" or "No household yet" flashes on a cold load. <br>• A failed members load shows "It's just you so far" under the error. <br>• The audit log misses renames, logs approvals as "Changed a role" and denials as "Removed", has no from/to or permission diffs, and lets any admin write arbitrary entries. <br>• Ownership can go to a Child or Guest without a warning. <br>• A role change silently wipes custom permissions on a single tap. <br>• Codes made by a removed or demoted admin stay valid. <br>• Invite expiry depends on the device clock and never ticks. <br>• A malformed invite throws a generic error. <br>• Member names and photos are frozen at join time, so Household and Chores disagree. <br>• Member colours shift when someone joins. | Each costs trust or creates confusion. | One small fix each. | Q–M | Code |
 
 ### 8.2 Security and privacy, as they show in the UX
 
@@ -796,7 +796,7 @@ The gaps:
 - **Layout and links:** `?tab=` deep links work; long names wrap; reduced motion is respected; the tablet layout is sound.
 - **No console errors** on any tab (verified live).
 
-**Test gaps:** no e2e tests for remove, deny, transfer, leave or delete; no rules tests for admin-vs-admin actions.
+**Test gaps:** no e2e tests for remove, deny, transfer, leave or delete; no rules tests for admin-vs-admin actions or for the unenforced `household.*` overrides.
 
 ### 8.7 Suggested order
 
@@ -1314,7 +1314,7 @@ The big value is in bringing a few chosen devices to the house drawing and the w
 | 5 Chores | 33 (10) | Strong fundamentals. No live data, points can be farmed, deleted repeats come back. |
 | 6 Calendar | 27 (7) | Good foundation. You can't tick anything off; too small for a wall. |
 | 7 Notifications | 27 (11) | Careful plumbing. Daily duplicate overdue alerts; sign-out doesn't stop pushes. |
-| 8 Household | 28 (8) | Careful core. one item withheld; no shared-tablet, kid or guest path. |
+| 8 Household | 28 (8) | Careful core. Some permission boxes do nothing; no shared-tablet, kid or guest path. |
 | 9 Profile | 26 (10) | Appearance is well done. Failed saves look successful; no text size. |
 | 10 Search and quick add | 25 (5) | Excellent safety (always Confirm). The parser misreads common sentences; weak on touch. |
 | 11 App shell | 24 (3) | Solid as a website. Not built for a screen that never reloads. |
@@ -1555,7 +1555,7 @@ The same problem appears under several IDs. Build it once, under the ID in the f
 
 ### 16.5 Build order (replaces 14.6; the per-section orders only rank items inside a section)
 
-0. **Privacy and permissions (added after the external review, 17.1):** NO-15 with NO-6, HO-9, HO-10, QA-8, HO-2, NO-2, HO-8.
+0. **Privacy and permissions (added after the external review, 17.1):** NO-15 with NO-6, HO-9, HO-10, QA-8, HO-2, NO-2, and a server-written activity log (HO-8).
 1. **Never stuck, never stale:** SL-1, SL-2, SL-3; live data (SH-1, CH-1, MA-2, CA-1); household time zone and midnight (D-6, HP-4, MA-1).
 2. **Stop wrong data:** QA-1 to QA-3, BL-1, BL-3, SH-2, PE-5 **then** PE-23, PE-24, MA-3, MA-4, CH-2 to CH-4, NO-1, PR-1, HO-6 **then** HO-5. Also the broken items no section order had scheduled: HP-7, HP-11, SH-9, MA-11, PR-10.
 3. **Undo, confirm and toasts:** SL-17, the 10-second Undo (PE-2, MA-8, QA-9, CH-6, BL-4), confirmations (HO-11, SL-6). *This moved ahead of the tablets, because the face-or-PIN rule depends on Undo existing.*
@@ -1581,9 +1581,9 @@ Section 16.5 had no step for these, and the tablets add a new reader of househol
 | NO-15, NO-6 | Targeted notifications can be read by other members; filtering is in the browser only. | The `audience` rule must be enforced in the database rules, not only in the query. |
 | HO-9, HO-10 | *Withheld from the public copy until the fix is live.* | |
 | QA-8 | Several saves have no field, assignee or author checks in the rules. | See WT-18 for how the author check works with tablets. |
-| HO-2 | *Withheld from the public copy until the fix is live.* | |
+| HO-2 | Some permission checkboxes do nothing. | **Decided (owner, 2026-11-09): make four work, keep two owner-only,** all enforced on the server. <br>• **View household** and **Manage invites** work as ticked (codes for wall tablets stay admin-only). <br>• **Manage members** works, but only on people with a lower role than your own; never the owner or other admins. <br>• **Manage roles** works with three guards: you cannot change your own permissions, cannot grant a permission you do not hold, and cannot change anyone at or above your own role. <br>• **Delete household** and **Transfer ownership** are owner-only always; their boxes are shown locked. <br>Effort is M (about a day), not Q. |
 | NO-2 | Signing out doesn't stop that device's pushes. | Remove the device's push registration on sign-out. |
-| HO-8 (activity log part) | *Withheld from the public copy until the fix is live.* | |
+| HO-8 (activity log part) | Admins can write arbitrary activity-log entries. | The log is written by the server only, since section 15 relies on it to explain sensitive actions. |
 
 These are findings from reading the code; none was exploited in testing.
 
