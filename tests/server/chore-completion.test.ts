@@ -82,6 +82,16 @@ describe('completing chores on the server', () => {
     assert.equal(stats.members.find(m => m.uid === owner.uid)!.totalPoints, 0);
   });
 
+  test('completing a chore an older client reopened removes the earlier completer email (review finding 4565773463)', async () => {
+    // An older client's reopen left the previous completion's attribution in place.
+    await seedChore('reopened', { completedByEmail: sam.email, completedByUid: sam.uid, completedByName: 'Sam' });
+    const [outcome] = await completeChoresAs(adminDb, owner, HOUSE, { choreIds: ['reopened'], completeSubTasks: false }, AFTER_MIDNIGHT);
+    assert.equal(outcome.status, 'completed');
+    const stored = await read('reopened');
+    assert.equal(stored.completedByUid, owner.uid);
+    assert.equal('completedByEmail' in stored, false, 'no email paired with the new completer');
+  });
+
   test('two people completing the same chore at once yield one completion', async () => {
     await seedChore('race');
     const [a, b] = await Promise.all([
