@@ -11,8 +11,6 @@ import { choreStatsByMember, mergeChoresById, sortMembers, startOfNextWeek, star
 type ChoreParts = { key: string; open?: ChoreLike[]; server?: ChoreLike[]; legacy?: ChoreLike[]; failed?: boolean };
 
 export type HouseholdLiveData = {
-  /** Live household name (the auth context loads it once). */
-  name: string | null;
   members: HouseholdMember[];
   invites: InviteCode[];
   auditLogs: AuditLog[];
@@ -57,7 +55,6 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
  */
 export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null }: Options): HouseholdLiveData {
   const householdId = enabled ? requestedHouseholdId : undefined;
-  const [name, setName] = useState<string | null>(null);
   const [rawMembers, setRawMembers] = useState<HouseholdMember[] | null>(null);
   const [membersFailed, setMembersFailed] = useState(false);
   const [invites, setInvites] = useState<InviteCode[]>([]);
@@ -92,14 +89,7 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
   useEffect(() => {
     if (!householdId) return;
     const stops: Unsubscribe[] = [];
-    stops.push(onSnapshot(
-      doc(db, 'households', householdId),
-      (snapshot) => {
-        const value = snapshot.data()?.name;
-        if (typeof value === 'string') setName(value);
-      },
-      (error) => console.warn('Household name listener failed', error),
-    ));
+    // The household document (live name) comes from the auth context's own listener.
     stops.push(onSnapshot(
       collection(db, 'households', householdId, 'members'),
       (snapshot) => {
@@ -222,7 +212,6 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
   );
 
   return {
-    name,
     members,
     invites: canListInvites ? invites : [],
     auditLogs: canReadAudit ? auditLogs : [],

@@ -144,6 +144,20 @@ export function initialCategory({
 }
 
 /**
+ * The target a late result (an AI category, a remembered category) may still act on:
+ * the caller's current target, but only while the account that started the work is
+ * still the one signed in. Another account signing in on this device (even in the same
+ * household) gets nothing written or remembered for it. Pure.
+ */
+export function lateResultTarget<T extends { householdId: string | null; listId: string | null }>(
+  active: T | null,
+  startedByUid: string | null,
+  signedInUid: string | null,
+): T | null {
+  return startedByUid && startedByUid === signedInUid ? active : null;
+}
+
+/**
  * Whether a late AI category may be written onto an item, judged from the item
  * (and its list) as just read inside a transaction (SH-16c). Only when: the active
  * household and list are still the ones the submission was for, the list still

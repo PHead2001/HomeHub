@@ -23,13 +23,14 @@ import { doc, getDocFromCache, runTransaction, setDoc } from 'firebase/firestore
 import { categorizeGroceryItems } from '@/ai/flows/categorize-grocery-items-flow';
 import { MAX_CATEGORIZE_BATCH } from '@/ai/tasks/categorize-grocery-items';
 import { getAiActionContext, unwrapAiActionResult } from '@/ai/client';
-import { db, getLocalPersistence } from '@/lib/firebase';
+import { auth, db, getLocalPersistence } from '@/lib/firebase';
 import { isBrowserOffline } from '@/lib/firestore-offline';
+import { onHouseholdForgotten } from '@/lib/auth/household-scope';
 import { buildShoppingListItem } from '@/lib/shopping-items';
 import type { ShoppingListItem } from '@/lib/types';
 import { mergeIntoNeededItem } from './item-transactions';
 import { findMergeTarget, itemNameKey, type QuickAddEntry } from './items';
-import { initialCategory, rememberedCategories, shouldApplyLateCategory, type CategorySource } from './local-categories';
+import { initialCategory, lateResultTarget, rememberedCategories, shouldApplyLateCategory, type CategorySource } from './local-categories';
 import { peekSettled, settleTimedOutMerge, trackWrite, type SaveState, type SettledState, type TrackWriteDeps } from './save-status';
 
 export type AddEntry = QuickAddEntry & { size?: number; sizeUnit?: string };
@@ -73,6 +74,11 @@ const remember = (householdId: string, name: string, category: string) => {
   memory.set(itemNameKey(name), category);
   sessionMemory.set(householdId, memory);
 };
+// A household this device no longer shows (SL-3) leaves nothing behind here.
+onHouseholdForgotten((householdId) => {
+  if (householdId === null) sessionMemory.clear();
+  else sessionMemory.delete(householdId);
+});
 
 // One batched call at a time per page: the server allows one in-flight request per
 // user and flow, so a second submission waits for the first instead of failing busy.
@@ -205,6 +211,10 @@ async function categorizeLater({
   active: () => ActiveTarget;
 }): Promise<CategorizationReport> {
   const names = batch.map((item) => item.name);
+  // A late answer acts only for the account that asked: another account signing in on this
+  // device meanwhile (same household or not) gets no write and no remembered category.
+  const startedBy = auth.currentUser?.uid ?? null;
+  const stillActive = () => lateResultTarget(active(), startedBy, auth.currentUser?.uid ?? null);
   const run = aiQueue.then(async () => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -255,13 +265,16 @@ async function categorizeLater({
         aiCategory,
         categories,
         target: { householdId, listId },
-        active: active(),
+        active: stillActive(),
       })) return false;
       const category = categories.find((candidate) => candidate.toLowerCase() === aiCategory.toLowerCase()) ?? aiCategory;
       transaction.update(itemRef, { category, categorySource: 'ai' });
       return category !== item?.category;
     }).catch(() => false);
-    if (aiCategory.toLowerCase() !== 'other') remember(householdId, name, aiCategory);
+    const target = stillActive();
+    if (aiCategory.toLowerCase() !== 'other' && target?.householdId === householdId && target.listId === listId) {
+      remember(householdId, name, aiCategory);
+    }
     if (changed) applied.push(name);
   }));
   return { requested: names.length, applied, unavailable: [], unconfirmed: [] };
