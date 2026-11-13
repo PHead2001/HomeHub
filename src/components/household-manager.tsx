@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import {
@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, LogOut } from 'lucide-react';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
+import { deletionNameField, deletionNameSuggestion, finishDeletingError, finishDeletingName } from '@/lib/auth/live-membership';
 import { HOUSEHOLD_NAME_MAX, formatInviteInput, householdNameError, inviteCodeError } from '@/components/household/household-model';
 import {
   Card,
@@ -25,6 +26,24 @@ import {
   CardHeader,
   CardTitle,
 } from './ui/card';
+
+const NO_DATA = 'Nothing from it is shown on this device any more. You can create a household or join one with an invite code.';
+
+/** What the person is told when access ends (`membershipEnded.reason`). */
+const membershipEndedCopy = {
+  removed: {
+    title: "You're no longer in this household",
+    description: `An owner or admin removed you, or you left on another device. ${NO_DATA}`,
+  },
+  declined: {
+    title: 'Your request to join was declined',
+    description: `An owner or admin turned down your request. ${NO_DATA}`,
+  },
+  deleted: {
+    title: 'This household was deleted',
+    description: `The owner deleted the household and everything in it. ${NO_DATA}`,
+  },
+} as const;
 
 interface HouseholdManagerProps {
   children: ReactNode;
@@ -142,12 +161,143 @@ function JoinHouseholdForm({
   );
 }
 
+/**
+ * The frozen-household screen. "Finish deleting" must send the household's exact name
+ * (the server checks it, and the frozen household cannot be read), so the owner always
+ * sees an editable name field, prefilled with the best guess (`deletionNameSuggestion`);
+ * the action is offered only while the field holds a name, and a refusal is explained
+ * under the field, which stays editable.
+ */
+function DeletingHouseholdDialog({
+  isOwner,
+  suggestedName,
+  onFinish,
+  onSignOut,
+}: {
+  isOwner: boolean;
+  suggestedName: string;
+  onFinish: (confirmName: string) => Promise<boolean>;
+  onSignOut: () => void;
+}) {
+  const [finishing, setFinishing] = useState(false);
+  const [typedName, setTypedName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const field = deletionNameField(typedName, suggestedName);
+  const confirmName = finishDeletingName(field);
+  return (
+    <Dialog open={true} onOpenChange={() => {}}>
+      <DialogContent
+        className="max-w-md"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        hideClose
+      >
+        <DialogHeader>
+          <DialogTitle className="font-headline text-2xl text-center">This household is being deleted</DialogTitle>
+          <DialogDescription className="text-center text-base">
+            {isOwner
+              ? "Deletion did not finish. Check the household's name, then finish deleting the remaining data."
+              : 'The owner is deleting this household. Its data is no longer available.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="flex flex-col gap-3 pt-2"
+          noValidate
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (!isOwner || !confirmName || finishing) return;
+            setFinishing(true);
+            setError(null);
+            try {
+              setError(finishDeletingError(await onFinish(confirmName)));
+            } finally {
+              setFinishing(false);
+            }
+          }}
+        >
+          {isOwner && (
+            <div className="space-y-2 text-left">
+              <Label htmlFor="finishDeleteName">Household name</Label>
+              <Input
+                {...fieldErrorProps('finishDeleteName', error)}
+                value={field}
+                onChange={(e) => { setTypedName(e.target.value); setError(null); }}
+                disabled={finishing}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                maxLength={HOUSEHOLD_NAME_MAX}
+              />
+              <FieldError id="finishDeleteName">{error}</FieldError>
+            </div>
+          )}
+          {isOwner && (
+            <Button type="submit" variant="destructive" disabled={finishing || !confirmName}>
+              {finishing ? 'Deleting…' : 'Finish deleting'}
+            </Button>
+          )}
+          <Button type="button" variant="link" className="text-primary" onClick={onSignOut}>
+            <LogOut className="mr-2 h-4 w-4" />
+            Sign Out
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function HouseholdManager({ children }: HouseholdManagerProps) {
-  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
+  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, membershipEnded, dismissMembershipEnded, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
   const pathname = usePathname();
-  const [finishingDelete, setFinishingDelete] = useState(false);
+  const router = useRouter();
+  // Screens are keyed by account and household: another household, or another person in
+  // the same household, remounts every screen, so no screen state, listener, Undo offer or
+  // pending write of the previous one survives. The first household of a page load keeps
+  // the initial key.
+  const [scope, setScope] = useState<{ uid: string | null; householdId: string | null; key: number }>({ uid: null, householdId: null, key: 0 });
+  const scopeUid = currentUser?.uid ?? null;
+  const scopeHouseholdId = currentUser?.householdId ?? null;
+  if (scopeUid && scopeHouseholdId && (scopeHouseholdId !== scope.householdId || scopeUid !== scope.uid)) {
+    setScope({ uid: scopeUid, householdId: scopeHouseholdId, key: scope.householdId ? scope.key + 1 : scope.key });
+  }
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+
+  // Access ended while this page was open (or since the last visit): the household's
+  // data is already gone from this device. Explain it once, then onboarding.
+  if (currentUser && membershipEnded) {
+    const copy = membershipEndedCopy[membershipEnded.reason];
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          hideClose
+        >
+          <DialogHeader>
+            <DialogTitle className="font-headline text-2xl text-center">{copy.title}</DialogTitle>
+            <DialogDescription className="text-center text-base">{copy.description}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-2">
+            <Button
+              onClick={() => {
+                dismissMembershipEnded();
+                if (pathname !== '/') router.replace('/');
+              }}
+            >
+              Continue
+            </Button>
+            <Button variant="link" className="text-primary" onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   if (currentUser && currentMember?.role === 'newuser' && pathname !== '/profile') {
     return (
@@ -188,47 +338,13 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   // The owner started deleting this household; its data is frozen. If a run failed
   // partway, the owner can finish it from here.
   if (currentUser && household?.deletingAt) {
-    const isOwner = currentMember?.role === 'owner';
     return (
-      <Dialog open={true} onOpenChange={() => {}}>
-        <DialogContent
-          className="max-w-md"
-          onInteractOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => e.preventDefault()}
-          hideClose
-        >
-          <DialogHeader>
-            <DialogTitle className="font-headline text-2xl text-center">This household is being deleted</DialogTitle>
-            <DialogDescription className="text-center text-base">
-              {isOwner
-                ? 'Deletion did not finish. Finish deleting to remove the remaining data.'
-                : 'The owner is deleting this household. Its data is no longer available.'}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 pt-2">
-            {isOwner && (
-              <Button
-                variant="destructive"
-                disabled={finishingDelete}
-                onClick={async () => {
-                  setFinishingDelete(true);
-                  try {
-                    await deleteHousehold(household.name);
-                  } finally {
-                    setFinishingDelete(false);
-                  }
-                }}
-              >
-                {finishingDelete ? 'Deleting…' : 'Finish deleting'}
-              </Button>
-            )}
-            <Button variant="link" className="text-primary" onClick={logout}>
-              <LogOut className="mr-2 h-4 w-4" />
-              Sign Out
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <DeletingHouseholdDialog
+        isOwner={currentMember?.role === 'owner'}
+        suggestedName={deletionNameSuggestion(household.name, currentMember?.householdName)}
+        onFinish={deleteHousehold}
+        onSignOut={logout}
+      />
     );
   }
 
@@ -262,7 +378,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
 
   // If user is not logged in, is still resolving household state, or has a household, show the main app.
   if (!currentUser || householdLoading || household !== null) {
-    return <>{children}</>;
+    return <Fragment key={scope.key}>{children}</Fragment>;
   }
 
   const handleCreate = async (name: string) => {

@@ -1,6 +1,6 @@
 # HomeHub audit 2: section by section
 
-> **Public copy.** 10 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-6, HO-10, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
+> **Public copy.** 11 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-6, HO-9, HO-10, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
 
 One section at a time, nitpicked. The primary device is a **wall-mounted tablet in landscape, one per room** (always on, touch only, read from across the room). Phone portrait comes second, desktop third.
 
@@ -744,7 +744,7 @@ The gaps:
 
 | # | Finding | Fix | Effort | Verified |
 |---|---|---|---|---|
-| HO-9 | *(Fix tightened: see section 17.)* **A pending joiner gets every member's email before approval.** Redeeming an invite returns the full household document (verified, `household-membership.ts:161`), which includes the member emails and the owner's email, and the rules let pending members read it. A forwarded or leaked code exposes the family's emails. | Return only `{id, name}`; move `memberEmails` out of the household doc. | M | Code |
+| HO-9 | *Withheld from the public copy until the fix is live.* | | | |
 | HO-10 | *Withheld from the public copy until the fix is live.* | | | |
 | HO-11 | *Withheld from the public copy until the fix is live.* | | | |
 | HO-12 | *Withheld from the public copy until the fix is live.* | | | |
@@ -800,7 +800,7 @@ The gaps:
 
 ### 8.7 Suggested order
 
-1. **Truth and safety:** HO-2 lock or enforce the permissions, HO-9 stop leaking emails to joiners, HO-1 live membership, HO-5 safe removal, HO-6 server actions.
+1. **Truth and safety:** HO-2, HO-9, HO-1 live membership, HO-5 safe removal, HO-6 server actions.
 2. **Unstick people:** HO-3 cancel a request, HO-4 the half-deleted household, HO-7 reminder targeting, the HO-8 list.
 3. **Privacy for kids and guests:** HO-10, HO-11, HO-12.
 4. **Shared home:** HO-13 device role and "Who's at the screen?", HO-16 and HO-23 QR invites, HO-19 settings, HO-14 guest passes, HO-15 kid profiles.

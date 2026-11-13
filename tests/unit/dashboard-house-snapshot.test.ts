@@ -89,8 +89,13 @@ describe('last-known house rooms (H01)', () => {
     assert.match(hook, /useHouseSnapshot\(facts, canChores \? householdId : null, uid, today\)/);
     const auth = readFileSync(resolve(__dirname, '../../src/contexts/auth-context.tsx'), 'utf8');
     const logout = auth.slice(auth.indexOf('const logout = useCallback'));
-    assert.ok(logout.indexOf('clearHouseSnapshot(deviceStorage())') < logout.indexOf('signOut(auth)'), 'cleared before sign-out');
+    const forgetAt = logout.indexOf('forgetHouseholdOnDevice(null)');
+    assert.ok(forgetAt > 0 && forgetAt < logout.indexOf('signOut(auth)'), 'cleared before sign-out');
     const signedOut = auth.slice(auth.indexOf('// User is not logged in'));
-    assert.ok(signedOut.indexOf('clearHouseSnapshot(deviceStorage())') < signedOut.indexOf('setCurrentUser(null)'));
+    const signedOutForget = signedOut.indexOf('forgetHouseholdOnDevice(null)');
+    assert.ok(signedOutForget > 0 && signedOutForget < signedOut.indexOf('setProfile(null)'));
+    // Forgetting a household (or all of them) always clears the snapshot.
+    const scope = readFileSync(resolve(__dirname, '../../src/lib/auth/household-scope.ts'), 'utf8');
+    assert.match(scope, /clearHouseSnapshot\(deviceStorage\(\)\);/);
   });
 });

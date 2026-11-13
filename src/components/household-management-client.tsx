@@ -133,7 +133,8 @@ export function HouseholdManagementClient() {
     ownEmail: currentUser?.email ?? null,
   });
   const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
-  const householdDisplayName = live.name ?? household?.name ?? '';
+  // Live: the auth context listens to the household document.
+  const householdDisplayName = household?.name ?? '';
 
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState('');
