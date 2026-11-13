@@ -1,6 +1,6 @@
 # HomeHub audit 2: section by section
 
-> **Public copy.** 10 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-6, HO-10, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
+> **Public copy.** 9 findings about privacy and permissions are withheld until their fixes are live (NO-8, HO-6, HO-11, HO-12, QA-7, AU-10, AU-11, AU-12, PR-8). Their IDs remain so the numbering and cross-references still work.
 
 One section at a time, nitpicked. The primary device is a **wall-mounted tablet in landscape, one per room** (always on, touch only, read from across the room). Phone portrait comes second, desktop third.
 
@@ -724,7 +724,7 @@ The gaps:
 - your own role never updates live;
 - some permission checkboxes do nothing;
 - pending and half-deleted states can trap people;
-- one item withheld;
+- joiners, kids and guests see everyone's emails;
 - nothing supports shared tablets, kids or babysitters.
 
 ### 8.1 Broken (fix these first)
@@ -745,7 +745,7 @@ The gaps:
 | # | Finding | Fix | Effort | Verified |
 |---|---|---|---|---|
 | HO-9 | *(Fix tightened: see section 17.)* **A pending joiner gets every member's email before approval.** Redeeming an invite returns the full household document (verified, `household-membership.ts:161`), which includes the member emails and the owner's email, and the rules let pending members read it. A forwarded or leaked code exposes the family's emails. | Return only `{id, name}`; move `memberEmails` out of the household doc. | M | Code |
-| HO-10 | *Withheld from the public copy until the fix is live.* | | | |
+| HO-10 | *(Fix tightened: see section 17.)* **Guests and children see every member's email and full profile:** member cards show emails, the pending list shows to non-managers, and any approved member can read every housemate's profile (preferences, time zone, legacy birthday and gender). A babysitter on Guest sees all of this. | Emails visible to owners and admins only; guests and children read a public subset of profiles. | M | Code |
 | HO-11 | *Withheld from the public copy until the fix is live.* | | | |
 | HO-12 | *Withheld from the public copy until the fix is live.* | | | |
 
@@ -1579,7 +1579,7 @@ Section 16.5 had no step for these, and the tablets add a new reader of househol
 | Finding | What it is | Note on the fix |
 |---|---|---|
 | NO-15, NO-6 | Targeted notifications can be read by other members; filtering is in the browser only. | The `audience` rule must be enforced in the database rules, not only in the query. |
-| HO-9, HO-10 | *Withheld from the public copy until the fix is live.* | |
+| HO-9, HO-10 | A pending joiner receives members' emails; approved members can read more of each profile than the screens need. | **Hiding fields in the interface is not a fix.** Database rules allow or deny a whole document, so emails and private profile fields must move to a separately protected document or come from the server, and the old broad read must be closed. |
 | QA-8 | Several saves have no field, assignee or author checks in the rules. | See WT-18 for how the author check works with tablets. |
 | HO-2 | Some permission checkboxes do nothing. | **Decided (owner, 2026-11-09): make four work, keep two owner-only,** all enforced on the server. <br>• **View household** and **Manage invites** work as ticked (codes for wall tablets stay admin-only). <br>• **Manage members** works, but only on people with a lower role than your own; never the owner or other admins. <br>• **Manage roles** works with three guards: you cannot change your own permissions, cannot grant a permission you do not hold, and cannot change anyone at or above your own role. <br>• **Delete household** and **Transfer ownership** are owner-only always; their boxes are shown locked. <br>Effort is M (about a day), not Q. |
 | NO-2 | Signing out doesn't stop that device's pushes. | Remove the device's push registration on sign-out. |
