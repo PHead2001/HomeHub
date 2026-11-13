@@ -36,9 +36,17 @@ async function scanWith(page: Page, opener: string, scannerName: string, barcode
     // Scan to tick is in the open list's actions menu (S8b), top right, where the
     // top-right toasts of the previous scan may still sit over it: open the menu and
     // choose the item from the keyboard, which no toast can intercept.
-    await page.getByTestId('open-list').getByRole('button', { name: 'More list actions' }).focus();
-    await page.keyboard.press('Enter');
+    const menuButton = page.getByTestId('open-list').getByRole('button', { name: 'More list actions' });
     const item = page.getByRole('menu').getByRole('menuitem', { name: opener, exact: true });
+    // Right after the previous scanner closes, focus is still being handed back to the menu
+    // button, and an Enter pressed in that moment can be lost: press again until the menu is open.
+    await expect(async () => {
+      if (!(await item.isVisible())) {
+        await menuButton.focus();
+        await page.keyboard.press('Enter');
+      }
+      await expect(item).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
     await item.focus();
     await page.keyboard.press('Enter');
   } else {
@@ -107,8 +115,12 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
   test('Add never replaces an existing product: it offers to edit it (BL-3)', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await library.doc(UNKNOWN).set({ name: 'E2E Saved First', imageUrl: '', createdAt: fixedNow.toISOString() });
-    await open(page, `/library?add=${UNKNOWN}`, 'Barcode Library');
+    // `?add=` opens the Add dialog at once, and a modal dialog hides the page heading from the
+    // accessibility tree: wait for the dialog, not the heading.
+    await page.clock.setFixedTime(fixedNow);
+    await page.goto(`/library?add=${UNKNOWN}`);
     const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+    await expect(dialog).toBeVisible();
     await dialog.getByLabel('Product Name').fill('E2E Overwrite Attempt');
     await dialog.getByRole('button', { name: 'Save Item' }).click();
     await expect(dialog.getByRole('alert').filter({ hasText: 'already saved as E2E Saved First' })).toBeVisible();
