@@ -4,6 +4,7 @@ import {
   initialCategory,
   localCategoryFor,
   matchListCategory,
+  lateResultTarget,
   rememberedCategories,
   shouldApplyLateCategory,
 } from '../../src/lib/shopping/local-categories';
@@ -102,5 +103,25 @@ describe('late AI guard (SH-16c)', () => {
 
   test('an item without nameKey (older client) is compared by its name', () => {
     assert.equal(shouldApplyLateCategory({ ...base, item: { name: ' zorblax ', category: 'Other', categorySource: 'pending' } }), true);
+  });
+});
+
+describe('late results belong to the account that asked (review finding 4565863322)', () => {
+  const target = { householdId: 'h1', listId: 'l1' };
+  test('the same account still signed in keeps its target', () => {
+    assert.deepEqual(lateResultTarget(target, 'u1', 'u1'), target);
+  });
+  test('another account signed in on this device (same household) gets nothing', () => {
+    assert.equal(lateResultTarget(target, 'u1', 'u2'), null);
+  });
+  test('signed out, or started with nobody signed in: nothing', () => {
+    assert.equal(lateResultTarget(target, 'u1', null), null);
+    assert.equal(lateResultTarget(target, null, null), null);
+  });
+  test('a late category for the old account is therefore never applied', () => {
+    const item = { name: 'Milk', nameKey: 'milk', categorySource: 'pending' as const, category: 'Other' };
+    const base = { item, listExists: true, expectedNameKey: 'milk', aiCategory: 'Dairy', categories: defaults, target };
+    assert.equal(shouldApplyLateCategory({ ...base, active: lateResultTarget(target, 'u1', 'u1') }), true);
+    assert.equal(shouldApplyLateCategory({ ...base, active: lateResultTarget(target, 'u1', 'u2') }), false);
   });
 });
