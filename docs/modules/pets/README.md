@@ -60,7 +60,7 @@ Pet IDs are the slugified name plus a random suffix. New log entries use Firesto
 Additive optional fields (all absent on older documents, which read as before):
 
 - Pet: `feedingsPerDay` (integer 1-12), `portionAmount` (number), `portionUnit` (`Cups`, `Cans`, `Scoops`, `Other`). Clearing them in the edit dialog removes the fields. `type` may now also be `Bird`, `Fish`, `Small mammal` or `Reptile`.
-- Feeding, medication and care logs: `loggedByUid` and `loggedByName` (the member's first name at the time of logging).
+- Feeding, medication and care logs: `loggedByUid` and `loggedByName` (the member's first name at the time of logging: `loggerName` takes the profile's first name, else the first word of its display name, skipping any that is an email, else "Someone"; never part of the email). `scripts/ops/scrub-remaining-emails.mjs` rewrites older labels that are an email, in the logs and in the feeding state's `lastFedByName` (see [Household Governance](../household-governance/README.md), "Email copies").
 - Feeding logs written by the shared feed operation: `loggedAt` (server time of the write), `repeat` (`none`; `confirmed` after "Feed again?"; `offline` when queued offline), `clockSource: 'device'` (offline only: `date` is that device's clock) and `backdated: true` (a chosen past time from the detailed form).
 - Medication logs: `nextDueDate` (`yyyy-MM-dd`, local calendar date).
 

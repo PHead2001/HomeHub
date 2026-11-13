@@ -3,14 +3,13 @@ import { describe, test } from 'node:test';
 import {
   assigneeFields,
   isAssignedTo,
-  occurrenceAssigneeKey,
   resolveAssigneeUid,
   unassignedChoreFields,
 } from '../../functions/src/shared/assignee';
 import { choreNotificationsFor } from '../../functions/src/shared/chore-reminders';
 import { addPurgedChores, creditedPerson, foldLegacyStatsKeys, purgeMustWait, purgeNeedsMemberEmails, readChoreStats } from '../../functions/src/shared/chore-stats';
 import { summarizeChores } from '../../src/lib/dashboard/wrapped';
-import { choreStatsAssigneeKey, choreStatsMemberKey, recurringChoreId } from '../../functions/src/shared/ids';
+import { choreStatsAssigneeKey, choreStatsMemberKey, occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
 import { assigneeBackfillDecision, memberUidsByEmail, resolveAssigneeUidJs } from '../../scripts/ops/chore-assignee.mjs';
 import { occurrenceIds } from '../../src/lib/chores/calendar';
 import { computeChoreStats } from '../../src/lib/chores/stats';
@@ -127,16 +126,17 @@ describe('chore assignee (uid with email fallback)', () => {
     assert.equal(resolveAssigneeUid(unassigned, people), null);
   });
 
-  test('occurrence ids keep the key each template was generated with', () => {
-    assert.equal(occurrenceAssigneeKey({ assignedToUid: 'uid-sam', assignedToEmail: 'Sam@example.test' }), 'Sam@example.test');
-    assert.equal(occurrenceAssigneeKey({ recurrence: { assignedToEmail: 'ana@example.test' } }), 'ana@example.test');
-    assert.equal(occurrenceAssigneeKey({ assignedToUid: 'uid-sam', assignedToEmail: '' }), 'uid-sam');
-    assert.equal(occurrenceAssigneeKey({}), '');
-    // A template written since release C (or scrubbed) is keyed by its uid.
-    assert.equal(occurrenceAssigneeKey(assigneeFields({ uid: 'uid-sam', email: 'sam@example.test' })), 'uid-sam');
-    // Same ids as before the uid existed, for a template with an email.
-    assert.deepEqual(occurrenceIds({ id: 't1', roomIds: ['kitchen'] }, '2026-11-09', 'sam@example.test'),
-      [recurringChoreId('t1', 'kitchen', '2026-11-09', 'sam@example.test')]);
+  test('occurrence ids never depend on the assignee (member privacy release E)', () => {
+    const templates = [
+      { id: 't1', roomIds: ['kitchen'], assignedToUid: 'uid-sam', assignedToEmail: 'Sam@example.test' },
+      { id: 't1', roomIds: ['kitchen'], ...assigneeFields({ uid: 'uid-ana', email: 'ana@example.test' }) },
+    ];
+    for (const template of templates) {
+      assert.deepEqual(occurrenceIds(template, '2026-11-09'), [occurrenceChoreId('t1', 'kitchen', '2026-11-09')]);
+    }
+    assert.equal(occurrenceChoreId('t1', 'kitchen', '2026-11-09'), 't1-kitchen-2026-11-09');
+    // The id before release E was the same followed by the assignee's slug.
+    assert.ok(recurringChoreId('t1', 'kitchen', '2026-11-09', 'sam@example.test').startsWith(`${occurrenceChoreId('t1', 'kitchen', '2026-11-09')}-`));
   });
 
   test('the backfill script decides like the shared helper', () => {

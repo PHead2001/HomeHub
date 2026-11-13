@@ -462,13 +462,21 @@ export function medicationState(days: number): Pick<MedicationDue, 'state' | 'la
 /* Who logged                                                                 */
 /* ------------------------------------------------------------------------- */
 
-/** Short display name stored on new log entries ("Alex"). */
-export function loggerName(user: { firstName?: string | null; displayName?: string | null; email?: string | null }): string {
-  const first = user.firstName?.trim();
+/**
+ * Short display name stored on new log entries ("Alex"). Every member who can see
+ * the pet reads it, so it is never taken from the email: a name that is an email
+ * address is skipped, and someone without a name is "Someone".
+ */
+export function loggerName(user: { firstName?: string | null; displayName?: string | null }): string {
+  const usable = (value: string | null | undefined) => {
+    const trimmed = value?.trim() ?? '';
+    return trimmed && !/\S+@\S+/.test(trimmed) ? trimmed : '';
+  };
+  const first = usable(user.firstName);
   if (first) return first.slice(0, 60);
-  const display = user.displayName?.trim();
+  const display = usable(user.displayName);
   if (display) return display.split(/\s+/)[0].slice(0, 60);
-  return (user.email?.split('@')[0] ?? 'Someone').slice(0, 60);
+  return 'Someone';
 }
 
 /* ------------------------------------------------------------------------- */

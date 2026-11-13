@@ -30,6 +30,32 @@ export const MEMBER_FALLBACK_NAME = 'Member';
 
 const EMAIL_LIKE = /\S+@\S+/;
 
+/**
+ * Whether a photo URL is a Firebase Storage download URL of a file in an
+ * email-named folder (`users/{email}/avatars/...`, where photos were uploaded
+ * before member privacy release B): the URL carries the email, so it is never
+ * copied to public member data.
+ */
+export function isEmailFolderPhotoUrl(url: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.hostname !== 'firebasestorage.googleapis.com') return false;
+  const match = /^\/v0\/b\/[^/]+\/o\/([^/]+)$/.exec(parsed.pathname);
+  if (!match) return false;
+  let path: string;
+  try {
+    path = decodeURIComponent(match[1]);
+  } catch {
+    return false;
+  }
+  return /^users\/[^/]*@[^/]*\//.test(path);
+}
+
 /** A display name that is safe to show housemates: never an email address. */
 export function publicDisplayName(name: unknown, fallback = MEMBER_FALLBACK_NAME): string {
   const trimmed = typeof name === 'string' ? name.trim() : '';
@@ -93,6 +119,6 @@ export function pendingHouseholdView(householdId: string, member: Pick<Household
 /** Whether the profile's name or photo differ from the public member data. */
 export function memberProfileDiffers(member: Pick<HouseholdMember, 'displayName' | 'avatarUrl'>, profile: Pick<User, 'displayName' | 'avatarUrl'>): boolean {
   const name = (value: unknown) => { const shown = publicDisplayName(value, ''); return shown || null; };
-  const photo = (value: unknown) => (typeof value === 'string' && value.startsWith('https://') ? value : null);
+  const photo = (value: unknown) => (typeof value === 'string' && value.startsWith('https://') && !isEmailFolderPhotoUrl(value) ? value : null);
   return name(member.displayName) !== name(profile.displayName) || photo(member.avatarUrl) !== photo(profile.avatarUrl);
 }

@@ -4,7 +4,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { completeChoresAs, reopenChoreAs, undoChoreCompletionAs, type CompletionCaller } from '../../src/lib/server/chore-completion';
 import { runHouseholdReminders } from '../../functions/src/reminders';
-import { recurringChoreId } from '../../functions/src/shared/ids';
+import { occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
 import { computeChoreStats } from '../../src/lib/chores/stats';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 
@@ -209,7 +209,7 @@ describe('occurrence identity in upkeep (CH-3)', () => {
       recurrence: { frequency: 'daily', assignedToEmail: owner.email },
     });
     await runHouseholdReminders(adminDb as never, HOUSE, now, ts);
-    const todayId = recurringChoreId('trash', 'general', '2026-11-05', owner.email);
+    const todayId = occurrenceChoreId('trash', 'general', '2026-11-05');
     assert.equal((await read(todayId)).occurrenceKey, 'trash|general|2026-11-05');
     const [done] = await completeChoresAs(adminDb, sam, HOUSE, { choreIds: [todayId] }, now);
     assert.equal(done.status, 'completed');

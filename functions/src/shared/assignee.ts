@@ -126,26 +126,3 @@ export const unassignedChoreFields = (): {
   assignedToUid: "",
   assignedToDisplayName: "Unassigned",
 });
-
-/**
- * The assignee part of a generated occurrence's id: a template that still
- * carries an email keeps it (ids generated so far used it), a template without
- * one (every template written since release C, and every scrubbed one) uses
- * the uid. A template whose key changes never gets a second copy of a day it
- * already has: upkeep and calendar planning also skip any occurrence whose
- * occurrence key (`templateId|roomId|day`, functions/src/shared/ids.ts) a
- * chore already holds.
- * @param {AssigneeRecord} template Template fields.
- * @return {string} The key, or "" when unassigned.
- */
-export const occurrenceAssigneeKey = (template: AssigneeRecord): string => {
-  // The stored value as is (not trimmed or lower-cased): ids generated so far
-  // used it verbatim.
-  const raw = (value: unknown): string =>
-    typeof value === "string" && value.trim() ? value : "";
-  const recurrence = template.recurrence;
-  return raw(template.assignedToEmail) ||
-    (recurrence && typeof recurrence === "object" ?
-      raw((recurrence as Record<string, unknown>).assignedToEmail) : "") ||
-    assigneeUidOf(template);
-};

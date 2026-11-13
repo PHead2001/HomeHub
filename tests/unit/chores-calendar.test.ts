@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { dayKey, type ChoreRecord } from '../../src/lib/chores/dates';
-import { recurringChoreId } from '../../functions/src/shared/ids';
+import { occurrenceChoreId, recurringChoreId } from '../../functions/src/shared/ids';
 import { stableSlugify } from '../../src/lib/utils';
 import {
   choreEvents, groupByDay, maintenanceCalendarItems, occurrenceIds, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, sortEvents, weekDays,
@@ -180,7 +180,7 @@ describe('calendar reads every date in the visible range', () => {
 
   it('plans repeating chores beyond the generated lookahead, from today on', () => {
     const templates = [{ id: 'trash', task: 'Trash', assignedToEmail: 'sam@example.test', recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [1] } } }];
-    const existing = [chore({ id: recurringChoreId('trash', 'general', '2027-02-01', 'sam@example.test'), templateId: 'trash', originalDueDate: '2027-02-01' })];
+    const existing = [chore({ id: occurrenceChoreId('trash', 'general', '2027-02-01'), templateId: 'trash', originalDueDate: '2027-02-01' })];
     const events = plannedRecurringEvents(templates, existing, members, '2026-08-01', '2027-01-25', '2027-02-14');
     // Mondays in range: Jan 25, Feb 1 (already generated), Feb 8.
     assert.deepEqual(events.map(e => e.day), ['2027-01-25', '2027-02-08']);
@@ -195,29 +195,37 @@ describe('planned occurrences use the server occurrence identity', () => {
   const trash = { id: 'trash', task: 'Trash', roomIds: ['kitchen', 'garage'], assignedToEmail: 'sam@example.test', recurrence: { frequency: 'daily', interval: 1 } };
 
   it('builds exactly the IDs the server generator uses', () => {
-    assert.deepEqual(occurrenceIds(trash, '2026-09-01', 'sam@example.test'), [
-      recurringChoreId('trash', 'kitchen', '2026-09-01', 'sam@example.test'),
-      recurringChoreId('trash', 'garage', '2026-09-01', 'sam@example.test'),
+    assert.deepEqual(occurrenceIds(trash, '2026-09-01'), [
+      occurrenceChoreId('trash', 'kitchen', '2026-09-01'),
+      occurrenceChoreId('trash', 'garage', '2026-09-01'),
     ]);
-    assert.deepEqual(occurrenceIds({ id: 'trash' }, '2026-09-01', 'sam@example.test'), [recurringChoreId('trash', 'general', '2026-09-01', 'sam@example.test')]);
+    assert.deepEqual(occurrenceIds({ id: 'trash' }, '2026-09-01'), [occurrenceChoreId('trash', 'general', '2026-09-01')]);
     // The web slug (used for older browser-generated IDs) matches the server's.
     for (const text of ['daily-kitchen-reset-kitchen-2026-08-01-alex.e2e@example.test', 'Ça va & Co / x_y']) {
       assert.equal(recurringChoreId(text, 'r', '2026-08-01', 'a@b.c'), stableSlugify(`${text}-r-2026-08-01-a@b.c`));
+      assert.equal(occurrenceChoreId(text, 'r', '2026-08-01'), stableSlugify(`${text}-r-2026-08-01`));
     }
   });
 
   it('matches the generator in functions/src/reminders.ts', () => {
     const source = readFileSync(resolve(process.cwd(), 'functions/src/reminders.ts'), 'utf8');
-    assert.match(source, /recurringChoreId\(templateDoc\.id, roomId, day, assignee\)/, 'generator ID changed: update occurrenceIds');
+    assert.match(source, /occurrenceChoreId\(templateDoc\.id, roomId, day\)/, 'generator ID changed: update occurrenceIds');
     assert.match(source, /template\.roomIds\.length > 0 \? template\.roomIds : \["general"\]/, 'generator room fallback changed: update occurrenceIds');
   });
 
   it('does not plan a copy of an occurrence that was moved or completed', () => {
-    const id = recurringChoreId('trash', 'kitchen', '2026-09-01', 'sam@example.test');
+    const id = occurrenceChoreId('trash', 'kitchen', '2026-09-01');
     // Generated for Sep 1, then moved to Sep 3 and completed.
     const moved = chore({ id, templateId: 'trash', roomIds: ['kitchen'], originalDueDate: '2026-09-03', isCompleted: true });
     const events = plannedRecurringEvents([trash], [moved], members, '2026-08-01', '2026-09-01', '2026-09-01');
     // Only the garage room instance is still missing on Sep 1.
-    assert.deepEqual(events.map(e => e.id), [`planned:${recurringChoreId('trash', 'garage', '2026-09-01', 'sam@example.test')}`]);
+    assert.deepEqual(events.map(e => e.id), [`planned:${occurrenceChoreId('trash', 'garage', '2026-09-01')}`]);
+  });
+
+  it('does not plan a day whose chore was generated under an id with the assignee (before release E)', () => {
+    // Generated before release E under the email-keyed id, then the template was reassigned.
+    const legacy = chore({ id: recurringChoreId('trash', 'kitchen', '2026-09-01', 'ana@example.test'), templateId: 'trash', roomIds: ['kitchen'], originalDueDate: '2026-09-01' });
+    const keyed = chore({ id: recurringChoreId('trash', 'garage', '2026-09-01', 'uid-ana'), templateId: 'trash', roomIds: ['kitchen'], originalDueDate: '2026-09-04', occurrenceKey: 'trash|garage|2026-09-01', isCompleted: true });
+    assert.deepEqual(plannedRecurringEvents([trash], [legacy, keyed], members, '2026-08-01', '2026-09-01', '2026-09-01'), []);
   });
 });
