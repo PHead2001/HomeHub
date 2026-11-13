@@ -36,9 +36,17 @@ async function scanWith(page: Page, opener: string, scannerName: string, barcode
     // Scan to tick is in the open list's actions menu (S8b), top right, where the
     // top-right toasts of the previous scan may still sit over it: open the menu and
     // choose the item from the keyboard, which no toast can intercept.
-    await page.getByTestId('open-list').getByRole('button', { name: 'More list actions' }).focus();
-    await page.keyboard.press('Enter');
+    const menuButton = page.getByTestId('open-list').getByRole('button', { name: 'More list actions' });
     const item = page.getByRole('menu').getByRole('menuitem', { name: opener, exact: true });
+    // Right after the previous scanner closes, focus is still being handed back to the menu
+    // button, and an Enter pressed in that moment can be lost: press again until the menu is open.
+    await expect(async () => {
+      if (!(await item.isVisible())) {
+        await menuButton.focus();
+        await page.keyboard.press('Enter');
+      }
+      await expect(item).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
     await item.focus();
     await page.keyboard.press('Enter');
   } else {
