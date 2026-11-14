@@ -56,6 +56,8 @@ export type TabletContextValue = {
   notices: DeviceNotice[];
   data: DashboardData;
   shell: ShellState;
+  /** "Who's here?" or the PIN pad is open: other dialogs step aside (`settingsLayer`). */
+  prompting: boolean;
   view: TabletView;
   /** Goes to a path (deep links into a section that is off land on the start page). */
   navigate: (path: string) => void;
