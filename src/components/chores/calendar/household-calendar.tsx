@@ -34,7 +34,7 @@ import { NumberTicker } from '@/components/motion/number-ticker';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import { PeekCard } from '@/components/dashboard/peek-card';
 import { toDate } from '@/lib/pets/care';
-import { readCourse } from '@/lib/pets/medication-course';
+import { readCourse, withOfflineDoses } from '@/lib/pets/medication-course';
 import { cn } from '@/lib/utils';
 import { addDaysToKey, dayFromKey, isDayKey, type ChoreRecord } from '@/lib/chores/dates';
 import {
@@ -325,7 +325,8 @@ export function HouseholdCalendar() {
             // Courses (P3): their occurrences come from the shared schedule model.
             const petCourses = courseSnap.docs.flatMap(c => {
               const course = readCourse(c.id, c.data());
-              return course ? [{ petId: petDoc.id, petName: pet.name || 'Pet', course }] : [];
+              // A dose recorded offline (not in the course's pointer) covers its occurrence too.
+              return course ? [{ petId: petDoc.id, petName: pet.name || 'Pet', course: withOfflineDoses(course, meds.docs.map(m => ({ id: m.id, ...m.data() }))) }] : [];
             });
             return { logs, courses: petCourses };
           }));

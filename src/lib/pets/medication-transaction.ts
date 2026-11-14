@@ -13,13 +13,21 @@
  * sessions giving the same occurrence at once: the course document changes
  * under the second, which retries, sees the first dose and asks.
  *
- * Doses need a connection: a transaction cannot run offline, and a dose queued
- * blind could double a dose someone else already gave.
+ * Offline (the browser reports no network; transactions cannot run), the dose
+ * is queued under the same id, marked `repeat: 'offline'` and
+ * `clockSource: 'device'` (`date` = this device's clock), checked only against
+ * what this device has cached; the course's `lastDose` is not written (a blind
+ * queued pointer could replace a newer dose by someone else). Every reader
+ * combines the course with its offline doses (`withOfflineDoses`), so the dose
+ * covers its occurrence on every screen and in the reminders once it syncs.
  */
 import {
   collection,
   doc,
+  getDocFromCache,
   getDocs,
+  getDocsFromCache,
+  writeBatch,
   limit,
   orderBy,
   query,
@@ -30,7 +38,7 @@ import {
   type DocumentData,
   type Firestore,
 } from 'firebase/firestore';
-import { isBrowserOffline } from '../firestore-offline';
+import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline';
 import { petDay, toDate } from './care';
 import { householdDayZone } from '../household-day';
 import {
@@ -42,7 +50,9 @@ import {
   readCourse,
   readDosePointer,
   scheduleChanged,
+  withOfflineDoses,
   type CourseFields,
+  type CourseView,
   type DoseCheck,
   type DoseConfirm,
   type DoseLogView,
@@ -102,11 +112,37 @@ export type GiveDoseInput = {
   user: Actor;
   /** `household.timeZone` (occurrences are household wall time). */
   timeZone?: string | null;
+  /** Reports a queued (offline) dose that the server later refuses. */
+  onLateError?: (error: unknown) => void;
 };
 
 export type GiveDoseResult =
   | { status: 'needsConfirm'; check: DoseCheck; staleConfirm: boolean }
-  | { status: 'saved'; logId: string; occurrence: Occurrence | null; nextAfter: Occurrence | null; replayed?: boolean };
+  /** `queued`: offline, saved on this device; nobody else's dose could be checked. */
+  | { status: 'saved' | 'queued'; logId: string; occurrence: Occurrence | null; nextAfter: Occurrence | null; replayed?: boolean };
+
+/** How many of a course's newest doses are read to find offline (and surviving) doses. */
+const LATEST_DOSES = 5;
+
+const newestCourseDoses = (db: Firestore, householdId: string, petId: string, courseId: string) =>
+  query(logsRef(db, householdId, petId), where('courseId', '==', courseId), orderBy('occurrenceAt', 'desc'), limit(LATEST_DOSES));
+
+const doseLogData = (input: GiveDoseInput, course: CourseView, plan: Extract<ReturnType<typeof planDose>, { kind: 'write' }>, given: unknown, occurrenceAt: Timestamp, backdated: boolean) => ({
+  courseId: input.courseId,
+  occurrence: plan.occurrence.key,
+  occurrenceAt,
+  date: given,
+  loggedAt: serverTimestamp(),
+  medication: course.name,
+  dosage: course.dosage,
+  notes: (input.notes ?? '').trim().slice(0, 2000),
+  loggedByUid: input.user.uid,
+  loggedByName: input.user.name,
+  repeat: plan.repeat,
+  ...(plan.repeat === 'confirmed' ? { confirmOf: plan.confirmOf } : {}),
+  ...(plan.repeat === 'offline' ? { clockSource: 'device' } : {}),
+  ...(backdated ? { backdated: true } : {}),
+});
 
 /**
  * Records a dose of a course, or returns `needsConfirm` when that occurrence
@@ -115,8 +151,8 @@ export type GiveDoseResult =
  * longer the latest returns a fresh `needsConfirm` (`staleConfirm: true`).
  */
 export async function runGiveDose(db: Firestore, input: GiveDoseInput): Promise<GiveDoseResult> {
-  if (isBrowserOffline()) throw new MedicationActionError('offline');
   const logId = doseLogId(input.opId);
+  if (isBrowserOffline()) return giveDoseOffline(db, input, logId);
   try {
     return await giveDoseOnce(db, input, logId);
   } catch (error) {
@@ -140,12 +176,15 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     const course = raw ? readCourse(courseId, raw) : null;
     const lastLogId = course?.lastDose?.logId ?? null;
     const lastDoseSurvives = lastLogId ? (await tx.get(doc(logsRef(db, householdId, petId), lastLogId))).exists() : false;
+    // Doses queued offline are not in the pointer: read the course's newest doses
+    // (inside the attempt) so one that synced covers its occurrence here too.
+    const newest = course ? await getDocs(newestCourseDoses(db, householdId, petId, courseId)) : null;
     const now = new Date();
     const plan = planDose(
       {
         now,
         timeZone: input.timeZone,
-        course,
+        course: course && newest ? withOfflineDoses(course, newest.docs.map((entry) => ({ id: entry.id, ...entry.data() }))) : course,
         lastDoseSurvives,
         existing: existing.exists()
           ? { loggedByUid: (existing.get('loggedByUid') as string | undefined) ?? null, courseId: (existing.get('courseId') as string | undefined) ?? null }
@@ -158,21 +197,7 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     if (plan.kind === 'needsConfirm') return { status: 'needsConfirm', check: plan.check, staleConfirm: plan.staleConfirm } as const;
     const given = plan.live ? serverTimestamp() : Timestamp.fromDate(plan.givenAt);
     const occurrenceAt = Timestamp.fromMillis(plan.occurrence.at);
-    tx.set(logRef, {
-      courseId,
-      occurrence: plan.occurrence.key,
-      occurrenceAt,
-      date: given,
-      loggedAt: serverTimestamp(),
-      medication: course!.name,
-      dosage: course!.dosage,
-      notes: (input.notes ?? '').trim().slice(0, 2000),
-      loggedByUid: input.user.uid,
-      loggedByName: input.user.name,
-      repeat: plan.repeat,
-      ...(plan.repeat === 'confirmed' ? { confirmOf: plan.confirmOf } : {}),
-      ...(plan.live ? {} : { backdated: true }),
-    });
+    tx.set(logRef, doseLogData(input, course!, plan, given, occurrenceAt, !plan.live));
     if (plan.becomesLatest) {
       tx.update(cRef, {
         lastDose: { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name },
@@ -182,6 +207,46 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     }
     return { status: 'saved', logId, occurrence: plan.occurrence, nextAfter: plan.nextAfter } as const;
   });
+}
+
+/**
+ * Offline Give dose: only what this device has cached (this press's log, the
+ * course, its cached doses). A press already queued here is not queued again;
+ * "already given?" is still asked from what the device knows. The log alone is
+ * queued (create-only under the press's id); the pointer is left for readers to
+ * combine. A course this device has not loaded cannot be given offline.
+ */
+async function giveDoseOffline(db: Firestore, input: GiveDoseInput, logId: string): Promise<GiveDoseResult> {
+  const { householdId, petId, courseId } = input;
+  const logRef = doc(logsRef(db, householdId, petId), logId);
+  const [existing, courseSnapshot, cachedDoses] = await Promise.all([
+    getDocFromCache(logRef).catch(() => null),
+    getDocFromCache(courseRef(db, householdId, petId, courseId)).catch(() => null),
+    getDocsFromCache(query(logsRef(db, householdId, petId), where('courseId', '==', courseId))).catch(() => null),
+  ]);
+  if (existing?.exists()) {
+    if (existing.get('loggedByUid') !== input.user.uid) throw new MedicationActionError('conflict');
+    return { status: 'queued', logId, occurrence: null, nextAfter: null, replayed: true };
+  }
+  const stored = courseSnapshot?.exists() ? readCourse(courseId, courseSnapshot.data()) : null;
+  if (!stored) throw new MedicationActionError('offline');
+  const doses = cachedDoses?.docs.map((entry) => ({ id: entry.id, ...entry.data() })) ?? [];
+  const course = withOfflineDoses(stored, doses);
+  // Unknown here whether the latest dose was removed elsewhere: assume it stands (ask rather than double).
+  const lastDoseSurvives = Boolean(course.lastDose);
+  const now = new Date();
+  const plan = planDose(
+    { now, timeZone: input.timeZone, course, lastDoseSurvives, existing: null, offline: true },
+    { userUid: input.user.uid, occurrenceKey: input.occurrenceKey, givenAt: input.givenAt, confirm: input.confirm },
+  );
+  if (plan.kind === 'already') return { status: 'queued', logId, occurrence: null, nextAfter: null, replayed: true };
+  if (plan.kind === 'refused') throw new MedicationActionError(plan.reason);
+  if (plan.kind === 'needsConfirm') return { status: 'needsConfirm', check: plan.check, staleConfirm: plan.staleConfirm };
+  const backdated = Boolean(input.givenAt) && Math.abs(plan.givenAt.getTime() - now.getTime()) > 60_000;
+  const batch = writeBatch(db);
+  batch.set(logRef, doseLogData(input, course, plan, Timestamp.fromDate(plan.givenAt), Timestamp.fromMillis(plan.occurrence.at), backdated));
+  const status = await awaitWriteUnlessOffline(batch.commit(), input.onLateError);
+  return { status: status === 'saved' ? 'saved' : 'queued', logId, occurrence: plan.occurrence, nextAfter: plan.nextAfter };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -198,9 +263,6 @@ const doseView = (id: string, data: DocumentData): DoseLogView => ({
   loggedByName: typeof data.loggedByName === 'string' ? data.loggedByName : null,
 });
 
-/** How many of a course's newest doses are read to find the latest surviving one. */
-const LATEST_DOSES = 5;
-
 /**
  * Removes a dose record (the 10 s Undo and the history's delete) and keeps the
  * course's latest dose right in the same commit: when the course names this
@@ -209,10 +271,20 @@ const LATEST_DOSES = 5;
  * Removing the record does not undo the dose itself (WT-20). Legacy and
  * one-off entries are deleted as before. Online only.
  */
-export async function runUndoDose(db: Firestore, input: { householdId: string; petId: string; logId: string }): Promise<'saved' | 'already'> {
+export async function runUndoDose(db: Firestore, input: { householdId: string; petId: string; logId: string; onLateError?: (error: unknown) => void }): Promise<'saved' | 'already' | 'queued'> {
   const { householdId, petId, logId } = input;
-  if (isBrowserOffline()) throw new MedicationActionError('offline');
   const logRef = doc(logsRef(db, householdId, petId), logId);
+  if (isBrowserOffline()) {
+    // Offline only an entry no course pointer can name is removed: a course dose
+    // recorded offline, a one-off dose or a legacy entry. A course dose recorded
+    // online may be the course's latest dose, which needs the pointer moved.
+    const cached = await getDocFromCache(logRef).catch(() => null);
+    const courseDose = typeof cached?.get('courseId') === 'string';
+    if (!cached?.exists() || (courseDose && cached.get('repeat') !== 'offline')) throw new MedicationActionError('offline');
+    const batch = writeBatch(db);
+    batch.delete(logRef);
+    return awaitWriteUnlessOffline(batch.commit(), input.onLateError);
+  }
   return settled(() => runTransaction(db, async (tx) => {
     const logSnapshot = await tx.get(logRef);
     if (!logSnapshot.exists()) return 'already' as const;
@@ -234,7 +306,7 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     if (course?.lastDose?.logId === logId && !prevSurvives) {
       // Read here, inside the attempt: any other dose writes the course, so a
       // conflicting change retries this transaction with a fresh read.
-      const newest = await getDocs(query(logsRef(db, householdId, petId), where('courseId', '==', courseId), orderBy('occurrenceAt', 'desc'), limit(LATEST_DOSES)));
+      const newest = await getDocs(newestCourseDoses(db, householdId, petId, courseId));
       surviving = newest.docs.map((entry) => {
         storedLogs.set(entry.id, entry.data());
         return doseView(entry.id, entry.data());
@@ -276,9 +348,32 @@ export async function runOneOffDose(db: Firestore, input: {
   notes?: string;
   givenAt: Date | null;
   user: Actor;
-}): Promise<'saved'> {
-  if (isBrowserOffline()) throw new MedicationActionError('offline');
+  onLateError?: (error: unknown) => void;
+}): Promise<'saved' | 'queued'> {
   const logRef = doc(logsRef(db, input.householdId, input.petId), doseLogId(input.opId));
+  if (isBrowserOffline()) {
+    // Queued on this device with its clock (as 2.1 allowed offline); a press already queued is not queued again.
+    const cached = await getDocFromCache(logRef).catch(() => null);
+    if (cached?.exists()) return 'queued';
+    const now = Date.now();
+    if (input.givenAt && input.givenAt.getTime() > now + 60_000) throw new MedicationActionError('future');
+    if (input.givenAt && input.givenAt.getTime() < now - 7 * 24 * 3_600_000) throw new MedicationActionError('too-old');
+    const chosen = Boolean(input.givenAt) && Math.abs(input.givenAt!.getTime() - now) > 60_000;
+    const batch = writeBatch(db);
+    batch.set(logRef, {
+      oneOff: true,
+      date: Timestamp.fromDate(input.givenAt ?? new Date(now)),
+      loggedAt: serverTimestamp(),
+      clockSource: 'device',
+      medication: input.medication.trim(),
+      dosage: input.dosage.trim(),
+      notes: (input.notes ?? '').trim().slice(0, 2000),
+      loggedByUid: input.user.uid,
+      loggedByName: input.user.name,
+      ...(chosen ? { backdated: true } : {}),
+    });
+    return awaitWriteUnlessOffline(batch.commit(), input.onLateError);
+  }
   await runTransaction(db, async (tx) => {
     const existing = await tx.get(logRef);
     if (existing.exists()) {

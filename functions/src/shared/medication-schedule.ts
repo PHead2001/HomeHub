@@ -63,6 +63,12 @@ export type CourseView = {
   prevDose: DosePointer | null;
   /** Set by a schedule edit: occurrences up to this instant count as given. */
   coveredUntil: number | null;
+  /**
+   * The latest dose recorded offline (`repeat: 'offline'`, not in `lastDose`):
+   * readers fill it from the logs they have (`withOfflineDoses`), and it covers
+   * its occurrence like `lastDose` does.
+   */
+  offlineDose?: DosePointer | null;
   /** Legacy (name-keyed) medications this course took over (D-P8). */
   legacyKeys: string[];
 };
@@ -414,12 +420,54 @@ export const nextDueOccurrence = (
  * @return {number | null} Milliseconds, or null when nothing is covered.
  */
 export const coveredThrough = (
-  course: Pick<CourseView, "lastDose" | "coveredUntil">,
+  course: Pick<CourseView, "lastDose" | "coveredUntil" | "offlineDose">,
 ): number | null => {
-  const last = course.lastDose?.occurrenceAt ?? null;
-  const until = course.coveredUntil;
-  if (last === null) return until;
-  return until === null ? last : Math.max(last, until);
+  const values = [
+    course.lastDose?.occurrenceAt, course.coveredUntil,
+    course.offlineDose?.occurrenceAt,
+  ].filter((value): value is number => typeof value === "number");
+  return values.length > 0 ? Math.max(...values) : null;
+};
+
+export type DoseLogInput = {
+  id?: string;
+  courseId?: unknown;
+  occurrence?: unknown;
+  occurrenceAt?: unknown;
+  date?: unknown;
+  repeat?: unknown;
+  loggedByUid?: unknown;
+  loggedByName?: unknown;
+};
+
+/**
+ * The course with its latest offline dose (a dose queued without a connection
+ * never moves `lastDose`; every reader combines the course with the offline
+ * doses it has, as the feeding state is combined with loaded feedings).
+ * @param {CourseView} course The course.
+ * @param {DoseLogInput[]} logs Medication logs (any; others are ignored).
+ * @return {CourseView} The course, with `offlineDose` when one is newer.
+ */
+export const withOfflineDoses = (
+  course: CourseView, logs: DoseLogInput[],
+): CourseView => {
+  let best: DosePointer | null = course.offlineDose ?? null;
+  for (const log of logs) {
+    if (log.courseId !== course.id || log.repeat !== "offline" ||
+        typeof log.id !== "string" || typeof log.occurrence !== "string") {
+      continue;
+    }
+    const occurrenceAt = toMillis(log.occurrenceAt);
+    if (occurrenceAt === null) continue;
+    if (best && best.occurrenceAt >= occurrenceAt) continue;
+    best = {
+      logId: log.id, occurrence: log.occurrence, occurrenceAt,
+      givenAt: toMillis(log.date),
+      byUid: typeof log.loggedByUid === "string" ? log.loggedByUid : null,
+      byName: typeof log.loggedByName === "string" ? log.loggedByName : null,
+    };
+  }
+  return best ? {...course, offlineDose: best} : course;
 };
 
 const periodMs = (schedule: CourseSchedule): number =>
@@ -439,7 +487,8 @@ const periodMs = (schedule: CourseSchedule): number =>
  * @return {number | null} Milliseconds, or null.
  */
 export const coverageAfterEdit = (
-  course: Pick<CourseView, "lastDose" | "coveredUntil">, next: CourseWindow,
+  course: Pick<CourseView, "lastDose" | "coveredUntil" | "offlineDose">,
+  next: CourseWindow,
   zone: string,
 ): number | null => {
   const covered = coveredThrough(course);

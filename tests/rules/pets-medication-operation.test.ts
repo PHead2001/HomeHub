@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, doc, getDoc, getDocs, setDoc, Timestamp, type Firestore } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocFromServer, getDocs, onSnapshot, query, setDoc, Timestamp, where, type Firestore } from 'firebase/firestore';
 import {
   runConfirmLegacy,
   runFinishCourse,
@@ -35,6 +35,7 @@ import {
   pendingLegacyGroups,
   readCourse,
   takenLegacyKeys,
+  withOfflineDoses,
   type CourseView,
 } from '../../src/lib/pets/medication-course';
 import { localDay, addDays } from '../../functions/src/shared/calendar';
@@ -84,7 +85,7 @@ async function press(person: Person, overrides: Partial<GiveDoseInput> = {}): Pr
 
 const saved = (result: GiveDoseResult) => {
   assert.equal(result.status, 'saved', `expected a write, got ${JSON.stringify(result)}`);
-  return result as Extract<GiveDoseResult, { status: 'saved' }>;
+  return result as Exclude<GiveDoseResult, { status: 'needsConfirm' }>;
 };
 
 before(async () => {
@@ -222,6 +223,54 @@ describe('Give dose on the emulator with the real rules', () => {
     assert.equal((await readCourseNow()).lastDose?.logId, one.logId);
   });
 
+  test('offline: queued once under the press id with the device clock, the pointer untouched; an online repeat asks, naming it', async () => {
+    const db = session(people.kim);
+    // Keep the course in this session's cache, as an open page does.
+    const stopCourse = onSnapshot(courseDoc(db), () => undefined);
+    const stopDoses = onSnapshot(query(collection(db, 'households', household, 'pets', 'rex', 'medication-logs'), where('courseId', '==', 'apoquel')), () => undefined);
+    const stop = () => { stopCourse(); stopDoses(); };
+    await getDocFromServer(courseDoc(db));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const input = await press(people.kim);
+    const navigatorRef = globalThis.navigator as unknown as Record<string, unknown>;
+    Object.defineProperty(navigatorRef, 'onLine', { value: false, configurable: true });
+    let first: GiveDoseResult;
+    let again: GiveDoseResult;
+    try {
+      first = await runGiveDose(db, input);
+      // The same press again while still offline: found on this device, not queued twice.
+      again = await runGiveDose(db, input);
+    } finally {
+      delete navigatorRef.onLine;
+      stop();
+    }
+    assert.equal(first.status, 'queued');
+    assert.equal(again.status === 'queued' && again.replayed, true);
+    // The emulator is reachable, so the queued write syncs; wait for it.
+    let log: Record<string, unknown> | undefined;
+    for (let attempt = 0; attempt < 50 && !log; attempt++) {
+      log = (await doses()).find((entry) => entry.id === input.opId);
+      if (!log) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(log, 'the queued dose synced');
+    assert.equal(log!.repeat, 'offline');
+    assert.equal(log!.clockSource, 'device');
+    assert.equal((await doses()).length, 1);
+    const course = await readCourseNow();
+    assert.equal(course.lastDose, null, 'an offline dose never writes the pointer');
+    // Readers combine it: the occurrence counts as given.
+    const combined = withOfflineDoses(course, await doses());
+    assert.equal(combined.offlineDose?.logId, input.opId);
+    assert.ok(nextDueOccurrence(combined, TZ)!.at > combined.offlineDose!.occurrenceAt);
+    // Online, Sam recording the same occurrence is asked first, naming Kim's offline dose.
+    const samPress = { ...input, opId: newDoseOpId(), user: actor(people.sam) };
+    const asked = await runGiveDose(session(people.sam), samPress);
+    assert.equal(asked.status, 'needsConfirm');
+    assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, input.opId);
+    const confirmed = saved(await runGiveDose(session(people.sam), { ...samPress, confirm: asked.status === 'needsConfirm' ? doseConfirmOf(asked.check) : null }));
+    assert.equal((await readCourseNow()).lastDose?.logId, confirmed.logId);
+  });
+
   test('Finish ends the course (no dose, no next due), history kept; its Undo resumes it', async () => {
     const one = saved(await runGiveDose(session(people.sam), await press(people.sam)));
     assert.equal(await runFinishCourse(session(people.kim), { householdId: household, petId: 'rex', courseId: 'apoquel', user: actor(people.kim) }), 'saved');
@@ -243,8 +292,8 @@ describe('Give dose on the emulator with the real rules', () => {
     const renamed = await readCourseNow();
     assert.equal(renamed.name, 'Apoquel 16 mg');
     assert.equal(renamed.lastDose?.logId, one.logId, 'the doses stay attached');
-    // A member cannot edit the schedule (pets.editProfiles).
-    await assert.rejects(runSaveCourse(session(people.sam), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, fields: { ...fields, name: 'x' }, user: actor(people.sam), timeZone: TZ }));
+    // A member who logs may edit it too (pets.addLogs, 2.1 parity).
+    await runSaveCourse(session(people.sam), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, fields, user: actor(people.sam), timeZone: TZ });
     // Moving the times by half an hour: the given occurrence's replacement counts as given.
     await runSaveCourse(session(people.owner), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, fields: { ...fields, schedule: { kind: 'hours', everyHours: 2, firstTime: '00:30' } }, user: actor(people.owner), timeZone: TZ });
     const moved = await readCourseNow();
@@ -304,8 +353,7 @@ describe('legacy medication confirmation (D-P8) with synthetic data', () => {
     ]);
     assert.deepEqual([a.status, b.status].sort(), ['already', 'saved']);
     assert.equal(a.courseId, legacyCourseId('heartworm'));
-    // A member may not confirm a schedule (pets.editProfiles), but may finish one.
-    await assert.rejects(runConfirmLegacy(session(people.sam), { householdId: household, petId: 'rex', key: 'flea', fields: { ...fields, name: 'Flea' }, user: actor(people.sam) }));
+    // A member finishes the ambiguous one ("no more doses").
     assert.equal(await runFinishLegacy(session(people.sam), { householdId: household, petId: 'rex', key: 'flea', name: 'Flea', dosage: '1 chew', user: actor(people.sam), timeZone: TZ }), 'saved');
     // The typo is merged by hand into the confirmed course.
     assert.equal(await runMergeLegacy(session(people.owner), { householdId: household, petId: 'rex', key: 'apoquell', courseId: legacyCourseId('heartworm'), user: actor(people.owner) }), 'saved');

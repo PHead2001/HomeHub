@@ -1347,9 +1347,10 @@ service cloud.firestore {
         optionalString(data.get('finishedByName', null), 200);
     }
 
-    // A new course: an active one with a schedule (pets.editProfiles), or a
-    // legacy medication finished without one (pets.addLogs, D-P8), always
-    // signed by the writer at server time and without doses yet.
+    // A new course: an active one with a schedule, or a legacy medication
+    // finished without one (D-P8), by anyone who logs (pets.addLogs: in 2.1 any
+    // such member set a next-due date, which is a schedule), always signed by
+    // the writer at server time and without doses yet.
     function courseCreated(householdId) {
       let data = request.resource.data;
       return validCourseFields(data) &&
@@ -1358,7 +1359,7 @@ service cloud.firestore {
         data.get('lastDose', null) == null && data.get('prevDose', null) == null &&
         data.get('coveredUntil', null) == null &&
         ((data.status == 'active' &&
-            hasHouseholdPermission(householdId, 'pets.editProfiles') &&
+            hasHouseholdPermission(householdId, 'pets.addLogs') &&
             data.get('updatedAt', null) == request.time &&
             data.get('updatedByUid', null) == request.auth.uid &&
             data.get('finishedAt', null) == null) ||
@@ -1369,13 +1370,13 @@ service cloud.firestore {
             data.get('finishedByUid', null) == request.auth.uid));
     }
 
-    // Name, dosage, schedule, days, or a legacy name merged in (keys only grow).
+    // Name, dosage, schedule, days, or a legacy name merged in (keys only grow), by pets.addLogs.
     // A schedule edit may set `coveredUntil` (the new occurrence that replaces
     // the one last given), at most 92 days ahead like a dose's occurrence.
     function courseEdited(householdId) {
       let before = resource.data;
       let after = request.resource.data;
-      return hasHouseholdPermission(householdId, 'pets.editProfiles') &&
+      return hasHouseholdPermission(householdId, 'pets.addLogs') &&
         before.status == 'active' && after.status == 'active' &&
         after.diff(before).affectedKeys().hasOnly(['name', 'dosage', 'schedule', 'startDay', 'endDay', 'legacyKeys', 'coveredUntil', 'updatedAt', 'updatedByUid', 'updatedByName']) &&
         (after.get('coveredUntil', null) == null || after.coveredUntil < request.time + duration.value(92, 'd')) &&
@@ -1394,7 +1395,7 @@ service cloud.firestore {
         hasHouseholdPermission(householdId, 'pets.addLogs');
     }
 
-    // Undo of Finish: its finisher for 10 minutes, or pets.editProfiles.
+    // Undo of Finish (or resuming a finished course): pets.addLogs, as creating one.
     function courseResumed(householdId) {
       let before = resource.data;
       let after = request.resource.data;
@@ -1403,11 +1404,7 @@ service cloud.firestore {
         after.get('finishedAt', null) == null &&
         after.get('finishedByUid', null) == null &&
         after.get('finishedByName', null) == null &&
-        (hasHouseholdPermission(householdId, 'pets.editProfiles') ||
-          (hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            before.get('finishedByUid', null) == request.auth.uid &&
-            before.get('finishedAt', null) is timestamp &&
-            request.time < before.finishedAt + duration.value(10, 'm')));
+        hasHouseholdPermission(householdId, 'pets.addLogs');
     }
 
     // The pointer names an existing (after this write) dose of this course, with its fields.
@@ -1503,7 +1500,7 @@ service cloud.firestore {
       let course = get(coursePath).data;
       let last = courseLatestDose(householdId, petId, course);
       return data.keys().hasOnly(['courseId', 'occurrence', 'occurrenceAt', 'date', 'loggedAt', 'medication', 'dosage', 'notes',
-          'loggedByUid', 'loggedByName', 'repeat', 'confirmOf', 'backdated']) &&
+          'loggedByUid', 'loggedByName', 'repeat', 'confirmOf', 'backdated', 'clockSource']) &&
         data.keys().hasAll(['courseId', 'occurrence', 'occurrenceAt', 'date', 'loggedAt', 'medication', 'dosage', 'loggedByUid', 'repeat']) &&
         nonEmptyString(data.courseId, 200) &&
         data.occurrence is string &&
@@ -1517,26 +1514,43 @@ service cloud.firestore {
         optionalString(data.get('loggedByName', null), 200) &&
         data.loggedAt == request.time &&
         data.date is timestamp &&
-        (data.get('backdated', false) == true
-          ? (data.date < request.time && data.date > request.time - duration.value(7, 'd'))
-          : (!('backdated' in data) || data.backdated == false) && data.date == request.time) &&
-        data.repeat in ['none', 'confirmed'] &&
-        (data.repeat == 'confirmed' ? data.get('confirmOf', null) is string : !('confirmOf' in data)) &&
         exists(coursePath) &&
-        course.status == 'active' &&
-        (last != null && last.occurrenceAt >= data.occurrenceAt
-          ? data.repeat == 'confirmed' && data.confirmOf == last.logId
-          : true) &&
-        (last != null && data.occurrenceAt < last.occurrenceAt
-          ? true
-          : getAfter(coursePath).data.get('lastDose', null) != null &&
-            getAfter(coursePath).data.lastDose.logId == logId);
+        (data.repeat == 'offline'
+          ? courseDoseOffline(data)
+          : !('clockSource' in data) &&
+            (data.get('backdated', false) == true
+              ? (data.date < request.time && data.date > request.time - duration.value(7, 'd'))
+              : (!('backdated' in data) || data.backdated == false) && data.date == request.time) &&
+            data.repeat in ['none', 'confirmed'] &&
+            (data.repeat == 'confirmed' ? data.get('confirmOf', null) is string : !('confirmOf' in data)) &&
+            course.status == 'active' &&
+            (last != null && last.occurrenceAt >= data.occurrenceAt
+              ? data.repeat == 'confirmed' && data.confirmOf == last.logId
+              : true) &&
+            (last != null && data.occurrenceAt < last.occurrenceAt
+              ? true
+              : getAfter(coursePath).data.get('lastDose', null) != null &&
+                getAfter(coursePath).data.lastDose.logId == logId));
+    }
+
+    // A dose queued without a connection (as offline feedings, R1): this device's
+    // clock (`clockSource: 'device'`), at most the 12-hour clock-skew allowance
+    // ahead and at most 8 days old when it syncs, no confirmation and no
+    // pointer write (nobody else's dose could be checked; readers combine the
+    // course with its offline doses). Its course must still exist; one finished
+    // while the dose was queued keeps it as history.
+    function courseDoseOffline(data) {
+      return data.get('clockSource', null) == 'device' &&
+        !('confirmOf' in data) &&
+        (!('backdated' in data) || data.backdated is bool) &&
+        data.date < request.time + duration.value(12, 'h') &&
+        data.date > request.time - duration.value(8, 'd');
     }
 
     // A dose outside any course: history only (no schedule, no reminders).
     function oneOffDoseCreate() {
       let data = request.resource.data;
-      return data.keys().hasOnly(['oneOff', 'date', 'loggedAt', 'medication', 'dosage', 'notes', 'loggedByUid', 'loggedByName', 'backdated']) &&
+      return data.keys().hasOnly(['oneOff', 'date', 'loggedAt', 'medication', 'dosage', 'notes', 'loggedByUid', 'loggedByName', 'backdated', 'clockSource']) &&
         data.oneOff == true &&
         nonEmptyString(data.get('medication', null), 200) &&
         boundedString(data.get('dosage', ''), 200) &&
@@ -1545,9 +1559,12 @@ service cloud.firestore {
         optionalString(data.get('loggedByName', null), 200) &&
         data.get('loggedAt', null) == request.time &&
         data.get('date', null) is timestamp &&
-        (data.get('backdated', false) == true
-          ? (data.date < request.time && data.date > request.time - duration.value(7, 'd'))
-          : data.date == request.time);
+        (data.get('clockSource', null) == 'device'
+          ? courseDoseOffline(data)
+          : !('clockSource' in data) &&
+            (data.get('backdated', false) == true
+              ? (data.date < request.time && data.date > request.time - duration.value(7, 'd'))
+              : data.date == request.time));
     }
 
     // Removing a course dose must move the course's pointer off it in the same commit.

@@ -573,7 +573,7 @@ export const runHouseholdReminders = async (
     return {
       id: pet.id,
       name: pet.get("name"),
-      logs: logs.docs.map((log) => log.data()),
+      logs: logs.docs.map((log) => ({id: log.id, ...log.data()})),
       courses: courses.docs.map((course) =>
         ({id: course.id, data: course.data()})),
     };
@@ -626,7 +626,7 @@ export const runHouseholdReminders = async (
       const stillPending = Boolean(pet?.exists && logs && courses) &&
         pendingCycles([{
           id: petId,
-          logs: logs!.docs.map((log) => log.data()),
+          logs: logs!.docs.map((log) => ({id: log.id, ...log.data()})),
           courses: courses!.docs.map((course) =>
             ({id: course.id, data: course.data()})),
         }], timeZone).has(medicationCycle(sourceId, snap.get("stateKey")));

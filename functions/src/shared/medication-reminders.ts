@@ -16,17 +16,15 @@
 import {DEFAULT_TIME_ZONE, isDayString} from "./calendar";
 import {
   courseDue, formatDoseTime, isLegacyLog, legacyMedicationKey,
-  nextDueOccurrence, readCourse, takenLegacyKeys, toMillis,
-  type CourseView,
+  nextDueOccurrence, readCourse, takenLegacyKeys, toMillis, withOfflineDoses,
+  type CourseView, type DoseLogInput,
 } from "./medication-schedule";
 
 export const MEDICATION_SOURCE_TYPE = "pet_medication";
 
-export type MedicationLogInput = {
-  date?: unknown;
+export type MedicationLogInput = DoseLogInput & {
   medication?: unknown;
   nextDueDate?: unknown;
-  courseId?: unknown;
   oneOff?: unknown;
 };
 
@@ -73,14 +71,17 @@ const isDueDay = (value: unknown): value is string =>
   new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 
 /**
- * The pet's readable courses.
- * @param {PetInput} pet Pet with its courses.
+ * The pet's readable courses, each combined with its offline doses (a dose
+ * recorded without a connection covers its occurrence too).
+ * @param {PetInput} pet Pet with its courses and logs.
  * @return {CourseView[]} Courses.
  */
-export const petCourses = (pet: Pick<PetInput, "courses">): CourseView[] =>
+export const petCourses = (
+  pet: Pick<PetInput, "courses"> & {logs?: MedicationLogInput[]},
+): CourseView[] =>
   (pet.courses ?? []).flatMap((course) => {
     const view = readCourse(course.id, course.data);
-    return view ? [view] : [];
+    return view ? [withOfflineDoses(view, pet.logs ?? [])] : [];
   });
 
 /**

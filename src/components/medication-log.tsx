@@ -34,7 +34,6 @@ import {
 } from '@/lib/pets/medication-course';
 import { mayMedication } from '@/lib/pets/medication-permissions';
 import { logOneOffDose, undoDose } from '@/lib/pets/medication-operation';
-import { isBrowserOffline } from '@/lib/firestore-offline';
 import type { PetMedicationLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
@@ -122,8 +121,8 @@ export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId 
   const deleteLog = async (logId: string) => {
     if (!householdId) return;
     try {
-      await undoDose({ householdId, petId, logId });
-      toast({ title: DOSE_UNDO_COPY.title, description: DOSE_UNDO_COPY.description });
+      const undone = await undoDose({ householdId, petId, logId, onLateError: (lateError) => toastError(lateError, "Removing the dose record didn't sync") });
+      toast({ title: undone === 'queued' ? `${DOSE_UNDO_COPY.title} on this device` : DOSE_UNDO_COPY.title, description: DOSE_UNDO_COPY.description });
     } catch (deleteError) {
       const refusal = medicationRefusal(deleteError);
       if (refusal) toast({ variant: 'destructive', title: "Couldn't remove the record", description: refusal });
@@ -344,14 +343,13 @@ function OneOffDoseDialog({ petId, petName, open, courses, onOpenChange }: { pet
     else if (chosen && chosen.getTime() < Date.now() - DOSE_BACKDATE_MAX_MS) next.givenAt = 'Pick a time within the last 7 days.';
     setErrors(next);
     if (Object.keys(next).length > 0) return;
-    if (isBrowserOffline()) {
-      setErrors({ givenAt: 'Connect to the internet to record a dose.' });
-      return;
-    }
     setSaving(true);
     try {
-      await logOneOffDose({ householdId, petId, opId, medication, dosage, notes, givenAt: chosen, user: { uid: currentUser.uid, name: loggerName(currentUser) } });
-      toast({ title: 'Dose recorded', description: `${medication.trim()}, ${dosage.trim()} for ${petName}.` });
+      const status = await logOneOffDose({
+        householdId, petId, opId, medication, dosage, notes, givenAt: chosen, user: { uid: currentUser.uid, name: loggerName(currentUser) },
+        onLateError: (lateError) => toastError(lateError, "The one-off dose didn't sync"),
+      });
+      toast({ title: status === 'queued' ? 'Saved on this device' : 'Dose recorded', description: `${medication.trim()}, ${dosage.trim()} for ${petName}.` });
       onOpenChange(false);
     } catch (saveError) {
       toastError(saveError, "Couldn't record the dose. Try again: it won't be recorded twice.");

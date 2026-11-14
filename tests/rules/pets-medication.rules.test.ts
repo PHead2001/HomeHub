@@ -99,11 +99,12 @@ beforeEach(async () => {
 after(async () => environment?.cleanup());
 
 describe('medication courses', () => {
-  test('an editor creates a course signed at server time; others and forged shapes are refused', async () => {
+  test('anyone who logs creates a course signed at server time; others and forged shapes are refused', async () => {
     await assertSucceeds(setDoc(courseRef(session(people.owner), 'new-course'), newCourse(people.owner)));
     await assertSucceeds(setDoc(courseRef(session(people.owner), 'hourly'), newCourse(people.owner, { schedule: { kind: 'hours', everyHours: 12, firstTime: '08:00' } })));
-    // Wrong role: members and children may give doses, not set schedules; guests nothing.
-    await assertFails(setDoc(courseRef(session(people.member), 'c2'), newCourse(people.member)));
+    // pets.addLogs is enough (2.1 parity: anyone who logged set a next-due date); guests have none.
+    await assertSucceeds(setDoc(courseRef(session(people.member), 'c2'), newCourse(people.member)));
+    await assertSucceeds(setDoc(courseRef(session(people.child), 'c2b'), newCourse(people.child)));
     await assertFails(setDoc(courseRef(session(people.guest), 'c3'), newCourse(people.guest)));
     // Other household; signed out.
     await assertFails(setDoc(courseRef(session(people.outsider), 'c4'), newCourse(people.outsider)));
@@ -133,13 +134,14 @@ describe('medication courses', () => {
     await assertFails(setDoc(courseRef(session(people.member), 'legacy-z'), finished(people.member, { finishedByUid: people.owner.uid })));
   });
 
-  test('edits (name, dosage, schedule, merge) need pets.editProfiles; keys only grow; status is not an edit', async () => {
+  test('edits (name, dosage, schedule, merge) need pets.addLogs; keys only grow; status is not an edit', async () => {
     const edit = (person: Person, fields: Record<string, unknown>) =>
       updateDoc(courseRef(session(person)), { ...fields, updatedAt: serverTimestamp(), updatedByUid: person.uid, updatedByName: 'Name' });
     await assertSucceeds(edit(people.owner, { name: 'Apoquel 16 mg', schedule: { kind: 'days', everyDays: 1, times: ['09:00', '21:00'] }, coveredUntil: Timestamp.now() }));
     await assertSucceeds(edit(people.owner, { legacyKeys: ['apoquell'] }));
     await assertFails(edit(people.owner, { legacyKeys: [] }));
-    await assertFails(edit(people.member, { name: 'Renamed' }));
+    await assertSucceeds(edit(people.member, { name: 'Renamed' }));
+    await assertFails(edit(people.guest, { name: 'Guest rename' }));
     await assertFails(edit(people.owner, { status: 'finished' }));
     await assertFails(edit(people.owner, { schedule: null }));
     await assertFails(updateDoc(courseRef(session(people.owner)), { name: 'Forged', updatedAt: serverTimestamp(), updatedByUid: people.member.uid }));
@@ -148,14 +150,14 @@ describe('medication courses', () => {
     await assertFails(deleteDoc(courseRef(session(people.owner))));
   });
 
-  test('finish (pets.addLogs) and its Undo by the finisher; others need pets.editProfiles', async () => {
+  test('finish and resume (its Undo) need pets.addLogs, signed by the finisher', async () => {
     const finish = (person: Person, by = person.uid) => updateDoc(courseRef(session(person)), { status: 'finished', finishedAt: serverTimestamp(), finishedByUid: by, finishedByName: 'Name' });
     const resume = (person: Person) => updateDoc(courseRef(session(person)), { status: 'active', finishedAt: null, finishedByUid: null, finishedByName: null });
     await assertFails(finish(people.guest));
     await assertFails(finish(people.member, people.owner.uid));
     await assertSucceeds(finish(people.member));
-    await assertFails(resume(people.child));
-    await assertSucceeds(resume(people.member));
+    await assertFails(resume(people.guest));
+    await assertSucceeds(resume(people.child));
     await assertSucceeds(finish(people.child));
     await assertSucceeds(resume(people.owner));
   });
@@ -243,6 +245,35 @@ describe('dose logs', () => {
     // Planting a pointer at an existing log (not created in this commit) is not a dose.
     await assertFails(updateDoc(courseRef(session(people.member)), { lastDose: pointerOf(people.member, 'someone-elses', occurrenceAt(-2)) }));
     await assertFails(updateDoc(courseRef(session(people.member)), { lastDose: null }));
+  });
+
+  test('offline doses: the device clock within the skew allowance, no confirmation, no pointer write', async () => {
+    const db = session(people.member);
+    const offline = (id: string, at: Timestamp, date: Timestamp, extra: Record<string, unknown> = {}) =>
+      setDoc(logRef(db, id), { ...doseLog(people.member, at, { repeat: 'offline', clockSource: 'device', date }), ...extra });
+    const at = occurrenceAt(-1);
+    await assertSucceeds(offline('off-0001', at, Timestamp.fromMillis(Date.now() - 3 * 3_600_000)));
+    // A device clock a little ahead is fine; far ahead, or older than the allowance, is not.
+    await assertSucceeds(offline('off-0002', at, Timestamp.fromMillis(Date.now() + 2 * 3_600_000)));
+    await assertFails(offline('off-0003', at, Timestamp.fromMillis(Date.now() + 13 * 3_600_000)));
+    await assertFails(offline('off-0004', at, Timestamp.fromMillis(Date.now() - 9 * 86_400_000)));
+    // Marked offline but not from a device clock, or carrying a confirmation: refused.
+    await assertFails(setDoc(logRef(db, 'off-0005'), doseLog(people.member, at, { repeat: 'offline', date: Timestamp.now() })));
+    await assertFails(offline('off-0006', at, Timestamp.now(), { confirmOf: 'x' }));
+    // A device-clock dose that claims to be live is refused (it must say offline).
+    await assertFails(setDoc(logRef(db, 'off-0007'), doseLog(people.member, at, { clockSource: 'device' })));
+    // Forged author, guest, other household.
+    await assertFails(offline('off-0008', at, Timestamp.now(), { loggedByUid: people.owner.uid }));
+    await assertFails(setDoc(logRef(session(people.guest), 'off-0009'), { ...doseLog(people.guest, at, { repeat: 'offline', clockSource: 'device', date: Timestamp.now() }) }));
+    // The pointer stays as it was (offline doses never write it).
+    // A course finished while the dose was queued keeps it as history.
+    await seed((seedDb) => updateDoc(courseRef(seedDb), { status: 'finished', finishedAt: Timestamp.now(), finishedByUid: people.owner.uid, finishedByName: 'Owner' }));
+    await assertSucceeds(offline('off-0010', at, Timestamp.now()));
+    // Its author may remove it (no pointer names it).
+    await assertSucceeds(deleteDoc(logRef(db, 'off-0001')));
+    // One-off doses offline too.
+    await assertSucceeds(setDoc(logRef(db, 'oneoff-off-1'), { oneOff: true, clockSource: 'device', date: Timestamp.fromMillis(Date.now() - 60 * 60_000), loggedAt: serverTimestamp(), medication: 'Dewormer', dosage: '1 tab', loggedByUid: people.member.uid, loggedByName: 'Name' }));
+    await assertFails(setDoc(logRef(db, 'oneoff-off-2'), { oneOff: true, clockSource: 'device', date: Timestamp.fromMillis(Date.now() + 13 * 3_600_000), loggedAt: serverTimestamp(), medication: 'Dewormer', dosage: '1 tab', loggedByUid: people.member.uid }));
   });
 
   test('legacy 2.1 entries and one-off doses', async () => {
