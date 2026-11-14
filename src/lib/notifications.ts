@@ -212,6 +212,9 @@ export const buildNotificationDocument = ({
   /** The one member it is for. Targeted by uid only: the document is readable by every member. */
   targetUser?: { uid: string };
 }) => {
+  // Kid profiles (`kid_…`, docs/modules/devices/README.md) have no account: nobody could
+  // ever read a notice targeted to one, so none is ever created.
+  if (targetUser?.uid.startsWith('kid_')) throw new Error('Kid profiles cannot receive targeted notifications.');
   const createdAt = new Date();
 
   const document = {

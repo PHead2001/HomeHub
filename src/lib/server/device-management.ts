@@ -5,6 +5,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
 import { INVITE_CHARS } from '@/lib/invite-codes';
 import { DEVICE_CODE_TTL_MS, MAX_LIVE_DEVICE_CODES, normalizeDeviceCode } from '@/lib/devices/device-codes';
+import { takeRateWindowSlot } from '@/lib/devices/rate-window';
 import { UNKNOWN_CLIENT } from '@/lib/devices/client-address';
 import {
   DEVICE_NAME_MAX,
@@ -525,17 +526,13 @@ const limitState = globalThis as LimitState;
 const windows = limitState.__homeHubDeviceWindows || new Map<string, number[]>();
 limitState.__homeHubDeviceWindows = windows;
 
-/** Counts one call in a 60 s window; false when `max` calls were already counted. */
-export const takeRateSlot = (key: string, max: number, nowMs = Date.now()): boolean => {
-  const recent = (windows.get(key) || []).filter(at => nowMs - at < 60_000);
-  if (recent.length >= max) {
-    windows.set(key, recent);
-    return false;
-  }
-  recent.push(nowMs);
-  windows.set(key, recent);
-  return true;
-};
+/**
+ * Counts one call in a 60 s window; false when `max` calls were already counted. The map
+ * is bounded: emptied windows are swept and the oldest keys dropped past a fixed size
+ * (src/lib/devices/rate-window.ts).
+ */
+export const takeRateSlot = (key: string, max: number, nowMs = Date.now()): boolean =>
+  takeRateWindowSlot(windows, key, max, nowMs);
 
 export const REDEEM_LIMITS = { perAddress: 10, perInstance: 300 };
 

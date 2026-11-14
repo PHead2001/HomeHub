@@ -5,7 +5,7 @@ import { signOut } from 'firebase/auth';
 import { MonitorSmartphone } from 'lucide-react';
 import { auth } from '@/lib/firebase-app';
 import type { Principal } from '@/lib/devices/principal';
-import { deviceHeartbeatAction } from '@/app/household/device-actions';
+import { deviceHeartbeatAction } from '@/app/devices/actions';
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { readDeviceSettings } from '@/lib/devices/settings';
 import { endsTabletSession } from '@/lib/devices/verify-errors';

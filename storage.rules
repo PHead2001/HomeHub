@@ -113,6 +113,22 @@ service firebase.storage {
       allow delete: if hasPermission(householdId, 'pets.editProfiles');
     }
 
+    // Kid profile photos (docs/modules/devices/README.md, "Actors"): uploaded by owners
+    // and admins (role) of the household, read by its members and its active tablets.
+    function isOwnerOrAdminOf(householdId) {
+      return signedIn() &&
+        firestore.exists(memberPath(householdId)) &&
+        firestore.get(memberPath(householdId)).data.role in ['owner', 'admin'] &&
+        firestore.get(memberPath(householdId)).data.get('status', 'active') == 'active';
+    }
+
+    match /households/{householdId}/members/{memberUid}/avatar/{fileName} {
+      allow read: if hasPermission(householdId, 'household.view') || deviceActiveForStorage(householdId);
+      allow create, update: if memberUid.matches('kid_[A-Za-z0-9]{20}') && isOwnerOrAdminOf(householdId) &&
+        isImage(5 * 1024 * 1024);
+      allow delete: if memberUid.matches('kid_[A-Za-z0-9]{20}') && isOwnerOrAdminOf(householdId);
+    }
+
     // Profile photos. Uploads go to the account-ID folder (`users/{uid}/avatars/...`).
     // Older photos under the email (`users/{email}/avatars/...`) stay readable until
     // they are deleted, and their owner may delete them, but nothing new is written

@@ -165,7 +165,8 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
   // contact document is simply absent: the card then shows no email. Membership
   // records carry no email.
   const contactUids = useMemo(
-    () => (canManageMembers && rawMembers ? rawMembers.map((m) => m.uid).sort().join('|') : ''),
+    // Kid profiles (kind 'identity') have no contact document.
+    () => (canManageMembers && rawMembers ? rawMembers.filter((m) => m.kind !== 'identity').map((m) => m.uid).sort().join('|') : ''),
     [canManageMembers, rawMembers],
   );
   useEffect(() => {

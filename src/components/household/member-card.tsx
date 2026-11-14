@@ -1,6 +1,6 @@
 'use client';
 
-import { Crown, MoreHorizontal, SlidersHorizontal, UserMinus } from 'lucide-react';
+import { Crown, KeyRound, MoreHorizontal, Pencil, SlidersHorizontal, Unlock, UserMinus } from 'lucide-react';
 import { MemberAvatar } from '@/components/member-avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -18,6 +18,14 @@ import type { MemberColor } from '@/lib/member-colors';
 import type { HouseholdMember, HouseholdRole } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { customizedPermissions, memberName, relativeTime, roleLabel, type MemberChoreStats } from './household-model';
+import type { MemberTabletAction, MemberTabletActions } from './member-tablet-controls';
+
+const TABLET_ACTION_LABELS: Record<MemberTabletAction, string> = {
+  'edit-kid': 'Edit kid profile',
+  'set-kid-pin': 'Set tablet PIN',
+  'clear-pin': 'Clear tablet PIN',
+  'unlock-pin': 'Unlock tablet PIN',
+};
 
 export type MemberActions = {
   /** Roles this actor may assign to the member (empty: no role control). */
@@ -27,8 +35,9 @@ export type MemberActions = {
   canRemove: boolean;
 };
 
-export function memberActionCount(actions: MemberActions): number {
-  return (actions.roles.length > 0 ? 1 : 0) + Number(actions.canCustomize) + Number(actions.canTransfer) + Number(actions.canRemove);
+export function memberActionCount(actions: MemberActions, tablet?: MemberTabletActions): number {
+  return (actions.roles.length > 0 ? 1 : 0) + Number(actions.canCustomize) + Number(actions.canTransfer) + Number(actions.canRemove) +
+    (tablet?.actions.length ?? 0);
 }
 
 /**
@@ -47,6 +56,8 @@ export function MemberCard({
   onCustomize,
   onTransfer,
   onRemove,
+  tablet,
+  onTablet,
 }: {
   member: HouseholdMember;
   color: MemberColor;
@@ -59,11 +70,16 @@ export function MemberCard({
   onCustomize: (member: HouseholdMember) => void;
   onTransfer: (member: HouseholdMember) => void;
   onRemove: (member: HouseholdMember) => void;
+  /** Wall-tablet controls (kid profiles, tablet PINs); only with the devices flag on. */
+  tablet?: MemberTabletActions;
+  onTablet?: (member: HouseholdMember, action: MemberTabletAction) => void;
 }) {
   const name = memberName(member);
+  const isKid = member.kind === 'identity';
   const customized = customizedPermissions(member.role, member.permissions).length;
   const joined = relativeTime(member.joinedAt);
-  const hasMenu = memberActionCount(actions) > 0;
+  const hasMenu = memberActionCount(actions, tablet) > 0;
+  const tabletActions = onTablet ? tablet?.actions ?? [] : [];
 
   return (
     <Card className="overflow-hidden" data-member-card={member.uid}>
@@ -81,13 +97,21 @@ export function MemberCard({
               {member.role === 'owner' && <Crown aria-hidden className="h-3 w-3" />}
               {roleLabel(member.role)}
             </span>
+            {isKid && (
+              <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">Kid profile, no sign-in</span>
+            )}
+            {tablet?.locked ? (
+              <span className="rounded-full border border-warning/60 px-2 py-0.5 text-xs">Tablet PIN locked</span>
+            ) : tablet?.hasPin ? (
+              <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">Tablet PIN set</span>
+            ) : null}
             {customized > 0 && (
               <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
                 {customized} custom {customized === 1 ? 'permission' : 'permissions'}
               </span>
             )}
           </div>
-          {showEmail && member.email && <p className="truncate text-sm text-muted-foreground">{member.email}</p>}
+          {showEmail && !isKid && member.email && <p className="truncate text-sm text-muted-foreground">{member.email}</p>}
           <p className="text-xs text-muted-foreground">
             {joined && <>Joined {joined}</>}
             {stats && (
@@ -137,9 +161,21 @@ export function MemberCard({
                   )}
                 </>
               )}
-              {actions.canRemove && (
+              {tabletActions.length > 0 && (
                 <>
                   {(actions.roles.length > 0 || actions.canCustomize || actions.canTransfer) && <DropdownMenuSeparator />}
+                  <DropdownMenuLabel>Wall tablets</DropdownMenuLabel>
+                  {tabletActions.map((action) => (
+                    <DropdownMenuItem key={action} onSelect={() => onTablet!(member, action)}>
+                      {action === 'edit-kid' ? <Pencil className="mr-2 h-4 w-4" /> : action === 'unlock-pin' ? <Unlock className="mr-2 h-4 w-4" /> : <KeyRound className="mr-2 h-4 w-4" />}
+                      {TABLET_ACTION_LABELS[action]}
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+              {actions.canRemove && (
+                <>
+                  {(actions.roles.length > 0 || actions.canCustomize || actions.canTransfer || tabletActions.length > 0) && <DropdownMenuSeparator />}
                   <DropdownMenuItem onSelect={() => onRemove(member)} className="text-destructive focus:text-destructive">
                     <UserMinus className="mr-2 h-4 w-4" /> Remove from household
                   </DropdownMenuItem>
