@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseFeedingsPerDay, parseSchedule } from '../../src/lib/pets/schedule-parser';
+import { feedingPlan } from '../../src/lib/pets/care';
 import {
   attributeFeeds,
   confirmMealPlan,
@@ -92,6 +93,37 @@ describe('PE-6: reading a free-text schedule', () => {
     assert.equal(parseSchedule('').kind, 'empty');
     // The legacy daily target keeps the stated count of an ambiguous text.
     assert.equal(parseFeedingsPerDay('twice daily, morning'), 2);
+  });
+
+  it('keeps a stated daily count as the legacy target when the times it names disagree ("twice daily at 8am")', () => {
+    const conflicting: [string, number][] = [
+      ['twice daily at 8am', 2],
+      ['twice a day at 7:30', 2],
+      ['2 times daily at 8am', 2],
+      ['three times daily at 8am', 3],
+      ['3x a day at 6pm', 3],
+      ['twice daily at 8am, 1 cup', 2],
+      ['twice in the morning', 2],
+      ['every 8 hours starting 7am', 3],
+    ];
+    for (const [text, perDay] of conflicting) {
+      const parsed = parseSchedule(text);
+      assert.equal(parsed.kind, 'ambiguous', text);
+      assert.deepEqual(draftFromSuggestion(parsed), [], `${text}: no suggestion`);
+      assert.equal(parseFeedingsPerDay(text), perDay, `${text}: legacy target`);
+      assert.equal(feedingPlan({ foodSchedule: text }).perDay, perDay, `${text}: the card's daily target`);
+    }
+    // A count that matches the times it names is still a plan.
+    const agreeing: [string, string[]][] = [
+      ['twice daily at 8am and 6pm', ['08:00', '18:00']],
+      ['three times a day at 8am, noon and 6pm', ['08:00', '12:00', '18:00']],
+      ['once daily at 8am', ['08:00']],
+    ];
+    for (const [text, times] of agreeing) {
+      const parsed = parseSchedule(text);
+      assert.equal(parsed.kind, 'plan', text);
+      assert.deepEqual(parsed.kind === 'plan' && parsed.meals.map((meal) => meal.time), times, text);
+    }
   });
 
   it('rejects oversized or non-finite counts before expanding them (no allocation, no freeze while typing)', () => {

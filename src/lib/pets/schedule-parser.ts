@@ -303,6 +303,8 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
   const counts: number[] = [];
   let conflict: string | null = null;
   let interval: number | null = null;
+  /** A count stated inside a part that conflicts with it, kept for the legacy target. */
+  let explicit: number | null = null;
   for (const [index, segment] of segments.entries()) {
     if (segment.badInterval) conflict = 'The interval does not divide the day into whole meals.';
     const placed = segment.times.length > 0 ? segment.times.length : segment.groups.length;
@@ -322,9 +324,15 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
     if (placed === 0) {
       counts.push(segment.count);
       if (segment.interval) interval = segment.count;
-    } else if (segment.count !== placed && !(segment.count === 1 && placed === 1)) {
-      // "twice in the morning", "once at 8am and 6pm": a count inside one part that does not match it.
+    } else if (segment.count > 1 && segment.count !== placed) {
+      // "twice daily at 8am", "three times a day at 8am, noon and 6pm": a daily total
+      // stated next to some of its meals. It is the stated count: it must match every
+      // meal the text names, and it stays the legacy daily target when they disagree.
+      counts.push(segment.count);
+    } else if (segment.count !== placed) {
+      // "once at 8am and 6pm" in one part: a count of one that names more meals.
       conflict = 'A count and the meals it names disagree.';
+      explicit ??= segment.count;
     }
   }
 
@@ -342,7 +350,8 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
     else if (!same.portion && meal.portion) same.portion = meal.portion;
   }
 
-  if (conflict) return { kind: 'ambiguous', reason: conflict, perDay: dailyTarget(stated ?? (unique.length || null)) };
+  // An explicit count always wins over the number of meals named for the legacy target.
+  if (conflict) return { kind: 'ambiguous', reason: conflict, perDay: dailyTarget(stated ?? explicit ?? (unique.length || null)) };
   if (unique.length > 0 && stated !== null && stated !== unique.length) {
     return { kind: 'ambiguous', reason: `It says ${stated} a day but names ${unique.length} ${unique.length === 1 ? 'meal' : 'meals'}.`, perDay: dailyTarget(stated) };
   }
