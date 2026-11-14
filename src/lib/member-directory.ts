@@ -23,6 +23,12 @@ export type HouseholdPerson = {
   joinedAt?: string;
   /** Matching key only, while records still carry it. Never displayed to others. */
   email?: string;
+  /**
+   * `'identity'`: a kid profile with no sign-in (docs/modules/devices/README.md). They
+   * count everywhere names, leaderboards and "by Mia" appear, but are not offered as
+   * chore assignees yet (HO-15d): use `assignablePeople` for pickers.
+   */
+  kind?: 'account' | 'identity';
 };
 
 /** Shown for someone who has no usable display name. */
@@ -82,6 +88,7 @@ export function personFromMemberRecord(data: Record<string, unknown>, docId?: st
     status,
     ...(typeof data.joinedAt === 'string' ? { joinedAt: data.joinedAt } : {}),
     ...(typeof data.email === 'string' && data.email ? { email: data.email } : {}),
+    ...(data.kind === 'identity' ? { kind: 'identity' as const } : {}),
   };
 }
 
@@ -92,6 +99,15 @@ export function approvedPeople(records: ReadonlyArray<{ id: string; data: Record
     .filter(record => record.data.status === undefined || record.data.status === 'active')
     .map(record => personFromMemberRecord(record.data, record.id))
     .filter((person): person is HouseholdPerson => Boolean(person) && person!.role !== 'newuser' && person!.status === 'active');
+}
+
+/**
+ * People a chore can be assigned to: everyone but kid profiles (assigning chores to
+ * them is not part of this release, HO-15d). `keepUid` keeps the current assignee
+ * listed whoever it is, so a picker never loses its value.
+ */
+export function assignablePeople<T extends { uid: string; kind?: 'account' | 'identity' }>(people: readonly T[], keepUid?: string | null): T[] {
+  return people.filter(person => person.kind !== 'identity' || (keepUid !== undefined && keepUid !== null && person.uid === keepUid));
 }
 
 /**

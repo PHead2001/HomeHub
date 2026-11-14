@@ -333,6 +333,8 @@ export const runHouseholdReminders = async (
   // injectable `now` and the Functions wall clock play no part.
   const sourcesReadAt = earliestReadTime(sourceSnaps);
 
+  const identityUids = new Set(membersSnap.docs
+    .filter((d) => d.get("kind") === "identity").map((d) => d.id));
   const approvedRecords = membersSnap.docs
     .map((d) => ({uid: d.id, ...d.data()}))
     .filter((m: Record<string, unknown>) =>
@@ -616,8 +618,11 @@ export const runHouseholdReminders = async (
   const choreIdSet = new Set(choreDocs.map((d) => d.id));
   // Reminder settings live on the email-keyed profile, so members without a
   // contact document email are skipped.
+  // Kid profiles (`kind: 'identity'`, docs/modules/devices/README.md) have no
+  // account, contact document or profile: they never get targeted reminders.
   const reachable = members.filter((m): m is typeof m & {email: string} =>
-    typeof m.email === "string" && m.email.length > 0);
+    typeof m.email === "string" && m.email.length > 0 &&
+    !identityUids.has(m.uid));
   const profiles = await Promise.all(reachable.map((m) =>
     db.collection("users").doc(m.email).get()));
   for (const [index, member] of reachable.entries()) {
@@ -681,7 +686,7 @@ export const DEVICE_SWEEP_UTC_HOUR = 3;
 
 export type DeviceSweepResult = {
   ran: boolean; checked: number; finished: number; orphans: number;
-  spared: number; failed: number;
+  spared: number; failed: number; sessionsDeleted: number; opsDeleted: number;
 };
 
 /**
@@ -716,6 +721,38 @@ const deviceUserStillWanted = async (
   return Number.isFinite(created) && created >= sweepStartedAt;
 };
 
+/** PIN sessions older than this are deleted by the daily sweep. */
+export const PIN_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Deletes one tablet's PIN sessions created more than a day ago and its op
+ * ledger entries past their `expireAt` (docs/modules/devices/README.md).
+ * Sessions expire after 2 idle minutes anyway; this only bounds storage.
+ * @param {DocumentReference} device The device record.
+ * @param {Date} now Current instant.
+ * @return {Promise<{sessions: number, ops: number}>} How many were deleted.
+ */
+export const cleanupDeviceRecords = async (
+  device: DocumentReference,
+  now: Date,
+): Promise<{sessions: number; ops: number}> => {
+  // Dates, not Timestamps: this file runs under two firebase-admin versions.
+  const sessionCutoff = new Date(now.getTime() - PIN_SESSION_RETENTION_MS);
+  const [sessions, ops] = await Promise.all([
+    device.collection("pinSessions")
+      .where("createdAt", "<", sessionCutoff).limit(400).get(),
+    device.collection("ops")
+      .where("expireAt", "<", now).limit(400).get(),
+  ]);
+  const refs = [...sessions.docs, ...ops.docs].map((d) => d.ref);
+  if (refs.length > 0) {
+    const batch = device.firestore.batch();
+    refs.forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
+  return {sessions: sessions.size, ops: ops.size};
+};
+
 /**
  * Daily: finishes the Firebase Auth sign-out of every registered wall tablet
  * whose record is no longer active (removed: user deleted; unpaired: user
@@ -738,6 +775,7 @@ export const sweepDeviceRevocations = async (
 ): Promise<DeviceSweepResult> => {
   const result: DeviceSweepResult = {
     ran: false, checked: 0, finished: 0, orphans: 0, spared: 0, failed: 0,
+    sessionsDeleted: 0, opsDeleted: 0,
   };
   if (!force && now.getUTCHours() !== DEVICE_SWEEP_UTC_HOUR) return result;
   result.ran = true;
@@ -754,6 +792,9 @@ export const sweepDeviceRevocations = async (
           generation: device.get("generation"),
         });
         if (outcome !== "none" && outcome !== "missing") result.finished++;
+        const cleaned = await cleanupDeviceRecords(device.ref, now);
+        result.sessionsDeleted += cleaned.sessions;
+        result.opsDeleted += cleaned.ops;
       } catch {
         result.failed++;
       }

@@ -323,6 +323,23 @@ const AUDIT_LABELS: Record<string, string> = {
   'member.removed': 'Removed a member',
   'member.left': 'Left the household',
   'ownership.transferred': 'Transferred ownership',
+  'device.code_created': 'Created a wall-tablet code',
+  'device.repair_code_created': 'Created a code to re-pair a wall tablet',
+  'device.code_revoked': 'Cancelled a wall-tablet code',
+  'device.paired': 'Paired a wall tablet',
+  'device.repaired': 'Re-paired a wall tablet',
+  'device.settings_changed': 'Changed wall-tablet settings',
+  'device.removed': 'Removed a wall tablet',
+  'device.exited': 'Signed a wall tablet out',
+  'device.action': 'Used a wall tablet with a PIN',
+  'device.policy_changed': 'Changed the points PIN for wall tablets',
+  'pin.set': 'Set a tablet PIN',
+  'pin.cleared': 'Cleared a tablet PIN',
+  'pin.locked': 'Tablet PIN locked after too many wrong tries',
+  'pin.lockout_cleared': 'Unlocked a tablet PIN',
+  'child.created': 'Added a kid profile',
+  'child.updated': 'Edited a kid profile',
+  'child.removed': 'Removed a kid profile',
 };
 
 /** Plain-language sentence for an audit entry; unknown actions fall back to a readable form. */
@@ -339,6 +356,18 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
   if (base) return base;
   const words = log.action.replace(/[._]+/g, ' ').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Household activity';
+}
+
+/**
+ * Who did it, for the Activity list: the actor, and for an action taken on a wall
+ * tablet "as Alex (PIN) on Kitchen tablet" (WT-18b; the server records the device,
+ * the selected person and the level separately).
+ */
+export function describeAuditActor(log: Pick<AuditLog, 'actorName' | 'actorEmail' | 'via' | 'deviceName' | 'level'>): string {
+  const actor = log.actorName || log.actorEmail || 'HomeHub';
+  if (log.via !== 'device' || !log.deviceName) return actor;
+  if (log.level === 'pin' || log.level === 'face') return `as ${actor} (${log.level === 'pin' ? 'PIN' : 'face'}) on ${log.deviceName}`;
+  return `${actor} on ${log.deviceName}`;
 }
 
 /** Which Household Manager listeners the viewer opens (`householdManagerReads`). */

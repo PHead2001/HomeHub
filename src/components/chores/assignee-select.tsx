@@ -1,6 +1,6 @@
 'use client';
 
-import { publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
+import { assignablePeople, publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { MemberAvatar } from '@/components/member-avatar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
@@ -31,7 +31,8 @@ export function AssigneeSelect({
         <SelectValue placeholder="Choose a member" />
       </SelectTrigger>
       <SelectContent>
-        {users.map(user => (
+        {/* Kid profiles are not assignees yet (HO-15d); the current value always stays listed. */}
+        {assignablePeople(users, value).map(user => (
           <SelectItem key={user.uid} value={user.uid}>
             <span className="flex items-center gap-2">
               <MemberAvatar uid={user.uid} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />

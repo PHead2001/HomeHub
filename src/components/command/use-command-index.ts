@@ -112,7 +112,8 @@ export function useCommandIndex(open: boolean): CommandIndex {
           ? rows(members)
               // Public member data (src/lib/member-directory.ts): the name is never an email.
               // The record's email, while it has one, only matches "for sam" locally.
-              .filter((member) => member.role !== 'newuser' && (member.status ?? 'active') === 'active')
+              // Quick add assigns chores to these people: kid profiles are not assignees yet (HO-15d).
+              .filter((member) => member.role !== 'newuser' && (member.status ?? 'active') === 'active' && member.kind !== 'identity')
               .map((member) => ({
                 uid: str(member.uid, member.id),
                 ...(typeof member.email === 'string' && member.email ? { email: member.email } : {}),

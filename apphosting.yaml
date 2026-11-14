@@ -52,3 +52,16 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+  # Wall-tablet PIN pepper (docs/modules/devices/README.md, "PINs"). Server runtime
+  # only, never NEXT_PUBLIC_. src/lib/server/pin-hash.ts reads
+  # HOMEHUB_PIN_PEPPER_CURRENT (the id new hashes use) and HOMEHUB_PIN_PEPPER_<id>
+  # (that id's secret; the id is used case-exact, so V1 -> HOMEHUB_PIN_PEPPER_V1).
+  # Rotation: add HOMEHUB_PIN_PEPPER_V2 and set CURRENT to V2, keeping V1.
+  - variable: HOMEHUB_PIN_PEPPER_V1
+    secret: homehubPinPepperV1
+
+  - variable: HOMEHUB_PIN_PEPPER_CURRENT
+    value: V1
+    availability:
+      - RUNTIME

@@ -22,6 +22,7 @@ import { roleLabel } from '@/components/household/household-model';
 import { AVATAR_ACCEPT, avatarFileError } from '@/components/profile/profile-validation';
 import { PushNotificationSettings } from './PushNotificationSettings';
 import { AppearanceSettings } from './appearance-settings';
+import { TabletPinCard } from '@/components/profile/tablet-pin-card';
 
 const profileSchema = z.object({
   displayName: z.string().trim().min(2, 'Use at least 2 characters.').max(60, 'Keep it under 60 characters.'),
@@ -275,6 +276,7 @@ export function ProfileClient() {
         <AppearanceSettings />
         <ChoreReminderSettings />
         <PushNotificationSettings />
+        <TabletPinCard />
       </div>
     </div>
   );

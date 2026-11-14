@@ -446,6 +446,12 @@ export type HouseholdMember = {
   lastNewUserReminderAt?: string;
   approvedAt?: string;
   approvedByUid?: string;
+  /**
+   * `'identity'`: a kid profile with no sign-in (`members/kid_<id>`, role `child`, no
+   * contact document, no Auth user; docs/modules/devices/README.md). Absent: an account.
+   */
+  kind?: 'account' | 'identity';
+  createdByUid?: string;
 };
 
 export type HomeAssistantCredentials = {
@@ -518,6 +524,8 @@ export type Household = {
     deletingByUid?: string;
     /** IANA timezone used for reminders and recurring chores (default America/Chicago). */
     timeZone?: string;
+    /** Wall-tablet policy (server-written; docs/modules/devices/README.md). Absent: points PIN off. */
+    devicePolicy?: { pointsPin?: 'off' | 'kids' | 'everyone' };
 }
 
 export type InviteCode = {
@@ -547,6 +555,10 @@ export type AuditLog = {
   targetName?: string;
   createdAt: string;
   details?: Record<string, string | number | boolean | null>;
+  /** Entries written for wall tablets (docs/modules/devices/README.md). */
+  via?: string;
+  deviceName?: string;
+  level?: 'face' | 'pin' | 'device';
 };
 
 export type NotificationCategory =

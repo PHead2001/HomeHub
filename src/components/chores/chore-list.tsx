@@ -4,7 +4,7 @@ import { useId, useRef } from 'react';
 import { AnimatePresence, useIsPresent } from 'motion/react';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
-import { publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
+import { assignablePeople, publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { Checkbox } from '@/components/ui/checkbox';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Label } from '@/components/ui/label';
@@ -185,7 +185,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel>Assign to</DropdownMenuLabel>
               <DropdownMenuRadioGroup value={chore.assignedToUid || ''} onValueChange={(uid) => props.onReassign(chore, uid)}>
-                {props.users.map(member => (
+                {assignablePeople(props.users, chore.assignedToUid).map(member => (
                   <DropdownMenuRadioItem key={member.uid} value={member.uid}>
                     <span className="flex items-center gap-2">
                       <MemberAvatar uid={member.uid} name={memberName(member)} photoUrl={member.avatarUrl} color={props.colors.get(member.uid)} size="sm" decorative />

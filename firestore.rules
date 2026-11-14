@@ -441,6 +441,23 @@ service cloud.firestore {
       return value is timestamp || boundedString(value, 40);
     }
 
+    // --- Device attribution (docs/modules/devices/README.md, section 12) ----
+    // `deviceAttribution` (which tablet, which person, face or PIN) is written only by
+    // the device actions on the server. No personal client may add it (every content
+    // allow-list leaves it out), change it or remove it.
+    function deviceAttributionKept() {
+      return request.resource.data.get('deviceAttribution', null) == resource.data.get('deviceAttribution', null);
+    }
+
+    // Chores (S10): the attribution belongs to the completion, so an update that clears
+    // the completion (isCompleted becomes false) may remove it, and only remove it.
+    function choreDeviceAttributionKept() {
+      return deviceAttributionKept() ||
+        (!('deviceAttribution' in request.resource.data) &&
+          resource.data.get('isCompleted', false) == true &&
+          request.resource.data.get('isCompleted', false) != true);
+    }
+
     // --- Chores -----------------------------------------------------------
 
     // Unassigned ('' or null) or the caller: no chores.assign needed.
@@ -1254,6 +1271,7 @@ service cloud.firestore {
         allow update: if choreCompletionStampValid() &&
           validChoreFields(request.resource.data, writtenKeys()) &&
           choreServerFieldsUnchanged() &&
+          choreDeviceAttributionKept() &&
           choreClientCompletionUnattributed() &&
           (
             (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks', 'completedAtServer']) &&
@@ -1428,7 +1446,7 @@ service cloud.firestore {
             feedingLoggedAtOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validFeedingLogFields(request.resource.data, updatedKeys()) && petLoggerUnchanged() &&
-            feedingLoggedAtUnchanged();
+            feedingLoggedAtUnchanged() && deviceAttributionKept();
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
             feedingAuthorWithinUndoWindow(householdId);
         }
@@ -1456,7 +1474,8 @@ service cloud.firestore {
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
+            validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged() &&
+            deviceAttributionKept();
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
         }
 
@@ -1465,7 +1484,8 @@ service cloud.firestore {
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged();
+            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged() &&
+            deviceAttributionKept();
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
         }
       }
