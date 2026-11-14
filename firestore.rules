@@ -2049,9 +2049,12 @@ service cloud.firestore {
         // Course doses (courseDoseCreate), one-off doses, and legacy 2.1-shape
         // entries (D-P8: cached older clients keep working). Course and one-off
         // doses are never edited (a create over an existing id is refused).
+        // Any entry is created only while its pet exists, so no dose lands after
+        // the pet's delete cascade (a queued offline dose is then refused).
         match /medication-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
-          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') && (
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            exists(/databases/$(database)/documents/households/$(householdId)/pets/$(petId)) && (
             ('courseId' in request.resource.data && courseDoseCreate(householdId, petId, logId)) ||
             ('oneOff' in request.resource.data && oneOffDoseCreate()) ||
             (legacyMedicationShape(request.resource.data) &&

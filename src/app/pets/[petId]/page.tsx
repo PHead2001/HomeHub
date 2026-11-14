@@ -114,7 +114,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   }, [householdId, petId, docKey]);
 
   const ready = loaded.key === docKey;
-  const petShown = ready && Boolean(loaded.pet);
+  const petShown = ready && Boolean(loaded.value);
   useEffect(() => {
     if (!petShown || (requestedTab !== 'medication' && !doseParam)) return;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'reduce';
