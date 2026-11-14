@@ -78,7 +78,7 @@ export type DeviceActionRequest = {
   /** Required for every mutating face/PIN capability (a client UUID). */
   opId?: string;
   /** Replay from the offline queue. */
-  queued?: { createdAt: string };
+  queued?: { createdAt: string; generation: number };
 };
 
 /** Stored as `deviceAttribution` next to the module's actor fields (section 12.1). */
@@ -148,6 +148,8 @@ export type DeviceAuthority = {
   now: Date;
   /** The request is a replay from the tablet's offline queue (section 11, R1). */
   queued: boolean;
+  /** A queued request: the device-clock time its queue entry was made (ISO), else null. */
+  queuedCreatedAt: string | null;
   hooks: DeviceTxHooks;
 };
 
@@ -382,10 +384,13 @@ const evaluate = (
 };
 
 /** Section 11.3 limits for queued replays. */
-const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabilityPolicy, required: RequiredLevel, now: Date) => {
+const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabilityPolicy, required: RequiredLevel, now: Date, tokenGeneration: number) => {
   if (!queued) return;
   const createdAt = typeof queued.createdAt === 'string' ? Date.parse(queued.createdAt) : NaN;
   if (!Number.isFinite(createdAt)) throw new DeviceActionError('invalid_input');
+  // A queued entry belongs to the credential generation it was made under.
+  if (typeof queued.generation !== 'number') throw new DeviceActionError('invalid_input');
+  if (queued.generation !== tokenGeneration) throw new DeviceActionError('stale_intent');
   if (createdAt > now.getTime() + QUEUED_MAX_FUTURE_MS || now.getTime() - createdAt > QUEUED_MAX_AGE_MS) {
     throw new DeviceActionError('stale_intent');
   }
@@ -462,7 +467,7 @@ export async function authorizeDeviceAction(
 
   const first = evaluate(await read(ref => ref.get()), claims, evaluationRequest, policy, now, undoProven);
   // Step 11: queued replay.
-  checkQueued(request.queued, policy, first.required, now);
+  checkQueued(request.queued, policy, first.required, now, claims.hh_gen);
 
   const ledgerRef = opId ? opRef(householdRef, claims.hh_device, opId) : null;
   const undo = isUndoCapability(capability);
@@ -485,6 +490,7 @@ export async function authorizeDeviceAction(
     attribution: attributionOf(first),
     now,
     queued: Boolean(request.queued),
+    queuedCreatedAt: deviceCreatedAt,
     hooks: {
       precheck: async () => { throw new Error('unreachable'); },
       finalize: () => { throw new Error('unreachable'); },
@@ -503,7 +509,7 @@ export async function authorizeDeviceAction(
       checkedAt = clock();
       authority.now = checkedAt;
       current = evaluate(snaps, claims, evaluationRequest, policy, checkedAt, undoProven);
-      checkQueued(request.queued, policy, current.required, checkedAt);
+      checkQueued(request.queued, policy, current.required, checkedAt, claims.hh_gen);
       authority.actor = current.actor;
       authority.level = current.level;
       authority.deviceName = current.deviceName;

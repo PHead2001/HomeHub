@@ -15,6 +15,7 @@ import {
 } from '@/lib/server/chore-completion';
 import type { DeviceCapability } from '@/lib/devices/action-policy';
 import type { ChoreCompletionOutcome, UndoOutcome } from '@/lib/chores/completion';
+import { publicDisplayName } from '@/lib/member-directory';
 
 // Chore actions from a registered wall tablet (docs/modules/devices/README.md, "Device
 // actions"; design 9, 10; WT-22, CH-12b). Each passes the device action gate
@@ -30,7 +31,7 @@ export type DeviceChoreRequest = {
   actorUid: unknown;
   pinSessionId?: unknown;
   opId: unknown;
-  queued?: { createdAt: string };
+  queued?: { createdAt: string; generation?: unknown };
 };
 
 export type DeviceChoreOptions = { now?: Date; clientAddress?: string };
@@ -42,8 +43,24 @@ const authorize = (capability: DeviceCapability, input: DeviceChoreRequest, opti
   actorUid: typeof input.actorUid === 'string' ? input.actorUid : undefined,
   pinSessionId: typeof input.pinSessionId === 'string' ? input.pinSessionId : undefined,
   opId: input.opId as string,
-  ...(input.queued && typeof input.queued.createdAt === 'string' ? { queued: { createdAt: input.queued.createdAt } } : {}),
+  // The gate refuses a queued entry whose generation is missing or not the token's.
+  ...(input.queued && typeof input.queued.createdAt === 'string' ? { queued: { createdAt: input.queued.createdAt, generation: input.queued.generation as number } } : {}),
 }, options.now, { clientAddress: options.clientAddress });
+
+/**
+ * What a tablet receives never carries an email (WT-10e): every `…Email` field is removed
+ * from device answers, replays from the op ledger included, and names are public names.
+ */
+export const withoutEmails = <T,>(value: T): T => {
+  if (Array.isArray(value)) return value.map(withoutEmails) as T;
+  if (!value || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (/email/i.test(key)) continue;
+    out[key] = /name$/i.test(key) && typeof child === 'string' ? publicDisplayName(child, '') : withoutEmails(child);
+  }
+  return out as T;
+};
 
 /** Chores module errors as device refusals (a missing chore or bad id is invalid input). */
 const asDeviceError = (error: unknown): never => {
@@ -58,23 +75,23 @@ export async function completeChoreFromTablet(input: DeviceChoreRequest & { chor
   const authority = await authorize('chores.complete', input, options);
   const ctx = deviceOperationContext(authority);
   const [outcome] = await completeChoresAs(adminDb, authority.householdId, { choreIds: [input.choreId], completeSubTasks: true }, ctx).catch(asDeviceError);
-  return { outcome, level: authority.level === 'pin' ? 'pin' : 'face' };
+  return { outcome: withoutEmails(outcome), level: authority.level === 'pin' ? 'pin' : 'face' };
 }
 
 /** `chores.complete.undo`: by the original's opId only. */
 export async function undoChoreCompletionFromTablet(input: DeviceChoreRequest, options: DeviceChoreOptions = {}): Promise<UndoOutcome | DeviceUndoOutcome> {
   const authority = await authorize('chores.complete.undo', input, options);
-  return undoChoreCompletionAs(adminDb, authority.householdId, {}, { ...deviceOperationContext(authority), authority }).catch(asDeviceError);
+  return withoutEmails(await undoChoreCompletionAs(adminDb, authority.householdId, {}, { ...deviceOperationContext(authority), authority }).catch(asDeviceError));
 }
 
 /** `chores.take`: an unassigned chore (or one already the person's, a no-op). */
 export async function takeChoreFromTablet(input: DeviceChoreRequest & { choreId: unknown }, options: DeviceChoreOptions = {}): Promise<TakeOutcome> {
   const authority = await authorize('chores.take', input, options);
-  return takeChoreAs(adminDb, authority.householdId, { choreId: input.choreId }, deviceOperationContext(authority)).catch(asDeviceError);
+  return withoutEmails(await takeChoreAs(adminDb, authority.householdId, { choreId: input.choreId }, deviceOperationContext(authority)).catch(asDeviceError));
 }
 
 /** `chores.take.undo`: by the original's opId only; puts the previous assignment back. */
 export async function undoTakeChoreFromTablet(input: DeviceChoreRequest, options: DeviceChoreOptions = {}): Promise<TakeOutcome> {
   const authority = await authorize('chores.take.undo', input, options);
-  return undoTakeChoreAs(adminDb, authority.householdId, { ...deviceOperationContext(authority), authority }).catch(asDeviceError);
+  return withoutEmails(await undoTakeChoreAs(adminDb, authority.householdId, { ...deviceOperationContext(authority), authority }).catch(asDeviceError));
 }

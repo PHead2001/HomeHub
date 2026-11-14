@@ -161,7 +161,12 @@ export const neverSent = (entry: QueuedDeviceAction): boolean => entry.attempts 
 export const syncOrder = (entries: readonly QueuedDeviceAction[]): QueuedDeviceAction[] =>
   [...entries].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.opId.localeCompare(b.opId));
 
-export type SendResult = { ok: true } | { ok: false; code: DeviceRefusal };
+/**
+ * A sync answer. `reason` (plain words, lower case, ending with a full stop) explains a
+ * domain refusal the server answered successfully (for example "that chore isn't due yet."),
+ * so the dropped-change notice can say why.
+ */
+export type SendResult = { ok: true } | { ok: false; code: DeviceRefusal; reason?: string };
 export type QueueSender = (entry: QueuedDeviceAction) => Promise<SendResult>;
 
 export type SyncOutcome = 'delete' | 'revoked' | 'drop' | 'retry';
@@ -197,13 +202,13 @@ const ACTION_WORDS: Partial<Record<DeviceCapability, string>> = {
 };
 
 /** The one plain notice for dropped entries ("1 change from this tablet couldn't be saved: …"). */
-export function dropNotice(dropped: ReadonlyArray<{ entry: QueuedDeviceAction; code: DeviceRefusal }>): string | null {
+export function dropNotice(dropped: ReadonlyArray<{ entry: QueuedDeviceAction; code: DeviceRefusal; reason?: string }>): string | null {
   if (dropped.length === 0) return null;
   const count = dropped.length === 1 ? '1 change' : `${dropped.length} changes`;
   const first = dropped[0];
   const name = first.entry.actorName.trim() || 'Someone';
   const what = ACTION_WORDS[first.entry.capability] ?? 'do that';
-  const reason = (() => {
+  const reason = first.reason ?? (() => {
     switch (first.code) {
       case 'actor_not_member':
       case 'actor_inactive':
@@ -292,7 +297,7 @@ export type SyncReport = {
   deleted: number;
   /** Discarded unsent: made under another household, device record or credential generation. */
   discarded: number;
-  dropped: Array<{ entry: QueuedDeviceAction; code: DeviceRefusal }>;
+  dropped: Array<{ entry: QueuedDeviceAction; code: DeviceRefusal; reason?: string }>;
   /** A revocation code was answered: the caller runs the revocation flow. */
   revoked: boolean;
   /** Entries still waiting (backoff or after a transient failure). */
@@ -349,7 +354,8 @@ export async function syncQueue(deps: {
         report.deleted += 1;
       } else if (outcome === 'drop') {
         await deps.store.delete(inflight.opId);
-        report.dropped.push({ entry: inflight, code: (result as { code: DeviceRefusal }).code });
+        const refused = result as { code: DeviceRefusal; reason?: string };
+        report.dropped.push({ entry: inflight, code: refused.code, ...(refused.reason ? { reason: refused.reason } : {}) });
       } else if (outcome === 'revoked') {
         report.revoked = true;
         return report;

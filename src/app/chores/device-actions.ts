@@ -39,7 +39,7 @@ const run = async <T>(label: string, work: (address: string) => Promise<T>): Pro
   }
 };
 
-type Request = { idToken: string; householdId: string; actorUid: string; pinSessionId?: string; opId: string; queued?: { createdAt: string } };
+type Request = { idToken: string; householdId: string; actorUid: string; pinSessionId?: string; opId: string; queued?: { createdAt: string; generation: number } };
 
 export async function completeChoreFromTabletAction(input: Request & { choreId: string }) {
   return run('Tablet chore completion', clientAddressValue => completeChoreFromTablet(input as DeviceChoreRequest & { choreId: unknown }, { clientAddress: clientAddressValue }));

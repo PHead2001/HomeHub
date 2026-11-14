@@ -15,13 +15,13 @@ import { useCallback, useEffect, useRef } from 'react';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
-import { choreAnswerMeaning, UNDO_CAPABILITY_OF } from '@/lib/devices/device-action-answers';
+import { choreAnswerMeaning, queuedSendResult, UNDO_CAPABILITY_OF } from '@/lib/devices/device-action-answers';
+import { createRevertRegistry, runUndo } from '@/lib/devices/undo-flow';
 import { deviceStore } from '@/lib/devices/device-store';
 import {
   createQueuedAction,
   dropNotice,
   enqueue,
-  planUndo,
   queueAllowed,
   removeIfNeverSent,
   syncQueue,
@@ -48,7 +48,7 @@ import {
 import type { TabletActor } from './tablet-context';
 
 type Answer = { ok: true; data: unknown } | { ok: false; code: DeviceRefusal; retryAfterSec?: number };
-type Base = { idToken: string; householdId: string; actorUid: string; pinSessionId?: string; opId: string; queued?: { createdAt: string } };
+type Base = { idToken: string; householdId: string; actorUid: string; pinSessionId?: string; opId: string; queued?: { createdAt: string; generation: number } };
 
 /** The server action for each capability the tablet can send (F4a: chores). */
 const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Record<string, unknown>>) => Promise<Answer>>> = {
@@ -62,8 +62,15 @@ export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDER
 
 const SYNC_EVERY_MS = 30_000;
 
+export type UndoAuthorization = { actorUid: string; capability: DeviceCapability; pinSessionId?: string; forcePin: boolean };
+
 export type DeviceActionRuntime = {
-  perform: (input: { capability: DeviceCapability; label: string; intent: Record<string, unknown>; actor: TabletActor; who: RosterPerson }) => Promise<{ ok: boolean }>;
+  /**
+   * `queued`: saved on this tablet, not applied yet. `onReverted` runs if the action is taken
+   * back later: its Undo succeeds (also a never-sent queue entry removed locally) or its
+   * queued replay is dropped (the dashboard then clears its local "Done").
+   */
+  perform: (input: { capability: DeviceCapability; label: string; intent: Record<string, unknown>; actor: TabletActor; who: RosterPerson; onReverted?: () => void }) => Promise<{ ok: boolean; queued?: boolean }>;
 };
 
 export function useDeviceActions(deps: {
@@ -75,6 +82,12 @@ export function useDeviceActions(deps: {
   /** Shows a refusal (8.5 copy) and runs the revocation flow when needed. */
   refuse: (code: DeviceRefusal, who?: RosterPerson | null, retryAfterSec?: number) => void;
   onRevoked: () => void;
+  /**
+   * The person for an Undo: the original actor, through the shell's authorization (their PIN
+   * pad when the Undo's level needs a PIN, also for an Undo restored after a reload).
+   * `pinSessionId` is a session already held; `forcePin` asks again after a PIN refusal.
+   */
+  authorizeUndo: (input: UndoAuthorization) => Promise<TabletActor | null>;
 }): DeviceActionRuntime {
   const { householdId, deviceId, generation, pointsPin, idToken } = deps;
   // The callbacks below stay stable across renders (the sync and restore effects run once).
@@ -82,6 +95,8 @@ export function useDeviceActions(deps: {
   useEffect(() => { latest.current = deps; });
   const refuse = useCallback((code: DeviceRefusal, who?: RosterPerson | null, retryAfterSec?: number) => latest.current.refuse(code, who, retryAfterSec), []);
   const onRevoked = useCallback(() => latest.current.onRevoked(), []);
+  const authorizeUndo = useCallback((input: UndoAuthorization) => latest.current.authorizeUndo(input), []);
+  const reverts = useRef(createRevertRegistry());
   const session = useRef({ householdId, deviceId, generation });
   useEffect(() => { session.current = { householdId, deviceId, generation }; }, [householdId, deviceId, generation]);
   const stores = useRef<{ queue: ReturnType<typeof deviceStore<QueuedDeviceAction>>; journal: ReturnType<typeof deviceStore<UndoJournalEntry>> } | null>(null);
@@ -112,12 +127,14 @@ export function useDeviceActions(deps: {
             actorUid: entry.actorUid,
             // An Undo intent is sent by the original action's opId.
             opId: entry.kind === 'undo' && entry.original ? entry.original.opId : entry.opId,
-            queued: { createdAt: entry.createdAt },
+            queued: { createdAt: entry.createdAt, generation: entry.generation },
           }, entry.intent);
-          return answer.ok ? { ok: true } : { ok: false, code: answer.code };
+          // Domain refusals answered "ok" (not due yet, gone, already done by someone) are dropped with a notice.
+          return queuedSendResult(entry.capability, answer);
         },
       });
       if (report.revoked) return onRevoked();
+      for (const { entry } of report.dropped) if (entry.kind === 'action') reverts.current.revert(entry.opId);
       const notice = dropNotice(report.dropped);
       if (notice) toast({ description: notice });
     } catch {
@@ -143,44 +160,37 @@ export function useDeviceActions(deps: {
     const undoCapability = UNDO_CAPABILITY_OF[entry.capability];
     if (!undoCapability) return;
     const { queue, journal } = storesOf();
-    const queued = await queue.get(entry.opId);
-    const plan = planUndo({
-      queued,
-      originalViaQueue: entry.viaQueue,
-      sentAt: entry.respondedAt ?? entry.sentAt,
-      online: navigator.onLine !== false,
+    const result = await runUndo(entry, {
+      queueGet: (opId) => queue.get(opId),
+      removeIfNeverSent: (opId) => removeIfNeverSent(queue, opId),
+      markJournal: (opId, patch) => markJournal(journal, opId, patch),
+      enqueueUndo: async () => {
+        await enqueue(queue, createQueuedAction({
+          opId: crypto.randomUUID(), kind: 'undo', ...session.current, capability: undoCapability,
+          actorUid: entry.actorUid, actorName: who?.name ?? '', intent: {}, original: { opId: entry.opId, queued: true },
+        }, new Date()));
+      },
+      authorize: (forcePin) => authorizeUndo({ actorUid: entry.actorUid, capability: undoCapability, pinSessionId: forcePin ? undefined : actor.pinSessionId, forcePin }),
+      send: (undoActor) => send(undoCapability, { actorUid: undoActor.actorUid, opId: entry.opId, ...(undoActor.pinSessionId ? { pinSessionId: undoActor.pinSessionId } : {}) }, {}),
+      online: typeof navigator === 'undefined' || navigator.onLine !== false,
       now: Date.now(),
     });
-    if (plan.kind === 'refuse') return refuse(plan.code, who);
-    if (plan.kind === 'remove-locally' && await removeIfNeverSent(queue, entry.opId)) {
-      await markJournal(journal, entry.opId, { state: 'undone' });
-      toast({ description: 'Undone.' });
-      return;
+    switch (result.kind) {
+      case 'undone':
+      case 'undone-locally':
+        reverts.current.revert(entry.opId);
+        toast({ description: 'Undone.' });
+        return;
+      case 'queued':
+        // Never promises more than the server will do: a late Undo is refused, and the queue then says so.
+        toast({ description: "Undo saved on this tablet. It's sent when the connection is back, if it's still in time." });
+        return;
+      case 'cancelled':
+        return;
+      default:
+        refuse(result.code, who, result.retryAfterSec);
     }
-    await markJournal(journal, entry.opId, { state: 'undoing' });
-    const originalQueued = plan.kind === 'send' || plan.kind === 'queue' ? plan.originalQueued : true;
-    const queueUndo = async () => {
-      await enqueue(queue, createQueuedAction({
-        opId: crypto.randomUUID(), kind: 'undo', ...session.current, capability: undoCapability,
-        actorUid: entry.actorUid, actorName: who?.name ?? '', intent: {}, original: { opId: entry.opId, queued: originalQueued },
-      }, new Date()));
-      toast({ description: 'Undo saved on this tablet. It syncs when the connection is back.' });
-    };
-    if (plan.kind === 'queue') return queueUndo();
-    let answer: Answer;
-    try {
-      answer = await send(undoCapability, { actorUid: entry.actorUid, opId: entry.opId, ...(actor.pinSessionId ? { pinSessionId: actor.pinSessionId } : {}) }, {});
-    } catch {
-      // No answer: the Undo waits in the queue (the server's tombstone makes the order irrelevant).
-      return queueUndo();
-    }
-    if (!answer.ok) {
-      await markJournal(journal, entry.opId, { state: 'confirmed' });
-      return refuse(answer.code, who, answer.retryAfterSec);
-    }
-    await markJournal(journal, entry.opId, { state: 'undone' });
-    toast({ description: 'Undone.' });
-  }, [refuse, send, storesOf]);
+  }, [authorizeUndo, refuse, send, storesOf]);
 
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
     const handle = toast({
@@ -213,8 +223,9 @@ export function useDeviceActions(deps: {
   }, [offerUndo, storesOf]);
 
   // --- Actions ------------------------------------------------------------------
-  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent, actor, who }) => {
+  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent, actor, who, onReverted }) => {
     const opId = crypto.randomUUID();
+    reverts.current.register(opId, onReverted);
     const { queue, journal } = storesOf();
     const undoCapability = UNDO_CAPABILITY_OF[capability];
     const canQueue = !actor.pinSessionId && queueAllowed(capability, { pointsPin, actorRole: who.role });
@@ -233,8 +244,14 @@ export function useDeviceActions(deps: {
         refuse('unavailable', who);
         return { ok: false };
       }
-      await queueIt(false);
-      return { ok: true };
+      try {
+        await queueIt(false);
+      } catch {
+        reverts.current.forget(opId);
+        refuse('failed', who);
+        return { ok: false };
+      }
+      return { ok: true, queued: true };
     }
     const journalItem = journalFor(false);
     if (undoCapability) await recordAttempt(journal, journalItem).catch(() => undefined);
@@ -243,12 +260,17 @@ export function useDeviceActions(deps: {
       answer = await send(capability, { actorUid: actor.actorUid, opId, ...(actor.pinSessionId ? { pinSessionId: actor.pinSessionId } : {}) }, intent);
     } catch {
       if (canQueue) {
-        await queueIt(true);
-        return { ok: true };
+        try {
+          await queueIt(true);
+          return { ok: true, queued: true };
+        } catch {
+          // Nothing could be stored: say so (the server may still have it; the opId replays).
+        }
       }
       answer = { ok: false, code: 'unavailable' };
     }
     if (!answer.ok) {
+      reverts.current.forget(opId);
       if (undoCapability) await markJournal(journal, opId, { state: 'undone' }).catch(() => undefined);
       refuse(answer.code, who, answer.retryAfterSec);
       return { ok: false };
@@ -259,6 +281,7 @@ export function useDeviceActions(deps: {
     if (meaning.undoable && undoCapability) {
       offerUndo({ ...journalItem, state: 'confirmed', respondedAt }, actor, who, meaning.message, JOURNAL_UNDO_WINDOW_MS);
     } else {
+      reverts.current.forget(opId);
       toast({ description: meaning.message });
     }
     return { ok: meaning.undoable || !meaning.notice };

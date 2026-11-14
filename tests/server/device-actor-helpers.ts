@@ -48,3 +48,7 @@ export const clock = (start = Date.parse('2026-11-14T15:00:00Z')) => {
     advance: (ms: number) => { t += ms; return new Date(t); },
   };
 };
+
+/** The credential generation in a tablet's ID token (`hh_gen`), for queued replays. */
+export const tokenGeneration = (idToken: string): number =>
+  Number((JSON.parse(Buffer.from(idToken.split('.')[1], 'base64url').toString('utf8')) as { hh_gen?: unknown }).hh_gen);

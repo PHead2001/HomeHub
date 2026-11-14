@@ -103,11 +103,12 @@ async function completeWith(db: Firestore, householdId: string, input: CompleteI
   // A device action completes one chore, identified by its opId.
   if (ctx.hooks && choreIds.length !== 1) throw new ChoreCompletionError('invalid');
   const completeSubTasks = input.completeSubTasks === true;
-  const now = ctx.now;
 
   return db.runTransaction(async tx => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
     if (replay) return replay.summary.outcomes as ChoreCompletionOutcome[];
+    // Read after the precheck: a device context's time is the one this attempt re-checked.
+    const now = ctx.now;
     const actor = ctx.actor;
     const [home, member, ...chores] = await tx.getAll(
       house,
@@ -144,10 +145,13 @@ async function completeWith(db: Firestore, householdId: string, input: CompleteI
       completedPath = snap.ref.path;
       return { choreId, status: 'completed', completion: plan.completion, previousCompletedSubTasks: plan.previousCompletedSubTasks };
     });
-    if (completedPath) {
-      ctx.hooks?.finalize(tx, {
-        targetPath: completedPath,
-        summary: { outcomes: JSON.parse(JSON.stringify(outcomes)) },
+    if (ctx.hooks) {
+      // Every device answer is recorded, a no-op too (already completed, not due, missing): a
+      // retry with the same opId then replays that answer, even if someone reopens the chore
+      // meanwhile, and its Undo never reverses a completion this action did not make.
+      ctx.hooks.finalize(tx, {
+        targetPath: completedPath ?? house.collection('chores').doc(choreIds[0]).path,
+        summary: { outcomes: JSON.parse(JSON.stringify(outcomes)), ...(completedPath ? {} : { noop: true }) },
         targetName: typeof chores[0]?.get('task') === 'string' ? chores[0]!.get('task') : null,
       });
     }
@@ -241,7 +245,10 @@ async function undoDeviceCompletion(db: Firestore, house: DocumentReference, ctx
     const original = plan.original;
     const actor = authority.actor!;
     assertActorRule(authority, original.actorUid);
-    assertUndoable(original, { generation: authority.generation, actorUid: actor.uid, now: authority.now, actorRuleAllows: false, queuedUndo: authority.queued });
+    // A no-op completion (it was already done, not due, or gone) changed nothing: its Undo
+    // answers `already` and never touches a completion this action did not make.
+    if (original.summary.noop === true) return { choreId: null, status: 'already' };
+    assertUndoable(original, { generation: authority.generation, actorUid: actor.uid, now: authority.now, actorRuleAllows: false, queuedUndo: authority.queued, queuedUndoCreatedAt: authority.queuedCreatedAt });
     await readHousehold(tx, house);
     const ref = choreOfEntry(house, original);
     const snap = await tx.get(ref);
@@ -307,6 +314,8 @@ export async function takeChoreAs(db: Firestore, householdId: string, input: { c
       summary: {
         outcome,
         noop: false,
+        // What this take wrote (the Undo reverts only while the chore still holds it).
+        wrote: { assignedToUid: actor.uid, assignedToDisplayName: name },
         // What the Undo puts back: the fields exactly as they were (null: absent).
         previous: {
           assignedToUid: snap.get('assignedToUid') ?? null,
@@ -337,12 +346,17 @@ export async function undoTakeChoreAs(db: Firestore, householdId: string, ctx: O
     const original = plan.original;
     const actor = authority.actor!;
     assertActorRule(authority, original.actorUid);
-    assertUndoable(original, { generation: authority.generation, actorUid: actor.uid, now: authority.now, actorRuleAllows: false, queuedUndo: authority.queued });
     const ref = choreOfEntry(house, original);
+    // R3: a no-op take answers `already`, also after the window.
     if (original.summary.noop === true) return { choreId: ref.id, status: 'already' };
+    assertUndoable(original, { generation: authority.generation, actorUid: actor.uid, now: authority.now, actorRuleAllows: false, queuedUndo: authority.queued, queuedUndoCreatedAt: authority.queuedCreatedAt });
     await readHousehold(tx, house);
     const snap = await tx.get(ref);
-    if (!snap.exists || snap.get('assignedToUid') !== original.actorUid) throw new DeviceActionError('changed_since');
+    // Only the assignment this take wrote is put back: same person and same name as written.
+    const wrote = (original.summary.wrote ?? {}) as { assignedToDisplayName?: unknown };
+    const sameAssignment = snap.exists && snap.get('assignedToUid') === original.actorUid
+      && (typeof wrote.assignedToDisplayName !== 'string' || snap.get('assignedToDisplayName') === wrote.assignedToDisplayName);
+    if (!sameAssignment) throw new DeviceActionError('changed_since');
     const previous = (original.summary.previous ?? {}) as { assignedToUid?: unknown; assignedToDisplayName?: unknown };
     tx.update(ref, {
       assignedToUid: typeof previous.assignedToUid === 'string' ? previous.assignedToUid : FieldValue.delete(),

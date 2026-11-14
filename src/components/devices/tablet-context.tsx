@@ -40,10 +40,18 @@ export type TabletActionRequest = {
   label: string;
   intent?: Record<string, unknown>;
   execute?: (actor: TabletActor) => Promise<TabletActionAnswer>;
+  /**
+   * Runs if the action is taken back later: its Undo succeeds (also a never-sent queued
+   * entry removed on the tablet) or its queued replay is dropped at sync.
+   */
+  onReverted?: () => void;
 };
 
-/** Whether the action went through (false: refused, cancelled or nothing changed). */
-export type TabletActionOutcome = { ok: boolean };
+/**
+ * Whether the action went through (false: refused, cancelled or nothing changed).
+ * `queued`: saved on this tablet and not applied yet (it syncs when the connection is back).
+ */
+export type TabletActionOutcome = { ok: boolean; queued?: boolean };
 
 export type TabletContextValue = {
   householdId: string;

@@ -52,6 +52,9 @@ export const deviceOperationContext = (authority: DeviceAuthority): OperationCon
     },
     opId: authority.opId ?? undefined,
     hooks: authority.hooks,
-    now: authority.now,
+    // The time of the latest gate check (re-read by every transaction attempt's precheck).
+    get now(): Date {
+      return authority.now;
+    },
   };
 };

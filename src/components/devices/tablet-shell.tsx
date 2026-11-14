@@ -612,6 +612,19 @@ function TabletFrame(props: {
       message(code, who, retryAfterSec);
     },
     onRevoked: () => endSession('removed'),
+    // An Undo is the original actor's: their PIN pad when the Undo's level needs a PIN
+    // (points PIN), also for an Undo restored from the journal after a reload.
+    authorizeUndo: async ({ actorUid, capability, pinSessionId, forcePin }) => {
+      const who = person(actorUid);
+      if (!who) {
+        message('actor_not_member');
+        return null;
+      }
+      if (requiredLevel(capability, { pointsPin: household.pointsPin, actorRole: who.role }) !== 'pin') return { actorUid };
+      const unlock = !forcePin ? pinSessionId ?? (shellRef.current.pin?.memberUid === who.uid ? shellRef.current.pin.sessionId : undefined) : undefined;
+      const sessionId = unlock ?? await askPin(who);
+      return sessionId ? { actorUid, pinSessionId: sessionId } : null;
+    },
   });
 
   const runAction = useCallback(async (request: TabletActionRequest): Promise<TabletActionOutcome> => {
@@ -644,7 +657,7 @@ function TabletFrame(props: {
     };
     if (!request.execute && who) {
       // The device action runtime: opId, Undo journal, offline queue, Undo toast.
-      const result = await whileBusy('save', deviceActions.perform({ capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who }))
+      const result = await whileBusy('save', deviceActions.perform({ capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who, onReverted: request.onReverted }))
         .catch(() => ({ ok: false }));
       if (result.ok) credit();
       return result;

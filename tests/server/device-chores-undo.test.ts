@@ -15,7 +15,7 @@ import { setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { UNDO_PROVEN } from '../../src/lib/devices/action-policy';
 import { completeChoreFromTabletAction } from '../../src/app/chores/device-actions';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
-import { clock, house, opId, pairTablet, seedKid, type Tablet } from './device-actor-helpers';
+import { clock, house, opId, pairTablet, seedKid, tokenGeneration, type Tablet } from './device-actor-helpers';
 
 // The Undo proof for chores on wall tablets (design 10.4; tracker WT-20f): for
 // `chores.complete` and `chores.take`, with real ID tokens: (1) another device or a
@@ -179,9 +179,9 @@ describe('chores.complete', () => {
       const id = `c-race-${order}`;
       await seedChore(id);
       const op = opId();
-      const queued = { createdAt: later(-30_000).toISOString() };
+      const queued = { createdAt: later(-30_000).toISOString(), generation: tokenGeneration(tablet.idToken) };
       const action = completeChoreFromTablet({ ...request(tablet, member.uid, op, { queued }), choreId: id }, { now: at }).catch(error => error);
-      const undo = undoChoreCompletionFromTablet(request(tablet, member.uid, op, { queued: { createdAt: later(-25_000).toISOString() } }), { now: at }).catch(error => error);
+      const undo = undoChoreCompletionFromTablet(request(tablet, member.uid, op, { queued: { createdAt: later(-25_000).toISOString(), generation: tokenGeneration(tablet.idToken) } }), { now: at }).catch(error => error);
       await Promise.all(order === 'action-first' ? [action, undo] : [undo, action]);
       assert.equal((await read(id)).isCompleted, false, order);
       // Whatever the order, the opId can never complete it afterwards.
@@ -216,20 +216,29 @@ describe('chores.complete', () => {
   test('R1: a queued Undo of a queued action is accepted late (bounded by the stored time); a live one is not', async () => {
     await seedChore('c-r1-queued');
     const queuedOp = opId();
-    await completeChoreFromTablet({ ...request(tablet, member.uid, queuedOp, { queued: { createdAt: later(-60_000).toISOString() } }), choreId: 'c-r1-queued' }, { now: at });
-    const queuedUndo = { queued: { createdAt: later(-55_000).toISOString() } };
+    await completeChoreFromTablet({ ...request(tablet, member.uid, queuedOp, { queued: { createdAt: later(-60_000).toISOString(), generation: tokenGeneration(tablet.idToken) } }), choreId: 'c-r1-queued' }, { now: at });
+    const queuedUndo = { queued: { createdAt: later(-55_000).toISOString(), generation: tokenGeneration(tablet.idToken) } };
     assert.equal((await undoChoreCompletionFromTablet(request(tablet, member.uid, queuedOp, queuedUndo), { now: later(5 * 60_000) })).status, 'undone');
 
     await seedChore('c-r1-live');
     const liveOp = opId();
     await completeChoreFromTablet({ ...request(tablet, member.uid, liveOp), choreId: 'c-r1-live' }, { now: at });
     // A queued Undo of an action that was sent live: the device clock never extends the window.
-    await refused(undoChoreCompletionFromTablet(request(tablet, member.uid, liveOp, { queued: { createdAt: at.toISOString() } }), { now: later(60_000) }), 'undo_expired');
+    await refused(undoChoreCompletionFromTablet(request(tablet, member.uid, liveOp, { queued: { createdAt: at.toISOString(), generation: tokenGeneration(tablet.idToken) } }), { now: later(60_000) }), 'undo_expired');
 
     await seedChore('c-r1-bound');
     const boundOp = opId();
-    await completeChoreFromTablet({ ...request(tablet, member.uid, boundOp, { queued: { createdAt: later(-60_000).toISOString() } }), choreId: 'c-r1-bound' }, { now: at });
+    await completeChoreFromTablet({ ...request(tablet, member.uid, boundOp, { queued: { createdAt: later(-60_000).toISOString(), generation: tokenGeneration(tablet.idToken) } }), choreId: 'c-r1-bound' }, { now: at });
     await refused(undoChoreCompletionFromTablet(request(tablet, member.uid, boundOp, queuedUndo), { now: later(11 * 60_000) }), 'undo_expired');
+
+    // JC-17: the queued Undo must have been made within 15 s of the queued action, on the same
+    // device clock; a claim of "queued" alone never extends the window.
+    await seedChore('c-r1-gap');
+    const gapOp = opId();
+    await completeChoreFromTablet({ ...request(tablet, member.uid, gapOp, { queued: { createdAt: later(-60_000).toISOString(), generation: tokenGeneration(tablet.idToken) } }), choreId: 'c-r1-gap' }, { now: at });
+    const lateUndo = { queued: { createdAt: later(-40_000).toISOString(), generation: tokenGeneration(tablet.idToken) } };
+    await refused(undoChoreCompletionFromTablet(request(tablet, member.uid, gapOp, lateUndo), { now: later(5 * 60_000) }), 'undo_expired');
+    assert.equal((await read('c-r1-gap')).isCompleted, true);
   });
 
   test('the points-PIN policy decides the level: Kids only asks a child for a PIN; with it, PIN level and an activity entry', async () => {
@@ -252,14 +261,77 @@ describe('chores.complete', () => {
     assert.equal((await completeChoreFromTablet({ ...request(tablet, member.uid, opId()), choreId: 'c-adult' }, { now: at })).level, 'face');
   });
 
-  test('a chore due after the household day is refused without a ledger entry; a personal token is not a tablet', async () => {
+  test('a chore due after the household day is refused, recorded as a no-op (a retry replays the refusal); a personal token is not a tablet', async () => {
     await seedChore('c-early', { dueDate: '2026-11-20T06:00:00.000Z' });
     const op = opId();
     const { outcome } = await completeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 'c-early' }, { now: at });
     assert.equal(outcome.status, 'refused');
-    assert.equal((await house(H).collection('devices').doc(tablet.deviceId).collection('ops').doc(op).get()).exists, false);
+    const ledger = (await house(H).collection('devices').doc(tablet.deviceId).collection('ops').doc(op).get()).data()!;
+    assert.equal(ledger.summary.noop, true);
+    // Now due: the same opId still replays the refusal and completes nothing.
+    await chore('c-early').update({ dueDate: '2026-11-14T06:00:00.000Z' });
+    assert.equal((await completeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 'c-early' }, { now: later(1000) })).outcome.status, 'refused');
+    assert.equal((await read('c-early')).isCompleted, false);
     const personal = await completeChoreFromTabletAction({ idToken: await personToken(owner), householdId: H, actorUid: member.uid, opId: opId(), choreId: 'c-early' });
     assert.equal(personal.ok ? 'ok' : personal.code, 'not_a_device');
+  });
+});
+
+describe('review fixes (PR #181)', () => {
+  test('B: a completion that found the chore already done is recorded; a retry after a reopen replays it; its Undo never reverses a completion it did not make', async () => {
+    await seedChore('c-noop');
+    await completeChoresAs(adminDb, owner, H, { choreIds: ['c-noop'] }, at);
+    const op = opId();
+    assert.equal((await completeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 'c-noop' }, { now: at })).outcome.status, 'already');
+    const ledger = (await house(H).collection('devices').doc(tablet.deviceId).collection('ops').doc(op).get()).data()!;
+    assert.equal(ledger.state, 'applied');
+    assert.equal(ledger.summary.noop, true);
+    // The answer was lost; someone reopens the chore; the queued retry arrives.
+    await reopenChoreAs(adminDb, H, { choreId: 'c-noop' });
+    assert.equal((await completeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 'c-noop' }, { now: later(1000) })).outcome.status, 'already');
+    assert.equal((await read('c-noop')).isCompleted, false, 'the retry did not complete it again');
+    // Completed again by someone else: the no-op's Undo leaves that completion alone, even after the window.
+    await completeChoresAs(adminDb, owner, H, { choreIds: ['c-noop'] }, later(2000));
+    assert.equal((await undoChoreCompletionFromTablet(request(tablet, member.uid, op), { now: later(3000) })).status, 'already');
+    assert.equal((await undoChoreCompletionFromTablet(request(tablet, member.uid, op), { now: later(60_000) })).status, 'already');
+    const stored = await read('c-noop');
+    assert.equal(stored.isCompleted, true);
+    assert.equal(stored.completedByUid, owner.uid);
+  });
+
+  test('2: answers to a tablet carry no email, replays included', async () => {
+    await seedChore('c-email', { isCompleted: true, completedByUid: 'someone', completedByEmail: 'someone@example.test', completedByName: 'someone@example.test', completedAt: '2026-11-14T10:00:00.000Z', completionId: 'x' });
+    const op = opId();
+    const first = await completeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 'c-email' }, { now: at });
+    const replay = await completeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 'c-email' }, { now: later(1000) });
+    for (const answer of [first, replay]) {
+      assert.equal(answer.outcome.status, 'already');
+      assert.equal(JSON.stringify(answer).includes('@'), false, JSON.stringify(answer));
+    }
+  });
+
+  test('3: a take\'s Undo leaves a newer assignment alone, even to the same person under another name', async () => {
+    await seedChore('t-newer');
+    const op = opId();
+    await takeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 't-newer' }, { now: at });
+    await chore('t-newer').update({ assignedToDisplayName: 'Max (reassigned)' });
+    await refused(undoTakeChoreFromTablet(request(tablet, member.uid, op), { now: later(2000) }), 'changed_since');
+    assert.equal((await read('t-newer')).assignedToDisplayName, 'Max (reassigned)');
+  });
+
+  test('4 (R3): a no-op take\'s Undo answers already even after the window', async () => {
+    await seedChore('t-noop-late', { assignedToUid: member.uid, assignedToDisplayName: 'Max' });
+    const op = opId();
+    await takeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 't-noop-late' }, { now: at });
+    assert.equal((await undoTakeChoreFromTablet(request(tablet, member.uid, op), { now: later(60_000) })).status, 'already');
+  });
+
+  test('7: an operation reads the time its latest gate check used', async () => {
+    const { deviceOperationContext } = await import('../../src/lib/server/operation-context');
+    const authority = { actor: { uid: 'a', name: 'A' }, attribution: null, opId: null, hooks: {}, now: new Date('2026-11-14T15:00:00Z') } as unknown as Parameters<typeof deviceOperationContext>[0];
+    const ctx = deviceOperationContext(authority);
+    (authority as { now: Date }).now = new Date('2026-11-14T15:00:05Z');
+    assert.equal(ctx.now.toISOString(), '2026-11-14T15:00:05.000Z');
   });
 });
 
@@ -350,8 +422,8 @@ describe('chores.take', () => {
       const id = `t-race-${order}`;
       await seedChore(id);
       const op = opId();
-      const take = takeChoreFromTablet({ ...request(tablet, member.uid, op, { queued: { createdAt: later(-30_000).toISOString() } }), choreId: id }, { now: at }).catch(error => error);
-      const undo = undoTakeChoreFromTablet(request(tablet, member.uid, op, { queued: { createdAt: later(-25_000).toISOString() } }), { now: at }).catch(error => error);
+      const take = takeChoreFromTablet({ ...request(tablet, member.uid, op, { queued: { createdAt: later(-30_000).toISOString(), generation: tokenGeneration(tablet.idToken) } }), choreId: id }, { now: at }).catch(error => error);
+      const undo = undoTakeChoreFromTablet(request(tablet, member.uid, op, { queued: { createdAt: later(-25_000).toISOString(), generation: tokenGeneration(tablet.idToken) } }), { now: at }).catch(error => error);
       await Promise.all(order === 'action-first' ? [take, undo] : [undo, take]);
       assert.equal((await read(id)).assignedToUid, '', order);
     }

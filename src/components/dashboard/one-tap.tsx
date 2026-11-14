@@ -88,7 +88,8 @@ export function useChoreDone(liveIds?: readonly string[]) {
       busy.current.add(chore.id);
       set(chore.id, 'saving');
       try {
-        const result = await tablet.runAction({ capability: 'chores.complete', label: chore.task, intent: { choreId: chore.id } });
+        // Undone later (or a queued Done dropped at sync): the button works again.
+        const result = await tablet.runAction({ capability: 'chores.complete', label: chore.task, intent: { choreId: chore.id }, onReverted: () => set(chore.id, null) });
         if (result.ok) settle(chore.id);
         else set(chore.id, null);
       } finally {

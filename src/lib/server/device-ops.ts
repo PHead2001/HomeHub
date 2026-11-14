@@ -3,6 +3,7 @@ import 'server-only';
 import { Timestamp } from 'firebase-admin/firestore';
 import { undoAccepts, type DeviceCapability } from '@/lib/devices/action-policy';
 import { DeviceActionError } from '@/lib/server/device-errors';
+import { queuedUndoInTime } from '@/lib/devices/queued-undo';
 
 // The server op ledger (docs/modules/devices/README.md, "Undo, idempotency and the op
 // ledger"; design B1): `households/{h}/devices/{d}/ops/{opId}`, written only by the
@@ -125,13 +126,14 @@ export const undoWindowOpen = (appliedAt: Timestamp | null, now: Date, options: 
  */
 export const assertUndoable = (
   entry: DeviceOp,
-  context: { generation: number; actorUid: string; now: Date; actorRuleAllows?: boolean; queuedUndo?: boolean },
+  context: { generation: number; actorUid: string; now: Date; actorRuleAllows?: boolean; queuedUndo?: boolean; queuedUndoCreatedAt?: string | null },
 ) => {
   if (entry.generation !== context.generation) throw new DeviceActionError('not_undoable');
   if (entry.actorUid !== context.actorUid && !context.actorRuleAllows) throw new DeviceActionError('forbidden');
-  // R1: the longer window only when this Undo came from the queue and the action it
-  // reverses was itself a queued replay (its ledger entry carries the device's creation time).
-  const queuedReplay = Boolean(context.queuedUndo) && entry.deviceCreatedAt !== null;
+  // R1: the longer window only when this Undo came from the queue, the action it reverses
+  // was itself a queued replay (its ledger entry carries the device's creation time), and
+  // the Undo was made within 15 s of that action on the same device clock (JC-17).
+  const queuedReplay = Boolean(context.queuedUndo) && entry.deviceCreatedAt !== null && queuedUndoInTime(entry.deviceCreatedAt, context.queuedUndoCreatedAt);
   if (!undoWindowOpen(entry.appliedAt, context.now, { queuedReplay })) throw new DeviceActionError('undo_expired');
 };
 
