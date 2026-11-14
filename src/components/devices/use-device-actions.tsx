@@ -18,7 +18,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
 import { choreAnswerMeaning, queuedSendResult, UNDO_CAPABILITY_OF } from '@/lib/devices/device-action-answers';
-import { createRevertRegistry, performAction, QUEUE_REFUSAL_COPY, queueRefusal, runUndo } from '@/lib/devices/undo-flow';
+import { createRevertRegistry, performAction, QUEUE_REFUSAL_COPY, queueRefusal, runUndo, undoReoffer } from '@/lib/devices/undo-flow';
 import { deviceStore } from '@/lib/devices/device-store';
 import {
   createQueuedAction,
@@ -229,11 +229,12 @@ export function useDeviceActions(deps: {
       online: typeof navigator === 'undefined' || navigator.onLine !== false,
       now: Date.now(),
     });
-    const offerAgain = async (message: string) => {
+    // `quiet`: when nothing is left to undo, say nothing (a cancelled PIN pad needs no words).
+    const offerAgain = async (message: string, otherwise: 'say' | 'quiet' = 'say') => {
       const now = await currentEntry(entry);
-      const { remainingMs } = undoOffer(now, Date.now());
-      if (remainingMs > 0) offerUndoRef.current?.(now, actor, who, message, remainingMs);
-      else toast({ description: message });
+      const again = undoReoffer(now, Date.now());
+      if (again) offerUndoRef.current?.(now, actor, who, message, again.remainingMs);
+      else if (otherwise === 'say') toast({ description: message });
     };
     switch (result.kind) {
       case 'undone':
@@ -249,7 +250,9 @@ export function useDeviceActions(deps: {
         // The Undo stays offered for the time left; tapping it again (online) re-runs the PIN flow.
         return offerAgain(QUEUE_REFUSAL_COPY[result.reason]);
       case 'cancelled':
-        return;
+        // The PIN pad was closed, or the retry after a PIN refusal was cancelled: the tap
+        // dismissed the toast, so the Undo comes back for the time left in its window.
+        return offerAgain(entry.label, 'quiet');
       default:
         refuse(result.code, who, result.retryAfterSec);
         // A passing refusal (an outage) leaves the Undo offered for the time left.

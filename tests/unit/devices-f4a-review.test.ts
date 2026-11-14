@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { choreAnswerMeaning, queuedSendResult, SENDABLE_CAPABILITIES } from '../../src/lib/devices/device-action-answers';
-import { createRevertRegistry, runUndo, type UndoFlowDeps } from '../../src/lib/devices/undo-flow';
+import { createRevertRegistry, runUndo, undoReoffer, type UndoFlowDeps } from '../../src/lib/devices/undo-flow';
 import { createQueuedAction, dropNotice, withSendFields, type QueuedDeviceAction } from '../../src/lib/devices/offline-queue';
-import { journalEntry, journalStep, type UndoJournalEntry } from '../../src/lib/devices/undo-journal';
+import { JOURNAL_UNDO_WINDOW_MS, journalEntry, journalStep, type UndoJournalEntry } from '../../src/lib/devices/undo-journal';
 import { queuedUndoInTime, QUEUED_UNDO_DEVICE_GAP_MS } from '../../src/lib/devices/queued-undo';
 import type { DeviceCapability } from '../../src/lib/devices/action-policy';
 
@@ -219,5 +219,43 @@ describe('round 2: nothing that needs a PIN or a durable queue is ever queued (A
     assert.match(runtime, /queueRefusal: queueRefusal\(\{ queueable: canQueue, durable: queue\.durable \}\),/);
     assert.match(runtime, /case 'not-queued':\s*reverts\.current\.forget\(opId\);\s*toast\(\{ variant: 'destructive', description: QUEUE_REFUSAL_COPY\[result\.reason\] \}\);\s*return \{ ok: false \};/);
     assert.match(runtime, /queueRefusal: queueRefusal\(\{ queueable: queueAllowed\(undoCapability,/);
+  });
+});
+
+describe('a cancelled Undo is offered again for the time left (round 3)', () => {
+  /** Deps whose journal steps move a local copy of the entry through the state machine. */
+  const tracked = (over: Partial<UndoFlowDeps> = {}) => {
+    const state = { entry: entryOf() };
+    const { calls, deps: d } = deps({ ...over, step: async (event) => { calls.push(`journal:${event.type}`); state.entry = journalStep(state.entry, event); } });
+    return { state, calls, deps: d };
+  };
+  const elapsed = 2_000;
+
+  it('PIN pad closed: cancelled, and the Undo is offered again with the remaining time', async () => {
+    const { state, deps: d } = tracked({ authorize: async () => null });
+    assert.deepEqual(await runUndo(state.entry, d), { kind: 'cancelled' });
+    assert.equal(state.entry.state, 'applied');
+    assert.deepEqual(undoReoffer(state.entry, T0 + elapsed), { remainingMs: JOURNAL_UNDO_WINDOW_MS - elapsed });
+  });
+
+  it('the retry after a PIN refusal cancelled: the entry goes back, and the Undo is offered again with the remaining time', async () => {
+    const { state, calls, deps: d } = tracked({
+      authorize: async (forcePin) => (forcePin ? null : { actorUid: 'mia', pinSessionId: 'stale' }),
+      send: async () => { calls.push('send'); return { ok: false, code: 'pin_session_invalid' }; },
+    });
+    assert.deepEqual(await runUndo(state.entry, d), { kind: 'cancelled' });
+    assert.deepEqual(calls.filter((c) => c === 'send'), ['send']);
+    assert.equal(state.entry.state, 'applied');
+    assert.deepEqual(undoReoffer(state.entry, T0 + elapsed), { remainingMs: JOURNAL_UNDO_WINDOW_MS - elapsed });
+  });
+
+  it('nothing is offered once the window has passed', () => {
+    assert.equal(undoReoffer(entryOf(), T0 + JOURNAL_UNDO_WINDOW_MS), null);
+  });
+
+  it('guard: the runtime offers the Undo again on every cancellation', () => {
+    const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
+    assert.match(runtime, /case 'cancelled':(\s*\/\/.*)*\s*return offerAgain\(entry\.label, 'quiet'\);/);
+    assert.match(runtime, /const again = undoReoffer\(now, Date\.now\(\)\);\s*if \(again\) offerUndoRef\.current\?\.\(now, actor, who, message, again\.remainingMs\);/);
   });
 });

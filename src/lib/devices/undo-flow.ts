@@ -16,6 +16,7 @@ import {
   journalEntry,
   journalStep,
   undoRefusalEvent,
+  undoOffer,
   undoRoute,
   type JournalEvent,
   type UndoJournalEntry,
@@ -225,6 +226,17 @@ export async function runUndo(entry: UndoJournalEntry, deps: UndoFlowDeps): Prom
   }
   await step({ type: 'undone', at: deps.now });
   return { kind: 'undone' };
+}
+
+/**
+ * The Undo offered again after one that did not go through for a passing reason (the PIN pad
+ * closed, the retry after a PIN refusal cancelled, no connection, an outage). Tapping the
+ * toast dismisses it, so without this the Undo would be gone for the rest of its window.
+ * Offered for the time left, from the journal entry as it is now; null when nothing is left.
+ */
+export function undoReoffer(current: UndoJournalEntry, now: number): { remainingMs: number } | null {
+  const { offered, remainingMs } = undoOffer(current, now);
+  return offered ? { remainingMs } : null;
 }
 
 /**
