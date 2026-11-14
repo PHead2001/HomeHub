@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
 import { INVITE_CHARS } from '@/lib/invite-codes';
@@ -293,10 +293,14 @@ type Committed = { deviceId: string; householdId: string; generation: number; re
  *    (refused when removed, or when its generation moved since the code was made);
  * 5. the code is marked used; activity and the creator's notification are written.
  * Two tablets redeeming one code race on the code document: exactly one commits.
- * After the commit every earlier credential of the device is revoked, then the new
- * credential is minted.
+ * After the commit the credential is issued under the device's issuance lease
+ * (`issueDeviceCredential`).
  */
-export const redeemDeviceCode = async (input: { code: unknown; nonce: unknown }, now = new Date()): Promise<RedeemResult> => {
+export const redeemDeviceCode = async (
+  input: { code: unknown; nonce: unknown },
+  now = new Date(),
+  hooks: RedeemHooks = {},
+): Promise<RedeemResult> => {
   const code = normalizeDeviceCode(typeof input?.code === 'string' ? input.code : '');
   if (!code) throw new DeviceError('invalid_input');
   if (typeof input?.nonce !== 'string' || !NONCE.test(input.nonce)) throw new DeviceError('invalid_input');
@@ -418,26 +422,98 @@ export const redeemDeviceCode = async (input: { code: unknown; nonce: unknown },
     return { deviceId: recordRef.id, householdId, generation, retry: false };
   });
 
-  // Every earlier credential of this device ends (a re-pair, or a retry whose first
-  // answer was lost), then the new one is issued. A failure here leaves the record
-  // paired; the tablet retries with the same code and nonce.
-  if (!(await revokeDeviceSessions(committed.deviceId))) throw new DeviceError('failed');
-  let customToken: string;
+  await hooks.afterCommit?.();
+  return issueDeviceCredential(committed, hooks);
+};
+
+/** Test seams around credential issuance (never set by the app). */
+export type RedeemHooks = {
+  /** After the redemption transaction commits, before issuance starts. */
+  afterCommit?: () => Promise<void>;
+  /** Inside the issuance lease, before the Auth calls (a throw simulates a minting failure). */
+  beforeMint?: () => Promise<void>;
+};
+
+const ISSUANCE_LEASE_MS = 30_000;
+const ISSUANCE_WAIT_MS = 15_000;
+
+type LeaseOutcome = 'acquired' | 'busy' | { stale: 'superseded' | 'not_repairable' };
+
+/**
+ * Takes the device's credential-issuance lease (`credentialLease` on the record) for this
+ * redemption's generation, in a transaction that also checks the record is still active
+ * at that generation. Every Auth write for a device (revoking earlier credentials,
+ * claims, the custom token) happens under this lease, one redemption at a time, and only
+ * for the record's current generation: a redemption whose generation was superseded while
+ * it waited changes nothing in Auth.
+ */
+const takeIssuanceLease = (recordRef: DocRef, generation: number, holder: string): Promise<LeaseOutcome> =>
+  adminDb.runTransaction(async tx => {
+    const record = await tx.get(recordRef);
+    if (!record.exists || record.get('status') !== 'active') return { stale: 'not_repairable' as const };
+    if (record.get('generation') !== generation) return { stale: 'superseded' as const };
+    const lease = record.get('credentialLease');
+    const nowMs = Date.now();
+    if (lease && lease.holder !== holder && typeof lease.until === 'number' && lease.until > nowMs) return 'busy' as const;
+    tx.update(recordRef, { credentialLease: { holder, generation, until: nowMs + ISSUANCE_LEASE_MS } });
+    return 'acquired' as const;
+  });
+
+const releaseIssuanceLease = (recordRef: DocRef, holder: string) =>
+  adminDb.runTransaction(async tx => {
+    const record = await tx.get(recordRef);
+    if (record.exists && record.get('credentialLease')?.holder === holder) tx.update(recordRef, { credentialLease: FieldValue.delete() });
+  }).catch(error => console.warn('Credential lease not released; it expires on its own.', error instanceof Error ? error.message : String(error)));
+
+/**
+ * Issues the credential of a committed redemption. Under the device's issuance lease:
+ * every earlier credential is revoked (a re-pair, or a retry whose first answer was lost),
+ * then the claims and custom token for this generation are written. A redemption that was
+ * superseded (another re-pair, or a removal, committed after it) returns `superseded` /
+ * `not_repairable` without touching Auth, so it never overwrites a newer generation's
+ * claims or ends its session. A failure leaves the record paired: the tablet retries with
+ * the same code and nonce (`failed` is retryable).
+ */
+const issueDeviceCredential = async (committed: Committed, hooks: RedeemHooks): Promise<RedeemResult> => {
+  const recordRef = householdsRef().doc(committed.householdId).collection('devices').doc(committed.deviceId);
+  const holder = randomUUID();
+  const waitUntil = Date.now() + ISSUANCE_WAIT_MS;
+  for (;;) {
+    const outcome = await takeIssuanceLease(recordRef, committed.generation, holder);
+    if (outcome === 'acquired') break;
+    if (outcome !== 'busy') throw new DeviceError(outcome.stale);
+    if (Date.now() > waitUntil) throw new DeviceError('failed');
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
   try {
-    customToken = await mintDeviceCredential(committed.deviceId, committed.householdId, committed.generation);
+    await hooks.beforeMint?.();
+    if (!(await revokeDeviceSessions(committed.deviceId))) throw new DeviceError('failed');
+    let customToken: string;
+    try {
+      customToken = await mintDeviceCredential(committed.deviceId, committed.householdId, committed.generation);
+    } catch (error) {
+      console.error('Device credential could not be issued', error instanceof Error ? error.message : String(error));
+      throw new DeviceError('failed');
+    }
+    // A removal or a newer re-pair commits without the lease. Read the record again: if it
+    // was removed or unpaired (its own sign-out may have run before the credential above was
+    // issued), end what was just issued. If a newer generation committed meanwhile, refuse
+    // without touching Auth: that generation's issuance waits for this lease, then revokes
+    // this credential and writes its own claims.
+    const current = await recordRef.get();
+    if (current.get('status') !== 'active') {
+      await finishDeviceRevocation(committed.deviceId, current.exists ? { status: current.get('status'), generation: current.get('generation') } : null);
+      throw new DeviceError('not_repairable');
+    }
+    if (current.get('generation') !== committed.generation) throw new DeviceError('superseded');
+    return { customToken, householdId: committed.householdId, deviceId: committed.deviceId };
   } catch (error) {
+    if (error instanceof DeviceError) throw error;
     console.error('Device credential could not be issued', error instanceof Error ? error.message : String(error));
     throw new DeviceError('failed');
+  } finally {
+    await releaseIssuanceLease(recordRef, holder);
   }
-  // A removal or another re-pair that committed after this redemption may have finished
-  // its own sign-out before the credential above was issued: read the record again (after
-  // minting), and if it moved on, end what was just issued and refuse.
-  const current = await householdsRef().doc(committed.householdId).collection('devices').doc(committed.deviceId).get();
-  if (current.get('status') !== 'active' || current.get('generation') !== committed.generation) {
-    await finishDeviceRevocation(committed.deviceId, current.exists ? { status: current.get('status'), generation: current.get('generation') } : null);
-    throw new DeviceError(current.get('status') === 'active' ? 'superseded' : 'not_repairable');
-  }
-  return { customToken, householdId: committed.householdId, deviceId: committed.deviceId };
 };
 
 // In-memory windows for redemption (per client address and per instance), the

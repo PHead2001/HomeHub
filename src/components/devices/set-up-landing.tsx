@@ -16,7 +16,7 @@ import { forgetHouseholdOnDevice } from '@/lib/auth/household-scope';
 // retries clearing leftover push state, and notices removal from the server: then it
 // clears this browser's tablet session and returns to the setup screen.
 
-type DevicePrincipal = Extract<Principal, { kind: 'device' }>;
+type TabletPrincipal = Exclude<Principal, { kind: 'personal' }>;
 
 /** One-shot note for the setup screen after a removal (read once, then cleared). */
 export const DEVICE_ENDED_KEY = 'homehub.device-ended';
@@ -45,10 +45,13 @@ const endSession = async (reason: 'removed' | 'repaired') => {
   }
 };
 
-export default function DeviceSetUpLanding({ principal }: { principal: DevicePrincipal }) {
+export default function DeviceSetUpLanding({ principal }: { principal: TabletPrincipal }) {
   const [label, setLabel] = useState<{ name: string; room: string } | null>(null);
   const ending = useRef(false);
-  const { deviceId, householdId, generation } = principal;
+  // Unresolved claims (offline restore): nothing is read or sent until AuthProvider has them.
+  const { deviceId } = principal;
+  const householdId = principal.kind === 'device' ? principal.householdId : '';
+  const generation = principal.kind === 'device' ? principal.generation : 0;
 
   const end = (reason: 'removed' | 'repaired') => {
     if (ending.current) return;

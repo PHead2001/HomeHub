@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
-import { adminDb } from '../../src/lib/server/firebase-admin';
+import { adminAuth, adminDb } from '../../src/lib/server/firebase-admin';
+import { verifyDevice } from '../../src/lib/server/device-identity';
 import { MembershipError, redeemInvite } from '../../src/lib/server/household-membership';
 import {
   createDeviceCode,
@@ -13,7 +14,7 @@ import {
 } from '../../src/lib/server/device-management';
 import { createDeviceCodeAction } from '../../src/app/household/device-actions';
 import { DEVICE_CODE_AS_INVITE_MESSAGE } from '../../src/lib/devices/device-codes';
-import { deleteDeviceUsers, nonce, personToken, refusedWith, seedHousehold, signIn, type Person } from './device-test-helpers';
+import { decodeJwt, deleteDeviceUsers, nonce, personToken, refresh, refusedWith, seedHousehold, signIn, type Person } from './device-test-helpers';
 
 // Device codes and redemption (docs/modules/devices/README.md, 3): authority (owner and
 // admin role only), the 15-minute bound from the server's creation time, single use,
@@ -322,5 +323,82 @@ describe('abuse limits and App Check', () => {
       process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS = 'true';
     }
     assert.equal((await codeDoc(code).get()).get('usedAt'), undefined);
+  });
+});
+
+describe('credential issuance after the commit (PR #176 review)', () => {
+  const deferred = () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    return { gate, release };
+  };
+
+  test('committed, then minting failed: a retry with the same code and nonce recovers the same tablet', async () => {
+    const { code } = await createDeviceCode(owner, { householdId: H, name: 'T', room: 'R' });
+    const value = nonce();
+    await refusedWith(redeemDeviceCode({ code, nonce: value }, undefined, {
+      beforeMint: async () => { throw new Error('Auth unavailable'); },
+    }), 'failed');
+    const record = (await devices().get()).docs[0];
+    assert.equal(record.get('status'), 'active');
+    assert.equal(record.get('credentialLease'), undefined, 'the issuance lease is released after a failure');
+    const retry = await redeem(code, value);
+    assert.equal(retry.deviceId, record.id);
+    const session = await signIn(retry.customToken);
+    assert.equal(decodeJwt(session.idToken).hh_gen, 1);
+    // A new nonce (what the setup screen did before the fix) cannot recover it.
+    await refusedWith(redeem(code, nonce()), 'used');
+  });
+
+  test('a superseded redemption resuming after a newer re-pair finished changes nothing: the newer claims and session survive', async () => {
+    const { code } = await createDeviceCode(owner, { householdId: H, name: 'T', room: 'R' });
+    const paired = await redeem(code);
+    const first = await createDeviceRepairCode(owner, { householdId: H, deviceId: paired.deviceId });
+    const pause = deferred();
+    const committed = deferred();
+    // A commits generation 2, then pauses before issuing its credential.
+    const stale = redeemDeviceCode({ code: first.code, nonce: nonce() }, undefined, {
+      afterCommit: async () => { committed.release(); await pause.gate; },
+    });
+    await committed.gate;
+    assert.equal((await devices().doc(paired.deviceId).get()).get('generation'), 2);
+    // B re-pairs to generation 3 and finishes, and its tablet signs in.
+    const second = await createDeviceRepairCode(admin, { householdId: H, deviceId: paired.deviceId });
+    const newer = await redeem(second.code);
+    const session = await signIn(newer.customToken);
+    assert.equal(decodeJwt(session.idToken).hh_gen, 3);
+    // A resumes.
+    pause.release();
+    await refusedWith(stale, 'superseded');
+    const claims = (await adminAuth.getUser(`device_${paired.deviceId}`)).customClaims;
+    assert.equal(claims?.hh_gen, 3, 'the stale redemption did not overwrite the claims');
+    const refreshed = await refresh(session.refreshToken);
+    assert.ok(refreshed, "B's session survives");
+    assert.equal(decodeJwt(refreshed.idToken).hh_gen, 3);
+    assert.equal((await verifyDevice(refreshed.idToken, H)).generation, 3);
+  });
+
+  test('a newer re-pair committing while an older one holds the issuance lease: the older is refused, the newer issues last', async () => {
+    const { code } = await createDeviceCode(owner, { householdId: H, name: 'T', room: 'R' });
+    const paired = await redeem(code);
+    const first = await createDeviceRepairCode(owner, { householdId: H, deviceId: paired.deviceId });
+    const pause = deferred();
+    const holding = deferred();
+    const stale = redeemDeviceCode({ code: first.code, nonce: nonce() }, undefined, {
+      beforeMint: async () => { holding.release(); await pause.gate; },
+    });
+    await holding.gate;
+    const second = await createDeviceRepairCode(admin, { householdId: H, deviceId: paired.deviceId });
+    const newerPromise = redeem(second.code);
+    // The newer issuance waits for the lease; let the older one finish first.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    pause.release();
+    await refusedWith(stale, 'superseded');
+    const newer = await newerPromise;
+    const session = await signIn(newer.customToken);
+    assert.equal(decodeJwt(session.idToken).hh_gen, 3);
+    assert.equal((await adminAuth.getUser(`device_${paired.deviceId}`)).customClaims?.hh_gen, 3);
+    assert.ok(await refresh(session.refreshToken));
+    assert.equal((await devices().doc(paired.deviceId).get()).get('credentialLease'), undefined);
   });
 });

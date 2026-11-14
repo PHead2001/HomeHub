@@ -254,7 +254,7 @@ describe('principal switch (AuthProvider, S4)', () => {
 
   it('a device_ user whose claims cannot be read is still a tablet (never the personal flow)', async () => {
     const offline = user({ uid: `device_${D}`, email: null, fails: true });
-    assert.deepEqual(await devicePrincipalOf(offline), { kind: 'device', deviceId: D, householdId: '', generation: 0 });
+    assert.deepEqual(await devicePrincipalOf(offline), { kind: 'device-unresolved', deviceId: D });
     assert.equal(looksLikeDevice(offline), true);
   });
 

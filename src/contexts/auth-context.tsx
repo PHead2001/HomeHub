@@ -15,6 +15,7 @@ import {
 } from 'react';
 import {
   onAuthStateChanged,
+  onIdTokenChanged,
   signOut,
   updatePassword,
   signInWithPopup,
@@ -49,7 +50,7 @@ import { normalizeInviteCode } from '@/lib/invite-codes';
 import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
-import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, type Principal } from '@/lib/devices/principal';
+import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, retryDeviceClaims, type Principal } from '@/lib/devices/principal';
 import type {
   Household,
   HouseholdMember,
@@ -519,12 +520,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return true;
     }
-    if (principalRef.current.kind === 'device') {
+    if (principalRef.current.kind !== 'personal') {
       principalRef.current = PERSONAL;
       setPrincipal(PERSONAL);
     }
     return false;
   }, []);
+
+  // A tablet whose claims could not be read (offline restore with an expired token): read
+  // them again on reconnect, on every ID-token change and every 30 s until they resolve.
+  const unresolvedDevice = principal.kind === 'device-unresolved' ? principal.deviceId : null;
+  useEffect(() => {
+    if (!unresolvedDevice) return;
+    return retryDeviceClaims({
+      resolve: async () => (auth.currentUser ? devicePrincipalOf(auth.currentUser) : null),
+      onResolved: (device) => { if (auth.currentUser?.uid === `device_${device.deviceId}`) switchPrincipal(device); },
+      triggers: [
+        (retry) => {
+          window.addEventListener('online', retry);
+          return () => window.removeEventListener('online', retry);
+        },
+        (retry) => onIdTokenChanged(auth, () => retry()),
+        (retry) => {
+          const timer = window.setInterval(retry, 30_000);
+          return () => window.clearInterval(timer);
+        },
+      ],
+    });
+  }, [switchPrincipal, unresolvedDevice]);
 
   // This is for session management ONLY (on page refresh)
   useEffect(() => {
@@ -583,7 +606,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signInWithGoogle = useCallback(async (): Promise<void> => {
     // A wall tablet switches to a personal account only through its protected exit
     // (an owner or admin PIN), never by signing in over the device session.
-    if (principalRef.current.kind === 'device' || looksLikeDevice(auth.currentUser)) {
+    if (principalRef.current.kind !== 'personal' || looksLikeDevice(auth.currentUser)) {
       toast({ variant: 'destructive', title: 'Sign-in not available here', description: DEVICE_GOOGLE_SIGN_IN_REFUSAL });
       return;
     }
@@ -872,7 +895,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {principal.kind === 'device'
+      {principal.kind !== 'personal'
         ? <Suspense fallback={null}><DeviceSetUpLanding principal={principal} /></Suspense>
         : children}
     </AuthContext.Provider>

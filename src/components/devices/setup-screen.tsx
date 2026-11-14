@@ -16,6 +16,7 @@ import { formatInviteInput } from '@/components/household/household-model';
 import { redeemDeviceCodeAction } from '@/app/household/device-actions';
 import { REDEEM_REFUSAL_COPY, codeFromScan, codeFromSetupFragment, normalizeDeviceCode } from '@/lib/devices/device-codes';
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
+import { keepPendingAfter, pendingFor, type PendingRedemption } from '@/lib/devices/setup-pending';
 import { SCANNER_ERROR_COPY, scannerErrorKind, type ScannerErrorKind } from '@/lib/barcode/scanner-errors';
 import { DEVICE_ENDED_KEY } from '@/components/devices/set-up-landing';
 
@@ -28,7 +29,7 @@ import { DEVICE_ENDED_KEY } from '@/components/devices/set-up-landing';
 
 const PENDING_KEY = 'homehub.device-setup';
 
-type Pending = { code: string; nonce: string };
+type Pending = PendingRedemption;
 
 const readPending = (): Pending | null => {
   try {
@@ -150,20 +151,20 @@ export function SetupScreen() {
     setBusy(true);
     setError(null);
     try {
-      const previous = readPending();
-      const pending = previous?.code === normalized ? previous : { code: normalized, nonce: newNonce() };
+      const pending = pendingFor(readPending(), normalized, newNonce);
       writePending(pending);
       const result = await redeemDeviceCodeAction({ code: pending.code, nonce: pending.nonce, appCheckToken: await limitedUseAppCheckToken() });
       if (!result.ok) {
-        // A definite refusal: the next attempt starts afresh.
-        writePending(null);
+        // A retryable refusal keeps the code and nonce: the redemption may have committed
+        // without its credential (`failed`), and only the same nonce can recover it.
+        if (!keepPendingAfter({ kind: 'refused', code: result.code })) writePending(null);
         setError(result.message);
         return;
       }
       const cleared = await clearPushState(browserPushClearDeps());
       if (!cleared.ok) console.warn('Leftover push state could not be fully cleared; the tablet retries at start.', cleared.errors.join('; '));
       await signInWithCustomToken(auth, result.data.customToken);
-      writePending(null);
+      if (!keepPendingAfter({ kind: 'signed-in' })) writePending(null);
     } catch (failure) {
       // Uncertain (network) or sign-in failed: the same code and nonce retry safely.
       console.warn('Tablet setup did not finish.', failure instanceof Error ? failure.message : String(failure));
@@ -190,7 +191,7 @@ export function SetupScreen() {
     void redeem(scanned);
   };
 
-  if (loading || principal.kind === 'device') {
+  if (loading || principal.kind !== 'personal') {
     return (
       <div className="flex flex-1 items-center justify-center p-6" role="status" aria-live="polite">
         <Loader2 aria-hidden className="mr-2 h-5 w-5 animate-spin" /> Loading…
