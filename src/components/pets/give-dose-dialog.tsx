@@ -46,7 +46,7 @@ import { useNow } from './use-now';
 const INPUT_FORMAT = "yyyy-MM-dd'T'HH:mm";
 
 const REFUSALS: Record<MedicationActionError['reason'], string> = {
-  offline: 'Connect to the internet to record a dose, so HomeHub can check whether someone else already gave it.',
+  offline: 'Connect to the internet to do this. Offline, doses can be recorded only for courses already loaded on this device.',
   missing: 'This course was removed meanwhile.',
   finished: 'This course was finished meanwhile.',
   'not-active': 'This course was finished meanwhile.',
@@ -198,6 +198,7 @@ export function GiveDoseDialog({
       const result = await giveDose({
         householdId, petId, courseId: course.id, opId, occurrenceKey: selected.key, givenAt: chosen, notes, confirm, timeZone,
         user: { uid: currentUser.uid, name: loggerName(currentUser) },
+        onLateError: (lateError) => toastError(lateError, `${course.name} for ${petName} didn't sync`),
       });
       if (result.status === 'needsConfirm') {
         setAsked({ check: result.check, confirm: doseConfirmOf(result.check), stale: result.staleConfirm });
@@ -209,16 +210,17 @@ export function GiveDoseDialog({
       const { dismiss } = toast({
         group: petDoseToastGroup(petId, course.id),
         duration: FEED_UNDO_MS,
-        title: `${course.name} recorded`,
-        description: `${course.dosage} for ${petName}, ${occurrenceLabel(selected, new Date(), timeZone)} dose.${nextLine}`,
+        ...(result.status === 'queued'
+          ? { title: 'Saved on this device', description: `${course.name} for ${petName}. Couldn't check whether someone else already gave it.` }
+          : { title: `${course.name} recorded`, description: `${course.dosage} for ${petName}, ${occurrenceLabel(selected, new Date(), timeZone)} dose.${nextLine}` }),
         action: (
           <ToastAction
             altText={`Remove the ${course.name} dose record`}
             onClick={async () => {
               dismiss();
               try {
-                await undoDose({ householdId, petId, logId: result.logId });
-                toast({ title: DOSE_UNDO_COPY.title, description: DOSE_UNDO_COPY.description });
+                const undone = await undoDose({ householdId, petId, logId: result.logId, onLateError: (lateError) => toastError(lateError, "Removing the dose record didn't sync") });
+                toast({ title: undone === 'queued' ? `${DOSE_UNDO_COPY.title} on this device` : DOSE_UNDO_COPY.title, description: DOSE_UNDO_COPY.description });
               } catch (undoError) {
                 toastError(undoError, "Couldn't remove the dose record");
               }
