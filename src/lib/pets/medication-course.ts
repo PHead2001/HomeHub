@@ -110,6 +110,16 @@ export function medicationDues(courses: CourseView[], legacyLogs: PetMedicationL
     });
 }
 
+/**
+ * The attention line for a pet's medication (PE-26 strip and card ring): its
+ * most urgent overdue dose, course or legacy ("Apoquel: overdue by 1 day").
+ * A dose due today, even past its time, is not overdue (it stays amber).
+ */
+export function medicationAttention(dues: readonly MedicationDue[]): string | null {
+  const overdue = dues.find((due) => due.state === 'overdue');
+  return overdue ? `${overdue.medication}: ${overdue.label.toLowerCase()}` : null;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Which occurrence a dose is for                                             */
 /* ------------------------------------------------------------------------- */

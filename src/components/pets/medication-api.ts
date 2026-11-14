@@ -3,28 +3,36 @@
 import { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, where, type DocumentData, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { resilientListener } from '@/lib/dashboard/resilient-listener';
+import { useAuth } from '@/hooks/use-auth';
+import { petListenerKey, petSnapshotListener } from '@/lib/pets/live-listener';
 import type { MedicationDue } from '@/lib/pets/care';
 import { medicationDues, pendingLegacyGroups, readCourse, takenLegacyKeys, withOfflineDoses, type CourseView, type LegacyGroup } from '@/lib/pets/medication-course';
 import type { PetMedicationLog } from '@/lib/pets/types';
 import type { LiveFailure } from '@/lib/pets/live-listener';
 import { useMedicationCountdownLogs } from './pet-log-api';
 
-type LiveCourses = { courses: CourseView[]; loading: boolean; error: unknown };
+type LiveCourses = { courses: CourseView[]; loading: boolean; error: unknown; failure?: LiveFailure };
+
+/** Who reads: listeners are recreated when the member or their pets.view changes (as the other Pets listeners). */
+function usePetAccess() {
+  const { currentUser, permissions } = useAuth();
+  return { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) };
+}
 
 /**
- * A pet's medication courses, live (P3). A resilient listener (PE-8g): a failed
- * read resubscribes with bounded backoff and on `online` / visibility, and is
- * reported as unavailable (`error`), never as "no courses".
+ * A pet's medication courses, live (P3). A Pets snapshot listener (PE-8g,
+ * `petSnapshotListener`): a failed read resubscribes with bounded backoff and on
+ * `online` / visibility, and is reported as unavailable (`error`, with why in
+ * `failure`), never as "no courses".
  */
 export function useMedicationCourses(householdId: string | null | undefined, petId: string): LiveCourses {
-  const key = householdId ? `${householdId}/${petId}` : null;
-  const [state, setState] = useState<{ key: string | null; courses: CourseView[]; error: unknown }>({ key: null, courses: [], error: null });
+  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
+  const [state, setState] = useState<{ key: string | null; courses: CourseView[]; error: unknown; failure?: LiveFailure }>({ key: null, courses: [], error: null });
 
   useEffect(() => {
     if (!key || !householdId) return;
-    const handle = resilientListener<QuerySnapshot>(
-      (next, error) => onSnapshot(collection(db, 'households', householdId, 'pets', petId, 'medication-courses'), next, error),
+    const handle = petSnapshotListener<QuerySnapshot>(
+      (next, error) => onSnapshot(collection(db, 'households', householdId, 'pets', petId, 'medication-courses'), { includeMetadataChanges: true }, next, error),
       {
         next: (snapshot) => {
           const courses = snapshot.docs.flatMap((entry) => {
@@ -37,7 +45,7 @@ export function useMedicationCourses(householdId: string | null | undefined, pet
         status: (status) => {
           if (status.kind === 'live') return;
           console.error('Error loading medication courses:', status.error);
-          setState({ key, courses: [], error: status.error ?? new Error('unavailable') });
+          setState({ key, courses: [], error: status.error ?? new Error('unavailable'), failure: status.kind });
         },
       },
     );
@@ -46,27 +54,27 @@ export function useMedicationCourses(householdId: string | null | undefined, pet
 
   if (!key) return { courses: [], loading: false, error: null };
   if (state.key !== key) return { courses: [], loading: true, error: null };
-  return { courses: state.courses, loading: false, error: state.error };
+  return { courses: state.courses, loading: false, error: state.error, failure: state.failure };
 }
 
 /**
  * A pet's doses recorded offline (`repeat: 'offline'`), live: they are not in
  * their course's `lastDose`, so readers combine them (`withOfflineDoses`).
  */
-export function useOfflineDoses(householdId: string | null | undefined, petId: string): { logs: DocumentData[]; loading: boolean; error: unknown } {
-  const key = householdId ? `${householdId}/${petId}` : null;
-  const [state, setState] = useState<{ key: string | null; logs: DocumentData[]; error: unknown }>({ key: null, logs: [], error: null });
+export function useOfflineDoses(householdId: string | null | undefined, petId: string): { logs: DocumentData[]; loading: boolean; error: unknown; failure?: LiveFailure } {
+  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
+  const [state, setState] = useState<{ key: string | null; logs: DocumentData[]; error: unknown; failure?: LiveFailure }>({ key: null, logs: [], error: null });
 
   useEffect(() => {
     if (!key || !householdId) return;
-    const handle = resilientListener<QuerySnapshot>(
-      (next, error) => onSnapshot(query(collection(db, 'households', householdId, 'pets', petId, 'medication-logs'), where('repeat', '==', 'offline')), next, error),
+    const handle = petSnapshotListener<QuerySnapshot>(
+      (next, error) => onSnapshot(query(collection(db, 'households', householdId, 'pets', petId, 'medication-logs'), where('repeat', '==', 'offline')), { includeMetadataChanges: true }, next, error),
       {
         next: (snapshot) => setState({ key, logs: snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() })), error: null }),
         status: (status) => {
           if (status.kind === 'live') return;
           console.error('Error loading offline doses:', status.error);
-          setState({ key, logs: [], error: status.error ?? new Error('unavailable') });
+          setState({ key, logs: [], error: status.error ?? new Error('unavailable'), failure: status.kind });
         },
       },
     );
@@ -75,7 +83,7 @@ export function useOfflineDoses(householdId: string | null | undefined, petId: s
 
   if (!key) return { logs: [], loading: false, error: null };
   if (state.key !== key) return { logs: [], loading: true, error: null };
-  return { logs: state.logs, loading: false, error: state.error };
+  return { logs: state.logs, loading: false, error: state.error, failure: state.failure };
 }
 
 export type MedicationState = {
@@ -98,7 +106,9 @@ export function useMedicationState(householdId: string | null | undefined, petId
   const offline = useOfflineDoses(householdId, petId);
   const loading = loaded.loading || legacy.loading || offline.loading;
   const error = loaded.error || legacy.error || offline.error;
-  if (loading || error) return { courses: loaded.courses, dues: [], legacy: [], legacyLogs: [], loading, error };
+  const failures = [loaded.failure, legacy.failure, offline.failure];
+  const failure: LiveFailure = failures.includes('unauthorized') ? 'unauthorized' : failures.includes('retrying') ? 'retrying' : false;
+  if (loading || error) return { courses: loaded.courses, dues: [], legacy: [], legacyLogs: [], loading, error, failure };
   // A dose recorded offline covers its occurrence like the course's latest dose.
   const courses = { courses: loaded.courses.map((course) => withOfflineDoses(course, offline.logs)) };
   return {
