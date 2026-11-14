@@ -174,6 +174,51 @@ describe('the household care store (PE-21a)', () => {
     assert.deepEqual(store.wanted(), [], 'gone after the linger');
   });
 
+  it('runs the real release path with browser-strict timers: mount, unmount, re-mount (the strict-mode double invoke) never throw', async () => {
+    // Browsers throw "Illegal invocation" when setTimeout/clearTimeout run with another receiver
+    // (for example stored on an object and called as `timers.set(...)`). These stand-ins do the same.
+    const { CareStore } = await import('../../src/components/pets/care-store-core');
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const pending = new Map<number, () => void>();
+    let next = 1;
+    function strictSet(this: unknown, callback: () => void) {
+      if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+      const id = next++;
+      pending.set(id, callback);
+      return id as unknown as ReturnType<typeof setTimeout>;
+    }
+    function strictClear(this: unknown, id: unknown) {
+      if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+      pending.delete(id as number);
+    }
+    globalThis.setTimeout = strictSet as unknown as typeof setTimeout;
+    globalThis.clearTimeout = strictClear as unknown as typeof clearTimeout;
+    try {
+      const store = new CareStore<string>();
+      const unsubscribe = store.subscribe(() => undefined);
+      // React dev: effect runs, its cleanup runs, it runs again (useSharedPetCare's acquire/release).
+      const first = store.acquire('h/rex');
+      assert.doesNotThrow(first);
+      const second = store.acquire('h/rex');
+      store.publish('h/rex', 'data');
+      assert.equal(store.read('h/rex'), 'data');
+      assert.doesNotThrow(second);
+      assert.equal(pending.size, 1, 'one linger timer, the first one cleared on re-mount');
+      for (const callback of [...pending.values()]) callback();
+      assert.deepEqual(store.wanted(), []);
+      assert.equal(store.read('h/rex'), undefined);
+      unsubscribe();
+    } finally {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    }
+    // The defaults call the globals through wrappers, never detached or with another receiver.
+    const core = read('src/components/pets/care-store-core.ts');
+    assert.match(core, /set: \(callback, ms\) => globalThis\.setTimeout\(callback, ms\)/);
+    assert.doesNotMatch(core, /\{ set: setTimeout, clear: clearTimeout \}/);
+  });
+
   it('serves every Pets reader from the store: cards, the summary, the pinned line, the Notes and Medication tabs', () => {
     assert.match(read('src/app/pets/layout.tsx'), /<PetsCareProvider>\{children\}<\/PetsCareProvider>/);
     assert.match(read('src/components/pets/pet-care-summary.tsx'), /useSharedPetCare\(householdId, pet\.id\)/);
