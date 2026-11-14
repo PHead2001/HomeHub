@@ -27,6 +27,7 @@ import type { DeviceComfort } from '@/lib/devices/types';
 import type { SessionEnd } from '@/lib/devices/device-session';
 import { whileBusy } from '@/lib/shell/busy';
 import { cn } from '@/lib/utils';
+import { settingsLayer } from '@/lib/devices/shell-state';
 import { useTablet, type TabletActor } from './tablet-context';
 
 type Exit = 'remove' | 'personal-sign-in' | 'new-code';
@@ -85,7 +86,7 @@ function Choice<T extends string | number>({ label, value, options, onChange, di
 }
 
 export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
-  const { settings, householdId, idToken, requestAdmin, endSession, person } = useTablet();
+  const { settings, householdId, idToken, requestAdmin, endSession, person, prompting } = useTablet();
   const [saving, setSaving] = useState<string | null>(null);
   const [admin, setAdmin] = useState<TabletActor | null>(null);
   const [confirming, setConfirming] = useState<(typeof EXITS)[number] | null>(null);
@@ -158,6 +159,8 @@ export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const layer = settingsLayer({ admin: admin !== null, confirming: confirming !== null, prompting });
+  if (layer === 'hidden') return null;
   if (admin) {
     return (
       <DeviceSettingsDialog
@@ -175,7 +178,7 @@ export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <Dialog open={!confirming} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
+      <Dialog open={layer === 'main'} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
         <DialogContent className="max-h-[calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px))] max-w-2xl overflow-y-auto" data-testid="tablet-settings">
           <DialogHeader>
             <DialogTitle className="font-headline text-2xl">Tablet settings</DialogTitle>
@@ -229,7 +232,7 @@ export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
         </DialogContent>
       </Dialog>
 
-      {confirming && (
+      {layer === 'confirm' && confirming && (
         <Dialog open onOpenChange={(open) => { if (!open) setConfirming(null); }}>
           <DialogContent className="max-w-lg" data-testid="tablet-exit-confirm">
             <DialogHeader>

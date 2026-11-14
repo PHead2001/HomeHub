@@ -543,7 +543,10 @@ function TabletFrame(props: {
     }
   }, [apply, endSession]);
 
-  const requestAdmin = useCallback(async (reason: string, actorUid?: string): Promise<TabletActor | null> => {
+  // An admin unlock in progress ("Who's here?" then the PIN pad): other dialogs stay aside
+  // for the whole flow, also in the moment between the picker closing and the pad opening.
+  const [unlocking, setUnlocking] = useState(0);
+  const unlockAdmin = useCallback(async (reason: string, actorUid?: string): Promise<TabletActor | null> => {
     const who = (actorUid ? person(actorUid) : null) ?? await askPerson('admin', reason);
     if (!who) return null;
     if (!isOwnerOrAdmin(who)) {
@@ -557,6 +560,15 @@ function TabletFrame(props: {
     const sessionId = await askPin(who);
     return sessionId ? { actorUid: who.uid, pinSessionId: sessionId } : null;
   }, [apply, askPerson, askPin, message, person]);
+
+  const requestAdmin = useCallback(async (reason: string, actorUid?: string): Promise<TabletActor | null> => {
+    setUnlocking((n) => n + 1);
+    try {
+      return await unlockAdmin(reason, actorUid);
+    } finally {
+      setUnlocking((n) => n - 1);
+    }
+  }, [unlockAdmin]);
 
   const runAction = useCallback(async (request: TabletActionRequest) => {
     const policy = policyOf(request.capability);
@@ -619,6 +631,7 @@ function TabletFrame(props: {
     notices,
     data,
     shell,
+    prompting: prompt !== null || unlocking > 0,
     view,
     navigate,
     goStart,

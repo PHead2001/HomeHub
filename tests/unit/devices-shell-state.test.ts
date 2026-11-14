@@ -8,6 +8,7 @@ import {
   nextShellDeadline,
   shellReducer,
   shellTimersFrom,
+  settingsLayer,
   type ShellEvent,
   type ShellState,
 } from '../../src/lib/devices/shell-state';
@@ -402,5 +403,19 @@ describe('household brief on the resting view (HP-3b, HP-21, WT-5a)', () => {
     assert.match(personal.text, /^Good morning, Alex\. 2 chores today \(1 overdue\)\./);
     const quiet = buildMorningBrief({ chores: { ...chores, mineDueToday: 0, mineOverdue: 0, todayTotal: 0, todayDone: 0, overdueTotal: 0 } }, { greeting: 'Hello', name: 'Alex', household: true });
     assert.equal(quiet.text, 'Hello. Nothing needs doing right now. Enjoy the quiet.');
+  });
+});
+
+describe('Tablet settings step aside for the "Who is here?" picker and the PIN pad (14.6)', () => {
+  it('settings and the exit confirmation are hidden while a prompt runs, then come back', () => {
+    assert.equal(settingsLayer({ admin: false, confirming: false, prompting: false }), 'main');
+    assert.equal(settingsLayer({ admin: false, confirming: true, prompting: false }), 'confirm');
+    assert.equal(settingsLayer({ admin: false, confirming: false, prompting: true }), 'hidden');
+    assert.equal(settingsLayer({ admin: false, confirming: true, prompting: true }), 'hidden');
+  });
+
+  it('the admin settings form stays (its draft survives); the PIN pad it asks for mounts above it', () => {
+    assert.equal(settingsLayer({ admin: true, confirming: false, prompting: true }), 'admin');
+    assert.equal(settingsLayer({ admin: true, confirming: false, prompting: false }), 'admin');
   });
 });

@@ -162,3 +162,20 @@ export const currentActor = (state: ShellState): { memberUid: string; level: 'fa
   if (state.face) return { memberUid: state.face.memberUid, level: 'face' };
   return null;
 };
+
+export type SettingsLayer = 'admin' | 'confirm' | 'main' | 'hidden';
+
+/**
+ * Which Tablet settings dialog shows (design 14.6). While "Who's here?" or the PIN pad
+ * runs (`prompting`), the settings and exit-confirm dialogs step aside entirely, so the
+ * picker and the pad are the only dialog (focus trapped there; Escape cancels the prompt
+ * and settings come back). Radix stacks dialogs by mount order, so a settings dialog that
+ * (re)opened at the same moment as the picker would otherwise cover it. The admin
+ * settings form stays mounted (its unsaved draft must survive); the PIN pad it asks for
+ * at save time mounts after it and so sits on top.
+ */
+export const settingsLayer = (state: { admin: boolean; confirming: boolean; prompting: boolean }): SettingsLayer => {
+  if (state.admin) return 'admin';
+  if (state.prompting) return 'hidden';
+  return state.confirming ? 'confirm' : 'main';
+};
