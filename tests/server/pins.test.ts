@@ -203,7 +203,9 @@ describe('storage and pepper', () => {
     assert.equal(doc?.pepperId, TEST_PEPPER_ID);
     assert.equal(Buffer.from(doc!.salt, 'base64').length, 16);
     assert.equal(Buffer.from(doc!.hash, 'base64').length, 32);
-    assert.ok(!JSON.stringify(doc).includes('4826'));
+    // The PIN itself is stored nowhere (random hash, salt and id may contain any digits).
+    assert.ok(Object.values(doc!).every(value => value !== '4826'));
+    assert.notEqual(Buffer.from(doc!.hash, 'base64').toString('utf8'), '4826');
     const current = process.env.HOMEHUB_PIN_PEPPER_CURRENT;
     delete process.env.HOMEHUB_PIN_PEPPER_CURRENT;
     try {
@@ -541,8 +543,12 @@ describe('hardening: daily count, repeat tablet locks, set admission, announceme
     const tablets: Tablet[] = [];
     for (let i = 0; i < 3; i++) tablets.push(await pairTablet(H, owner, created, `Concurrent lock ${i}`));
     const c = clock(Date.parse('2026-12-13T06:00:00Z'));
-    const notices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
-      .filter(d => d.get('sourceId') === member.uid).length;
+    // Earlier tests in this file may have left such notices: count only new ones.
+    const allNotices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid);
+    const before = new Set((await allNotices()).map(d => d.id));
+    const fresh = async () => (await allNotices()).filter(d => !before.has(d.id));
+    const notices = async () => (await fresh()).length;
     const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').update({ recentFailures: [] });
     for (const t of tablets) {
       for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(1000)), 'pin_wrong');
@@ -573,8 +579,7 @@ describe('hardening: daily count, repeat tablet locks, set admission, announceme
       for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_wrong');
       await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_locked');
     }
-    const recipients = new Set((await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
-      .filter(d => d.get('sourceId') === member.uid).map(d => d.get('targetUserUid')));
+    const recipients = new Set((await fresh()).map(d => d.get('targetUserUid')));
     assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid));
   });
 
