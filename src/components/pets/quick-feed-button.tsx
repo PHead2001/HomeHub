@@ -57,6 +57,13 @@ export type QuickFeedOptions = {
 
 export type FeedSource = 'tap' | 'hold';
 
+/** Focuses the pet's Feed button (`data-feed-button`), when it is on the page. */
+function focusFeedButton(petId: string) {
+  if (typeof document === 'undefined') return;
+  const id = typeof CSS !== 'undefined' ? CSS.escape(petId) : petId;
+  document.querySelector<HTMLButtonElement>(`[data-feed-button="${id}"]:not([disabled])`)?.focus();
+}
+
 export type QuickFeedController = {
   /** The member may log feedings (`pets.addLogs`). */
   allowed: boolean;
@@ -72,6 +79,8 @@ export type QuickFeedController = {
   burst: { key: number; source: FeedSource } | null;
   /** The shared feed operation's UI state ("Feed again?" prompt, accept, cancel). */
   action: FeedAction;
+  /** Focuses this pet's Feed button: after "Feed again?" closes and after Undo (PE-20e). */
+  returnFocus: () => void;
   /** Logs one feeding, or opens "Feed again?"; resolves with the operation's result (null when nothing ran). */
   feed: (source: FeedSource) => Promise<FeedPetResult | null>;
 };
@@ -90,6 +99,7 @@ export function useQuickFeed({ petId, petName, plan, food, known }: QuickFeedOpt
   const reducedMotion = useReducedMotion();
   const [burst, setBurst] = React.useState<QuickFeedController['burst']>(null);
   const sourceRef = React.useRef<FeedSource>('tap');
+  const returnFocus = React.useCallback(() => focusFeedButton(petId), [petId]);
   const portion = formatPortion(plan.amount, plan.unit);
   // Today's count comes from the operation's committed state, not from this device's view.
   const reachedGoal = (result: { status: string; countToday: number }) =>
@@ -103,6 +113,7 @@ export function useQuickFeed({ petId, petName, plan, food, known }: QuickFeedOpt
       title: reachedGoal(result) ? `${petName} is all fed for today` : `${petName} fed`,
       description: foodFallback ? `${portion} of dry food logged (last feeding unavailable).` : `${portion} logged.`,
     }),
+    returnFocus,
   });
   const { allowed, run, saving } = action;
 
@@ -119,7 +130,7 @@ export function useQuickFeed({ petId, petName, plan, food, known }: QuickFeedOpt
     return run({ portion: { amount: plan.amount, unit: plan.unit }, food: foodType, known });
   }, [allowed, ready, saving, run, plan.amount, plan.unit, foodType, known]);
 
-  return { allowed, saving, portion, foodType, ready, foodFallback, burst, action, feed };
+  return { allowed, saving, portion, foodType, ready, foodFallback, burst, action, feed, returnFocus };
 }
 
 /**
@@ -172,7 +183,7 @@ export function FeedConfirmPanel({
   return (
     <div className="space-y-3">
       {quick.ready ? (
-        <p id={titleId} className="text-sm text-foreground">
+        <p id={titleId} className="break-words text-sm text-foreground">
           Log <span className="font-semibold">{quick.portion}</span> of {quick.foodType.toLowerCase()} food for{' '}
           <span className="font-semibold">{petName}</span>?
           {lastFed && <span className="mt-1 block text-xs text-muted-foreground" data-testid="feed-confirm-last-fed">{lastFed}</span>}
@@ -239,6 +250,7 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
     <span className={cn('relative inline-flex', className)}>
       <ShortcutHint shortcut="log-feeding" label="Log a feeding from anywhere">
       <Button
+        data-feed-button={options.petId}
         type="button"
         size={size}
         variant={variant}
@@ -253,7 +265,7 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
       </Button>
       </ShortcutHint>
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}
-      <FeedAgainDialog action={quick.action} petName={options.petName} />
+      <FeedAgainDialog action={quick.action} petName={options.petName} returnFocus={quick.returnFocus} />
     </span>
   );
 }

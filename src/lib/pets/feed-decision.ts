@@ -6,15 +6,24 @@
  *
  * "Today" here is the household day (`household.timeZone`, default
  * America/Chicago), computed with the shared `localDay` from
- * functions/src/shared/calendar.ts. (No `src/lib/household-day.ts` helper exists
- * on main yet; switch to it once the dashboard data PR adds one.)
+ * functions/src/shared/calendar.ts (the zone rule of `src/lib/household-day.ts`).
+ * The whole planning of one feed (idempotency, the bound confirmation, the state
+ * write) lives in `feed-plan.ts`, on top of these decisions.
  */
 import { UNDO_WINDOW_MS } from '../undo-window';
 import { DEFAULT_TIME_ZONE, localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { formatAgo, seenFeedingDate, toDate, type FeedingEntry } from './care';
 
-/** A feeding this recent asks "Feed again?" (audit PE-1/PE-23: "under about 90 minutes"). */
+/** A feeding this recent asks "Feed again?" (audit PE-1/PE-23: "under about 90 minutes"). The rules use it on server time. */
 export const FEED_REPEAT_WINDOW_MS = 90 * 60_000;
+
+/**
+ * The client asks a little longer than the rules refuse (90 + 5 minutes on this
+ * device's clock), so a device clock up to 5 minutes off never plans a plain feed
+ * the rules then refuse on server time. Beyond that, a refused plain feed turns
+ * into "Feed again?" (`serverRefusedPlain` in feed-plan.ts).
+ */
+export const FEED_CLOCK_MARGIN_MS = 5 * 60_000;
 
 /**
  * How long the Undo toast stays (audit 16.3: the 10-second Undo for everyone who
@@ -27,6 +36,15 @@ export const AUTHOR_DELETE_WINDOW_MS = 10 * 60_000;
 
 /** Document id of the per-pet state: `households/{h}/pets/{p}/feeding-state/current`. */
 export const FEEDING_STATE_ID = 'current';
+
+/**
+ * Toast group of a pet's feeding Undo (PE-8i, D-P13): one group per pet, so a
+ * newer feeding of the same pet replaces its toast, while feeding the cat keeps
+ * the dog's Undo on screen.
+ */
+export function petFeedToastGroup(petId: string): string {
+  return `pet-feed:${petId}`;
+}
 
 /** The household day of an instant. */
 export function householdDay(instant: Date, timeZone?: string | null): string {
@@ -69,6 +87,8 @@ export function readFeedingState(data: Record<string, unknown> | null | undefine
 
 /** What a client already knows from the feeding logs it has loaded (fallback while a pet has no state document). */
 export type KnownFeedings = {
+  /** The newest feeding's log id, when the logs carry ids. */
+  lastLogId?: string | null;
   lastFedAt: Date | null;
   lastFedByUid?: string | null;
   lastFedByName: string | null;
@@ -83,21 +103,65 @@ export type KnownFeedings = {
  */
 export function knownFromLogs(logs: FeedingEntry[], now: Date, timeZone?: string | null): KnownFeedings {
   const today = householdDay(now, timeZone);
-  let last: { date: Date; uid: string | null; name: string | null } | null = null;
+  let last: { id: string | null; date: Date; raw: number; uid: string | null; name: string | null } | null = null;
   let countToday = 0;
   for (const log of logs) {
     const date = seenFeedingDate(log.date, now);
     if (!date) continue;
     if (householdDay(date, timeZone) === today) countToday += 1;
-    if (!last || date > last.date) last = { date, uid: text(log.loggedByUid), name: log.loggedByName?.trim() || null };
+    // Only a feeding the state (and so the rules) can name may be the last feed (`isNameableFeedingDate`).
+    if (!isNameableFeedingDate(log.date)) continue;
+    const raw = toDate(log.date)!.getTime();
+    if (!last || raw > last.raw) last = { id: text(log.id), date, raw, uid: text(log.loggedByUid), name: log.loggedByName?.trim() || null };
   }
-  return { lastFedAt: last?.date ?? null, lastFedByUid: last?.uid ?? null, lastFedByName: last?.name ?? null, countToday };
+  return { lastLogId: last?.id ?? null, lastFedAt: last?.date ?? null, lastFedByUid: last?.uid ?? null, lastFedByName: last?.name ?? null, countToday };
+}
+
+/**
+ * Which feedings can be named as the latest or previous feed (by the state, by
+ * "Feed again?" and in `confirmOf`): those with a stored Timestamp date (a Date
+ * in pure code). The rules can only compare Timestamps, so a legacy entry with an
+ * ISO-string date is counted for its day but never named or confirmed. Among
+ * nameable feedings the latest is the one with the latest stored date (within
+ * the clock-skew allowance); a live feed being written is the latest. This is
+ * the one definition `knownFromLogs`, `deriveFeedingState` and the rules
+ * (feedingStateHonest, feedingConfirmBound) share.
+ */
+export function isNameableFeedingDate(value: unknown): boolean {
+  return value instanceof Date || Boolean(value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function');
+}
+
+/** The palette preview's line when the feeding history could not be read. */
+export const LAST_FEEDING_UNAVAILABLE = 'Last feeding unavailable';
+
+/**
+ * "Last fed 10 min ago by Sam (wet)" for the palette's feeding preview (PE-23e),
+ * from both date-shape reads of the newest feedings. Both are required: if
+ * either read failed the history is unknown, never "No feedings logged yet" or
+ * an older feeding shown as the latest.
+ */
+export function lastFedPreview(
+  reads: PromiseSettledResult<(FeedingEntry & { foodType?: unknown })[]>[],
+  now: Date,
+  timeZone?: string | null,
+): string {
+  if (reads.some((read) => read.status === 'rejected')) return LAST_FEEDING_UNAVAILABLE;
+  const logs = reads.flatMap((read) => (read.status === 'fulfilled' ? read.value : []));
+  const known = knownFromLogs(logs, now, timeZone);
+  const latest = known.lastLogId ? logs.find((log) => log.id === known.lastLogId) : undefined;
+  const food = latest && typeof latest.foodType === 'string' ? latest.foodType : null;
+  return lastFedLine(known.lastFedAt, known.lastFedByName, now, timeZone, food);
 }
 
 export type FeedCheck = {
   needsConfirm: boolean;
   /** `recent`: fed under 90 minutes ago (wins); `complete`: today's planned feedings are done. */
   reason: 'recent' | 'complete' | null;
+  /**
+   * The log of the last feeding the check saw (null when none, or unknown). A
+   * "Feed again?" answer is bound to it and to `countToday` (PE-23g).
+   */
+  lastLogId: string | null;
   lastFedAt: Date | null;
   lastFedByUid: string | null;
   lastFedByName: string | null;
@@ -127,28 +191,30 @@ export function feedConfirmDecision(input: {
   const { state, known, now, perDay } = input;
   const today = householdDay(now, input.timeZone);
   let lastFedAt = state?.lastFedAt ?? null;
+  let lastLogId = lastFedAt ? state?.lastLogId ?? null : null;
   let lastFedByUid = state?.lastFedByUid ?? null;
   let lastFedByName = state?.lastFedByName ?? null;
   if (known?.lastFedAt && (!lastFedAt || known.lastFedAt > lastFedAt)) {
     lastFedAt = known.lastFedAt;
+    lastLogId = known.lastLogId ?? null;
     lastFedByUid = known.lastFedByUid ?? null;
     lastFedByName = known.lastFedByName;
   }
   const stateCount = state && state.day === today ? state.countOnDay : 0;
   const countToday = typeof input.countToday === 'number' ? input.countToday : Math.max(stateCount, known?.countToday ?? 0);
   // A future time (another device's clock) counts as recent.
-  const recent = Boolean(lastFedAt) && now.getTime() - lastFedAt!.getTime() < FEED_REPEAT_WINDOW_MS;
+  const recent = Boolean(lastFedAt) && now.getTime() - lastFedAt!.getTime() < FEED_REPEAT_WINDOW_MS + FEED_CLOCK_MARGIN_MS;
   const complete = perDay != null && perDay > 0 && countToday >= perDay;
   const reason = recent ? 'recent' : complete ? 'complete' : null;
-  return { needsConfirm: reason !== null, reason, lastFedAt, lastFedByUid, lastFedByName, countToday, perDay };
+  return { needsConfirm: reason !== null, reason, lastLogId, lastFedAt, lastFedByUid, lastFedByName, countToday, perDay };
 }
 
 type PromptInput = Pick<FeedCheck, 'reason' | 'lastFedAt' | 'lastFedByUid' | 'lastFedByName' | 'perDay'>;
 
 /** Why the member is asked: "Sam fed Rex 12 min ago." (or "You fed…", or the complete-day line). */
-export function feedAgainReason(check: PromptInput, petName: string, now: Date, viewerUid?: string | null): string {
+export function feedAgainReason(check: PromptInput, petName: string, now: Date, viewerUid?: string | null, timeZone?: string | null): string {
   const who = viewerUid && check.lastFedByUid === viewerUid ? 'You' : check.lastFedByName;
-  const ago = check.lastFedAt ? formatAgo(check.lastFedAt, now) : null;
+  const ago = check.lastFedAt ? formatAgo(check.lastFedAt, now, timeZone) : null;
   const fedLine = ago ? (who ? `${who} fed ${petName} ${ago}.` : `${petName} was fed ${ago}.`) : '';
   if (check.reason === 'complete') {
     const done = check.perDay ? `${petName} has had all ${check.perDay} feedings today.` : `${petName} is all fed today.`;
@@ -158,14 +224,18 @@ export function feedAgainReason(check: PromptInput, petName: string, now: Date, 
 }
 
 /** "Sam fed Rex 12 min ago. Feed again?" */
-export function feedAgainPrompt(check: PromptInput, petName: string, now: Date, viewerUid?: string | null): string {
-  return `${feedAgainReason(check, petName, now, viewerUid)} Feed again?`;
+export function feedAgainPrompt(check: PromptInput, petName: string, now: Date, viewerUid?: string | null, timeZone?: string | null): string {
+  return `${feedAgainReason(check, petName, now, viewerUid, timeZone)} Feed again?`;
 }
 
-/** "Last fed 12 min ago by Sam" for places that show last-fed context. */
-export function lastFedLine(lastFedAt: Date | null, lastFedByName: string | null, now: Date): string {
+/**
+ * "Last fed 12 min ago by Sam (wet)" for places that show last-fed context before
+ * logging (the palette preview, PE-23e / QA-17).
+ */
+export function lastFedLine(lastFedAt: Date | null, lastFedByName: string | null, now: Date, timeZone?: string | null, foodType?: string | null): string {
   if (!lastFedAt) return 'No feedings logged yet';
-  return `Last fed ${formatAgo(lastFedAt, now)}${lastFedByName ? ` by ${lastFedByName}` : ''}`;
+  const food = foodType ? ` (${foodType.toLowerCase()})` : '';
+  return `Last fed ${formatAgo(lastFedAt, now, timeZone)}${lastFedByName ? ` by ${lastFedByName}` : ''}${food}`;
 }
 
 /** The instant a household day starts (for the bounded "today's feedings" read). */
@@ -216,56 +286,6 @@ export function newerKnown(a: KnownFeedings | null | undefined, b: KnownFeedings
 export function withSurvivingLatest(state: FeedingStateView | null, latestSurvives: boolean): FeedingStateView | null {
   if (!state || latestSurvives || !state.lastLogId) return state;
   return { ...state, lastFedAt: null, lastFedByUid: null, lastFedByName: null };
-}
-
-/** The day count after logging a feeding on `logDay`. */
-export function countAfterFeed(base: { day: string; countOnDay: number }, logDay: string): { day: string; countOnDay: number } {
-  if (logDay === base.day) return { day: base.day, countOnDay: base.countOnDay + 1 };
-  // A later day starts a new count; an earlier (backdated) day leaves today's count alone.
-  if (logDay > base.day) return { day: logDay, countOnDay: 1 };
-  return base;
-}
-
-/**
- * Whether a new feeding at `fedAt` becomes the state's latest feed. Live feeds
- * always do; a backdated entry only when it is newer than every feeding known.
- */
-export function becomesLatest(fedAt: Date, backdated: boolean, state: FeedingStateView | null, known?: KnownFeedings | null): boolean {
-  if (!backdated) return true;
-  const latest = [state?.lastFedAt, known?.lastFedAt].filter((value): value is Date => Boolean(value));
-  return latest.every((date) => fedAt > date);
-}
-
-export type UndoPlan =
-  | { kind: 'none' }
-  /**
-   * The undone log was the latest feed: restore `prev` (who and when) when its
-   * log still exists (`restorePrev`), otherwise clear the latest feed; set the count.
-   */
-  | { kind: 'restore'; day: string | null; countOnDay: number; restorePrev: boolean }
-  /** An older log: the count drops (when it was on the counted day), and `prev` is cleared when it pointed at this log. */
-  | { kind: 'count'; day: string | null; countOnDay: number; dropPrev: boolean };
-
-/**
- * How deleting a feeding changes the state (Undo and history deletes). Only the
- * fields that log affected change: the previous feed is restored only when the
- * state still points at this log, so an Undo never writes an old snapshot over a
- * newer feed by someone else, and never brings back a feed whose log is gone:
- * deleting the feed `prev` points at clears `prev`, and restoring needs `prev`'s
- * log to still exist (`prevSurvives`, read in the same transaction). Undoing the
- * record does not undo the meal: the next feed still runs the last-fed check
- * (audit 17.2, WT-20).
- */
-export function planUndo(state: FeedingStateView | null, log: { id: string; day: string | null }, prevSurvives = true): UndoPlan {
-  if (!state) return { kind: 'none' };
-  const sameDay = log.day !== null && log.day === state.day;
-  const countOnDay = sameDay ? Math.max(0, state.countOnDay - 1) : state.countOnDay;
-  if (state.lastLogId === log.id) {
-    return { kind: 'restore', day: state.day, countOnDay, restorePrev: state.prevLogId !== null && prevSurvives };
-  }
-  const dropPrev = state.prevLogId === log.id;
-  if (dropPrev || (sameDay && state.countOnDay > 0)) return { kind: 'count', day: state.day, countOnDay, dropPrev };
-  return { kind: 'none' };
 }
 
 /** Whether the author may still delete their own feeding (rules: within 10 minutes of `loggedAt`). */

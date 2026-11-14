@@ -24,6 +24,7 @@ import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { useToday } from '@/components/chores/use-today';
+import { useHouseholdToday } from '@/lib/household-day';
 import { auth, db } from '@/lib/firebase';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap, type MemberColor } from '@/lib/member-colors';
@@ -248,6 +249,8 @@ export function HouseholdCalendar() {
   // Direction of the last day change, so the agenda slides in from that side.
   const [dayShift, setDayShift] = useState<-1 | 0 | 1>(0);
   const today = useToday();
+  // Medication days follow the household's day, as the Pets chips and the reminders do (PE-7b).
+  const householdToday = useHouseholdToday(household?.timeZone ?? null);
   const [anchor, setAnchor] = useState(today);
   const [selectedDay, setSelectedDay] = useState(today);
   // At midnight, a view that was showing "today" moves with it; a view the member
@@ -335,9 +338,9 @@ export function HouseholdCalendar() {
     ...choreEvents(chores, members, today),
     ...plannedRecurringEvents(templates, chores, members, today, visibleDays[0], visibleDays[visibleDays.length - 1]),
     ...maintenanceEvents(maintenance),
-    ...medicationEvents(medication),
-    ...medicationDueEvents(medication, today),
-  ], [chores, templates, members, maintenance, medication, today, visibleDays]);
+    ...medicationEvents(medication, timeZone),
+    ...medicationDueEvents(medication, householdToday),
+  ], [chores, templates, members, maintenance, medication, today, visibleDays, timeZone, householdToday]);
   const byDay = useMemo(() => groupByDay(events), [events]);
   const rail = useMemo(() => overdueRail(events), [events]);
 

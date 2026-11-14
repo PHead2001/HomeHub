@@ -13,7 +13,7 @@ import { FeedConfirmPanel, useQuickFeed } from './quick-feed-button';
 function fedStatusLine(care: PetCare): string {
   if (care.feedings.loading) return 'Checking last feeding…';
   if (!care.status) return 'Last feeding unavailable';
-  const headline = feedingHeadline(care.status, care.now);
+  const headline = feedingHeadline(care.status, care.now, care.timeZone);
   return care.status.last ? `${headline} · ${feedingCountLabel(care.status)}` : headline;
 }
 
@@ -39,8 +39,8 @@ function PetRow({ pet, householdId, onChoose }: { pet: PetProfile; householdId: 
       aria-label={`${pet.name}, ${portion}. ${status}`}
     >
       <Utensils aria-hidden className="mr-2 h-4 w-4 shrink-0" />
-      <span className="min-w-0 text-left">
-        <span className="block truncate">{pet.name}</span>
+      <span className="min-w-0 whitespace-normal text-left">
+        <span className="line-clamp-2 block break-words [overflow-wrap:anywhere]">{pet.name}</span>
         <span className="block truncate text-xs font-normal text-muted-foreground" data-testid={`feed-picker-status-${pet.id}`}>{status}</span>
       </span>
       <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">{portion}</span>
@@ -79,7 +79,7 @@ export function FeedPickerDialog({
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>Log a feeding</DialogTitle>
-          <DialogDescription>{chosen ? `At ${chosen.name}'s usual portion.` : 'Who did you feed?'}</DialogDescription>
+          <DialogDescription className="break-words">{chosen ? `At ${chosen.name}'s usual portion.` : 'Who did you feed?'}</DialogDescription>
         </DialogHeader>
         {chosen ? (
           <div className="space-y-3">

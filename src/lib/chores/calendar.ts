@@ -8,7 +8,7 @@ import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../fu
 import { choreOccurrenceKey, occurrenceChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { publicDisplayName } from '../member-directory';
-import { currentMedications, type MedicationDue as MedicationCountdown } from '../pets/care';
+import { currentMedicationsOn, petDay, toDate, type MedicationDue as MedicationCountdown } from '../pets/care';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
 export type CalendarEventKind = 'chore' | 'maintenance' | 'medication';
@@ -101,17 +101,21 @@ export type MedicationEntry = {
   nextDueDate?: string;
 };
 
-/** Medication doses that were logged. */
-export function medicationEvents(entries: readonly MedicationEntry[]): CalendarEvent[] {
+/**
+ * Medication doses that were logged, on the household day they were given
+ * (PE-7b: `timeZone` is `household.timeZone`, as the Pets chips and the server
+ * reminders use), not the viewer's device day.
+ */
+export function medicationEvents(entries: readonly MedicationEntry[], timeZone?: string | null): CalendarEvent[] {
   return entries.flatMap(entry => {
-    const parsed = new Date(entry.date);
-    if (Number.isNaN(parsed.getTime())) return [];
+    const parsed = toDate(entry.date);
+    if (!parsed) return [];
     return [{
       id: `medication:${entry.petId}:${entry.id}`,
       kind: 'medication' as const,
       title: entry.dosage ? `${entry.medication} (${entry.dosage})` : entry.medication,
       subtitle: entry.petName,
-      day: dayKey(parsed),
+      day: petDay(parsed, timeZone),
       overdue: false,
       completed: true,
       href: `/pets/${encodeURIComponent(entry.petId)}`,
@@ -124,6 +128,8 @@ export function medicationEvents(entries: readonly MedicationEntry[]): CalendarE
  * module's own rule (`currentMedications`, which the pet card chips and, mirrored,
  * the server reminders use), on its due day. Overdue doses join the red rail.
  * `entries` must hold every medication entry of each pet, as the calendar loads.
+ * `today` is the household day (`yyyy-MM-dd`, PE-7b); due days are the stored
+ * household calendar days, so "Due today" matches the card and the reminder.
  */
 export function medicationDueEvents(entries: readonly MedicationEntry[], today: string): CalendarEvent[] {
   const byPet = new Map<string, MedicationEntry[]>();
@@ -132,14 +138,13 @@ export function medicationDueEvents(entries: readonly MedicationEntry[], today: 
     if (list) list.push(entry);
     else byPet.set(entry.petId, [entry]);
   }
-  const now = dayFromKey(today);
   return [...byPet.entries()].flatMap(([petId, logs]) =>
-    currentMedications(logs.map(log => ({ ...log, dosage: log.dosage ?? '' })), now).map(due => ({
+    currentMedicationsOn(logs.map(log => ({ ...log, dosage: log.dosage ?? '' })), today).map(due => ({
       id: `medication-due:${petId}:${due.medication.trim().toLowerCase()}`,
       kind: 'medication' as const,
       title: due.dosage ? `${due.medication} (${due.dosage})` : due.medication,
       subtitle: logs[0].petName,
-      day: dayKey(due.due),
+      day: due.dueDay,
       overdue: due.state === 'overdue',
       completed: false,
       href: `/pets/${encodeURIComponent(petId)}?tab=medication`,

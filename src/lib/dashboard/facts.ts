@@ -614,7 +614,7 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
         };
       }
       const plan = feedingPlan(pet as unknown as PetProfile);
-      const status = feedingStatus(logs, plan, now);
+      const status = feedingStatus(logs, plan, now, timeZone);
       // HP-33a: the same request as the Pets one-tap feed (usual portion, latest food type).
       const latest = [...logs].sort((a, b) => (toDateValue(b.date)?.getTime() ?? 0) - (toDateValue(a.date)?.getTime() ?? 0))[0] as (FeedingEntry & { foodType?: unknown }) | undefined;
       const feed: PetFeed = {
@@ -633,7 +633,7 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
         lastFedBy: status.last?.by ?? null,
         fed: status.complete,
         countLabel: feedingCountLabel(status),
-        headline: feedingHeadline(status, now),
+        headline: feedingHeadline(status, now, timeZone),
         feed,
       };
     });

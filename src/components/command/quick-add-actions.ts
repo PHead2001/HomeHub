@@ -28,7 +28,8 @@ import { format } from 'date-fns';
 import { auth, db } from '@/lib/firebase';
 import { awaitWriteUnlessOffline, getDocOfflineAware, getDocsOfflineAware } from '@/lib/firestore-offline';
 import { petLogsCollection } from '@/components/pets/pet-log-api';
-import { knownFromLogs } from '@/lib/pets/feed-decision';
+import { knownFromLogs, lastFedPreview } from '@/lib/pets/feed-decision';
+import type { FeedConfirm } from '@/lib/pets/feed-plan';
 import { feedPet, type FeedPetResult } from '@/lib/pets/feed-operation';
 import { foodTypeFromLatest } from '@/lib/dashboard/quick-add';
 import type { RawDoc } from '@/lib/dashboard/facts';
@@ -92,7 +93,8 @@ export async function logFeeding({
   unit,
   viewer,
   timeZone,
-  confirm = false,
+  opId,
+  confirm = null,
   onLateError,
 }: {
   householdId: string;
@@ -101,8 +103,10 @@ export async function logFeeding({
   unit: PortionUnit;
   viewer: User;
   timeZone?: string | null;
-  /** The member answered "Feed again?" with yes. */
-  confirm?: boolean;
+  /** One id per previewed feeding (`newFeedOpId`), reused when Confirm is pressed again (PE-23h). */
+  opId: string;
+  /** The answer to "Feed again?", bound to the state it was asked for (`feedConfirmOf`, PE-23g). */
+  confirm?: FeedConfirm | null;
   onLateError: (error: unknown) => void;
 }): Promise<FeedPetResult> {
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
@@ -113,6 +117,7 @@ export async function logFeeding({
     petId,
     portion: { amount, unit },
     food,
+    opId,
     confirm,
     timeZone,
     known,
@@ -132,6 +137,16 @@ export async function feedingHistory(householdId: string, petId: string, timeZon
   return { food: foodTypeFromLatest(latest), known: knownFromLogs(latest.flat(), new Date(), timeZone) };
 }
 
+/**
+ * "Last fed 10 min ago by Sam (wet)" for the quick-add preview before saving
+ * (PE-23e, QA-17), from the same newest feedings the save reads. The save still
+ * runs the authoritative check in its transaction.
+ */
+export async function feedingPreviewLine(householdId: string, petId: string, timeZone?: string | null): Promise<string> {
+  // Both date-shape reads are required: a failed one makes the line "Last feeding unavailable" (lastFedPreview).
+  return lastFedPreview(await latestFeedingReads(householdId, petId), new Date(), timeZone);
+}
+
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
 
@@ -142,12 +157,21 @@ const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
  * history, as Pets picks it) and the last-fed fallback for a pet without a
  * feeding-state document.
  */
-async function latestFeedings(householdId: string, petId: string): Promise<(RawDoc & { date: unknown })[][]> {
+async function latestFeedingReads(householdId: string, petId: string): Promise<PromiseSettledResult<(RawDoc & { date: unknown })[]>[]> {
   const logs = petLogsCollection(householdId, petId, 'feeding-logs');
   const latest = (floor: unknown) => getDocsOfflineAware(query(logs, where('date', '>=', floor), orderBy('date', 'desc'), limit(20)))
-    .then((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as RawDoc & { date: unknown }))
-    .catch(() => []);
-  return Promise.all([latest(MIN_TIMESTAMP), latest('')]);
+    .then((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as RawDoc & { date: unknown }));
+  return Promise.allSettled([latest(MIN_TIMESTAMP), latest('')]);
+}
+
+/**
+ * The same reads for saving a quick feeding: a failed read is left out (the food
+ * type falls back to Dry and the transaction runs the authoritative check), but
+ * the preview above never shows such a partial result as the last feeding.
+ */
+async function latestFeedings(householdId: string, petId: string): Promise<(RawDoc & { date: unknown })[][]> {
+  const reads = await latestFeedingReads(householdId, petId);
+  return reads.map((read) => (read.status === 'fulfilled' ? read.value : []));
 }
 
 export async function createOneTimeChore({

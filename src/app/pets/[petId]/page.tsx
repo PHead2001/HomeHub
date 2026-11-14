@@ -1,13 +1,16 @@
 'use client';
 
-import { useEffect, useState, use } from 'react';
+import { useEffect, useRef, useState, use } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { CalendarDays, Edit, Home, MoreVertical, Pill, Sparkles, Trash2, Utensils } from 'lucide-react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { doc, onSnapshot, type DocumentSnapshot } from 'firebase/firestore';
+import { ArrowLeft, CalendarDays, Edit, MoreVertical, Pill, Sparkles, Trash2, Utensils } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
+import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
+import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
 import { feedingPlan, formatPortion, petPhotoMorphName } from '@/lib/pets/care';
 import { morphStyle } from '@/lib/motion';
 import type { PetProfile } from '@/lib/pets/types';
@@ -33,13 +36,12 @@ import { PetCareSummary } from '@/components/pets/pet-care-summary';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
 import type { PetFields } from '@/components/pets/pet-form';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
-
-const TABS = ['feeding', 'medication', 'care'] as const;
-type PetTab = (typeof TABS)[number];
+import { returnFocusToPet } from '@/components/pets/focus';
 
 export default function PetDetailPage({ params }: { params: Promise<{ petId: string }> }) {
   const { petId } = use(params);
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const { toast, toastError } = useToast();
   const { currentUser, permissions, loading: authLoading } = useAuth();
@@ -49,37 +51,62 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   const [petToEdit, setPetToEdit] = useState<PetProfile | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // The tab follows `?tab=` (PE-8f): a medication reminder tapped while this pet's
+  // page is already open switches to its tab; choosing a tab updates the URL.
   const requestedTab = searchParams.get('tab');
-  const [tab, setTab] = useState<PetTab>(TABS.includes(requestedTab as PetTab) ? (requestedTab as PetTab) : 'feeding');
+  const [tab, setTab] = useState<PetTab>(petTabFromParam(requestedTab));
+  const [seenTabParam, setSeenTabParam] = useState(requestedTab);
+  if (requestedTab !== seenTabParam) {
+    setSeenTabParam(requestedTab);
+    if (requestedTab !== null) setTab(petTabFromParam(requestedTab));
+  }
+  const chooseTab = (next: PetTab) => {
+    setTab(next);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', next);
+    // The URL catches up on a later render; the param check above then agrees with `tab`.
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
 
   // Live pet document: edits from other members appear without a refresh. Keyed by
-  // path so navigating between pets never shows the previous one.
-  const docKey = householdId ? `${householdId}/${petId}` : null;
-  const [loaded, setLoaded] = useState<{ key: string | null; pet: PetProfile | null; failed: boolean }>({ key: null, pet: null, failed: false });
+  // path so navigating between pets never shows the previous one. A resilient
+  // listener (PE-8g): a failed read resubscribes on its own (backoff, `online`,
+  // page visible); a refused one is reported as no access, without "Try again" (PE-18c).
+  // Keyed by member and pets.view too, so a page refused for lack of access recovers when access returns.
+  const docKey = petListenerKey(householdId ? `${householdId}/${petId}` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  const [loaded, setLoaded] = useState<LiveState<PetProfile>>({ key: null, value: null, loaded: false, failed: false });
+  const petHandle = useRef<ResilientHandle | null>(null);
   useEffect(() => {
     if (!householdId || !docKey) return;
-    return onSnapshot(
-      doc(db, 'households', householdId, 'pets', petId),
-      (snapshot) => {
-        setLoaded({
-          key: docKey,
-          pet: snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as PetProfile) : null,
-          failed: false,
-        });
-      },
-      (error) => {
-        console.error('Error loading pet:', error);
-        setLoaded({ key: docKey, pet: null, failed: true });
-        toastError(error, "Couldn't load this pet");
+    const handle = petSnapshotListener<DocumentSnapshot>(
+      (next, error) => onSnapshot(doc(db, 'households', householdId, 'pets', petId), { includeMetadataChanges: true }, next, error),
+      {
+        next: (snapshot) => {
+          setLoaded(liveAnswer(docKey, snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as PetProfile) : null));
+        },
+        status: (status) => {
+          if (status.kind === 'live') return;
+          console.error('Error loading pet:', status.error);
+          // A pet already on screen stays, with the failure recorded so the page says
+          // it is reconnecting or that access changed (never silently stale).
+          setLoaded((previous) => liveFailure(previous, docKey, status.kind));
+        },
       },
     );
-  }, [householdId, petId, docKey, toastError]);
+    petHandle.current = handle;
+    return () => {
+      handle.stop();
+      if (petHandle.current === handle) petHandle.current = null;
+    };
+  }, [householdId, petId, docKey]);
 
   const ready = loaded.key === docKey;
   const loading = authLoading || (Boolean(docKey) && !ready);
-  const pet = ready ? loaded.pet : null;
-  const loadFailed = ready && loaded.failed;
-  const missing = ready && !loaded.failed && !loaded.pet;
+  const pet = ready ? loaded.value : null;
+  // With nothing loaded the failure is the page's state; with a pet on screen it is a notice beside it.
+  const loadFailed = ready && !loaded.loaded ? loaded.failed : false;
+  const missing = ready && loaded.loaded && !loaded.value;
+  const notice = ready && pet ? liveNotice(loaded) : null;
 
   const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
     if (!householdId || !pet) return false;
@@ -112,7 +139,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
     <div className="mb-4">
       <Button asChild variant="outline">
         <Link href="/pets">
-          <Home className="mr-2" />
+          <ArrowLeft aria-hidden className="mr-2" />
           Back to All Pets
         </Link>
       </Button>
@@ -145,9 +172,15 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
         {currentUser ? (
           <EmptyState
             kind="pets"
-            title={missing ? 'This pet isn’t here' : 'This pet is unavailable right now'}
-            description={missing ? 'It may have been removed. Your other pets are still on the Pets page.' : "We couldn't load this pet. Check your connection and try again."}
-            action={loadFailed ? { label: 'Try again', onClick: () => window.location.reload() } : { label: 'All pets', href: '/pets' }}
+            title={missing ? 'This pet isn’t here' : loadFailed === 'unauthorized' ? 'This pet isn’t available to you' : 'This pet is unavailable right now'}
+            description={
+              missing
+                ? 'It may have been removed. Your other pets are still on the Pets page.'
+                : loadFailed === 'unauthorized'
+                  ? "Your household role doesn't include viewing pets. Ask an owner or admin if you need access."
+                  : "We couldn't load this pet. HomeHub keeps trying; check your connection or try again now."
+            }
+            action={loadFailed === 'retrying' ? { label: 'Try again', onClick: () => petHandle.current?.retryNow() } : loadFailed === 'unauthorized' ? undefined : { label: 'All pets', href: '/pets' }}
           />
         ) : (
           <SignInPrompt what="see your pets" />
@@ -160,10 +193,15 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} />
-      <DeletePetAlert isOpen={confirmDelete} petName={pet.name} onConfirm={handleDeletePet} onCancel={() => setConfirmDelete(false)} />
+      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} onCloseAutoFocus={returnFocusToPet(pet.id)} />
+      <DeletePetAlert isOpen={confirmDelete} petName={pet.name} onConfirm={handleDeletePet} onCancel={() => setConfirmDelete(false)} onCloseAutoFocus={returnFocusToPet(pet.id)} />
 
       {backButton}
+      {notice && (
+        <p role="status" className="-mt-2 mb-4 text-sm text-muted-foreground" data-testid="pet-stale">
+          {staleNoticeText(notice, pet.name)}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
         <div className="space-y-6 md:col-span-1">
@@ -173,7 +211,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                 <div className="absolute right-2 top-2 z-10">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="secondary" size="icon" aria-label={`Open actions for ${pet.name}`} className="h-9 w-9 rounded-full bg-background/80 shadow-raised hover:bg-background">
+                      <Button variant="secondary" size="icon" aria-label={`Open actions for ${pet.name}`} data-pet-actions={pet.id} className="h-9 w-9 rounded-full bg-background/80 shadow-raised hover:bg-background">
                         <MoreVertical className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -204,7 +242,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
             </CardHeader>
             <CardContent className="space-y-4 p-4">
               <div>
-                <h1 className="font-headline text-3xl font-bold tracking-tight">{pet.name}</h1>
+                <h1 tabIndex={-1} data-pets-heading className="break-words font-headline text-3xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none">{pet.name}</h1>
                 <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
               </div>
               <div className="flex flex-col gap-3">
@@ -240,7 +278,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
         </div>
 
         <div className="md:col-span-2">
-          <Tabs value={tab} onValueChange={(value) => setTab(value as PetTab)}>
+          <Tabs value={tab} onValueChange={(value) => { if ((PET_TABS as readonly string[]).includes(value)) chooseTab(value as PetTab); }}>
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="feeding"><Utensils className="mr-2" /> Feeding</TabsTrigger>
               <TabsTrigger value="medication"><Pill className="mr-2" /> Medication</TabsTrigger>

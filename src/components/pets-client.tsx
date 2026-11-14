@@ -1,12 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, type QuerySnapshot } from 'firebase/firestore';
 import { PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
+import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import { petListenerKey, petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
 import type { PetProfile } from '@/lib/pets/types';
 import { FEED_SHORTCUT_PARAM, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
@@ -20,6 +22,7 @@ import { Skeleton } from './ui/skeleton';
 import { LivingPetCard } from './pets/living-pet-card';
 import { PetsPageHeader } from './pets/pets-page-header';
 import { createPet, deletePet, updatePet } from './pets/pet-profile-api';
+import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
 
 const GRID = 'grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
@@ -48,36 +51,57 @@ export function PetsClient() {
   const canEdit = Boolean(permissions['pets.editProfiles']);
 
   // Keyed by household so a household switch never shows the previous pets.
-  const [snapshot, setSnapshot] = useState<{ householdId: string | null; pets: PetProfile[]; failed: boolean }>({
-    householdId: null,
+  // `failed`: the list could not be read (`retrying`: it resubscribes on its own;
+  // `unauthorized`: access was refused, so no "Try again" is offered, PE-18c).
+  // Keyed by the listener (household, member, pets.view), so access returning starts a fresh read.
+  const listKey = petListenerKey(householdId ? `${householdId}/pets` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  const [snapshot, setSnapshot] = useState<{ key: string | null; pets: PetProfile[]; loaded: boolean; failed: false | 'retrying' | 'unauthorized' }>({
+    key: null,
     pets: [],
+    loaded: false,
     failed: false,
   });
+  const listHandle = useRef<ResilientHandle | null>(null);
+  // The pet whose menu opened Edit or Delete: focus returns to its actions button (PE-20e).
+  const menuPet = useRef<string | null>(null);
+  const backToMenu = (event: Event) => returnFocusToPet(menuPet.current)(event);
   const [addOpen, setAddOpen] = useState(false);
   const [petToEdit, setPetToEdit] = useState<PetProfile | null>(null);
   const [petToDelete, setPetToDelete] = useState<PetProfile | null>(null);
 
   // Live pet list: edits from other members and devices appear without a refresh.
+  // A resilient listener (PE-8g): a failed read resubscribes with bounded backoff
+  // and on `online` / page visible; already loaded pets stay while it retries.
   useEffect(() => {
-    if (!householdId) return;
-    return onSnapshot(
-      collection(db, 'households', householdId, 'pets'),
-      (result) => {
-        const next = result.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetProfile);
-        setSnapshot({ householdId, pets: next.sort((a, b) => a.name.localeCompare(b.name)), failed: false });
-      },
-      (error) => {
-        console.error('Error loading pets:', error);
-        setSnapshot({ householdId, pets: [], failed: true });
-        toastError(error, "Couldn't load your pets");
+    if (!householdId || !listKey) return;
+    const handle = petSnapshotListener<QuerySnapshot>(
+      (next, error) => onSnapshot(collection(db, 'households', householdId, 'pets'), { includeMetadataChanges: true }, next, error),
+      {
+        next: (result) => {
+          const next = result.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetProfile);
+          setSnapshot({ key: listKey, pets: next.sort((a, b) => a.name.localeCompare(b.name)), loaded: true, failed: false });
+        },
+        status: (status) => {
+          if (status.kind === 'live') return;
+          console.error('Error loading pets:', status.error);
+          setSnapshot((previous) => previous.key === listKey && previous.loaded
+            ? { ...previous, failed: status.kind }
+            : { key: listKey, pets: [], loaded: false, failed: status.kind });
+        },
       },
     );
-  }, [householdId, toastError]);
+    listHandle.current = handle;
+    return () => {
+      handle.stop();
+      if (listHandle.current === handle) listHandle.current = null;
+    };
+    // Recreated when the member or their pets.view changes: a refused list recovers when access returns.
+  }, [householdId, listKey]);
 
-  const ready = snapshot.householdId === householdId;
+  const ready = snapshot.key === listKey && (snapshot.loaded || snapshot.failed !== false);
   const loading = Boolean(householdId) && !ready;
   const pets = useMemo(() => (ready ? snapshot.pets : []), [ready, snapshot.pets]);
-  const loadFailed = ready && snapshot.failed;
+  const loadFailed = ready && !snapshot.loaded ? snapshot.failed : false;
 
   const existingNames = useMemo(() => pets.map((pet) => pet.name), [pets]);
 
@@ -157,6 +181,11 @@ export function PetsClient() {
   return (
     <div>
       <PetsPageHeader action={addButton} />
+      {ready && snapshot.loaded && snapshot.failed && (
+        <p role="status" className="-mt-4 mb-4 text-sm text-muted-foreground" data-testid="pets-list-stale">
+          {staleNoticeText(snapshot.failed === 'unauthorized' ? 'access-changed' : 'reconnecting', 'the pet list')}
+        </p>
+      )}
 
       {canEdit && (
         <AddPetDialog open={addOpen} onOpenChange={setAddOpen} existingNames={existingNames} onAddPet={handleAddPet} />
@@ -164,12 +193,13 @@ export function PetsClient() {
       {canFeed && householdId && (
         <FeedPickerDialog open={feedPickerOpen} onOpenChange={setFeedPickerOpen} pets={pets} householdId={householdId} />
       )}
-      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} />
+      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} onCloseAutoFocus={backToMenu} />
       <DeletePetAlert
         isOpen={!!petToDelete}
         petName={petToDelete?.name}
         onConfirm={handleDeletePet}
         onCancel={() => setPetToDelete(null)}
+        onCloseAutoFocus={backToMenu}
       />
 
       {loading ? (
@@ -186,20 +216,26 @@ export function PetsClient() {
                 pet={pet}
                 householdId={householdId}
                 canEdit={canEdit}
-                onEdit={setPetToEdit}
-                onDelete={setPetToDelete}
+                onEdit={(target) => { menuPet.current = target.id; setPetToEdit(target); }}
+                onDelete={(target) => { menuPet.current = target.id; setPetToDelete(target); }}
                 priority={index === 0}
                 index={index}
               />
             </StaggerItem>
           ))}
         </Stagger>
+      ) : loadFailed === 'unauthorized' ? (
+        <EmptyState
+          kind="pets"
+          title="Pets aren't available to you"
+          description="Your household role doesn't include viewing pets. Ask an owner or admin if you need access."
+        />
       ) : loadFailed ? (
         <EmptyState
           kind="pets"
           title="Pets are unavailable right now"
-          description="We couldn't load your pets. Check your connection and try again."
-          action={{ label: 'Try again', onClick: () => window.location.reload() }}
+          description="We couldn't load your pets. HomeHub keeps trying; check your connection or try again now."
+          action={{ label: 'Try again', onClick: () => listHandle.current?.retryNow() }}
         />
       ) : (
         <EmptyState

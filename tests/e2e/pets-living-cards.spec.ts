@@ -275,7 +275,7 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
     });
     await openPets(page);
     const card = page.getByTestId(`pet-card-${TEST_PET}`);
-    await expect(card).toContainText('Not fed today');
+    await expect(card).toContainText('No feeding planned daily'); // PE-18b: a non-daily schedule has no daily target
     await expect(card).not.toContainText('of 2 today');
 
     await card.getByRole('button', { name: `Open actions for ${legacyName}` }).click();

@@ -15,8 +15,17 @@ import {
   type CollectionReference,
   type Query,
   type QueryDocumentSnapshot,
+  type QuerySnapshot,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
+import { useAuth } from '@/hooks/use-auth';
+
+/** Who reads: listeners are recreated when the member or their pets.view changes (access returning recovers). */
+function usePetAccess() {
+  const { currentUser, permissions } = useAuth();
+  return { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) };
+}
 import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { PetCareLog, PetFeedingLog, PetMedicationLog } from '@/lib/pets/types';
 
@@ -42,8 +51,12 @@ export async function deletePetLog(householdId: string, petId: string, kind: Oth
   await deleteDoc(doc(petLogsCollection(householdId, petId, kind), logId));
 }
 
-type LiveLogs<T> = { logs: T[]; loading: boolean; error: unknown };
-type KeyedLogs<T> = { key: string | null; logs: T[]; error: unknown };
+/**
+ * `failure` says why `error` is set: `retrying` (resubscribing on its own) or
+ * `unauthorized` (access was refused), so a history says which (PE-18c).
+ */
+type LiveLogs<T> = { logs: T[]; loading: boolean; error: unknown; failure?: LiveFailure };
+type KeyedLogs<T> = { key: string | null; logs: T[]; error: unknown; failure?: LiveFailure };
 const EMPTY_KEYED = { key: null, logs: [], error: null };
 
 /**
@@ -86,7 +99,13 @@ type UnionSpec = {
   max?: number;
 };
 
-/** Subscribes to one or more queries; resolves once each has answered, keyed so stale results never show. */
+/**
+ * Subscribes to one or more queries; resolves once each has answered, keyed so
+ * stale results never show. Each query is a resilient listener (PE-8g, the HP-5
+ * pattern, `petSnapshotListener`): a failed one resubscribes with bounded
+ * backoff and at once on `online` or when the page becomes visible, and while it
+ * is down the logs are reported as unavailable (`error`), never as empty.
+ */
 function useLiveUnion({ key, householdId, petId, kind, mode, sinceMs, max }: UnionSpec) {
   const [state, setState] = useState<KeyedLogs<Record<string, unknown>[]>>(EMPTY_KEYED);
 
@@ -97,22 +116,36 @@ function useLiveUnion({ key, householdId, petId, kind, mode, sinceMs, max }: Uni
       ? [query(ref, where('nextDueDate', '>=', ''))]
       : dateShapeQueries(ref, sinceMs == null ? null : new Date(sinceMs), max);
     const results: (Record<string, unknown>[] | undefined)[] = queries.map(() => undefined);
-    let failed = false;
-    const unsubscribes = queries.map((shape, index) =>
-      onSnapshot(
-        shape,
-        (snapshot) => {
-          results[index] = snapshot.docs.map((entry) => normalizeEntry(kind, entry));
-          if (!failed && results.every(Boolean)) setState({ key, logs: results as Record<string, unknown>[][], error: null });
-        },
-        (error) => {
-          failed = true;
-          console.error(`Error loading ${kind}:`, error);
-          setState({ key, logs: [], error });
+    const errors: unknown[] = queries.map(() => null);
+    const failures: LiveFailure[] = queries.map(() => false);
+    const publish = () => {
+      const error = errors.find((value) => value !== null);
+      const failure: LiveFailure = failures.includes('unauthorized') ? 'unauthorized' : failures.includes('retrying') ? 'retrying' : false;
+      if (error) setState({ key, logs: [], error, failure });
+      else if (results.every(Boolean)) setState({ key, logs: [...results] as Record<string, unknown>[][], error: null });
+    };
+    const handles = queries.map((shape, index) =>
+      petSnapshotListener<QuerySnapshot>(
+        // Metadata changes too: a cached answer that turns into a server answer is seen (only that resets the retries).
+        (next, error) => onSnapshot(shape, { includeMetadataChanges: true }, next, error),
+        {
+          next: (snapshot) => {
+            results[index] = snapshot.docs.map((entry) => normalizeEntry(kind, entry));
+            errors[index] = null;
+            failures[index] = false;
+            publish();
+          },
+          status: (status) => {
+            if (status.kind === 'live') return;
+            console.error(`Error loading ${kind}:`, status.error);
+            errors[index] = status.error ?? new Error('unavailable');
+            failures[index] = status.kind;
+            publish();
+          },
         },
       ),
     );
-    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+    return () => handles.forEach((handle) => handle.stop());
   }, [key, householdId, petId, kind, mode, sinceMs, max]);
 
   return state;
@@ -125,13 +158,13 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
   kind: PetLogKind,
   max = 50,
 ): LiveLogs<T> {
-  const key = householdId ? `${householdId}/${petId}/${kind}/${max}` : null;
+  const key = petListenerKey(householdId ? `${householdId}/${petId}/${kind}/${max}` : null, usePetAccess());
   const state = useLiveUnion({ key, householdId, petId, kind, mode: 'shapes', max });
 
   if (!key) return { logs: [], loading: false, error: null };
   // Until the current subscriptions answer, show loading (never another pet's logs).
   if (state.key !== key) return { logs: [], loading: true, error: null };
-  if (state.error) return { logs: [], loading: false, error: state.error };
+  if (state.error) return { logs: [], loading: false, error: state.error, failure: state.failure };
   const lists = state.logs as unknown as (T & { id: string; date: unknown })[][];
   return { logs: newestFirst(lists, max) as T[], loading: false, error: null };
 }
@@ -145,7 +178,7 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
  * single-field indexes.
  */
 export function useMedicationCountdownLogs(householdId: string | null | undefined, petId: string): LiveLogs<PetMedicationLog> {
-  const key = householdId ? `${householdId}/${petId}` : null;
+  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
   const dated = useLiveUnion({ key, householdId, petId, kind: 'medication-logs', mode: 'dated' });
 
   const datedReady = dated.key === key && !dated.error;
@@ -156,10 +189,10 @@ export function useMedicationCountdownLogs(householdId: string | null | undefine
 
   if (!key) return { logs: [], loading: false, error: null };
   if (dated.key !== key) return { logs: [], loading: true, error: null };
-  if (dated.error) return { logs: [], loading: false, error: dated.error };
+  if (dated.error) return { logs: [], loading: false, error: dated.error, failure: dated.failure };
   if (!sinceKey) return { logs: [], loading: false, error: null };
   if (recent.key !== sinceKey) return { logs: [], loading: true, error: null };
-  if (recent.error) return { logs: [], loading: false, error: recent.error };
+  if (recent.error) return { logs: [], loading: false, error: recent.error, failure: recent.failure };
   const recentLogs = (recent.logs as unknown as PetMedicationLog[][]).flat();
   return { logs: mergeById(datedLogs, recentLogs), loading: false, error: null };
 }

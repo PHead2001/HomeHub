@@ -14,12 +14,13 @@ import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { loggerName } from '@/lib/pets/care';
+import { loggerName, readableLogDate } from '@/lib/pets/care';
 import type { PetCareLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
 import { addPetLog, deletePetLog, usePetLogs } from './pets/pet-log-api';
+import { unavailableText } from '@/lib/pets/live-listener';
 
 const logSchema = z.object({
   activity: z.string().trim().min(3, 'Describe the activity (at least 3 characters).').max(80, 'Keep the activity under 80 characters.'),
@@ -38,7 +39,7 @@ export function CareLogClient({ petId }: CareLogProps) {
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', 100);
+  const { logs, loading, error, failure } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', 100);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
 
@@ -147,17 +148,20 @@ export function CareLogClient({ petId }: CareLogProps) {
             </div>
           )}
           {!loading && error ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">Care history is unavailable right now.</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">{unavailableText('Care history', failure ?? 'retrying')}</p>
           ) : null}
           {!loading && !error && logs.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No care logged yet.</p>
           )}
-          {!loading && logs.map((log) => (
+          {!loading && logs.map((log) => {
+            // A blank or unreadable legacy date renders as unknown, never a crash (PE-8c).
+            const when = readableLogDate(log.date);
+            return (
             <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
               <div className="min-w-0 space-y-0.5">
-                <p className="font-semibold text-foreground">{log.activity}</p>
+                <p className="break-words font-semibold text-foreground">{log.activity}</p>
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
-                  <span>{format(new Date(log.date), 'PPP p')}</span>
+                  <span>{when ? format(when, 'PPP p') : 'Unknown time'}</span>
                   <LoggedBy entry={log} />
                 </p>
                 {log.notes && <p className="mt-1 text-muted-foreground">{log.notes}</p>}
@@ -168,7 +172,8 @@ export function CareLogClient({ petId }: CareLogProps) {
                 </Button>
               )}
             </div>
-          ))}
+            );
+          })}
         </section>
       </CardContent>
     </Card>

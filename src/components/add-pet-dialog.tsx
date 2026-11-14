@@ -99,7 +99,19 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
             onChange={change}
             onPhotoChange={setPhotoFile}
           />
-          <DialogFooter className="pt-2">
+          <DialogFooter className="gap-2 pt-2">
+            {/* PE-18d: an explicit way out besides the corner X and Escape. */}
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => {
+                onOpenChange(false);
+                reset();
+              }}
+            >
+              Cancel
+            </Button>
             <Button type="submit" disabled={saving}>
               {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
               Save Pet
