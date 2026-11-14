@@ -18,6 +18,9 @@ import { loggerName } from '@/lib/pets/care';
 import { FEED_UNDO_MS, feedAgainPrompt, feedAgainReason, petFeedToastGroup } from '@/lib/pets/feed-decision';
 import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-plan';
 import { feedPet, undoFeed, type FeedPetInput, type FeedPetResult } from '@/lib/pets/feed-operation';
+import { TabletContext } from '@/components/devices/tablet-context';
+import { backdatedCapability } from '@/lib/devices/action-policy';
+import { PET_PERMISSIONS } from '@/lib/permissions';
 
 /** A feeding request as an entry point describes it; who, where and the zone come from the session. */
 export type FeedRequest = Pick<FeedPetInput, 'portion' | 'portionFromSlot' | 'food' | 'comments' | 'backdatedAt' | 'known'>;
@@ -77,7 +80,11 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
   const [asked, setAsked] = React.useState<{ attempt: FeedAttempt; prompt: string; reason: string } | null>(null);
   const callbacksRef = React.useRef(callbacks);
   React.useEffect(() => { callbacksRef.current = callbacks; });
-  const allowed = Boolean(permissions['pets.addLogs']);
+  // On a registered wall tablet every feeding entry point is a device action (PE-17a): the
+  // shell asks "Who's here?" (and a PIN when the level needs one), shows "Feed again?" and the
+  // Undo toast; the server decides for the chosen person. Offered while Pets is on.
+  const tablet = React.useContext(TabletContext);
+  const allowed = tablet ? tablet.settings.sections.pets : Boolean(permissions[PET_PERMISSIONS.addLogs]);
   const householdId = currentUser?.householdId ?? null;
   const timeZone = household?.timeZone ?? null;
 
@@ -158,8 +165,40 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
     retryRef.current = (attempt) => void execute(attempt);
   }, [execute]);
 
-  // A new press: a new operation id.
-  const run = React.useCallback((request: FeedRequest) => execute({ request, opId: newFeedOpId(), confirm: null }), [execute]);
+  const runOnTablet = React.useCallback(async (request: FeedRequest): Promise<FeedPetResult | null> => {
+    if (!tablet || !allowed || savingRef.current) return null;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const capability = request.backdatedAt ? backdatedCapability('feed', request.backdatedAt, new Date()) : 'pets.feed';
+      const outcome = await tablet.runAction({
+        capability,
+        label: `Fed ${petName}`,
+        subject: petName,
+        intent: {
+          petId,
+          portion: request.portion,
+          portionFromSlot: Boolean(request.portionFromSlot),
+          food: request.food,
+          ...(request.comments ? { comments: request.comments } : {}),
+          ...(request.backdatedAt ? { backdatedAt: request.backdatedAt.toISOString() } : {}),
+        },
+      });
+      if (!outcome.ok) return null;
+      const data = (outcome.data as { result?: Partial<FeedSuccess> } | undefined)?.result;
+      const success: FeedSuccess = outcome.queued
+        ? { status: 'queued', logId: '', countToday: 0, perDay: null }
+        : { status: 'saved', logId: data?.logId ?? '', countToday: data?.countToday ?? 0, perDay: data?.perDay ?? null, slot: data?.slot ?? null, ...(data?.portion ? { portion: data.portion } : {}), mealsComplete: Boolean(data?.mealsComplete) };
+      callbacksRef.current.onFed?.(success);
+      return success;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }, [allowed, petId, petName, tablet]);
+
+  // A new press: a new operation id (on a tablet, the device runtime makes it).
+  const run = React.useCallback((request: FeedRequest) => (tablet ? runOnTablet(request) : execute({ request, opId: newFeedOpId(), confirm: null })), [execute, runOnTablet, tablet]);
   const acceptPrompt = React.useCallback(async () => {
     if (!asked) return null;
     return execute(asked.attempt);

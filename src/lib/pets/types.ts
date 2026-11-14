@@ -74,6 +74,8 @@ export type MealPlanHistoryEntry = {
 export type LoggedBy = {
   loggedByUid?: string;
   loggedByName?: string;
+  /** Written by a wall tablet (server only): which tablet, which person, face or PIN (PE-17c). */
+  deviceAttribution?: { deviceName?: unknown; level?: unknown } | null;
 };
 
 export type PetFeedingLog = FeedingLog & LoggedBy & {

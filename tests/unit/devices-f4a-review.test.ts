@@ -50,6 +50,7 @@ describe('queued answers: every capability\'s outcome shapes (E)', () => {
     for (const capability of SENDABLE_CAPABILITIES) assert.notEqual(queuedSendResult(capability, ok({})).ok, undefined);
     assert.deepEqual(queuedSendResult('chores.complete', { ok: false, code: 'forbidden' }), { ok: false, code: 'forbidden' });
     assert.equal(queuedSendResult('pets.feed', ok({ anything: true })).ok, false);
+    assert.equal(queuedSendResult('pets.dose.give', ok({ anything: true })).ok, false);
   });
 
   it('the dropped-change notice says why', () => {

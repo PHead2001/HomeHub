@@ -27,6 +27,7 @@ import { DeviceActionError } from '@/lib/server/device-errors';
 import { devicesEnabled } from '@/lib/server/device-identity';
 import { takeAddressRateSlot, takeRateSlot } from '@/lib/server/device-management';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
+import { withoutEmails } from '@/lib/devices/without-emails';
 import {
   appliedEntry,
   classifyActionAttempt,
@@ -531,7 +532,8 @@ export async function authorizeDeviceAction(
         if (!undo) {
           tx.set(ledgerRef, appliedEntry({
             capability, actorUid: current.actor.uid, generation: claims.hh_gen, targetPath: outcome.targetPath,
-            summary: outcome.summary, deviceCreatedAt, now: checkedAt,
+            // Design 10.1: no email is ever kept in the ledger (no-op answers carry stored records).
+            summary: withoutEmails(outcome.summary), deviceCreatedAt, now: checkedAt,
           }));
         } else if (outcome.undo === 'reversed') {
           tx.update(ledgerRef, undoneUpdate(checkedAt));

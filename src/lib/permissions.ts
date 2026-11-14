@@ -6,6 +6,18 @@ import type {
   UserRole,
 } from '@/lib/types';
 
+/**
+ * The Pets permissions, named once (R5): the rules' pet-log clauses, the personal UI's
+ * gates and the wall tablet's device actions (`src/lib/devices/action-policy.ts`, checked by
+ * the server gate) all use these, so a tablet is never looser than a phone.
+ * `tests/unit/devices-pets.test.ts` checks the rules use the same names.
+ */
+export const PET_PERMISSIONS = {
+  addLogs: 'pets.addLogs',
+  deleteLogs: 'pets.deleteLogs',
+  editProfiles: 'pets.editProfiles',
+} as const satisfies Record<string, HouseholdPermission>;
+
 export const householdPermissions: HouseholdPermission[] = [
   'household.view',
   'household.manageMembers',
