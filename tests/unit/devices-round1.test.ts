@@ -80,6 +80,7 @@ describe('a tablet removed while switched off is cleared at the next start (revi
     return {
       ran,
       deps: {
+        signedIn: () => false,
         deleteDeviceDatabase: () => { ran.push('db'); },
         forgetHousehold: () => { ran.push('household'); },
         clearFirestore: () => { ran.push('firestore'); },
@@ -93,7 +94,7 @@ describe('a tablet removed while switched off is cleared at the next start (revi
     resetFormerTabletForTests();
     const storage = memoryStorage();
     const { ran, deps: d } = deps();
-    assert.equal(await recoverFormerTablet(d, storage), false);
+    assert.equal(await recoverFormerTablet(d, storage), 'not-needed');
     assert.deepEqual(ran, []);
   });
 
@@ -104,10 +105,10 @@ describe('a tablet removed while switched off is cleared at the next start (revi
     assert.equal(storage.rows.get(TABLET_MARKER_KEY), '1');
     assert.equal(hasTabletMarker(storage), true);
     const { ran, deps: d } = deps();
-    assert.equal(await recoverFormerTablet(d, storage), true);
-    assert.deepEqual(ran, ['db', 'household', 'firestore', 'push', 'navigate']);
+    assert.equal(await recoverFormerTablet(d, storage), 'ran');
+    assert.deepEqual(ran, ['db', 'household', 'push', 'firestore', 'navigate']);
     assert.equal(hasTabletMarker(storage), false);
-    assert.equal(await recoverFormerTablet(d, storage), false, 'the marker is gone: no second run');
+    assert.equal(await recoverFormerTablet(d, storage), 'not-needed', 'the marker is gone: no second run');
   });
 
   it('a failing or hanging step never stops the rest', async () => {
@@ -120,7 +121,7 @@ describe('a tablet removed while switched off is cleared at the next start (revi
       deleteDeviceDatabase: () => new Promise(() => undefined),
       clearFirestore: () => { throw new Error('two tabs'); },
     }, storage, 20);
-    assert.equal(result, true);
+    assert.equal(result, 'ran');
     assert.deepEqual(ran, ['household', 'push', 'navigate']);
     assert.equal(hasTabletMarker(storage), false);
   });
@@ -191,6 +192,7 @@ describe('a new setup link opened on a former tablet keeps its code (round 5)', 
     // 3. Recovery clears, removes the marker, then reloads to a URL that still carries the code.
     let reloadedTo = '';
     await recoverFormerTablet({
+      signedIn: () => false,
       deleteDeviceDatabase: () => { events.push('clear'); },
       forgetHousehold: () => undefined,
       clearFirestore: () => undefined,
@@ -211,7 +213,8 @@ describe('a new setup link opened on a former tablet keeps its code (round 5)', 
 
   it('guards: both entry points capture the code before the asynchronous recovery, and the setup screen defers stripping', () => {
     const setup = readFileSync('src/components/devices/setup-screen.tsx', 'utf8');
-    assert.match(setup, /recoverFormerTabletHere\(codeFromSetupFragment\(window\.location\.hash\)/);
+    assert.match(setup, /initialCode = useRef<string \| null>\(typeof window === 'undefined' \? null : codeFromSetupFragment\(window\.location\.hash\)\)/);
+    assert.match(setup, /recoverFormerTabletHere\(initialCode\.current\)/);
     assert.match(setup, /shouldStripSetupFragment\(hasTabletMarker\(\)\)/);
     const auth = readFileSync('src/contexts/auth-context.tsx', 'utf8');
     assert.match(auth, /const setupCode = codeFromSetupFragment\(window\.location\.hash\);\s*void import\('@\/lib\/devices\/former-tablet'\)\.then\(\(mod\) => mod\.recoverFormerTabletHere\(setupCode\)\)/);
