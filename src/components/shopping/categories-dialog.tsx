@@ -296,7 +296,7 @@ export function CategoriesDialog({
           <Button variant="outline" className="w-full sm:w-auto"><Settings className="mr-2 h-4 w-4" aria-hidden /> Manage Categories</Button>
         </DialogTrigger>
       )}
-      <DialogContent phoneSheet className="max-h-[90dvh] overflow-y-auto" onCloseAutoFocus={onCloseAutoFocus}>
+      <DialogContent phoneSheet className="max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] overflow-y-auto" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="font-headline">Manage Categories</DialogTitle>
           <DialogDescription>

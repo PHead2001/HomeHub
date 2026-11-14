@@ -39,7 +39,7 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const PHONE_SHEET_CLASSES =
   "[@media(max-width:639.98px)]:left-0 [@media(max-width:639.98px)]:right-0 [@media(max-width:639.98px)]:top-auto [@media(max-width:639.98px)]:bottom-[var(--keyboard-inset,0px)] [@media(max-width:639.98px)]:max-h-[calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px))] [@media(max-width:639.98px)]:max-w-none [@media(max-width:639.98px)]:translate-x-0 [@media(max-width:639.98px)]:translate-y-0 [@media(max-width:639.98px)]:rounded-t-2xl [@media(max-width:639.98px)]:border-x-0 [@media(max-width:639.98px)]:border-b-0 [@media(max-width:639.98px)]:pb-[calc(1.5rem+env(safe-area-inset-bottom))] [@media(max-width:639.98px)]:data-[state=open]:zoom-in-100 [@media(max-width:639.98px)]:data-[state=closed]:zoom-out-100 [@media(max-width:639.98px)]:data-[state=open]:slide-in-from-left-0 [@media(max-width:639.98px)]:data-[state=closed]:slide-out-to-left-0 [@media(max-width:639.98px)]:data-[state=open]:slide-in-from-bottom-full [@media(max-width:639.98px)]:data-[state=closed]:slide-out-to-bottom-full"
 
-/** Mounted inside an open sheet's content only, so the listener lives exactly while it is open. */
+/** Mounted inside an open dialog's content only, so the listener lives exactly while it is open. */
 function KeyboardInsetTracker() {
   React.useEffect(() => trackKeyboardInset(), [])
   return null
@@ -54,20 +54,22 @@ const DialogContent = React.forwardRef<
     phoneSheet?: boolean
   }
 >(({ className, children, hideClose = false, phoneSheet = false, ...props }, ref) => (
-  // SH-19: never taller than the dynamic viewport minus the safe areas; the content
-  // scrolls inside, so the footer stays reachable above an on-screen keyboard.
+  // SH-19: never taller than the screen minus the safe areas; the content scrolls inside.
+  // WT-29: Android Chrome does not shrink the layout viewport for the on-screen keyboard, so
+  // a centred dialog also leaves out `--keyboard-inset` and centres in the uncovered part,
+  // keeping its footer reachable above the keyboard (0 without a keyboard: no change).
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid max-h-[var(--dialog-max-h)] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] overflow-y-auto overscroll-contain ease-spring-enter gap-4 border bg-popover p-6 text-popover-foreground shadow-overlay duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:pointer-events-none data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-xl",
+        "fixed left-[50%] top-[calc(50%_-_var(--keyboard-inset,0px)/2)] z-50 grid max-h-[calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px))] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] overflow-y-auto overscroll-contain ease-spring-enter gap-4 border bg-popover p-6 text-popover-foreground shadow-overlay duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:pointer-events-none data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-xl",
         phoneSheet && PHONE_SHEET_CLASSES,
         className
       )}
       {...props}
     >
-      {phoneSheet && <KeyboardInsetTracker />}
+      <KeyboardInsetTracker />
       {children}
       {!hideClose && (
         <DialogPrimitive.Close data-dialog-close className="hit-slop absolute right-4 top-4 rounded-sm text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none">

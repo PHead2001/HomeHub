@@ -2,7 +2,8 @@
  * Pixels the on-screen keyboard (or other browser UI) covers at the bottom of the
  * layout viewport, from the visual viewport: 0 when there is no visual viewport
  * or nothing is covered. Phone bottom sheets (SH-19b) sit this far above the
- * bottom, so their fields and buttons stay above the keyboard.
+ * bottom, and centred dialogs leave it out of their height (WT-29), so their
+ * fields and buttons stay above the keyboard.
  */
 export function keyboardInset(layoutHeight: number, visual: { height: number; offsetTop: number } | null | undefined): number {
   if (!visual || !Number.isFinite(layoutHeight) || !Number.isFinite(visual.height)) return 0;
@@ -10,14 +11,14 @@ export function keyboardInset(layoutHeight: number, visual: { height: number; of
   return covered > 1 ? Math.round(covered) : 0;
 }
 
-/** Bottom sheets open at once (nested sheets share one `--keyboard-inset`). */
+/** Dialogs open at once (nested dialogs share one `--keyboard-inset`). */
 let activeSheets = 0;
 let detach: (() => void) | null = null;
 
 /**
- * Keeps `--keyboard-inset` on <html> up to date while at least one phone bottom
- * sheet is open (one visual viewport listener for all of them). Returns the
- * release for this sheet.
+ * Keeps `--keyboard-inset` on <html> up to date while at least one dialog is
+ * open (one visual viewport listener for all of them). Returns the release for
+ * this dialog.
  */
 export function trackKeyboardInset(): () => void {
   if (typeof window === 'undefined') return () => undefined;

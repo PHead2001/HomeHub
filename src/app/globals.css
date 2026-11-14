@@ -36,8 +36,9 @@
        menu items (`h-[var(--target-min)]`: a caller's own `h-*` replaces it cleanly). */
     --target-min: 2.75rem;
 
-    /* Tallest a dialog may be: the dynamic viewport (shrinks with mobile browser
-       chrome) minus the notch/home-indicator safe areas and a 1 rem margin each side. */
+    /* Tallest a dialog may be: the small viewport (the screen with mobile browser chrome
+       shown) minus the notch/home-indicator safe areas and a 1 rem margin each side. Not
+       dvh: the installed Android web app resolves it too tall after a full page load (WT-29). */
     --dialog-max-h: calc(100vh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
 
     /* One focus-visible ring for every interactive element. */
@@ -55,9 +56,9 @@
     --ease-spring: linear(0, 0.1504, 0.421, 0.6644, 0.8358, 0.9381, 0.9898, 1.0106, 1.0152, 1.0129, 1.0088, 1.0051, 1.0025, 1.0009, 1.0002, 1, 1);
   }
 
-  @supports (height: 100dvh) {
+  @supports (height: 100svh) {
     :root {
-      --dialog-max-h: calc(100dvh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      --dialog-max-h: calc(100svh - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     }
   }
 

@@ -78,7 +78,10 @@ export default function RootLayout({
         {/* Applies the stored theme and motion preference before first paint: no flash. */}
         <script id="homehub-theme-bootstrap" dangerouslySetInnerHTML={{ __html: themeBootstrapScript() }} />
       </head>
-      <body className="font-body antialiased min-h-screen flex flex-col">
+      {/* svh where supported, not vh: in the installed Android web app a full page load (a
+          notification tap, a redirect) resolves vh and dvh 64 px taller than the screen and keeps
+          that, which leaves the page scrollable; svh is the screen height (WT-29). */}
+      <body className="font-body antialiased min-h-screen supports-[height:100svh]:min-h-svh flex flex-col">
         <AmbientBackground />
         <AuthProvider>
           <AppearanceProvider>

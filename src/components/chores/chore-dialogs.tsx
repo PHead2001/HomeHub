@@ -970,7 +970,7 @@ export function AddChoreDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !isSubmitting && onOpenChange(open)}>
-      <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col overflow-hidden p-0">
+      <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-xl flex-col overflow-hidden p-0">
         <DialogHeader className="px-6 pb-0 pr-10 pt-6">
           <DialogTitle>Add chore</DialogTitle>
           <DialogDescription>Name it, pick who does it and when. That&apos;s it.</DialogDescription>
