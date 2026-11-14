@@ -21,14 +21,8 @@ export type TabletHousehold = {
   pointsPin: PointsPinPolicy;
 };
 
-export type DeviceNotice = {
-  id: string;
-  category: string;
-  title: string;
-  message: string;
-  createdAt: Date | null;
-  deepLink: string | null;
-};
+export type { DeviceNotice } from '@/lib/devices/device-session';
+import type { DeviceNotice } from '@/lib/devices/device-session';
 
 /** What an action executor gets: the person and, when unlocked, their PIN session. */
 export type TabletActor = { actorUid: string; pinSessionId?: string };

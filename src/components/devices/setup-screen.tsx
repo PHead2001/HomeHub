@@ -19,6 +19,7 @@ import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { keepPendingAfter, pendingFor, type PendingRedemption } from '@/lib/devices/setup-pending';
 import { SCANNER_ERROR_COPY, scannerErrorKind, type ScannerErrorKind } from '@/lib/barcode/scanner-errors';
 import { DEVICE_ENDED_KEY, endedNote } from '@/lib/devices/device-session';
+import { hasTabletMarker, recoverFormerTabletHere } from '@/lib/devices/former-tablet';
 
 // "Set up a wall tablet" (docs/modules/devices/README.md, "QR and the setup screen"):
 // the code typed or scanned from the creator's QR (whose setup link carries the code in
@@ -127,6 +128,12 @@ export function SetupScreen() {
   // The one-shot note after a removal.
   const [note] = useState(() => (typeof window === 'undefined' ? null : readEndedNote()));
   const submitting = useRef(false);
+
+  // A browser that was a tablet whose session ended while the shell was not running: its
+  // data is cleared first (then the setup screen loads again).
+  useEffect(() => {
+    if (hasTabletMarker()) void recoverFormerTabletHere();
+  }, []);
 
   // Then the address bar loses the code, and the note is not shown again.
   useEffect(() => {

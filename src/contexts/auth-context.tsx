@@ -50,6 +50,7 @@ import { normalizeInviteCode } from '@/lib/invite-codes';
 import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
+import { hasTabletMarker } from '@/lib/devices/former-tablet';
 import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, retryDeviceClaims, type Principal } from '@/lib/devices/principal';
 import type {
   Household,
@@ -592,6 +593,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // User is not logged in: nothing of the last user's house stays on this device.
         dispatchMembership({ type: 'reset' });
         forgetHouseholdOnDevice(null);
+        // A wall tablet whose session ended while its shell was not running (removed while
+        // switched off): finish its clearing, then reload the setup screen.
+        if (hasTabletMarker()) void import('@/lib/devices/former-tablet').then((mod) => mod.recoverFormerTabletHere());
         profileRef.current = null;
         setProfile(null);
         setProfileConfirmed(false);

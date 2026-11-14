@@ -4,7 +4,8 @@
 // design 13, 14; WT-14, WT-16, WT-19, D-T1-D-T18). Rendered by AuthProvider instead of
 // the app for a device principal only (never by viewport size, WT-12b), so the personal
 // header, account menu, Profile, push manager and command palette never mount on a
-// tablet (WT-10, WT-14k).
+// tablet (WT-10, WT-14k). The service worker is registered (offline and new-build
+// detection, `TabletUpdateWatcher`); no push subscription or token is ever requested.
 //
 // TabletShell → TabletRuntime (the tablet's own record, its household, the roster and the
 // household-wide notices from the server; heartbeat; push clearing; revocation observed
@@ -28,17 +29,21 @@ import { classifyListenerError } from '@/lib/auth/live-membership';
 import {
   DEVICE_ENDED_KEY,
   DEVICE_NOTICES_LIMIT,
+  EXIT_TIMEOUT_MS,
   clearTabletSession,
   decideSessionEnd,
+  withTimeout,
   exitGateSettle,
   exitGateSignal,
   type ExitGate,
   destinationAfter,
   deviceNotificationCategories,
+  parseDeviceNotice,
   type SessionEnd,
   type SessionSignal,
 } from '@/lib/devices/device-session';
 import { deleteDeviceDatabase } from '@/lib/devices/device-store';
+import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
 import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, type DeviceRefusal } from '@/lib/devices/action-policy';
 import { rosterFrom, isOwnerOrAdmin, type RosterPerson } from '@/lib/devices/roster';
@@ -84,7 +89,6 @@ import { TabletUpdateWatcher } from './tablet-update-watcher';
 const TabletSettingsDialog = dynamic(() => import('./tablet-settings').then((mod) => mod.TabletSettingsDialog), { ssr: false });
 const TabletQuickAdd = dynamic(() => import('./tablet-quick-add').then((mod) => mod.TabletQuickAdd), { ssr: false });
 const Toaster = dynamic(() => import('@/components/ui/toaster').then((mod) => mod.Toaster), { ssr: false });
-const PushNotificationManager = dynamic(() => import('@/components/PushNotificationManager').then((mod) => mod.PushNotificationManager), { ssr: false });
 
 type TabletPrincipal = Exclude<Principal, { kind: 'personal' }>;
 
@@ -99,7 +103,8 @@ export default function TabletShell({ principal }: { principal: TabletPrincipal 
     // until AuthProvider has them.
     return <TabletMessage title="HomeHub can't be reached right now" body="This screen tries again when the connection returns." offline />;
   }
-  return <TabletRuntime householdId={principal.householdId} deviceId={principal.deviceId} generation={principal.generation} />;
+  // Keyed by the session: another household, device record or generation starts from nothing.
+  return <TabletRuntime key={`${principal.householdId}/${principal.deviceId}/${principal.generation}`} householdId={principal.householdId} deviceId={principal.deviceId} generation={principal.generation} />;
 }
 
 function TabletMessage({ title, body, offline }: { title: string; body: string; offline?: boolean }) {
@@ -113,29 +118,6 @@ function TabletMessage({ title, body, offline }: { title: string; body: string; 
     </main>
   );
 }
-
-const millisOf = (value: unknown): number | null => {
-  if (value && typeof value === 'object' && typeof (value as { toMillis?: unknown }).toMillis === 'function') return (value as { toMillis: () => number }).toMillis();
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-};
-
-const parseNotice = (id: string, data: Record<string, unknown>): DeviceNotice | null => {
-  const expires = millisOf(data.expiresAt);
-  if (expires !== null && expires < Date.now()) return null;
-  const created = millisOf(data.createdAt);
-  return {
-    id,
-    category: typeof data.category === 'string' ? data.category : 'general',
-    title: typeof data.title === 'string' ? data.title.slice(0, 120) : 'Household notice',
-    message: typeof data.message === 'string' ? data.message.slice(0, 400) : '',
-    createdAt: created === null ? null : new Date(created),
-    deepLink: typeof data.deepLink === 'string' ? data.deepLink : null,
-  };
-};
 
 /** Where the tablet session is stopped from (listeners) and how it ended. */
 let endingSession = false;
@@ -172,6 +154,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
         await clearLocalFirestoreCache();
       },
       'clear-push': () => clearPushState(browserPushClearDeps()),
+      'forget-tablet-marker': () => forgetTabletMarker(),
       'sign-out': () => signOut(auth),
       'set-note': () => {
         try {
@@ -192,12 +175,16 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
     if (endNow) clearAndLeave(endNow);
   }, [clearAndLeave]);
 
-  /** Runs one of this tablet's exits; the note and destination come from the exit, not the race. */
+  /**
+   * Runs one of this tablet's exits; the note and destination come from the exit, not the
+   * race. The hold-back lasts at most EXIT_TIMEOUT_MS: a call that does not answer by then
+   * counts as failed, and any session end that arrived meanwhile applies.
+   */
   const runExit = useCallback(async <T extends { ok: boolean }>(end: SessionEnd, call: () => Promise<T>): Promise<T> => {
     exitGate.current = { inFlight: end, deferred: null };
     let ok = false;
     try {
-      const result = await call();
+      const result = await withTimeout(call(), EXIT_TIMEOUT_MS, 'tablet exit');
       ok = result.ok;
       return result;
     } finally {
@@ -289,7 +276,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
           orderBy('createdAt', 'desc'),
           limit(DEVICE_NOTICES_LIMIT),
         ), (snapshot) => {
-          const notices = snapshot.docs.map((d) => parseNotice(d.id, d.data())).filter((notice): notice is DeviceNotice => notice !== null);
+          const notices = snapshot.docs.map((d) => parseDeviceNotice(d.id, d.data(), Date.now())).filter((notice): notice is DeviceNotice => notice !== null);
           setNoticesByCategory((previous) => ({ ...previous, [category]: notices }));
         }, () => undefined));
       }
@@ -324,6 +311,10 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
       window.removeEventListener('online', beat);
     };
   }, [householdId, signal]);
+
+  // "This browser is a tablet": if the session ends while the shell is not running, the
+  // signed-out app finishes the clearing (src/lib/devices/former-tablet.ts).
+  useEffect(() => { markTabletBrowser(); }, []);
 
   // A tablet never holds a push subscription: retried at every start until it succeeds (S5, WT-10a).
   useEffect(() => {
@@ -375,7 +366,6 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
           />
         </Suspense>
       </DashboardScopeProvider>
-      <PushNotificationManager />
       <Toaster />
     </AppearanceProvider>
   );

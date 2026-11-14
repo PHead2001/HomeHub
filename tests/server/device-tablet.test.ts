@@ -6,6 +6,7 @@ import { exitTablet, updateDeviceSettingsFromTablet } from '../../src/lib/server
 import { createDeviceRepairCode, redeemDeviceCode, recordDeviceHeartbeat } from '../../src/lib/server/device-management';
 import { setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { QuietHoursError, updateQuietHours } from '../../src/lib/server/quiet-hours';
+import { transferOwnership } from '../../src/lib/server/household-membership';
 import { exitTabletAction, updateDeviceSettingsFromTabletAction } from '../../src/app/devices/actions';
 import { updateQuietHoursAction } from '../../src/app/household/quiet-hours-actions';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, userState, type Person } from './device-test-helpers';
@@ -256,6 +257,24 @@ describe('household quiet hours (D-T1, JC-20)', () => {
       await assert.rejects(updateQuietHours(owner, { householdId: H, quietHours: null }), (error: unknown) => error instanceof QuietHoursError && error.code === 'unavailable');
     } finally {
       process.env.HOMEHUB_DEVICES_ENABLED = 'true';
+    }
+  });
+});
+
+describe('household-wide notices carry no email (review 6)', () => {
+  test('the ownership-transfer notice uses the public name, never an email-valued display name', async () => {
+    const HT = 'tablet-house-transfer';
+    const emailNamed: Person = { uid: 't-email-named', email: 't.email@example.test', displayName: 't.email@example.test', role: 'member' };
+    await seedHousehold(HT, [owner, emailNamed]);
+    try {
+      await transferOwnership(owner, HT, emailNamed.uid);
+      const notices = await house(HT).collection('notifications').where('sourceType', '==', 'household-ownership-transfer').get();
+      assert.equal(notices.size, 1);
+      const message = String(notices.docs[0].get('message'));
+      assert.equal(message.includes('@'), false, message);
+      assert.match(message, /^A member is now the owner of /);
+    } finally {
+      await adminDb.recursiveDelete(house(HT));
     }
   });
 });

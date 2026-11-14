@@ -82,12 +82,12 @@ describe('clearing (13, WT-19c)', () => {
     return { ran, deps };
   };
 
-  it('runs every step in order: listeners, PIN and face, queue and journal, household data, Firestore, push, sign-out, note, navigation', async () => {
+  it('runs every step in order: listeners, PIN and face, queue and journal, household data, Firestore, push, the tablet marker, sign-out, note, navigation', async () => {
     const { ran, deps } = recorder();
     assert.deepEqual(await clearTabletSession(deps), []);
     assert.deepEqual(ran, [
       'stop-listeners', 'end-pin-and-face', 'delete-device-database', 'forget-household',
-      'clear-firestore', 'clear-push', 'sign-out', 'set-note', 'navigate',
+      'clear-firestore', 'clear-push', 'forget-tablet-marker', 'sign-out', 'set-note', 'navigate',
     ]);
   });
 

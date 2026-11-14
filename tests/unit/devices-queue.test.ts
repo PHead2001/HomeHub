@@ -14,6 +14,7 @@ import {
   removeIfNeverSent,
   retryDelay,
   syncQueue,
+  belongsToSession,
   withSendFields,
   type QueuedDeviceAction,
   type SendResult,
@@ -37,6 +38,7 @@ import type { DeviceCapability } from '../../src/lib/devices/action-policy';
 const T0 = Date.parse('2026-11-14T15:00:00Z');
 const proven = new Set<DeviceCapability>(['pets.feed', 'pets.feed.undo', 'chores.complete', 'chores.complete.undo']);
 const noLock = <R,>(work: () => Promise<R>) => work();
+const SESSION = { householdId: 'H', deviceId: 'D'.repeat(20), generation: 2 };
 
 const entry = (over: Partial<Parameters<typeof createQueuedAction>[0]> = {}, at = T0): QueuedDeviceAction => createQueuedAction({
   opId: randomUUID(), kind: 'action', householdId: 'H', deviceId: 'D'.repeat(20), generation: 2,
@@ -130,7 +132,7 @@ describe('syncQueue (11.3)', () => {
     const states: string[] = [];
     const { send } = sender({});
     const report = await syncQueue({
-      store, generation: 2, now: () => T0 + 60_000, lock: noLock,
+      store, session: SESSION, now: () => T0 + 60_000, lock: noLock,
       send: async (e) => { states.push(`${e.actorUid}:${(await store.get(e.opId))?.sendState}:${e.attempts}`); return send(e); },
     });
     assert.deepEqual(states, ['mia:inflight:1', 'sam:inflight:1']);
@@ -143,7 +145,7 @@ describe('syncQueue (11.3)', () => {
     const a = entry({}, T0);
     await enqueue(store, a, noLock);
     const { send, sent } = sender({});
-    await syncQueue({ store, generation: 2, now: () => T0 + 3 * 60 * 60_000, lock: noLock, send });
+    await syncQueue({ store, session: SESSION, now: () => T0 + 3 * 60 * 60_000, lock: noLock, send });
     assert.equal(sent[0].actorUid, 'mia');
     assert.deepEqual(sent[0].intent, a.intent);
     assert.equal(sent[0].opId, a.opId);
@@ -153,10 +155,24 @@ describe('syncQueue (11.3)', () => {
     const store = memoryStore<QueuedDeviceAction>();
     await enqueue(store, entry({ generation: 1 }), noLock);
     const { send, sent } = sender({});
-    const report = await syncQueue({ store, generation: 2, now: () => T0, lock: noLock, send });
+    const report = await syncQueue({ store, session: SESSION, now: () => T0, lock: noLock, send });
     assert.equal(report.discarded, 1);
     assert.equal(sent.length, 0);
     assert.deepEqual(await store.all(), []);
+  });
+
+  it('discards entries of another device record or household, even at the same generation (pairings restart at 1)', async () => {
+    const store = memoryStore<QueuedDeviceAction>();
+    const mine = entry({}, T0);
+    await enqueue(store, entry({ deviceId: 'E'.repeat(20) }, T0 + 1), noLock);
+    await enqueue(store, entry({ householdId: 'H2' }, T0 + 2), noLock);
+    await enqueue(store, mine, noLock);
+    const { send, sent } = sender({});
+    const report = await syncQueue({ store, session: SESSION, now: () => T0 + 10, lock: noLock, send });
+    assert.equal(report.discarded, 2);
+    assert.deepEqual(sent.map((e) => e.opId), [mine.opId], 'only this session\'s entry is sent');
+    assert.equal(belongsToSession(mine, SESSION), true);
+    assert.equal(belongsToSession(mine, { ...SESSION, deviceId: 'E'.repeat(20) }), false);
   });
 
   it('drops refused entries with a notice, keeps transient ones for a retry and stops there (order kept)', async () => {
@@ -166,7 +182,7 @@ describe('syncQueue (11.3)', () => {
     const later = entry({}, T0 + 2);
     for (const e of [dropped, transient, later]) await enqueue(store, e, noLock);
     const { send, sent } = sender({ [dropped.opId]: { ok: false, code: 'actor_not_member' }, [transient.opId]: 'throw' });
-    const report = await syncQueue({ store, generation: 2, now: () => T0 + 10, lock: noLock, send });
+    const report = await syncQueue({ store, session: SESSION, now: () => T0 + 10, lock: noLock, send });
     assert.deepEqual(sent.map((e) => e.opId), [dropped.opId, transient.opId], 'later entries never overtake a failing one');
     assert.equal(report.dropped.length, 1);
     assert.equal(report.dropped[0].code, 'actor_not_member');
@@ -177,10 +193,10 @@ describe('syncQueue (11.3)', () => {
     assert.equal(report.waiting, 2);
     // In backoff: nothing is sent.
     const again = sender({});
-    await syncQueue({ store, generation: 2, now: () => T0 + 4_000, lock: noLock, send: again.send });
+    await syncQueue({ store, session: SESSION, now: () => T0 + 4_000, lock: noLock, send: again.send });
     assert.equal(again.sent.length, 0);
     // After the backoff the same opId is resent (the server replays it if it had arrived).
-    await syncQueue({ store, generation: 2, now: () => T0 + 6_000, lock: noLock, send: again.send });
+    await syncQueue({ store, session: SESSION, now: () => T0 + 6_000, lock: noLock, send: again.send });
     assert.deepEqual(again.sent.map((e) => e.opId), [transient.opId, later.opId]);
     assert.equal(again.sent[0].attempts, 2);
     assert.deepEqual(await store.all(), []);
@@ -193,7 +209,7 @@ describe('syncQueue (11.3)', () => {
     await enqueue(store, a, noLock);
     await enqueue(store, b, noLock);
     const { send, sent } = sender({ [a.opId]: { ok: false, code: 'device_revoked' } });
-    const report = await syncQueue({ store, generation: 2, now: () => T0, lock: noLock, send });
+    const report = await syncQueue({ store, session: SESSION, now: () => T0, lock: noLock, send });
     assert.equal(report.revoked, true);
     assert.equal(sent.length, 1);
   });
@@ -202,7 +218,7 @@ describe('syncQueue (11.3)', () => {
     const store = memoryStore<QueuedDeviceAction>();
     await enqueue(store, entry(), noLock);
     const { send, sent } = sender({});
-    await syncQueue({ store, generation: 2, now: () => T0, lock: noLock, send });
+    await syncQueue({ store, session: SESSION, now: () => T0, lock: noLock, send });
     const values: unknown[] = [...Object.values(sent[0]), ...Object.values(sent[0].intent)];
     assert.ok(values.every((value) => typeof value !== 'function'));
     assert.doesNotThrow(() => structuredClone(sent[0]));
@@ -230,8 +246,8 @@ describe('syncQueue (11.3)', () => {
     };
     const lock = <R,>(work: () => Promise<R>) => withQueueLock(work, null);
     const [first, second] = await Promise.all([
-      syncQueue({ store, generation: 2, now: () => T0, lock, send }),
-      syncQueue({ store, generation: 2, now: () => T0, lock, send }),
+      syncQueue({ store, session: SESSION, now: () => T0, lock, send }),
+      syncQueue({ store, session: SESSION, now: () => T0, lock, send }),
     ]);
     assert.equal(maxInFlight, 1);
     assert.equal(first.sent + second.sent, 1, 'the entry is sent once');
@@ -278,7 +294,7 @@ describe('Undo of queued and live actions (10.3, R1)', () => {
 
 describe('Undo journal (10.3)', () => {
   const live = (over: Partial<UndoJournalEntry> = {}): UndoJournalEntry => ({
-    ...journalEntry({ opId: randomUUID(), capability: 'pets.feed', actorUid: 'mia', label: 'Fed Maple', sentAt: T0, viaQueue: false }),
+    ...journalEntry({ opId: randomUUID(), ...SESSION, capability: 'pets.feed', actorUid: 'mia', label: 'Fed Maple', sentAt: T0, viaQueue: false }),
     ...over,
   });
 
@@ -296,11 +312,25 @@ describe('Undo journal (10.3)', () => {
     const old = live({ respondedAt: T0 - 120_000, state: 'confirmed' });
     const undone = live({ state: 'undone', respondedAt: T0 });
     for (const e of [fresh, old, undone]) await store.put(e);
-    const restored = restorableUndos(await store.all(), T0 + 6_000);
+    const restored = restorableUndos(await store.all(), T0 + 6_000, SESSION);
     assert.deepEqual(restored.map((r) => [r.entry.opId, r.remainingMs]), [[fresh.opId, 9_000]]);
-    assert.deepEqual(expiredJournalEntries(await store.all(), T0 + 6_000).map((e) => e.opId).sort(), [old.opId, undone.opId].sort());
-    assert.equal(await pruneJournal(store, T0 + 6_000), 2);
+    assert.deepEqual(expiredJournalEntries(await store.all(), T0 + 6_000, SESSION).map((e) => e.opId).sort(), [old.opId, undone.opId].sort());
+    assert.equal(await pruneJournal(store, T0 + 6_000, SESSION), 2);
     await markJournal(store, fresh.opId, { state: 'undone' });
     assert.equal((await store.get(fresh.opId))?.state, 'undone');
+  });
+});
+
+describe('Undo journal entries belong to one tablet session', () => {
+  it('another device record\'s or household\'s entries are never restored and are pruned', async () => {
+    const store = memoryStore<UndoJournalEntry>();
+    const base = { capability: 'pets.feed' as const, actorUid: 'mia', label: 'Fed Maple', sentAt: T0, viaQueue: false };
+    const mine = { ...journalEntry({ opId: randomUUID(), ...SESSION, ...base }), respondedAt: T0, state: 'confirmed' as const };
+    const otherDevice = { ...journalEntry({ opId: randomUUID(), ...SESSION, deviceId: 'E'.repeat(20), ...base }), respondedAt: T0, state: 'confirmed' as const };
+    const otherHousehold = { ...journalEntry({ opId: randomUUID(), ...SESSION, householdId: 'H2', ...base }), respondedAt: T0, state: 'confirmed' as const };
+    for (const e of [mine, otherDevice, otherHousehold]) await store.put(e);
+    assert.deepEqual(restorableUndos(await store.all(), T0 + 1_000, SESSION).map((r) => r.entry.opId), [mine.opId]);
+    assert.equal(await pruneJournal(store, T0 + 1_000, SESSION), 2);
+    assert.deepEqual((await store.all()).map((e) => e.opId), [mine.opId]);
   });
 });

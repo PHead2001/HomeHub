@@ -80,6 +80,7 @@ export type ClearStep =
   | 'forget-household'
   | 'clear-firestore'
   | 'clear-push'
+  | 'forget-tablet-marker'
   | 'sign-out'
   | 'set-note'
   | 'navigate';
@@ -91,6 +92,7 @@ export const CLEAR_ORDER: readonly ClearStep[] = [
   'forget-household',
   'clear-firestore',
   'clear-push',
+  'forget-tablet-marker',
   'sign-out',
   'set-note',
   'navigate',
@@ -98,19 +100,44 @@ export const CLEAR_ORDER: readonly ClearStep[] = [
 
 export type ClearDeps = Record<ClearStep, () => unknown | Promise<unknown>>;
 
+/** Each clearing step gets at most this long; a step that hangs counts as failed and the rest still run. */
+export const CLEAR_STEP_TIMEOUT_MS = 2_500;
+/** A tablet exit call gets at most this long; a timeout counts as a failed exit. */
+export const EXIT_TIMEOUT_MS = 30_000;
+
+export class TimeoutError extends Error {
+  constructor(label: string) {
+    super(`${label} timed out`);
+    this.name = 'TimeoutError';
+  }
+}
+
+/** `work`, or a TimeoutError after `ms` (the work itself is not cancelled; its result is ignored). */
+export function withTimeout<T>(work: Promise<T>, ms: number, label = 'work', timers: { set: typeof setTimeout; clear: typeof clearTimeout } = { set: setTimeout, clear: clearTimeout }): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = timers.set(() => reject(new TimeoutError(label)), ms);
+    work.then(
+      (value) => { timers.clear(id); resolve(value); },
+      (error) => { timers.clear(id); reject(error); },
+    );
+  });
+}
+
 /**
  * Clears this browser's tablet session, in order (section 13): unsubscribe every
  * listener; end the in-memory PIN session and face memory; delete `homehub-device`
  * (queue and Undo journal); forget the household's local data; terminate Firestore and
- * clear its cache; clear push state; sign out; leave the one-shot note; hard-navigate.
- * Every step runs even when an earlier one fails (each is best effort), and navigation
- * always happens last. Returns the steps that failed.
+ * clear its cache; clear push state; remove the "this browser was a tablet" marker; sign out; leave the one-shot note; hard-navigate.
+ * Every step runs even when an earlier one fails or hangs (each is best effort and gets at
+ * most `stepTimeoutMs`), and navigation always happens last. Returns the steps that failed
+ * or timed out.
  */
-export async function clearTabletSession(deps: ClearDeps): Promise<ClearStep[]> {
+export async function clearTabletSession(deps: ClearDeps, options: { stepTimeoutMs?: number } = {}): Promise<ClearStep[]> {
+  const stepTimeoutMs = options.stepTimeoutMs ?? CLEAR_STEP_TIMEOUT_MS;
   const failed: ClearStep[] = [];
   for (const step of CLEAR_ORDER) {
     try {
-      await deps[step]();
+      await withTimeout(Promise.resolve().then(() => deps[step]()), stepTimeoutMs, step);
     } catch {
       failed.push(step);
     }
@@ -146,6 +173,43 @@ export const exitGateSettle = (gate: ExitGate, ok: boolean): { gate: ExitGate; e
 
 /** Where the tablet goes once cleared: the sign-in screen for a personal sign-in, else setup. */
 export const destinationAfter = (end: SessionEnd): string => (end === 'personal-sign-in' ? '/' : '/setup');
+
+/** A household-wide notice as the tablet shows it. */
+export type DeviceNotice = {
+  id: string;
+  category: string;
+  title: string;
+  message: string;
+  createdAt: Date | null;
+  deepLink: string | null;
+};
+
+/** Household-wide notices never show an email on a tablet (WT-10e): anything email-shaped is replaced. */
+export const redactEmails = (value: string): string => value.replace(/[^\s@]+@[^\s@]+/g, 'a member');
+
+const millisOf = (value: unknown): number | null => {
+  if (value && typeof value === 'object' && typeof (value as { toMillis?: unknown }).toMillis === 'function') return (value as { toMillis: () => number }).toMillis();
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+/** A notice document for the tablet: expired ones are dropped, text is capped and email-free. */
+export function parseDeviceNotice(id: string, data: Record<string, unknown>, nowMs: number): DeviceNotice | null {
+  const expires = millisOf(data.expiresAt);
+  if (expires !== null && expires < nowMs) return null;
+  const created = millisOf(data.createdAt);
+  return {
+    id,
+    category: typeof data.category === 'string' ? data.category : 'general',
+    title: typeof data.title === 'string' ? redactEmails(data.title).slice(0, 120) : 'Household notice',
+    message: typeof data.message === 'string' ? redactEmails(data.message).slice(0, 400) : '',
+    createdAt: created === null ? null : new Date(created),
+    deepLink: typeof data.deepLink === 'string' ? data.deepLink : null,
+  };
+}
 
 export type DeviceNotificationCategory = 'chores' | 'pets' | 'shopping' | 'maintenance' | 'system' | 'general';
 

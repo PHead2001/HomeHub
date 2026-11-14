@@ -27,7 +27,9 @@ export function rosterFrom(docs: ReadonlyArray<{ id: string; data: Record<string
   for (const { id, data } of docs) {
     const role = data.role;
     if (typeof role !== 'string' || !ELIGIBLE.has(role)) continue;
-    if (data.status !== 'active') continue;
+    // A record without `status` is active (as in household-policy, normalizeMember, the rules
+    // and the gate); pending, deleting and removed records are not.
+    if ((data.status ?? 'active') !== 'active') continue;
     if (id.startsWith('device_')) continue;
     const avatar = typeof data.avatarUrl === 'string' && /^https:\/\//.test(data.avatarUrl) ? data.avatarUrl : null;
     people.push({

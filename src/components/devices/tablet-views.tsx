@@ -9,7 +9,8 @@
 // household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { Bell, CalendarDays, CheckSquare, PawPrint, ShoppingCart, Wrench } from 'lucide-react';
 import { DashboardLoading } from '@/components/dashboard/dashboard-loading';
 import { cn } from '@/lib/utils';
@@ -82,24 +83,64 @@ function PetsView() {
   );
 }
 
+/** One list's needed items, live (the section view shows them all; JC-24 read-only). */
+function useListItems(householdId: string, listId: string | undefined) {
+  const [state, setState] = useState<{ listId: string; items: TabletShoppingItem[] | null; failed: boolean } | null>(null);
+  useEffect(() => {
+    if (!listId) return;
+    let stop: (() => void) | null = null;
+    let stopped = false;
+    void Promise.all([import('@/lib/firebase'), import('firebase/firestore')]).then(([{ db }, { collection, onSnapshot }]) => {
+      if (stopped) return;
+      stop = onSnapshot(
+        collection(db, 'households', householdId, 'shopping-lists', listId, 'items'),
+        (snapshot) => setState({ listId, items: neededListItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))), failed: false }),
+        () => setState((previous) => ({ listId, items: previous?.listId === listId ? previous.items : null, failed: true })),
+      );
+    });
+    return () => {
+      stopped = true;
+      stop?.();
+    };
+  }, [householdId, listId]);
+  return state && state.listId === listId ? state : null;
+}
+
 function ShoppingView({ listId }: { listId?: string }) {
-  const { data } = useTablet();
+  const { data, householdId, navigate } = useTablet();
   const shopping = data.facts.shopping;
   const status = loadingOr(Boolean(shopping), data.failed.has('shopping'));
-  const lists = (shopping?.lists ?? []).filter((list) => !listId || list.id === listId);
-  const items = (shopping?.firstItems ?? []).filter((item) => !listId || item.listId === listId);
+  const lists = shopping?.lists ?? [];
+  const selected = listId ? lists.find((list) => list.id === listId) : undefined;
+  const live = useListItems(householdId, listId);
   return (
-    <Section title="Shopping" icon={ShoppingCart} testId="tablet-view-shopping" empty={status ?? (lists.length === 0 ? 'No shopping lists yet.' : null)}>
-      <ul className="space-y-2">
-        {lists.map((list) => <Row key={list.id} title={list.name} detail={`${list.needed} needed`} />)}
-      </ul>
-      {items.length > 0 && (
-        <>
-          <h2 className="pt-2 font-headline text-xl font-semibold">Needed</h2>
-          <ul className="space-y-2">
-            {items.map((item) => <Row key={`${item.listId}-${item.id}`} title={item.name} detail={item.quantity > 1 ? `${item.quantity} · ${item.listName}` : item.listName} />)}
-          </ul>
-        </>
+    <Section title={selected ? selected.name : 'Shopping'} icon={ShoppingCart} testId="tablet-view-shopping" empty={status ?? (lists.length === 0 ? 'No shopping lists yet.' : null)}>
+      {listId ? (
+        live?.items ? (
+          live.items.length === 0 ? <p className="text-lg text-muted-foreground">Nothing needed on this list.</p> : (
+            <ul className="space-y-2" data-testid="tablet-shopping-items">
+              {live.items.map((item) => <Row key={item.id} title={item.name} detail={item.quantity > 1 ? String(item.quantity) : null} />)}
+            </ul>
+          )
+        ) : (
+          <p className="text-lg text-muted-foreground">{live?.failed ? "This list couldn't be loaded right now. It tries again on its own." : 'Loading…'}</p>
+        )
+      ) : (
+        <ul className="space-y-2">
+          {lists.map((list) => (
+            <li key={list.id}>
+              <button
+                type="button"
+                onClick={() => navigate(`/shopping?list=${encodeURIComponent(list.id)}`)}
+                className="flex min-h-14 w-full items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3 text-left"
+                data-testid={`tablet-shopping-list-${list.id}`}
+              >
+                <span className="min-w-0 text-lg font-medium">{list.name}</span>
+                <span className="shrink-0 text-sm text-muted-foreground">{list.needed} needed</span>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
       <p className="text-sm text-muted-foreground">Shopping is read-only on wall tablets. Add or tick items from a phone.</p>
     </Section>

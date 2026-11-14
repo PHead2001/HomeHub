@@ -8,6 +8,10 @@
 
 import type { DeviceCapability } from './action-policy';
 import type { RecordStore } from './device-store';
+import type { QueueSession } from './offline-queue';
+
+const ofSession = (entry: UndoJournalEntry, session: QueueSession) =>
+  entry.householdId === session.householdId && entry.deviceId === session.deviceId && entry.generation === session.generation;
 
 export const JOURNAL_UNDO_WINDOW_MS = 10_000;
 /** Entries are kept a little past the window so a late server answer still finds them. */
@@ -17,6 +21,10 @@ export type UndoJournalState = 'attempted' | 'confirmed' | 'undoing' | 'undone';
 
 export type UndoJournalEntry = {
   opId: string;
+  /** The tablet session the action was made in (household, device record, credential generation). */
+  householdId: string;
+  deviceId: string;
+  generation: number;
   capability: DeviceCapability;
   actorUid: string;
   /** Short description for the restored toast ("Fed Maple"); no PII beyond names shown on the tablet. */
@@ -43,18 +51,20 @@ export function journalRemainingMs(entry: UndoJournalEntry, now: number): number
   return Math.max(0, from + JOURNAL_UNDO_WINDOW_MS - now);
 }
 
-/** After a reload: the entries whose Undo toast comes back, with the time left. */
-export function restorableUndos(entries: readonly UndoJournalEntry[], now: number): Array<{ entry: UndoJournalEntry; remainingMs: number }> {
+/** After a reload: this session's entries whose Undo toast comes back, with the time left. */
+export function restorableUndos(entries: readonly UndoJournalEntry[], now: number, session: QueueSession): Array<{ entry: UndoJournalEntry; remainingMs: number }> {
   return entries
+    .filter((entry) => ofSession(entry, session))
     .filter((entry) => entry.state === 'confirmed' || entry.state === 'attempted')
     .map((entry) => ({ entry, remainingMs: journalRemainingMs(entry, now) }))
     .filter((item) => item.remainingMs > 0)
     .sort((a, b) => a.remainingMs - b.remainingMs);
 }
 
-/** Entries to delete: undone, or past the window plus the keep margin. */
-export function expiredJournalEntries(entries: readonly UndoJournalEntry[], now: number): UndoJournalEntry[] {
+/** Entries to delete: another session's, undone, or past the window plus the keep margin. */
+export function expiredJournalEntries(entries: readonly UndoJournalEntry[], now: number, session: QueueSession): UndoJournalEntry[] {
   return entries.filter((entry) => {
+    if (!ofSession(entry, session)) return true;
     if (entry.state === 'undone') return true;
     const from = entry.respondedAt ?? entry.sentAt;
     return now - from > JOURNAL_UNDO_WINDOW_MS + JOURNAL_KEEP_MS;
@@ -71,8 +81,8 @@ export async function markJournal(store: RecordStore<UndoJournalEntry>, opId: st
   await store.put({ ...current, ...patch });
 }
 
-export async function pruneJournal(store: RecordStore<UndoJournalEntry>, now: number): Promise<number> {
-  const expired = expiredJournalEntries(await store.all(), now);
+export async function pruneJournal(store: RecordStore<UndoJournalEntry>, now: number, session: QueueSession): Promise<number> {
+  const expired = expiredJournalEntries(await store.all(), now, session);
   for (const entry of expired) await store.delete(entry.opId);
   return expired.length;
 }

@@ -39,7 +39,7 @@ export type QueuedDeviceAction = {
   readonly kind: 'action' | 'undo';
   readonly householdId: string;
   readonly deviceId: string;
-  /** The credential generation the entry was made under; a different one discards it unsent. */
+  /** The credential generation the entry was made under. */
   readonly generation: number;
   readonly capability: DeviceCapability;
   /** The person chosen at the time (the server re-reads the name). */
@@ -142,6 +142,18 @@ export function withSendFields(entry: QueuedDeviceAction, patch: Partial<SendFie
   }
   return next;
 }
+
+/** The tablet session an entry belongs to: the household, the device record and the credential generation. */
+export type QueueSession = { householdId: string; deviceId: string; generation: number };
+
+/**
+ * An entry belongs to this session only when household, device and generation all match.
+ * Generations restart at 1 for every new pairing, so the generation alone never identifies
+ * the session: an entry left by another device record (even in the same household) is
+ * discarded unsent.
+ */
+export const belongsToSession = (entry: Pick<QueuedDeviceAction, 'householdId' | 'deviceId' | 'generation'>, session: QueueSession): boolean =>
+  entry.householdId === session.householdId && entry.deviceId === session.deviceId && entry.generation === session.generation;
 
 /** Never sent: it can be dropped locally without the server ever knowing it. */
 export const neverSent = (entry: QueuedDeviceAction): boolean => entry.attempts === 0 && entry.sendState === 'pending';
@@ -278,7 +290,7 @@ export async function removeIfNeverSent(store: RecordStore<QueuedDeviceAction>, 
 export type SyncReport = {
   sent: number;
   deleted: number;
-  /** Discarded unsent: made under another credential generation. */
+  /** Discarded unsent: made under another household, device record or credential generation. */
   discarded: number;
   dropped: Array<{ entry: QueuedDeviceAction; code: DeviceRefusal }>;
   /** A revocation code was answered: the caller runs the revocation flow. */
@@ -288,7 +300,8 @@ export type SyncReport = {
 };
 
 /**
- * Sends the queue oldest first (11.3). Each entry is marked in flight (attempts + 1)
+ * Sends the queue oldest first (11.3). Entries of another session (household, device or
+ * generation) are deleted unsent. Each entry is marked in flight (attempts + 1)
  * durably before it is sent, so a crash mid-send leaves it uncertain, and its resend
  * reuses the same opId (the server replays it). Stops at the first entry still in
  * backoff or failing transiently, so later entries never overtake it.
@@ -296,7 +309,7 @@ export type SyncReport = {
 export async function syncQueue(deps: {
   store: RecordStore<QueuedDeviceAction>;
   send: QueueSender;
-  generation: number;
+  session: QueueSession;
   now: () => number;
   lock?: Lock;
 }): Promise<SyncReport> {
@@ -306,7 +319,7 @@ export async function syncQueue(deps: {
     const entries = syncOrder(await deps.store.all());
     let stopped = false;
     for (const stored of entries) {
-      if (stored.generation !== deps.generation) {
+      if (!belongsToSession(stored, deps.session)) {
         await deps.store.delete(stored.opId);
         report.discarded += 1;
         continue;

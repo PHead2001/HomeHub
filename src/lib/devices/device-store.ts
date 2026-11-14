@@ -86,7 +86,12 @@ export function deviceStore<T extends { opId: string }>(name: DeviceStoreName): 
   };
 }
 
-/** Deletes the whole `homehub-device` database (queue and Undo journal). Best effort. */
+/**
+ * Deletes the whole `homehub-device` database (queue and Undo journal). Best effort and
+ * never waits on other tabs: when another tab still has it open the delete is blocked;
+ * this resolves `false` at once and the browser finishes the delete when that tab closes
+ * its connection (every connection here closes on `versionchange`).
+ */
 export async function deleteDeviceDatabase(): Promise<boolean> {
   if (typeof indexedDB === 'undefined') return true;
   if (opening) {
@@ -97,8 +102,7 @@ export async function deleteDeviceDatabase(): Promise<boolean> {
     const req = indexedDB.deleteDatabase(DEVICE_DB_NAME);
     req.onsuccess = () => resolve(true);
     req.onerror = () => resolve(false);
-    // Another tab still holds it open: it closes on `versionchange`; the delete completes then.
-    req.onblocked = () => undefined;
+    req.onblocked = () => resolve(false);
   });
 }
 

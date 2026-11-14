@@ -4,11 +4,12 @@
 // (nothing busy, resting, online), at most once per build per tab, and never after the
 // crash guard counted repeated crashes in this tab (the error boundary then shows the
 // plain error with the time and a manual retry, as for everyone since 2.1). It reuses
-// the 2.1 worker build messages (src/lib/shell/update-check.ts). Production only: the
-// service worker is not registered in development.
+// the 2.1 worker build messages (src/lib/shell/update-check.ts). It also registers the
+// service worker on the tablet (registration only: no push subscription or token). Production
+// only: the service worker is not registered in development.
 
 import { useEffect, useRef, useState } from 'react';
-import { SERVICE_WORKER_SCOPE, shouldAutoRegisterServiceWorker } from '@/lib/service-worker';
+import { SERVICE_WORKER_SCOPE, registerHomeHubServiceWorker, shouldAutoRegisterServiceWorker } from '@/lib/service-worker';
 import { isShellBusy, subscribeShellBusy } from '@/lib/shell/busy';
 import { CRASH_HISTORY_KEY, CRASH_WINDOW_MS, parseCrashHistory } from '@/lib/shell/crash-guard';
 import {
@@ -49,6 +50,9 @@ export function TabletUpdateWatcher({ resting }: { resting: boolean }) {
   useEffect(() => {
     if (!PAGE_BUILD_ID || !shouldAutoRegisterServiceWorker() || !('serviceWorker' in navigator)) return;
     const container = navigator.serviceWorker;
+    void registerHomeHubServiceWorker().catch((error: unknown) => {
+      console.warn('Service worker registration failed', error instanceof Error ? error.message : String(error));
+    });
     const ask = () => container.controller?.postMessage({ type: BUILD_QUERY_MESSAGE });
     const onMessage = (event: MessageEvent) => {
       const info = buildInfoFromMessage(event.data);
