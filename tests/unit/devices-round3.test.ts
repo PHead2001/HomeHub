@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, mock } from 'node:test';
 import { tabletListener, TABLET_DENIED_RECOVERY_MS } from '../../src/lib/devices/tablet-listener';
+import { initialNavigationState, navigationReducer } from '../../src/lib/devices/shell-state';
 import { resilientListener } from '../../src/lib/dashboard/resilient-listener';
 import { tabletApplication, type TabletApplication } from '../../src/lib/devices/tablet-settings-apply';
 import { defaultDeviceSettings } from '../../src/lib/devices/settings';
@@ -162,5 +163,62 @@ describe('every device-record setting is applied from the record (round 3 B)', (
     assert.match(shell, /seasonal: settings\.display\.seasonal/);
     assert.match(shell, /appearanceFromRecord\(settings\.comfort\)/);
     assert.match(shell, /weatherFromRecord\(settings\.display\)/);
+  });
+});
+
+describe('deferred navigation survives data updates while busy (round 4)', () => {
+  type Ev = Parameters<typeof navigationReducer>[1];
+  const run = (startKey: string, steps: Array<[Ev, string?]>) => {
+    let state = initialNavigationState(startKey);
+    const navigations: string[] = [];
+    for (const [event, keyNow] of steps) {
+      const result = navigationReducer(state, event, keyNow ?? startKey);
+      state = result.state;
+      if (result.navigate) navigations.push(result.navigate);
+    }
+    return { state, navigations };
+  };
+  const HOME = '{"kind":"home"}';
+  const PETS = '{"kind":"pets"}';
+
+  it('a start page changed while busy, data updates while busy, then idle: navigates once', () => {
+    const { state, navigations } = run(HOME, [
+      [{ type: 'start-page', startKey: PETS }, PETS],
+      [{ type: 'tick', busy: true }, PETS],
+      // A household snapshot or the minute tick re-runs the effect: same key, still busy.
+      [{ type: 'start-page', startKey: PETS }, PETS],
+      [{ type: 'page-allowed' }, PETS],
+      [{ type: 'tick', busy: true }, PETS],
+      [{ type: 'start-page', startKey: PETS }, PETS],
+      [{ type: 'tick', busy: false }, PETS],
+      [{ type: 'tick', busy: false }, PETS],
+      [{ type: 'start-page', startKey: PETS }, PETS],
+      [{ type: 'tick', busy: false }, PETS],
+    ]);
+    assert.deepEqual(navigations, ['start-page']);
+    assert.equal(state.appliedStartKey, PETS, 'applied only when the navigation ran');
+  });
+
+  it('idle: navigates at once; changed back before it ran: nothing is owed', () => {
+    assert.deepEqual(run(HOME, [[{ type: 'start-page', startKey: PETS }, PETS], [{ type: 'tick', busy: false }, PETS]]).navigations, ['start-page']);
+    assert.deepEqual(run(HOME, [
+      [{ type: 'start-page', startKey: PETS }, PETS],
+      [{ type: 'tick', busy: true }, PETS],
+      [{ type: 'start-page', startKey: HOME }],
+      [{ type: 'tick', busy: false }],
+    ]).navigations, []);
+  });
+
+  it('a section switched off under the page: leaves once idle; switched back on first: stays', () => {
+    assert.deepEqual(run(HOME, [
+      [{ type: 'leave-page' }], [{ type: 'tick', busy: true }], [{ type: 'leave-page' }], [{ type: 'tick', busy: true }], [{ type: 'tick', busy: false }], [{ type: 'tick', busy: false }],
+    ]).navigations, ['leave-page']);
+    assert.deepEqual(run(HOME, [[{ type: 'leave-page' }], [{ type: 'tick', busy: true }], [{ type: 'page-allowed' }], [{ type: 'tick', busy: false }]]).navigations, []);
+  });
+
+  it('guard: the shell has no scheduled "when idle" callbacks left', () => {
+    const shell = readFileSync('src/components/devices/tablet-shell.tsx', 'utf8');
+    assert.doesNotMatch(shell, /whenIdle/);
+    assert.match(shell, /navigationReducer\(/);
   });
 });

@@ -179,3 +179,55 @@ export const settingsLayer = (state: { admin: boolean; confirming: boolean; prom
   if (state.prompting) return 'hidden';
   return state.confirming ? 'confirm' : 'main';
 };
+
+/**
+ * Navigation the shell owes but must not do while busy (design 4.2, 14.5): a new start page
+ * set from the Devices list or admin settings, or the current page's section switched off.
+ * The pending navigation is state, not a scheduled callback: data updates while the shell is
+ * busy (a household snapshot, the dashboard's minute tick) never cancel it, and a start-page
+ * change counts as applied only when its navigation actually runs.
+ */
+export type PendingNavigation = { reason: 'start-page' | 'leave-page' };
+
+export type NavigationState = {
+  /** The start page (as a key) the tablet last navigated to, or was opened on. */
+  appliedStartKey: string;
+  pending: PendingNavigation | null;
+};
+
+export type NavigationEvent =
+  /** The record's start page, on every update (unchanged keys are ignored). */
+  | { type: 'start-page'; startKey: string }
+  /** The current page is not allowed any more (its section was switched off): leave it. */
+  | { type: 'leave-page' }
+  /** The current page is allowed (again): a pending "leave" is no longer owed. */
+  | { type: 'page-allowed' }
+  /** Evaluate now (every render, and whenever the busy flag changes). */
+  | { type: 'tick'; busy: boolean };
+
+export const initialNavigationState = (startKey: string): NavigationState => ({ appliedStartKey: startKey, pending: null });
+
+/**
+ * `navigate` names what to do now: `start-page` (go to the start page) or `leave-page`
+ * (go to the start page because the current page is not allowed). Never while busy; once.
+ */
+export function navigationReducer(state: NavigationState, event: NavigationEvent, startKeyNow?: string): { state: NavigationState; navigate: PendingNavigation['reason'] | null } {
+  switch (event.type) {
+    case 'start-page':
+      if (event.startKey === state.appliedStartKey) {
+        // Changed back before it was applied: nothing is owed for the start page any more.
+        return { state: state.pending?.reason === 'start-page' ? { ...state, pending: null } : state, navigate: null };
+      }
+      return { state: { ...state, pending: { reason: 'start-page' } }, navigate: null };
+    case 'leave-page':
+      return { state: state.pending ? state : { ...state, pending: { reason: 'leave-page' } }, navigate: null };
+    case 'page-allowed':
+      return { state: state.pending?.reason === 'leave-page' ? { ...state, pending: null } : state, navigate: null };
+    case 'tick': {
+      if (event.busy || !state.pending) return { state, navigate: null };
+      return { state: { appliedStartKey: startKeyNow ?? state.appliedStartKey, pending: null }, navigate: state.pending.reason };
+    }
+    default:
+      return { state, navigate: null };
+  }
+}

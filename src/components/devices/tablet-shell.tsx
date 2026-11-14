@@ -57,11 +57,15 @@ import {
   type ShellEvent,
   type ShellState,
   type ShellTimers,
+  initialNavigationState,
+  navigationReducer,
+  type NavigationEvent,
 } from '@/lib/devices/shell-state';
 import { activeFace } from '@/lib/devices/face-memory';
 import { pathOfView, resolveTabletPath, sameView, startView, type KnownTargets } from '@/lib/devices/start-page';
 import { watchKeepAwake, type WakeLockApi } from '@/lib/devices/wake-lock';
 import { isShellBusy, subscribeShellBusy, whileBusy } from '@/lib/shell/busy';
+import { useShellBusy } from '@/hooks/use-shell-busy';
 import { DashboardScopeProvider, type DashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
 import { setDeviceWeather } from '@/lib/dashboard/use-weather';
@@ -422,19 +426,6 @@ type Prompt =
   | { kind: 'who'; purpose: 'admin' | 'action'; title: string; resolve: (person: RosterPerson | null) => void }
   | { kind: 'pin'; person: RosterPerson; resolve: (sessionId: string | null) => void };
 
-/** Runs `fn` now if the shell is idle, else as soon as it becomes idle. */
-const whenIdle = (fn: () => void): (() => void) => {
-  if (!isShellBusy()) {
-    fn();
-    return () => undefined;
-  }
-  const stop = subscribeShellBusy((busy) => {
-    if (busy) return;
-    stop();
-    fn();
-  });
-  return stop;
-};
 
 function TabletFrame(props: {
   householdId: string;
@@ -536,20 +527,25 @@ function TabletFrame(props: {
   const resolved = resolveTabletPath(requested, settings, known);
   const view = resolved.view;
   const target = pathOfView(view);
-  useEffect(() => {
-    if (!resolved.redirected) return;
-    // A section switched off under the current page waits until nothing is busy.
-    return whenIdle(() => router.replace(target));
-  }, [resolved.redirected, router, target]);
-
-  // A new start page from the Devices list or admin settings: go there once idle (WT-4i).
+  // Deferred navigation (pure: navigationReducer). A new start page, or a section switched
+  // off under the current page, navigates as soon as nothing is busy; data updates meanwhile
+  // never cancel it, and a start-page change counts as applied only when it runs (WT-4i, 4.2).
+  const busy = useShellBusy();
   const startKey = JSON.stringify(settings.startPage);
-  const firstStart = useRef(startKey);
+  const navState = useRef(initialNavigationState(startKey));
+  const latest = useRef({ startPath, target, startKey });
+  useEffect(() => { latest.current = { startPath, target, startKey }; });
+  const stepNavigation = useCallback((event: NavigationEvent) => {
+    const result = navigationReducer(navState.current, event, latest.current.startKey);
+    navState.current = result.state;
+    if (result.navigate === 'start-page') router.replace(latest.current.startPath());
+    else if (result.navigate === 'leave-page') router.replace(latest.current.target);
+  }, [router]);
   useEffect(() => {
-    if (firstStart.current === startKey) return;
-    firstStart.current = startKey;
-    return whenIdle(() => router.replace(startPath()));
-  }, [router, startKey, startPath]);
+    stepNavigation({ type: 'start-page', startKey });
+    stepNavigation(resolved.redirected ? { type: 'leave-page' } : { type: 'page-allowed' });
+    stepNavigation({ type: 'tick', busy });
+  }, [busy, resolved.redirected, startKey, stepNavigation, target]);
 
   const navigate = useCallback((path: string) => {
     const next = resolveTabletPath(path, settings, known).view;
