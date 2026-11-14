@@ -17,12 +17,31 @@ import type { UndoJournalEntry } from './undo-journal';
 export type UndoActor = { actorUid: string; pinSessionId?: string };
 export type UndoAnswer = { ok: true; data?: unknown } | { ok: false; code: DeviceRefusal; retryAfterSec?: number };
 
+/**
+ * Why something can't wait in the tablet's queue: it needs a PIN (queued sends carry no PIN
+ * session, and the server refuses a PIN-level queued request), or the queue isn't durable
+ * here (no IndexedDB: nothing would survive a reload, so nothing is promised).
+ */
+export type QueueRefusal = 'needs-pin' | 'not-durable';
+
+/** Whether an action or Undo may be saved on the tablet for later (null: yes). */
+export const queueRefusal = (input: { queueable: boolean; durable: boolean }): QueueRefusal | null =>
+  !input.queueable ? 'needs-pin' : !input.durable ? 'not-durable' : null;
+
+/** The tablet's words for a refused offline save. */
+export const QUEUE_REFUSAL_COPY: Record<QueueRefusal, string> = {
+  'needs-pin': 'That needs a PIN, so it needs a connection. Try again when the tablet is back online.',
+  'not-durable': "Couldn't save offline on this tablet. Try again when connected.",
+};
+
 export type UndoFlowDeps = {
   queueGet: (opId: string) => Promise<QueuedDeviceAction | undefined>;
   removeIfNeverSent: (opId: string) => Promise<boolean>;
   markJournal: (opId: string, patch: Partial<Pick<UndoJournalEntry, 'state' | 'respondedAt'>>) => Promise<void>;
   /** Queues the Undo intent by opId (offline, or no answer). */
   enqueueUndo: () => Promise<void>;
+  /** Null when the Undo may wait in the queue; otherwise why not (it is then never queued). */
+  queueRefusal: QueueRefusal | null;
   /**
    * The person for the Undo: the original actor, with a PIN session when the level needs one
    * (`forcePin`: the server just refused the PIN, so ask again). Null: cancelled.
@@ -38,6 +57,8 @@ export type UndoFlowResult =
   /** Removed from the queue before it was ever sent. */
   | { kind: 'undone-locally' }
   | { kind: 'queued' }
+  /** It can't wait in the queue (a PIN is needed, or the queue isn't durable): try again online. The entry stays undoable. */
+  | { kind: 'needs-connection'; reason: QueueRefusal }
   | { kind: 'cancelled' }
   | { kind: 'refused'; code: DeviceRefusal; retryAfterSec?: number };
 
@@ -60,6 +81,10 @@ export async function runUndo(entry: UndoJournalEntry, deps: UndoFlowDeps): Prom
     return { kind: 'undone-locally' };
   }
   const queueIt = async (): Promise<UndoFlowResult> => {
+    if (deps.queueRefusal) {
+      await bestEffort(() => deps.markJournal(entry.opId, { state: 'confirmed' }), undefined);
+      return { kind: 'needs-connection', reason: deps.queueRefusal };
+    }
     try {
       await deps.enqueueUndo();
       return { kind: 'queued' };

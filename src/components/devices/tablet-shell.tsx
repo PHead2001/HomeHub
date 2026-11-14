@@ -612,6 +612,7 @@ function TabletFrame(props: {
       message(code, who, retryAfterSec);
     },
     onRevoked: () => endSession('removed'),
+    personOf: (uid) => person(uid),
     // An Undo is the original actor's: their PIN pad when the Undo's level needs a PIN
     // (points PIN), also for an Undo restored from the journal after a reload.
     authorizeUndo: async ({ actorUid, capability, pinSessionId, forcePin }) => {

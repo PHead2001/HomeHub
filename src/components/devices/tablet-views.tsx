@@ -107,7 +107,7 @@ function ChoresView({ roomId }: { roomId?: string }) {
       {room ? (
         room.chores.length === 0 ? <p className="text-lg text-muted-foreground">Nothing due in {room.name}.</p> : (
           <ul className="space-y-2">
-            {room.chores.map((chore) => <ChoreRow key={chore.id} chore={chore} detail={chore.dueLabel} />)}
+            {room.chores.map((chore) => <ChoreRow key={chore.id} chore={chore} detail={[chore.assignee ?? (chore.assigneeKey ? null : 'Unassigned'), chore.dueLabel].filter(Boolean).join(' · ')} />)}
           </ul>
         )
       ) : work.length === 0 ? (

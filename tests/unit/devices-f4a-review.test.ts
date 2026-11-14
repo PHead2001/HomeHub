@@ -77,6 +77,7 @@ const deps = (over: Partial<UndoFlowDeps> = {}) => {
     removeIfNeverSent: async () => false,
     markJournal: async (_opId, patch) => { calls.push(`journal:${patch.state}`); },
     enqueueUndo: async () => { calls.push('enqueue'); },
+    queueRefusal: null,
     authorize: async (forcePin) => { calls.push(`authorize:${forcePin}`); return { actorUid: 'mia' }; },
     send: async (actor) => { calls.push(`send:${actor.pinSessionId ?? 'face'}`); return { ok: true, data: { status: 'undone' } }; },
     online: true,
@@ -169,5 +170,53 @@ describe('the longer window for a queued Undo needs the device-clock check (JC-1
     assert.equal(queuedUndoInTime(null, action), false);
     assert.equal(queuedUndoInTime(action, null), false);
     assert.equal(queuedUndoInTime(action, 'garbage'), false);
+  });
+});
+
+describe('round 2: nothing that needs a PIN or a durable queue is ever queued (A, B)', () => {
+  it('queueRefusal: a PIN-level item needs a connection; a non-durable queue promises nothing', async () => {
+    const { queueRefusal, QUEUE_REFUSAL_COPY } = await import('../../src/lib/devices/undo-flow');
+    const { memoryStore } = await import('../../src/lib/devices/device-store');
+    assert.equal(queueRefusal({ queueable: true, durable: true }), null);
+    assert.equal(queueRefusal({ queueable: false, durable: true }), 'needs-pin');
+    assert.equal(queueRefusal({ queueable: true, durable: false }), 'not-durable');
+    assert.equal(memoryStore().durable, false, 'the IndexedDB fallback is not durable');
+    assert.match(QUEUE_REFUSAL_COPY['not-durable'], /Couldn't save offline on this tablet/);
+  });
+
+  it('a PIN-level original action is never queueable (points PIN Everyone, or Kids only with a child)', async () => {
+    const { queueAllowed } = await import('../../src/lib/devices/offline-queue');
+    assert.equal(queueAllowed('chores.complete', { pointsPin: 'everyone', actorRole: 'member' }), false);
+    assert.equal(queueAllowed('chores.complete', { pointsPin: 'kids', actorRole: 'child' }), false);
+    assert.equal(queueAllowed('chores.complete.undo', { pointsPin: 'everyone', actorRole: 'member' }), false);
+    assert.equal(queueAllowed('chores.complete', { pointsPin: 'off', actorRole: 'member' }), true);
+  });
+
+  it('a PIN-level Undo offline: not queued, the entry stays undoable, "needs a connection"', async () => {
+    const { calls, deps: d } = deps({ online: false, queueRefusal: 'needs-pin' });
+    assert.deepEqual(await runUndo(entryOf(), d), { kind: 'needs-connection', reason: 'needs-pin' });
+    assert.equal(calls.includes('enqueue'), false);
+    assert.equal(calls.some((c) => c.startsWith('send')), false);
+    assert.ok(calls.includes('journal:confirmed'));
+  });
+
+  it('a PIN-level Undo whose send gets no answer is not queued either', async () => {
+    const { calls, deps: d } = deps({ queueRefusal: 'needs-pin', send: async () => { throw new Error('network'); } });
+    assert.deepEqual(await runUndo(entryOf(), d), { kind: 'needs-connection', reason: 'needs-pin' });
+    assert.equal(calls.includes('enqueue'), false);
+  });
+
+  it('a non-durable queue: an offline Undo is not "saved", it needs a connection', async () => {
+    const { calls, deps: d } = deps({ online: false, queueRefusal: 'not-durable' });
+    assert.deepEqual(await runUndo(entryOf(), d), { kind: 'needs-connection', reason: 'not-durable' });
+    assert.equal(calls.includes('enqueue'), false);
+  });
+
+  it('guards: actions are saved offline only when queueable and durable; a refused save returns not-ok', () => {
+    const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
+    assert.match(runtime, /const canQueue = !actor\.pinSessionId && queueAllowed\(capability, \{ pointsPin, actorRole: who\.role \}\);/);
+    assert.match(runtime, /const refusal = queueRefusal\(\{ queueable: canQueue, durable: queue\.durable \}\);\s*if \(refusal\) \{\s*reverts\.current\.forget\(opId\);\s*toast\(\{ variant: 'destructive', description: QUEUE_REFUSAL_COPY\[refusal\] \}\);\s*return \{ ok: false \};/);
+    assert.match(runtime, /if \(canQueue && queue\.durable\) \{/);
+    assert.match(runtime, /queueRefusal: queueRefusal\(\{ queueable: queueAllowed\(undoCapability,/);
   });
 });

@@ -16,7 +16,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
 import { choreAnswerMeaning, queuedSendResult, UNDO_CAPABILITY_OF } from '@/lib/devices/device-action-answers';
-import { createRevertRegistry, runUndo } from '@/lib/devices/undo-flow';
+import { createRevertRegistry, QUEUE_REFUSAL_COPY, queueRefusal, runUndo } from '@/lib/devices/undo-flow';
 import { deviceStore } from '@/lib/devices/device-store';
 import {
   createQueuedAction,
@@ -32,6 +32,7 @@ import {
 import {
   journalEntry,
   JOURNAL_UNDO_WINDOW_MS,
+  journalRemainingMs,
   markJournal,
   pruneJournal,
   recordAttempt,
@@ -88,6 +89,8 @@ export function useDeviceActions(deps: {
    * `pinSessionId` is a session already held; `forcePin` asks again after a PIN refusal.
    */
   authorizeUndo: (input: UndoAuthorization) => Promise<TabletActor | null>;
+  /** A person on the live roster (an Undo restored after a reload knows only the uid). */
+  personOf: (uid: string) => RosterPerson | null;
 }): DeviceActionRuntime {
   const { householdId, deviceId, generation, pointsPin, idToken } = deps;
   // The callbacks below stay stable across renders (the sync and restore effects run once).
@@ -96,6 +99,7 @@ export function useDeviceActions(deps: {
   const refuse = useCallback((code: DeviceRefusal, who?: RosterPerson | null, retryAfterSec?: number) => latest.current.refuse(code, who, retryAfterSec), []);
   const onRevoked = useCallback(() => latest.current.onRevoked(), []);
   const authorizeUndo = useCallback((input: UndoAuthorization) => latest.current.authorizeUndo(input), []);
+  const personOf = useCallback((uid: string) => latest.current.personOf(uid), []);
   const reverts = useRef(createRevertRegistry());
   const session = useRef({ householdId, deviceId, generation });
   useEffect(() => { session.current = { householdId, deviceId, generation }; }, [householdId, deviceId, generation]);
@@ -156,11 +160,16 @@ export function useDeviceActions(deps: {
   }, [sync]);
 
   // --- Undo -------------------------------------------------------------------
+  // The toast that offers an Undo (set below once `offerUndo` exists): a needs-connection Undo is offered again.
+  const offerUndoRef = useRef<((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => void) | null>(null);
   const undoOf = useCallback(async (entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null) => {
     const undoCapability = UNDO_CAPABILITY_OF[entry.capability];
     if (!undoCapability) return;
     const { queue, journal } = storesOf();
+    const role = (who ?? personOf(entry.actorUid))?.role ?? null;
     const result = await runUndo(entry, {
+      // A PIN-level Undo (points PIN) is never queued: queued sends carry no PIN session.
+      queueRefusal: queueRefusal({ queueable: queueAllowed(undoCapability, { pointsPin: latest.current.pointsPin, actorRole: role }), durable: queue.durable }),
       queueGet: (opId) => queue.get(opId),
       removeIfNeverSent: (opId) => removeIfNeverSent(queue, opId),
       markJournal: (opId, patch) => markJournal(journal, opId, patch),
@@ -185,12 +194,19 @@ export function useDeviceActions(deps: {
         // Never promises more than the server will do: a late Undo is refused, and the queue then says so.
         toast({ description: "Undo saved on this tablet. It's sent when the connection is back, if it's still in time." });
         return;
+      case 'needs-connection': {
+        // The Undo stays offered for the time left; tapping it again (online) re-runs the PIN flow.
+        toast({ description: QUEUE_REFUSAL_COPY[result.reason] });
+        const remainingMs = journalRemainingMs({ ...entry, state: 'confirmed' }, Date.now());
+        if (remainingMs > 0) offerUndoRef.current?.(entry, actor, who, entry.label, remainingMs);
+        return;
+      }
       case 'cancelled':
         return;
       default:
         refuse(result.code, who, result.retryAfterSec);
     }
-  }, [authorizeUndo, refuse, send, storesOf]);
+  }, [authorizeUndo, personOf, refuse, send, storesOf]);
 
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
     const handle = toast({
@@ -204,6 +220,7 @@ export function useDeviceActions(deps: {
       ),
     });
   }, [undoOf]);
+  useEffect(() => { offerUndoRef.current = offerUndo; }, [offerUndo]);
 
   // After a reload: Undo toasts come back for the time that is left (the server's window decides).
   useEffect(() => {
@@ -240,8 +257,11 @@ export function useDeviceActions(deps: {
       else toast({ description: 'Saved on this tablet. It syncs when the connection is back.' });
     };
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      if (!canQueue) {
-        refuse('unavailable', who);
+      // Saved for later only when it can wait (face level, no PIN) and the queue is durable here.
+      const refusal = queueRefusal({ queueable: canQueue, durable: queue.durable });
+      if (refusal) {
+        reverts.current.forget(opId);
+        toast({ variant: 'destructive', description: QUEUE_REFUSAL_COPY[refusal] });
         return { ok: false };
       }
       try {
@@ -259,7 +279,7 @@ export function useDeviceActions(deps: {
     try {
       answer = await send(capability, { actorUid: actor.actorUid, opId, ...(actor.pinSessionId ? { pinSessionId: actor.pinSessionId } : {}) }, intent);
     } catch {
-      if (canQueue) {
+      if (canQueue && queue.durable) {
         try {
           await queueIt(true);
           return { ok: true, queued: true };

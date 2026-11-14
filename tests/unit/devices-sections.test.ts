@@ -78,6 +78,29 @@ describe('every tablet section selector shows all entries, past every preview ca
   }
 });
 
+describe("room entries and today's entries carry the same action inputs (round 2 C)", () => {
+  const ACTION_INPUTS = ['id', 'task', 'assigneeKey'] as const;
+  const inputsOf = (entry: Record<string, unknown>) => Object.fromEntries(ACTION_INPUTS.map((key) => [key, entry[key]]));
+
+  it("every room entry exposes id, task and the assignment identity, equal to the same chore in today's work", () => {
+    const assigned = { ...choreDocs[0], id: 'mine', assignedToUid: 'sam', assignedToDisplayName: 'Sam' };
+    const facts = computeChoreFacts([...choreDocs, assigned], rooms, viewer, now, new Set(), zone, [{ id: 'sam', uid: 'sam', displayName: 'Sam', role: 'member', status: 'active' }], SECTION_LIMITS);
+    const roomSection = choresSection({ chores: facts }, 'kitchen');
+    const todaySection = choresSection({ chores: facts });
+    assert.ok(roomSection?.kind === 'room' && todaySection?.kind === 'today');
+    if (roomSection?.kind !== 'room' || todaySection?.kind !== 'today') return;
+    const today = new Map(todaySection.work.map((entry) => [entry.id, entry]));
+    for (const entry of roomSection.room.chores) {
+      for (const key of ACTION_INPUTS) assert.ok(key in entry, `${entry.id} has ${key}`);
+      const same = today.get(entry.id);
+      if (same) assert.deepEqual(inputsOf(entry), inputsOf(same as unknown as Record<string, unknown>));
+    }
+    const unassigned = roomSection.room.chores.find((entry) => entry.id === 't0');
+    assert.equal(unassigned?.assigneeKey, '', 'an unassigned chore can be taken from its room');
+    assert.equal(roomSection.room.chores.find((entry) => entry.id === 'mine')?.assigneeKey, 'sam');
+  });
+});
+
 describe('the dashboard previews keep their caps', () => {
   it('previews stay short and hold no section-only list', () => {
     assert.equal(preview.chores?.todayWork?.length, PREVIEW_LIMITS.todayWork);
