@@ -215,13 +215,25 @@ function ActionsMenu({ pet, onEdit, onDelete, className }: { pet: PetProfile; on
   );
 }
 
-/** The pet's name as its explicit details link (PE-11b), with the peek card on hover or focus. */
+/**
+ * The pet's name as its explicit details link (PE-11b), with the peek card on
+ * hover or focus. The link is a block as wide as the name's column and at least
+ * the target height (44 px, 48 px on touch, WT-28), so a short name is still a
+ * full-size target; it never overlaps the chevron or the menu beside it. The
+ * name inside wraps and clamps at two lines (PE-20d).
+ */
 function NameLink({ pet, model, className }: { pet: PetProfile; model: CardModel; className?: string }) {
   return (
     <PeekCard peek={<PetPeek pet={pet} care={model.care} />} className="min-w-0 flex-1">
-      <h2 className={cn('line-clamp-2 break-words font-headline font-semibold leading-tight [overflow-wrap:anywhere]', className)} title={pet.name}>
-        <Link href={model.href} onClick={model.openPet} draggable={false} className="rounded-sm [-webkit-touch-callout:none]" data-testid={`pet-name-${pet.id}`}>
-          {pet.name}
+      <h2 className={cn('min-w-0 font-headline font-semibold leading-tight', className)} title={pet.name}>
+        <Link
+          href={model.href}
+          onClick={model.openPet}
+          draggable={false}
+          className="flex min-h-[var(--target-min)] min-w-[var(--target-min)] items-center rounded-sm [-webkit-touch-callout:none]"
+          data-testid={`pet-name-${pet.id}`}
+        >
+          <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]">{pet.name}</span>
         </Link>
       </h2>
     </PeekCard>

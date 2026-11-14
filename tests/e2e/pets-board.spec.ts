@@ -234,7 +234,41 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
       const more = chips.getByTestId('medication-chips-more');
       await expect(more).toHaveText(/\+\d/);
       await more.click();
-      await expect(chips.getByRole('link')).toHaveCount(5);
+      // Maple has exactly the four countdowns seeded above: two chips and "+2" (a button), then all four links.
+      await expect(chips.getByRole('link')).toHaveCount(4);
+      await expect(chips.getByTestId('medication-chips-more')).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('/pets at 1263 x 818 on touch: the name links, chevrons, menus and Feed buttons are 48 px and do not overlap (WT-28, PE-11b)', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    await seedExtraPets(2);
+    const { context, page } = await touchContext(browser, { width: 1263, height: 818 });
+    try {
+      await openPets(page);
+      const boxes: { name: string; box: { x: number; y: number; width: number; height: number } }[] = [];
+      for (const petId of ['maple', 'pixel', EXTRA[0], EXTRA[1]]) {
+        const card = page.getByTestId(`pet-card-${petId}`);
+        boxes.push({ name: `${petId} name`, box: (await card.getByTestId(`pet-name-${petId}`).boundingBox())! });
+        boxes.push({ name: `${petId} details`, box: (await card.getByTestId(`pet-details-${petId}`).boundingBox())! });
+        boxes.push({ name: `${petId} feed`, box: (await card.getByRole('button', { name: /^Feed / }).boundingBox())! });
+        const menu = card.getByRole('button', { name: /^Open actions for / });
+        if (await menu.count()) boxes.push({ name: `${petId} menu`, box: (await menu.boundingBox())! });
+      }
+      for (const { name, box } of boxes) {
+        expect(box.height, name).toBeGreaterThanOrEqual(48);
+        expect(box.width, name).toBeGreaterThanOrEqual(48);
+      }
+      for (let i = 0; i < boxes.length; i += 1) {
+        for (let j = i + 1; j < boxes.length; j += 1) {
+          const a = boxes[i].box;
+          const b = boxes[j].box;
+          const overlap = a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5;
+          expect(overlap, `${boxes[i].name} overlaps ${boxes[j].name}`).toBe(false);
+        }
+      }
     } finally {
       await context.close();
     }
@@ -248,6 +282,8 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
       await expect(page.getByRole('tab', { name: /Care/ })).toHaveAttribute('data-state', 'active');
       const boxes: { name: string; box: { x: number; y: number; width: number; height: number } }[] = [];
       for (const tab of await page.getByRole('tab').all()) boxes.push({ name: (await tab.textContent()) ?? 'tab', box: (await tab.boundingBox())! });
+      // Back to All Pets and the pet page's own menu are measured with them.
+      boxes.push({ name: 'back', box: (await page.getByRole('link', { name: /Back to All Pets/ }).boundingBox())! });
       const deleteButton = page.getByRole('button', { name: /Delete .* care log/ }).first();
       boxes.push({ name: 'care delete', box: (await deleteButton.boundingBox())! });
       await page.getByRole('tab', { name: /Feeding/ }).click();
@@ -277,7 +313,8 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
     try {
       await page.goto('/pets/maple');
       const tabs = (await page.getByTestId('pet-tabs-column').boundingBox())!;
-      const info = (await page.getByRole('heading', { name: 'Info' }).boundingBox())!;
+      // The Info card's title is a CardTitle (a div, not a heading role).
+      const info = (await page.getByText('Info', { exact: true }).boundingBox())!;
       expect(tabs.y).toBeLessThan(info.y);
       expect(tabs.y).toBeLessThan(844);
       await expect(page.getByRole('heading', { level: 1, name: 'Maple' })).toBeVisible();
