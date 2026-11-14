@@ -37,6 +37,7 @@ const deviceStorage = () => environment.authenticatedContext(`device_${DEV}`, de
 const personStorage = (person: { uid: string; email: string }) => environment.authenticatedContext(person.uid, { email: person.email }).storage();
 
 const attribution = { deviceId: DEV, deviceName: 'Kitchen tablet', generation: 1, actorUid: member.uid, level: 'face' };
+let devlogDate: Timestamp;
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 before(async () => {
@@ -67,7 +68,13 @@ before(async () => {
     await setDoc(doc(db, 'households', H, 'devices', DEV, 'ops', 'op1'), { state: 'applied' });
     // Records a device action wrote (Admin SDK) carry deviceAttribution.
     await setDoc(doc(db, 'households', H, 'pets', 'p1'), { name: 'Rex' });
-    await setDoc(doc(db, 'households', H, 'pets', 'p1', 'feeding-logs', 'devlog'), { date: '2026-11-14', cups: 1, loggedByUid: member.uid, loggedByName: 'Max', deviceAttribution: attribution });
+    // Written moments ago by the member at a tablet: inside the author's 10-minute window,
+    // so a time correction (the only feeding-log update, P1) is theirs to make.
+    devlogDate = Timestamp.fromMillis(Date.now() - 60_000);
+    await setDoc(doc(db, 'households', H, 'pets', 'p1', 'feeding-logs', 'devlog'), {
+      date: devlogDate, cups: 1, repeat: 'none', backdated: false,
+      loggedAt: Timestamp.now(), loggedByUid: member.uid, loggedByName: 'Max', deviceAttribution: attribution,
+    });
     await setDoc(doc(db, 'households', H, 'pets', 'p1', 'medication-logs', 'devlog'), { date: '2026-11-14', medication: 'X', loggedByUid: member.uid, deviceAttribution: attribution });
     await setDoc(doc(db, 'households', H, 'pets', 'p1', 'care-logs', 'devlog'), { date: '2026-11-14', activity: 'Walk', loggedByUid: member.uid, deviceAttribution: attribution });
     await setDoc(doc(db, 'households', H, 'chores', 'devdone'), {
@@ -132,7 +139,11 @@ describe('deviceAttribution: personal clients never add, change or remove it (S1
   const db = () => personDb(member);
 
   test('creates carrying it are refused in every collection a device writes to (positive control without it)', async () => {
-    const feeding = { date: '2026-11-14', cups: 1, loggedByUid: member.uid, loggedByName: 'Max' };
+    // A valid P1 create: a backdated feed (operation fields, server loggedAt, device time).
+    const feeding = {
+      date: Timestamp.fromMillis(Date.now() - 2 * 3600_000), cups: 1, loggedByUid: member.uid, loggedByName: 'Max',
+      loggedAt: serverTimestamp(), repeat: 'none', backdated: true,
+    };
     await assertFails(setDoc(doc(db(), 'households', H, 'pets', 'p1', 'feeding-logs', 'n1'), { ...feeding, deviceAttribution: attribution }));
     await assertSucceeds(setDoc(doc(db(), 'households', H, 'pets', 'p1', 'feeding-logs', 'n1'), feeding));
     const med = { date: '2026-11-14', medication: 'X', loggedByUid: member.uid };
@@ -162,7 +173,16 @@ describe('deviceAttribution: personal clients never add, change or remove it (S1
       await assertFails(updateDoc(target, { deviceAttribution: deleteField() }));
     }
     await assertSucceeds(updateDoc(doc(db(), 'households', H, 'pets', 'p1', 'care-logs', 'devlog'), { notes: 'Long walk' }));
-    await assertSucceeds(updateDoc(doc(db(), 'households', H, 'pets', 'p1', 'feeding-logs', 'devlog'), { comments: 'Ate it all' }));
+    // The only feeding-log update (P1): a time correction by its author, which keeps the attribution.
+    await assertSucceeds(updateDoc(doc(db(), 'households', H, 'pets', 'p1', 'feeding-logs', 'devlog'), {
+      date: Timestamp.fromMillis(Date.now() - 30 * 60_000), originalDate: devlogDate,
+      dateCorrectedAt: serverTimestamp(), dateCorrectedByUid: member.uid,
+    }));
+    // The same correction that also strips the attribution is refused.
+    await assertFails(updateDoc(doc(db(), 'households', H, 'pets', 'p1', 'feeding-logs', 'devlog'), {
+      date: Timestamp.fromMillis(Date.now() - 20 * 60_000), dateCorrectedAt: serverTimestamp(), dateCorrectedByUid: member.uid,
+      deviceAttribution: deleteField(),
+    }));
   });
 
   test('chores: attribution leaves only with the completion it describes', async () => {
