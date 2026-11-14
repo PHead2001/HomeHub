@@ -24,6 +24,7 @@ import {
   writeCachedWeather,
   type WeatherEntry,
   type WeatherPreference,
+  type TemperatureUnit,
   type WeatherReport,
 } from './weather';
 
@@ -56,7 +57,22 @@ const storage = (): Storage | null => {
   }
 };
 
-const unit = () => temperatureUnitFor(typeof navigator === 'undefined' ? undefined : navigator.language);
+/**
+ * A registered wall tablet's weather (docs/modules/devices/README.md, "Tablet shell";
+ * S12, HP-18b): the tablet has no profile, so its device record's display settings
+ * (`display.weather`, `display.weatherPlace`, `display.temperatureUnit`) decide, set by
+ * the tablet shell. It never reads any person's weather preference.
+ */
+let deviceWeather: { enabled: boolean; city: string; unit: TemperatureUnit } | null = null;
+
+export function setDeviceWeather(next: { enabled: boolean; city: string | null; unit: TemperatureUnit } | null): void {
+  const value = next ? { enabled: next.enabled && Boolean(next.city), city: normalizeCity(next.city ?? ''), unit: next.unit } : null;
+  if (JSON.stringify(value) === JSON.stringify(deviceWeather)) return;
+  deviceWeather = value;
+  emit();
+}
+
+const unit = () => deviceWeather?.unit ?? temperatureUnitFor(typeof navigator === 'undefined' ? undefined : navigator.language);
 const reportKey = (city: string) => `${city.toLowerCase()}|${unit()}`;
 
 /** Loads the report when its refresh is due (`weatherRefreshDelay`); a no-op while it is fresh. */
@@ -96,7 +112,8 @@ export function useWeatherPreference(): {
   useSyncExternalStore(subscribe, getVersion, getServerVersion);
   const email = currentUser?.email ?? '';
   const stored = (currentUser as { preferences?: { weather?: unknown } } | null)?.preferences?.weather;
-  const preference = (email && overrides.get(email)) || parseWeatherPreference(stored);
+  const device = deviceWeather;
+  const preference = device ? { enabled: device.enabled, city: device.city } : (email && overrides.get(email)) || parseWeatherPreference(stored);
 
   const save = useCallback(async (next: WeatherPreference) => {
     if (!email) return;
@@ -122,7 +139,7 @@ export function useWeatherPreference(): {
     }
   }, [email]);
 
-  return { preference, ready: Boolean(email), save };
+  return { preference, ready: Boolean(email) && !device, save };
 }
 
 /**

@@ -109,3 +109,35 @@ export function buildInfoFromMessage(data: unknown): { buildId: string; minimumB
 export function isBelowMinimumBuild(pageBuildId: string | null | undefined, minimum: string | null | undefined): boolean {
   return isBuildId(pageBuildId) && isBuildId(minimum) && pageBuildId < minimum;
 }
+
+/** sessionStorage: the build a wall tablet already reloaded for (never twice for one build). */
+export const TABLET_RELOADED_KEY = 'homehub.shell.tablet-reloaded';
+
+export type TabletReloadDecision = 'reload' | 'wait' | 'none';
+
+/**
+ * Registered wall tablets only (WT-14l, HP-17e; docs/modules/devices/README.md): a newer
+ * build reloads the tablet by itself, but only while it is idle: nothing busy (no save,
+ * no open Undo, no unsaved input), resting (nobody chosen, no PIN unlock, no dialog) and
+ * online. It reloads at most once per build per tab, and never once the crash guard has
+ * counted repeated crashes in this tab (the error boundary then shows a plain error with
+ * the time and a manual retry, as in 2.1). Personal accounts keep the "HomeHub updated"
+ * prompt and never reload on their own.
+ */
+export function decideTabletReload(input: {
+  pageBuildId: string | null | undefined;
+  workerBuildId: string | null | undefined;
+  reloadedFor: string | null | undefined;
+  busy: boolean;
+  resting: boolean;
+  online: boolean;
+  recentCrashes: number;
+  crashLimit?: number;
+}): TabletReloadDecision {
+  const { pageBuildId, workerBuildId, reloadedFor, busy, resting, online, recentCrashes, crashLimit = 2 } = input;
+  if (!isBuildId(pageBuildId) || !isBuildId(workerBuildId) || workerBuildId <= pageBuildId) return 'none';
+  if (isBuildId(reloadedFor) && reloadedFor >= workerBuildId) return 'none';
+  if (recentCrashes >= crashLimit) return 'none';
+  if (busy || !resting || !online) return 'wait';
+  return 'reload';
+}

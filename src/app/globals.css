@@ -390,3 +390,17 @@
 :root[data-shopping-trip] {
   --dock-clearance: calc(4.5rem + env(safe-area-inset-bottom));
 }
+
+/* Registered wall tablet (docs/modules/devices/README.md, "Tablet shell"; WT-14h/i): the
+   shell sets data-kiosk on <html>. No pull-to-refresh, heavy background effects off (a
+   static gradient: no grain, no drifting blobs). Pinch zoom stays. */
+:root[data-kiosk],
+:root[data-kiosk] body {
+  overscroll-behavior: none;
+}
+:root[data-kiosk] .ambient-aurora__grain {
+  display: none;
+}
+:root[data-kiosk] .ambient-aurora__blob {
+  animation: none !important;
+}

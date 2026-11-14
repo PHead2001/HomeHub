@@ -10,7 +10,7 @@ const result = spawnSync(process.execPath, [
   E2E_PROJECT_ID,
   '--only',
   'firestore,storage',
-  'node --import tsx --test --test-concurrency=1 tests/rules/firestore.rules.test.ts tests/rules/storage.rules.test.ts tests/rules/pets-feed-operation.test.ts tests/rules/devices.rules.test.ts tests/rules/storage-devices.rules.test.ts tests/rules/devices-actors.rules.test.ts',
+  'node --import tsx --test --test-concurrency=1 tests/rules/firestore.rules.test.ts tests/rules/storage.rules.test.ts tests/rules/pets-feed-operation.test.ts tests/rules/devices.rules.test.ts tests/rules/storage-devices.rules.test.ts tests/rules/devices-actors.rules.test.ts tests/rules/devices-shell.rules.test.ts',
 ], {
   cwd: process.cwd(),
   env: e2eEnvironment,

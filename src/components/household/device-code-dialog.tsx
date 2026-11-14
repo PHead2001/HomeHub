@@ -103,7 +103,7 @@ export function DeviceCodeDialog({ shown, onClose }: { shown: ShownDeviceCode | 
             ) : (
               <>
                 {setupUrl && <QrCode value={setupUrl} />}
-                <p className="text-center font-code text-3xl font-semibold tracking-widest" aria-label={`Code ${shown.code.split('').join(' ')}`}>{shown.code}</p>
+                <p data-testid="device-code-value" className="text-center font-code text-3xl font-semibold tracking-widest" aria-label={`Code ${shown.code.split('').join(' ')}`}>{shown.code}</p>
                 <p className="text-center text-sm text-muted-foreground" aria-live="polite">Waiting for the tablet · expires {relativeTime(shown.expiresAt)}</p>
               </>
             )}

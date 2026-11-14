@@ -103,6 +103,8 @@ export type ChoreFacts = {
   todayWorkTotal?: number;
   /** Older missed instances of repeating chores, folded into their latest one (never counted as done). */
   missed?: number;
+  /** Section views only (`SECTION_LIMITS`): every open chore due within the next week, overdue first. Empty in previews. */
+  upcoming?: ChoreEntry[];
 };
 
 /** The most chores `todayWork` lists (the tile shows fewer; the rest is "+N more" to /chores). */
@@ -110,6 +112,42 @@ export const TODAY_WORK_MAX = 20;
 
 /** The most needed items the Shopping tile lists (HP-36a: the top 6, each with a tick, HP-33c). */
 export const SHOPPING_TILE_ITEMS = 6;
+
+/**
+ * How many entries each list in the facts may hold. The dashboard draws short previews
+ * (`PREVIEW_LIMITS`, the default); a full section view, such as a wall tablet's Chores or
+ * Maintenance page, asks for `SECTION_LIMITS` (no caps), so no work is ever silently left out
+ * there. `upcoming` (every open chore due within the next week) exists only for section views.
+ */
+export type FactLimits = {
+  todayWork: number;
+  roomChores: number;
+  nextUp: number;
+  mineNext: number;
+  upcoming: number;
+  maintenanceItems: number;
+  shoppingItems: number;
+};
+
+export const PREVIEW_LIMITS: Readonly<FactLimits> = Object.freeze({
+  todayWork: TODAY_WORK_MAX,
+  roomChores: ROOM_CHORES,
+  nextUp: 5,
+  mineNext: 5,
+  upcoming: 0,
+  maintenanceItems: 6,
+  shoppingItems: SHOPPING_TILE_ITEMS,
+});
+
+export const SECTION_LIMITS: Readonly<FactLimits> = Object.freeze({
+  todayWork: Infinity,
+  roomChores: Infinity,
+  nextUp: Infinity,
+  mineNext: Infinity,
+  upcoming: Infinity,
+  maintenanceItems: Infinity,
+  shoppingItems: Infinity,
+});
 
 export type ShoppingTileItem = { id: string; name: string; listId: string; listName: string; quantity: number };
 
@@ -301,6 +339,7 @@ export function computeChoreFacts(
    * email or uid.
    */
   members?: readonly RawDoc[],
+  limits: Readonly<FactLimits> = PREVIEW_LIMITS,
 ): ChoreFacts {
   // D-6: "today" and "completed today" are the household's day (device zone only when the
   // household has none); due dates are date-only keys and are compared as stored.
@@ -428,7 +467,7 @@ export function computeChoreFacts(
     // on ties, so chores keep their document order.
     room.chores = (roomOrder.get(room.id) ?? [])
       .sort((a, b) => a.days - b.days)
-      .slice(0, ROOM_CHORES)
+      .slice(0, limits.roomChores)
       .map((entry) => entry.chore);
   }
 
@@ -448,18 +487,19 @@ export function computeChoreFacts(
     todayDone,
     overdueTotal,
     rooms: [...roomMap.values()],
-    nextUp: sorted.slice(0, 5).map((item) => item.entry),
+    nextUp: sorted.slice(0, limits.nextUp).map((item) => item.entry),
     mineNext: sorted
       .filter((item) => item.entry.mine && item.days <= UPCOMING_DAYS)
-      .slice(0, 5)
+      .slice(0, limits.mineNext)
       .map((item) => item.entry),
-    todayWork: todayWork.slice(0, TODAY_WORK_MAX).map((item) => item.entry),
+    todayWork: todayWork.slice(0, limits.todayWork).map((item) => item.entry),
+    upcoming: sorted.filter((item) => item.days <= UPCOMING_DAYS).slice(0, limits.upcoming).map((item) => item.entry),
     todayWorkTotal: todayWork.length,
     missed: folded.size,
   };
 }
 
-export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string, RawDoc[]>): ShoppingFacts {
+export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string, RawDoc[]>, limits: Readonly<FactLimits> = PREVIEW_LIMITS): ShoppingFacts {
   const sortedLists = [...lists].sort((a, b) => text(a.name, a.id).localeCompare(text(b.name, b.id)));
   const firstItems: ShoppingFacts['firstItems'] = [];
   let neededItems = 0;
@@ -470,7 +510,7 @@ export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string
     [...needed]
       .sort((a, b) => (toDateValue(a.createdAt)?.getTime() ?? 0) - (toDateValue(b.createdAt)?.getTime() ?? 0))
       .forEach((item) => {
-        if (firstItems.length < SHOPPING_TILE_ITEMS) {
+        if (firstItems.length < limits.shoppingItems) {
           const quantity = typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1;
           firstItems.push({ id: item.id, name: text(item.name, 'Item'), listId: list.id, listName, quantity });
         }
@@ -534,7 +574,7 @@ export function reminderTrigger(
  * means within 14 days or 500 miles, and deep links are the module's own.
  * An expired warranty is not a task and is left out.
  */
-export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date, timeZone?: string | null): MaintenanceFacts {
+export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date, timeZone?: string | null, limits: Readonly<FactLimits> = PREVIEW_LIMITS): MaintenanceFacts {
   const zone = safeTimeZone(timeZone);
   const today = localDay(now, zone);
   const activeAssets = assets.filter((asset) => asset.status !== 'retired');
@@ -579,7 +619,7 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
       + activeVehicles.filter((vehicle) => vehicle.status === 'needs_attention').length,
     // Reminders arrive most urgent first (overdue, today, soon, upcoming; then by date).
     next: items[0] ?? null,
-    items: items.slice(0, 6),
+    items: items.slice(0, limits.maintenanceItems),
     vehicleDue: active.some((item) => item.kind === 'vehicle')
       || activeVehicles.some((vehicle) => vehicle.status === 'needs_attention'),
     climateDue: active.some((item) => item.climate)

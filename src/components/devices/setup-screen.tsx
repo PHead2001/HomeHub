@@ -18,7 +18,8 @@ import { REDEEM_REFUSAL_COPY, codeFromScan, codeFromSetupFragment, normalizeDevi
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { keepPendingAfter, pendingFor, type PendingRedemption } from '@/lib/devices/setup-pending';
 import { SCANNER_ERROR_COPY, scannerErrorKind, type ScannerErrorKind } from '@/lib/barcode/scanner-errors';
-import { DEVICE_ENDED_KEY } from '@/components/devices/set-up-landing';
+import { DEVICE_ENDED_KEY, endedNote } from '@/lib/devices/device-session';
+import { hasTabletMarker, recoverFormerTabletHere, shouldStripSetupFragment } from '@/lib/devices/former-tablet';
 
 // "Set up a wall tablet" (docs/modules/devices/README.md, "QR and the setup screen"):
 // the code typed or scanned from the creator's QR (whose setup link carries the code in
@@ -68,8 +69,6 @@ const limitedUseAppCheckToken = async (): Promise<string | null> => {
   }
 };
 
-const endedNote = (value: string | null) =>
-  value === 'repaired' ? 'This tablet was set up again on another screen.' : value === 'removed' ? 'This tablet was removed.' : null;
 
 function QrScanner({ onCode, onClose }: { onCode: (text: string) => void; onClose: () => void }) {
   const [facing, setFacing] = useState<'user' | 'environment'>('user');
@@ -130,9 +129,20 @@ export function SetupScreen() {
   const [note] = useState(() => (typeof window === 'undefined' ? null : readEndedNote()));
   const submitting = useRef(false);
 
-  // Then the address bar loses the code, and the note is not shown again.
+  // A browser that was a tablet whose session ended while the shell was not running: its
+  // data is cleared first (then the setup screen loads again).
+  // The setup link's code (read into `code` above, before anything strips it) is carried
+  // through that reload.
   useEffect(() => {
-    if (window.location.hash) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    if (hasTabletMarker()) void recoverFormerTabletHere(codeFromSetupFragment(window.location.hash) ?? (code || null));
+    // Once, on mount, with the code as the page opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Then the address bar loses the code (only once no recovery is owed: recovery reloads the
+  // page with the code), and the note is not shown again.
+  useEffect(() => {
+    if (window.location.hash && shouldStripSetupFragment(hasTabletMarker())) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     try {
       window.sessionStorage.removeItem(DEVICE_ENDED_KEY);
     } catch {
