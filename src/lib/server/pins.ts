@@ -18,6 +18,7 @@ import {
   settleDeviceGuardCorrect,
   settleMemberGuardCorrect,
   validatePinFormat,
+  confirmTabletLock,
   repeatTabletLockAlertDue,
   type DeviceGuard,
   type MemberGuard,
@@ -485,7 +486,13 @@ const readMemberGuard = (snap: Snap): MemberGuard => {
   return {
     recentFailures,
     dayFailures: timed(d.dayFailures),
-    tabletLocks: timed(d.tabletLocks),
+    tabletLocks: Array.isArray(d.tabletLocks)
+      ? d.tabletLocks.flatMap((f: unknown) => {
+        const entry = f as { id?: unknown; at?: unknown; confirmed?: unknown };
+        const at = millisOf(entry?.at);
+        return typeof entry?.id === 'string' && at !== null ? [{ id: entry.id, at, confirmed: entry.confirmed === true }] : [];
+      })
+      : [],
     repeatAlertAt: millisOf(d.repeatAlertAt),
     sinceSuccess,
     seq: typeof d.seq === 'number' ? d.seq : 0,
@@ -498,7 +505,7 @@ const readMemberGuard = (snap: Snap): MemberGuard => {
 const storeMemberGuard = (guard: MemberGuard) => ({
   recentFailures: guard.recentFailures.map(f => ({ id: f.id, at: Timestamp.fromMillis(f.at) })),
   dayFailures: guard.dayFailures.map(f => ({ id: f.id, at: Timestamp.fromMillis(f.at) })),
-  tabletLocks: guard.tabletLocks.map(l => ({ id: l.id, at: Timestamp.fromMillis(l.at) })),
+  tabletLocks: guard.tabletLocks.map(l => ({ id: l.id, at: Timestamp.fromMillis(l.at), confirmed: l.confirmed })),
   repeatAlertAt: guard.repeatAlertAt === null ? null : Timestamp.fromMillis(guard.repeatAlertAt),
   sinceSuccess: guard.sinceSuccess,
   seq: guard.seq,
@@ -778,9 +785,15 @@ const announceLocks = async (input: {
         action: 'pin.device_locked', ...tablet, targetUid: input.actorUid, targetName: personName,
         details: { minutes: input.deviceLockMinutes },
       }, now);
-      // Repeated tablet locks for one person: one notice per 24 hours.
-      if (repeatTabletLockAlertDue(memberGuard, now.getTime())) {
-        tx.set(mGuard.ref, { repeatAlertAt: Timestamp.fromDate(now) }, { merge: true });
+      // This lock is now confirmed (the attempt proved wrong); only confirmed locks count
+      // toward the repeated-lock notice, one notice per 24 hours.
+      const confirmed = confirmTabletLock(memberGuard, input.attemptId);
+      const due = repeatTabletLockAlertDue(confirmed, now.getTime());
+      tx.set(mGuard.ref, {
+        tabletLocks: storeMemberGuard(confirmed).tabletLocks,
+        ...(due ? { repeatAlertAt: Timestamp.fromDate(now) } : {}),
+      }, { merge: true });
+      if (due) {
         notify(`pin-tablet-locks-${input.actorUid}-${now.getTime()}`, 'Tablet PIN keeps locking',
           `${personName}'s tablet PIN locked ${TABLET_LOCKS_ALERT_COUNT} tablets within a day. Check in with them, or unlock it in Household, Members.`, 'pin-tablet-locks');
       }

@@ -536,6 +536,48 @@ describe('hardening: daily count, repeat tablet locks, set admission, announceme
     assert.equal((await notices()).length, new Set((await notices()).map(d => d.get('targetUserUid'))).size);
   });
 
+  test('concurrent fifth attempts: only a lock whose attempt proved wrong counts toward the repeated-lock notice', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 3; i++) tablets.push(await pairTablet(H, owner, created, `Concurrent lock ${i}`));
+    const c = clock(Date.parse('2026-12-13T06:00:00Z'));
+    const notices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid).length;
+    const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').update({ recentFailures: [] });
+    for (const t of tablets) {
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(1000)), 'pin_wrong');
+    }
+    await keepHourlyCountLow();
+    // Three fifth attempts at once: two are right, one is wrong and is announced first.
+    let reached = 0;
+    let bothReached!: () => void;
+    const reservedBoth = new Promise<void>(resolve => { bothReached = resolve; });
+    let wrongDone!: () => void;
+    const announced = new Promise<void>(resolve => { wrongDone = resolve; });
+    const at = c.advance(7000);
+    const rightHooks = { afterCompare: async () => { reached += 1; if (reached === 2) bothReached(); await announced; } };
+    const outcomes = await Promise.all([
+      verify(tablets[0], member.uid, '4826', at, { testHooks: rightHooks }),
+      verify(tablets[1], member.uid, '7391', at, { testHooks: { afterCompare: () => reservedBoth } })
+        .catch(error => error).finally(() => wrongDone()),
+      verify(tablets[2], member.uid, '4826', at, { testHooks: rightHooks }),
+    ]);
+    assert.ok((outcomes[0] as { pinSessionId?: string }).pinSessionId);
+    assert.equal((outcomes[1] as DeviceActionError).code, 'pin_locked');
+    assert.ok((outcomes[2] as { pinSessionId?: string }).pinSessionId);
+    assert.equal(await notices(), 0, 'one confirmed lock is not three');
+    assert.equal((await memberGuard(member.uid))?.repeatAlertAt, null);
+    // Two genuine locks later the notice goes out once.
+    for (const t of [tablets[0], tablets[2]]) {
+      await keepHourlyCountLow();
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_wrong');
+      await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_locked');
+    }
+    const recipients = new Set((await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid).map(d => d.get('targetUserUid')));
+    assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid));
+  });
+
   test('PIN sets beyond the admission bound are refused busy instead of queueing without limit', async () => {
     const people = Array.from({ length: 12 }, (_, i) => ({ uid: `p-setter-${i}`, email: `p.setter${i}@example.test` }));
     for (const person of people) {

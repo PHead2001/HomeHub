@@ -23,6 +23,7 @@ import {
   MEMBER_FAILURES_PER_DAY_LOCK,
   MEMBER_FAILURES_SINCE_SUCCESS_LOCK,
   TABLET_LOCKS_ALERT_COUNT,
+  confirmTabletLock,
   repeatTabletLockAlertDue,
   clearedDeviceGuard,
   clearedMemberGuard,
@@ -418,20 +419,30 @@ describe('lockout arithmetic', () => {
     assert.equal(later.locked, false);
   });
 
-  it('repeated tablet locks: one notice at the 3rd within 24 hours, then none for a day', () => {
+  it('repeated tablet locks: one notice at the 3rd confirmed within 24 hours, then none for a day', () => {
     let guard: MemberGuard = emptyMemberGuard();
     for (let i = 0; i < TABLET_LOCKS_ALERT_COUNT; i++) {
       assert.equal(repeatTabletLockAlertDue(guard, t0 + i * 1000), false);
       guard = (reserveMemberGuard(guard, `lock${i}`, t0 + i * 1000, { tabletLock: true }) as { guard: MemberGuard }).guard;
+      guard = confirmTabletLock(guard, `lock${i}`);
     }
     assert.equal(repeatTabletLockAlertDue(guard, t0 + 5000), true);
     const told = { ...guard, repeatAlertAt: t0 + 5000 };
-    const fourth = (reserveMemberGuard(told, 'lock3', t0 + 6000, { tabletLock: true }) as { guard: MemberGuard }).guard;
+    const fourth = confirmTabletLock((reserveMemberGuard(told, 'lock3', t0 + 6000, { tabletLock: true }) as { guard: MemberGuard }).guard, 'lock3');
     assert.equal(repeatTabletLockAlertDue(fourth, t0 + 6000), false);
     assert.equal(repeatTabletLockAlertDue(told, t0 + 25 * 3600_000), false, 'old locks have aged out');
     // A correct attempt that set a tablet lock withdraws it.
     const right = reserveMemberGuard(emptyMemberGuard(), 'right', t0, { tabletLock: true }) as { guard: MemberGuard; seq: number };
     assert.equal(settleMemberGuardCorrect(right.guard, 'right', right.seq).tabletLocks.length, 0);
+  });
+
+  it('provisional tablet locks (attempts still being checked) never count toward the notice', () => {
+    let guard: MemberGuard = emptyMemberGuard();
+    for (const id of ['a', 'b', 'c']) guard = (reserveMemberGuard(guard, id, t0, { tabletLock: true }) as { guard: MemberGuard }).guard;
+    // Only one of the three proved wrong so far.
+    const one = confirmTabletLock(guard, 'b');
+    assert.equal(repeatTabletLockAlertDue(one, t0 + 1), false);
+    assert.equal(repeatTabletLockAlertDue(confirmTabletLock(confirmTabletLock(one, 'a'), 'c'), t0 + 1), true);
   });
 
   it('clearing a lockout keeps the sequence numbers monotonic (security review 4)', () => {
