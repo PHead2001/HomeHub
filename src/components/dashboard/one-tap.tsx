@@ -38,7 +38,7 @@ import {
   type UndoTicket,
 } from '@/lib/chores/complete-client';
 import { formatPortion } from '@/lib/pets/care';
-import { memberName, type ChoreEntry, type PetState } from '@/lib/dashboard/facts';
+import { memberName, oneTapFedVisible, type ChoreEntry, type PetState } from '@/lib/dashboard/facts';
 import { householdSummary, summaryPhrase } from '@/lib/dashboard/household-summary';
 import { cn } from '@/lib/utils';
 import { keepFocusInTile } from './focus-after-action';
@@ -271,15 +271,16 @@ export function HouseholdChores({ work, total, canComplete, done }: { work: Chor
 }
 
 /**
- * HP-33a: "Fed" for a pet that has not met today's feeding target. Logs the pet's usual
- * portion with its latest food type through the shared feed operation; "Feed again?"
- * when someone fed it in the last 90 minutes or today is complete; Undo for 10 s.
+ * HP-33a: "Fed" (D-P22, `oneTapFedVisible`): for a pet with meal times while a meal
+ * slot is due, logging that slot's portion; for a pet without, while today's count is
+ * not met, at its usual portion. Always the latest food type, through the shared feed
+ * operation; "Feed again?" when the operation asks; Undo for 10 s.
  */
 export function PetFedButton({ pet, className }: { pet: PetState; className?: string }) {
   const feed = pet.feed;
   const portion = feed ? formatPortion(feed.amount, feed.unit) : '';
-  const reachedGoal = (result: { status: string; countToday: number }) =>
-    Boolean(feed?.perDay) && result.status === 'saved' && result.countToday === feed?.perDay;
+  const reachedGoal = (result: { status: string; countToday: number; slot?: unknown; mealsComplete?: boolean }) =>
+    result.status === 'saved' && (result.slot ? Boolean(result.mealsComplete) : Boolean(feed?.perDay) && result.countToday === feed?.perDay);
   const action = useFeedAction(pet.id, pet.name, {
     onFed: (result) => playFeedback(reachedGoal(result) ? 'celebrate' : 'complete'),
     describe: (result) => ({
@@ -288,10 +289,11 @@ export function PetFedButton({ pet, className }: { pet: PetState; className?: st
     }),
   });
   const [failed, setFailed] = useState(false);
-  if (!feed || !action.allowed || pet.fed !== false) return null;
+  // D-P22: a due meal slot (as the bowl and the card show it), or a legacy pet not fed to its count today.
+  if (!feed || !action.allowed || !oneTapFedVisible(pet)) return null;
   const run = async () => {
     setFailed(false);
-    const result = await action.run({ portion: { amount: feed.amount, unit: feed.unit }, food: feed.foodType, known: feed.known });
+    const result = await action.run({ portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: feed.portionFromSlot, food: feed.foodType, known: feed.known });
     // Null after a real attempt: the operation failed (its toast offers Retry too).
     if (result === null) setFailed(true);
   };

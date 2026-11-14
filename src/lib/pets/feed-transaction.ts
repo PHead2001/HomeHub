@@ -16,6 +16,13 @@
  * Offline a transaction cannot run: the log alone is queued under the same id,
  * marked `repeat: 'offline'`, `clockSource: 'device'` (date = this device's
  * clock), and the state is left for the next online writer.
+ *
+ * Meal slots (P2): the transaction reads the pet's plan for today
+ * (`planForDay`); a live feed is assigned to a slot (`slotId` on the log, the
+ * slot's portion when the caller asks for the planned portion) and the derived
+ * state keeps today's fed slots (`slotsFed`: slot id → first surviving log),
+ * derived again on every feed, Undo and correction. Offline and backdated
+ * entries carry no slot; readers assign them by time.
  */
 import {
   collection,
@@ -36,7 +43,7 @@ import {
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline';
-import { feedingPlan } from './care';
+import { planForDay } from './meal-plan';
 import {
   FEEDING_STATE_ID,
   feedReadStart,
@@ -74,6 +81,12 @@ export type FeedPetInput = {
    */
   opId: string;
   portion: { amount: number; unit: PortionUnit };
+  /**
+   * Log the portion of the meal slot the feed is assigned to (quick feeds: Feed,
+   * hold, F picker, Feeding mode, dashboard Fed, quick add without an amount;
+   * PE-22d). `portion` is then the fallback for a pet without slots, an off-day or offline.
+   */
+  portionFromSlot?: boolean;
   food: FoodType;
   comments?: string;
   /** The answer to "Feed again?": the state it was shown for (`feedConfirmOf` of the asking result). */
@@ -96,18 +109,30 @@ export type FeedPetResult =
   /** Nothing written: ask "Feed again?". `staleConfirm`: an earlier answer no longer applies (someone fed since). */
   | ({ status: 'needsConfirm'; staleConfirm: boolean } & FeedCheck)
   /** Committed on the server, with today's count after this feed. `replayed`: an earlier attempt of this press had already saved it. */
-  | { status: 'saved'; logId: string; countToday: number; perDay: number | null; replayed?: boolean }
+  | ({ status: 'saved'; logId: string; countToday: number; perDay: number | null; replayed?: boolean } & FeedWritten)
   /** Offline: queued on this device; nobody else's feed could be checked. */
-  | { status: 'queued'; logId: string; countToday: number; perDay: number | null; replayed?: boolean };
+  | ({ status: 'queued'; logId: string; countToday: number; perDay: number | null; replayed?: boolean } & FeedWritten);
+
+/** What a written feed was for (P2): its meal slot, the portion logged, and whether it completed today's meals. */
+export type FeedWritten = {
+  slot?: { id: string; name: string } | null;
+  portion?: { amount: number; unit: PortionUnit };
+  mealsComplete?: boolean;
+};
 
 type WritePlan = Extract<FeedPlan, { kind: 'write' }>;
 
-function logData(input: FeedPetInput, plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null }, stamp?: Timestamp): DocumentData {
+function logData(
+  input: FeedPetInput,
+  plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null; slotId?: string | null },
+  stamp?: Timestamp,
+  portion: { amount: number; unit: PortionUnit } = input.portion,
+): DocumentData {
   return {
     date: plan.live ? serverTimestamp() : stamp ?? Timestamp.fromDate(plan.fedAt),
     loggedAt: serverTimestamp(),
-    cups: input.portion.amount,
-    foodAmountType: input.portion.unit,
+    cups: portion.amount,
+    foodAmountType: portion.unit,
     foodType: input.food,
     comments: input.comments ?? '',
     ampm: format(plan.fedAt, 'a').toUpperCase(),
@@ -117,7 +142,13 @@ function logData(input: FeedPetInput, plan: { fedAt: Date; live: boolean; repeat
     ...(plan.repeat === 'confirmed' ? { confirmOf: plan.confirmOf ?? null } : {}),
     ...(plan.repeat === 'offline' ? { clockSource: 'device' } : {}),
     ...(input.backdatedAt ? { backdated: true } : {}),
+    ...(plan.slotId ? { slotId: plan.slotId } : {}),
   };
+}
+
+/** The portion a write logs: the assigned slot's when the caller asked for the planned portion. */
+function portionFor(input: FeedPetInput, plan: WritePlan): { amount: number; unit: PortionUnit } {
+  return input.portionFromSlot && plan.slot ? { amount: plan.slot.amount, unit: plan.slot.unit } : input.portion;
 }
 
 /** A stored time as read (a Timestamp, kept exactly), else the Date as a Timestamp. */
@@ -142,6 +173,8 @@ function stateDocument(derived: DerivedFeedingState, liveLogId: string | null): 
     day: derived.day,
     countOnDay: Math.min(derived.countOnDay, 1000),
     prev: prev ? { lastLogId: prev.logId, lastFedAt: at(prev), lastFedByUid: prev.byUid, lastFedByName: prev.byName } : null,
+    // Today's fed meal slots (P2), only for a pet that tracks them (the rules check a plain slot feed against them).
+    ...(derived.slotsFed ? { slotsFed: derived.slotsFed } : {}),
   };
 }
 
@@ -216,13 +249,15 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string, ser
     const existingSnapshot = await tx.get(logRef);
     const petSnapshot = await tx.get(petRef(db, householdId, petId));
     const stateSnapshot = await tx.get(stateRef(db, householdId, petId));
-    const perDay = petSnapshot.exists() ? feedingPlan(petSnapshot.data() as PetProfile).perDay : null;
     const raw = stateSnapshot.exists() ? stateSnapshot.data() : null;
     const stored = readFeedingState(raw);
     // A latest feed deleted offline is not a feed (its log is gone).
     const latestSurvives = stored?.lastLogId ? (await tx.get(doc(logsRef(db, householdId, petId), stored.lastLogId))).exists() : false;
     const now = input.clock?.() ?? new Date();
     const today = householdDay(now, timeZone);
+    // Today's plan (meal slots, or the legacy target) from the pet read in this attempt.
+    const dayPlan = petSnapshot.exists() ? planForDay(petSnapshot.data() as PetProfile, today) : null;
+    const perDay = dayPlan?.kind === 'legacy' ? dayPlan.plan.perDay : null;
     // Surviving feedings from today's start or the last 90 minutes, whichever is
     // earlier, plus the newest ones, read on every attempt (a feeding just before
     // household midnight still counts as recent; today's count comes from today's
@@ -233,6 +268,7 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string, ser
         now,
         timeZone,
         perDay,
+        dayPlan,
         stored,
         latestSurvives,
         recent,
@@ -244,7 +280,15 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string, ser
     if (plan.kind === 'already') return { status: 'saved', logId, countToday: plan.countToday, perDay: plan.perDay, replayed: true } as const;
     if (plan.kind === 'needsConfirm') return { status: 'needsConfirm', staleConfirm: plan.staleConfirm, ...plan.check } as const;
     writeFeed(tx, db, input, logRef.id, plan);
-    return { status: 'saved', logId, countToday: plan.countToday, perDay: plan.perDay } as const;
+    return {
+      status: 'saved',
+      logId,
+      countToday: plan.countToday,
+      perDay: plan.perDay,
+      slot: plan.slot ? { id: plan.slot.id, name: plan.slot.name } : null,
+      portion: portionFor(input, plan),
+      mealsComplete: plan.mealsComplete,
+    } as const;
   });
 }
 
@@ -258,7 +302,7 @@ function writeFeed(
   const { householdId, petId } = input;
   // A backdated entry's log and state carry the same Timestamp, so the rules see one time.
   const stamp = Timestamp.fromDate(plan.fedAt);
-  tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, plan, stamp));
+  tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, { ...plan, slotId: plan.slot?.id ?? null }, stamp, portionFor(input, plan)));
   const state = plan.live
     ? plan.state
     : { ...plan.state, latest: plan.state.latest?.logId === logId ? { ...plan.state.latest, rawDate: stamp } : plan.state.latest, prev: plan.state.prev?.logId === logId ? { ...plan.state.prev, rawDate: stamp } : plan.state.prev };
@@ -275,11 +319,13 @@ async function feedOffline(db: Firestore, input: FeedPetInput, logId: string): P
     getDocFromCache(petRef(db, householdId, petId)).catch(() => null),
     getDocFromCache(stateRef(db, householdId, petId)).catch(() => null),
   ]);
-  const perDay = petSnapshot?.exists() ? feedingPlan(petSnapshot.data() as PetProfile).perDay : null;
+  // A pet with slots today: the check counts against today's meals (offline feeds carry no slot).
+  const dayPlan = petSnapshot?.exists() ? planForDay(petSnapshot.data() as PetProfile, householdDay(now, timeZone)) : null;
+  const perDay = dayPlan ? (dayPlan.kind === 'legacy' ? dayPlan.plan.perDay : dayPlan.slots.length) : null;
   const stored = readFeedingState(stateSnapshot?.exists() ? stateSnapshot.data() : null);
   if (existing?.exists()) {
     // This press is already queued (or saved): never queue it twice.
-    return { status: 'queued', logId, countToday: known?.countToday ?? 0, perDay, replayed: true };
+    return { status: 'queued', logId, countToday: known?.countToday ?? 0, perDay, replayed: true, portion: input.portion };
   }
   const plan = planOfflineFeed({ now, timeZone, perDay, stored, known }, { userUid: input.user.uid, confirm: input.confirm, backdatedAt: input.backdatedAt });
   if (plan.kind === 'needsConfirm') return { status: 'needsConfirm', staleConfirm: plan.staleConfirm, ...plan.check };
@@ -288,7 +334,7 @@ async function feedOffline(db: Firestore, input: FeedPetInput, logId: string): P
   // feed by someone else when it syncs. The next online feed or Undo updates it.
   batch.set(logRef, logData(input, { fedAt: plan.fedAt, live: false, repeat: 'offline' }));
   const status = await awaitWriteUnlessOffline(batch.commit(), input.onLateError);
-  return { status, logId, countToday: plan.countToday, perDay };
+  return { status, logId, countToday: plan.countToday, perDay, portion: input.portion };
 }
 
 /**
@@ -322,7 +368,8 @@ export async function runUndoFeed(db: Firestore, input: {
     // previous feed comes back at its own (possibly corrected) time, never from
     // an old snapshot, and today's count repairs any offline delete.
     const logs = await stateFeedings(db, householdId, petId, householdDayStart(today, timeZone));
-    const derived = planFeedDelete({ now, timeZone, logs, logId, hasState: stateSnapshot.exists() });
+    const slots = Boolean(stateSnapshot.exists() && readFeedingState(stateSnapshot.data())?.slotsFed);
+    const derived = planFeedDelete({ now, timeZone, logs, logId, hasState: stateSnapshot.exists(), slots });
     tx.delete(logRef);
     if (derived) tx.set(stateRef(db, householdId, petId), stateDocument(derived, null));
   });
@@ -390,6 +437,7 @@ export async function runCorrectFeedTime(db: Firestore, input: {
       newDate: date,
       rawNewDate: stamp,
       hasState: stateSnapshot.exists(),
+      slots: Boolean(stateSnapshot.exists() && readFeedingState(stateSnapshot.data())?.slotsFed),
     });
     if (derived) tx.set(stateRef(db, householdId, petId), stateDocument(derived, null));
   });

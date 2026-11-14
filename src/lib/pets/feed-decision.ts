@@ -13,6 +13,7 @@
 import { UNDO_WINDOW_MS } from '../undo-window';
 import { DEFAULT_TIME_ZONE, localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { formatAgo, seenFeedingDate, toDate, type FeedingEntry } from './care';
+import { formatSlotTime } from './meal-plan';
 
 /** A feeding this recent asks "Feed again?" (audit PE-1/PE-23: "under about 90 minutes"). The rules use it on server time. */
 export const FEED_REPEAT_WINDOW_MS = 90 * 60_000;
@@ -64,6 +65,8 @@ export type FeedingStateView = {
   hasPrev: boolean;
   /** The log `prev` points at (the feed an Undo would bring back); null when none. */
   prevLogId: string | null;
+  /** Meal slots fed on `day`, each with its first feeding's log id (P2; null when the state has none). */
+  slotsFed?: Record<string, string> | null;
 };
 
 const text = (value: unknown): string | null => (typeof value === 'string' && value.length > 0 ? value : null);
@@ -82,7 +85,18 @@ export function readFeedingState(data: Record<string, unknown> | null | undefine
     countOnDay: count,
     hasPrev: Boolean(data.prev && typeof data.prev === 'object'),
     prevLogId: data.prev && typeof data.prev === 'object' ? text((data.prev as Record<string, unknown>).lastLogId) : null,
+    slotsFed: readSlotsFed(data.slotsFed),
   };
+}
+
+/** A stored `slotsFed` map (slot id → log id), ignoring malformed entries. */
+function readSlotsFed(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const fed: Record<string, string> = {};
+  for (const [slotId, logId] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof logId === 'string' && logId) fed[slotId] = logId;
+  }
+  return fed;
 }
 
 /** What a client already knows from the feeding logs it has loaded (fallback while a pet has no state document). */
@@ -155,8 +169,13 @@ export function lastFedPreview(
 
 export type FeedCheck = {
   needsConfirm: boolean;
-  /** `recent`: fed under 90 minutes ago (wins); `complete`: today's planned feedings are done. */
-  reason: 'recent' | 'complete' | null;
+  /**
+   * `recent`: fed under 90 minutes ago (without slots it wins; with slots only
+   * when the target slot's window is not open yet); `complete`: today's planned
+   * feedings (or every meal slot) are done; `slot-fed`: the target meal is
+   * already fed while an earlier one was missed; `off-day`: no meal is planned today (D-P5).
+   */
+  reason: 'recent' | 'complete' | 'slot-fed' | 'off-day' | null;
   /**
    * The log of the last feeding the check saw (null when none, or unknown). A
    * "Feed again?" answer is bound to it and to `countToday` (PE-23g).
@@ -167,6 +186,10 @@ export type FeedCheck = {
   lastFedByName: string | null;
   countToday: number;
   perDay: number | null;
+  /** With meal slots (D-P5): the slot this feed is for (null on an off-day), its name and `HH:mm` time. */
+  slotId?: string | null;
+  slotName?: string | null;
+  slotTime?: string | null;
 };
 
 /**
@@ -209,16 +232,29 @@ export function feedConfirmDecision(input: {
   return { needsConfirm: reason !== null, reason, lastLogId, lastFedAt, lastFedByUid, lastFedByName, countToday, perDay };
 }
 
-type PromptInput = Pick<FeedCheck, 'reason' | 'lastFedAt' | 'lastFedByUid' | 'lastFedByName' | 'perDay'>;
+type PromptInput = Pick<FeedCheck, 'reason' | 'lastFedAt' | 'lastFedByUid' | 'lastFedByName' | 'perDay'> & Partial<Pick<FeedCheck, 'slotId' | 'slotName' | 'slotTime'>>;
 
 /** Why the member is asked: "Sam fed Rex 12 min ago." (or "You fed…", or the complete-day line). */
 export function feedAgainReason(check: PromptInput, petName: string, now: Date, viewerUid?: string | null, timeZone?: string | null): string {
   const who = viewerUid && check.lastFedByUid === viewerUid ? 'You' : check.lastFedByName;
   const ago = check.lastFedAt ? formatAgo(check.lastFedAt, now, timeZone) : null;
   const fedLine = ago ? (who ? `${who} fed ${petName} ${ago}.` : `${petName} was fed ${ago}.`) : '';
-  if (check.reason === 'complete') {
-    const done = check.perDay ? `${petName} has had all ${check.perDay} feedings today.` : `${petName} is all fed today.`;
+  const meals = check.slotId !== undefined;
+  if (check.reason === 'off-day') {
+    const none = `No meals are planned for ${petName} today.`;
+    return fedLine ? `${none} ${fedLine}` : none;
+  }
+  if (check.reason === 'slot-fed' && check.slotName) {
+    const done = `${petName}'s ${check.slotName.toLowerCase()} is already logged.`;
     return fedLine ? `${done} ${fedLine}` : done;
+  }
+  if (check.reason === 'complete') {
+    const unit = meals ? 'meals' : 'feedings';
+    const done = check.perDay ? `${petName} has had all ${check.perDay} ${check.perDay === 1 ? unit.slice(0, -1) : unit} today.` : `${petName} is all fed today.`;
+    return fedLine ? `${done} ${fedLine}` : done;
+  }
+  if (check.reason === 'recent' && check.slotName && check.slotTime) {
+    return `${fedLine || `${petName} was fed recently.`} ${check.slotName} is at ${formatSlotTime(check.slotTime)}.`;
   }
   return fedLine || `${petName} was fed recently.`;
 }

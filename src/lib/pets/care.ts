@@ -6,6 +6,7 @@ import { sharedId } from '../motion';
 import { diffDays, localDay } from '../../../functions/src/shared/calendar';
 import { householdDayZone } from '../household-day';
 import { FOOD_TYPES, type FoodType, type LoggedBy, type PetMedicationLog, type PetProfile, type PortionUnit } from './types';
+import { isNonDailySchedule, isValidPortion, parseFeedingsPerDay, parsePortion, PORTION_MAX } from './schedule-parser';
 
 /* ------------------------------------------------------------------------- */
 /* Species and photos                                                         */
@@ -72,108 +73,8 @@ export const PET_PHOTO_FOCUS = '50% 35%';
 /* Feeding plan                                                               */
 /* ------------------------------------------------------------------------- */
 
-const WORD_NUMBERS: Record<string, number> = {
-  a: 1, an: 1, one: 1, single: 1, half: 0.5, two: 2, three: 3, four: 4, five: 5, six: 6,
-};
-
-function toNumber(raw: string): number | null {
-  const text = raw.trim().toLowerCase();
-  if (text in WORD_NUMBERS) return WORD_NUMBERS[text];
-  const fraction = text.match(/^(\d+)\s*\/\s*(\d+)$/);
-  if (fraction) {
-    const value = Number(fraction[1]) / Number(fraction[2]);
-    return Number.isFinite(value) && value > 0 ? value : null;
-  }
-  const mixed = text.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
-  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
-  const value = Number(text);
-  return Number.isFinite(value) && value > 0 ? value : null;
-}
-
-/**
- * Explicitly non-daily or irregular schedules ("twice a week", "every other day",
- * "as needed", "free feed", "Mondays"). They get no daily target, so the ring never
- * presents them as a more frequent daily goal than the member entered.
- */
-const NON_DAILY: RegExp[] = [
-  /\b(?:weekly|fortnightly|biweekly|monthly|bimonthly)\b/,
-  /\b(?:a|per|each|every|the|this)\s+(?:week|month|fortnight)\b/,
-  /\/\s*(?:week|wk|month)\b/,
-  /\bevery\s+(?:other|second|third|alternate|few|couple(?:\s+of)?|\d+|two|three|four|five|six|seven)\s+(?:days?|weeks?|months?)\b/,
-  /\b(?:alternate|alternating)\s+days\b/,
-  /\b(?:as|when|if)\s+needed\b/,
-  /\b(?:prn|on\s+demand|ad\s+lib(?:itum)?)\b/,
-  /\bfree[-\s]?(?:feed|feeding|fed|choice)\b/,
-  /\b(?:mon|tues?|wednes|thurs?|fri|satur|sun)days\b/,
-];
-
-export function isNonDailySchedule(schedule?: string | null): boolean {
-  const text = (schedule ?? '').toLowerCase();
-  return NON_DAILY.some((pattern) => pattern.test(text));
-}
-
-const HOUR_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, six: 6, eight: 8, twelve: 12 };
-
-/** Best guess at feedings per day from free text such as "1.5 cups twice daily". */
-export function parseFeedingsPerDay(schedule?: string | null): number | null {
-  const text = (schedule ?? '').toLowerCase();
-  if (!text.trim()) return null;
-  if (isNonDailySchedule(text)) return null;
-  const everyHours = text.match(/\bevery\s+(\d+|one|two|three|four|six|eight|twelve)\s*(?:hours?|hrs?|h)\b/);
-  if (everyHours) {
-    const hours = HOUR_WORDS[everyHours[1]] ?? Number(everyHours[1]);
-    return hours > 0 && hours <= 24 && Number.isInteger(24 / hours) ? 24 / hours : null;
-  }
-  if (/\b(once)\b/.test(text)) return 1;
-  if (/\b(twice)\b/.test(text)) return 2;
-  if (/\b(thrice)\b/.test(text)) return 3;
-  const times = text.match(/\b(\d+|one|two|three|four|five|six)\s*(?:x|times)\b/);
-  if (times) {
-    const value = toNumber(times[1]);
-    if (value && Number.isInteger(value)) return value;
-  }
-  const clockTimes = text.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/g);
-  if (clockTimes && clockTimes.length > 0) return clockTimes.length;
-  const meals = ['morning', 'breakfast', 'noon', 'lunch', 'midday', 'afternoon', 'evening', 'dinner', 'night', 'bedtime']
-    .filter((word) => new RegExp(`\\b${word}\\b`).test(text));
-  if (meals.length > 0) return meals.length;
-  if (/\b(daily|a day|per day|every day)\b/.test(text)) return 1;
-  return null;
-}
-
-const UNIT_WORDS: [PortionUnit, RegExp][] = [
-  ['Cups', /^cups?$/],
-  ['Cans', /^(cans?|tins?|pouch(?:es)?)$/],
-  ['Scoops', /^scoops?$/],
-];
-
-/** Best guess at the usual portion from free text such as "1.5 cups" or "One can". */
-export function parsePortion(schedule?: string | null): { amount: number; unit: PortionUnit } | null {
-  const text = (schedule ?? '').toLowerCase();
-  // The number must start at a boundary (not inside "1.5" or "x5"), and leading-dot
-  // decimals (".5 cups") are read whole, so a portion is never misread tenfold.
-  const match = text.match(/(?<![\w.])(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d*\.\d+|\d+(?:\.\d+)?|\ba\b|\ban\b|\bone\b|\bhalf\b|\btwo\b|\bthree\b|\bfour\b)\s*(?:a\s+)?(cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/);
-  if (!match) return null;
-  const raw = toNumber(match[1]);
-  // Same bounds as every portion input: above 0, at most PORTION_MAX, two decimals.
-  const amount = raw ? roundPortion(raw) : 0;
-  if (!amount || amount > PORTION_MAX) return null;
-  const unit = UNIT_WORDS.find(([, pattern]) => pattern.test(match[2]))?.[0] ?? 'Other';
-  return { amount, unit };
-}
-
-/** Largest portion any form or parser accepts. */
-export const PORTION_MAX = 50;
-
-/** Portions are kept to two decimals ("1/3 cup" → 0.33), never rounded to 0. */
-export function roundPortion(value: number): number {
-  return Math.max(0.01, Math.round(value * 100) / 100);
-}
-
-/** True when an amount is accepted by every portion input (feeding form, pet form, parser). */
-export function isValidPortion(value: number): boolean {
-  return Number.isFinite(value) && value > 0 && value <= PORTION_MAX;
-}
+// Free-text schedule reading lives in schedule-parser.ts (PE-6); re-exported for existing callers.
+export { isNonDailySchedule, isValidPortion, parseFeedingsPerDay, parsePortion, PORTION_MAX, roundPortion } from './schedule-parser';
 
 /** A stored food type the forms accept, or undefined for legacy/unknown values. */
 export function knownFoodType(value: unknown): FoodType | undefined {
@@ -353,7 +254,7 @@ export function parseLocalDate(value?: string | null): Date | null {
 /* Feeding status                                                             */
 /* ------------------------------------------------------------------------- */
 
-export type FeedingEntry = { date: unknown; id?: string } & LoggedBy;
+export type FeedingEntry = { date: unknown; id?: string; slotId?: unknown } & LoggedBy;
 
 export type FeedingStatus = {
   fedToday: number;
@@ -573,7 +474,7 @@ export type PetFormErrors = Partial<Record<keyof PetFormValues, string>>;
  * or schedule length, feedings per day, portion bounds), so older pets stay
  * editable. (The name cannot be changed while editing.)
  */
-export function validatePetForm(values: PetFormValues, existingNames: string[] = [], original?: PetFormValues): PetFormErrors {
+export function validatePetForm(values: PetFormValues, existingNames: string[] = [], original?: PetFormValues, options: { hasMealTimes?: boolean } = {}): PetFormErrors {
   const errors: PetFormErrors = {};
   const unchanged = (field: keyof PetFormValues) => original !== undefined && values[field].trim() === original[field].trim();
   const name = values.name.trim();
@@ -585,10 +486,13 @@ export function validatePetForm(values: PetFormValues, existingNames: string[] =
     }
   }
   const schedule = values.foodSchedule.trim();
-  if (!schedule) errors.foodSchedule = 'Describe the feeding schedule, e.g. "1 cup at 8am and 6pm".';
+  // With meal times (PE-22k) the free text is optional notes.
+  if (!schedule && !options.hasMealTimes) errors.foodSchedule = 'Describe the feeding schedule, e.g. "1 cup at 8am and 6pm".';
   else if (schedule.length > FOOD_SCHEDULE_MAX && !unchanged('foodSchedule')) {
     errors.foodSchedule = `Keep the schedule under ${FOOD_SCHEDULE_MAX + 1} characters.`;
   }
+  // The legacy count and portion are not used (nor shown) once meal times are set.
+  if (options.hasMealTimes) return errors;
   if (values.feedingsPerDay.trim() && !unchanged('feedingsPerDay')) {
     const perDay = Number(values.feedingsPerDay);
     if (!Number.isInteger(perDay) || perDay < 1 || perDay > 12) errors.feedingsPerDay = 'Use a whole number from 1 to 12.';

@@ -8,9 +8,11 @@
  * (`feed-transaction.ts`) uses it now, and a device-authorized server action can
  * read the same documents with the Admin SDK and call the same functions later.
  *
- * Meal slots (P2) plug in here: `planFeed` is the one place that picks the
- * repeat reason, so a slot-aware check replaces `feedConfirmDecision` without
- * changing the writers.
+ * Meal slots (P2, D-P5, windows D-P21): with confirmed slots for today (`dayPlan`),
+ * `planFeed` assigns the feed to a slot (`targetSlot` in `meal-plan.ts`) and
+ * picks the repeat reason from the slots; the binding, idempotency and the
+ * derived state are the same, plus the slot on the log and the state's
+ * `slotsFed` (derived from the surviving logs like everything else in it).
  */
 import {
   AUTHOR_DELETE_WINDOW_MS,
@@ -26,6 +28,10 @@ import {
   type KnownFeedings,
 } from './feed-decision';
 import { FEEDING_CLOCK_SKEW_MS, toDate, type FeedingEntry } from './care';
+import { feedsOnDay, slotDay, slotsFedOn, targetSlot, type DayPlan } from './meal-plan';
+import { localMinutes } from '../../../functions/src/shared/calendar';
+import { householdDayZone } from '../household-day';
+import type { PortionUnit } from './types';
 
 /* ------------------------------------------------------------------------- */
 /* Idempotency: one operation id per press                                    */
@@ -58,15 +64,18 @@ export function feedLogId(opId: string): string {
  * The state a "Feed again?" question was shown for: the last feeding it named and
  * today's count. The answer only counts while both are unchanged.
  */
-export type FeedConfirm = { lastLogId: string | null; countToday: number };
+export type FeedConfirm = { lastLogId: string | null; countToday: number; slotId?: string | null };
 
-export function feedConfirmOf(check: Pick<FeedCheck, 'lastLogId' | 'countToday'>): FeedConfirm {
-  return { lastLogId: check.lastLogId, countToday: check.countToday };
+export function feedConfirmOf(check: Pick<FeedCheck, 'lastLogId' | 'countToday' | 'slotId'>): FeedConfirm {
+  return { lastLogId: check.lastLogId, countToday: check.countToday, ...(check.slotId !== undefined ? { slotId: check.slotId } : {}) };
 }
 
-/** Whether a confirmation still describes the current check (same last feeding, same count). */
-export function confirmStillHolds(confirm: FeedConfirm | null | undefined, check: Pick<FeedCheck, 'lastLogId' | 'countToday'>): boolean {
-  return Boolean(confirm) && confirm!.lastLogId === check.lastLogId && confirm!.countToday === check.countToday;
+/** Whether a confirmation still describes the current check (same last feeding, same count, same meal slot). */
+export function confirmStillHolds(confirm: FeedConfirm | null | undefined, check: Pick<FeedCheck, 'lastLogId' | 'countToday' | 'slotId'>): boolean {
+  return Boolean(confirm)
+    && confirm!.lastLogId === check.lastLogId
+    && confirm!.countToday === check.countToday
+    && (confirm!.slotId ?? null) === (check.slotId ?? null);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -79,6 +88,11 @@ export type FeedSnapshot = {
   timeZone?: string | null;
   /** The pet's planned feedings per day (`feedingPlan(pet).perDay`); null without a daily target. */
   perDay: number | null;
+  /**
+   * Today's plan (`planForDay(pet, today)`): with confirmed slots the feed is
+   * assigned to a slot and the repeat check follows D-P5. Absent or legacy: the 2.1 check.
+   */
+  dayPlan?: DayPlan | null;
   /** The stored `feeding-state/current` (`readFeedingState`), null when the pet has none. */
   stored: FeedingStateView | null;
   /** Whether the stored latest feed's log still exists (one deleted offline is not a feed). */
@@ -127,7 +141,18 @@ export type DerivedFeed = { logId: string; at: Date; rawDate: unknown; byUid: st
  * exactly this, computed from the logs it read plus its own change, so the
  * state never carries a stale snapshot (a corrected or deleted previous feed).
  */
-export type DerivedFeedingState = { latest: DerivedFeed | null; prev: DerivedFeed | null; day: string; countOnDay: number };
+export type DerivedFeedingState = {
+  latest: DerivedFeed | null;
+  prev: DerivedFeed | null;
+  day: string;
+  countOnDay: number;
+  /**
+   * Meal slots fed today: slot id → its first surviving log today (by effective
+   * time). Present when asked for (`slots`, a pet that tracks slots) or when a
+   * surviving log of today names a slot; the rules check a plain slot feed against it.
+   */
+  slotsFed?: Record<string, string>;
+};
 
 
 /**
@@ -138,7 +163,7 @@ export type DerivedFeedingState = { latest: DerivedFeed | null; prev: DerivedFee
  * ignored, as every reader ignores it. `latestId` makes a live feed the latest
  * whatever the device clocks say (it is server time "now").
  */
-export function deriveFeedingState(logs: StateLog[], options: { now: Date; timeZone?: string | null; latestId?: string | null }): DerivedFeedingState {
+export function deriveFeedingState(logs: StateLog[], options: { now: Date; timeZone?: string | null; latestId?: string | null; slots?: boolean }): DerivedFeedingState {
   const { now, timeZone } = options;
   const byId = new Map<string, StateLog>();
   for (const log of logs) byId.set(log.id, log);
@@ -161,11 +186,18 @@ export function deriveFeedingState(logs: StateLog[], options: { now: Date; timeZ
         byName: typeof entry.log.loggedByName === 'string' ? entry.log.loggedByName : null,
       }
     : null;
-  return { latest: feed(named[0]), prev: feed(named[1]), day: today, countOnDay: countOnHouseholdDay(surviving, today, timeZone, now) };
+  const slotsFed = slotsFedOn(surviving, today, now, timeZone);
+  return {
+    latest: feed(named[0]),
+    prev: feed(named[1]),
+    day: today,
+    countOnDay: countOnHouseholdDay(surviving, today, timeZone, now),
+    ...(options.slots || Object.keys(slotsFed).length > 0 ? { slotsFed } : {}),
+  };
 }
 
 /** The state after deleting a feeding (Undo or a history delete); null when the pet has no state yet. */
-export function planFeedDelete(input: { now: Date; timeZone?: string | null; logs: StateLog[]; logId: string; hasState: boolean }): DerivedFeedingState | null {
+export function planFeedDelete(input: { now: Date; timeZone?: string | null; logs: StateLog[]; logId: string; hasState: boolean; slots?: boolean }): DerivedFeedingState | null {
   if (!input.hasState) return null;
   return deriveFeedingState(input.logs.filter((log) => log.id !== input.logId), input);
 }
@@ -184,6 +216,8 @@ export function planFeedCorrection(input: {
   /** The stored value written to the log (a Timestamp), so the state names the identical time. */
   rawNewDate?: unknown;
   hasState: boolean;
+  /** The stored state tracks meal slots (`slotsFed`): keep tracking them. */
+  slots?: boolean;
 }): DerivedFeedingState | null {
   if (!input.hasState) return null;
   const corrected = input.logs.find((log) => log.id === input.logId);
@@ -211,7 +245,14 @@ export type FeedPlan =
       /** Today's count after this feed. */
       countToday: number;
       perDay: number | null;
+      /** The meal slot the log records (live feeds of a pet with slots today); null otherwise. */
+      slot: FeedSlot | null;
+      /** With slots: every meal of today is fed after this feed (the celebration). */
+      mealsComplete: boolean;
     };
+
+/** The meal slot a write is for (D-P5), with its portion. */
+export type FeedSlot = { id: string; name: string; amount: number; unit: PortionUnit };
 
 /**
  * Plans one online feed from a consistent read. Order: an existing log for this
@@ -222,7 +263,10 @@ export type FeedPlan =
  * (`deriveFeedingState`; a live feed is the latest).
  */
 export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
-  const { now, timeZone, perDay, stored, recent } = snapshot;
+  const { now, timeZone, stored, recent } = snapshot;
+  const slotPlan = snapshot.dayPlan?.kind === 'slots' ? snapshot.dayPlan : null;
+  // With slots the day's target is today's served meals.
+  const perDay = slotPlan ? slotPlan.slots.length : snapshot.perDay;
   const today = householdDay(now, timeZone);
   // Today's count from the surviving logs read in this attempt, never a stored or loaded count.
   const countToday = countOnHouseholdDay(recent, today, timeZone, now);
@@ -239,8 +283,17 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
 
   let repeat: 'none' | 'confirmed' = 'none';
   let confirmOf: string | null = null;
+  let slot: FeedSlot | null = null;
+  let mealsComplete = false;
   if (!backdatedAt) {
-    const decided = feedConfirmDecision({ state, known: latestKnown, now, timeZone, perDay, countToday });
+    let decided = feedConfirmDecision({ state, known: latestKnown, now, timeZone, perDay: slotPlan ? null : perDay, countToday });
+    if (slotPlan) {
+      // D-P5 replaces the reason; who fed last and when stay the shared check's (the same latest feed the rules bind to).
+      const slots = slotCheck(slotPlan, recent, now, timeZone, decided);
+      decided = slots.check;
+      slot = slots.slot;
+      mealsComplete = slots.completesDay;
+    }
     // The rules refused this press as plain (their clock saw a recent feed): ask instead of retrying it.
     const check = !decided.needsConfirm && intent.serverRefusedPlain
       ? { ...decided, needsConfirm: true, reason: decided.lastFedAt ? 'recent' as const : 'complete' as const }
@@ -259,10 +312,48 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
   const fedAt = backdatedAt ?? now;
   const logId = intent.logId ?? 'new-feeding';
   const derived = deriveFeedingState(
-    [...recent, { id: logId, date: fedAt, loggedByUid: intent.userUid, loggedByName: intent.userName ?? undefined }],
-    { now, timeZone, latestId: backdatedAt ? null : logId },
+    [...recent, { id: logId, date: fedAt, loggedByUid: intent.userUid, loggedByName: intent.userName ?? undefined, ...(slot ? { slotId: slot.id } : {}) }],
+    { now, timeZone, latestId: backdatedAt ? null : logId, slots: Boolean(slotPlan) || Boolean(stored?.slotsFed) },
   );
-  return { kind: 'write', live: !backdatedAt, repeat, confirmOf, fedAt, state: derived, countToday: derived.countOnDay, perDay };
+  return { kind: 'write', live: !backdatedAt, repeat, confirmOf, fedAt, state: derived, countToday: derived.countOnDay, perDay, slot, mealsComplete };
+}
+
+/**
+ * D-P5 on today's slots (windows: D-P21): the target slot of a feed now, and
+ * whether to ask. Asks when the target is already fed (`complete` when every
+ * slot is fed, else `slot-fed`), when no slot is served today (`off-day`), or
+ * when the last feed was under 90 minutes ago and the target's window is not
+ * open yet (`recent`). A feed for a slot whose window is open never asks for
+ * recency alone. The last feed named (and bound) is the shared check's.
+ */
+function slotCheck(
+  plan: Extract<DayPlan, { kind: 'slots' }>,
+  recent: FeedingEntry[],
+  now: Date,
+  timeZone: string | null | undefined,
+  base: FeedCheck,
+): { check: FeedCheck; slot: FeedSlot | null; completesDay: boolean } {
+  const minutes = localMinutes(now, householdDayZone(timeZone));
+  const day = slotDay(plan, feedsOnDay(recent, plan.day, now, timeZone), minutes);
+  const target = targetSlot(plan.slots, day.slots.map((state) => state.fed !== null), minutes);
+  let reason: FeedCheck['reason'] = null;
+  if (!target) reason = 'off-day';
+  else if (target.alreadyFed) reason = day.fedCount === day.planned ? 'complete' : 'slot-fed';
+  else if (!target.open && base.reason === 'recent') reason = 'recent';
+  const chosen = target ? plan.slots[target.index] : null;
+  return {
+    check: {
+      ...base,
+      needsConfirm: reason !== null,
+      reason,
+      perDay: day.planned,
+      slotId: chosen?.id ?? null,
+      slotName: chosen?.name ?? null,
+      slotTime: chosen?.time ?? null,
+    },
+    slot: chosen ? { id: chosen.id, name: chosen.name, amount: chosen.amount, unit: chosen.unit } : null,
+    completesDay: Boolean(target && !target.alreadyFed) && day.fedCount + 1 === day.planned,
+  };
 }
 
 /**
