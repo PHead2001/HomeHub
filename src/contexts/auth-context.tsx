@@ -50,6 +50,8 @@ import { normalizeInviteCode } from '@/lib/invite-codes';
 import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
+import { hasTabletMarker } from '@/lib/devices/former-tablet';
+import { codeFromSetupFragment } from '@/lib/devices/device-codes';
 import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, retryDeviceClaims, type Principal } from '@/lib/devices/principal';
 import type {
   Household,
@@ -64,9 +66,9 @@ type PermissionMap = Record<HouseholdPermission, boolean>;
 export type { Principal };
 const PERSONAL = PERSONAL_PRINCIPAL;
 
-// The minimal tablet screen (until the tablet shell lands). Loaded only for a device
-// session: it reads Firestore, which signed-out and personal first paint never load here.
-const DeviceSetUpLanding = lazy(() => import('@/components/devices/set-up-landing'));
+// The wall-tablet shell (docs/modules/devices/README.md, "Tablet shell"). Loaded only for
+// a device session: it reads Firestore, which signed-out and personal first paint never load here.
+const TabletShell = lazy(() => import('@/components/devices/tablet-shell'));
 
 /**
  * Firestore and the rest of the data stack (`@/lib/firebase`, which starts App
@@ -592,6 +594,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // User is not logged in: nothing of the last user's house stays on this device.
         dispatchMembership({ type: 'reset' });
         forgetHouseholdOnDevice(null);
+        // A wall tablet whose session ended while its shell was not running (removed while
+        // switched off): finish its clearing, then reload the setup screen.
+        // A setup link's code is read now, before anything can strip it, and kept through the reload.
+        if (hasTabletMarker()) {
+          const setupCode = codeFromSetupFragment(window.location.hash);
+          void import('@/lib/devices/former-tablet').then((mod) => mod.recoverFormerTabletHere(setupCode));
+        }
         profileRef.current = null;
         setProfile(null);
         setProfileConfirmed(false);
@@ -896,7 +905,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={value}>
       {principal.kind !== 'personal'
-        ? <Suspense fallback={null}><DeviceSetUpLanding principal={principal} /></Suspense>
+        ? <Suspense fallback={null}><TabletShell principal={principal} /></Suspense>
         : children}
     </AuthContext.Provider>
   );

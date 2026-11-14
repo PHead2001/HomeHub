@@ -73,12 +73,20 @@ function briefPeek(peek: BriefPeek | undefined, facts: DashboardFacts): ReactNod
   }
 }
 
-type BriefProps = { facts: DashboardFacts; name?: string | null; now: Date; today: string; timeZone?: string };
+type BriefProps = {
+  facts: DashboardFacts;
+  name?: string | null;
+  now: Date;
+  today: string;
+  timeZone?: string;
+  /** A wall tablet's household brief: household totals, no name, no AI rewrite (HP-3b, HP-21, JC-28). */
+  household?: boolean;
+};
 
-function PlainBrief({ facts, name, now, today, timeZone }: BriefProps) {
+function PlainBrief({ facts, name, now, today, timeZone, household }: BriefProps) {
   const reduced = useReducedMotion();
   // HP-22c: the greeting follows the household's clock, with "Hello" in the small hours.
-  const brief = useMemo(() => buildMorningBrief(facts, { greeting: greeting(now, timeZone), name }), [facts, name, now, timeZone]);
+  const brief = useMemo(() => buildMorningBrief(facts, { greeting: greeting(now, timeZone), name, household }), [facts, name, now, timeZone, household]);
   // Mounted on the client once facts are ready, so storage can be read at init. Decided
   // once per mount: the day rolling over while the page is open never retypes it.
   const [typed, setTyped] = useState<number | null>(() => (reduced || typedToday(today) ? null : 0));
@@ -142,6 +150,17 @@ function PlainBrief({ facts, name, now, today, timeZone }: BriefProps) {
         ))
       )}
     </p>
+  );
+}
+
+/** A wall tablet's brief: the deterministic household sentence only (the AI flows are not on tablets, JC-28). */
+function HouseholdBrief({ facts, now, today, timeZone }: BriefProps) {
+  return (
+    <section aria-label={briefLabel(now, timeZone)} className="mb-6" data-testid="morning-brief-block">
+      <div className="flex items-start gap-2">
+        <PlainBrief facts={facts} name={null} now={now} today={today} timeZone={timeZone} household />
+      </div>
+    </section>
   );
 }
 
@@ -215,12 +234,13 @@ function BriefLine({ facts, name, now, today, timeZone }: BriefProps) {
  * the current sentence and the AI rewrite instead of dropping back to the placeholder.
  * The dashboard keys it by the data context, so a household or member change resets it.
  */
-export function MorningBrief({ facts, name, now, today, timeZone, ready }: BriefProps & { ready: boolean }) {
+export function MorningBrief({ facts, name, now, today, timeZone, ready, household }: BriefProps & { ready: boolean }) {
   // The last complete facts: while a section is loading again, its absence must never read
   // as "Nothing needs you", so the brief keeps speaking from what was last complete.
   const [held, setHeld] = useState<DashboardFacts | null>(ready ? facts : null);
   if (ready && held !== facts) setHeld(facts);
   const spoken = briefFacts(held, facts, ready);
   if (!spoken) return <div aria-hidden className={cn(LINE_CLASS, 'mb-6 w-3/4 max-w-xl animate-pulse rounded bg-muted')} />;
+  if (household) return <HouseholdBrief facts={spoken} now={now} today={today} timeZone={timeZone} household />;
   return <BriefLine facts={spoken} name={name} now={now} today={today} timeZone={timeZone} />;
 }

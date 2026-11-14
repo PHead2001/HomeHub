@@ -37,7 +37,7 @@ import { dashboardTiles, type TileId } from '@/lib/dashboard/tiles';
 import { shoppingRowKey, shoppingTileRows } from '@/lib/dashboard/shopping-tile';
 import { dailyLabel, temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
 import { useLiveWeatherState, useWeatherPreference } from '@/lib/dashboard/use-weather';
-import { useAuth } from '@/hooks/use-auth';
+import { useDashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
 import { HouseholdChores, HouseholdSummaryLine, PetFedButton, useChoreDone } from './one-tap';
@@ -282,7 +282,7 @@ export function BentoGrid({
   timeZone?: string;
   onRetry?: () => void;
 }) {
-  const { permissions } = useAuth();
+  const { permissions } = useDashboardScope();
   const liveChoreIds = facts.chores && sections.chores && sections.chores.status !== 'loading'
     ? (facts.chores.todayWork ?? []).map((chore) => chore.id)
     : undefined;

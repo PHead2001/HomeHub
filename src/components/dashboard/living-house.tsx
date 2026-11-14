@@ -56,6 +56,7 @@ import { attentionKey, INLINE_CHORES, inlineRoomChores, onRoof, PEEK_ROOM_CHORES
 import { useDayLight, WeatherLayer } from './time-of-day';
 import { useWeatherSettings, WeatherCityForm } from './weather-controls';
 import { HouseMenu } from './house-menu';
+import { useDashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { PeekCard } from './peek-card';
 import { PetFedButton } from './one-tap';
 import styles from './dashboard.module.css';
@@ -514,7 +515,11 @@ export function LivingHouse({
   const weather = useLiveWeather();
   const { navigate } = useMorphNavigation();
   // The dashboard renders only after sign-in on the client, so reading storage here is safe.
-  const [seasonalOn, setSeasonalOn] = useState(() => (typeof window === 'undefined' ? true : readSeasonalPref()));
+  const [seasonalPref, setSeasonalOn] = useState(() => (typeof window === 'undefined' ? true : readSeasonalPref()));
+  // A wall tablet follows its device record ("Show seasonal touches"); a person's own
+  // choice on this browser never applies there, and the house's toggle is hidden.
+  const recordSeasonal = useDashboardScope().seasonal;
+  const seasonalOn = recordSeasonal ?? seasonalPref;
   const [discoRequested, setDisco] = useState(false);
   const [activeRoom, setActiveRoom] = useState<string | null>(null);
   const [zoom, setZoom] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -722,7 +727,7 @@ export function LivingHouse({
             {roomsHint && <span className="shrink-0 text-xs text-muted-foreground" data-testid="house-rooms-stale">{roomsHint}</span>}
           </div>
           {/* HP-18a: the display settings live in a "..." menu, out of the hero. */}
-          <HouseMenu weather={weatherSettings} seasonal={season ? { on: seasonalOn, toggle: toggleSeasonal } : undefined} />
+          <HouseMenu weather={weatherSettings} seasonal={season && recordSeasonal === undefined ? { on: seasonalOn, toggle: toggleSeasonal } : undefined} />
         </div>
         <WeatherCityForm settings={weatherSettings} />
         <p className="sr-only">{summary}</p>

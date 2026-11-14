@@ -17,7 +17,7 @@ import { Keyboard } from 'lucide-react';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { openShortcutHelp } from '@/components/command/events';
 import { ShortcutHint, ShortcutKeys } from '@/components/ui/shortcut-hint';
-import { useAuth } from '@/hooks/use-auth';
+import { useDashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
 import { isGoldenRoof } from '@/lib/dashboard/ambience';
 import { houseCleanReady } from '@/lib/dashboard/celebration';
@@ -34,12 +34,15 @@ import { MorningBrief } from './morning-brief';
 import styles from './dashboard.module.css';
 
 export function Dashboard() {
-  const { currentUser, household } = useAuth();
+  const scope = useDashboardScope();
+  // D-T15, HP-3b, HP-21: on a registered wall tablet the brief greets the household (no
+  // name, household totals, no AI rewrite) and desktop-only affordances are hidden.
+  const tablet = scope.kind === 'device';
   const { facts, loading, failed, sections, retry, now, today, timeZone, context, houseOutline } = useDashboardData();
   // HP-11b: counted from the completions listener that is already running (streaks), so a
   // page that never reloads turns gold at the 100th chore. Unknown is never gold.
   const golden = facts.completedChores !== undefined && isGoldenRoof(facts.completedChores);
-  const houseClean = useHouseClean(facts, sections.chores, currentUser?.householdId ?? null, today);
+  const houseClean = useHouseClean(facts, sections.chores, scope.householdId, today);
 
   return (
     <div className={cn('container mx-auto px-4', styles.page)} data-testid="dashboard-page">
@@ -48,20 +51,20 @@ export function Dashboard() {
         <div className={cn(styles.lead, 'mb-4 min-w-0')}>
           {/* HP-12c: visually hidden on wide landscape screens, kept for screen readers. */}
           <h1 className={cn(styles.wideSrOnly, 'font-headline text-3xl font-bold tracking-tight')}>Welcome Home</h1>
-          <DashboardSubtitle householdName={household?.name} timeZone={timeZone} />
+          <DashboardSubtitle householdName={scope.householdName ?? undefined} timeZone={timeZone} />
         </div>
-        <LivingHouse facts={facts} title={household?.name || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} />
+        <LivingHouse facts={facts} title={scope.householdName || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} />
       </div>
 
       <div className={cn(styles.tilesPane, 'min-w-0')}>
         {/* Keyed by the context: a household or member change resets the brief and its AI
             rewrite; the household day rolling over does not (HP-4b). */}
         <div className={styles.briefSlot}>
-          <MorningBrief key={context} facts={facts} name={currentUser?.firstName || currentUser?.displayName} now={now} today={today} timeZone={timeZone} ready={!loading} />
+          <MorningBrief key={context} facts={facts} name={tablet ? null : scope.greetingName} household={tablet} now={now} today={today} timeZone={timeZone} ready={!loading} />
         </div>
         <BentoGrid facts={facts} loading={loading} failed={failed} sections={sections} timeZone={timeZone} onRetry={retry} />
 
-        <div className="flex flex-wrap items-center gap-3">
+        {!tablet && <div className="flex flex-wrap items-center gap-3">
           <HomeWrapped />
           {/* HP-19a: only on a keyboard-and-mouse screen (fine, hovering pointer, md and up). */}
           <ShortcutHint shortcut="help">
@@ -75,7 +78,7 @@ export function Dashboard() {
               Keyboard shortcuts <ShortcutKeys shortcut="help" />
             </button>
           </ShortcutHint>
-        </div>
+        </div>}
       </div>
     </div>
   );
