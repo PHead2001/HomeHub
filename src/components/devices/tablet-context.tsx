@@ -72,6 +72,12 @@ export type TabletContextValue = {
   requestAdmin: (reason: string, actorUid?: string) => Promise<TabletActor | null>;
   idToken: () => Promise<string>;
   endSession: (end: SessionEnd) => void;
+  /**
+   * Runs one of this tablet's protected exits. Session ends signalled while it is in
+   * flight wait; on success the session ends as `end` (the exit's own result decides the
+   * note), on failure any signal that arrived meanwhile applies.
+   */
+  runExit: <T extends { ok: boolean }>(end: SessionEnd, call: () => Promise<T>) => Promise<T>;
   openSettings: () => void;
   openQuickAdd: () => void;
   /** Person by uid from the live roster. */

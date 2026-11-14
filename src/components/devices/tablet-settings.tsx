@@ -24,7 +24,7 @@ import { exitTabletAction, updateDeviceComfortAction, updateDeviceSettingsFromTa
 import { deviceRefusalResponse, type DeviceRefusal } from '@/lib/devices/action-policy';
 import { TEXT_SCALES } from '@/lib/devices/settings';
 import type { DeviceComfort } from '@/lib/devices/types';
-import type { SessionEnd } from '@/lib/devices/device-session';
+import { exitSessionEnd } from '@/lib/devices/device-session';
 import { whileBusy } from '@/lib/shell/busy';
 import { cn } from '@/lib/utils';
 import { settingsLayer } from '@/lib/devices/shell-state';
@@ -32,24 +32,21 @@ import { useTablet, type TabletActor } from './tablet-context';
 
 type Exit = 'remove' | 'personal-sign-in' | 'new-code';
 
-const EXITS: Array<{ exit: Exit; label: string; confirm: string; end: SessionEnd; destructive?: boolean }> = [
+const EXITS: Array<{ exit: Exit; label: string; confirm: string; destructive?: boolean }> = [
   {
     exit: 'personal-sign-in',
     label: 'Sign in with a personal account',
     confirm: 'This tablet stops being a wall tablet: it is signed out and its household data is cleared from this browser. It stays in Devices as needing a re-pair. Then you can sign in with Google.',
-    end: 'personal-sign-in',
   },
   {
     exit: 'new-code',
     label: 'Use a different code',
     confirm: 'This tablet is signed out and its household data is cleared from this browser. It stays in Devices as needing a re-pair; enter a new code to set it up again.',
-    end: 'new-code',
   },
   {
     exit: 'remove',
     label: 'Remove this tablet',
     confirm: 'This tablet is removed from the household for good and signed out. To use it again, add it as a new tablet.',
-    end: 'removed',
     destructive: true,
   },
 ];
@@ -86,7 +83,7 @@ function Choice<T extends string | number>({ label, value, options, onChange, di
 }
 
 export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
-  const { settings, householdId, idToken, requestAdmin, endSession, person, prompting } = useTablet();
+  const { settings, householdId, idToken, requestAdmin, endSession, runExit: runTabletExit, person, prompting } = useTablet();
   const [saving, setSaving] = useState<string | null>(null);
   const [admin, setAdmin] = useState<TabletActor | null>(null);
   const [confirming, setConfirming] = useState<(typeof EXITS)[number] | null>(null);
@@ -146,12 +143,9 @@ export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
     if (!actor) return;
     setExiting(true);
     try {
-      const result = await whileBusy('save', async () => exitTabletAction({ idToken: await idToken(), householdId, actorUid: actor.actorUid, pinSessionId: actor.pinSessionId ?? '', exit: choice.exit }));
-      if (result.ok) {
-        endSession(choice.end);
-        return;
-      }
-      refuse(result.code);
+      // The exit's own result decides how the session ends (and the setup screen's note).
+      const result = await runTabletExit(exitSessionEnd(choice.exit), () => whileBusy('save', async () => exitTabletAction({ idToken: await idToken(), householdId, actorUid: actor.actorUid, pinSessionId: actor.pinSessionId ?? '', exit: choice.exit })));
+      if (!result.ok) refuse(result.code);
     } catch {
       refuse('unavailable');
     } finally {
