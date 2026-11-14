@@ -10,6 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
 import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
+import { useSettledPetAccess } from '@/components/pets/pet-access';
 import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
 import { feedingPlan, formatPortion, loggerName, petPhotoMorphName } from '@/lib/pets/care';
 import { readMealPlan } from '@/lib/pets/meal-plan';
@@ -86,7 +87,10 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   // listener (PE-8g): a failed read resubscribes on its own (backoff, `online`,
   // page visible); a refused one is reported as no access, without "Try again" (PE-18c).
   // Keyed by member and pets.view too, so a page refused for lack of access recovers when access returns.
-  const docKey = petListenerKey(householdId ? `${householdId}/${petId}` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  // On the settled access (`useSettledPetAccess`): no second subscription, and no flash of
+  // "unavailable", while permissions settle after the first render.
+  const access = useSettledPetAccess();
+  const docKey = access ? petListenerKey(householdId ? `${householdId}/${petId}` : null, access) : null;
   const [loaded, setLoaded] = useState<LiveState<PetProfile>>({ key: null, value: null, loaded: false, failed: false });
   const petHandle = useRef<ResilientHandle | null>(null);
   useEffect(() => {
@@ -120,7 +124,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'reduce';
     tabsRef.current?.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
   }, [petShown, requestedTab, doseParam]);
-  const loading = authLoading || (Boolean(docKey) && !ready);
+  const loading = authLoading || (Boolean(householdId) && !access) || (Boolean(docKey) && !ready);
   const pet = ready ? loaded.value : null;
   // With nothing loaded the failure is the page's state; with a pet on screen it is a notice beside it.
   const loadFailed = ready && !loaded.loaded ? loaded.failed : false;

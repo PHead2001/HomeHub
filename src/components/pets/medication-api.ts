@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, where, type DocumentData, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { useAuth } from '@/hooks/use-auth';
 import { petListenerKey, petSnapshotListener } from '@/lib/pets/live-listener';
+import { useSettledPetAccess } from './pet-access';
 import type { MedicationDue } from '@/lib/pets/care';
 import { medicationDues, pendingLegacyGroups, readCourse, takenLegacyKeys, withOfflineDoses, type CourseView, type LegacyGroup } from '@/lib/pets/medication-course';
 import type { PetMedicationLog } from '@/lib/pets/types';
@@ -13,11 +13,6 @@ import { useMedicationCountdownLogs } from './pet-log-api';
 
 type LiveCourses = { courses: CourseView[]; loading: boolean; error: unknown; failure?: LiveFailure };
 
-/** Who reads: listeners are recreated when the member or their pets.view changes (as the other Pets listeners). */
-function usePetAccess() {
-  const { currentUser, permissions } = useAuth();
-  return { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) };
-}
 
 /**
  * A pet's medication courses, live (P3). A Pets snapshot listener (PE-8g,
@@ -26,7 +21,8 @@ function usePetAccess() {
  * `failure`), never as "no courses".
  */
 export function useMedicationCourses(householdId: string | null | undefined, petId: string): LiveCourses {
-  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
+  const access = useSettledPetAccess();
+  const key = access ? petListenerKey(householdId ? `${householdId}/${petId}` : null, access) : null;
   const [state, setState] = useState<{ key: string | null; courses: CourseView[]; error: unknown; failure?: LiveFailure }>({ key: null, courses: [], error: null });
 
   useEffect(() => {
@@ -52,6 +48,7 @@ export function useMedicationCourses(householdId: string | null | undefined, pet
     return () => handle.stop();
   }, [key, householdId, petId]);
 
+  if (householdId && !access) return { courses: [], loading: true, error: null };
   if (!key) return { courses: [], loading: false, error: null };
   if (state.key !== key) return { courses: [], loading: true, error: null };
   return { courses: state.courses, loading: false, error: state.error, failure: state.failure };
@@ -62,7 +59,8 @@ export function useMedicationCourses(householdId: string | null | undefined, pet
  * their course's `lastDose`, so readers combine them (`withOfflineDoses`).
  */
 export function useOfflineDoses(householdId: string | null | undefined, petId: string): { logs: DocumentData[]; loading: boolean; error: unknown; failure?: LiveFailure } {
-  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
+  const access = useSettledPetAccess();
+  const key = access ? petListenerKey(householdId ? `${householdId}/${petId}` : null, access) : null;
   const [state, setState] = useState<{ key: string | null; logs: DocumentData[]; error: unknown; failure?: LiveFailure }>({ key: null, logs: [], error: null });
 
   useEffect(() => {
@@ -81,6 +79,7 @@ export function useOfflineDoses(householdId: string | null | undefined, petId: s
     return () => handle.stop();
   }, [key, householdId, petId]);
 
+  if (householdId && !access) return { logs: [], loading: true, error: null };
   if (!key) return { logs: [], loading: false, error: null };
   if (state.key !== key) return { logs: [], loading: true, error: null };
   return { logs: state.logs, loading: false, error: state.error, failure: state.failure };
