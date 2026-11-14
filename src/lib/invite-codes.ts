@@ -2,6 +2,9 @@
 // or without dashes, in any case, and sometimes with spaces.
 const INVITE_ALPHABET = /^[A-Z0-9]{10}$/;
 
+/** The letters and digits generated codes use (no 0/O, 1/I): member invites and device codes. */
+export const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 export const normalizeInviteCode = (input: string): string | null => {
   const compact = (input || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (!INVITE_ALPHABET.test(compact)) return null;

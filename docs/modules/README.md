@@ -22,6 +22,7 @@ Executable code, types, Firebase rules, configuration, and Cloud Functions remai
 | [Home Automation](./home-automation/README.md) | `/automation`, Home Assistant state lookup | `src/components/automation-client.tsx`, `src/app/automation/actions.ts` |
 | [Notifications, Reminders, and Push Delivery](./notifications/README.md) | Bell, `/notifications`, `/api/sw`, FCM trigger | `src/components/notification-*.tsx`, `src/lib/notifications.ts`, `functions/src/index.ts` |
 | [AI and OpenAI](./ai-genkit/README.md) | Authenticated OpenAI server actions, on-demand overview, deterministic provider, strict structured outputs | `src/ai/openai-client.ts`, `src/ai/structured-generation.ts`, `src/ai/tasks/*`, `src/ai/flows/*` |
+| [Registered Wall Tablets (Devices)](./devices/README.md) | `/setup`, Household Devices tab, device codes and redemption, device principal (custom tokens), tablet read rules | `src/lib/devices/*`, `src/lib/server/device-*.ts`, `src/app/household/device-actions.ts`, `src/components/devices/*`, `src/components/household/device*.tsx` |
 | [Firebase Platform, Persistence, and Security](./firebase-platform/README.md) | Firebase bootstrap, rules, hosting, Functions, emulator E2E/CI harness | `src/lib/firebase.ts`, `firestore.rules`, `storage.rules`, `firebase.json`, `functions/`, `scripts/e2e/`, `tests/e2e/`, `.github/workflows/` |
 
 ## Adding a Module

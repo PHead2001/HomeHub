@@ -43,6 +43,9 @@ import {
 } from "./shared/medication-reminders";
 import {normalizeRecurrence, upcomingOccurrences} from "./shared/recurrence";
 import {withContactEmails} from "./shared/member-contact";
+import {
+  DEVICE_UID_PREFIX, finishRevocationForRecord, type DeviceAuthClient,
+} from "./shared/device-revocation";
 
 type Db = Firestore;
 type Timestamp = FirestoreTimestamp;
@@ -670,5 +673,78 @@ export const runHouseholdReminders = async (
     if (status === "reopened") result.reopenedNotifications++;
     if (status === "resolved") result.resolvedNotifications++;
   }
+  return result;
+};
+
+/** The UTC hour of the daily wall-tablet sign-out sweep (hourly upkeep). */
+export const DEVICE_SWEEP_UTC_HOUR = 3;
+
+export type DeviceSweepResult = {
+  ran: boolean; checked: number; finished: number; orphans: number;
+  failed: number;
+};
+
+/**
+ * Daily: finishes the Firebase Auth sign-out of every registered wall tablet
+ * whose record is no longer active (removed: user deleted; unpaired: user
+ * disabled), or whose stored claims carry an older generation (a re-pair whose
+ * revocation failed), in every household. Then deletes `device_` Auth users
+ * whose household no longer exists (a deletion whose Auth step failed). Runs
+ * once a day (the upkeep hour `DEVICE_SWEEP_UTC_HOUR`) unless `force`.
+ * See docs/modules/devices/README.md.
+ * @param {Db} db Firestore (Admin SDK).
+ * @param {DeviceAuthClient} auth Admin Auth.
+ * @param {Date} now Current instant.
+ * @param {boolean} force Run whatever the hour (tests).
+ * @return {Promise<DeviceSweepResult>} What was done.
+ */
+export const sweepDeviceRevocations = async (
+  db: Db,
+  auth: DeviceAuthClient,
+  now: Date,
+  force = false,
+): Promise<DeviceSweepResult> => {
+  const result: DeviceSweepResult = {
+    ran: false, checked: 0, finished: 0, orphans: 0, failed: 0,
+  };
+  if (!force && now.getUTCHours() !== DEVICE_SWEEP_UTC_HOUR) return result;
+  result.ran = true;
+  const households = await db.collection("households").select().get();
+  const existing = new Set(households.docs.map((d) => d.id));
+  for (const household of households.docs) {
+    const devices = await household.ref.collection("devices").get();
+    for (const device of devices.docs) {
+      result.checked++;
+      try {
+        const outcome = await finishRevocationForRecord(auth, device.id, {
+          status: device.get("status"),
+          generation: device.get("generation"),
+        });
+        if (outcome !== "none" && outcome !== "missing") result.finished++;
+      } catch {
+        result.failed++;
+      }
+    }
+  }
+  // Auth users of tablets whose household record tree is gone.
+  let pageToken: string | undefined;
+  do {
+    const page = await auth.listUsers(1000, pageToken);
+    for (const user of page.users) {
+      if (!user.uid.startsWith(DEVICE_UID_PREFIX)) continue;
+      const claims = user.customClaims || {};
+      const householdId = typeof claims.hh_household === "string" ?
+        claims.hh_household : "";
+      if (householdId && existing.has(householdId)) continue;
+      const deviceId = user.uid.slice(DEVICE_UID_PREFIX.length);
+      try {
+        await finishRevocationForRecord(auth, deviceId, null);
+        result.orphans++;
+      } catch {
+        result.failed++;
+      }
+    }
+    pageToken = page.pageToken;
+  } while (pageToken);
   return result;
 };
