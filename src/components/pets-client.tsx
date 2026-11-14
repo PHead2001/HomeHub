@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { collection, onSnapshot, type QuerySnapshot } from 'firebase/firestore';
 import { PlusCircle } from 'lucide-react';
@@ -10,7 +11,7 @@ import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
 import { petListenerKey, petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
 import type { PetProfile } from '@/lib/pets/types';
-import { FEED_SHORTCUT_PARAM, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
+import { FEED_SHORTCUT_PARAM, loggerName, petHref, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
 import { FeedPickerDialog } from './pets/feed-picker-dialog';
 import { AddPetDialog } from './add-pet-dialog';
@@ -19,13 +20,46 @@ import { EditPetDialog } from './edit-pet-dialog';
 import { EmptyState } from './empty-state';
 import { Button } from './ui/button';
 import { Skeleton } from './ui/skeleton';
-import { LivingPetCard } from './pets/living-pet-card';
+import { LivingPetCard, type PetAttention } from './pets/living-pet-card';
 import { PetsPageHeader } from './pets/pets-page-header';
 import { createPet, deletePet, updatePet } from './pets/pet-profile-api';
 import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
 
 const GRID = 'grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
+
+/**
+ * Needs-attention strip (PE-26): pets with a meal past its slot time (due, or
+ * missed earlier today) or an overdue medication, from the same shared status
+ * the cards show (PE-22h). Hidden when nothing needs attention; a pet whose data
+ * is loading or failed is never listed. The cards below keep their order.
+ */
+function AttentionStrip({ pets, attention }: { pets: PetProfile[]; attention: Record<string, PetAttention> }) {
+  const listed = pets.filter((pet) => attention[pet.id]);
+  if (listed.length === 0) return null;
+  return (
+    <section aria-labelledby="pets-attention-title" className="mb-4 rounded-lg border border-warning/60 bg-warning/10 p-3" data-testid="pets-attention">
+      <h2 id="pets-attention-title" className="text-sm font-semibold text-foreground">Needs attention</h2>
+      <ul className="mt-2 flex flex-wrap gap-2">
+        {listed.map((pet) => {
+          const item = attention[pet.id];
+          return (
+            <li key={pet.id} className="min-w-0 max-w-full">
+              <Link
+                href={petHref(pet.id)}
+                className="inline-flex min-h-[var(--target-min)] max-w-full items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-sm text-foreground transition-ui hover:bg-muted"
+                data-testid={`pets-attention-${pet.id}`}
+              >
+                <span className="truncate font-semibold">{pet.name}</span>
+                <span className="min-w-0 break-words">: {[item.meal, item.medication].filter(Boolean).join(' · ')}</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
 
 function PetSkeleton() {
   return (
@@ -45,7 +79,7 @@ function PetSkeleton() {
 }
 
 export function PetsClient() {
-  const { currentUser, currentMember, permissions, loading: authLoading, householdLoading } = useAuth();
+  const { currentUser, currentMember, permissions, household, loading: authLoading, householdLoading } = useAuth();
   const { toast, toastError } = useToast();
   const householdId = currentUser?.householdId ?? null;
   const canEdit = Boolean(permissions['pets.editProfiles']);
@@ -105,6 +139,20 @@ export function PetsClient() {
 
   const existingNames = useMemo(() => pets.map((pet) => pet.name), [pets]);
 
+  // Each card reports its own attention (from its shared status); the strip lists them in card order.
+  const [attention, setAttention] = useState<{ householdId: string | null; byPet: Record<string, PetAttention> }>({ householdId: null, byPet: {} });
+  const reportAttention = useCallback((petId: string, item: PetAttention | null) => {
+    setAttention((previous) => {
+      const base = previous.householdId === householdId ? previous.byPet : {};
+      if (!item && !(petId in base)) return previous.householdId === householdId ? previous : { householdId, byPet: base };
+      const byPet = { ...base };
+      if (item) byPet[petId] = item;
+      else delete byPet[petId];
+      return { householdId, byPet };
+    });
+  }, [householdId]);
+  const attentionByPet = attention.householdId === householdId ? attention.byPet : {};
+
   // "Log feeding" home-screen shortcut (`/pets?feed=1`): once both the pet list and
   // the member's permissions have loaded, open the feeding picker (straight to the
   // confirm step with one pet) or ignore the request, then drop the param so a
@@ -132,10 +180,13 @@ export function PetsClient() {
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }, [handledFeedRequest, feedRequested]);
 
+  // Meal times are confirmed by the signed-in member, on the household's day (PE-22k).
+  const confirmer = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser), timeZone: household?.timeZone ?? null } : undefined;
+
   const handleAddPet = async (fields: PetFields, photoFile: File | null): Promise<boolean> => {
     if (!householdId) return false;
     try {
-      await createPet(householdId, fields, photoFile);
+      await createPet(householdId, fields, photoFile, confirmer);
       toast({ title: 'Pet added', description: `${fields.name} has joined the household.` });
       return true;
     } catch (error) {
@@ -148,7 +199,7 @@ export function PetsClient() {
   const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
     if (!householdId || !petToEdit) return false;
     try {
-      await updatePet(householdId, petToEdit.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: petToEdit.photoUrl });
+      await updatePet(householdId, petToEdit.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: petToEdit.photoUrl }, confirmer);
       toast({ title: 'Pet updated', description: `${petToEdit.name}'s details are saved.` });
       setPetToEdit(null);
       return true;
@@ -209,6 +260,8 @@ export function PetsClient() {
           <PetSkeleton />
         </div>
       ) : pets.length > 0 && householdId ? (
+        <>
+        <AttentionStrip pets={pets} attention={attentionByPet} />
         <Stagger className={GRID}>
           {pets.map((pet, index) => (
             <StaggerItem key={pet.id} className="min-w-0">
@@ -220,10 +273,12 @@ export function PetsClient() {
                 onDelete={(target) => { menuPet.current = target.id; setPetToDelete(target); }}
                 priority={index === 0}
                 index={index}
+                onAttention={reportAttention}
               />
             </StaggerItem>
           ))}
         </Stagger>
+        </>
       ) : loadFailed === 'unauthorized' ? (
         <EmptyState
           kind="pets"

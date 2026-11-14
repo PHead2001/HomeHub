@@ -20,7 +20,7 @@ import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-pl
 import { feedPet, undoFeed, type FeedPetInput, type FeedPetResult } from '@/lib/pets/feed-operation';
 
 /** A feeding request as an entry point describes it; who, where and the zone come from the session. */
-export type FeedRequest = Pick<FeedPetInput, 'portion' | 'food' | 'comments' | 'backdatedAt' | 'known'>;
+export type FeedRequest = Pick<FeedPetInput, 'portion' | 'portionFromSlot' | 'food' | 'comments' | 'backdatedAt' | 'known'>;
 
 export type FeedSuccess = Extract<FeedPetResult, { status: 'saved' | 'queued' }>;
 

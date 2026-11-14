@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { localMinutes } from '../../functions/src/shared/calendar';
+import { timeOfMinutes } from '../../src/lib/pets/schedule-parser';
 import { describe, it } from 'node:test';
 import {
   computeChoreFacts,
@@ -8,6 +10,7 @@ import {
   computeShoppingFacts,
   recurringTemplateIdsFrom,
   UNKNOWN_ROOM_ID,
+  oneTapFedVisible,
 } from '../../src/lib/dashboard/facts';
 
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -241,7 +244,55 @@ describe('shopping, pantry, maintenance and pets', () => {
       ['Rex', false, '0 of 1 today'],
     ]);
     assert.equal(facts.pets[0].headline, 'Fed 2 h ago by Sam');
-    assert.equal(facts.hungry, 2);
+    // D-P3 / PE-31: without confirmed meal times nothing is "waiting to be fed" (no guess shown as a need).
+    assert.deepEqual(facts.pets.map((pet) => pet.needsMeal), [false, false, false]);
+    assert.equal(facts.hungry, 0);
+  });
+
+  it('one-tap Fed (D-P22): a pet with meal times only while a meal is due; a legacy pet while its count is not met', () => {
+    const minutes = localMinutes(now, 'America/Chicago');
+    const dueNow = { id: 'dinner', name: 'Dinner', time: timeOfMinutes(minutes), amount: 0.5, unit: 'Cans' };
+    const facts = computePetFacts(
+      [
+        { id: 'due', name: 'Due', type: 'Dog', mealPlan: { slots: [dueNow], effectiveFrom: '2026-01-01' } },
+        { id: 'fedslot', name: 'Fedslot', type: 'Dog', mealPlan: { slots: [dueNow], effectiveFrom: '2026-01-01' } },
+        { id: 'legacy', name: 'Legacy', type: 'Cat', foodSchedule: 'twice daily' },
+        { id: 'legacydone', name: 'Legacydone', type: 'Cat', feedingsPerDay: 1 },
+      ],
+      { due: [], fedslot: [{ date: now, slotId: 'dinner' }], legacy: [], legacydone: [{ date: now }] },
+      now,
+    );
+    const byId = Object.fromEntries(facts.pets.map((pet) => [pet.id, pet]));
+    // Meal times: Fed while the meal is due (amber), not once it is fed.
+    assert.deepEqual([byId.due.slots, byId.due.needsMeal, oneTapFedVisible(byId.due)], [true, true, true]);
+    assert.deepEqual([byId.fedslot.needsMeal, oneTapFedVisible(byId.fedslot)], [false, false]);
+    // Legacy: Fed while today's count is not met, never as a need (no bowl, not counted hungry).
+    assert.deepEqual([byId.legacy.slots, byId.legacy.fed, byId.legacy.needsMeal, oneTapFedVisible(byId.legacy)], [false, false, false, true]);
+    assert.deepEqual([byId.legacydone.fed, oneTapFedVisible(byId.legacydone)], [true, false]);
+    assert.equal(facts.hungry, 1);
+    // An unknown history offers nothing.
+    assert.equal(oneTapFedVisible({ fed: null, needsMeal: false, slots: false }), false);
+    assert.equal(oneTapFedVisible({ fed: null, needsMeal: true, slots: true }), false);
+  });
+
+  it('a confirmed meal slot whose time has passed unfed is the only "needs food" (D-P3, PE-31f)', () => {
+    const minutes = localMinutes(now, 'America/Chicago');
+    const dueNow = { id: 'dinner', name: 'Dinner', time: timeOfMinutes(minutes), amount: 0.5, unit: 'Cans' };
+    const later = { id: 'late', name: 'Late snack', time: timeOfMinutes(Math.min(minutes + 6 * 60, 23 * 60 + 59)), amount: 1, unit: 'Cups' };
+    const facts = computePetFacts(
+      [
+        { id: 'due', name: 'Due', type: 'Dog', mealPlan: { slots: [dueNow], effectiveFrom: '2026-01-01' } },
+        { id: 'ahead', name: 'Ahead', type: 'Dog', mealPlan: { slots: minutes + 6 * 60 < 24 * 60 ? [later] : [], effectiveFrom: '2026-01-01' } },
+      ],
+      { due: [], ahead: [] },
+      now,
+    );
+    const [ahead, due] = facts.pets;
+    assert.equal(due.needsMeal, true);
+    assert.equal(due.mealLine?.startsWith('Dinner due'), true);
+    assert.deepEqual(due.feed && [due.feed.amount, due.feed.unit, due.feed.portionFromSlot], [0.5, 'Cans', true]);
+    assert.equal(ahead.needsMeal, false, 'a meal still ahead is not a need');
+    assert.equal(facts.hungry, 1);
   });
 });
 
@@ -326,7 +377,8 @@ describe('buildMorningBrief', () => {
   it('builds one sentence from exact counts with links', () => {
     const facts = {
       chores: computeChoreFacts(chores, rooms, viewer, now),
-      pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat', foodSchedule: 'twice daily' }], { pixel: [] }, now),
+      // Pixel's confirmed meal is due now (the brief names only a due meal slot, D-P3).
+      pets: computePetFacts([{ id: 'pixel', name: 'Pixel', type: 'Cat', mealPlan: { slots: [{ id: 'meal', name: 'Meal', time: timeOfMinutes(localMinutes(now, 'America/Chicago')), amount: 1, unit: 'Cups' }], effectiveFrom: '2026-01-01' } }], { pixel: [] }, now),
       pantry: computePantryFacts([{ id: 'milk', name: 'Milk', location: 'Fridge', expiryDate: '2026-08-02' }], now, localZone),
     };
     const brief = buildMorningBrief(facts, { greeting: 'Good morning', name: 'Alex Owner' });

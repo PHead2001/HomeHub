@@ -414,8 +414,9 @@ export function BentoGrid({
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
                 <span className="flex shrink-0 items-center gap-2">
-                  <span className={cn('text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
-                    {pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
+                  {/* Amber only for a due meal slot (D-P3): an unconfirmed plan's count is never a need. */}
+                  <span className={cn('text-xs', pet.fed === null ? 'text-muted-foreground' : pet.needsMeal ? 'text-warning' : pet.fed ? 'text-success' : 'text-muted-foreground')}>
+                    {pet.needsMeal && pet.mealLine ? pet.mealLine : pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
                   </span>
                   {/* Beside the house the house's own pet chips carry Fed. */}
                   <PetFedButton pet={pet} className={styles.wideHide} />

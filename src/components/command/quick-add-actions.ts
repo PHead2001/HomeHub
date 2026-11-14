@@ -23,6 +23,9 @@
  * maintenance.createLogs). Nothing is written until the person confirms the preview.
  */
 import { Timestamp, collection, doc, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
+import type { QuickAddPet } from '@/lib/dashboard/quick-add';
+import { feedTarget, mealHeadline, mealStatus } from '@/lib/pets/meal-plan';
+import type { FeedingEntry } from '@/lib/pets/care';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { format } from 'date-fns';
 import { auth, db } from '@/lib/firebase';
@@ -95,6 +98,7 @@ export async function logFeeding({
   timeZone,
   opId,
   confirm = null,
+  portionFromSlot = false,
   onLateError,
 }: {
   householdId: string;
@@ -107,6 +111,8 @@ export async function logFeeding({
   opId: string;
   /** The answer to "Feed again?", bound to the state it was asked for (`feedConfirmOf`, PE-23g). */
   confirm?: FeedConfirm | null;
+  /** No amount was typed: log the portion of the meal slot the feed is for (PE-22d). */
+  portionFromSlot?: boolean;
   onLateError: (error: unknown) => void;
 }): Promise<FeedPetResult> {
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
@@ -116,6 +122,7 @@ export async function logFeeding({
     householdId,
     petId,
     portion: { amount, unit },
+    portionFromSlot,
     food,
     opId,
     confirm,
@@ -134,7 +141,7 @@ export async function logFeeding({
  */
 export async function feedingHistory(householdId: string, petId: string, timeZone?: string | null) {
   const latest = await latestFeedings(householdId, petId);
-  return { food: foodTypeFromLatest(latest), known: knownFromLogs(latest.flat(), new Date(), timeZone) };
+  return { food: foodTypeFromLatest(latest), known: knownFromLogs(latest.flat(), new Date(), timeZone), logs: latest.flat() as FeedingEntry[] };
 }
 
 /**
@@ -142,9 +149,27 @@ export async function feedingHistory(householdId: string, petId: string, timeZon
  * (PE-23e, QA-17), from the same newest feedings the save reads. The save still
  * runs the authoritative check in its transaction.
  */
-export async function feedingPreviewLine(householdId: string, petId: string, timeZone?: string | null): Promise<string> {
+export async function feedingPreviewLine(householdId: string, petId: string, timeZone?: string | null, profile?: QuickAddPet['profile']): Promise<string> {
   // Both date-shape reads are required: a failed one makes the line "Last feeding unavailable" (lastFedPreview).
-  return lastFedPreview(await latestFeedingReads(householdId, petId), new Date(), timeZone);
+  const reads = await latestFeedingReads(householdId, petId);
+  const now = new Date();
+  const line = lastFedPreview(reads, now, timeZone);
+  // With meal slots, the same status as the card first ("Dinner due 6:00 pm · Last fed …", PE-22h), only from complete reads.
+  const complete = reads.every((read) => read.status === 'fulfilled');
+  const meal = complete ? mealLineOf(profile, reads.flatMap((read) => (read.status === 'fulfilled' ? read.value : [])) as FeedingEntry[], now, timeZone) : null;
+  return meal ? `${meal} · ${line}` : line;
+}
+
+/**
+ * The card's meal-slot status for a pet with confirmed slots ("Dinner due 6:00 pm;
+ * logs dinner · 0.5 cans"), from the logs a quick feed reads; null without slots.
+ */
+export function mealLineOf(profile: QuickAddPet['profile'] | undefined, logs: FeedingEntry[], now: Date, timeZone?: string | null): string | null {
+  if (!profile) return null;
+  const meal = mealStatus(profile, logs, now, timeZone);
+  if (meal.kind !== 'slots') return null;
+  const target = feedTarget(meal);
+  return target.slotName ? `${mealHeadline(meal)}; logs ${target.label}` : mealHeadline(meal);
 }
 
 /** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */

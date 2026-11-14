@@ -122,7 +122,20 @@ export function useCommandIndex(open: boolean): CommandIndex {
           : [],
         pets: pets ? rows(pets).map((pet) => {
           const plan = feedingPlan(pet as unknown as PetProfile);
-          return { id: pet.id, name: str(pet.name, 'Pet'), portion: { amount: plan.amount, unit: plan.unit } };
+          const profile = pet as unknown as PetProfile;
+          return {
+            id: pet.id,
+            name: str(pet.name, 'Pet'),
+            portion: { amount: plan.amount, unit: plan.unit },
+            profile: {
+              foodSchedule: profile.foodSchedule,
+              feedingsPerDay: profile.feedingsPerDay,
+              portionAmount: profile.portionAmount,
+              portionUnit: profile.portionUnit,
+              mealPlan: profile.mealPlan,
+              mealPlanHistory: profile.mealPlanHistory,
+            },
+          };
         }) : [],
         lists: listRows.map((list) => ({ id: list.id, name: str(list.name, 'Shopping list'), type: str(list.type) || undefined })),
         rooms: rooms ? rows(rooms).map((room) => ({ id: room.id, name: str(room.name, 'Room') })) : [],

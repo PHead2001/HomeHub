@@ -17,8 +17,12 @@ import { useMorphNavigation } from '@/hooks/use-morph-navigation';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { feedingHeadline, formatPortion, petHref, petPhotoMorphName, SPECIES_ART_LABEL, speciesArt } from '@/lib/pets/care';
 import { morphStyle } from '@/lib/motion';
+import { cn } from '@/lib/utils';
 import type { PetProfile } from '@/lib/pets/types';
-import { PetCareSummary, usePetCare, type PetCare } from './pet-care-summary';
+import { PetCareSummary, petAttention, usePetCare, type PetCare } from './pet-care-summary';
+import { mealHeadline } from '@/lib/pets/meal-plan';
+
+export type PetAttention = NonNullable<ReturnType<typeof petAttention>>;
 import { PetPhoto } from './pet-photo';
 import { HoldToFeedOverlay, useHoldToFeed } from './hold-to-feed';
 import { useQuickFeed } from './quick-feed-button';
@@ -31,6 +35,11 @@ export type LivingPetCardProps = {
   onDelete: (pet: PetProfile) => void;
   priority?: boolean;
   index?: number;
+  /**
+   * Reports what needs attention on this pet (PE-26: a due or missed meal, an
+   * overdue medication), or null; never while its data is loading or failed.
+   */
+  onAttention?: (petId: string, attention: PetAttention | null) => void;
 };
 
 /** Species label for display: the stored type, or the illustration's species for legacy "Other". */
@@ -50,6 +59,7 @@ function PetPeek({ pet, care }: { pet: PetProfile; care: PetCare }) {
         {petTypeLabel(pet)} · {formatPortion(plan.amount, plan.unit)}{plan.perDay ? `, ${plan.perDay}× a day` : ''}
       </p>
       {pet.foodSchedule && <p className="line-clamp-2 text-xs text-muted-foreground">{pet.foodSchedule}</p>}
+      {care.meal?.kind === 'slots' && <p className="text-xs text-foreground">{mealHeadline(care.meal)}</p>}
       {status && <p className="text-xs text-foreground">{feedingHeadline(status, now, timeZone)}</p>}
       {dues.length > 0 && (
         <ul className="space-y-0.5 text-xs text-foreground">
@@ -69,9 +79,19 @@ function PetPeek({ pet, care }: { pet: PetProfile; care: PetCare }) {
  * so they stay separate targets. One feed controller serves the button and the
  * hold, so both go through the shared feed operation (`feedPet`).
  */
-export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0 }: LivingPetCardProps) {
+export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0, onAttention }: LivingPetCardProps) {
   const href = petHref(pet.id);
   const care = usePetCare(pet, householdId);
+  // PE-26: what needs attention, from the shared status; nothing while loading or failed.
+  const attention = care.feedings.loading || care.feedings.error ? null : petAttention(care);
+  const attentionKey = attention ? `${attention.meal ?? ''}|${attention.medication ?? ''}` : '';
+  React.useEffect(() => {
+    if (!onAttention) return;
+    onAttention(pet.id, attentionKey ? attention : null);
+    // Reported by its text, so a new object for the same state reports nothing new.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onAttention, pet.id, attentionKey]);
+  React.useEffect(() => () => onAttention?.(pet.id, null), [onAttention, pet.id]);
   const reduced = useReducedMotion();
   const { navigate } = useMorphNavigation();
   // The photo takes its shared-element name only while morphing into the pet page
@@ -90,14 +110,19 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
     flushSync(() => setMorphing(true));
     navigate(href);
   };
-  const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food, known: care.known });
+  const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, meal: care.meal, status: care.status, food: care.food, known: care.known });
   const photoRef = React.useRef<HTMLDivElement>(null);
   const { hold, enabled: holdEnabled, handlers } = useHoldToFeed(feed, photoRef);
   const hintId = `feed-hint-${pet.id}`;
 
   return (
     <Card
-      className="glow-card relative flex h-full flex-col overflow-hidden transition-ui"
+      // PE-26b: a card that needs attention gets a ring; the order of the cards never changes.
+      className={cn(
+        'glow-card relative flex h-full flex-col overflow-hidden transition-ui',
+        attention && (attention.medication ? 'ring-2 ring-destructive/60' : 'ring-2 ring-warning/80'),
+      )}
+      data-attention={attention ? (attention.medication ? 'medication' : 'meal') : undefined}
       data-testid={`pet-card-${pet.id}`}
       {...(holdEnabled ? handlers : {})}
     >
@@ -176,6 +201,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
           feed={feed}
           feedHintId={holdEnabled ? hintId : undefined}
           feedClassName="relative z-20 mt-auto pt-1"
+          onSetMealTimes={canEdit ? () => onEdit(pet) : undefined}
         />
       </div>
     </Card>

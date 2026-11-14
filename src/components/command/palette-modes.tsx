@@ -31,7 +31,7 @@ import {
   type PaletteMode,
 } from '@/lib/dashboard/palette-mode';
 import type { ChoreIntent, QuickAddContext, QuickAddPet, ShoppingIntent } from '@/lib/dashboard/quick-add';
-import { feedingHistory } from './quick-add-actions';
+import { feedingHistory, mealLineOf } from './quick-add-actions';
 
 const MODE_ICON: Record<PaletteMode, LucideIcon> = { feeding: PawPrint, item: ShoppingCart, chore: CheckSquare };
 
@@ -132,12 +132,26 @@ function FeedPetButton({ pet, onFed }: { pet: QuickAddPet; onFed: () => void }) 
   const { currentUser, household } = useAuth();
   const portion = pet.portion ?? DEFAULT_PORTION;
   const portionText = formatPortion(portion.amount, portion.unit);
+  // The card's meal-slot status (PE-22h), read once when the mode opens; the portion follows the slot.
+  const [mealLine, setMealLine] = useState<string | null>(null);
+  useEffect(() => {
+    const householdId = currentUser?.householdId;
+    if (!householdId || !pet.profile?.mealPlan) return;
+    let active = true;
+    feedingHistory(householdId, pet.id, household?.timeZone ?? null)
+      .then((history) => { if (active) setMealLine(mealLineOf(pet.profile, history.logs, new Date(), household?.timeZone ?? null)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [currentUser?.householdId, household?.timeZone, pet.id, pet.profile]);
   const action = useFeedAction(pet.id, pet.name, {
     onFed: () => {
       playFeedback('complete');
       onFed();
     },
-    describe: () => ({ title: `${pet.name} fed`, description: `${portionText} logged.` }),
+    describe: (result) => ({
+      title: `${pet.name} fed`,
+      description: `${result.slot ? `${result.slot.name}: ` : ''}${result.portion ? formatPortion(result.portion.amount, result.portion.unit) : portionText} logged.`,
+    }),
   });
   const [reading, setReading] = useState(false);
   const busy = reading || action.saving;
@@ -152,7 +166,7 @@ function FeedPetButton({ pet, onFed }: { pet: QuickAddPet; onFed: () => void }) 
     } finally {
       setReading(false);
     }
-    await action.run({ portion, food: history.food, known: history.known });
+    await action.run({ portion, portionFromSlot: true, food: history.food, known: history.known });
   };
   return (
     <>
@@ -169,7 +183,7 @@ function FeedPetButton({ pet, onFed }: { pet: QuickAddPet; onFed: () => void }) 
           : <PawPrint aria-hidden className="h-6 w-6 shrink-0 text-primary" />}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-base font-medium">Feed {pet.name}</span>
-          <span className="block truncate text-sm text-muted-foreground">{portionText}</span>
+          <span className="block truncate text-sm text-muted-foreground" data-testid={`palette-feed-status-${pet.id}`}>{mealLine ?? portionText}</span>
         </span>
       </button>
       <FeedAgainDialog action={action} petName={pet.name} />

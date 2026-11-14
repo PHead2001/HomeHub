@@ -877,9 +877,10 @@ service cloud.firestore {
     // operation's fields on every new feeding (feedingCreateR2).
     function validFeedingLogFields(data, keys) {
       return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName',
-          'loggedAt', 'repeat', 'clockSource', 'backdated', 'confirmOf',
+          'loggedAt', 'repeat', 'clockSource', 'backdated', 'confirmOf', 'slotId',
           'originalDate', 'dateCorrectedAt', 'dateCorrectedByUid', 'dateCorrectedByName']) &&
         (!('date' in keys) || dateValue(data.date)) &&
+        (!('slotId' in keys) || mealSlotId(data.slotId)) &&
         (!('confirmOf' in keys) || data.confirmOf == null || nonEmptyString(data.confirmOf, 200)) &&
         (!('originalDate' in keys) || data.originalDate == null || dateValue(data.originalDate)) &&
         (!('dateCorrectedAt' in keys) || data.dateCorrectedAt is timestamp) &&
@@ -996,6 +997,45 @@ service cloud.firestore {
       return at > request.time ? request.time : at;
     }
 
+    // --- Meal slots on feedings (P2, D-P5) ----------------------------------
+    // A feeding's `slotId` names a slot of the pet's current plan. A live,
+    // unconfirmed feeding for a slot replaces the 90-minute and complete-day
+    // checks with the slot one: the state's `slotsFed` (slot id -> first log id
+    // of the state's day) must record this log for its slot, and the slot must
+    // not already be fed that day by a log that still exists. What only the
+    // client checks: whether the slot's window is open (household-local times),
+    // off-days, and feedings without a slot attributed to a slot by time.
+    function petMealSlots(householdId, petId) {
+      let pet = get(/databases/$(database)/documents/households/$(householdId)/pets/$(petId)).data;
+      let plan = pet.get('mealPlan', null);
+      return plan is map && plan.get('slots', null) is list ? plan.slots : [];
+    }
+
+    function mealSlotIn(slots, slotId) {
+      return (slots.size() > 0 && slots[0].get('id', null) == slotId) ||
+        (slots.size() > 1 && slots[1].get('id', null) == slotId) ||
+        (slots.size() > 2 && slots[2].get('id', null) == slotId) ||
+        (slots.size() > 3 && slots[3].get('id', null) == slotId) ||
+        (slots.size() > 4 && slots[4].get('id', null) == slotId) ||
+        (slots.size() > 5 && slots[5].get('id', null) == slotId);
+    }
+
+    function feedingSlotKnown(householdId, petId, data) {
+      return !('slotId' in data) || mealSlotIn(petMealSlots(householdId, petId), data.slotId);
+    }
+
+    function feedingSlotFree(householdId, petId, logId, slotId, before) {
+      let after = getAfter(feedingStatePath(householdId, petId)).data;
+      let fedBefore = before == null ? {} : before.get('slotsFed', {});
+      return after.get('slotsFed', {}) is map &&
+        after.get('slotsFed', {}).get(slotId, null) == logId &&
+        !(before != null &&
+          before.get('day', null) == after.get('day', null) &&
+          fedBefore is map &&
+          fedBefore.get(slotId, null) is string &&
+          exists(feedingLogPath(householdId, petId, fedBefore.get(slotId, ''))));
+    }
+
     // Every new feeding (stage R2): signed by the writer, recorded at server time,
     // and one of:
     // - live: `date` is server time, written with the state in the same commit
@@ -1013,6 +1053,7 @@ service cloud.firestore {
       let before = feedingStateBefore(householdId, petId);
       return data.get('loggedByUid', null) == request.auth.uid &&
         data.get('loggedAt', null) == request.time &&
+        feedingSlotKnown(householdId, petId, data) &&
         !('originalDate' in data) && !('dateCorrectedAt' in data) &&
         !('dateCorrectedByUid' in data) && !('dateCorrectedByName' in data) &&
         (
@@ -1030,7 +1071,9 @@ service cloud.firestore {
             getAfter(feedingStatePath(householdId, petId)).data.get('lastLogId', null) == logId &&
             (data.repeat == 'confirmed'
               ? feedingConfirmBound(householdId, petId, data, before)
-              : !feedingRecent(householdId, petId, before) && !feedingDayComplete(householdId, petId)))
+              : ('slotId' in data
+                ? feedingSlotFree(householdId, petId, logId, data.slotId, before)
+                : !feedingRecent(householdId, petId, before) && !feedingDayComplete(householdId, petId))))
         );
     }
 
@@ -1054,6 +1097,96 @@ service cloud.firestore {
           feedingAuthorWithinUndoWindow(householdId));
     }
 
+    // --- Meal plans on the pet (P2: PE-22a, PE-22g, PE-22k) ------------------
+    // `mealPlan` holds up to 6 slots with stable ids, household-local `HH:mm`
+    // times, a portion and optional off-days; it is written by the confirming
+    // member at server time. Editing it keeps the plan that applied before in
+    // `mealPlanHistory` (oldest first, at most 10): a later `effectiveFrom`
+    // appends exactly the replaced slots (`until` = the new `effectiveFrom`) and
+    // keeps every earlier entry; a same-day edit leaves the history alone; a
+    // first plan may record the legacy target it replaces. A plan cannot be
+    // removed. Other pet fields are not validated here (unchanged from 2.1).
+    function mealSlotId(value) {
+      return value is string && value.matches('^[A-Za-z0-9_-]{1,32}$');
+    }
+
+    function validMealSlot(slot) {
+      return slot is map &&
+        slot.keys().hasOnly(['id', 'name', 'time', 'amount', 'unit', 'offDays']) &&
+        slot.keys().hasAll(['id', 'name', 'time', 'amount', 'unit']) &&
+        mealSlotId(slot.id) &&
+        slot.name is string && slot.name.size() >= 1 && slot.name.size() <= 30 &&
+        slot.time is string && slot.time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$') &&
+        (slot.amount is int || slot.amount is float) && slot.amount > 0 && slot.amount <= 50 &&
+        slot.unit in ['Cups', 'Cans', 'Scoops', 'Other'] &&
+        (!('offDays' in slot) ||
+          (slot.offDays is list && slot.offDays.size() <= 6 && slot.offDays.hasOnly([0, 1, 2, 3, 4, 5, 6])));
+    }
+
+    function mealSlotValidAt(slots, i) {
+      return slots.size() <= i || validMealSlot(slots[i]);
+    }
+
+    // A slot's id or time, or a placeholder unique to the index when there is no slot there.
+    function mealSlotKeyAt(slots, i, field) {
+      return slots.size() > i ? slots[i][field] : '#' + field + string(i);
+    }
+
+    function validMealSlots(slots) {
+      return slots is list && slots.size() >= 1 && slots.size() <= 6 &&
+        mealSlotValidAt(slots, 0) && mealSlotValidAt(slots, 1) && mealSlotValidAt(slots, 2) &&
+        mealSlotValidAt(slots, 3) && mealSlotValidAt(slots, 4) && mealSlotValidAt(slots, 5) &&
+        [mealSlotKeyAt(slots, 0, 'id'), mealSlotKeyAt(slots, 1, 'id'), mealSlotKeyAt(slots, 2, 'id'),
+          mealSlotKeyAt(slots, 3, 'id'), mealSlotKeyAt(slots, 4, 'id'), mealSlotKeyAt(slots, 5, 'id')].toSet().size() == 6 &&
+        [mealSlotKeyAt(slots, 0, 'time'), mealSlotKeyAt(slots, 1, 'time'), mealSlotKeyAt(slots, 2, 'time'),
+          mealSlotKeyAt(slots, 3, 'time'), mealSlotKeyAt(slots, 4, 'time'), mealSlotKeyAt(slots, 5, 'time')].toSet().size() == 6;
+    }
+
+    function validMealPlan(plan) {
+      return plan is map &&
+        plan.keys().hasOnly(['slots', 'effectiveFrom', 'confirmedAt', 'confirmedByUid', 'confirmedByName']) &&
+        plan.keys().hasAll(['slots', 'effectiveFrom', 'confirmedAt', 'confirmedByUid']) &&
+        validMealSlots(plan.slots) &&
+        plan.effectiveFrom is string && plan.effectiveFrom.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        plan.confirmedAt == request.time &&
+        plan.confirmedByUid == request.auth.uid &&
+        (!('confirmedByName' in plan) || optionalString(plan.confirmedByName, 200));
+    }
+
+    // The legacy daily target a first plan replaces.
+    function legacyMealPlanEntry(entry, until) {
+      return entry is map && entry.keys().hasOnly(['until', 'perDay', 'nonDaily']) && entry.get('until', null) == until &&
+        (entry.get('perDay', null) == null || (entry.perDay is int && entry.perDay >= 1 && entry.perDay <= 12)) &&
+        (!('nonDaily' in entry) || entry.nonDaily is bool);
+    }
+
+    function mealPlanWrite(before, after) {
+      let plan = after.get('mealPlan', null);
+      let history = after.get('mealPlanHistory', []);
+      let previous = before == null ? null : before.get('mealPlan', null);
+      let past = before == null ? [] : before.get('mealPlanHistory', []);
+      return validMealPlan(plan) && history is list && history.size() <= 10 &&
+        (previous == null
+          ? (history.size() == 0 || (history.size() == 1 && legacyMealPlanEntry(history[0], plan.effectiveFrom)))
+          : (plan.effectiveFrom == previous.get('effectiveFrom', null)
+            ? history == past
+            : (plan.effectiveFrom > previous.get('effectiveFrom', '') &&
+              history.size() >= 1 &&
+              history[history.size() - 1] == {'until': plan.effectiveFrom, 'slots': previous.get('slots', null)} &&
+              ((history.size() == past.size() + 1 && history[0:history.size() - 1] == past) ||
+                (history.size() == 10 && past.size() == 10 && history[0:9] == past[1:10])))));
+    }
+
+    function petMealPlanCreate() {
+      return !request.resource.data.keys().hasAny(['mealPlan', 'mealPlanHistory']) ||
+        mealPlanWrite(null, request.resource.data);
+    }
+
+    function petMealPlanUpdate() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mealPlan', 'mealPlanHistory']) ||
+        mealPlanWrite(resource.data, request.resource.data);
+    }
+
     // --- Feeding state (households/{h}/pets/{p}/feeding-state/current) ----
     // The shared feed operation keeps the latest feed and the household day's
     // count here, written in the same transaction as the log it describes.
@@ -1073,8 +1206,9 @@ service cloud.firestore {
 
     function validFeedingState(data) {
       let fields = ['lastLogId', 'lastFedAt', 'lastFedByUid', 'lastFedByName', 'day', 'countOnDay'];
-      return data.keys().hasOnly(fields.concat(['prev'])) && data.keys().hasAll(fields) &&
+      return data.keys().hasOnly(fields.concat(['prev', 'slotsFed'])) && data.keys().hasAll(fields) &&
         feedingStateLatest(data) &&
+        (!('slotsFed' in data) || (data.slotsFed is map && data.slotsFed.size() <= 20)) &&
         (data.get('prev', null) == null ||
           (data.prev is map && data.prev.keys().hasOnly(fields) && feedingStateLatest(data.prev)));
     }
@@ -1554,7 +1688,10 @@ service cloud.firestore {
 
       match /pets/{petId} {
         allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
-        allow create, update, delete: if hasHouseholdPermission(householdId, 'pets.editProfiles');
+        // Meal plans are validated (P2); other pet fields are as in 2.1.
+        allow create: if hasHouseholdPermission(householdId, 'pets.editProfiles') && petMealPlanCreate();
+        allow update: if hasHouseholdPermission(householdId, 'pets.editProfiles') && petMealPlanUpdate();
+        allow delete: if hasHouseholdPermission(householdId, 'pets.editProfiles');
 
         // Stage R2 (docs/modules/pets/README.md): creates are the feed operation's
         // shapes only (feedingCreateR2); the only update is a time correction.
