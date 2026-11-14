@@ -276,6 +276,24 @@ describe('dose logs', () => {
     await assertFails(setDoc(logRef(db, 'oneoff-off-2'), { oneOff: true, clockSource: 'device', date: Timestamp.fromMillis(Date.now() + 13 * 3_600_000), loggedAt: serverTimestamp(), medication: 'Dewormer', dosage: '1 tab', loggedByUid: people.member.uid }));
   });
 
+  test('a medication entry is created only while its pet exists (no dose after the delete cascade)', async () => {
+    const db = session(people.member);
+    const legacy = { date: new Date().toISOString(), medication: 'Flea', dosage: '1', notes: '', loggedByUid: people.member.uid, loggedByName: 'Name' };
+    const offline = { ...doseLog(people.member, occurrenceAt(-1), { repeat: 'offline', clockSource: 'device', date: Timestamp.now() }) };
+    const oneOff = { oneOff: true, date: serverTimestamp(), loggedAt: serverTimestamp(), medication: 'Dewormer', dosage: '1 tab', loggedByUid: people.member.uid, loggedByName: 'Name' };
+    // The pet exists: each shape is accepted.
+    await assertSucceeds(giveDose(people.member, 'press-pet-1', occurrenceAt(-1)));
+    await assertSucceeds(setDoc(logRef(db, 'legacy-pet-1'), legacy));
+    await assertSucceeds(setDoc(logRef(db, 'offline-pet-1'), offline));
+    await assertSucceeds(setDoc(logRef(db, 'oneoff-pet-1'), oneOff));
+    // The pet is deleted (its cascade removes the pet document): none is accepted, including a queued offline dose.
+    await seed((seedDb) => deleteDoc(doc(seedDb, 'households', house, 'pets', 'rex')));
+    await assertFails(setDoc(logRef(db, 'legacy-pet-2'), legacy));
+    await assertFails(setDoc(logRef(db, 'offline-pet-2'), offline));
+    await assertFails(setDoc(logRef(db, 'oneoff-pet-2'), oneOff));
+    await assertFails(setDoc(logRef(db, 'press-pet-2'), doseLog(people.member, occurrenceAt(-1))));
+  });
+
   test('legacy 2.1 entries and one-off doses', async () => {
     const db = session(people.member);
     await assertSucceeds(setDoc(logRef(db, 'legacy-1'), { date: new Date().toISOString(), medication: 'Flea', dosage: '1', notes: '', nextDueDate: '2026-12-01', loggedByUid: people.member.uid, loggedByName: 'Name' }));

@@ -22,6 +22,7 @@ import { MedicationChips } from './medication-chip';
 import { FeedingWeekStrip, MealSlotsStatus, SetMealTimesButton } from './meal-status';
 import { GiveDoseDialog } from './give-dose-dialog';
 import { useMedicationState } from './medication-api';
+import { medicationAttention } from '@/lib/pets/medication-course';
 import { usePetLogs } from './pet-log-api';
 import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
@@ -84,8 +85,8 @@ function ringView(meal: MealStatus): FeedingStatus {
 /** What the attention strip and the card ring show for a pet (PE-26): a due or missed meal, or an overdue medication. */
 export function petAttention(care: Pick<PetCare, 'meal' | 'dues' | 'medications'>): { meal: string | null; medication: string | null } | null {
   const meal = mealAttention(care.meal);
-  const overdue = care.medications.error ? undefined : care.dues.find((due) => due.state === 'overdue');
-  const medication = overdue ? `${overdue.medication}: ${overdue.label.toLowerCase()}` : null;
+  // Courses and legacy countdowns alike (P3): only an overdue dose asks for attention.
+  const medication = care.medications.error ? null : medicationAttention(care.dues);
   return meal || medication ? { meal, medication } : null;
 }
 

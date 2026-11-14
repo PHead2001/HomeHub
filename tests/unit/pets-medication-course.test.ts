@@ -18,6 +18,7 @@ import {
   lastDoseLine,
   latestDoseOf,
   legacyCourseId,
+  medicationAttention,
   medicationDues,
   newDoseOpId,
   occurrenceLabel,
@@ -395,6 +396,23 @@ describe('permissions come from one table (R5)', () => {
       assert.equal(mayMedication(action, member), true, `member: ${action}`);
       assert.equal(mayMedication(action, guest), false, `guest: ${action}`);
     }
+  });
+});
+
+describe('the attention strip follows courses too (PE-26 with P3)', () => {
+  const courseData = { name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'days', everyDays: 1, times: ['08:00', '20:00'] }, startDay: '2026-11-13', status: 'active', lastDose: pointer('2026-11-14T08:00', '2026-11-14T14:00:00Z') };
+  const legacyLogs = [{ id: 'l1', date: '2026-10-06T15:00:00Z', medication: 'Heartworm', dosage: '1 chew', notes: '', nextDueDate: '2026-11-05' }];
+
+  test('a course dose past its time today is not overdue; after household midnight it is', () => {
+    const course = readCourse('apoquel', courseData)!;
+    assert.equal(medicationAttention(medicationDues([course], [], at('2026-11-15T03:00:00Z'), CHI)), null, 'Due since 8:00 PM stays amber');
+    assert.equal(medicationAttention(medicationDues([course], [], at('2026-11-15T06:30:00Z'), CHI)), 'Apoquel: overdue by 1 day');
+  });
+
+  test('a legacy countdown still counts until a course takes it over; a finished course never does', () => {
+    assert.equal(medicationAttention(medicationDues([], legacyLogs, at('2026-11-14T18:00:00Z'), CHI)), 'Heartworm: overdue by 9 days');
+    const finished = readCourse('legacy-heartworm', { name: 'Heartworm', schedule: null, startDay: '2026-11-01', status: 'finished', legacyKeys: ['heartworm'] })!;
+    assert.equal(medicationAttention(medicationDues([finished], legacyLogs, at('2026-11-14T18:00:00Z'), CHI)), null);
   });
 });
 
