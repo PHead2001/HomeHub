@@ -3,6 +3,8 @@
 
 import {
   createContext,
+  lazy,
+  Suspense,
   useState,
   useEffect,
   type ReactNode,
@@ -13,6 +15,7 @@ import {
 } from 'react';
 import {
   onAuthStateChanged,
+  onIdTokenChanged,
   signOut,
   updatePassword,
   signInWithPopup,
@@ -47,6 +50,7 @@ import { normalizeInviteCode } from '@/lib/invite-codes';
 import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
+import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, retryDeviceClaims, type Principal } from '@/lib/devices/principal';
 import type {
   Household,
   HouseholdMember,
@@ -55,6 +59,14 @@ import type {
 } from '@/lib/types';
 
 type PermissionMap = Record<HouseholdPermission, boolean>;
+
+/** A person or a registered wall tablet (src/lib/devices/principal.ts). */
+export type { Principal };
+const PERSONAL = PERSONAL_PRINCIPAL;
+
+// The minimal tablet screen (until the tablet shell lands). Loaded only for a device
+// session: it reads Firestore, which signed-out and personal first paint never load here.
+const DeviceSetUpLanding = lazy(() => import('@/components/devices/set-up-landing'));
 
 /**
  * Firestore and the rest of the data stack (`@/lib/firebase`, which starts App
@@ -83,6 +95,8 @@ const readCached = async (path: string[]) => {
 };
 
 interface AuthContextType {
+  /** A person or a registered wall tablet (see `Principal`). */
+  principal: Principal;
   currentUser: User | null;
   household: Household | null;
   currentMember: HouseholdMember | null;
@@ -177,6 +191,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => { profileRef.current = profile; }, [profile]);
 
   const [membership, dispatchMembership] = useReducer(membershipReducer, initialMembershipState);
+  const [principal, setPrincipal] = useState<Principal>(PERSONAL);
+  const principalRef = useRef<Principal>(PERSONAL);
   const [loading, setLoading] = useState(true);
   const [profileConfirmed, setProfileConfirmed] = useState(false);
   // Bumped by "Try again" so every listener of the household is reopened.
@@ -488,12 +504,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [deletingWithoutName]);
 
+  /**
+   * Enters a device session (no profile fetch or creation, no membership, push or member
+   * sync; true) or leaves one for the personal flow (false).
+   */
+  const switchPrincipal = useCallback((device: Principal | null): boolean => {
+    if (device) {
+      dispatchMembership({ type: 'reset' });
+      if (profileRef.current) forgetHouseholdOnDevice(null);
+      profileRef.current = null;
+      setProfile(null);
+      setProfileConfirmed(false);
+      principalRef.current = device;
+      setPrincipal(device);
+      setLoading(false);
+      return true;
+    }
+    if (principalRef.current.kind !== 'personal') {
+      principalRef.current = PERSONAL;
+      setPrincipal(PERSONAL);
+    }
+    return false;
+  }, []);
+
+  // A tablet whose claims could not be read (offline restore with an expired token): read
+  // them again on reconnect, on every ID-token change and every 30 s until they resolve.
+  const unresolvedDevice = principal.kind === 'device-unresolved' ? principal.deviceId : null;
+  useEffect(() => {
+    if (!unresolvedDevice) return;
+    return retryDeviceClaims({
+      resolve: async () => (auth.currentUser ? devicePrincipalOf(auth.currentUser) : null),
+      onResolved: (device) => { if (auth.currentUser?.uid === `device_${device.deviceId}`) switchPrincipal(device); },
+      triggers: [
+        (retry) => {
+          window.addEventListener('online', retry);
+          return () => window.removeEventListener('online', retry);
+        },
+        (retry) => onIdTokenChanged(auth, () => retry()),
+        (retry) => {
+          const timer = window.setInterval(retry, 30_000);
+          return () => window.clearInterval(timer);
+        },
+      ],
+    });
+  }, [switchPrincipal, unresolvedDevice]);
+
   // This is for session management ONLY (on page refresh)
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       const restoring = restoringSession.current;
       restoringSession.current = false;
       setLoading(true);
+      // A wall tablet never runs the personal flow.
+      if (switchPrincipal(firebaseUser ? await devicePrincipalOf(firebaseUser) : null)) return;
       if (firebaseUser) {
         // Another account on this page (for example a sign-in synchronised from another
         // tab): nothing of the previous one stays. The membership restarts from the new
@@ -537,10 +600,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => unsubscribeAuth();
-  }, [fetchOrCreateUserProfile, publishProfile]);
+  }, [fetchOrCreateUserProfile, publishProfile, switchPrincipal]);
 
 
   const signInWithGoogle = useCallback(async (): Promise<void> => {
+    // A wall tablet switches to a personal account only through its protected exit
+    // (an owner or admin PIN), never by signing in over the device session.
+    if (principalRef.current.kind !== 'personal' || looksLikeDevice(auth.currentUser)) {
+      toast({ variant: 'destructive', title: 'Sign-in not available here', description: DEVICE_GOOGLE_SIGN_IN_REFUSAL });
+      return;
+    }
     setLoading(true);
     // Default scopes only (openid, email, profile). Name and photo come from
     // the ID token Firebase Auth already returns; nothing else is requested.
@@ -803,6 +872,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const permissions = useMemo(() => computedPermissions, [permissionsKey]);
 
   const value = {
+    principal,
     currentUser,
     household,
     currentMember,
@@ -825,7 +895,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      {principal.kind !== 'personal'
+        ? <Suspense fallback={null}><DeviceSetUpLanding principal={principal} /></Suspense>
+        : children}
     </AuthContext.Provider>
   );
 }

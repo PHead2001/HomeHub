@@ -2,6 +2,7 @@
 "use client"
 
 import { useState, type ReactNode } from "react"
+import Link from "next/link"
 import { useAuth } from "@/hooks/use-auth"
 import { Button } from "@/components/ui/button"
 import {
@@ -12,7 +13,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Loader2 } from "lucide-react"
+import { Loader2, MonitorSmartphone } from "lucide-react"
+
+// Wall-tablet setup ships dark behind the public devices flag (docs/modules/devices/README.md).
+const devicesEnabled = process.env.NEXT_PUBLIC_HOMEHUB_DEVICES === "true"
 
 interface LoginDialogProps {
     children: ReactNode;
@@ -61,6 +65,15 @@ export function LoginDialog({ children }: LoginDialogProps) {
                 {loading ? <><Loader2 aria-hidden className="mr-2 animate-spin" /> Signing in…</> : <><GoogleIcon /> Sign in with Google</>}
             </Button>
         </div>
+        {devicesEnabled && (
+          <div className="-mt-4 pb-2 flex justify-center">
+            <Button asChild variant="ghost" size="lg" className="w-full">
+              <Link href="/setup" onClick={() => setOpen(false)}>
+                <MonitorSmartphone aria-hidden className="mr-2 h-4 w-4" /> Set up a wall tablet
+              </Link>
+            </Button>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )
