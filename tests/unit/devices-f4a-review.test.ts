@@ -255,7 +255,12 @@ describe('a cancelled Undo is offered again for the time left (round 3)', () => 
 
   it('guard: the runtime offers the Undo again on every cancellation', () => {
     const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
-    assert.match(runtime, /case 'cancelled':(\s*\/\/.*)*\s*return offerAgain\(entry\.label, 'quiet'\);/);
+    // The cancelled case (up to the next case) returns the re-offer; plain string search, no backtracking.
+    const start = runtime.indexOf("case 'cancelled':");
+    assert.ok(start >= 0, 'the runtime handles a cancelled Undo');
+    const next = runtime.indexOf('case ', start + "case 'cancelled':".length);
+    const body = runtime.slice(start, next < 0 ? undefined : next);
+    assert.ok(body.includes("return offerAgain(entry.label, 'quiet');"), 'a cancelled Undo is offered again');
     assert.match(runtime, /const again = undoReoffer\(now, Date\.now\(\)\);\s*if \(again\) offerUndoRef\.current\?\.\(now, actor, who, message, again\.remainingMs\);/);
   });
 });
