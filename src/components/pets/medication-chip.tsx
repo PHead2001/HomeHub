@@ -10,14 +10,15 @@ const STATE_CLASSES: Record<MedicationDue['state'], string> = {
   upcoming: 'border-border bg-muted/60 text-muted-foreground',
 };
 
-/** Countdown chip for one medication's next dose; amber when due, red when overdue. */
-export function MedicationChip({ due, className }: { due: MedicationDue; className?: string }) {
-  return (
-    <span
-      className={cn('inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium coarse:text-sm', STATE_CLASSES[due.state], className)}
-      title={`${due.medication}: next dose ${due.due.toLocaleDateString()}`}
-      data-medication-state={due.state}
-    >
+/**
+ * Countdown chip for one medication's next dose; amber when due, red when
+ * overdue. With `onSelect` it is a button (P3, PE-24b): a course's chip opens
+ * Give dose, a legacy one its confirmation on the Medication tab.
+ */
+export function MedicationChip({ due, className, onSelect }: { due: MedicationDue; className?: string; onSelect?: (due: MedicationDue) => void }) {
+  const classes = cn('inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium coarse:text-sm', STATE_CLASSES[due.state], className);
+  const content = (
+    <>
       <Pill aria-hidden className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">
         <span className="font-semibold">{due.medication}</span>
@@ -25,6 +26,31 @@ export function MedicationChip({ due, className }: { due: MedicationDue; classNa
         <span className="sr-only">, </span>
         {due.label}
       </span>
+    </>
+  );
+  if (onSelect) {
+    return (
+      <button
+        type="button"
+        className={cn(classes, 'relative z-10 text-left coarse:min-h-12 [@media(hover:hover)_and_(pointer:fine)]:hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring')}
+        title={due.courseId ? `Give ${due.medication}` : `${due.medication}: confirm its schedule`}
+        aria-label={due.courseId ? `Give ${due.medication}, ${due.label}` : `${due.medication}, ${due.label}. Open the Medication tab`}
+        data-medication-state={due.state}
+        data-course-id={due.courseId}
+        onClick={(event) => {
+          // The card's stretched link sits under the chip: the chip's tap is its own.
+          event.preventDefault();
+          event.stopPropagation();
+          onSelect(due);
+        }}
+      >
+        {content}
+      </button>
+    );
+  }
+  return (
+    <span className={classes} title={`${due.medication}: next dose ${due.due.toLocaleDateString()}`} data-medication-state={due.state}>
+      {content}
     </span>
   );
 }
@@ -34,15 +60,15 @@ export function MedicationChip({ due, className }: { due: MedicationDue; classNa
  * of `currentMedications`). Past `max`, the rest fold into a "+N" chip whose
  * title and screen-reader text name them.
  */
-export function MedicationChips({ dues, max = 2, className }: { dues: MedicationDue[]; max?: number; className?: string }) {
+export function MedicationChips({ dues, max = 2, className, onSelect }: { dues: MedicationDue[]; max?: number; className?: string; onSelect?: (due: MedicationDue) => void }) {
   if (dues.length === 0) return null;
   const { shown, hidden } = chipOverflow(dues, max);
   const rest = dues.slice(shown.length);
   return (
     <ul className={cn('flex min-w-0 flex-wrap gap-1.5', className)} aria-label="Medication countdowns" data-testid="medication-chips">
       {shown.map((due) => (
-        <li key={due.medication.trim().toLowerCase()} className="min-w-0 max-w-full">
-          <MedicationChip due={due} />
+        <li key={due.courseId ?? `legacy:${due.legacyKey ?? due.medication.trim().toLowerCase()}`} className="min-w-0 max-w-full">
+          <MedicationChip due={due} onSelect={onSelect} />
         </li>
       ))}
       {hidden > 0 && (
