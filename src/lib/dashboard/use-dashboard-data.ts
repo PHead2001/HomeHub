@@ -34,7 +34,7 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { useAuth } from '@/hooks/use-auth';
+import { useDashboardScope } from './dashboard-scope';
 import { householdDayStart, householdDayZone, useHouseholdToday } from '@/lib/household-day';
 import { deduplicateNotifications, parseNotificationDoc } from '@/lib/notifications';
 import { NOTIFICATION_WINDOW_DAYS } from './notification-display';
@@ -163,11 +163,13 @@ export type DashboardData = {
 };
 
 export function useDashboardData(enabled = true): DashboardData {
-  const { currentUser, household, permissions } = useAuth();
-  const zone = householdDayZone(household?.timeZone ?? null);
-  const householdId = enabled ? currentUser?.householdId ?? null : null;
-  const uid = currentUser?.uid ?? '';
-  const email = currentUser?.email ?? '';
+  // A person by default; a registered wall tablet provides its own scope (dashboard-scope.tsx).
+  const scope = useDashboardScope();
+  const { permissions } = scope;
+  const zone = householdDayZone(scope.timeZone);
+  const householdId = enabled ? scope.householdId : null;
+  const uid = scope.uid;
+  const email = scope.email;
   const today = useHouseholdToday(zone);
   const now = useNow(60_000, today);
   const offline = useOffline();

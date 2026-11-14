@@ -134,6 +134,10 @@ Removal keeps completed chores assigned to the person who did them (the earlier 
 
 With the wall-tablet flags on, owners and admins (role) manage **kid profiles** (children without an account: `members/kid_<id>` records with `kind: 'identity'`, role Child, no contact document, no sign-in) and tablet PINs from the Members tab (`useMemberTabletControls`, `child-identity-dialog.tsx`). The policy changes for kid profiles: `canAssignRole` refuses any role change (`identity_fixed_role`), `canTransferOwnership` refuses them as the new owner (`target_identity`), and `removeMember` routes a kid profile to the kid-profile removal body with its own authority (owner or admin role; a member holding `household.manageMembers` is refused). `removeMember`, `leaveHousehold` and `deleteHousehold` also delete every departing person's `private/pin` and `private/pinGuard`. Kid profiles appear among members (no email line, no role menu, "Kid profile, no sign-in"; the contact listener skips them) and in Roles (overrides editable as for any child). The Activity list labels the new `device.*`, `pin.*` and `child.*` entries and shows tablet actions as "as Alex (PIN) on Kitchen tablet". Details, authority and data shapes: [Devices](../devices/README.md), "Actors and kid profiles" and "PINs".
 
+### Household quiet hours (wall tablets, ships dark)
+
+With the wall-tablet flags on, owners and admins (role) set **quiet hours** in Household > Devices (`QuietHoursSetting`): `households/{h}.quietHours = { start, end, updatedAt, updatedByUid }` or null, `HH:mm` in the household's time zone, written only by `updateQuietHoursAction` (activity `device.quiet_hours_changed`). Registered wall tablets dim their screen during them; push notifications are not muted. See [Registered Wall Tablets](../devices/README.md), "Night dimming".
+
 ### Household writes are server-only in the rules
 
 Every household-management write is made by the server actions above (Admin SDK, which the rules do not apply to), and `firestore.rules` denies the same writes from a browser:
@@ -153,7 +157,7 @@ The emulator E2E seed creates Household A and Household B, matching fake identit
 
 ## Data Model and Persistence
 
-- Household: `households/{householdId}` with `name`, `ownerUid`, timestamps, and `timeZone` (older households may still carry the legacy `ownerEmail` and `memberEmails` until the scrub removes them). `timeZone` is captured from the creator's browser when the household is created (the rules let owners/admins change it, bounded to a 64-character string; no screen does so today). Server-side upkeep uses it for recurring-chore dates and maintenance due days; households without one use `America/Chicago`.
+- Household: `households/{householdId}` with `name`, `ownerUid`, timestamps, `devicePolicy` and `quietHours` (wall tablets, server-written), and `timeZone` (older households may still carry the legacy `ownerEmail` and `memberEmails` until the scrub removes them). `timeZone` is captured from the creator's browser when the household is created (the rules let owners/admins change it, bounded to a 64-character string; no screen does so today). Server-side upkeep uses it for recurring-chore dates and maintenance due days; households without one use `America/Chicago`.
 - Membership: `households/{householdId}/members/{uid}`: `uid`, `displayName`, `avatarUrl`, `role`, `status`, `permissions`, `joinedAt`, approval fields, and for people who joined by invite `inviteCode` and `householdName` (server-written; read by the person while pending). No `email` (older records keep one until the scrub removes it).
 - Member contact: `households/{householdId}/members/{uid}/private/contact`: `email`, `updatedAt` (server-written; see Member contact).
 - Temporary invite: `inviteCodes/{code}`.

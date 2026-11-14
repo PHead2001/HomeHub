@@ -39,7 +39,15 @@ const firstName = (name: string | undefined | null) => {
  * Builds the brief. Returns segments (plain text plus links) and the flat text,
  * which is also the cache key for "already typed today".
  */
-export function buildMorningBrief(facts: DashboardFacts, options: { greeting: string; name?: string | null }): {
+export function buildMorningBrief(facts: DashboardFacts, options: {
+  greeting: string;
+  name?: string | null;
+  /**
+   * A registered wall tablet's resting view (HP-3b, HP-21, WT-5a): household totals only,
+   * no name and nothing addressed to one person.
+   */
+  household?: boolean;
+}): {
   segments: BriefSegment[];
   text: string;
 } {
@@ -59,16 +67,17 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
     const mineHref = choresFilteredHref({ mine: true });
     const mineOverdueHref = choresFilteredHref({ overdue: true, mine: true });
     const houseOverdueHref = choresFilteredHref({ overdue: true });
-    if (chores.mineOverdue > 0 && today > 0) {
+    const personal = !options.household;
+    if (personal && chores.mineOverdue > 0 && today > 0) {
       phrases.push([
         { text: `${plural(today, 'chore')} today`, href: mineHref, peek: mine },
         { text: ' (' },
         { text: `${chores.mineOverdue} overdue`, href: mineOverdueHref, peek: mine },
         { text: ')' },
       ]);
-    } else if (chores.mineOverdue > 0) {
+    } else if (personal && chores.mineOverdue > 0) {
       phrases.push([{ text: `${plural(chores.mineOverdue, 'overdue chore')}`, href: mineOverdueHref, peek: mine }]);
-    } else if (today > 0) {
+    } else if (personal && today > 0) {
       phrases.push([{ text: `${plural(today, 'chore')} today`, href: mineHref, peek: mine }]);
     } else if (houseOverdue > 0 && houseToday > 0) {
       phrases.push([
@@ -118,7 +127,7 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
   }
 
   const incomplete = Boolean(facts.unavailable?.length || facts.pets?.unknown);
-  const name = firstName(options.name);
+  const name = options.household ? '' : firstName(options.name);
   const opener = `${options.greeting}${name ? `, ${name}` : ''}. `;
   const body: BriefSegment[] = phrases.length > 0
     ? (() => {
@@ -130,7 +139,7 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
       })()
     : incomplete
       ? [{ text: 'Some of your home could not be loaded right now, so there may be more to do.' }]
-      : [{ text: 'Nothing needs you right now. Enjoy the quiet.' }];
+      : [{ text: options.household ? 'Nothing needs doing right now. Enjoy the quiet.' : 'Nothing needs you right now. Enjoy the quiet.' }];
   // A failed read is never summarized as "nothing to do".
   if (incomplete && phrases.length > 0) body.push({ text: ' Some sections could not be loaded.' });
 

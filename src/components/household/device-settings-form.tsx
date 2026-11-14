@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
+import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import {
   DEVICE_NAME_MAX,
   DEVICE_ROOM_MAX,
@@ -113,6 +114,8 @@ export function DeviceSettingsDialog({
 
   const patch = useMemo(() => (initial && draft ? diffPatch(initial, draft) : {}), [draft, initial]);
   const dirty = Object.keys(patch).length > 0;
+  // Unsaved edits hold the shell busy: no idle return or automatic reload discards them.
+  useUnsavedInput(dirty);
 
   if (!draft || !initial) return null;
   const update = (next: Partial<DeviceSettings>) => {

@@ -18,7 +18,7 @@ import { REDEEM_REFUSAL_COPY, codeFromScan, codeFromSetupFragment, normalizeDevi
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { keepPendingAfter, pendingFor, type PendingRedemption } from '@/lib/devices/setup-pending';
 import { SCANNER_ERROR_COPY, scannerErrorKind, type ScannerErrorKind } from '@/lib/barcode/scanner-errors';
-import { DEVICE_ENDED_KEY } from '@/components/devices/set-up-landing';
+import { DEVICE_ENDED_KEY, endedNote } from '@/lib/devices/device-session';
 
 // "Set up a wall tablet" (docs/modules/devices/README.md, "QR and the setup screen"):
 // the code typed or scanned from the creator's QR (whose setup link carries the code in
@@ -68,8 +68,6 @@ const limitedUseAppCheckToken = async (): Promise<string | null> => {
   }
 };
 
-const endedNote = (value: string | null) =>
-  value === 'repaired' ? 'This tablet was set up again on another screen.' : value === 'removed' ? 'This tablet was removed.' : null;
 
 function QrScanner({ onCode, onClose }: { onCode: (text: string) => void; onClose: () => void }) {
   const [facing, setFacing] = useState<'user' | 'environment'>('user');

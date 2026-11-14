@@ -4,6 +4,7 @@ import { DeviceError, recordDeviceHeartbeat } from '@/lib/server/device-manageme
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { endPinSession, verifyDevicePin } from '@/lib/server/pins';
 import { updateDeviceComfort } from '@/lib/server/device-comfort';
+import { exitTablet, updateDeviceSettingsFromTablet, type TabletExit } from '@/lib/server/device-tablet';
 import type { DeviceRefusal } from '@/lib/devices/action-policy';
 import type { DeviceSettings } from '@/lib/devices/types';
 import { clientAddress, trustedProxyHopsFromEnv, UNKNOWN_CLIENT } from '@/lib/devices/client-address';
@@ -88,5 +89,30 @@ export async function deviceHeartbeatAction(input: { idToken: string; householdI
     return { ok: true, data: await recordDeviceHeartbeat(input) };
   } catch (error) {
     return refusal(error, 'Tablet heartbeat');
+  }
+}
+
+/**
+ * Room, name, sections, start page and the other record settings from the tablet
+ * (WT-16e): an owner or admin with a fresh PIN session (at most 30 s old).
+ */
+export async function updateDeviceSettingsFromTabletAction(input: { idToken: string; householdId: string; actorUid: string; pinSessionId: string; patch: Record<string, unknown> }): Promise<TabletActionResult<{ changed: string[]; settings: DeviceSettings }>> {
+  try {
+    return { ok: true, data: await updateDeviceSettingsFromTablet(input) };
+  } catch (error) {
+    return refusal(error, 'Tablet settings');
+  }
+}
+
+/**
+ * The protected exit (WT-16a-c, D-T5): remove this tablet, switch it to a personal
+ * sign-in, or sign it out to use a different code. An owner or admin with a fresh PIN
+ * session; the device credential ends either way.
+ */
+export async function exitTabletAction(input: { idToken: string; householdId: string; actorUid: string; pinSessionId: string; exit: TabletExit }): Promise<TabletActionResult<{ status: 'removed' | 'unpaired'; authCleanup: 'done' | 'pending' }>> {
+  try {
+    return { ok: true, data: await exitTablet(input) };
+  } catch (error) {
+    return refusal(error, 'Tablet exit');
   }
 }

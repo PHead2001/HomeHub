@@ -526,6 +526,8 @@ export type Household = {
     timeZone?: string;
     /** Wall-tablet policy (server-written; docs/modules/devices/README.md). Absent: points PIN off. */
     devicePolicy?: { pointsPin?: 'off' | 'kids' | 'everyone' };
+    /** Household quiet hours ('HH:mm', household zone); wall tablets dim during them (server-written; docs/modules/devices/README.md). */
+    quietHours?: { start: string; end: string } | null;
 }
 
 export type InviteCode = {
