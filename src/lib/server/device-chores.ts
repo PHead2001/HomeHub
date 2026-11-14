@@ -34,7 +34,8 @@ export type DeviceChoreRequest = {
   queued?: { createdAt: string; generation?: unknown };
 };
 
-export type DeviceChoreOptions = { now?: Date; clientAddress?: string };
+/** `clock`: the server clock (the real time unless a test injects one); read again at every precheck. */
+export type DeviceChoreOptions = { clock?: () => Date; clientAddress?: string };
 
 const authorize = (capability: DeviceCapability, input: DeviceChoreRequest, options: DeviceChoreOptions) => authorizeDeviceAction({
   idToken: input.idToken as string,
@@ -45,7 +46,7 @@ const authorize = (capability: DeviceCapability, input: DeviceChoreRequest, opti
   opId: input.opId as string,
   // The gate refuses a queued entry whose generation is missing or not the token's.
   ...(input.queued && typeof input.queued.createdAt === 'string' ? { queued: { createdAt: input.queued.createdAt, generation: input.queued.generation as number } } : {}),
-}, options.now, { clientAddress: options.clientAddress });
+}, { clientAddress: options.clientAddress, clock: options.clock });
 
 /**
  * What a tablet receives never carries an email (WT-10e): every `…Email` field is removed

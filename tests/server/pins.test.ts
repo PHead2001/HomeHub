@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { after, before, beforeEach, describe, test } from 'node:test';
+import { after, before, beforeEach, describe, mock, test } from 'node:test';
+import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { DeviceActionError, authorizeDeviceAction } from '../../src/lib/server/device-gate';
 import {
@@ -12,6 +13,7 @@ import {
   setChildPin,
   setMyPin,
   verifyDevicePin,
+  type VerifyPinTestHooks,
 } from '../../src/lib/server/pins';
 import { changeMemberRole, leaveHousehold, removeMember } from '../../src/lib/server/household-membership';
 import { createDeviceRepairCode, redeemDeviceCode } from '../../src/lib/server/device-management';
@@ -27,6 +29,14 @@ import {
 import { endPinSessionAction, verifyDevicePinAction } from '../../src/app/devices/actions';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
 import { TEST_PEPPER_ID, clock, house, opId, pairTablet, seedKid, sessionsOf, installTestPepper, type Tablet } from './device-actor-helpers';
+
+
+/**
+ * The gate with an injected clock: a test's `at` is the server time for authorization and
+ * for every precheck (production passes no clock and reads the real time each time).
+ */
+const authorize = (request: Parameters<typeof authorizeDeviceAction>[0], at?: Date, options: Parameters<typeof authorizeDeviceAction>[1] = {}) =>
+  authorizeDeviceAction(request, { ...options, ...(at ? { clock: () => at } : {}) });
 
 // Tablet PINs (docs/modules/devices/README.md, "PINs"; design 7, re-review R2): the
 // WT-17 authority matrix (including forbidden known-value resets), format, storage
@@ -367,7 +377,7 @@ describe('verification and lockouts (7.3, 7.4)', () => {
 
 describe('PIN sessions (7.5): what ends them', () => {
   const pinAction = (t: Tablet, actorUid: string, pinSessionId: string, now: Date) =>
-    authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'pets.pet.delete', actorUid, pinSessionId, opId: opId() }, now);
+    authorize({ idToken: t.idToken, householdId: H, capability: 'pets.pet.delete', actorUid, pinSessionId, opId: opId() }, now);
 
   test('PIN change, PIN clear, role change, Done, idle expiry, removal and re-pairing', async () => {
     await setMyPin(admin, { householdId: H, pin: '1357' });
@@ -389,7 +399,7 @@ describe('PIN sessions (7.5): what ends them', () => {
 
     // A role change: the session was opened as a member; as a child it no longer counts.
     session = await open(member.uid, '4826');
-    const feed = (at: Date) => authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'pets.feed', actorUid: member.uid, pinSessionId: session, opId: opId() }, at);
+    const feed = (at: Date) => authorize({ idToken: t.idToken, householdId: H, capability: 'pets.feed', actorUid: member.uid, pinSessionId: session, opId: opId() }, at);
     assert.equal((await feed(c.now())).level, 'pin');
     await changeMemberRole(owner, H, member.uid, 'child');
     await deviceErr(feed(c.now()), 'pin_session_invalid');
@@ -487,12 +497,175 @@ describe('round 2: lock announcements, slow guessing, set limits, cleared guards
   });
 });
 
+describe('hardening: daily count, repeat tablet locks, set admission, announcements', () => {
+  test('30 failures within 24 hours lock the PIN even when correct PINs come in between (reason day)', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 8; i++) tablets.push(await pairTablet(H, owner, created, `Daily ${i}`));
+    const c = clock(Date.parse('2026-12-10T06:00:00Z'));
+    let last: unknown;
+    // 29 wrong spread over the day (under 20 an hour, 4 per tablet visit), a correct one after every 4.
+    for (let i = 0; i < 29; i++) {
+      const t = tablets[i % tablets.length];
+      c.advance(20 * 60_000);
+      last = await verify(t, member.uid, '7391', c.now()).catch(error => error);
+      assert.equal((last as DeviceActionError).code, 'pin_wrong', `attempt ${i}`);
+      if (i % 4 === 3) assert.ok(await verify(t, member.uid, '4826', c.advance(7000)));
+    }
+    c.advance(20 * 60_000);
+    await deviceErr(verify(tablets[0], member.uid, '7391', c.now()), 'pin_locked_member');
+    assert.equal((await memberGuard(member.uid))?.lockedReason, 'day');
+    await deviceErr(verify(tablets[1], member.uid, '4826', c.advance(7000)), 'pin_locked_member');
+  });
+
+  test('owners and admins are told once when one person locks 3 tablets within 24 hours', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 4; i++) tablets.push(await pairTablet(H, owner, created, `Repeat ${i}`));
+    const c = clock(Date.parse('2026-12-11T06:00:00Z'));
+    const notices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid);
+    for (const [index, t] of tablets.entries()) {
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(1000)), 'pin_wrong');
+      await deviceErr(verify(t, member.uid, '7391', c.advance(1000)), 'pin_locked');
+      // The person-wide hourly count would lock first; keep only it out of the way.
+      await house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').update({ recentFailures: [] });
+      const recipients = new Set((await notices()).map(d => d.get('targetUserUid')));
+      if (index < 2) assert.equal(recipients.size, 0, `after ${index + 1} tablet locks`);
+      else assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid) && !recipients.has(member.uid));
+    }
+    // The 4th lock in the same day sends no second notice.
+    assert.equal((await notices()).length, new Set((await notices()).map(d => d.get('targetUserUid'))).size);
+  });
+
+  test('concurrent fifth attempts: only a lock whose attempt proved wrong counts toward the repeated-lock notice', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 3; i++) tablets.push(await pairTablet(H, owner, created, `Concurrent lock ${i}`));
+    const c = clock(Date.parse('2026-12-13T06:00:00Z'));
+    // Earlier tests in this file may have left such notices: count only new ones.
+    const allNotices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid);
+    const before = new Set((await allNotices()).map(d => d.id));
+    const fresh = async () => (await allNotices()).filter(d => !before.has(d.id));
+    const notices = async () => (await fresh()).length;
+    const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').update({ recentFailures: [] });
+    for (const t of tablets) {
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(1000)), 'pin_wrong');
+    }
+    await keepHourlyCountLow();
+    // Three fifth attempts at once: two are right, one is wrong and is announced first.
+    let reached = 0;
+    let bothReached!: () => void;
+    const reservedBoth = new Promise<void>(resolve => { bothReached = resolve; });
+    let wrongDone!: () => void;
+    const announced = new Promise<void>(resolve => { wrongDone = resolve; });
+    const at = c.advance(7000);
+    const rightHooks = { afterCompare: async () => { reached += 1; if (reached === 2) bothReached(); await announced; } };
+    const outcomes = await Promise.all([
+      verify(tablets[0], member.uid, '4826', at, { testHooks: rightHooks }),
+      verify(tablets[1], member.uid, '7391', at, { testHooks: { afterCompare: () => reservedBoth } })
+        .catch(error => error).finally(() => wrongDone()),
+      verify(tablets[2], member.uid, '4826', at, { testHooks: rightHooks }),
+    ]);
+    assert.ok((outcomes[0] as { pinSessionId?: string }).pinSessionId);
+    assert.equal((outcomes[1] as DeviceActionError).code, 'pin_locked');
+    assert.ok((outcomes[2] as { pinSessionId?: string }).pinSessionId);
+    assert.equal(await notices(), 0, 'one confirmed lock is not three');
+    assert.equal((await memberGuard(member.uid))?.repeatAlertAt, null);
+    // Two genuine locks later the notice goes out once.
+    for (const t of [tablets[0], tablets[2]]) {
+      await keepHourlyCountLow();
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_wrong');
+      await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_locked');
+    }
+    const recipients = new Set((await fresh()).map(d => d.get('targetUserUid')));
+    assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid));
+  });
+
+  test('three locks of the same tablet give no notice; locks on three different tablets give one', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 3; i++) tablets.push(await pairTablet(H, owner, created, `Distinct ${i}`));
+    const c = clock(Date.parse('2026-12-14T06:00:00Z'));
+    const allNotices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid);
+    const before = new Set((await allNotices()).map(d => d.id));
+    const fresh = async () => (await allNotices()).filter(d => !before.has(d.id));
+    const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').set({ recentFailures: [], dayFailures: [] }, { merge: true });
+    const lock = async (t: Tablet) => {
+      await keepHourlyCountLow();
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_wrong');
+      await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_locked');
+    };
+    // The same tablet locks three times in a day (waiting out each lock).
+    for (let round = 0; round < 3; round++) {
+      await lock(tablets[0]);
+      c.advance(20 * 60_000);
+    }
+    assert.equal((await fresh()).length, 0, 'one tablet is not three tablets');
+    assert.equal((await memberGuard(member.uid))?.repeatAlertAt, null);
+    // Two more tablets lock: three distinct tablets now, one notice.
+    await lock(tablets[1]);
+    assert.equal((await fresh()).length, 0);
+    await lock(tablets[2]);
+    const recipients = new Set((await fresh()).map(d => d.get('targetUserUid')));
+    assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid));
+  });
+
+  test('PIN sets beyond the admission bound are refused busy instead of queueing without limit', async () => {
+    const people = Array.from({ length: 12 }, (_, i) => ({ uid: `p-setter-${i}`, email: `p.setter${i}@example.test` }));
+    for (const person of people) {
+      await house(H).collection('members').doc(person.uid).set({ uid: person.uid, role: 'member', status: 'active', displayName: 'Setter', permissions: {} });
+    }
+    const outcomes = await Promise.all(people.map(person => setMyPin(person, { householdId: H, pin: '2580' }).then(() => 'ok', (error: unknown) => (error as PinError).code)));
+    assert.ok(outcomes.includes('busy'), JSON.stringify(outcomes));
+    assert.ok(outcomes.every(code => code === 'ok' || code === 'busy'));
+  });
+
+  test('no lock announcement for a household being deleted; a failed announcement is retried once, then logged without names', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const lockOnFifth = async (t: Tablet, at: number, hooks: VerifyPinTestHooks) => {
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', new Date(at + i * 1000)), 'pin_wrong');
+      await deviceErr(verify(t, member.uid, '7391', new Date(at + 5000), { testHooks: hooks }), 'pin_locked');
+    };
+    const entriesFor = async (t: Tablet) => (await house(H).collection('auditLogs').where('action', '==', 'pin.device_locked').get()).docs
+      .filter(d => d.get('deviceId') === t.deviceId).length;
+
+    const deleting = await pairTablet(H, owner, created, 'Deleting tablet');
+    await lockOnFifth(deleting, Date.parse('2026-12-12T06:00:00Z'), {
+      afterCompare: async () => { await house(H).update({ deletingAt: FieldValue.serverTimestamp() }); },
+    });
+    await house(H).update({ deletingAt: FieldValue.delete() });
+    assert.equal(await entriesFor(deleting), 0);
+
+    const flaky = await pairTablet(H, owner, created, 'Flaky announce tablet');
+    let throws = 1;
+    await lockOnFifth(flaky, Date.parse('2026-12-12T07:00:00Z'), { duringAnnounce: () => { if (throws-- > 0) throw new Error('simulated'); } });
+    assert.equal(await entriesFor(flaky), 1);
+
+    const broken = await pairTablet(H, owner, created, 'Broken announce tablet');
+    const errors = mock.method(console, 'error', () => undefined);
+    try {
+      await lockOnFifth(broken, Date.parse('2026-12-12T08:00:00Z'), { duringAnnounce: () => { throw new Error('simulated'); } });
+    } finally {
+      errors.mock.restore();
+    }
+    assert.equal(await entriesFor(broken), 0);
+    const logged = errors.mock.calls.map(call => String(call.arguments[0])).find(line => line.includes('pin_lock_announcement_failed'));
+    assert.ok(logged);
+    const parsed = JSON.parse(logged!);
+    assert.equal(parsed.deviceId, broken.deviceId);
+    assert.ok(!logged!.includes('Max') && !logged!.includes(member.uid));
+  });
+});
+
 describe('sessions never outlive a membership (Codex P2: PIN identity reuse)', () => {
   const rejoin = (person: Person) => house(H).collection('members').doc(person.uid).set({
     uid: person.uid, role: person.role, status: 'active', displayName: person.displayName, permissions: {},
   });
   const feed = (t: Tablet, actorUid: string, pinSessionId: string, at: Date) =>
-    authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'pets.feed', actorUid, pinSessionId, opId: opId() }, at);
+    authorize({ idToken: t.idToken, householdId: H, capability: 'pets.feed', actorUid, pinSessionId, opId: opId() }, at);
 
   for (const how of ['leave', 'remove'] as const) {
     test(`${how}, rejoin with the same role and set a new PIN: the old session is refused and gone`, async () => {
