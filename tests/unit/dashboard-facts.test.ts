@@ -10,6 +10,7 @@ import {
   computeShoppingFacts,
   recurringTemplateIdsFrom,
   UNKNOWN_ROOM_ID,
+  oneTapFedVisible,
 } from '../../src/lib/dashboard/facts';
 
 const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -246,6 +247,32 @@ describe('shopping, pantry, maintenance and pets', () => {
     // D-P3 / PE-31: without confirmed meal times nothing is "waiting to be fed" (no guess shown as a need).
     assert.deepEqual(facts.pets.map((pet) => pet.needsMeal), [false, false, false]);
     assert.equal(facts.hungry, 0);
+  });
+
+  it('one-tap Fed (D-P22): a pet with meal times only while a meal is due; a legacy pet while its count is not met', () => {
+    const minutes = localMinutes(now, 'America/Chicago');
+    const dueNow = { id: 'dinner', name: 'Dinner', time: timeOfMinutes(minutes), amount: 0.5, unit: 'Cans' };
+    const facts = computePetFacts(
+      [
+        { id: 'due', name: 'Due', type: 'Dog', mealPlan: { slots: [dueNow], effectiveFrom: '2026-01-01' } },
+        { id: 'fedslot', name: 'Fedslot', type: 'Dog', mealPlan: { slots: [dueNow], effectiveFrom: '2026-01-01' } },
+        { id: 'legacy', name: 'Legacy', type: 'Cat', foodSchedule: 'twice daily' },
+        { id: 'legacydone', name: 'Legacydone', type: 'Cat', feedingsPerDay: 1 },
+      ],
+      { due: [], fedslot: [{ date: now, slotId: 'dinner' }], legacy: [], legacydone: [{ date: now }] },
+      now,
+    );
+    const byId = Object.fromEntries(facts.pets.map((pet) => [pet.id, pet]));
+    // Meal times: Fed while the meal is due (amber), not once it is fed.
+    assert.deepEqual([byId.due.slots, byId.due.needsMeal, oneTapFedVisible(byId.due)], [true, true, true]);
+    assert.deepEqual([byId.fedslot.needsMeal, oneTapFedVisible(byId.fedslot)], [false, false]);
+    // Legacy: Fed while today's count is not met, never as a need (no bowl, not counted hungry).
+    assert.deepEqual([byId.legacy.slots, byId.legacy.fed, byId.legacy.needsMeal, oneTapFedVisible(byId.legacy)], [false, false, false, true]);
+    assert.deepEqual([byId.legacydone.fed, oneTapFedVisible(byId.legacydone)], [true, false]);
+    assert.equal(facts.hungry, 1);
+    // An unknown history offers nothing.
+    assert.equal(oneTapFedVisible({ fed: null, needsMeal: false, slots: false }), false);
+    assert.equal(oneTapFedVisible({ fed: null, needsMeal: true, slots: true }), false);
   });
 
   it('a confirmed meal slot whose time has passed unfed is the only "needs food" (D-P3, PE-31f)', () => {

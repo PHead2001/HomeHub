@@ -197,6 +197,8 @@ export type PetState = {
    * meal is still ahead (D-P3, PE-31).
    */
   needsMeal?: boolean;
+  /** The pet has confirmed meal times today (Pets' slot status); false: the legacy daily count. */
+  slots?: boolean;
   /** The meal-slot status line ("Dinner due 6:00 pm", "Next: dinner at 6:00 pm"); absent without slots. */
   mealLine?: string;
   /** "1 of 2 today", "Not fed today" (Pets' `feedingCountLabel`), or the unavailable line. */
@@ -650,6 +652,7 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
         lastFedBy: last?.by ?? null,
         fed: meal.kind === 'slots' ? meal.complete : meal.status.complete,
         needsMeal: needsMeal(meal),
+        slots: meal.kind === 'slots',
         countLabel: meal.kind === 'slots' ? mealCountLabel(meal) : feedingCountLabel(meal.status),
         headline: last ? feedingHeadline({ fedToday: 0, perDay: null, progress: 0, complete: false, last }, now, timeZone) : 'No feedings logged yet',
         ...(meal.kind === 'slots' ? { mealLine: mealHeadline(meal) } : {}),
@@ -662,6 +665,19 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
     hungry: states.filter((pet) => pet.needsMeal).length,
     unknown: states.filter((pet) => pet.fed === null).length,
   };
+}
+
+/**
+ * D-P22: when the dashboard offers one-tap **Fed** (house chip and Pets tile).
+ * A pet with confirmed meal times: only while a meal slot is due (`needsMeal`,
+ * as the bowl and the card show it). A pet without (the legacy daily count):
+ * as before meal slots, while today's count is not met (`fed === false`), in
+ * the neutral colour, never as a warning, so no guess is shown as a need (D-P3).
+ * Never while the feeding history is unknown.
+ */
+export function oneTapFedVisible(pet: Pick<PetState, 'fed' | 'needsMeal' | 'slots'>): boolean {
+  if (pet.fed === null) return false;
+  return pet.slots ? Boolean(pet.needsMeal) : pet.fed === false;
 }
 
 /** A room's text summary, used as its link name: "1 overdue, 2 due today", "All clear"... */
