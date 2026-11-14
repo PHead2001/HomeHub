@@ -22,7 +22,8 @@ import { writeDeviceAudit } from '@/lib/server/device-audit';
 /** Room, name, sections, start page and every other record setting, from the tablet. */
 export const updateDeviceSettingsFromTablet = async (
   input: { idToken: unknown; householdId: unknown; actorUid: unknown; pinSessionId: unknown; patch: unknown },
-  now = new Date(),
+  nowInput?: Date,
+  options: { clientAddress?: string } = {},
 ): Promise<{ changed: string[]; settings: DeviceSettings }> => {
   const authority = await authorizeDeviceAction({
     idToken: input?.idToken as string,
@@ -30,11 +31,13 @@ export const updateDeviceSettingsFromTablet = async (
     capability: 'device.settings',
     actorUid: input?.actorUid as string,
     pinSessionId: input?.pinSessionId as string,
-  }, now);
+  }, nowInput, { clientAddress: options.clientAddress });
   const householdRef = householdRefOf(authority.householdId);
   const recordRef = deviceRecordRef(householdRef, authority.deviceId);
   return adminDb.runTransaction(async tx => {
     await authority.hooks.precheck(tx);
+    // The server clock the precheck just used (re-read on every transaction attempt).
+    const now = authority.now;
     const record = await tx.get(recordRef);
     const result = validateDevicePatch(input?.patch, readDeviceSettings(record.data()), 'admin');
     if (!result.ok) throw new DeviceActionError('invalid_input');
@@ -80,7 +83,8 @@ const NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const exitTablet = async (
   input: { idToken: unknown; householdId: unknown; actorUid: unknown; pinSessionId: unknown; exit: unknown },
-  now = new Date(),
+  nowInput?: Date,
+  options: { clientAddress?: string } = {},
 ): Promise<{ status: 'removed' | 'unpaired'; authCleanup: 'done' | 'pending' }> => {
   const exit = input?.exit;
   if (exit !== 'remove' && exit !== 'personal-sign-in' && exit !== 'new-code') throw new DeviceActionError('invalid_input');
@@ -90,12 +94,13 @@ export const exitTablet = async (
     capability: EXIT_CAPABILITY[exit],
     actorUid: input?.actorUid as string,
     pinSessionId: input?.pinSessionId as string,
-  }, now);
+  }, nowInput, { clientAddress: options.clientAddress });
   const householdRef = householdRefOf(authority.householdId);
   const recordRef = deviceRecordRef(householdRef, authority.deviceId);
   const status = exit === 'remove' ? 'removed' as const : 'unpaired' as const;
   const committed = await adminDb.runTransaction(async tx => {
     await authority.hooks.precheck(tx);
+    const now = authority.now;
     const [record, codes, admins] = await Promise.all([
       tx.get(recordRef),
       tx.get(adminDb.collection('deviceCodes').where('householdId', '==', householdRef.id)),

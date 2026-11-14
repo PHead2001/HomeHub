@@ -98,7 +98,7 @@ export async function deviceHeartbeatAction(input: { idToken: string; householdI
  */
 export async function updateDeviceSettingsFromTabletAction(input: { idToken: string; householdId: string; actorUid: string; pinSessionId: string; patch: Record<string, unknown> }): Promise<TabletActionResult<{ changed: string[]; settings: DeviceSettings }>> {
   try {
-    return { ok: true, data: await updateDeviceSettingsFromTablet(input) };
+    return { ok: true, data: await updateDeviceSettingsFromTablet(input, undefined, { clientAddress: await requestAddress() }) };
   } catch (error) {
     return refusal(error, 'Tablet settings');
   }
@@ -111,7 +111,7 @@ export async function updateDeviceSettingsFromTabletAction(input: { idToken: str
  */
 export async function exitTabletAction(input: { idToken: string; householdId: string; actorUid: string; pinSessionId: string; exit: TabletExit }): Promise<TabletActionResult<{ status: 'removed' | 'unpaired'; authCleanup: 'done' | 'pending' }>> {
   try {
-    return { ok: true, data: await exitTablet(input) };
+    return { ok: true, data: await exitTablet(input, undefined, { clientAddress: await requestAddress() }) };
   } catch (error) {
     return refusal(error, 'Tablet exit');
   }
