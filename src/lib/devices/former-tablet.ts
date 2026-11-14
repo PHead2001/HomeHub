@@ -8,6 +8,7 @@
 // state, then a fresh load of the setup screen.
 
 import { withTimeout, CLEAR_STEP_TIMEOUT_MS } from './device-session';
+import { codeFromSetupFragment, deviceSetupUrl } from './device-codes';
 
 export const TABLET_MARKER_KEY = 'homehub.tablet-browser';
 
@@ -78,8 +79,27 @@ export async function recoverFormerTablet(deps: FormerTabletDeps, storage: KeySt
 /** Test helper: the in-progress guard is module state. */
 export const resetFormerTabletForTests = () => { recovering = false; };
 
-/** The browser's own steps (loaded only when the marker is present). */
-export function recoverFormerTabletHere(): Promise<boolean> {
+/**
+ * Where recovery reloads to: the setup screen, carrying a setup link's code in the fragment
+ * when there was one (a new QR link opened on a former tablet keeps its prefilled code).
+ */
+export const formerTabletReloadUrl = (origin: string, setupCode: string | null): string =>
+  setupCode ? deviceSetupUrl(origin, setupCode) : new URL('/setup', origin).href;
+
+/**
+ * Whether the setup screen may strip the code from the address bar now: not while a
+ * recovery is still owed (the marker is present), since recovery reloads the page and the
+ * code must survive that reload; after it, the marker is gone and the code is stripped.
+ */
+export const shouldStripSetupFragment = (markerPresent: boolean): boolean => !markerPresent;
+
+/**
+ * The browser's own steps (loaded only when the marker is present). The setup code is
+ * captured now, before any asynchronous step: `setupCode` when the caller already read it,
+ * else the current fragment's.
+ */
+export function recoverFormerTabletHere(setupCode?: string | null): Promise<boolean> {
+  const code = setupCode ?? (typeof window === 'undefined' ? null : codeFromSetupFragment(window.location.hash));
   return recoverFormerTablet({
     deleteDeviceDatabase: async () => (await import('./device-store')).deleteDeviceDatabase(),
     forgetHousehold: async () => (await import('@/lib/auth/household-scope')).forgetHouseholdOnDevice(null),
@@ -88,10 +108,6 @@ export function recoverFormerTabletHere(): Promise<boolean> {
       const { clearPushState, browserPushClearDeps } = await import('./push-clear');
       await clearPushState(browserPushClearDeps());
     },
-    navigate: () => {
-      // On the setup screen already: reload it as it is (a setup link's code stays in the fragment).
-      const target = window.location.pathname === '/setup' ? window.location.href : new URL('/setup', window.location.origin).href;
-      window.location.replace(target);
-    },
+    navigate: () => window.location.replace(formerTabletReloadUrl(window.location.origin, code)),
   });
 }

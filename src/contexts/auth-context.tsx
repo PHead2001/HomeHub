@@ -51,6 +51,7 @@ import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
 import { hasTabletMarker } from '@/lib/devices/former-tablet';
+import { codeFromSetupFragment } from '@/lib/devices/device-codes';
 import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, retryDeviceClaims, type Principal } from '@/lib/devices/principal';
 import type {
   Household,
@@ -595,7 +596,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         forgetHouseholdOnDevice(null);
         // A wall tablet whose session ended while its shell was not running (removed while
         // switched off): finish its clearing, then reload the setup screen.
-        if (hasTabletMarker()) void import('@/lib/devices/former-tablet').then((mod) => mod.recoverFormerTabletHere());
+        // A setup link's code is read now, before anything can strip it, and kept through the reload.
+        if (hasTabletMarker()) {
+          const setupCode = codeFromSetupFragment(window.location.hash);
+          void import('@/lib/devices/former-tablet').then((mod) => mod.recoverFormerTabletHere(setupCode));
+        }
         profileRef.current = null;
         setProfile(null);
         setProfileConfirmed(false);

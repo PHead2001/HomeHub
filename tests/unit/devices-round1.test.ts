@@ -18,9 +18,13 @@ import {
   forgetTabletMarker,
   hasTabletMarker,
   markTabletBrowser,
+  formerTabletReloadUrl,
   recoverFormerTablet,
   resetFormerTabletForTests,
+  shouldStripSetupFragment,
 } from '../../src/lib/devices/former-tablet';
+import { codeFromSetupFragment } from '../../src/lib/devices/device-codes';
+import { readFileSync } from 'node:fs';
 
 // PR #178 review round 1 (docs/modules/devices/README.md): the shopping list view shows a
 // list's full items, a member without `status` is on the roster, a tablet removed while
@@ -166,5 +170,50 @@ describe('household notices never show an email on a tablet (review 6)', () => {
     const now = Date.parse('2026-11-14T15:00:00Z');
     assert.equal(parseDeviceNotice('n', { expiresAt: '2026-11-14T14:00:00Z' }, now), null);
     assert.equal(parseDeviceNotice('n', { title: 'x'.repeat(500) }, now)?.title.length, 120);
+  });
+});
+
+describe('a new setup link opened on a former tablet keeps its code (round 5)', () => {
+  const ORIGIN = 'https://homehub.example';
+  const CODE = 'ABCD-EFGH-JK';
+
+  it('marker plus a setup link: the code is captured, recovery reloads with it, the fragment is stripped only afterwards', async () => {
+    resetFormerTabletForTests();
+    const storage = memoryStorage();
+    markTabletBrowser(storage);
+    const events: string[] = [];
+    // 1. The page opens with the link; the code is read before anything else.
+    const hash = `#code=${CODE}`;
+    const captured = codeFromSetupFragment(hash);
+    assert.equal(captured, CODE);
+    // 2. While recovery is owed, the setup screen leaves the fragment alone.
+    assert.equal(shouldStripSetupFragment(hasTabletMarker(storage)), false);
+    // 3. Recovery clears, removes the marker, then reloads to a URL that still carries the code.
+    let reloadedTo = '';
+    await recoverFormerTablet({
+      deleteDeviceDatabase: () => { events.push('clear'); },
+      forgetHousehold: () => undefined,
+      clearFirestore: () => undefined,
+      clearPush: () => undefined,
+      navigate: () => { events.push('reload'); reloadedTo = formerTabletReloadUrl(ORIGIN, captured); },
+    }, storage);
+    assert.deepEqual(events, ['clear', 'reload']);
+    assert.equal(reloadedTo, `${ORIGIN}/setup#code=${encodeURIComponent(CODE)}`);
+    assert.equal(codeFromSetupFragment(new URL(reloadedTo).hash), CODE, 'the reloaded page prefills the same code');
+    // 4. After the reload the marker is gone: the fragment is stripped now.
+    assert.equal(shouldStripSetupFragment(hasTabletMarker(storage)), true);
+  });
+
+  it('without a setup link the reload goes to the plain setup screen', () => {
+    assert.equal(formerTabletReloadUrl(ORIGIN, null), `${ORIGIN}/setup`);
+    assert.equal(codeFromSetupFragment(''), null);
+  });
+
+  it('guards: both entry points capture the code before the asynchronous recovery, and the setup screen defers stripping', () => {
+    const setup = readFileSync('src/components/devices/setup-screen.tsx', 'utf8');
+    assert.match(setup, /recoverFormerTabletHere\(codeFromSetupFragment\(window\.location\.hash\)/);
+    assert.match(setup, /shouldStripSetupFragment\(hasTabletMarker\(\)\)/);
+    const auth = readFileSync('src/contexts/auth-context.tsx', 'utf8');
+    assert.match(auth, /const setupCode = codeFromSetupFragment\(window\.location\.hash\);\s*void import\('@\/lib\/devices\/former-tablet'\)\.then\(\(mod\) => mod\.recoverFormerTabletHere\(setupCode\)\)/);
   });
 });
