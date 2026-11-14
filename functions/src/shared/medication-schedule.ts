@@ -298,6 +298,33 @@ export type CourseWindow = {
 const MAX_STEPS = 2000;
 
 /**
+ * One day's occurrences of set times, in instant order. On the spring-forward
+ * day a missing time moves forward by the gap (`zonedInstant`), which can put
+ * it after a later wall time (2:30 becomes 3:30, after 3:00) or on the same
+ * instant as another (3:30): so the day is resolved, sorted by instant and
+ * deduplicated (an instant keeps the time that really reads so on the clock).
+ * @param {string} day Household day.
+ * @param {string[]} times Wall times (none: one all-day occurrence).
+ * @param {string} timeZone IANA zone.
+ * @return {Occurrence[]} Occurrences, strictly increasing.
+ */
+const dayOccurrences = (
+  day: string, times: string[], timeZone: string,
+): Occurrence[] => {
+  if (times.length === 0) {
+    return [{key: day, day, time: null, at: zonedInstant(day, 0, timeZone)}];
+  }
+  const resolved = times.map((time) => ({
+    key: `${day}T${time}`, day, time,
+    at: zonedInstant(day, toMinutes(time), timeZone),
+  })).sort((a, b) => a.at - b.at ||
+    Number(wallTime(b.at, timeZone) === b.time) -
+      Number(wallTime(a.at, timeZone) === a.time));
+  return resolved.filter((occurrence, index) =>
+    index === 0 || occurrence.at !== resolved[index - 1].at);
+};
+
+/**
  * Walks the schedule's occurrences after `after` (from the start when null)
  * in time order, never past the end day, until `more` says stop. Every
  * enumeration goes through here; the callers bound it by a count from a
@@ -326,11 +353,9 @@ const walkOccurrences = (
     }
     for (let steps = 0; steps < maxSteps; steps++) {
       if (endDay && day > endDay) return;
-      const slots = schedule.times.length > 0 ? schedule.times : [null];
-      for (const time of slots) {
-        const at = zonedInstant(day, time ? toMinutes(time) : 0, timeZone);
-        if (after !== null && at <= after) continue;
-        if (!more({key: time ? `${day}T${time}` : day, day, time, at})) return;
+      for (const occurrence of dayOccurrences(day, schedule.times, timeZone)) {
+        if (after !== null && occurrence.at <= after) continue;
+        if (!more(occurrence)) return;
       }
       day = addDays(day, step);
     }
@@ -630,12 +655,14 @@ export const periodMs = (schedule: CourseSchedule): number =>
     schedule.everyDays * 24 * HOUR_MS / Math.max(1, schedule.times.length);
 
 /**
- * `coveredUntil` for a schedule edit: when the new schedule's first
- * occurrence after what was given is nearer to the given one than the
- * previous new occurrence, and within half a dose interval, it replaces the
- * given one (8:00 AM given, moved to 9:00 AM: 9:00 AM is covered). Otherwise
- * null (the latest dose alone decides). The edit form shows the resulting
- * next dose before it is saved.
+ * `coveredUntil` for an edit of the schedule, start or end day; the edit
+ * form's preview and the transaction both use it. When the new schedule's
+ * first occurrence after what is covered is nearer to it than the previous
+ * new occurrence, and within half a dose interval, it replaces the given one
+ * (8:00 AM given, moved to 9:00 AM: 9:00 AM is covered). What an earlier edit
+ * covered stays covered (`coveredUntil` never drops on an edit: adding an end
+ * day after moving 8:00 to 9:00 keeps 9:00 covered), so nothing covered
+ * becomes due again. Null when nothing is covered by an edit.
  * @param {CourseView} course The course before the edit.
  * @param {CourseWindow} next The new schedule, start and end day.
  * @param {string} zone Household zone.
@@ -646,15 +673,16 @@ export const coverageAfterEdit = (
   next: CourseWindow,
   zone: string,
 ): number | null => {
+  const kept = course.coveredUntil;
   const covered = coveredThrough(course);
-  if (covered === null) return null;
+  if (covered === null) return kept;
   const after = occurrencesAfter(next, covered, zone, 1)[0];
-  if (!after) return null;
+  if (!after) return kept;
   const before = occurrenceAtOrBefore(next, covered, zone);
   const gap = after.at - covered;
-  if (gap > periodMs(next.schedule) / 2) return null;
-  if (before && covered - before.at <= gap) return null;
-  return after.at;
+  if (gap > periodMs(next.schedule) / 2) return kept;
+  if (before && covered - before.at <= gap) return kept;
+  return kept === null ? after.at : Math.max(kept, after.at);
 };
 
 /* ------------------------------------------------------------------------ */

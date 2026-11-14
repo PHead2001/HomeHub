@@ -40,9 +40,8 @@ import {
 } from 'firebase/firestore';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline';
 import { petDay } from './care';
-import { householdDayZone } from '../household-day';
 import {
-  coverageAfterEdit,
+  coveredUntilAfterSave,
   doseLogId,
   doseRecordsOf,
   pointerAfter,
@@ -477,7 +476,7 @@ export async function runSaveCourse(db: Firestore, input: {
     // A schedule change may count the new occurrence that replaces the one last
     // given (8:00 AM given, moved to 9:00 AM), so it is not due again.
     const moved = stored && scheduleChanged(stored, input.fields);
-    const coveredUntil = moved ? coverageAfterEdit(stored, input.fields, householdDayZone(input.timeZone)) : undefined;
+    const coveredUntil = moved ? coveredUntilAfterSave(stored, input.fields, input.timeZone) : undefined;
     tx.update(ref, {
       ...scheduleData(input.fields),
       ...(moved ? { coveredUntil: coveredUntil === null || coveredUntil === undefined ? null : Timestamp.fromMillis(coveredUntil) } : {}),

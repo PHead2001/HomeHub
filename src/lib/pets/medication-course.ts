@@ -16,6 +16,7 @@
 import {
   COURSE_DOSAGE_MAX,
   courseDue,
+  coverageAfterEdit,
   coveredThrough,
   deriveCourseState,
   latestOccurrencesUpTo,
@@ -508,6 +509,16 @@ export function validateCourseForm(values: CourseFormValues, activeNames: string
 export function schedulePreview(fields: Pick<CourseFields, 'schedule' | 'startDay' | 'endDay'>, now: Date, timeZone?: string | null, count = 3): Occurrence[] {
   const zone = householdDayZone(timeZone);
   return occurrencesAfter(fields, now.getTime() - 1, zone, count);
+}
+
+/**
+ * The course's `coveredUntil` after saving these fields: `coverageAfterEdit`
+ * when the schedule, start or end day changes, else unchanged. The edit form's
+ * preview and the transaction both use it, so they always agree (pass the
+ * course combined with its dose records, `withRecords`).
+ */
+export function coveredUntilAfterSave(course: CourseView, fields: Pick<CourseFields, 'schedule' | 'startDay' | 'endDay'>, timeZone?: string | null): number | null {
+  return scheduleChanged(course, fields) ? coverageAfterEdit(course, fields, householdDayZone(timeZone)) : course.coveredUntil;
 }
 
 /** Whether a stored course and new fields differ in anything that moves its occurrences. */

@@ -19,9 +19,11 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { addDays } from '../../functions/src/shared/calendar';
 import {
   coverageAfterEdit,
   coveredThrough,
+  coveredUntilAfterSave,
   deriveCourseState,
   doseChoices,
   doseConfirmOf,
@@ -44,7 +46,7 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 
 type Log = { id: string; courseId: string; occurrence: string; occurrenceAt: number; date: number; repeat: 'none' | 'confirmed' | 'offline'; loggedByUid: string; loggedByName: string };
-type Course = { schedule: CourseSchedule; startDay: string; endDay: null; status: 'active' | 'finished'; lastDose: DosePointer | null; prevDose: DosePointer | null; coveredUntil: number | null };
+type Course = { schedule: CourseSchedule; startDay: string; endDay: string | null; status: 'active' | 'finished'; lastDose: DosePointer | null; prevDose: DosePointer | null; coveredUntil: number | null };
 
 function random(seed: number) {
   let state = seed >>> 0;
@@ -55,7 +57,7 @@ function random(seed: number) {
 }
 
 const view = (course: Course): CourseView => readCourse('c1', {
-  name: 'Apoquel', dosage: '1 tablet', schedule: course.schedule, startDay: course.startDay, status: course.status,
+  name: 'Apoquel', dosage: '1 tablet', schedule: course.schedule, startDay: course.startDay, endDay: course.endDay, status: course.status,
   lastDose: course.lastDose && { ...course.lastDose, occurrenceAt: new Date(course.lastDose.occurrenceAt), givenAt: course.lastDose.givenAt === null ? null : new Date(course.lastDose.givenAt) },
   prevDose: course.prevDose && { ...course.prevDose, occurrenceAt: new Date(course.prevDose.occurrenceAt), givenAt: course.prevDose.givenAt === null ? null : new Date(course.prevDose.givenAt) },
   ...(course.coveredUntil === null ? {} : { coveredUntil: new Date(course.coveredUntil) }),
@@ -83,19 +85,22 @@ function doseCreateAllowed(before: Course, logsBefore: Map<string, Log>, log: Lo
 
 const SCHEDULES: CourseSchedule[] = [
   { kind: 'days', everyDays: 1, times: ['08:00', '20:00'] },
+  { kind: 'days', everyDays: 1, times: ['09:00', '21:00'] },
   { kind: 'days', everyDays: 1, times: ['08:00', '12:00', '18:00'] },
   { kind: 'hours', everyHours: 4, firstTime: '06:00' },
   { kind: 'days', everyDays: 2, times: [] },
+  // Times in and around the daylight-saving gap and overlap.
+  { kind: 'days', everyDays: 1, times: ['01:30', '02:30', '03:00'] },
 ];
 
-function run(seed: number, steps: number) {
+function run(seed: number, steps: number, start: { day: string; startDay: string } = { day: '2026-10-30', startDay: '2026-10-28' }) {
   const rand = random(seed);
   const pick = <T,>(list: T[]) => list[Math.floor(rand() * list.length)];
   const logs = new Map<string, Log>();
   // Offline doses this device still has queued or loaded (a reader's offline listener sees them all).
-  let course: Course = { schedule: pick(SCHEDULES), startDay: '2026-10-28', endDay: null, status: 'active', lastDose: null, prevDose: null, coveredUntil: null };
-  // Spans the fall-back day (Nov 1) on purpose.
-  let now = zonedInstant('2026-10-30', 7 * 60, TZ);
+  let course: Course = { schedule: pick(SCHEDULES), startDay: start.startDay, endDay: null, status: 'active', lastDose: null, prevDose: null, coveredUntil: null };
+  // Spans a daylight-saving day on purpose (fall back Nov 1, or spring forward Mar 8).
+  let now = zonedInstant(start.day, 7 * 60, TZ);
   let next = 0;
   const id = () => `log-${String(next++).padStart(4, '0')}`;
   const users = ['sam', 'kim'];
@@ -182,12 +187,32 @@ function run(seed: number, steps: number) {
       assert.notEqual(course.lastDose?.logId, target.id);
       check(`${label} undo`, true);
     } else if (roll < 0.8) {
-      // A schedule edit: coverage from the derived state (offline-synced doses included).
-      const schedule = pick(SCHEDULES);
-      const window = { schedule, startDay: course.startDay, endDay: null };
-      const derivedView = withRecords(view(course), records(logs));
-      course = { ...course, schedule, coveredUntil: coverageAfterEdit(derivedView, window, TZ) };
-      check(`${label} edit`, false);
+      // Edits of the schedule, the end day, or both, often several in a row: the
+      // coverage comes from the derived state (offline-synced doses included) through
+      // the function the preview and the transaction share, and never drops.
+      const edits = 1 + Math.floor(rand() * 3);
+      for (let edit = 0; edit < edits; edit++) {
+        const kind = rand();
+        const today = new Date(now).toISOString().slice(0, 10);
+        const endDay = rand() < 0.3 ? null : addDays(today, Math.floor(rand() * 10));
+        const fields = {
+          schedule: kind < 0.4 || kind >= 0.7 ? pick(SCHEDULES) : course.schedule,
+          startDay: course.startDay,
+          endDay: kind >= 0.4 ? (endDay && endDay >= course.startDay ? endDay : null) : course.endDay,
+        };
+        const derivedView = withRecords(view(course), records(logs));
+        const before = coveredThrough(derivedView);
+        const coveredUntil = coveredUntilAfterSave(derivedView, fields, TZ);
+        // The preview: what a reader sees after saving equals what the form showed.
+        const preview = coveredThrough({ ...derivedView, coveredUntil });
+        course = { ...course, ...fields, coveredUntil };
+        const after = withOfflineDoses(view(course), [...logs.values()].filter((log) => log.repeat === 'offline'));
+        assert.equal(coveredThrough(after), preview, `${label} edit ${edit}: the preview equals what is saved`);
+        if (before !== null) assert.ok((coveredThrough(after) ?? -Infinity) >= before, `${label} edit ${edit}: nothing covered becomes uncovered`);
+        const due = course.status === 'active' ? nextDueOccurrence(after, TZ) : null;
+        if (due && before !== null) assert.ok(due.at > before, `${label} edit ${edit}: nothing covered becomes due again`);
+        check(`${label} edit ${edit}`, false);
+      }
     } else {
       course = { ...course, status: 'finished' };
       check(`${label} finish`, false);
@@ -199,7 +224,9 @@ function run(seed: number, steps: number) {
 describe('the course pointer always agrees with the surviving dose records', () => {
   it('60 random sequences of 40 steps', () => {
     let written = 0;
-    for (let seed = 1; seed <= 60; seed++) written += run(seed, 40);
+    for (let seed = 1; seed <= 40; seed++) written += run(seed, 40);
+    // The same around the spring-forward day.
+    for (let seed = 41; seed <= 60; seed++) written += run(seed, 40, { day: '2026-03-06', startDay: '2026-03-04' });
     assert.ok(written > 250, 'the runs record plenty of doses');
   });
 

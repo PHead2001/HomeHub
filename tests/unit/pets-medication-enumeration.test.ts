@@ -74,37 +74,73 @@ function random(seed: number) {
   };
 }
 
-const TIMES = ['00:00', '01:30', '02:30', '06:15', '08:00', '12:00', '18:45', '20:00', '23:59'];
+// Times in and around the daylight-saving gap (2:00-3:00 skipped) and overlap (1:00-2:00 twice).
+const TIMES = ['00:00', '00:59', '01:00', '01:30', '01:59', '02:00', '02:30', '02:59', '03:00', '03:30', '06:15', '08:00', '12:00', '18:45', '20:00', '23:59'];
 
 function randomSchedule(rand: () => number): CourseSchedule {
   if (rand() < 0.5) {
     return { kind: 'hours', everyHours: 2 + Math.floor(rand() * 23), firstTime: TIMES[Math.floor(rand() * TIMES.length)] };
   }
-  const count = Math.floor(rand() * 4);
+  const count = Math.floor(rand() * 6);
   const times = [...new Set(Array.from({ length: count }, () => TIMES[Math.floor(rand() * TIMES.length)]))].sort();
   return { kind: 'days', everyDays: 1 + Math.floor(rand() * (rand() < 0.5 ? 3 : 40)), times };
 }
+
+/** 2026 daylight-saving days: a time inside the gap or overlap, and one just after it. */
+const TRANSITIONS = [
+  { zone: CHI, day: '2026-03-08', inside: '02:30', after: '03:00' }, // gap 2:00-3:00
+  { zone: CHI, day: '2026-11-01', inside: '01:30', after: '02:00' }, // overlap 1:00-2:00
+  { zone: 'Europe/London', day: '2026-03-29', inside: '01:30', after: '02:00' }, // gap 1:00-2:00
+  { zone: 'Europe/London', day: '2026-10-25', inside: '01:30', after: '02:00' }, // overlap 1:00-2:00
+  { zone: 'Australia/Sydney', day: '2026-10-04', inside: '02:30', after: '03:00' }, // gap 2:00-3:00
+  { zone: 'Australia/Sydney', day: '2026-04-05', inside: '02:30', after: '03:00' }, // overlap 2:00-3:00
+];
+
+describe('every daylight-saving day: the occurrences of a day in strictly increasing instants', () => {
+  test('set times inside and just after each gap and overlap', () => {
+    for (const transition of TRANSITIONS) {
+      const [h, m] = transition.after.split(':').map(Number);
+      const halfAfter = `${String(h).padStart(2, '0')}:${String(m + 30).padStart(2, '0')}`;
+      const window = { schedule: { kind: 'days' as const, everyDays: 1, times: [transition.inside, transition.after, halfAfter] }, startDay: addDays(transition.day, -1), endDay: addDays(transition.day, 1) };
+      const list = occurrencesAfter(window, null, transition.zone, 50);
+      for (let i = 1; i < list.length; i++) assert.ok(list[i].at > list[i - 1].at, `${transition.zone} ${transition.day}: ${list[i - 1].key} then ${list[i].key}`);
+      assert.ok(list.filter((occurrence) => occurrence.day === transition.day).length >= 2, `${transition.zone} ${transition.day}: the day keeps its doses`);
+    }
+  });
+});
 
 describe('property: the enumerator never drops an occurrence inside its range, the prefill is the most recent missed one', () => {
   const zones = [CHI, 'Europe/London', 'Australia/Sydney', 'UTC'];
   test('150 random schedules, start days, ranges and clocks', () => {
     const rand = random(20261115);
     for (let run = 0; run < 150; run++) {
-      const zone = zones[run % zones.length];
-      const schedule = randomSchedule(rand);
-      // Start days around both 2026 daylight-saving changes and in between.
-      const startDay = addDays('2026-02-20', Math.floor(rand() * 300));
+      // Most runs sit on a daylight-saving day of their zone, with times in and around its gap or overlap.
+      const transition = rand() < 0.6 ? TRANSITIONS[Math.floor(rand() * TRANSITIONS.length)] : null;
+      const zone = transition ? transition.zone : zones[run % zones.length];
+      let schedule = randomSchedule(rand);
+      if (transition && schedule.kind === 'days') {
+        const extra = [transition.inside, transition.after, ...schedule.times.filter(() => rand() < 0.5)];
+        schedule = { ...schedule, times: [...new Set([...extra, ...TIMES.filter(() => rand() < 0.1)])].sort().slice(0, 6) };
+      }
+      // Start days just before a 2026 daylight-saving change (the US, UK and Australian
+      // days), or anywhere in between.
+      const startDay = transition ? addDays(transition.day, -Math.floor(rand() * 3)) : addDays('2026-02-20', Math.floor(rand() * 300));
       const endDay = rand() < 0.2 ? addDays(startDay, Math.floor(rand() * 60)) : null;
       const window = { schedule, startDay, endDay };
       const startAt = zonedInstant(startDay, 0, zone);
-      const from = startAt + Math.floor(rand() * 40 * DAY) - 5 * DAY;
+      const from = startAt + Math.floor(rand() * 10 * DAY) - 2 * DAY;
       const to = from + Math.floor(rand() * 35 * DAY);
       const now = from + Math.floor(rand() * 30 * DAY);
       // Brute force: every occurrence from the start, filtered afterwards.
       const all = occurrencesAfter(window, null, zone, 100_000).filter((occurrence) => occurrence.at <= Math.max(to, now) + DAY);
       const expected = all.filter((occurrence) => occurrence.at > from && occurrence.at <= to).map((occurrence) => occurrence.key);
       const label = `${zone} ${JSON.stringify(window)} (${from}, ${to}]`;
-      assert.deepEqual(occurrencesBetween(window, from, to, zone).map((occurrence) => occurrence.key), expected, label);
+      const between = occurrencesBetween(window, from, to, zone);
+      assert.deepEqual(between.map((occurrence) => occurrence.key), expected, label);
+      // The walker always emits strictly increasing instants (no reordering, no duplicate instant).
+      for (const list of [all, between]) {
+        for (let i = 1; i < list.length; i++) assert.ok(list[i].at > list[i - 1].at, `${label}: ${list[i - 1].key} then ${list[i].key}`);
+      }
 
       // The most recent missed occurrences: after the last covered dose, at or before now.
       const covered = rand() < 0.3 ? null : from + Math.floor(rand() * (now - from + 1)) - DAY;
