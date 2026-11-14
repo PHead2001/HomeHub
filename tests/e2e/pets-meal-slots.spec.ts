@@ -286,7 +286,11 @@ test.describe('pets: meal slots (P2)', () => {
       // The editor on a legacy pet: the suggestion, then the rows with their weekday toggles.
       await card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' }).click();
       const dialog = page.getByRole('dialog', { name: 'Edit Pixel' });
-      await dialog.getByRole('button', { name: 'Use these meal times' }).click();
+      // Measured before it is pressed: once the rows are filled it may leave the dialog.
+      const useTimes = dialog.getByRole('button', { name: 'Use these meal times' });
+      await expect(useTimes).toBeVisible();
+      expect((await useTimes.boundingBox())!.height, 'Use these meal times').toBeGreaterThanOrEqual(48);
+      await useTimes.click();
       const toggle = dialog.getByRole('button', { name: 'Skip Breakfast on Sunday' });
       await toggle.scrollIntoViewIfNeeded();
       const box = await toggle.boundingBox();
@@ -294,10 +298,11 @@ test.describe('pets: meal slots (P2)', () => {
       expect(box!.height).toBeGreaterThanOrEqual(48);
       await toggle.click();
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-      for (const name of ['Use these meal times', 'Add a meal', 'Remove Breakfast']) {
-        const control = dialog.getByRole('button', { name });
-        if (await control.count() === 0) continue;
-        const controlBox = await control.first().boundingBox();
+      for (const name of ['Add a meal', 'Remove Breakfast']) {
+        const control = dialog.getByRole('button', { name }).first();
+        if (!(await control.isVisible())) continue;
+        await control.scrollIntoViewIfNeeded();
+        const controlBox = await control.boundingBox();
         expect(controlBox!.height, name).toBeGreaterThanOrEqual(48);
       }
       const dialogBox = await dialog.boundingBox();
