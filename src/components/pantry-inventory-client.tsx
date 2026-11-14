@@ -300,7 +300,7 @@ function PantryItemDialog({
         </DialogContent>
     </Dialog>
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+      <DialogContent className="max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-headline">{itemToEdit ? 'Edit Item' : 'Add New Item'}</DialogTitle>
           <DialogDescription>

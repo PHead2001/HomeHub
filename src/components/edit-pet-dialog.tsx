@@ -95,7 +95,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
 
   return (
     <Dialog open={!!pet} onOpenChange={(isOpen) => { if (!saving) onOpenChange(isOpen); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[460px]">
+      <DialogContent className="max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] overflow-y-auto sm:max-w-[460px]">
         <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle className="font-headline">Edit {pet?.name}</DialogTitle>

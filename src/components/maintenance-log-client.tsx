@@ -2697,7 +2697,7 @@ export function MaintenanceLogClient() {
         setAssetDialogOpen(open);
         if (!open) setAssetScheduleForms([]);
       }}>
-        <DialogContent className="flex max-h-[90dvh] max-w-3xl flex-col overflow-hidden p-0">
+        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-3xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingAsset ? 'Edit Home Asset' : 'Add Home Asset'}</DialogTitle>
             <DialogDescription>Track core asset details and schedule-ready maintenance metadata.</DialogDescription>
@@ -2865,7 +2865,7 @@ export function MaintenanceLogClient() {
         setVehicleDialogOpen(open);
         if (!open) setVehicleScheduleForms([]);
       }}>
-        <DialogContent className="flex max-h-[90dvh] max-w-3xl flex-col overflow-hidden p-0">
+        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-3xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}</DialogTitle>
             <DialogDescription>Track vehicle details and schedule-ready service metadata.</DialogDescription>
@@ -3064,7 +3064,7 @@ export function MaintenanceLogClient() {
           setLogScheduleTarget(null);
         }
       }}>
-        <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col overflow-hidden p-0">
+        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-2xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>{editingLog ? 'Edit Maintenance Log' : 'Add Maintenance Log'}</DialogTitle>
             <DialogDescription>
@@ -3133,7 +3133,7 @@ export function MaintenanceLogClient() {
           scheduleCompletionForm.reset(emptyScheduleCompletionForm());
         }
       }}>
-        <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col overflow-hidden p-0">
+        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-xl flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pb-0 pr-10 pt-6">
             <DialogTitle>Complete Scheduled Maintenance</DialogTitle>
             <DialogDescription>

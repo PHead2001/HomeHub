@@ -71,7 +71,7 @@ export function ListDialog({
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       {/* The content mounts on open, so the form starts from the list being edited. */}
-      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+      <DialogContent className="max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] overflow-y-auto">
         <ListDialogBody listToEdit={listToEdit} onOpenChange={onOpenChange} onSave={onSave} lists={lists} onOpenList={onOpenList} draft={draft} />
       </DialogContent>
     </Dialog>
