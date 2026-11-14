@@ -104,6 +104,9 @@ const card = (page: Page, petId: string) => page.getByTestId(`pet-card-${petId}`
  */
 const toastText = (page: Page, text: string) => page.getByRole('region', { name: /^Notifications/ }).getByText(text, { exact: true });
 const mealState = (scope: Locator) => scope.getByTestId('meal-slots-status').locator('[data-meal-state]');
+/** Waits for a dialog's open animation (a 95% zoom) so boxes are measured at full size. */
+const settleAnimations = (scope: Locator) =>
+  scope.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined))));
 
 async function openContext(browser: Browser, viewport: { width: number; height: number }) {
   const context = await browser.newContext({ baseURL, viewport, hasTouch: true, reducedMotion: 'reduce', storageState: 'playwright/.auth/e2e-owner.json' });
@@ -287,8 +290,10 @@ test.describe('pets: meal slots (P2)', () => {
       await card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' }).click();
       const dialog = page.getByRole('dialog', { name: 'Edit Pixel' });
       // Measured before it is pressed: once the rows are filled it may leave the dialog.
+      // The dialog opens with a 95% zoom; measure only after its animations finish.
       const useTimes = dialog.getByRole('button', { name: 'Use these meal times' });
       await expect(useTimes).toBeVisible();
+      await settleAnimations(dialog);
       expect((await useTimes.boundingBox())!.height, 'Use these meal times').toBeGreaterThanOrEqual(48);
       await useTimes.click();
       const toggle = dialog.getByRole('button', { name: 'Skip Breakfast on Sunday' });
