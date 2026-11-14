@@ -423,22 +423,36 @@ describe('lockout arithmetic', () => {
     let guard: MemberGuard = emptyMemberGuard();
     for (let i = 0; i < TABLET_LOCKS_ALERT_COUNT; i++) {
       assert.equal(repeatTabletLockAlertDue(guard, t0 + i * 1000), false);
-      guard = (reserveMemberGuard(guard, `lock${i}`, t0 + i * 1000, { tabletLock: true }) as { guard: MemberGuard }).guard;
+      guard = (reserveMemberGuard(guard, `lock${i}`, t0 + i * 1000, { tabletLock: `tablet${i}` }) as { guard: MemberGuard }).guard;
       guard = confirmTabletLock(guard, `lock${i}`);
     }
     assert.equal(repeatTabletLockAlertDue(guard, t0 + 5000), true);
     const told = { ...guard, repeatAlertAt: t0 + 5000 };
-    const fourth = confirmTabletLock((reserveMemberGuard(told, 'lock3', t0 + 6000, { tabletLock: true }) as { guard: MemberGuard }).guard, 'lock3');
+    const fourth = confirmTabletLock((reserveMemberGuard(told, 'lock3', t0 + 6000, { tabletLock: 'tablet3' }) as { guard: MemberGuard }).guard, 'lock3');
     assert.equal(repeatTabletLockAlertDue(fourth, t0 + 6000), false);
     assert.equal(repeatTabletLockAlertDue(told, t0 + 25 * 3600_000), false, 'old locks have aged out');
     // A correct attempt that set a tablet lock withdraws it.
-    const right = reserveMemberGuard(emptyMemberGuard(), 'right', t0, { tabletLock: true }) as { guard: MemberGuard; seq: number };
+    const right = reserveMemberGuard(emptyMemberGuard(), 'right', t0, { tabletLock: 'tablet0' }) as { guard: MemberGuard; seq: number };
     assert.equal(settleMemberGuardCorrect(right.guard, 'right', right.seq).tabletLocks.length, 0);
+  });
+
+  it('the notice counts distinct tablets: three locks of one tablet are not three tablets (Codex)', () => {
+    let guard: MemberGuard = emptyMemberGuard();
+    for (let i = 0; i < 3; i++) {
+      guard = (reserveMemberGuard(guard, `same${i}`, t0 + i * 600_000, { tabletLock: 'kitchen' }) as { guard: MemberGuard }).guard;
+      guard = confirmTabletLock(guard, `same${i}`);
+    }
+    assert.equal(repeatTabletLockAlertDue(guard, t0 + 2_000_000), false);
+    for (const [i, tablet] of ['hall', 'den'].entries()) {
+      guard = (reserveMemberGuard(guard, `other${i}`, t0 + 2_000_000 + i, { tabletLock: tablet }) as { guard: MemberGuard }).guard;
+      guard = confirmTabletLock(guard, `other${i}`);
+    }
+    assert.equal(repeatTabletLockAlertDue(guard, t0 + 2_000_010), true);
   });
 
   it('provisional tablet locks (attempts still being checked) never count toward the notice', () => {
     let guard: MemberGuard = emptyMemberGuard();
-    for (const id of ['a', 'b', 'c']) guard = (reserveMemberGuard(guard, id, t0, { tabletLock: true }) as { guard: MemberGuard }).guard;
+    for (const id of ['a', 'b', 'c']) guard = (reserveMemberGuard(guard, id, t0, { tabletLock: `tablet-${id}` }) as { guard: MemberGuard }).guard;
     // Only one of the three proved wrong so far.
     const one = confirmTabletLock(guard, 'b');
     assert.equal(repeatTabletLockAlertDue(one, t0 + 1), false);

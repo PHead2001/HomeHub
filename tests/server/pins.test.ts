@@ -583,6 +583,36 @@ describe('hardening: daily count, repeat tablet locks, set admission, announceme
     assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid));
   });
 
+  test('three locks of the same tablet give no notice; locks on three different tablets give one', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 3; i++) tablets.push(await pairTablet(H, owner, created, `Distinct ${i}`));
+    const c = clock(Date.parse('2026-12-14T06:00:00Z'));
+    const allNotices = async () => (await house(H).collection('notifications').where('sourceType', '==', 'pin-tablet-locks').get()).docs
+      .filter(d => d.get('sourceId') === member.uid);
+    const before = new Set((await allNotices()).map(d => d.id));
+    const fresh = async () => (await allNotices()).filter(d => !before.has(d.id));
+    const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').update({ recentFailures: [], dayFailures: [] });
+    const lock = async (t: Tablet) => {
+      await keepHourlyCountLow();
+      for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_wrong');
+      await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_locked');
+    };
+    // The same tablet locks three times in a day (waiting out each lock).
+    for (let round = 0; round < 3; round++) {
+      await lock(tablets[0]);
+      c.advance(20 * 60_000);
+    }
+    assert.equal((await fresh()).length, 0, 'one tablet is not three tablets');
+    assert.equal((await memberGuard(member.uid))?.repeatAlertAt, null);
+    // Two more tablets lock: three distinct tablets now, one notice.
+    await lock(tablets[1]);
+    assert.equal((await fresh()).length, 0);
+    await lock(tablets[2]);
+    const recipients = new Set((await fresh()).map(d => d.get('targetUserUid')));
+    assert.ok(recipients.has(owner.uid) && recipients.has(admin.uid));
+  });
+
   test('PIN sets beyond the admission bound are refused busy instead of queueing without limit', async () => {
     const people = Array.from({ length: 12 }, (_, i) => ({ uid: `p-setter-${i}`, email: `p.setter${i}@example.test` }));
     for (const person of people) {

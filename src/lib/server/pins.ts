@@ -488,9 +488,11 @@ const readMemberGuard = (snap: Snap): MemberGuard => {
     dayFailures: timed(d.dayFailures),
     tabletLocks: Array.isArray(d.tabletLocks)
       ? d.tabletLocks.flatMap((f: unknown) => {
-        const entry = f as { id?: unknown; at?: unknown; confirmed?: unknown };
+        const entry = f as { id?: unknown; at?: unknown; confirmed?: unknown; deviceId?: unknown };
         const at = millisOf(entry?.at);
-        return typeof entry?.id === 'string' && at !== null ? [{ id: entry.id, at, confirmed: entry.confirmed === true }] : [];
+        return typeof entry?.id === 'string' && at !== null
+          ? [{ id: entry.id, at, confirmed: entry.confirmed === true, deviceId: typeof entry.deviceId === 'string' ? entry.deviceId : entry.id }]
+          : [];
       })
       : [],
     repeatAlertAt: millisOf(d.repeatAlertAt),
@@ -505,7 +507,7 @@ const readMemberGuard = (snap: Snap): MemberGuard => {
 const storeMemberGuard = (guard: MemberGuard) => ({
   recentFailures: guard.recentFailures.map(f => ({ id: f.id, at: Timestamp.fromMillis(f.at) })),
   dayFailures: guard.dayFailures.map(f => ({ id: f.id, at: Timestamp.fromMillis(f.at) })),
-  tabletLocks: guard.tabletLocks.map(l => ({ id: l.id, at: Timestamp.fromMillis(l.at), confirmed: l.confirmed })),
+  tabletLocks: guard.tabletLocks.map(l => ({ id: l.id, at: Timestamp.fromMillis(l.at), confirmed: l.confirmed, deviceId: l.deviceId })),
   repeatAlertAt: guard.repeatAlertAt === null ? null : Timestamp.fromMillis(guard.repeatAlertAt),
   sinceSuccess: guard.sinceSuccess,
   seq: guard.seq,
@@ -614,8 +616,8 @@ export const verifyDevicePin = async (
         throw new DeviceActionError('pin_locked', deviceReservation.refused === 'pin_locked' ? deviceReservation.retryAfterSec : undefined);
       }
       // A tablet lock this attempt sets is also counted for the person (repeat-lock notice).
-      const tabletLock = deviceReservation.guard.lockedBySeq === deviceReservation.seq;
-      const memberReservation = reserveMemberGuard(memberGuard, attemptId, now.getTime(), { tabletLock });
+      const locksTablet = deviceReservation.guard.lockedBySeq === deviceReservation.seq;
+      const memberReservation = reserveMemberGuard(memberGuard, attemptId, now.getTime(), locksTablet ? { tabletLock: claims.hh_device } : {});
       if ('refused' in memberReservation) throw new DeviceActionError('pin_locked_member');
       // Fail closed before counting anything when the pepper is missing.
       const pepperId = pinSnap.get('pepperId');
@@ -795,7 +797,7 @@ const announceLocks = async (input: {
       }, { merge: true });
       if (due) {
         notify(`pin-tablet-locks-${input.actorUid}-${now.getTime()}`, 'Tablet PIN keeps locking',
-          `${personName}'s tablet PIN locked ${TABLET_LOCKS_ALERT_COUNT} tablets within a day. Check in with them, or unlock it in Household, Members.`, 'pin-tablet-locks');
+          `${personName}'s tablet PIN locked ${TABLET_LOCKS_ALERT_COUNT} different tablets within a day. Check in with them, or unlock it in Household, Members.`, 'pin-tablet-locks');
       }
     }
   });

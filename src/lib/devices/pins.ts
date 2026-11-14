@@ -114,7 +114,7 @@ export const MEMBER_FAILURES_SINCE_SUCCESS_LOCK = 50;
 export const MEMBER_FAILURES_PER_DAY_LOCK = 30;
 export const MEMBER_DAY_WINDOW_MS = 24 * 60 * 60_000;
 
-/** Owners and admins are told once when one person's PIN locks this many tablets within 24 hours. */
+/** Owners and admins are told once when one person's PIN locks this many different tablets within 24 hours. */
 export const TABLET_LOCKS_ALERT_COUNT = 3;
 
 /**
@@ -132,7 +132,7 @@ export type MemberGuard = {
    * `confirmed` once the attempt that set the lock proved wrong; until then the lock is
    * provisional (that attempt may still be right and lift it) and is not counted.
    */
-  tabletLocks: Array<{ id: string; at: number; confirmed: boolean }>;
+  tabletLocks: Array<{ id: string; at: number; confirmed: boolean; deviceId: string }>;
   /** When owners and admins were last told about repeated tablet locks. */
   repeatAlertAt: number | null;
   sinceSuccess: Array<{ id: string; seq: number }>;
@@ -155,7 +155,8 @@ export const reserveMemberGuard = (
   guard: MemberGuard,
   attemptId: string,
   nowMs: number,
-  options: { tabletLock?: boolean } = {},
+  /** `tabletLock`: the id of the tablet this attempt locks, when it does. */
+  options: { tabletLock?: string } = {},
 ): { guard: MemberGuard; locked: boolean; seq: number } | GuardRefusal => {
   if (guard.lockedAt !== null) return { refused: 'pin_locked_member' };
   const seq = guard.seq + 1;
@@ -165,7 +166,9 @@ export const reserveMemberGuard = (
   const dayFailures = [...day, { id: attemptId, at: nowMs }].slice(-MEMBER_FAILURES_PER_DAY_LOCK);
   const sinceSuccess = [...guard.sinceSuccess, { id: attemptId, seq }].slice(-MEMBER_FAILURES_SINCE_SUCCESS_LOCK);
   const lockedTablets = guard.tabletLocks.filter(l => nowMs - l.at < MEMBER_DAY_WINDOW_MS);
-  const tabletLocks = options.tabletLock ? [...lockedTablets, { id: attemptId, at: nowMs, confirmed: false }].slice(-20) : lockedTablets;
+  const tabletLocks = options.tabletLock
+    ? [...lockedTablets, { id: attemptId, at: nowMs, confirmed: false, deviceId: options.tabletLock }].slice(-20)
+    : lockedTablets;
   const reason: MemberLockReason | null =
     recentFailures.length >= MEMBER_FAILURES_BEFORE_LOCK ? 'hour'
       : dayFailures.length >= MEMBER_FAILURES_PER_DAY_LOCK ? 'day'
@@ -198,12 +201,12 @@ export const confirmTabletLock = (guard: MemberGuard, attemptId: string): Member
 
 /**
  * Whether owners and admins should now be told that this person's PIN keeps locking
- * tablets: TABLET_LOCKS_ALERT_COUNT confirmed tablet locks within 24 hours (locks set by
+ * tablets: confirmed locks on TABLET_LOCKS_ALERT_COUNT different tablets within 24 hours (locks set by
  * attempts still being checked do not count), and no such notice in
  * the last 24 hours (one notice per episode).
  */
 export const repeatTabletLockAlertDue = (guard: MemberGuard, nowMs: number): boolean =>
-  guard.tabletLocks.filter(l => l.confirmed && nowMs - l.at < MEMBER_DAY_WINDOW_MS).length >= TABLET_LOCKS_ALERT_COUNT &&
+  new Set(guard.tabletLocks.filter(l => l.confirmed && nowMs - l.at < MEMBER_DAY_WINDOW_MS).map(l => l.deviceId)).size >= TABLET_LOCKS_ALERT_COUNT &&
   (guard.repeatAlertAt === null || nowMs - guard.repeatAlertAt >= MEMBER_DAY_WINDOW_MS);
 
 /**
