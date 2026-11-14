@@ -77,6 +77,7 @@ import {
   TabletContext,
   type DeviceNotice,
   type TabletActionAnswer,
+  type TabletActionOutcome,
   type TabletActionRequest,
   type TabletActor,
   type TabletContextValue,
@@ -88,6 +89,7 @@ import { TabletView as TabletViewContent } from './tablet-views';
 import { WhoIsHereDialog } from './who-is-here';
 import { PinPadDialog } from './pin-pad';
 import { AmbientScreen, NightDim } from './tablet-overlays';
+import { canSend, useDeviceActions } from './use-device-actions';
 import { TabletUpdateWatcher } from './tablet-update-watcher';
 
 const TabletSettingsDialog = dynamic(() => import('./tablet-settings').then((mod) => mod.TabletSettingsDialog), { ssr: false });
@@ -599,12 +601,26 @@ function TabletFrame(props: {
     }
   }, [unlockAdmin]);
 
-  const runAction = useCallback(async (request: TabletActionRequest) => {
+  const deviceActions = useDeviceActions({
+    householdId,
+    deviceId,
+    generation,
+    pointsPin: household.pointsPin,
+    idToken,
+    refuse: (code, who, retryAfterSec) => {
+      if (code === 'pin_session_invalid' || code === 'pin_required' || code === 'pin_fresh_required') apply({ type: 'pin-invalid' });
+      message(code, who, retryAfterSec);
+    },
+    onRevoked: () => endSession('removed'),
+  });
+
+  const runAction = useCallback(async (request: TabletActionRequest): Promise<TabletActionOutcome> => {
     const policy = policyOf(request.capability);
-    if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never' || !request.execute) {
-      // Until F4 every write on a tablet is refused; the server refuses it too.
+    const sendable = canSend(request.capability);
+    if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never' || (!request.execute && !sendable)) {
+      // Not offered on tablets (F4a sends chores only; Pets and the rest stay refused, as on the server).
       message('not_on_tablets');
-      return;
+      return { ok: false };
     }
     let actor: TabletActor | null;
     if (policy.levelClass === 'admin-pin') {
@@ -612,25 +628,37 @@ function TabletFrame(props: {
     } else {
       const remembered = activeFace(shellRef.current.face, Date.now(), isShellBusy());
       const who = person(remembered?.memberUid) ?? await askPerson('action', request.label);
-      if (!who) return;
+      if (!who) return { ok: false };
       apply({ type: 'pick', memberUid: who.uid, now: Date.now() });
       const required = requiredLevel(request.capability, { pointsPin: household.pointsPin, actorRole: who.role });
       const unlock = shellRef.current.pin?.memberUid === who.uid ? shellRef.current.pin.sessionId : undefined;
       const sessionId = required === 'pin' && !unlock ? await askPin(who) : unlock;
-      if (required === 'pin' && !sessionId) return;
+      if (required === 'pin' && !sessionId) return { ok: false };
       actor = { actorUid: who.uid, ...(sessionId ? { pinSessionId: sessionId } : {}) };
     }
-    if (!actor) return;
-    const answer: TabletActionAnswer = await whileBusy('save', request.execute(actor)).catch((): TabletActionAnswer => ({ ok: false, code: 'failed' }));
+    if (!actor) return { ok: false };
     const who = person(actor.actorUid);
+    const credit = () => {
+      apply({ type: 'credit', memberUid: actor!.actorUid, now: Date.now() });
+      if (actor!.pinSessionId) apply({ type: 'pin-used', now: Date.now() });
+    };
+    if (!request.execute && who) {
+      // The device action runtime: opId, Undo journal, offline queue, Undo toast.
+      const result = await whileBusy('save', deviceActions.perform({ capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who }))
+        .catch(() => ({ ok: false }));
+      if (result.ok) credit();
+      return result;
+    }
+    if (!request.execute) return { ok: false };
+    const answer: TabletActionAnswer = await whileBusy('save', request.execute(actor)).catch((): TabletActionAnswer => ({ ok: false, code: 'failed' }));
     if (answer.ok) {
-      apply({ type: 'credit', memberUid: actor.actorUid, now: Date.now() });
-      if (actor.pinSessionId) apply({ type: 'pin-used', now: Date.now() });
-      return;
+      credit();
+      return { ok: true };
     }
     if (answer.code === 'pin_session_invalid' || answer.code === 'pin_required' || answer.code === 'pin_fresh_required') apply({ type: 'pin-invalid' });
     message(answer.code, who, answer.retryAfterSec);
-  }, [apply, askPerson, askPin, household.pointsPin, message, person, requestAdmin]);
+    return { ok: false };
+  }, [apply, askPerson, askPin, deviceActions, household.pointsPin, message, person, requestAdmin]);
 
   const done = useCallback(() => apply({ type: 'done' }), [apply]);
   const goStart = useCallback(() => router.push(startPath()), [router, startPath]);

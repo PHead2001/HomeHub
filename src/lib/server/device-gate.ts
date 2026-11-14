@@ -146,6 +146,8 @@ export type DeviceAuthority = {
   attribution: DeviceAttribution | null;
   /** The server clock this authorization used (also used by the hooks). */
   now: Date;
+  /** The request is a replay from the tablet's offline queue (section 11, R1). */
+  queued: boolean;
   hooks: DeviceTxHooks;
 };
 
@@ -482,6 +484,7 @@ export async function authorizeDeviceAction(
     opId,
     attribution: attributionOf(first),
     now,
+    queued: Boolean(request.queued),
     hooks: {
       precheck: async () => { throw new Error('unreachable'); },
       finalize: () => { throw new Error('unreachable'); },

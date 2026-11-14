@@ -4,8 +4,8 @@
 // shell"). Home is the household resting view: the dashboard drawn for the household
 // (the house, the household brief with household totals and no greeting by name, the
 // tiles of the sections that are on; HP-3b, HP-21, HP-32b, WT-5a). The section views are
-// read-only (Shopping, Maintenance and Calendar stay read-only on tablets, JC-24; Chores
-// and Pets become actionable with the device actions in F4), built from the same live
+// read-only (Shopping, Maintenance and Calendar stay read-only on tablets, JC-24) except
+// Chores, whose rows have Done and Take (device actions, F4a; Pets follow in F4b), built from the same live
 // household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
@@ -13,7 +13,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { tabletListener } from '@/lib/devices/tablet-listener';
 import type { QuerySnapshot } from 'firebase/firestore';
-import { Bell, CalendarDays, CheckSquare, PawPrint, ShoppingCart, Wrench } from 'lucide-react';
+import { Bell, CalendarDays, Check, CheckSquare, Hand, PawPrint, ShoppingCart, Wrench } from 'lucide-react';
 import { DashboardLoading } from '@/components/dashboard/dashboard-loading';
 import { cn } from '@/lib/utils';
 import {
@@ -55,6 +55,46 @@ const Row = ({ title, detail, tone, testId }: { title: string; detail?: string |
 const loadingOr = (ready: boolean, failed: boolean): string | null =>
   failed ? "This couldn't be loaded right now. It tries again on its own." : ready ? null : 'Loading…';
 
+/** Done and Take for one chore on the tablet ("Who's here?" first, a PIN when the points-PIN setting asks). */
+function ChoreActions({ chore }: { chore: { id: string; task: string; assigneeKey?: string } }) {
+  const { runAction } = useTablet();
+  const [busy, setBusy] = useState<'complete' | 'take' | null>(null);
+  const run = async (kind: 'complete' | 'take') => {
+    if (busy) return;
+    setBusy(kind);
+    try {
+      await runAction(kind === 'complete'
+        ? { capability: 'chores.complete', label: chore.task, intent: { choreId: chore.id } }
+        : { capability: 'chores.take', label: chore.task, intent: { choreId: chore.id } });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const button = 'inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-lg border border-border px-4 text-base font-medium disabled:opacity-60';
+  return (
+    <span className="flex shrink-0 gap-2">
+      {chore.assigneeKey === '' && (
+        <button type="button" className={button} disabled={busy !== null} onClick={() => void run('take')} aria-label={`Take ${chore.task}`} data-testid={`tablet-chore-take-${chore.id}`}>
+          <Hand aria-hidden className="h-5 w-5" /> Take
+        </button>
+      )}
+      <button type="button" className={cn(button, 'border-primary/40 text-primary')} disabled={busy !== null} onClick={() => void run('complete')} aria-label={`Mark ${chore.task} done`} data-testid={`tablet-chore-done-${chore.id}`}>
+        <Check aria-hidden className="h-5 w-5" /> Done
+      </button>
+    </span>
+  );
+}
+
+const ChoreRow = ({ chore, detail }: { chore: { id: string; task: string; overdue: boolean; assigneeKey?: string }; detail: string }) => (
+  <li className="flex min-h-14 items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3" data-testid={`tablet-chore-${chore.id}`}>
+    <span className="min-w-0">
+      <span className="block text-lg font-medium">{chore.task}</span>
+      {detail && <span className={cn('block text-sm', chore.overdue ? 'font-semibold text-destructive' : 'text-muted-foreground')}>{detail}</span>}
+    </span>
+    <ChoreActions chore={chore} />
+  </li>
+);
+
 function ChoresView({ roomId }: { roomId?: string }) {
   const { data } = useTablet();
   const section = choresSection(data.sectionFacts ?? {}, roomId);
@@ -67,7 +107,7 @@ function ChoresView({ roomId }: { roomId?: string }) {
       {room ? (
         room.chores.length === 0 ? <p className="text-lg text-muted-foreground">Nothing due in {room.name}.</p> : (
           <ul className="space-y-2">
-            {room.chores.map((chore) => <Row key={chore.id} title={chore.task} detail={chore.dueLabel} tone={chore.overdue ? 'warn' : null} />)}
+            {room.chores.map((chore) => <ChoreRow key={chore.id} chore={chore} detail={chore.dueLabel} />)}
           </ul>
         )
       ) : work.length === 0 ? (
@@ -75,7 +115,7 @@ function ChoresView({ roomId }: { roomId?: string }) {
       ) : (
         <ul className="space-y-2">
           {work.map((chore) => (
-            <Row key={chore.id} title={chore.task} detail={[chore.room, chore.assignee, chore.dueLabel].filter(Boolean).join(' · ')} tone={chore.overdue ? 'warn' : null} />
+            <ChoreRow key={chore.id} chore={chore} detail={[chore.room, chore.assignee ?? (chore.assigneeKey ? null : 'Unassigned'), chore.dueLabel].filter(Boolean).join(' · ')} />
           ))}
         </ul>
       )}

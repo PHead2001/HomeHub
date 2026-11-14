@@ -17,6 +17,12 @@ export const OP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** The Undo window (16.3) and the server's latency grace (JC-16). */
 export const UNDO_WINDOW_MS = 10_000;
 export const UNDO_GRACE_MS = 5_000;
+/**
+ * R1: an Undo sent from the tablet's offline queue for an action that was itself a queued
+ * replay is accepted up to this long after the action's stored `appliedAt` (server time).
+ * Device clocks never extend a window on their own.
+ */
+export const QUEUED_UNDO_WINDOW_MS = 10 * 60_000;
 
 export type DeviceOpState = 'applied' | 'undone';
 
@@ -108,8 +114,8 @@ export const classifyUndoAttempt = (
 };
 
 /** `serverNow ≤ appliedAt + 10 s + 5 s grace`; `appliedAt` is the stored server time. */
-export const undoWindowOpen = (appliedAt: Timestamp | null, now: Date): boolean =>
-  Boolean(appliedAt) && now.getTime() <= appliedAt!.toMillis() + UNDO_WINDOW_MS + UNDO_GRACE_MS;
+export const undoWindowOpen = (appliedAt: Timestamp | null, now: Date, options: { queuedReplay?: boolean } = {}): boolean =>
+  Boolean(appliedAt) && now.getTime() <= appliedAt!.toMillis() + (options.queuedReplay ? QUEUED_UNDO_WINDOW_MS : UNDO_WINDOW_MS + UNDO_GRACE_MS);
 
 /**
  * The checks every Undo of an `applied` entry makes inside its transaction: the entry
@@ -119,11 +125,14 @@ export const undoWindowOpen = (appliedAt: Timestamp | null, now: Date): boolean 
  */
 export const assertUndoable = (
   entry: DeviceOp,
-  context: { generation: number; actorUid: string; now: Date; actorRuleAllows?: boolean },
+  context: { generation: number; actorUid: string; now: Date; actorRuleAllows?: boolean; queuedUndo?: boolean },
 ) => {
   if (entry.generation !== context.generation) throw new DeviceActionError('not_undoable');
   if (entry.actorUid !== context.actorUid && !context.actorRuleAllows) throw new DeviceActionError('forbidden');
-  if (!undoWindowOpen(entry.appliedAt, context.now)) throw new DeviceActionError('undo_expired');
+  // R1: the longer window only when this Undo came from the queue and the action it
+  // reverses was itself a queued replay (its ledger entry carries the device's creation time).
+  const queuedReplay = Boolean(context.queuedUndo) && entry.deviceCreatedAt !== null;
+  if (!undoWindowOpen(entry.appliedAt, context.now, { queuedReplay })) throw new DeviceActionError('undo_expired');
 };
 
 /** A record the action created is unchanged since: no write after its creation. */

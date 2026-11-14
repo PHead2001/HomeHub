@@ -62,9 +62,14 @@ export type CompletionWrite = {
   completedSubTasks?: string[];
 };
 
-/** Fields every un-completion removes. `completedSubTasks` is handled separately. */
+/**
+ * Fields every un-completion removes. `completedSubTasks` is handled separately.
+ * `deviceAttribution` (which wall tablet, which person, face or PIN) belongs to the
+ * completion it describes, so it goes with it (S10).
+ */
 export const COMPLETION_FIELDS = [
   'completedAt', 'completedAtServer', 'completedByUid', 'completedByEmail', 'completedByName', 'completionId',
+  'deviceAttribution',
 ] as const;
 
 /** Firestore's limit on a document ID, in UTF-8 bytes. */

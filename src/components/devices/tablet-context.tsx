@@ -30,15 +30,20 @@ export type TabletActor = { actorUid: string; pinSessionId?: string };
 export type TabletActionAnswer = { ok: true } | { ok: false; code: DeviceRefusal; retryAfterSec?: number };
 
 /**
- * A request to do something on the tablet. `execute` is the device server action for the
- * capability (F4 supplies them); without one the tablet refuses at once (every write on a
- * tablet is refused until F4).
+ * A request to do something on the tablet. A capability the tablet can send to the server
+ * (F4a: chores) goes through the device action runtime with `intent` as its payload
+ * (`use-device-actions.tsx`: opId, Undo journal, offline queue). `execute` runs a custom
+ * call instead (tablet settings, exits). Anything else is refused at once.
  */
 export type TabletActionRequest = {
   capability: DeviceCapability;
   label: string;
+  intent?: Record<string, unknown>;
   execute?: (actor: TabletActor) => Promise<TabletActionAnswer>;
 };
+
+/** Whether the action went through (false: refused, cancelled or nothing changed). */
+export type TabletActionOutcome = { ok: boolean };
 
 export type TabletContextValue = {
   householdId: string;
@@ -60,7 +65,7 @@ export type TabletContextValue = {
   goStart: () => void;
   /** "Done": forgets the chosen person and ends a PIN unlock. */
   done: () => void;
-  runAction: (request: TabletActionRequest) => Promise<void>;
+  runAction: (request: TabletActionRequest) => Promise<TabletActionOutcome>;
   /**
    * Asks "Who's here?" for an owner or admin (or uses `actorUid`), then a fresh PIN unless
    * that person unlocked in the last 25 s (admin-PIN actions need a session at most 30 s old).
