@@ -8,7 +8,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
-import { petSnapshotListener } from '@/lib/pets/live-listener';
+import { petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
 import type { PetProfile } from '@/lib/pets/types';
 import { FEED_SHORTCUT_PARAM, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
@@ -180,9 +180,7 @@ export function PetsClient() {
       <PetsPageHeader action={addButton} />
       {ready && snapshot.loaded && snapshot.failed && (
         <p role="status" className="-mt-4 mb-4 text-sm text-muted-foreground" data-testid="pets-list-stale">
-          {snapshot.failed === 'unauthorized'
-            ? 'Your access to pets changed. This is the last list that loaded.'
-            : 'Reconnecting… changes by others will show again once the list is back.'}
+          {staleNoticeText(snapshot.failed === 'unauthorized' ? 'access-changed' : 'reconnecting', 'the pet list')}
         </p>
       )}
 

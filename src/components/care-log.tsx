@@ -20,6 +20,7 @@ import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
 import { addPetLog, deletePetLog, usePetLogs } from './pets/pet-log-api';
+import { unavailableText } from '@/lib/pets/live-listener';
 
 const logSchema = z.object({
   activity: z.string().trim().min(3, 'Describe the activity (at least 3 characters).').max(80, 'Keep the activity under 80 characters.'),
@@ -38,7 +39,7 @@ export function CareLogClient({ petId }: CareLogProps) {
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', 100);
+  const { logs, loading, error, failure } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', 100);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
 
@@ -147,7 +148,7 @@ export function CareLogClient({ petId }: CareLogProps) {
             </div>
           )}
           {!loading && error ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">Care history is unavailable right now.</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">{unavailableText('Care history', failure ?? 'retrying')}</p>
           ) : null}
           {!loading && !error && logs.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No care logged yet.</p>

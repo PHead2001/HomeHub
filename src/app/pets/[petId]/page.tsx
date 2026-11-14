@@ -9,7 +9,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
-import { petSnapshotListener } from '@/lib/pets/live-listener';
+import { liveAnswer, liveFailure, liveNotice, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
 import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
 import { feedingPlan, formatPortion, petPhotoMorphName } from '@/lib/pets/care';
 import { morphStyle } from '@/lib/motion';
@@ -73,7 +73,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   // listener (PE-8g): a failed read resubscribes on its own (backoff, `online`,
   // page visible); a refused one is reported as no access, without "Try again" (PE-18c).
   const docKey = householdId ? `${householdId}/${petId}` : null;
-  const [loaded, setLoaded] = useState<{ key: string | null; pet: PetProfile | null; failed: false | 'retrying' | 'unauthorized' }>({ key: null, pet: null, failed: false });
+  const [loaded, setLoaded] = useState<LiveState<PetProfile>>({ key: null, value: null, loaded: false, failed: false });
   const petHandle = useRef<ResilientHandle | null>(null);
   useEffect(() => {
     if (!householdId || !docKey) return;
@@ -81,17 +81,14 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
       (next, error) => onSnapshot(doc(db, 'households', householdId, 'pets', petId), { includeMetadataChanges: true }, next, error),
       {
         next: (snapshot) => {
-          setLoaded({
-            key: docKey,
-            pet: snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as PetProfile) : null,
-            failed: false,
-          });
+          setLoaded(liveAnswer(docKey, snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as PetProfile) : null));
         },
         status: (status) => {
           if (status.kind === 'live') return;
           console.error('Error loading pet:', status.error);
-          // A pet already on screen stays while the listener reconnects.
-          setLoaded((previous) => (previous.key === docKey && previous.pet ? previous : { key: docKey, pet: null, failed: status.kind }));
+          // A pet already on screen stays, with the failure recorded so the page says
+          // it is reconnecting or that access changed (never silently stale).
+          setLoaded((previous) => liveFailure(previous, docKey, status.kind));
         },
       },
     );
@@ -104,9 +101,11 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
 
   const ready = loaded.key === docKey;
   const loading = authLoading || (Boolean(docKey) && !ready);
-  const pet = ready ? loaded.pet : null;
-  const loadFailed = ready ? loaded.failed : false;
-  const missing = ready && !loaded.failed && !loaded.pet;
+  const pet = ready ? loaded.value : null;
+  // With nothing loaded the failure is the page's state; with a pet on screen it is a notice beside it.
+  const loadFailed = ready && !loaded.loaded ? loaded.failed : false;
+  const missing = ready && loaded.loaded && !loaded.value;
+  const notice = ready && pet ? liveNotice(loaded) : null;
 
   const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
     if (!householdId || !pet) return false;
@@ -197,6 +196,11 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
       <DeletePetAlert isOpen={confirmDelete} petName={pet.name} onConfirm={handleDeletePet} onCancel={() => setConfirmDelete(false)} onCloseAutoFocus={returnFocusToPet(pet.id)} />
 
       {backButton}
+      {notice && (
+        <p role="status" className="-mt-2 mb-4 text-sm text-muted-foreground" data-testid="pet-stale">
+          {staleNoticeText(notice, pet.name)}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
         <div className="space-y-6 md:col-span-1">

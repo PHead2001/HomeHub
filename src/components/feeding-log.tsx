@@ -31,6 +31,7 @@ import { LoggedBy } from './pets/logged-by';
 import { usePetLogs } from './pets/pet-log-api';
 import { FeedAgainDialog, useFeedAction } from './pets/use-feed-action';
 import { useNow } from './pets/use-now';
+import { unavailableText } from '@/lib/pets/live-listener';
 import { CorrectFeedTimeDialog, type CorrectableFeeding } from './pets/correct-feed-time-dialog';
 
 const logSchema = z.object({
@@ -87,7 +88,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', 100);
+  const { logs, loading, error, failure } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', 100);
   const [useCurrentTime, setUseCurrentTime] = useState(true);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [logToCorrect, setLogToCorrect] = useState<CorrectableFeeding | null>(null);
@@ -358,7 +359,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
             </div>
           )}
           {!loading && error ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">Feeding history is unavailable right now.</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">{unavailableText('Feeding history', failure ?? 'retrying')}</p>
           ) : null}
           {!loading && !error && logs.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No feedings logged yet.</p>

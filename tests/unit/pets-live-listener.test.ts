@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import type { ListenerStatus } from '../../src/lib/dashboard/resilient-listener';
-import { petSnapshotListener } from '../../src/lib/pets/live-listener';
+import { liveAnswer, liveFailure, liveNotice, petSnapshotListener, staleNoticeText, unavailableText } from '../../src/lib/pets/live-listener';
 
 type Snapshot = { metadata: { fromCache: boolean }; value: number };
 const cached = (value = 1): Snapshot => ({ metadata: { fromCache: true }, value });
@@ -72,5 +72,46 @@ describe('Pets live listeners: only a server answer counts as recovered (PE-8g)'
       assert.doesNotMatch(source, /resilientListener</, file);
       assert.match(source, /includeMetadataChanges: true/, file);
     }
+  });
+});
+
+describe('a listener that fails after loading keeps the content and says why (PE-8g, PE-18c)', () => {
+  it('records retrying and unauthorized on content already shown, and clears it on the next answer', () => {
+    const loaded = liveAnswer('h/rex', { name: 'Rex' });
+    const retrying = liveFailure(loaded, 'h/rex', 'retrying');
+    assert.deepEqual(retrying, { key: 'h/rex', value: { name: 'Rex' }, loaded: true, failed: 'retrying' });
+    const refused = liveFailure(retrying, 'h/rex', 'unauthorized');
+    assert.equal(refused.failed, 'unauthorized');
+    assert.deepEqual(refused.value, { name: 'Rex' });
+    assert.equal(liveNotice(refused), 'access-changed');
+    assert.equal(liveNotice(retrying), 'reconnecting');
+    assert.equal(liveNotice(loaded), null);
+    assert.deepEqual(liveAnswer('h/rex', { name: 'Rex 2' }).failed, false);
+  });
+
+  it('with nothing loaded (or another key) the failure is the whole state, with no stale content', () => {
+    const before = liveAnswer('h/rex', { name: 'Rex' });
+    assert.deepEqual(liveFailure(before, 'h/maple', 'retrying'), { key: 'h/maple', value: null, loaded: false, failed: 'retrying' });
+    assert.equal(liveNotice(liveFailure(before, 'h/maple', 'unauthorized')), null, 'no notice: the page shows its own failure state');
+  });
+
+  it('the notice and the history copy are honest: access changed has no retry, reconnecting says so', () => {
+    assert.match(staleNoticeText('access-changed', 'this pet'), /access to pets changed/);
+    assert.match(staleNoticeText('reconnecting', 'this pet'), /Reconnecting/);
+    assert.match(unavailableText('Feeding history', 'unauthorized'), /access to pets changed/);
+    assert.match(unavailableText('Feeding history', 'retrying'), /unavailable right now/);
+  });
+
+  it('the pet page, the list and the tabs use them', () => {
+    const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
+    const page = read('src/app/pets/[petId]/page.tsx');
+    assert.match(page, /liveFailure\(/);
+    assert.match(page, /staleNoticeText\(/);
+    assert.doesNotMatch(page, /previous\.pet \? previous :/, 'a failure after loading is never dropped');
+    assert.match(read('src/components/pets-client.tsx'), /staleNoticeText\(/);
+    for (const file of ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx']) {
+      assert.match(read(file), /unavailableText\(/, file);
+    }
+    assert.match(read('src/components/pets/pet-log-api.ts'), /failures\[index\] = status\.kind/);
   });
 });

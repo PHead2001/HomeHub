@@ -22,6 +22,7 @@ import { LoggedBy } from './pets/logged-by';
 import { MedicationChips } from './pets/medication-chip';
 import { addPetLog, deletePetLog, useMedicationCountdownLogs, usePetLogs } from './pets/pet-log-api';
 import { useNow } from './pets/use-now';
+import { unavailableText } from '@/lib/pets/live-listener';
 
 const logSchema = z.object({
   medication: z.string().trim().min(2, 'Enter the medication name.').max(80, 'Keep the name under 80 characters.'),
@@ -47,7 +48,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error } = usePetLogs<PetMedicationLog>(householdId, petId, 'medication-logs', 100);
+  const { logs, loading, error, failure } = usePetLogs<PetMedicationLog>(householdId, petId, 'medication-logs', 100);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const pending = useMedicationCountdownLogs(householdId, petId);
@@ -117,7 +118,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
       </CardHeader>
       <CardContent className="space-y-6">
         {pending.error ? (
-          <p className="text-sm text-muted-foreground">Next dose is unavailable right now.</p>
+          <p className="text-sm text-muted-foreground">{unavailableText('The next dose', pending.failure ?? 'retrying')}</p>
         ) : null}
         {dues.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -202,7 +203,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
             </div>
           )}
           {!loading && error ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">Medication history is unavailable right now.</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">{unavailableText('Medication history', failure ?? 'retrying')}</p>
           ) : null}
           {!loading && !error && logs.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No medication logged yet.</p>

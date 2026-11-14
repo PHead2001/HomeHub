@@ -22,6 +22,7 @@ import { MedicationChips } from './medication-chip';
 import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
 import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
+import { unavailableText } from '@/lib/pets/live-listener';
 
 /**
  * A pet's live care data: feedings, the plan and today's status, and every
@@ -99,7 +100,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           </div>
         </div>
       ) : !status ? (
-        <p id={statusId} className="text-sm text-muted-foreground">Feeding status is unavailable right now.</p>
+        <p id={statusId} className="text-sm text-muted-foreground">{unavailableText('Feeding status', feedings.failure ?? 'retrying')}</p>
       ) : (
         <div className="flex items-center gap-3">
           <FeedingRing status={status} />
@@ -115,7 +116,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
       )}
 
       {medications.error ? (
-        <p className="text-xs text-muted-foreground">Next medication dose is unavailable right now.</p>
+        <p className="text-xs text-muted-foreground">{unavailableText('The next medication dose', medications.failure ?? 'retrying')}</p>
       ) : (
         <MedicationChips dues={dues} max={maxMedicationChips} className="self-start" />
       )}
