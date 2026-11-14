@@ -1,94 +1,133 @@
 "use client";
 
-import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { z } from 'zod';
-import { zodResolver } from '@hookform/resolvers/zod';
+import { useEffect, useId, useRef, useState } from 'react';
 import { format } from 'date-fns';
-import { PlusCircle, Trash2 } from 'lucide-react';
+import { Loader2, MoreVertical, Pencil, Pill, PlusCircle, Square, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
-import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
-import { playFeedback } from '@/lib/feedback';
-import { currentMedications, loggerName, parseLocalDate, petDay, readableLogDate } from '@/lib/pets/care';
+import { loggerName, readableLogDate, toDate } from '@/lib/pets/care';
+import {
+  DOSE_BACKDATE_MAX_MS,
+  DOSE_UNDO_COPY,
+  courseDue,
+  lastDoseLine,
+  legacyMedicationKey,
+  newDoseOpId,
+  occurrenceLabel,
+  scheduleSummary,
+  type CourseView,
+} from '@/lib/pets/medication-course';
+import { mayMedication } from '@/lib/pets/medication-permissions';
+import { logOneOffDose, undoDose } from '@/lib/pets/medication-operation';
+import { isBrowserOffline } from '@/lib/firestore-offline';
 import type { PetMedicationLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { MedicationChips } from './pets/medication-chip';
-import { addPetLog, deletePetLog, useMedicationCountdownLogs, usePetLogs } from './pets/pet-log-api';
+import { MedicationChip } from './pets/medication-chip';
+import { CourseFormDialog, type CourseFormMode } from './pets/course-form-dialog';
+import { GiveDoseDialog, medicationRefusal, useFinishCourse } from './pets/give-dose-dialog';
+import { LegacyMedicationCard } from './pets/legacy-medication-card';
+import { useMedicationState } from './pets/medication-api';
+import { usePetLogs } from './pets/pet-log-api';
 import { useNow } from './pets/use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
 
-const logSchema = z.object({
-  medication: z.string().trim().min(2, 'Enter the medication name.').max(80, 'Keep the name under 80 characters.'),
-  dosage: z.string().trim().min(1, 'Enter the dosage.').max(80, 'Keep the dosage under 80 characters.'),
-  nextDueDate: z
-    .string()
-    .optional()
-    .refine((value) => !value || parseLocalDate(value) !== null, 'Pick a valid date.'),
-  notes: z.string().max(500, 'Keep notes under 500 characters.').optional(),
-});
-
-type LogValues = z.infer<typeof logSchema>;
+const AUTHOR_WINDOW_MS = 10 * 60_000;
+const INPUT_FORMAT = "yyyy-MM-dd'T'HH:mm";
 
 interface MedicationLogProps {
   petId: string;
+  petName?: string;
+  /** `?dose=<courseId>` (a reminder's link): opens Give dose for that course once loaded. */
+  doseCourseId?: string | null;
+  /** Called once the `?dose=` request was handled (opened, or the course is not active). */
+  onDoseHandled?: () => void;
 }
 
-export function MedicationLogClient({ petId }: MedicationLogProps) {
+/**
+ * The Medication tab (P3): the pet's courses with Give dose, Edit and Finish,
+ * the D-P8 confirmation cards for legacy medications, one-off doses, and the
+ * history (course doses show the occurrence they covered, and when they were
+ * given and recorded). Every action's permission comes from the shared table
+ * (`MEDICATION_ACTION_PERMISSIONS`); the rules enforce the same.
+ */
+export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId = null, onDoseHandled }: MedicationLogProps) {
   const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
   const now = useNow();
   const timeZone = household?.timeZone ?? null;
-  const canAdd = Boolean(permissions['pets.addLogs']);
-  const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
+  const canGive = mayMedication('pets.dose.give', permissions);
+  const canEdit = mayMedication('pets.course.edit', permissions);
+  const canFinish = mayMedication('pets.course.finish', permissions);
+  const canOneOff = mayMedication('pets.dose.oneOff', permissions);
+  const canDeleteAny = Boolean(permissions['pets.deleteLogs']);
   const { logs, loading, error, failure } = usePetLogs<PetMedicationLog>(householdId, petId, 'medication-logs', 100);
+  const state = useMedicationState(householdId, petId, now, timeZone);
+  const finish = useFinishCourse(petId);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
-  const pending = useMedicationCountdownLogs(householdId, petId);
-  // A failed countdown load is "unavailable", never "nothing due".
-  const dues = pending.loading || pending.error ? [] : currentMedications(pending.logs, now, timeZone);
+  // The course Give dose is open for, by id, so the dialog always sees the live course.
+  const [givingId, setGivingId] = useState<string | null>(null);
+  const [formMode, setFormMode] = useState<CourseFormMode | null>(null);
+  const [oneOffOpen, setOneOffOpen] = useState(false);
+  const [finishing, setFinishing] = useState<CourseView | null>(null);
+  // `?dose=` handled for this course id (null once the param is gone, so the same reminder opens again).
+  const [seenDose, setSeenDose] = useState<string | null>(null);
+  const notifiedDose = useRef<string | null>(null);
 
-  const form = useForm<LogValues>({
-    resolver: zodResolver(logSchema),
-    defaultValues: { medication: '', dosage: '', nextDueDate: '', notes: '' },
-  });
+  const active = state.courses.filter((course) => course.status === 'active').sort((a, b) => a.name.localeCompare(b.name));
+  const finished = state.courses.filter((course) => course.status === 'finished').sort((a, b) => a.name.localeCompare(b.name));
+  const coursesById = new Map(state.courses.map((course) => [course.id, course]));
+  const giving = givingId ? active.find((course) => course.id === givingId) ?? null : null;
 
-  const onSubmit = async (values: LogValues) => {
-    if (!householdId || !currentUser) return;
-    const entry: Record<string, unknown> = {
-      date: new Date().toISOString(),
-      medication: values.medication,
-      dosage: values.dosage,
-      notes: values.notes || '',
-      loggedByUid: currentUser.uid,
-      loggedByName: loggerName(currentUser),
-    };
-    if (values.nextDueDate) entry.nextDueDate = values.nextDueDate;
-    try {
-      await addPetLog(householdId, petId, 'medication-logs', entry);
-      playFeedback('complete');
-      form.reset({ medication: '', dosage: '', nextDueDate: '', notes: '' });
-      setFormOpen(false);
-      toast({ title: 'Medication logged', description: `${values.medication}, ${values.dosage}.` });
-    } catch (submitError) {
-      toastError(submitError, "Couldn't log the medication");
+  // A reminder's link (`?dose=`): open Give dose for that course once the courses are
+  // loaded (state adjusted during render), then drop the param (effect below).
+  const doseCourse = doseCourseId ? state.courses.find((entry) => entry.id === doseCourseId && entry.status === 'active') ?? null : null;
+  if (doseCourseId !== seenDose && (!doseCourseId || !state.loading)) {
+    setSeenDose(doseCourseId);
+    if (doseCourse) setGivingId(doseCourse.id);
+  }
+  useEffect(() => {
+    if (!seenDose || notifiedDose.current === seenDose) {
+      if (!seenDose) notifiedDose.current = null;
+      return;
     }
+    notifiedDose.current = seenDose;
+    if (!doseCourse && !state.error) toast({ title: 'This course is no longer active', description: 'It may have been finished. Its history is below.' });
+    onDoseHandled?.();
+  }, [seenDose, doseCourse, state.error, onDoseHandled, toast]);
+
+  const mayDelete = (log: PetMedicationLog) => {
+    if (canDeleteAny) return true;
+    const loggedAt = toDate(log.loggedAt);
+    return Boolean(canGive && log.loggedByUid === currentUser?.uid && loggedAt && now.getTime() - loggedAt.getTime() < AUTHOR_WINDOW_MS && (log.courseId || log.oneOff));
   };
 
   const deleteLog = async (logId: string) => {
     if (!householdId) return;
     try {
-      await deletePetLog(householdId, petId, 'medication-logs', logId);
-      toast({ title: 'Log removed' });
+      await undoDose({ householdId, petId, logId });
+      toast({ title: DOSE_UNDO_COPY.title, description: DOSE_UNDO_COPY.description });
     } catch (deleteError) {
-      toastError(deleteError, "Couldn't remove the log");
+      const refusal = medicationRefusal(deleteError);
+      if (refusal) toast({ variant: 'destructive', title: "Couldn't remove the record", description: refusal });
+      else toastError(deleteError, "Couldn't remove the record");
     }
   };
 
@@ -104,94 +143,114 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
         setLogToDelete(null);
       }}
     />
+    <GiveDoseDialog petId={petId} petName={petName} course={giving} onOpenChange={(open) => { if (!open) setGivingId(null); }} />
+    <CourseFormDialog petId={petId} petName={petName} mode={formMode} courses={state.courses} onOpenChange={(open) => { if (!open) setFormMode(null); }} />
+    <OneOffDoseDialog petId={petId} petName={petName} open={oneOffOpen} courses={state.courses} onOpenChange={setOneOffOpen} />
+    <Dialog open={finishing !== null} onOpenChange={(open) => { if (!open) setFinishing(null); }}>
+      <DialogContent className="sm:max-w-[400px]">
+        <DialogHeader>
+          <DialogTitle className="break-words">Finish {finishing?.name}?</DialogTitle>
+          <DialogDescription>No more doses are due and its reminders stop. The doses already recorded stay in the history.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" onClick={() => setFinishing(null)}>Cancel</Button>
+          <Button type="button" variant="destructive" onClick={async () => { const course = finishing; setFinishing(null); if (course) await finish(course); }}>Finish course</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
         <div className="space-y-1.5">
-          <CardTitle className="font-headline">Medication Log</CardTitle>
-          <CardDescription>Doses given, and when the next one is due.</CardDescription>
+          <CardTitle className="font-headline">Medication</CardTitle>
+          <CardDescription>Courses follow the schedule you enter. Give a dose from here, the pet&apos;s card or a reminder.</CardDescription>
         </div>
-        {canAdd && !formOpen && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setFormOpen(true)}>
-            <PlusCircle className="mr-2 h-4 w-4" /> Log a dose
-          </Button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {canEdit && (
+            <Button type="button" variant="outline" size="sm" onClick={() => setFormMode({ kind: 'create' })}>
+              <PlusCircle className="mr-2 h-4 w-4" /> New course
+            </Button>
+          )}
+          {canOneOff && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => setOneOffOpen(true)}>One-off dose</Button>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="space-y-6">
-        {pending.error ? (
-          <p className="text-sm text-muted-foreground">{unavailableText('The next dose', pending.failure ?? 'retrying')}</p>
-        ) : null}
-        {dues.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">{dues.length === 1 ? 'Next dose:' : 'Next doses:'}</span>
-            {/* Every current medication here: this tab is the full view. */}
-            <MedicationChips dues={dues} max={dues.length} />
-          </div>
+        {state.error ? <p className="text-sm text-muted-foreground">{unavailableText('Medication courses', state.failure ?? 'retrying')}</p> : null}
+        {state.loading ? <Skeleton className="h-20 w-full" /> : null}
+
+        {state.legacy.length > 0 && (
+          <section className="space-y-3" aria-label="Medications to confirm">
+            {state.legacy.map((group) => (
+              <LegacyMedicationCard key={group.key} petId={petId} group={group} courses={state.courses} onConfirm={(entry) => setFormMode({ kind: 'legacy', group: entry })} />
+            ))}
+          </section>
         )}
 
-        {canAdd && formOpen && (
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 rounded-lg border p-4" aria-label="Log a medication dose">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="medication"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Medication</FormLabel>
-                      <FormControl>
-                        <Input placeholder="e.g. Flea & Tick" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="dosage"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Dosage</FormLabel>
-                      <FormControl>
-                        <Input placeholder="e.g. 1 tablet" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-              <FormField
-                control={form.control}
-                name="nextDueDate"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Next dose due (Optional)</FormLabel>
-                    <FormControl>
-                      <Input type="date" min={petDay(now, timeZone)} className="sm:max-w-[220px]" {...field} />
-                    </FormControl>
-                    <FormDescription>Shows a countdown on the pet&apos;s card.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="notes"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Notes (Optional)</FormLabel>
-                    <FormControl>
-                      <Textarea placeholder="e.g. Hidden in cheese." rows={2} {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit" size="sm" disabled={form.formState.isSubmitting}><PlusCircle className="mr-2 h-4 w-4" /> Save dose</Button>
-                <Button type="button" size="sm" variant="ghost" onClick={() => setFormOpen(false)}>Cancel</Button>
-              </div>
-            </form>
-          </Form>
+        {!state.loading && !state.error && (
+          <section className="space-y-3" aria-labelledby={`medication-courses-${petId}`}>
+            <h3 id={`medication-courses-${petId}`} className="font-semibold">Courses</h3>
+            {active.length === 0 && <p className="text-sm text-muted-foreground">No active course.{canEdit ? ' Add one with New course.' : ''}</p>}
+            {active.map((course) => {
+              const due = courseDue(course, now, timeZone ?? '');
+              const last = lastDoseLine(course, now, timeZone, currentUser?.uid);
+              return (
+                <div key={course.id} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3 text-sm" data-testid="medication-course" data-course-id={course.id}>
+                  <div className="min-w-0 space-y-1">
+                    <p className="break-words"><span className="font-semibold">{course.name}</span>{course.dosage ? ` · ${course.dosage}` : ''}</p>
+                    <p className="text-muted-foreground">
+                      {course.schedule ? scheduleSummary(course.schedule) : ''}
+                      {course.endDay ? `, until ${format(new Date(`${course.endDay}T12:00:00`), 'MMM d')}` : ''}
+                    </p>
+                    {due ? (
+                      <MedicationChip due={{ medication: course.name, dosage: course.dosage, due: new Date(due.occurrence.at), dueDay: due.occurrence.day, days: due.days, state: due.state, label: due.label, courseId: course.id }} />
+                    ) : (
+                      <p className="text-muted-foreground">No more doses scheduled.</p>
+                    )}
+                    {last && <p className="text-xs text-muted-foreground">{last}</p>}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {canGive && due && (
+                      <Button type="button" size="sm" onClick={() => setGivingId(course.id)} data-give-dose={course.id}>
+                        <Pill aria-hidden className="mr-2 h-4 w-4" /> Give dose
+                      </Button>
+                    )}
+                    {(canEdit || canFinish) && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button type="button" variant="ghost" size="icon" aria-label={`More actions for ${course.name}`}>
+                            <MoreVertical aria-hidden className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {canEdit && (
+                            <DropdownMenuItem onSelect={() => setFormMode({ kind: 'edit', course })}>
+                              <Pencil aria-hidden className="mr-2 h-4 w-4" /> Edit course
+                            </DropdownMenuItem>
+                          )}
+                          {canFinish && (
+                            <DropdownMenuItem onSelect={() => setFinishing(course)} className="text-destructive focus:bg-destructive/10 focus:text-destructive">
+                              <Square aria-hidden className="mr-2 h-4 w-4" /> Finish course
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {finished.length > 0 && (
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted-foreground">Finished courses ({finished.length})</summary>
+                <ul className="mt-2 space-y-1">
+                  {finished.map((course) => (
+                    <li key={course.id} className="break-words text-muted-foreground">{course.name}{course.dosage ? ` · ${course.dosage}` : ''}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </section>
         )}
 
         <section className="space-y-3" aria-labelledby={`medication-history-${petId}`}>
@@ -209,21 +268,30 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
             <p className="py-4 text-center text-sm text-muted-foreground">No medication logged yet.</p>
           )}
           {!loading && logs.map((log) => {
-            const nextDue = parseLocalDate(log.nextDueDate);
             // A blank or unreadable legacy date renders as unknown, never a crash (PE-8b).
             const given = readableLogDate(log.date);
+            const recorded = readableLogDate(log.loggedAt);
+            const course = log.courseId ? coursesById.get(log.courseId) : undefined;
+            const occurrence = log.occurrence ? { day: log.occurrence.slice(0, 10), time: log.occurrence.slice(11) || null } : null;
+            const nextDue = log.nextDueDate && !log.courseId ? new Date(`${log.nextDueDate}T12:00:00`) : null;
             return (
-              <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
+              <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm" data-testid="medication-entry">
                 <div className="min-w-0 space-y-0.5">
-                  <p className="break-words text-foreground"><span className="font-semibold">{log.medication}</span> · {log.dosage}</p>
+                  <p className="break-words text-foreground">
+                    <span className="font-semibold">{log.medication}</span> · {log.dosage}
+                    {course && legacyMedicationKey(course.name) !== legacyMedicationKey(log.medication) ? <span className="text-muted-foreground"> (now {course.name})</span> : null}
+                  </p>
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
-                    <span>{given ? format(given, 'PPP p') : 'Unknown time'}</span>
+                    <span>{given ? `Given ${format(given, 'PPP p')}` : 'Unknown time'}</span>
                     <LoggedBy entry={log} />
                   </p>
-                  {nextDue && <p className="text-muted-foreground">Next dose {format(nextDue, 'PPP')}</p>}
+                  {occurrence && <p className="text-muted-foreground">For the {occurrenceLabel(occurrence, now, timeZone)} dose{log.repeat === 'confirmed' ? ' (recorded again)' : ''}</p>}
+                  {log.oneOff && <p className="text-muted-foreground">One-off dose</p>}
+                  {log.backdated && recorded && <p className="text-xs text-muted-foreground">Recorded {format(recorded, 'PPP p')}</p>}
+                  {nextDue && !Number.isNaN(nextDue.getTime()) && <p className="text-muted-foreground">Next dose {format(nextDue, 'PPP')}</p>}
                   {log.notes && <p className="mt-1 text-muted-foreground">{log.notes}</p>}
                 </div>
-                {canDelete && (
+                {mayDelete(log) && (
                   <Button variant="ghost" size="icon" aria-label={`Delete ${log.medication} medication log`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -235,5 +303,102 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
       </CardContent>
     </Card>
     </>
+  );
+}
+
+/** A dose outside any course: no schedule and no reminders (history only). One opening is one press. */
+function OneOffDoseDialog({ petId, petName, open, courses, onOpenChange }: { petId: string; petName: string; open: boolean; courses: CourseView[]; onOpenChange: (open: boolean) => void }) {
+  const { currentUser } = useAuth();
+  const { toast, toastError } = useToast();
+  const now = useNow();
+  const [opId, setOpId] = useState('');
+  const [wasOpen, setWasOpen] = useState(false);
+  const [medication, setMedication] = useState('');
+  const [dosage, setDosage] = useState('');
+  const [givenAt, setGivenAt] = useState('');
+  const [notes, setNotes] = useState('');
+  const [errors, setErrors] = useState<{ medication?: string; dosage?: string; givenAt?: string }>({});
+  const [saving, setSaving] = useState(false);
+  const ids = { medication: useId(), dosage: useId(), givenAt: useId(), notes: useId(), names: useId() };
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setOpId(newDoseOpId());
+      setMedication('');
+      setDosage('');
+      setGivenAt('');
+      setNotes('');
+      setErrors({});
+    }
+  }
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const householdId = currentUser?.householdId;
+    if (!householdId || !currentUser || saving) return;
+    const next: typeof errors = {};
+    if (!medication.trim()) next.medication = 'Enter the medication name.';
+    if (!dosage.trim()) next.dosage = 'Enter the dosage.';
+    const chosen = givenAt ? new Date(givenAt) : null;
+    if (chosen && (Number.isNaN(chosen.getTime()) || chosen.getTime() > Date.now() + 60_000)) next.givenAt = 'Pick a time that has already passed.';
+    else if (chosen && chosen.getTime() < Date.now() - DOSE_BACKDATE_MAX_MS) next.givenAt = 'Pick a time within the last 7 days.';
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
+    if (isBrowserOffline()) {
+      setErrors({ givenAt: 'Connect to the internet to record a dose.' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await logOneOffDose({ householdId, petId, opId, medication, dosage, notes, givenAt: chosen, user: { uid: currentUser.uid, name: loggerName(currentUser) } });
+      toast({ title: 'Dose recorded', description: `${medication.trim()}, ${dosage.trim()} for ${petName}.` });
+      onOpenChange(false);
+    } catch (saveError) {
+      toastError(saveError, "Couldn't record the dose. Try again: it won't be recorded twice.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>
+      <DialogContent className="sm:max-w-[420px]">
+        <form onSubmit={save} noValidate>
+          <DialogHeader>
+            <DialogTitle>One-off dose</DialogTitle>
+            <DialogDescription>A single dose outside any course: it is kept in the history and sets no reminder.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-4 text-sm">
+            <div className="grid gap-1">
+              <Label htmlFor={ids.medication}>Medication</Label>
+              <Input list={ids.names} maxLength={80} value={medication} onChange={(event) => setMedication(event.target.value)} {...fieldErrorProps(ids.medication, errors.medication)} />
+              <datalist id={ids.names}>{courses.map((course) => <option key={course.id} value={course.name} />)}</datalist>
+              <FieldError id={ids.medication}>{errors.medication}</FieldError>
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor={ids.dosage}>Dosage</Label>
+              <Input maxLength={80} value={dosage} onChange={(event) => setDosage(event.target.value)} {...fieldErrorProps(ids.dosage, errors.dosage)} />
+              <FieldError id={ids.dosage}>{errors.dosage}</FieldError>
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor={ids.givenAt}>Given at (leave empty for now)</Label>
+              <Input type="datetime-local" max={format(now, INPUT_FORMAT)} value={givenAt} onChange={(event) => setGivenAt(event.target.value)} {...fieldErrorProps(ids.givenAt, errors.givenAt)} />
+              <FieldError id={ids.givenAt}>{errors.givenAt}</FieldError>
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor={ids.notes}>Notes (optional)</Label>
+              <Textarea id={ids.notes} rows={2} maxLength={500} value={notes} onChange={(event) => setNotes(event.target.value)} />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={saving}>
+              {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+              Record dose
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

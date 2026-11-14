@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, use } from 'react';
+import { useCallback, useEffect, useRef, useState, use } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { doc, onSnapshot, type DocumentSnapshot } from 'firebase/firestore';
@@ -62,6 +62,17 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
     setSeenTabParam(requestedTab);
     if (requestedTab !== null) setTab(petTabFromParam(requestedTab));
   }
+  // A medication reminder's link (`?tab=medication&dose=<courseId>`) opens Give
+  // dose for that course (PE-24i); the param is removed once handled. Arriving
+  // on the Medication tab from a link brings the tabs on screen on a phone (PE-13d).
+  const doseParam = searchParams.get('dose');
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const clearDoseParam = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('dose')) return;
+    params.delete('dose');
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [pathname, router]);
   const chooseTab = (next: PetTab) => {
     setTab(next);
     const params = new URLSearchParams(searchParams.toString());
@@ -103,6 +114,12 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   }, [householdId, petId, docKey]);
 
   const ready = loaded.key === docKey;
+  const petShown = ready && Boolean(loaded.pet);
+  useEffect(() => {
+    if (!petShown || (requestedTab !== 'medication' && !doseParam)) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'reduce';
+    tabsRef.current?.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+  }, [petShown, requestedTab, doseParam]);
   const loading = authLoading || (Boolean(docKey) && !ready);
   const pet = ready ? loaded.value : null;
   // With nothing loaded the failure is the page's state; with a pet on screen it is a notice beside it.
@@ -301,7 +318,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
           </Card>
         </div>
 
-        <div className="md:col-span-2">
+        <div className="scroll-mt-20 md:col-span-2" ref={tabsRef}>
           <Tabs value={tab} onValueChange={(value) => { if ((PET_TABS as readonly string[]).includes(value)) chooseTab(value as PetTab); }}>
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="feeding"><Utensils className="mr-2" /> Feeding</TabsTrigger>
@@ -312,7 +329,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
               <FeedingLogClient petId={pet.id} petName={pet.name} plan={plan} pet={pet} />
             </TabsContent>
             <TabsContent value="medication">
-              <MedicationLogClient petId={pet.id} />
+              <MedicationLogClient petId={pet.id} petName={pet.name} doseCourseId={doseParam} onDoseHandled={clearDoseParam} />
             </TabsContent>
             <TabsContent value="care">
               <CareLogClient petId={pet.id} />

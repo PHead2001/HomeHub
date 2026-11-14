@@ -397,8 +397,8 @@ describe('pets components use tokens only', () => {
   it('every live-log consumer handles load errors separately from empty results', () => {
     // A failed subscription returns { logs: [], error }; rendering it as an empty
     // history would read as "not fed" or "nothing due".
-    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/pet-care-summary.tsx'];
-    const hookCall = /const\s+(\w+|\{[^}]*\})\s*=\s*(?:usePetLogs|useMedicationCountdownLogs)\W/g;
+    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/pet-care-summary.tsx', 'src/components/pets/medication-api.ts'];
+    const hookCall = /const\s+(\w+|\{[^}]*\})\s*=\s*(?:usePetLogs|useMedicationCountdownLogs|useMedicationCourses|useMedicationState)\W/g;
     for (const file of files) {
       const text = readFileSync(resolve(process.cwd(), file), 'utf8');
       const calls = [...text.matchAll(hookCall)];
@@ -412,7 +412,7 @@ describe('pets components use tokens only', () => {
     }
     const offenders = readdirSync(resolve(process.cwd(), 'src/components'), { recursive: true, encoding: 'utf8' })
       .filter((file) => /\.tsx?$/.test(file))
-      .filter((file) => /(?:usePetLogs|useMedicationCountdownLogs)\W/.test(readFileSync(resolve(process.cwd(), 'src/components', file), 'utf8')))
+      .filter((file) => /(?:usePetLogs|useMedicationCountdownLogs|useMedicationCourses|useMedicationState)\(/.test(readFileSync(resolve(process.cwd(), 'src/components', file), 'utf8')))
       .map((file) => `src/components/${file.split(String.fromCharCode(92)).join('/')}`)
       .filter((file) => !files.includes(file) && !file.endsWith('pet-log-api.ts'));
     assert.deepEqual(offenders, [], 'new consumers must be added to this check');
