@@ -32,7 +32,7 @@ import {
   type SendResult,
 } from '@/lib/devices/offline-queue';
 import {
-  journalStep,
+  journalTransition,
   recordAttempt,
   restoreJournal,
   stepJournal,
@@ -123,11 +123,18 @@ export function useDeviceActions(deps: {
     mirror.current.set(entry.opId, entry);
     await recordAttempt(storesOf().journal, entry);
   }, [storesOf]);
+  // The one place an action is reported taken back: a step that moves its entry into `undone`
+  // (local removal, a live or queued Undo, or the original found already undone at sync) runs
+  // the action's `onReverted`, once. The memory copy decides when it exists (storage may fail).
   const step = useCallback(async (opId: string, event: JournalEvent) => {
     const key = opId.toLowerCase();
     const known = mirror.current.get(key);
-    if (known) mirror.current.set(key, journalStep(known, event));
-    const stored = await stepJournal(storesOf().journal, key, event);
+    if (known) {
+      const { entry: next, reverted } = journalTransition(known, event);
+      mirror.current.set(key, next);
+      if (reverted) reverts.current.revert(key);
+    }
+    const stored = await stepJournal(storesOf().journal, key, event, known ? undefined : (id) => reverts.current.revert(id));
     if (!known && stored) mirror.current.set(key, stored);
   }, [storesOf]);
   const currentEntry = useCallback(async (entry: UndoJournalEntry): Promise<UndoJournalEntry> => {
@@ -239,7 +246,7 @@ export function useDeviceActions(deps: {
     switch (result.kind) {
       case 'undone':
       case 'undone-locally':
-        reverts.current.revert(entry.opId);
+        // The journal step into `undone` has already run the action's `onReverted`.
         toast({ description: 'Undone.' });
         return;
       case 'queued':

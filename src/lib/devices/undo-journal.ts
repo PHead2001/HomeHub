@@ -1,7 +1,8 @@
 // The tablet's Undo journal (docs/modules/devices/README.md, "Offline queue and Undo
 // journal"; design 10.3, WT-20): one explicit state machine per action, stored in
 // IndexedDB `homehub-device`, store `undo`, keyed by opId. Pure: the transitions
-// (`journalStep`), what each state offers (`undoOffer`), what an Undo tap does
+// (`journalStep`, and `journalTransition`, which also says when a step took the action
+// back), what each state offers (`undoOffer`), what an Undo tap does
 // (`undoRoute`) and how an entry comes back after a reload (`restoreJournalEntry`). The
 // tablet's runtime only stores entries and runs the steps. The server's window is the
 // authority; this decides whether the button is shown and what tapping it does.
@@ -245,12 +246,34 @@ export async function recordAttempt(store: RecordStore<UndoJournalEntry>, entry:
   await store.put(entry);
 }
 
-/** Applies one event to a stored entry (read, step, write). The new entry, or null when none is stored. */
-export async function stepJournal(store: RecordStore<UndoJournalEntry>, opId: string, event: JournalEvent): Promise<UndoJournalEntry | null> {
+/**
+ * One step, and whether it took the action back ("reverted"): the entry moved into `undone`.
+ * That covers every way an action is taken back: a never-sent entry removed locally, a live
+ * Undo answered, a queued Undo answered at sync (undone, already, not applied), and the
+ * queued original answered "already undone" at sync. A final state never moves, so this is
+ * true at most once per entry; an entry that ends applied (or refused, or expired) never
+ * reports it.
+ */
+export function journalTransition(entry: UndoJournalEntry, event: JournalEvent): { entry: UndoJournalEntry; reverted: boolean } {
+  const next = journalStep(entry, event);
+  return { entry: next, reverted: entry.state !== 'undone' && next.state === 'undone' };
+}
+
+/**
+ * Applies one event to a stored entry (read, step, write). The new entry, or null when none
+ * is stored. `onReverted` runs once, after the write, when this step took the action back.
+ */
+export async function stepJournal(
+  store: RecordStore<UndoJournalEntry>,
+  opId: string,
+  event: JournalEvent,
+  onReverted?: (opId: string) => void,
+): Promise<UndoJournalEntry | null> {
   const current = await store.get(opId.toLowerCase());
   if (!current) return null;
-  const next = journalStep(current, event);
+  const { entry: next, reverted } = journalTransition(current, event);
   if (next !== current) await store.put(next);
+  if (reverted) onReverted?.(next.opId);
   return next;
 }
 

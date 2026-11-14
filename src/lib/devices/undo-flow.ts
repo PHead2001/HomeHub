@@ -240,9 +240,10 @@ export function undoReoffer(current: UndoJournalEntry, now: number): { remaining
 }
 
 /**
- * Callbacks to run when an action is taken back: its Undo succeeded (on the server or by
- * removing a never-sent queue entry), or its queued replay was dropped. In memory only
- * (the dashboard's local "Done" state lives as long as the page).
+ * Callbacks to run when an action is taken back: its journal entry moved into `undone`
+ * (`journalTransition` reports it once, whichever way it got there), or its queued replay
+ * was dropped. In memory only (the dashboard's local "Done" state lives as long as the
+ * page); a callback runs at most once.
  */
 export function createRevertRegistry() {
   const callbacks = new Map<string, () => void>();

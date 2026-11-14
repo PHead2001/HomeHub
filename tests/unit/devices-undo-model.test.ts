@@ -13,6 +13,7 @@ import {
 import { performAction, runUndo, type PerformResult, type UndoAnswer, type UndoFlowResult } from '../../src/lib/devices/undo-flow';
 import {
   journalStep,
+  journalTransition,
   recordAttempt,
   restoreJournal,
   stepJournal,
@@ -34,6 +35,9 @@ import {
 //    is offered, or an Undo is on its way.
 // 2. Nothing is reported as done (or undone) when it wasn't.
 // 3. Nothing is removed locally after it may have been sent.
+// 4. Taken back once: an action that ends undone reports "reverted" exactly once (whichever
+//    way: local removal, a live Undo, a queued Undo at sync, or the original found already
+//    undone at sync); one that ends applied, or any state other than undone, never does.
 
 const SESSION = { householdId: 'H', deviceId: 'D'.repeat(20), generation: 1 };
 const T0 = Date.parse('2026-11-14T15:00:00Z');
@@ -64,6 +68,8 @@ async function runSequence(seed: number, length: number) {
   const server = { applied: false, appliedAt: 0, undone: false, tombstone: false, received: false };
   const log: string[] = [];
   let performed = false;
+  let reverted = 0;
+  let endedUndone = false;
 
   const actionCall = (mode: Mode): { ok: true } | { ok: false; code: 'forbidden' | 'already_undone' } | 'throw' | { noop: true } => {
     if (mode === 'unknown-lost') return 'throw';
@@ -86,7 +92,7 @@ async function runSequence(seed: number, length: number) {
     server.undone = true;
     return { ok: true, data: { status: 'undone' } };
   };
-  const step = (id: string, event: JournalEvent) => stepJournal(journal, id, event).then(() => undefined);
+  const step = (id: string, event: JournalEvent) => stepJournal(journal, id, event, () => { reverted += 1; }).then(() => undefined);
   const current = async () => (await journal.get(opId)) ?? null;
   const removeWatched = async (id: string) => {
     const removed = await removeIfNeverSent(queue, id, noLock);
@@ -110,6 +116,10 @@ async function runSequence(seed: number, length: number) {
     if (lastPerform?.kind === 'applied') assert.ok(server.applied, `${trail}: reported applied`);
     if (lastUndo?.kind === 'undone') assert.ok(server.undone || server.tombstone || !server.applied, `${trail}: reported undone`);
     if (lastUndo?.kind === 'undone-locally') assert.equal(server.received, false, `${trail}: undone locally after sending`);
+    // 4. Taken back once (an undone entry may later be pruned: it still counts).
+    if (entry?.state === 'undone') endedUndone = true;
+    assert.equal(reverted, endedUndone ? 1 : 0, `${trail}: reverted ${reverted} time(s) in state ${entry?.state ?? 'none'}`);
+    if (entry?.state === 'applied') assert.equal(reverted, 0, `${trail}: reverted while applied`);
   };
 
   const sync = async () => {
@@ -298,6 +308,32 @@ describe('the journal state machine, case by case', () => {
     await store.put(journalStep(applied, { type: 'undo-sent', at: T0 + 1_000, queued: false }));
     const [again] = await restoreJournal(store, T0 + 2_000, SESSION);
     assert.equal(again.entry.state, 'applied');
+  });
+
+  it('every way into undone reports reverted once; applied, refused and expired never do', async () => {
+    const applied = journalStep(fresh(), { type: 'answered', at: T0, undoable: true });
+    const pending = journalStep(applied, { type: 'undo-sent', at: T0 + 1, queued: false });
+    const queuedSent = journalStep(fresh(true), { type: 'sync-sending', at: T0 + 1 });
+    const into = (entry: UndoJournalEntry) => journalTransition(entry, { type: 'undone', at: T0 + 2 });
+    // A never-sent entry removed locally; a live or queued Undo answered; the queued original answered already undone.
+    for (const before of [fresh(true), pending, journalStep(applied, { type: 'undo-sent', at: T0 + 1, queued: true }), queuedSent]) {
+      const step = into(before);
+      assert.equal(step.entry.state, 'undone');
+      assert.equal(step.reverted, true, `from ${before.state}`);
+      assert.equal(into(step.entry).reverted, false, 'a duplicate answer reports nothing more');
+    }
+    assert.equal(journalTransition(fresh(), { type: 'answered', at: T0, undoable: true }).reverted, false);
+    assert.equal(journalTransition(fresh(), { type: 'refused', at: T0 }).reverted, false);
+    assert.equal(journalTransition(pending, undoRefusalEvent('undo_expired', T0 + 2)).reverted, false);
+    assert.equal(journalTransition(pending, undoRefusalEvent('unavailable', T0 + 2)).reverted, false);
+    // Stored: the callback runs once, after the write, with the original's opId.
+    const store = memoryStore<UndoJournalEntry>();
+    await store.put(pending);
+    const seen: string[] = [];
+    await stepJournal(store, 'OP', { type: 'undone', at: T0 + 2 }, (id) => seen.push(id));
+    await stepJournal(store, 'op', { type: 'undone', at: T0 + 3 }, (id) => seen.push(id));
+    assert.deepEqual(seen, ['op']);
+    assert.equal((await store.get('op'))?.state, 'undone');
   });
 
   it('an Undo that fails for a passing reason goes back; a final refusal expires it', () => {

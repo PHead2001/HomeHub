@@ -264,3 +264,20 @@ describe('a cancelled Undo is offered again for the time left (round 3)', () => 
     assert.match(runtime, /const again = undoReoffer\(now, Date\.now\(\)\);\s*if \(again\) offerUndoRef\.current\?\.\(now, actor, who, message, again\.remainingMs\);/);
   });
 });
+
+describe('a taken-back action is reported from one place (round 4)', () => {
+  it('guard: the runtime runs onReverted from the journal step into undone, and nowhere else for an Undo', () => {
+    const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
+    // Plain string search, no regular expressions.
+    const stepAt = runtime.indexOf('const step = useCallback(');
+    assert.ok(stepAt >= 0, 'the runtime has one journal step');
+    const stepBody = runtime.slice(stepAt, runtime.indexOf('}, [storesOf]);', stepAt));
+    assert.ok(stepBody.includes('journalTransition(known, event)'), 'the memory copy steps through journalTransition');
+    assert.ok(stepBody.includes('if (reverted) reverts.current.revert(key);'), 'a step into undone reverts the action');
+    assert.ok(stepBody.includes('known ? undefined : (id) => reverts.current.revert(id)'), 'the stored entry reports it when there is no memory copy');
+    // Outside the step, only a dropped queued replay reverts an action (it never reaches undone).
+    const elsewhere = runtime.slice(0, stepAt) + runtime.slice(stepAt + stepBody.length);
+    assert.equal(elsewhere.split('reverts.current.revert(').length - 1, 1);
+    assert.ok(elsewhere.includes('for (const { entry } of report.dropped) reverts.current.revert('));
+  });
+});
