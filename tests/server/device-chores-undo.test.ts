@@ -267,25 +267,25 @@ describe('chores.take', () => {
   test('takes an unassigned chore; the Undo puts the previous assignment back exactly', async () => {
     await seedChore('t-basic');
     const op = opId();
-    assert.equal((await takeChoreFromTablet({ ...request(tablet, child.uid, op), choreId: 't-basic' }, { now: at })).status, 'taken');
+    assert.equal((await takeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 't-basic' }, { now: at })).status, 'taken');
     const stored = await read('t-basic');
-    assert.equal(stored.assignedToUid, child.uid);
-    assert.equal(stored.assignedToDisplayName, 'Cleo');
+    assert.equal(stored.assignedToUid, member.uid);
+    assert.equal(stored.assignedToDisplayName, 'Max');
     // R4: a take's attribution lives in the op ledger, not on the chore.
     assert.equal(stored.deviceAttribution, undefined);
-    assert.equal((await house(H).collection('devices').doc(tablet.deviceId).collection('ops').doc(op).get()).get('actorUid'), child.uid);
-    assert.equal((await undoTakeChoreFromTablet(request(tablet, child.uid, op), { now: later(2000) })).status, 'untaken');
+    assert.equal((await house(H).collection('devices').doc(tablet.deviceId).collection('ops').doc(op).get()).get('actorUid'), member.uid);
+    assert.equal((await undoTakeChoreFromTablet(request(tablet, member.uid, op), { now: later(2000) })).status, 'untaken');
     const back = await read('t-basic');
     assert.equal(back.assignedToUid, '');
     assert.equal(back.assignedToDisplayName, 'Unassigned');
   });
 
   test('R3: taking a chore that is already yours is a no-op whose Undo answers already', async () => {
-    await seedChore('t-noop', { assignedToUid: child.uid, assignedToDisplayName: 'Cleo' });
+    await seedChore('t-noop', { assignedToUid: member.uid, assignedToDisplayName: 'Max' });
     const op = opId();
-    assert.equal((await takeChoreFromTablet({ ...request(tablet, child.uid, op), choreId: 't-noop' }, { now: at })).status, 'already_yours');
-    assert.equal((await undoTakeChoreFromTablet(request(tablet, child.uid, op), { now: later(1000) })).status, 'already');
-    assert.equal((await read('t-noop')).assignedToUid, child.uid);
+    assert.equal((await takeChoreFromTablet({ ...request(tablet, member.uid, op), choreId: 't-noop' }, { now: at })).status, 'already_yours');
+    assert.equal((await undoTakeChoreFromTablet(request(tablet, member.uid, op), { now: later(1000) })).status, 'already');
+    assert.equal((await read('t-noop')).assignedToUid, member.uid);
   });
 
   test('someone else\'s chore is a reassignment, which tablets do not offer; a member without chores.assign cannot take', async () => {

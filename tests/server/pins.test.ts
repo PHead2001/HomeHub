@@ -193,7 +193,9 @@ describe('storage and pepper', () => {
     assert.equal(doc?.pepperId, TEST_PEPPER_ID);
     assert.equal(Buffer.from(doc!.salt, 'base64').length, 16);
     assert.equal(Buffer.from(doc!.hash, 'base64').length, 32);
-    assert.ok(!JSON.stringify(doc).includes('4826'));
+    // The PIN itself is stored nowhere (random hash, salt and id may contain any digits).
+    assert.ok(Object.values(doc!).every(value => value !== '4826'));
+    assert.notEqual(Buffer.from(doc!.hash, 'base64').toString('utf8'), '4826');
     const current = process.env.HOMEHUB_PIN_PEPPER_CURRENT;
     delete process.env.HOMEHUB_PIN_PEPPER_CURRENT;
     try {

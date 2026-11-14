@@ -94,10 +94,11 @@ test('Take: an unassigned chore becomes the chosen person\'s', async ({}, testIn
   await seedChore('tablet-take');
   const page = tabletPage();
   await openChores(page);
+  // "Done" forgets the remembered kid: taking needs chores.assign, which the Child role lacks.
+  await page.getByTestId('tablet-done').click().catch(() => undefined);
   await page.getByTestId('tablet-chore-take-tablet-take').click();
-  // The face memory from the previous action may still hold the kid; either way the take is credited to someone.
-  if (await page.getByTestId('who-is-here').isVisible().catch(() => false)) await pick(page, KID.uid);
-  await expect.poll(async () => (await chore('tablet-take').get()).get('assignedToUid'), { timeout: 15_000 }).toBe(KID.uid);
+  await pick(page, OWNER_UID);
+  await expect.poll(async () => (await chore('tablet-take').get()).get('assignedToUid'), { timeout: 15_000 }).toBe(OWNER_UID);
 });
 
 test('with the points PIN set to Everyone, a completion asks for the person\'s PIN', async ({}, testInfo) => {
