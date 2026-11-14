@@ -42,6 +42,12 @@ export const forgetTabletMarker = (storage: KeyStorage | null = browserStorage()
 };
 
 export type FormerTabletDeps = {
+  /**
+   * Whether a person is signed in on this browser right now. Recovery only ever runs while
+   * nobody is: it is checked before starting and again before every step that clears data
+   * or reloads, so a sign-in during recovery stops it (nothing of theirs is cleared).
+   */
+  signedIn: () => boolean;
   deleteDeviceDatabase: () => unknown | Promise<unknown>;
   forgetHousehold: () => unknown | Promise<unknown>;
   clearFirestore: () => unknown | Promise<unknown>;
@@ -53,24 +59,47 @@ export type FormerTabletDeps = {
 let recovering = false;
 
 /**
- * Finishes the clearing a tablet could not do itself. Does nothing unless the marker is
- * present. Every step is best effort and time-boxed; the marker is removed before the
- * navigation, so this runs once. Returns whether it ran.
+ * - `ran`: cleared, the marker removed, the setup screen reloaded.
+ * - `not-needed`: no marker (or a recovery is already running in this page).
+ * - `signed-in`: a person is (or became) signed in: stopped before clearing anything more;
+ *   the marker is kept so the next signed-out start finishes it.
+ * - `marker-stuck`: the marker cannot be removed (storage refuses writes): nothing is cleared
+ *   and nothing reloads, so a page can never reload in a loop; the next start tries again.
  */
-export async function recoverFormerTablet(deps: FormerTabletDeps, storage: KeyStorage | null = browserStorage(), stepTimeoutMs = CLEAR_STEP_TIMEOUT_MS): Promise<boolean> {
-  if (recovering || !hasTabletMarker(storage)) return false;
+export type RecoveryResult = 'ran' | 'not-needed' | 'signed-in' | 'marker-stuck';
+
+/**
+ * Finishes the clearing a tablet could not do itself, only while nobody is signed in.
+ * The marker is removed first (and must really be gone, or nothing happens); every step is
+ * best effort and time-boxed and is preceded by a sign-in check; a sign-in meanwhile puts the
+ * marker back and stops. The reload happens only with the marker gone, so it runs once.
+ */
+export async function recoverFormerTablet(deps: FormerTabletDeps, storage: KeyStorage | null = browserStorage(), stepTimeoutMs = CLEAR_STEP_TIMEOUT_MS): Promise<RecoveryResult> {
+  if (recovering || !hasTabletMarker(storage)) return 'not-needed';
+  if (deps.signedIn()) return 'signed-in';
   recovering = true;
   try {
+    // A marker that cannot be removed would make every load recover and reload again.
+    forgetTabletMarker(storage);
+    if (hasTabletMarker(storage)) return 'marker-stuck';
+    const stopForSignIn = () => {
+      if (!deps.signedIn()) return false;
+      // Owed still: the next signed-out start finishes it.
+      markTabletBrowser(storage);
+      return true;
+    };
     for (const step of [deps.deleteDeviceDatabase, deps.forgetHousehold, deps.clearFirestore, deps.clearPush]) {
+      if (stopForSignIn()) return 'signed-in';
       try {
         await withTimeout(Promise.resolve().then(step), stepTimeoutMs, 'former tablet clearing');
       } catch {
         // Best effort: the next step still runs.
       }
     }
-    forgetTabletMarker(storage);
+    if (stopForSignIn()) return 'signed-in';
+    if (hasTabletMarker(storage)) return 'marker-stuck';
     deps.navigate();
-    return true;
+    return 'ran';
   } finally {
     recovering = false;
   }
@@ -98,9 +127,11 @@ export const shouldStripSetupFragment = (markerPresent: boolean): boolean => !ma
  * captured now, before any asynchronous step: `setupCode` when the caller already read it,
  * else the current fragment's.
  */
-export function recoverFormerTabletHere(setupCode?: string | null): Promise<boolean> {
+export async function recoverFormerTabletHere(setupCode?: string | null): Promise<RecoveryResult> {
   const code = setupCode ?? (typeof window === 'undefined' ? null : codeFromSetupFragment(window.location.hash));
+  const { auth } = await import('@/lib/firebase-app');
   return recoverFormerTablet({
+    signedIn: () => auth.currentUser !== null,
     deleteDeviceDatabase: async () => (await import('./device-store')).deleteDeviceDatabase(),
     forgetHousehold: async () => (await import('@/lib/auth/household-scope')).forgetHouseholdOnDevice(null),
     clearFirestore: async () => (await import('@/lib/firebase')).clearLocalFirestoreCache(),
