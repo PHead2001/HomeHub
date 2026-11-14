@@ -22,12 +22,18 @@ export const MEDICATION_ACTION_PERMISSIONS = {
   'pets.dose.undo': ['pets.addLogs', 'pets.deleteLogs'],
   /** Record a dose outside any course (no schedule, no reminders). */
   'pets.dose.oneOff': ['pets.addLogs'],
-  /** Finish a course (and its Undo), or finish a legacy medication without a schedule. */
+  /** Finish a course (and its Undo or a later resume), or finish a legacy medication without a schedule. */
   'pets.course.finish': ['pets.addLogs'],
-  /** Create a course, edit its name, dosage or schedule, or merge a legacy name into it. */
-  'pets.course.edit': ['pets.editProfiles'],
-  /** Confirm a schedule for a legacy medication (D-P8 confirmation card). */
-  'pets.medication.confirmLegacy': ['pets.editProfiles'],
+  /**
+   * Create a course, edit its name, dosage or schedule, or merge a legacy name
+   * into it. `pets.addLogs`, not `pets.editProfiles` (lead decision 2026-11-14):
+   * in 2.1 anyone who logged a dose could enter its next due date, which is a
+   * schedule, so this must not regress. On a registered tablet the device policy
+   * still makes these PIN-level (F4).
+   */
+  'pets.course.edit': ['pets.addLogs'],
+  /** Confirm a schedule for a legacy medication (D-P8 confirmation card); same reasoning. */
+  'pets.medication.confirmLegacy': ['pets.addLogs'],
 } as const satisfies Record<string, readonly HouseholdPermission[]>;
 
 export type MedicationAction = keyof typeof MEDICATION_ACTION_PERMISSIONS;

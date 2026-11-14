@@ -94,7 +94,7 @@ export function LegacyMedicationCard({
         {canConfirm ? (
           <Button type="button" size="sm" onClick={() => onConfirm(group)} disabled={busy}>Confirm schedule</Button>
         ) : (
-          <p className="text-xs text-muted-foreground">An owner or admin can confirm its schedule.</p>
+          <p className="text-xs text-muted-foreground">Someone who can log pet care can confirm its schedule.</p>
         )}
         {canFinish && (
           <Button type="button" size="sm" variant="outline" onClick={() => setConfirmFinish(true)} disabled={busy}>No more doses</Button>

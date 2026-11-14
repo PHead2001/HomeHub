@@ -208,6 +208,8 @@ export type DoseSnapshot = {
   lastDoseSurvives: boolean;
   /** This press's own log (`doseLogId(opId)`), when it already exists. */
   existing: { loggedByUid: string | null; courseId: string | null } | null;
+  /** No connection: the dose is queued on this device (`repeat: 'offline'`, device clock, pointer untouched). */
+  offline?: boolean;
 };
 
 export type DoseIntent = {
@@ -238,7 +240,8 @@ export type DosePlan =
       occurrence: Occurrence;
       live: boolean;
       givenAt: Date;
-      repeat: 'none' | 'confirmed';
+      /** `offline`: queued on this device without a check against other sessions. */
+      repeat: 'none' | 'confirmed' | 'offline';
       confirmOf: string | null;
       /** The new dose becomes the course's latest dose (`prevDose` = the replaced one, when it survives). */
       becomesLatest: boolean;
@@ -269,23 +272,33 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
     if (intent.givenAt.getTime() < now.getTime() - DOSE_BACKDATE_MAX_MS) return { kind: 'refused', reason: 'too-old' };
   }
   const last = snapshot.lastDoseSurvives ? course.lastDose : null;
-  const given = Boolean(last) && occurrence.at <= last!.occurrenceAt;
-  const moved = !given && course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
-  let repeat: 'none' | 'confirmed' = 'none';
+  // A dose recorded offline (not in `lastDose`) covers its occurrence too.
+  const offlineDose = course.offlineDose ?? null;
+  const givenStored = Boolean(last) && occurrence.at <= last!.occurrenceAt;
+  const givenOffline = !givenStored && Boolean(offlineDose) && occurrence.at <= offlineDose!.occurrenceAt;
+  const named = givenStored ? last : givenOffline ? offlineDose : null;
+  const moved = !named && course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
+  let repeat: 'none' | 'confirmed' | 'offline' = 'none';
   let confirmOf: string | null = null;
-  if (given || moved) {
+  if (named || moved) {
     const confirm = intent.confirm;
-    if (!confirm || confirm.lastLogId !== (last?.logId ?? null)) {
-      return { kind: 'needsConfirm', check: { last, occurrence, reason: given ? 'given' : 'moved' }, staleConfirm: Boolean(confirm) };
+    const shown = named ?? last;
+    if (!confirm || confirm.lastLogId !== (shown?.logId ?? null)) {
+      return { kind: 'needsConfirm', check: { last: shown, occurrence, reason: named ? 'given' : 'moved' }, staleConfirm: Boolean(confirm) };
     }
-    if (given) {
+    if (named) {
       repeat = 'confirmed';
-      confirmOf = last!.logId;
+      confirmOf = named.logId;
     }
   }
-  const becomesLatest = !last || occurrence.at >= last.occurrenceAt;
-  const after = Math.max(becomesLatest ? occurrence.at : last!.occurrenceAt, course.coveredUntil ?? -Infinity);
+  const after = Math.max(occurrence.at, coveredThrough({ ...course, lastDose: last }) ?? -Infinity);
   const nextAfter = occurrencesAfter(courseWindow(course), after, zone, 1)[0] ?? null;
+  if (snapshot.offline) {
+    // Queued on this device: the device clock, marked offline, and the course's
+    // pointer is left alone (readers combine it with offline doses).
+    return { kind: 'write', occurrence, live: false, givenAt: intent.givenAt ?? now, repeat: 'offline', confirmOf: null, becomesLatest: false, nextAfter };
+  }
+  const becomesLatest = !last || occurrence.at >= last.occurrenceAt;
   // A chosen time within a minute of now is a live dose (server time).
   const live = !intent.givenAt || Math.abs(intent.givenAt.getTime() - now.getTime()) <= DOSE_FUTURE_SLACK_MS;
   return { kind: 'write', occurrence, live, givenAt: live ? now : intent.givenAt!, repeat, confirmOf, becomesLatest, nextAfter };

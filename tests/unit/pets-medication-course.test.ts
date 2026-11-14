@@ -24,8 +24,10 @@ import {
   pendingLegacyGroups,
   planDose,
   planUndoDose,
+  nextDueOccurrence,
   readCourse,
   schedulePreview,
+  withOfflineDoses,
   validateCourseForm,
   DOSE_UNDO_COPY,
   type CourseView,
@@ -358,20 +360,81 @@ describe('permissions come from one table (R5)', () => {
       for (const permission of permissions) assert.ok(rules.includes(`'${permission}'`), `${action}: ${permission} in rules`);
     }
     assert.deepEqual(MEDICATION_ACTION_PERMISSIONS['pets.course.finish'], ['pets.addLogs']);
-    assert.deepEqual(MEDICATION_ACTION_PERMISSIONS['pets.course.edit'], ['pets.editProfiles']);
-    assert.deepEqual(MEDICATION_ACTION_PERMISSIONS['pets.medication.confirmLegacy'], ['pets.editProfiles']);
+    // Lead decision: creating and editing a course must not regress 2.1, where anyone who logged set a next-due date.
+    assert.deepEqual(MEDICATION_ACTION_PERMISSIONS['pets.course.edit'], ['pets.addLogs']);
+    assert.deepEqual(MEDICATION_ACTION_PERMISSIONS['pets.medication.confirmLegacy'], ['pets.addLogs']);
   });
 
-  test('role presets: a child or member may give a dose and finish; only editors set schedules (D-P19)', () => {
+  test('the rule functions behind each action check exactly the permission in the table', () => {
+    const rules = readFileSync('firestore.rules', 'utf8');
+    const body = (name: string) => {
+      const start = rules.indexOf(`function ${name}(`);
+      assert.ok(start >= 0, name);
+      const end = rules.indexOf('\n    function ', start + 1);
+      return rules.slice(start, end);
+    };
+    const uses = (name: string, action: keyof typeof MEDICATION_ACTION_PERMISSIONS) => {
+      const text = body(name);
+      for (const permission of MEDICATION_ACTION_PERMISSIONS[action]) assert.ok(text.includes(`'${permission}'`), `${name} checks ${permission}`);
+      assert.ok(!text.includes("'pets.editProfiles'"), `${name} does not require pets.editProfiles`);
+    };
+    uses('courseCreated', 'pets.course.edit');
+    uses('courseCreated', 'pets.medication.confirmLegacy');
+    uses('courseEdited', 'pets.course.edit');
+    uses('courseFinished', 'pets.course.finish');
+    uses('courseResumed', 'pets.course.finish');
+    uses('doseGiven', 'pets.dose.give');
+  });
+
+  test('role presets: anyone who logs may give, finish, create and edit a course; guests nothing (D-P19)', () => {
     const child = getRolePresetPermissions('child');
     const member = getRolePresetPermissions('member');
-    const admin = getRolePresetPermissions('admin');
     const guest = getRolePresetPermissions('guest');
-    assert.equal(mayMedication('pets.dose.give', child), true);
-    assert.equal(mayMedication('pets.course.finish', member), true);
-    assert.equal(mayMedication('pets.course.edit', member), false);
-    assert.equal(mayMedication('pets.course.edit', admin), true);
-    assert.equal(mayMedication('pets.dose.give', guest), false);
+    for (const action of ['pets.dose.give', 'pets.course.finish', 'pets.course.edit', 'pets.medication.confirmLegacy'] as const) {
+      assert.equal(mayMedication(action, child), true, `child: ${action}`);
+      assert.equal(mayMedication(action, member), true, `member: ${action}`);
+      assert.equal(mayMedication(action, guest), false, `guest: ${action}`);
+    }
+  });
+});
+
+describe('doses recorded offline', () => {
+  const now = at('2026-11-14T14:10:00Z');
+  const offlineLog = (id: string, occurrence: string, occurrenceAt: string) => ({
+    id, courseId: 'apoquel', occurrence, occurrenceAt: at(occurrenceAt), date: at(occurrenceAt), repeat: 'offline', clockSource: 'device', loggedByUid: 'kim', loggedByName: 'Kim',
+  });
+
+  test('an offline dose covers its occurrence for every reader, without the pointer', () => {
+    const c = course({ lastDose: pointer('2026-11-13T20:00', '2026-11-14T02:00:00Z') });
+    const combined = withOfflineDoses(c, [offlineLog('off-1', '2026-11-14T08:00', '2026-11-14T14:00:00Z'), { id: 'x', courseId: 'other', occurrence: '2026-11-15T08:00', occurrenceAt: at('2026-11-15T14:00:00Z'), repeat: 'offline' }]);
+    assert.equal(combined.offlineDose?.logId, 'off-1');
+    assert.equal(nextDueOccurrence(combined, CHI)?.key, '2026-11-14T20:00');
+    assert.equal(withOfflineDoses(c, []), c, 'unchanged without offline doses');
+    // The server agrees: the reminder for 8:00 AM is no longer pending.
+    const pets = [{ id: 'rex', name: 'Rex', logs: [offlineLog('off-1', '2026-11-14T08:00', '2026-11-14T14:00:00Z')], courses: [{ id: 'apoquel', data: { name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'days', everyDays: 1, times: ['08:00', '20:00'] }, startDay: '2026-11-13', status: 'active', lastDose: pointer('2026-11-13T20:00', '2026-11-14T02:00:00Z') } }] }];
+    assert.ok(!pendingCycles(pets, CHI).has('rex:course:apoquel|2026-11-14T08:00'));
+    assert.ok(pendingCycles(pets, CHI).has('rex:course:apoquel|2026-11-14T20:00'));
+  });
+
+  test('a later online dose for that occurrence asks first, naming the offline dose', () => {
+    const c = withOfflineDoses(course({ lastDose: pointer('2026-11-13T20:00', '2026-11-14T02:00:00Z') }), [offlineLog('off-1', '2026-11-14T08:00', '2026-11-14T14:00:00Z')]);
+    const intent = { userUid: 'sam', occurrenceKey: '2026-11-14T08:00', givenAt: null };
+    const asked = planDose({ now, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, intent);
+    assert.equal(asked.kind, 'needsConfirm');
+    if (asked.kind !== 'needsConfirm') return;
+    assert.equal(asked.check.last?.logId, 'off-1');
+    assert.match(doseRepeatReason(asked.check, now, CHI, 'sam'), /^Kim recorded the Today 8:00 AM dose/);
+    const written = planDose({ now, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { ...intent, confirm: doseConfirmOf(asked.check) });
+    assert.equal(written.kind === 'write' && written.confirmOf, 'off-1');
+  });
+
+  test('planned offline: the device clock, marked offline, never the pointer', () => {
+    const plan = planDose({ now, timeZone: CHI, course: course(), lastDoseSurvives: false, existing: null, offline: true }, { userUid: 'sam', occurrenceKey: '2026-11-14T08:00', givenAt: null });
+    assert.equal(plan.kind, 'write');
+    if (plan.kind !== 'write') return;
+    assert.deepEqual([plan.repeat, plan.live, plan.becomesLatest, plan.confirmOf], ['offline', false, false, null]);
+    assert.equal(plan.givenAt.getTime(), now.getTime());
+    assert.equal(plan.nextAfter?.key, '2026-11-14T20:00');
   });
 });
 
