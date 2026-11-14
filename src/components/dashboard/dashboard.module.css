@@ -88,6 +88,18 @@
   68%, 80% { transform: translate(var(--p2x), var(--p2y)); }
 }
 
+/* PE-31e: a pet that was just fed walks from its bowl to its first waypoint, then walks on as usual. */
+.leaveBowl {
+  animation: leave-bowl 900ms var(--ease-standard) both;
+}
+.leaveBowl.petWalk {
+  animation: leave-bowl 900ms var(--ease-standard), pet-walk 24s ease-in-out 900ms 3;
+}
+@keyframes leave-bowl {
+  from { transform: translate(var(--from-x), var(--from-y)); }
+  to { transform: translate(var(--p0x), var(--p0y)); }
+}
+
 /* Pets wander inside their room (small, slow, transform only). */
 .wander {
   animation: wander 9s ease-in-out infinite alternate;
@@ -317,6 +329,7 @@
 :global(:root[data-visibility='hidden']) .disco,
 :global(:root[data-visibility='hidden']) .caret::after,
 :global(:root[data-visibility='hidden']) .petWalk,
+:global(:root[data-visibility='hidden']) .leaveBowl,
 :global(:root[data-visibility='hidden']) .rain::before,
 :global(:root[data-visibility='hidden']) .snowfall::before,
 :global(:root[data-visibility='hidden']) .glint {
@@ -336,6 +349,7 @@
 :global(:root[data-motion='reduce']) .pop,
 :global(:root[data-motion='reduce']) .caret::after,
 :global(:root[data-motion='reduce']) .petWalk,
+:global(:root[data-motion='reduce']) .leaveBowl,
 :global(:root[data-motion='reduce']) .rain::before,
 :global(:root[data-motion='reduce']) .snowfall::before,
 :global(:root[data-motion='reduce']) .glint {
@@ -384,6 +398,7 @@
   .pop,
   .caret::after,
   .petWalk,
+  .leaveBowl,
   .rain::before,
   .snowfall::before,
   .glint {

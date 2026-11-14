@@ -1159,7 +1159,7 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
       category: 'system',
       title: 'Household ownership transferred',
       // Household-wide: the name only, never the email.
-      message: `${target.displayName || 'A member'} is now the owner of ${householdName}.`,
+      message: `${publicMemberName(target.displayName) || 'A member'} is now the owner of ${householdName}.`,
       createdAt: Timestamp.fromDate(now),
       expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
       deepLink: '/household',

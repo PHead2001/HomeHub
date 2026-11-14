@@ -51,7 +51,7 @@ test.describe('pets: hold to feed (H09)', () => {
     const card = await openPets(page);
     // The Feed button stays as the accessible alternative and describes the gesture.
     const feedButton = card.getByRole('button', { name: 'Feed Pixel, 1 can' });
-    await expect(feedButton).toHaveAccessibleDescription('No feedings logged yet 0 of 2 today Or press and hold the photo of Pixel to log 1 can.') // PE-20b: the status is part of the description;
+    await expect(feedButton).toHaveAccessibleDescription('No feedings logged yet 0 of 2 today Next meal: morning Or press and hold the photo of Pixel to log 1 can.') // PE-20b: the status is part of the description;
 
     await pressPhoto(page);
     await expect(page.getByTestId('hold-to-feed-ring')).toBeVisible();

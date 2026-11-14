@@ -130,7 +130,7 @@ describe('the house filling a tall pane (HP-12e)', () => {
       for (const point of [...tall.roofFront, ...tall.roofSide, ...tall.sideWall]) {
         assert.ok(point.y >= 0 && point.y <= tall.height);
       }
-      const pets = placePets([{ id: 'p', fed: false }, { id: 'q', fed: true }], tall);
+      const pets = placePets([{ id: 'p', fed: false, needsMeal: true }, { id: 'q', fed: true }], tall);
       for (const pet of pets) assert.ok(pet.at.y <= tall.height && pet.at.y >= 0);
     }
   });
@@ -141,10 +141,12 @@ describe('pets in the house', () => {
   const names = { bath: 'Bathroom', kitchen: 'Kitchen', living: 'Living Room' };
 
   it('fed pets wander between rooms; hungry pets sit by the kitchen bowl; unknown pets rest', () => {
-    const [maple, pixel, ghost] = placePets([
+    const [maple, pixel, ghost, later] = placePets([
       { id: 'maple', fed: true },
-      { id: 'pixel', fed: false },
+      { id: 'pixel', fed: false, needsMeal: true },
       { id: 'ghost', fed: null },
+      // D-P3: today's count not met without a due meal slot (an unconfirmed plan, or dinner still ahead) is no bowl.
+      { id: 'later', fed: false },
     ], layout, names);
 
     assert.equal(maple.mode, 'wander');
@@ -161,22 +163,24 @@ describe('pets in the house', () => {
     assert.equal(ghost.mode, 'idle');
     assert.equal(ghost.bowl, null);
     assert.equal(ghost.path.length, 1);
+    assert.notEqual(later.mode, 'bowl');
+    assert.equal(later.bowl, null);
   });
 
   it('two hungry pets do not sit on top of each other', () => {
-    const [a, b] = placePets([{ id: 'a', fed: false }, { id: 'b', fed: false }], layout, names);
+    const [a, b] = placePets([{ id: 'a', fed: false, needsMeal: true }, { id: 'b', fed: false, needsMeal: true }], layout, names);
     assert.notEqual(a.at.x, b.at.x);
     assert.deepEqual(a.bowl, b.bowl);
   });
 
   it('without a kitchen the bowl is in a ground-floor room; without rooms pets stand in the yard', () => {
     const twoFloors = layoutHouse(ids(4));
-    const [hungry] = placePets([{ id: 'p', fed: false }], twoFloors, {});
+    const [hungry] = placePets([{ id: 'p', fed: false, needsMeal: true }], twoFloors, {});
     const room = twoFloors.rooms.find((r) => r.id === hungry.roomId)!;
     assert.equal(room.floor, twoFloors.floors - 1);
 
     const empty = layoutHouse([]);
-    const [fed, hungryYard] = placePets([{ id: 'x', fed: true }, { id: 'y', fed: false }], empty, {});
+    const [fed, hungryYard] = placePets([{ id: 'x', fed: true }, { id: 'y', fed: false, needsMeal: true }], empty, {});
     assert.equal(fed.mode, 'idle');
     assert.ok(fed.at.y > empty.groundY);
     assert.ok(hungryYard.at.y > empty.groundY);
@@ -185,7 +189,7 @@ describe('pets in the house', () => {
   it('many hungry pets stay inside the kitchen and apart (HP-11d)', () => {
     const kitchen = layout.rooms.find((room) => room.id === 'kitchen')!;
     const inside = (p: { x: number; y: number }) => p.x - 9 >= kitchen.x && p.x + 9 <= kitchen.x + kitchen.w && p.y - 18 >= kitchen.y && p.y <= kitchen.y + kitchen.h;
-    const eight = placePets(ids(8).map((id) => ({ id, fed: false })), layout, names);
+    const eight = placePets(ids(8).map((id) => ({ id, fed: false, needsMeal: true })), layout, names);
     assert.ok(eight.every((pet) => pet.roomId === 'kitchen' && inside(pet.at)), 'eight hungry pets stay in the kitchen');
     for (let a = 0; a < eight.length; a += 1) {
       for (let b = a + 1; b < eight.length; b += 1) {
@@ -193,7 +197,7 @@ describe('pets in the house', () => {
         assert.ok(distance >= 16, `pets ${a} and ${b} do not overlap (${distance})`);
       }
     }
-    const twenty = placePets(ids(20).map((id) => ({ id, fed: false })), layout, names);
+    const twenty = placePets(ids(20).map((id) => ({ id, fed: false, needsMeal: true })), layout, names);
     assert.ok(twenty.every((pet) => inside(pet.at)), 'twenty hungry pets are squeezed, never pushed out of the room');
     assert.equal(new Set(twenty.map((pet) => `${pet.at.x},${pet.at.y}`)).size, 20, 'no two share a spot');
   });

@@ -11,18 +11,25 @@ import {
   FOOD_SCHEDULE_MAX,
   PET_NAME_MAX,
   PORTION_MAX,
+  feedingPlan,
   parseFeedingsPerDay,
   parsePortion,
   speciesHintFor,
   UNIT_LABELS,
+  validatePetForm,
+  type FeedingPlan,
   type PetFormErrors,
   type PetFormValues,
 } from '@/lib/pets/care';
-import { PET_SPECIES, PORTION_UNITS, type PetProfile, type PortionUnit } from '@/lib/pets/types';
+import { draftFromPlan, readMealPlan, slotsFromDraft, validateMealDraft, type MealSlotDraft, type MealSlotErrors } from '@/lib/pets/meal-plan';
+import { PET_SPECIES, PORTION_UNITS, type MealSlot, type PetProfile, type PortionUnit } from '@/lib/pets/types';
+import { MealPlanEditor, mealFieldId } from './meal-plan-editor';
 
 export type PetFormState = PetFormValues & {
   type: string;
   portionUnit: PortionUnit;
+  /** Meal time rows (PE-22k); empty keeps the legacy daily count. */
+  meals: MealSlotDraft[];
 };
 
 export const EMPTY_PET_FORM: PetFormState = {
@@ -32,6 +39,7 @@ export const EMPTY_PET_FORM: PetFormState = {
   feedingsPerDay: '',
   portionAmount: '',
   portionUnit: 'Cups',
+  meals: [],
 };
 
 export function petFormFromProfile(pet: PetProfile): PetFormState {
@@ -43,8 +51,30 @@ export function petFormFromProfile(pet: PetProfile): PetFormState {
     feedingsPerDay: pet.feedingsPerDay ? String(pet.feedingsPerDay) : '',
     portionAmount: pet.portionAmount ? String(pet.portionAmount) : '',
     portionUnit: pet.portionUnit ?? portion?.unit ?? 'Cups',
+    meals: draftFromPlan(readMealPlan(pet)),
   };
 }
+
+/** Field errors of the whole form: the pet fields, each meal row, and the plan. */
+export type PetDraftErrors = { fields: PetFormErrors; meals: MealSlotErrors[]; plan: string | null };
+
+/**
+ * Validates the add and edit forms. With meal times the free-text schedule is
+ * optional (notes) and the legacy count and portion are not used; a pet that
+ * already has confirmed meal times keeps at least one (a plan cannot be removed).
+ */
+export function validatePetDraft(values: PetFormState, existingNames: string[] = [], original?: PetFormState, confirmed = false): PetDraftErrors {
+  const fields = validatePetForm(values, existingNames, original, { hasMealTimes: values.meals.length > 0 });
+  const meals = validateMealDraft(values.meals);
+  const plan = meals.plan ?? (confirmed && values.meals.length === 0 ? 'Keep at least one meal time.' : null);
+  return { fields, meals: meals.rows, plan };
+}
+
+export function hasDraftErrors(errors: PetDraftErrors): boolean {
+  return Object.keys(errors.fields).length > 0 || errors.plan !== null || errors.meals.some((row) => Object.keys(row).length > 0);
+}
+
+export const NO_DRAFT_ERRORS: PetDraftErrors = { fields: {}, meals: [], plan: null };
 
 /** Types offered in the picker: the known species plus any legacy value already stored. */
 function typeOptions(current: string): string[] {
@@ -62,18 +92,24 @@ export function preventImplicitSubmit(event: React.MouseEvent<HTMLElement>) {
 export type PetFormFieldsProps = {
   idPrefix: string;
   values: PetFormState;
-  errors: PetFormErrors;
+  errors: PetDraftErrors;
   onChange: (patch: Partial<PetFormState>) => void;
   onPhotoChange: (file: File | null) => void;
   existingPhotoUrl?: string;
   nameDisabled?: boolean;
+  /** The stored pet (edit): its legacy target, and whether it already has confirmed meal times. */
+  pet?: PetProfile | null;
 };
 
 /** Shared fields for the add and edit pet dialogs, with inline field errors. */
-export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChange, existingPhotoUrl, nameDisabled }: PetFormFieldsProps) {
+export function PetFormFields({ idPrefix, values, errors: draftErrors, onChange, onPhotoChange, existingPhotoUrl, nameDisabled, pet }: PetFormFieldsProps) {
   const id = (field: string) => `${idPrefix}-${field}`;
+  const errors = draftErrors.fields;
   const parsedPerDay = parseFeedingsPerDay(values.foodSchedule);
   const parsedPortion = parsePortion(values.foodSchedule);
+  const confirmed = Boolean(pet && readMealPlan(pet));
+  const legacy: FeedingPlan | null = pet && !confirmed ? feedingPlan(pet) : null;
+  const withMeals = values.meals.length > 0;
 
   return (
     <div className="grid gap-4 py-2">
@@ -120,18 +156,31 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor={id('schedule')}>Food schedule</Label>
+        <Label htmlFor={id('schedule')}>{withMeals ? 'Food notes' : 'Food schedule'}</Label>
         <Textarea
           value={values.foodSchedule}
           maxLength={FOOD_SCHEDULE_MAX + 20}
           onChange={(event) => onChange({ foodSchedule: event.target.value })}
-          placeholder="e.g. 1.5 cups at 8am and 6pm"
+          placeholder={withMeals ? 'Optional, e.g. "Wet food at dinner"' : 'e.g. 1.5 cups at 8am and 6pm'}
           rows={2}
           {...fieldErrorProps(id('schedule'), errors.foodSchedule)}
         />
         <FieldError id={id('schedule')}>{errors.foodSchedule}</FieldError>
       </div>
 
+      <MealPlanEditor
+        idPrefix={idPrefix}
+        rows={values.meals}
+        errors={draftErrors.meals}
+        planError={draftErrors.plan}
+        schedule={values.foodSchedule}
+        legacy={legacy}
+        confirmed={confirmed}
+        onChange={(meals) => onChange({ meals })}
+      />
+
+      {!withMeals && (
+      <>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="grid gap-2">
           <Label htmlFor={id('per-day')}>Feedings per day</Label>
@@ -178,8 +227,10 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
         </div>
       </div>
       <p className="-mt-2 text-xs text-muted-foreground">
-        Used for one-tap feeding and the daily feeding ring. Leave blank to read them from the schedule.
+        Without meal times: used for one-tap feeding and the daily feeding ring. Leave blank to read them from the schedule.
       </p>
+      </>
+      )}
     </div>
   );
 }
@@ -192,27 +243,52 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
 export function petFieldsFromForm(values: PetFormState, previous?: Pick<PetProfile, 'type' | 'dataAiHint'> | null) {
   const perDay = values.feedingsPerDay.trim() ? Number(values.feedingsPerDay) : null;
   const amount = values.portionAmount.trim() ? Number(values.portionAmount) : null;
+  // With meal times the plan sets the count and portion (confirmMealPlan); the hidden legacy inputs are ignored.
+  const slots: MealSlot[] | null = values.meals.length > 0 ? slotsFromDraft(values.meals) : null;
   return {
     name: values.name.trim(),
     type: values.type,
     dataAiHint: speciesHintFor(values.type, previous),
     foodSchedule: values.foodSchedule.trim(),
-    feedingsPerDay: perDay,
-    portionAmount: amount,
-    portionUnit: amount ? values.portionUnit : null,
+    feedingsPerDay: slots ? null : perDay,
+    portionAmount: slots ? null : amount,
+    portionUnit: !slots && amount ? values.portionUnit : null,
+    slots,
   };
 }
 
 export type PetFields = ReturnType<typeof petFieldsFromForm>;
 
 /** Focus the first invalid field (validation rule: focus moves to the first problem). */
-export function focusFirstError(idPrefix: string, errors: PetFormErrors) {
+export function focusFirstError(idPrefix: string, draft: PetDraftErrors) {
+  const errors = draft.fields;
   const order: [keyof PetFormErrors, string][] = [
     ['name', 'name'],
     ['foodSchedule', 'schedule'],
+  ];
+  const first = order.find(([key]) => errors[key]);
+  if (first) {
+    document.getElementById(`${idPrefix}-${first[1]}`)?.focus();
+    return;
+  }
+  const fields: (keyof MealSlotErrors)[] = ['name', 'time', 'amount', 'offDays'];
+  for (const [index, row] of draft.meals.entries()) {
+    const field = fields.find((key) => row[key]);
+    if (field) {
+      // Day toggles have no single input: focus the row's first toggle.
+      const target = document.getElementById(mealFieldId(idPrefix, index, field));
+      (field === 'offDays' ? target?.parentElement?.querySelector<HTMLElement>('button') : target)?.focus();
+      return;
+    }
+  }
+  if (draft.plan) {
+    document.querySelector<HTMLElement>(`[data-testid="meal-plan-add"]`)?.focus();
+    return;
+  }
+  const legacy: [keyof PetFormErrors, string][] = [
     ['feedingsPerDay', 'per-day'],
     ['portionAmount', 'portion'],
   ];
-  const first = order.find(([key]) => errors[key]);
-  if (first) document.getElementById(`${idPrefix}-${first[1]}`)?.focus();
+  const next = legacy.find(([key]) => errors[key]);
+  if (next) document.getElementById(`${idPrefix}-${next[1]}`)?.focus();
 }

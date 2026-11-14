@@ -11,7 +11,8 @@ import { collapseMissedRecurring } from '../chores/list';
 import { isAssignedTo, resolveAssigneeUid, type AssigneePerson } from '../../../functions/src/shared/assignee';
 import { daysUntilExpiry } from '../shopping/pantry';
 import { isUsedUpPantryDoc } from '../shopping/pantry-batches';
-import { feedingCountLabel, feedingHeadline, feedingPlan, feedingStatus, knownFoodType, type FeedingEntry } from '../pets/care';
+import { feedingCountLabel, feedingHeadline, knownFoodType, type FeedingEntry } from '../pets/care';
+import { feedTarget, mealCountLabel, mealHeadline, mealStatus, needsMeal } from '../pets/meal-plan';
 import { knownFromLogs, type KnownFeedings } from '../pets/feed-decision';
 import type { FoodType, PetProfile, PortionUnit } from '../pets/types';
 import type { HealthResult } from '../maintenance/health';
@@ -103,6 +104,8 @@ export type ChoreFacts = {
   todayWorkTotal?: number;
   /** Older missed instances of repeating chores, folded into their latest one (never counted as done). */
   missed?: number;
+  /** Section views only (`SECTION_LIMITS`): every open chore due within the next week, overdue first. Empty in previews. */
+  upcoming?: ChoreEntry[];
 };
 
 /** The most chores `todayWork` lists (the tile shows fewer; the rest is "+N more" to /chores). */
@@ -110,6 +113,42 @@ export const TODAY_WORK_MAX = 20;
 
 /** The most needed items the Shopping tile lists (HP-36a: the top 6, each with a tick, HP-33c). */
 export const SHOPPING_TILE_ITEMS = 6;
+
+/**
+ * How many entries each list in the facts may hold. The dashboard draws short previews
+ * (`PREVIEW_LIMITS`, the default); a full section view, such as a wall tablet's Chores or
+ * Maintenance page, asks for `SECTION_LIMITS` (no caps), so no work is ever silently left out
+ * there. `upcoming` (every open chore due within the next week) exists only for section views.
+ */
+export type FactLimits = {
+  todayWork: number;
+  roomChores: number;
+  nextUp: number;
+  mineNext: number;
+  upcoming: number;
+  maintenanceItems: number;
+  shoppingItems: number;
+};
+
+export const PREVIEW_LIMITS: Readonly<FactLimits> = Object.freeze({
+  todayWork: TODAY_WORK_MAX,
+  roomChores: ROOM_CHORES,
+  nextUp: 5,
+  mineNext: 5,
+  upcoming: 0,
+  maintenanceItems: 6,
+  shoppingItems: SHOPPING_TILE_ITEMS,
+});
+
+export const SECTION_LIMITS: Readonly<FactLimits> = Object.freeze({
+  todayWork: Infinity,
+  roomChores: Infinity,
+  nextUp: Infinity,
+  mineNext: Infinity,
+  upcoming: Infinity,
+  maintenanceItems: Infinity,
+  shoppingItems: Infinity,
+});
 
 export type ShoppingTileItem = { id: string; name: string; listId: string; listName: string; quantity: number };
 
@@ -166,8 +205,10 @@ export type MaintenanceFacts = {
 export type PetFeed = {
   amount: number;
   unit: PortionUnit;
-  /** Planned feedings per day (null when unknown). */
+  /** Planned feedings per day (null when unknown); with meal slots, today's planned meals. */
   perDay: number | null;
+  /** With meal slots: log the portion of the meal the feed is assigned to (PE-22d). */
+  portionFromSlot?: boolean;
   /** The latest feeding's food type (`knownFoodType`), Dry without history. */
   foodType: FoodType;
   /** Last feed and today's count from the loaded logs (the duplicate check's fallback). */
@@ -182,11 +223,22 @@ export type PetState = {
   lastFedAt: Date | null;
   lastFedBy: string | null;
   /**
-   * Today's feeding target is met (Pets' `feedingStatus(...).complete`), or null
-   * when the feeding history could not be read (still loading or a query failed):
-   * then nothing is claimed, neither fed nor hungry.
+   * Today's feeding target is met (every meal slot fed, or the legacy count),
+   * or null when the feeding history could not be read (still loading or a
+   * query failed): then nothing is claimed, neither fed nor hungry.
    */
   fed: boolean | null;
+  /**
+   * A confirmed meal slot is due now (its time passed unfed, Pets' `needsMeal`):
+   * the only "needs food" the dashboard shows (bowl, amber chip, one-tap Fed,
+   * the brief). Never for a pet without confirmed slots, never because a later
+   * meal is still ahead (D-P3, PE-31).
+   */
+  needsMeal?: boolean;
+  /** The pet has confirmed meal times today (Pets' slot status); false: the legacy daily count. */
+  slots?: boolean;
+  /** The meal-slot status line ("Dinner due 6:00 pm", "Next: dinner at 6:00 pm"); absent without slots. */
+  mealLine?: string;
   /** "1 of 2 today", "Not fed today" (Pets' `feedingCountLabel`), or the unavailable line. */
   countLabel: string;
   /** "Fed 2 h ago by Sam", "No feedings logged yet" (Pets' `feedingHeadline`), or the unavailable line. */
@@ -197,7 +249,7 @@ export type PetState = {
   feed?: PetFeed;
 };
 
-/** Pets with an unreadable feeding history (`fed === null`) count in neither number. */
+/** `hungry`: pets with a meal slot due now (`needsMeal`). Pets with an unreadable feeding history (`fed === null`) count in neither number. */
 export type PetFacts = { pets: PetState[]; hungry: number; unknown: number };
 
 /** Same wording as the Pets module's `PetCareSummary` when a history cannot be read. */
@@ -301,6 +353,7 @@ export function computeChoreFacts(
    * email or uid.
    */
   members?: readonly RawDoc[],
+  limits: Readonly<FactLimits> = PREVIEW_LIMITS,
 ): ChoreFacts {
   // D-6: "today" and "completed today" are the household's day (device zone only when the
   // household has none); due dates are date-only keys and are compared as stored.
@@ -428,7 +481,7 @@ export function computeChoreFacts(
     // on ties, so chores keep their document order.
     room.chores = (roomOrder.get(room.id) ?? [])
       .sort((a, b) => a.days - b.days)
-      .slice(0, ROOM_CHORES)
+      .slice(0, limits.roomChores)
       .map((entry) => entry.chore);
   }
 
@@ -448,18 +501,19 @@ export function computeChoreFacts(
     todayDone,
     overdueTotal,
     rooms: [...roomMap.values()],
-    nextUp: sorted.slice(0, 5).map((item) => item.entry),
+    nextUp: sorted.slice(0, limits.nextUp).map((item) => item.entry),
     mineNext: sorted
       .filter((item) => item.entry.mine && item.days <= UPCOMING_DAYS)
-      .slice(0, 5)
+      .slice(0, limits.mineNext)
       .map((item) => item.entry),
-    todayWork: todayWork.slice(0, TODAY_WORK_MAX).map((item) => item.entry),
+    todayWork: todayWork.slice(0, limits.todayWork).map((item) => item.entry),
+    upcoming: sorted.filter((item) => item.days <= UPCOMING_DAYS).slice(0, limits.upcoming).map((item) => item.entry),
     todayWorkTotal: todayWork.length,
     missed: folded.size,
   };
 }
 
-export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string, RawDoc[]>): ShoppingFacts {
+export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string, RawDoc[]>, limits: Readonly<FactLimits> = PREVIEW_LIMITS): ShoppingFacts {
   const sortedLists = [...lists].sort((a, b) => text(a.name, a.id).localeCompare(text(b.name, b.id)));
   const firstItems: ShoppingFacts['firstItems'] = [];
   let neededItems = 0;
@@ -470,7 +524,7 @@ export function computeShoppingFacts(lists: RawDoc[], itemsByList: Record<string
     [...needed]
       .sort((a, b) => (toDateValue(a.createdAt)?.getTime() ?? 0) - (toDateValue(b.createdAt)?.getTime() ?? 0))
       .forEach((item) => {
-        if (firstItems.length < SHOPPING_TILE_ITEMS) {
+        if (firstItems.length < limits.shoppingItems) {
           const quantity = typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1;
           firstItems.push({ id: item.id, name: text(item.name, 'Item'), listId: list.id, listName, quantity });
         }
@@ -534,7 +588,7 @@ export function reminderTrigger(
  * means within 14 days or 500 miles, and deep links are the module's own.
  * An expired warranty is not a task and is left out.
  */
-export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date, timeZone?: string | null): MaintenanceFacts {
+export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date, timeZone?: string | null, limits: Readonly<FactLimits> = PREVIEW_LIMITS): MaintenanceFacts {
   const zone = safeTimeZone(timeZone);
   const today = localDay(now, zone);
   const activeAssets = assets.filter((asset) => asset.status !== 'retired');
@@ -579,7 +633,7 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
       + activeVehicles.filter((vehicle) => vehicle.status === 'needs_attention').length,
     // Reminders arrive most urgent first (overdue, today, soon, upcoming; then by date).
     next: items[0] ?? null,
-    items: items.slice(0, 6),
+    items: items.slice(0, limits.maintenanceItems),
     vehicleDue: active.some((item) => item.kind === 'vehicle')
       || activeVehicles.some((vehicle) => vehicle.status === 'needs_attention'),
     climateDue: active.some((item) => item.climate)
@@ -589,10 +643,11 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
 }
 
 /**
- * Pet facts with the Pets module's own feeding model: `feedingPlan` (structured
- * fields, else the parsed schedule) and `feedingStatus` (today's feedings against
- * the plan). A pet counts as fed when today's target is met, as on its card.
- * `feedings` holds each pet's recent feeding entries in either date shape.
+ * Pet facts with the Pets module's own shared status (`mealStatus`, PE-22h): a
+ * pet's confirmed meal slots, else its legacy target (structured fields or the
+ * parsed schedule). `fed`: today's target is met, as on its card; `needsMeal`:
+ * a confirmed slot is due now (the bowl, D-P3). `feedings` holds each pet's
+ * recent feeding entries in either date shape.
  */
 export function computePetFacts(pets: RawDoc[], feedings: Record<string, FeedingEntry[] | null | undefined>, now: Date, timeZone?: string | null): PetFacts {
   const states = [...pets]
@@ -609,18 +664,22 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
           lastFedAt: null,
           lastFedBy: null,
           fed: null,
+          needsMeal: false,
           countLabel: 'Unavailable',
           headline: FEEDING_UNAVAILABLE,
         };
       }
-      const plan = feedingPlan(pet as unknown as PetProfile);
-      const status = feedingStatus(logs, plan, now, timeZone);
-      // HP-33a: the same request as the Pets one-tap feed (usual portion, latest food type).
+      // The one shared status of the Pets module (PE-22h): meal slots when confirmed, else the legacy target.
+      const meal = mealStatus(pet as unknown as PetProfile, logs, now, timeZone);
+      const target = feedTarget(meal);
+      const last = meal.kind === 'slots' ? meal.last : meal.status.last;
+      // HP-33a: the same request as the Pets one-tap feed (the target meal's portion, latest food type).
       const latest = [...logs].sort((a, b) => (toDateValue(b.date)?.getTime() ?? 0) - (toDateValue(a.date)?.getTime() ?? 0))[0] as (FeedingEntry & { foodType?: unknown }) | undefined;
       const feed: PetFeed = {
-        amount: plan.amount,
-        unit: plan.unit,
-        perDay: plan.perDay,
+        amount: target.amount,
+        unit: target.unit,
+        perDay: meal.kind === 'slots' ? meal.day.planned : meal.plan.perDay,
+        ...(meal.kind === 'slots' ? { portionFromSlot: true } : {}),
         foodType: knownFoodType(latest?.foodType) ?? 'Dry',
         known: knownFromLogs(logs, now, timeZone),
       };
@@ -629,19 +688,36 @@ export function computePetFacts(pets: RawDoc[], feedings: Record<string, Feeding
         name: text(pet.name, 'Pet'),
         type: text(pet.type, 'Other'),
         photoUrl: typeof pet.photoUrl === 'string' && pet.photoUrl ? pet.photoUrl : undefined,
-        lastFedAt: status.last?.date ?? null,
-        lastFedBy: status.last?.by ?? null,
-        fed: status.complete,
-        countLabel: feedingCountLabel(status),
-        headline: feedingHeadline(status, now, timeZone),
+        lastFedAt: last?.date ?? null,
+        lastFedBy: last?.by ?? null,
+        fed: meal.kind === 'slots' ? meal.complete : meal.status.complete,
+        needsMeal: needsMeal(meal),
+        slots: meal.kind === 'slots',
+        countLabel: meal.kind === 'slots' ? mealCountLabel(meal) : feedingCountLabel(meal.status),
+        headline: last ? feedingHeadline({ fedToday: 0, perDay: null, progress: 0, complete: false, last }, now, timeZone) : 'No feedings logged yet',
+        ...(meal.kind === 'slots' ? { mealLine: mealHeadline(meal) } : {}),
         feed,
       };
     });
   return {
     pets: states,
-    hungry: states.filter((pet) => pet.fed === false).length,
+    // Waiting for a due meal slot (D-P3); a pet without confirmed slots is never counted.
+    hungry: states.filter((pet) => pet.needsMeal).length,
     unknown: states.filter((pet) => pet.fed === null).length,
   };
+}
+
+/**
+ * D-P22: when the dashboard offers one-tap **Fed** (house chip and Pets tile).
+ * A pet with confirmed meal times: only while a meal slot is due (`needsMeal`,
+ * as the bowl and the card show it). A pet without (the legacy daily count):
+ * as before meal slots, while today's count is not met (`fed === false`), in
+ * the neutral colour, never as a warning, so no guess is shown as a need (D-P3).
+ * Never while the feeding history is unknown.
+ */
+export function oneTapFedVisible(pet: Pick<PetState, 'fed' | 'needsMeal' | 'slots'>): boolean {
+  if (pet.fed === null) return false;
+  return pet.slots ? Boolean(pet.needsMeal) : pet.fed === false;
 }
 
 /** A room's text summary, used as its link name: "1 overdue, 2 due today", "All clear"... */

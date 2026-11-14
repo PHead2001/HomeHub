@@ -37,7 +37,7 @@ import { dashboardTiles, type TileId } from '@/lib/dashboard/tiles';
 import { shoppingRowKey, shoppingTileRows } from '@/lib/dashboard/shopping-tile';
 import { dailyLabel, temperatureLabel, weatherSummary } from '@/lib/dashboard/weather';
 import { useLiveWeatherState, useWeatherPreference } from '@/lib/dashboard/use-weather';
-import { useAuth } from '@/hooks/use-auth';
+import { useDashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
 import { HouseholdChores, HouseholdSummaryLine, PetFedButton, useChoreDone } from './one-tap';
@@ -282,7 +282,7 @@ export function BentoGrid({
   timeZone?: string;
   onRetry?: () => void;
 }) {
-  const { permissions } = useAuth();
+  const { permissions } = useDashboardScope();
   const liveChoreIds = facts.chores && sections.chores && sections.chores.status !== 'loading'
     ? (facts.chores.todayWork ?? []).map((chore) => chore.id)
     : undefined;
@@ -414,8 +414,9 @@ export function BentoGrid({
               <li key={pet.id} className="flex items-center justify-between gap-2">
                 <span className="truncate font-medium">{pet.name}</span>
                 <span className="flex shrink-0 items-center gap-2">
-                  <span className={cn('text-xs', pet.fed === null ? 'text-muted-foreground' : pet.fed ? 'text-success' : 'text-warning')}>
-                    {pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
+                  {/* Amber only for a due meal slot (D-P3): an unconfirmed plan's count is never a need. */}
+                  <span className={cn('text-xs', pet.fed === null ? 'text-muted-foreground' : pet.needsMeal ? 'text-warning' : pet.fed ? 'text-success' : 'text-muted-foreground')}>
+                    {pet.needsMeal && pet.mealLine ? pet.mealLine : pet.countLabel}{pet.feedingHint ? ` · ${pet.feedingHint}` : ''}
                   </span>
                   {/* Beside the house the house's own pet chips carry Fed. */}
                   <PetFedButton pet={pet} className={styles.wideHide} />

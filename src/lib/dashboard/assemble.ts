@@ -28,6 +28,7 @@ import {
   type DashboardFacts,
   type DashboardSection,
   type DashboardViewer,
+  type FactLimits,
   type RawDoc,
 } from './facts';
 
@@ -89,6 +90,8 @@ export function assembleDashboardFacts(
     recentFeedings: number;
     /** The member's view permissions, for the bell's category check (none: every category). */
     canView?: (permission: ViewPermission) => boolean;
+    /** Preview caps (default) or none, for full section views (`SECTION_LIMITS`). */
+    limits?: Readonly<FactLimits>;
   },
 ): { facts: DashboardFacts; loading: boolean } {
   const facts: DashboardFacts = {};
@@ -110,12 +113,12 @@ export function assembleDashboardFacts(
     // (computeChoreFacts then reads its completion with `completionInstant`).
     const merged = new Map<string, RawDoc>();
     [...raw.openChores!, ...raw.todayChores!, ...raw.doneToday!, ...raw.doneTodayServer!].forEach((chore) => merged.set(chore.id, chore));
-    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone, raw.members);
+    facts.chores = computeChoreFacts([...merged.values()], raw.rooms!, context.viewer, context.now, recurringTemplateIdsFrom(raw.templates!, today), zone, raw.members, context.limits);
   });
 
   const listsReady = Boolean(raw.lists && raw.lists.every((list) => raw.items?.[list.id] !== undefined));
   section('shopping', listsReady, () => {
-    facts.shopping = computeShoppingFacts(raw.lists!, raw.items ?? {});
+    facts.shopping = computeShoppingFacts(raw.lists!, raw.items ?? {}, context.limits);
   });
 
   section('pantry', raw.pantry !== undefined, () => {
@@ -123,7 +126,7 @@ export function assembleDashboardFacts(
   });
 
   section('maintenance', Boolean(raw.assets && raw.vehicles), () => {
-    facts.maintenance = computeMaintenanceFacts(raw.assets!, raw.vehicles!, context.now, zone);
+    facts.maintenance = computeMaintenanceFacts(raw.assets!, raw.vehicles!, context.now, zone, context.limits);
   });
 
   section('pets', raw.pets !== undefined, () => {

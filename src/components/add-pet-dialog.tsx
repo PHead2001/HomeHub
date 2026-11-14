@@ -11,10 +11,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { validatePetForm, type PetFormErrors } from "@/lib/pets/care";
 import {
   EMPTY_PET_FORM,
+  NO_DRAFT_ERRORS,
   PetFormFields,
+  hasDraftErrors,
+  validatePetDraft,
+  type PetDraftErrors,
   focusFirstError,
   petFieldsFromForm,
   type PetFields,
@@ -35,14 +38,14 @@ const ID_PREFIX = "add-pet";
 export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: AddPetDialogProps) {
   const [values, setValues] = useState<PetFormState>(EMPTY_PET_FORM);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [errors, setErrors] = useState<PetFormErrors>({});
+  const [errors, setErrors] = useState<PetDraftErrors>(NO_DRAFT_ERRORS);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const reset = () => {
     setValues(EMPTY_PET_FORM);
     setPhotoFile(null);
-    setErrors({});
+    setErrors(NO_DRAFT_ERRORS);
     setSubmitted(false);
   };
 
@@ -50,16 +53,16 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
     const next = { ...values, ...patch };
     setValues(next);
     // After the first submit, errors update as the member fixes them.
-    if (submitted) setErrors(validatePetForm(next, existingNames));
+    if (submitted) setErrors(validatePetDraft(next, existingNames));
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (saving) return;
     setSubmitted(true);
-    const nextErrors = validatePetForm(values, existingNames);
+    const nextErrors = validatePetDraft(values, existingNames);
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
+    if (hasDraftErrors(nextErrors)) {
       focusFirstError(ID_PREFIX, nextErrors);
       return;
     }
@@ -89,7 +92,7 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
           <DialogHeader>
             <DialogTitle className="font-headline">Add a new pet</DialogTitle>
             <DialogDescription>
-              A name and feeding schedule are all you need. Everything else is optional.
+              A name and a feeding schedule or meal times are all you need. Everything else is optional.
             </DialogDescription>
           </DialogHeader>
           <PetFormFields

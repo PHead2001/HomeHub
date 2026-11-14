@@ -10,6 +10,12 @@
  * firestore.rules (feedingStateHonest, feedingLatestMoveAllowed, feedingRecent,
  * feedingDayComplete, feedingConfirmBound); the emulator suites check the real
  * rules on the same cases.
+ *
+ * With meal slots (P2, D-P5, windows D-P21) the same runs also hold: a pet with
+ * a confirmed plan (one meal skipped on Sundays) gets slot-assigned live feeds,
+ * the derived state's `slotsFed` is always the first surviving slotted log per
+ * slot of the state's day, and a plain slot feed is one the rules' slot check
+ * (feedingSlotFree) accepts, in place of the 90-minute and complete-day checks.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -24,13 +30,23 @@ import {
   type DerivedFeedingState,
 } from '../../src/lib/pets/feed-plan';
 import { petDay } from '../../src/lib/pets/care';
+import { planForDay } from '../../src/lib/pets/meal-plan';
+import type { MealSlot } from '../../src/lib/pets/types';
 
 const TZ = 'America/Chicago';
 const MIN = 60_000;
 const PER_DAY = 2;
 
 /** A log's stored date: a Timestamp (here a Date) or a legacy ISO string. */
-type Log = { id: string; date: Date | string; loggedByUid: string; loggedByName: string };
+type Log = { id: string; date: Date | string; loggedByUid: string; loggedByName: string; slotId?: string };
+
+/** The slot pet's confirmed plan: three meals, dinner skipped on Sundays. */
+const SLOTS: MealSlot[] = [
+  { id: 'breakfast', name: 'Breakfast', time: '07:00', amount: 1, unit: 'Cups' },
+  { id: 'lunch', name: 'Lunch', time: '12:30', amount: 0.5, unit: 'Cups' },
+  { id: 'dinner', name: 'Dinner', time: '18:00', amount: 1, unit: 'Cans', offDays: [0] },
+];
+const SLOT_PET = { foodSchedule: '', mealPlan: { slots: SLOTS, effectiveFrom: '2026-01-01' } };
 const timeOf = (log: Log) => (typeof log.date === 'string' ? new Date(log.date) : log.date).getTime();
 /** The rules can only compare Timestamps: a legacy string-dated feeding is never named or confirmed. */
 const nameable = (log: Log | undefined): log is Log => Boolean(log) && typeof log!.date !== 'string';
@@ -38,7 +54,7 @@ const nameable = (log: Log | undefined): log is Log => Boolean(log) && typeof lo
 const clamp = (time: number, serverNow: Date) => Math.min(time, serverNow.getTime());
 const SKEW = 12 * 60 * MIN;
 type Ref = { logId: string; at: Date; byUid: string | null; byName: string | null };
-type StateDoc = { lastLogId: string | null; lastFedAt: Date | null; lastFedByUid: string | null; lastFedByName: string | null; day: string; countOnDay: number; prev: Ref | null };
+type StateDoc = { lastLogId: string | null; lastFedAt: Date | null; lastFedByUid: string | null; lastFedByName: string | null; day: string; countOnDay: number; prev: Ref | null; slotsFed?: Record<string, string> };
 
 /** What the transaction stores for a derived state (`date` of a live log is the server time). */
 function stateDoc(derived: DerivedFeedingState, live: { id: string; serverNow: Date } | null): StateDoc {
@@ -51,7 +67,27 @@ function stateDoc(derived: DerivedFeedingState, live: { id: string; serverNow: D
     day: derived.day,
     countOnDay: derived.countOnDay,
     prev: derived.prev ? { logId: derived.prev.logId, at: at(derived.prev)!, byUid: derived.prev.byUid, byName: derived.prev.byName } : null,
+    ...(derived.slotsFed ? { slotsFed: derived.slotsFed } : {}),
   };
+}
+
+/** feedingSlotFree, mirrored: the state written records this log for its slot, and the slot was not fed that day by a surviving log. */
+function rulesSlotFree(before: StateDoc | null, after: StateDoc, logsBefore: Map<string, Log>, logId: string, slotId: string): boolean {
+  if (after.slotsFed?.[slotId] !== logId) return false;
+  const fedBy = before?.slotsFed?.[slotId];
+  return !(before && before.day === after.day && fedBy && logsBefore.has(fedBy));
+}
+
+/** What `slotsFed` must be: per slot, the first surviving slotted log of the day (by effective time, as readers see it). */
+function expectedSlotsFed(logs: Map<string, Log>, deviceNow: Date): Record<string, string> {
+  const today = petDay(deviceNow, TZ);
+  const fed: Record<string, string> = {};
+  const limit = deviceNow.getTime() + SKEW;
+  const slotted = [...logs.values()]
+    .filter((log) => log.slotId && timeOf(log) <= limit && petDay(new Date(Math.min(timeOf(log), deviceNow.getTime())), TZ) === today)
+    .sort((a, b) => Math.min(timeOf(a), deviceNow.getTime()) - Math.min(timeOf(b), deviceNow.getTime()));
+  for (const log of slotted) if (!(log.slotId! in fed)) fed[log.slotId!] = log.id;
+  return fed;
 }
 
 /* ---- the rules, mirrored ------------------------------------------------ */
@@ -120,7 +156,7 @@ function prng(seed: number) {
   };
 }
 
-function run(seed: number, steps: number) {
+function run(seed: number, steps: number, slots = false) {
   const random = prng(seed);
   const pick = <T,>(items: T[]) => items[Math.floor(random() * items.length)];
   const users = [{ uid: 'sam', name: 'Sam' }, { uid: 'alex', name: 'Alex' }, { uid: 'kim', name: 'Kim' }];
@@ -135,7 +171,8 @@ function run(seed: number, steps: number) {
     return {
       now: deviceNow,
       timeZone: TZ,
-      perDay: PER_DAY,
+      perDay: slots ? null : PER_DAY,
+      dayPlan: slots ? planForDay(SLOT_PET, petDay(deviceNow, TZ)) : null,
       stored,
       latestSurvives: Boolean(state?.lastLogId && logs.has(state.lastLogId)),
       recent: [...logs.values()],
@@ -151,6 +188,7 @@ function run(seed: number, steps: number) {
     assert.equal(after.prev?.logId ?? null, want.prev, `prev: ${where}`);
     assert.equal(after.prev?.at.getTime() ?? null, want.prevAt, `prev time: ${where}`);
     assert.equal(after.countOnDay, want.countOnDay, `count: ${where}`);
+    if (slots) assert.deepEqual(after.slotsFed ?? {}, expectedSlotsFed(logs, deviceNow), `slotsFed: ${where}`);
     assert.ok(honest(after, logs, serverNow), `rules refuse the state (not honest): ${where}`);
     assert.ok(moveAllowed(before, after, logs, serverNow), `rules refuse the state (latest moved back): ${where}`);
   };
@@ -184,14 +222,20 @@ function run(seed: number, steps: number) {
       }
       assert.equal(plan.kind, 'write', `a confirmed feed writes: seed ${seed}`);
       if (plan.kind !== 'write') continue;
-      if (plan.live && plan.repeat === 'none') {
+      const after = stateDoc(plan.state, plan.live ? { id, serverNow: server } : null);
+      if (plan.live && plan.repeat === 'none' && slots) {
+        // D-P5: a plain feed with slots is always for a slot, and the rules' slot check accepts it (not the 90-minute one).
+        assert.ok(plan.slot, `planned plain without a slot on a slot pet: seed ${seed}, ${trace.join(' > ')}`);
+        assert.ok(rulesSlotFree(before, after, logsBefore, id, plan.slot!.id), `planned plain for a slot the rules see fed: seed ${seed}, ${trace.join(' > ')} > ${op}`);
+      } else if (plan.live && plan.repeat === 'none') {
         assert.ok(!rulesRecent(before, logsBefore, server), `planned plain but the rules see a recent feed: seed ${seed}, ${trace.join(' > ')} > ${op}`);
         assert.ok(plan.state.countOnDay <= PER_DAY, `planned plain past a complete day: seed ${seed}`);
       }
       if (plan.live && plan.repeat === 'confirmed') assert.ok(rulesBound(before, logsBefore, plan.confirmOf, server), `confirmation not bound: seed ${seed}, ${trace.join(' > ')}`);
+      if (!plan.live || !slots) assert.equal(plan.slot ?? null, null, 'only live feeds of a slot pet carry a slot');
       const date = plan.live ? server : backdatedAt!;
-      logs.set(id, { id, date, loggedByUid: user.uid, loggedByName: user.name });
-      state = stateDoc(plan.state, plan.live ? { id, serverNow: server } : null);
+      logs.set(id, { id, date, loggedByUid: user.uid, loggedByName: user.name, ...(plan.slot ? { slotId: plan.slot.id } : {}) });
+      state = after;
       trace.push(`${op}:${id}`);
       check(op, before, state, device, server, plan.live ? id : null);
     } else if (op === 'offline') {
@@ -208,7 +252,7 @@ function run(seed: number, steps: number) {
     } else if (logs.size > 0) {
       const target = pick([...logs.keys()].sort());
       if (op === 'delete') {
-        const derived = planFeedDelete({ now: device, timeZone: TZ, logs: [...logs.values()], logId: target, hasState: state !== null });
+        const derived = planFeedDelete({ now: device, timeZone: TZ, logs: [...logs.values()], logId: target, hasState: state !== null, slots: Boolean(state?.slotsFed) });
         logs.delete(target);
         trace.push(`delete:${target}`);
         if (derived) {
@@ -217,7 +261,7 @@ function run(seed: number, steps: number) {
         }
       } else {
         const newDate = new Date(serverNow - Math.floor(1 + random() * 3000) * MIN);
-        const derived = planFeedCorrection({ now: device, timeZone: TZ, logs: [...logs.values()], logId: target, newDate, hasState: state !== null });
+        const derived = planFeedCorrection({ now: device, timeZone: TZ, logs: [...logs.values()], logId: target, newDate, hasState: state !== null, slots: Boolean(state?.slotsFed) });
         logs.set(target, { ...logs.get(target)!, date: newDate });
         trace.push(`correct:${target}`);
         if (derived) {
@@ -232,6 +276,11 @@ function run(seed: number, steps: number) {
 describe('the feeding state always reflects the surviving logs by effective time (model test)', () => {
   it('holds over 300 random sequences of every feeding write: device clocks ±5 min, offline clocks ahead, legacy string dates', () => {
     for (let seed = 1; seed <= 300; seed += 1) run(seed, 40);
+  });
+
+  it('holds with meal slots too: slot-assigned feeds, slotsFed derived from the logs, plain slot feeds the rules accept (D-P5)', () => {
+    // 120 sequences: each step also computes the slot status, about three times the plain run's cost.
+    for (let seed = 1; seed <= 120; seed += 1) run(seed, 40, true);
   });
 
   it('derives latest, previous and today’s count from the logs alone', () => {

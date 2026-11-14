@@ -17,6 +17,7 @@ export type DeviceAuditAction =
   | 'device.exited'
   | 'device.action'
   | 'device.policy_changed'
+  | 'device.quiet_hours_changed'
   | 'pin.set'
   | 'pin.cleared'
   | 'pin.locked'

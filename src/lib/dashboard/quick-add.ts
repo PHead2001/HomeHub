@@ -9,7 +9,7 @@
  */
 import { addLocalDays, dayKey, startOfLocalDay } from './dates';
 import { knownFoodType, newestFirst, parsePortion } from '../pets/care';
-import type { FoodType, PortionUnit } from '../pets/types';
+import type { FoodType, PortionUnit, PetProfile } from '../pets/types';
 import { parseQuickAdd as parseShoppingEntries, type QuickAddEntry } from '../shopping/items';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -20,7 +20,13 @@ const PORTION_UNIT_WORD = /\b(?:cups?|cans?|tins?|pouch(?:es)?|scoops?)\b/i;
 /** `email` is a local matching key only ("for sam" by email name) while member records still carry it; never shown. */
 export type QuickAddMember = { uid: string; email?: string; name: string };
 /** A pet, with its usual portion (Pets' `feedingPlan`) used when the sentence gives no amount. */
-export type QuickAddPet = { id: string; name: string; portion?: { amount: number; unit: PortionUnit } };
+export type QuickAddPet = {
+  id: string;
+  name: string;
+  portion?: { amount: number; unit: PortionUnit };
+  /** The pet's plan fields, so a quick feed shows the same meal-slot status as the card (PE-22h). */
+  profile?: Pick<PetProfile, 'foodSchedule' | 'feedingsPerDay' | 'portionAmount' | 'portionUnit' | 'mealPlan' | 'mealPlanHistory'>;
+};
 export type QuickAddList = { id: string; name: string; type?: string };
 /** A chore room (Chores' `rooms` collection). */
 export type QuickAddRoom = { id: string; name: string };

@@ -67,6 +67,14 @@ export function resilientListener<T>(
      * the minimum delay forever. Default: every answer is confirmed.
      */
     confirmed?: (value: T) => boolean;
+    /**
+     * Wall tablets: after settling on `unauthorized`, subscribe again this long later (and on
+     * `online` / visible), with the permission-denied count reset, instead of staying quiet
+     * until recreated. A tablet's access is ended by its own revocation flow, so a denial that
+     * outlasts the retries (a long token refresh) must never leave a view stale for good.
+     * Default: no recovery (personal listeners are recreated by a context change).
+     */
+    recoverUnauthorizedAfterMs?: number;
   },
   environment: ResilientEnvironment = browserEnvironment(),
 ): ResilientHandle {
@@ -113,6 +121,12 @@ export function resilientListener<T>(
         denials += 1;
         if (denials > PERMISSION_RETRIES) {
           handlers.status?.({ kind: 'unauthorized', error });
+          if (handlers.recoverUnauthorizedAfterMs !== undefined) {
+            denials = 0;
+            failures = 0;
+            pending = true;
+            timer = setTimeout(start, handlers.recoverUnauthorizedAfterMs);
+          }
           return;
         }
       }

@@ -11,11 +11,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { hasRealPhoto, validatePetForm, type PetFormErrors } from "@/lib/pets/care";
+import { hasRealPhoto } from "@/lib/pets/care";
+import { readMealPlan } from "@/lib/pets/meal-plan";
 import type { PetProfile } from "@/lib/pets/types";
 import {
   EMPTY_PET_FORM,
+  NO_DRAFT_ERRORS,
   PetFormFields,
+  hasDraftErrors,
+  validatePetDraft,
+  type PetDraftErrors,
   focusFirstError,
   petFieldsFromForm,
   petFormFromProfile,
@@ -38,7 +43,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
   const [values, setValues] = useState<PetFormState>(EMPTY_PET_FORM);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [isPhotoRemoved, setIsPhotoRemoved] = useState(false);
-  const [errors, setErrors] = useState<PetFormErrors>({});
+  const [errors, setErrors] = useState<PetDraftErrors>(NO_DRAFT_ERRORS);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -59,7 +64,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
     setOriginal(stored);
     setPhotoFile(null);
     setIsPhotoRemoved(false);
-    setErrors({});
+    setErrors(NO_DRAFT_ERRORS);
     setSubmitted(false);
   }
 
@@ -72,7 +77,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
   const change = (patch: Partial<PetFormState>) => {
     const next = { ...values, ...patch };
     setValues(next);
-    if (submitted) setErrors(validatePetForm(next, [], original));
+    if (submitted) setErrors(validatePetDraft(next, [], original, Boolean(pet && readMealPlan(pet))));
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -80,9 +85,9 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
     if (saving) return;
     setSubmitted(true);
     // The name cannot change here, so duplicate names are not re-checked.
-    const nextErrors = validatePetForm(values, [], original);
+    const nextErrors = validatePetDraft(values, [], original, Boolean(pet && readMealPlan(pet)));
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
+    if (hasDraftErrors(nextErrors)) {
       focusFirstError(ID_PREFIX, nextErrors);
       return;
     }
@@ -106,7 +111,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
           <DialogHeader>
             <DialogTitle className="font-headline break-words">Edit {pet?.name}</DialogTitle>
             <DialogDescription>
-              Update the photo, type, feeding schedule and usual portion.
+              Update the photo, type, feeding schedule and meal times.
             </DialogDescription>
           </DialogHeader>
           <PetFormFields
@@ -117,6 +122,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
             onPhotoChange={handlePhotoChange}
             existingPhotoUrl={hasRealPhoto(pet?.photoUrl) ? pet?.photoUrl : undefined}
             nameDisabled
+            pet={pet}
           />
           <DialogFooter className="gap-2 pt-2">
             <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
