@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useAuth } from '@/hooks/use-auth';
+import { useDashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { dashboardTiles } from '@/lib/dashboard/tiles';
 import { useWeatherPreference } from '@/lib/dashboard/use-weather';
 import { DashboardSkeleton } from './dashboard-skeleton';
@@ -12,7 +12,7 @@ import { DashboardSkeleton } from './dashboard-skeleton';
  * the same cells the real grid then fills (HP-26b).
  */
 export function DashboardLoading() {
-  const { permissions } = useAuth();
+  const { permissions } = useDashboardScope();
   const { preference } = useWeatherPreference();
   const weatherEnabled = preference.enabled && Boolean(preference.city);
   const tiles = useMemo(() => dashboardTiles({ permissions, weatherEnabled }), [permissions, weatherEnabled]);

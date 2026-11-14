@@ -91,7 +91,7 @@ export const deviceCodeExpiry = (snapshot: FirebaseFirestore.DocumentSnapshot): 
   return new Date(Math.min(claimed.getTime(), storedAt.getTime() + DEVICE_CODE_TTL_MS));
 };
 
-const codeIsLive = (snapshot: FirebaseFirestore.DocumentSnapshot, now: Date) => {
+export const codeIsLive = (snapshot: FirebaseFirestore.DocumentSnapshot, now: Date) => {
   if (snapshot.get('usedAt') || snapshot.get('revokedAt')) return false;
   const expiry = deviceCodeExpiry(snapshot);
   return Boolean(expiry && expiry > now);
@@ -100,7 +100,7 @@ const codeIsLive = (snapshot: FirebaseFirestore.DocumentSnapshot, now: Date) => 
 const memberName = (data: FirebaseFirestore.DocumentData | undefined): string | null =>
   typeof data?.displayName === 'string' && data.displayName.trim() && !/\S+@\S+/.test(data.displayName) ? data.displayName.trim() : null;
 
-const isDeviceAdmin = (data: FirebaseFirestore.DocumentData | undefined) =>
+export const isDeviceAdmin = (data: FirebaseFirestore.DocumentData | undefined) =>
   Boolean(data && (data.role === 'owner' || data.role === 'admin') && (data.status ?? 'active') === 'active');
 
 type AdminContext = { householdRef: DocRef; household: FirebaseFirestore.DocumentData; actorName: string | null };

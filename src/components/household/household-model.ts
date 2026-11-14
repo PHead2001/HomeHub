@@ -333,6 +333,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'device.exited': 'Signed a wall tablet out',
   'device.action': 'Used a wall tablet with a PIN',
   'device.policy_changed': 'Changed the points PIN for wall tablets',
+  'device.quiet_hours_changed': 'Changed quiet hours for wall tablets',
   'pin.set': 'Set a tablet PIN',
   'pin.cleared': 'Cleared a tablet PIN',
   'pin.locked': 'Tablet PIN locked after too many wrong tries',

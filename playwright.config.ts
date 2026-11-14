@@ -67,6 +67,13 @@ export default defineConfig({
       NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST:
         process.env.NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST
         || process.env.FIREBASE_STORAGE_EMULATOR_HOST!,
+      // Registered wall tablets (docs/modules/devices/README.md, "Flags"): on for the
+      // emulator suite so the device journeys run; production stays dark until both are
+      // set deliberately. A test-only PIN pepper (not a secret: emulator data only).
+      NEXT_PUBLIC_HOMEHUB_DEVICES: process.env.NEXT_PUBLIC_HOMEHUB_DEVICES ?? "true",
+      HOMEHUB_DEVICES_ENABLED: process.env.HOMEHUB_DEVICES_ENABLED ?? "true",
+      HOMEHUB_PIN_PEPPER_CURRENT: process.env.HOMEHUB_PIN_PEPPER_CURRENT ?? "E2E",
+      HOMEHUB_PIN_PEPPER_E2E: process.env.HOMEHUB_PIN_PEPPER_E2E ?? "e2e-only-pin-pepper-not-a-secret-000000000",
     },
   },
   projects: [

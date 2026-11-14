@@ -64,9 +64,9 @@ type PermissionMap = Record<HouseholdPermission, boolean>;
 export type { Principal };
 const PERSONAL = PERSONAL_PRINCIPAL;
 
-// The minimal tablet screen (until the tablet shell lands). Loaded only for a device
-// session: it reads Firestore, which signed-out and personal first paint never load here.
-const DeviceSetUpLanding = lazy(() => import('@/components/devices/set-up-landing'));
+// The wall-tablet shell (docs/modules/devices/README.md, "Tablet shell"). Loaded only for
+// a device session: it reads Firestore, which signed-out and personal first paint never load here.
+const TabletShell = lazy(() => import('@/components/devices/tablet-shell'));
 
 /**
  * Firestore and the rest of the data stack (`@/lib/firebase`, which starts App
@@ -896,7 +896,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={value}>
       {principal.kind !== 'personal'
-        ? <Suspense fallback={null}><DeviceSetUpLanding principal={principal} /></Suspense>
+        ? <Suspense fallback={null}><TabletShell principal={principal} /></Suspense>
         : children}
     </AuthContext.Provider>
   );
