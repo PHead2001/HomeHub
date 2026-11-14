@@ -85,9 +85,11 @@ describe('Pets "today" is the household day, not the device day (PE-7a-c)', () =
     // The shared status (PE-22h) takes the household zone; its legacy branch is feedingStatus with it.
     assert.match(read('src/components/pets/pet-care-summary.tsx'), /mealStatus\(pet, feedings\.logs, now, timeZone\)/);
     assert.match(read('src/lib/pets/meal-plan.ts'), /feedingStatus\(logs, plan\.plan, now, timeZone\)/);
-    assert.match(read('src/components/pets/pet-care-summary.tsx'), /currentMedications\(medications\.logs, now, timeZone\)/);
-    assert.match(read('src/components/medication-log.tsx'), /currentMedications\(pending\.logs, now, timeZone\)/);
     assert.match(read('src/lib/dashboard/facts.ts'), /mealStatus\(pet as unknown as PetProfile, logs, now, timeZone\)/);
+    // Medication countdowns (courses and legacy, P3) come from one hook with the household zone.
+    assert.match(read('src/components/pets/pet-care-summary.tsx'), /useMedicationState\(householdId, pet\.id, now, timeZone\)/);
+    assert.match(read('src/components/medication-log.tsx'), /useMedicationState\(householdId, petId, now, timeZone\)/);
+    assert.match(read('src/components/pets/medication-api.ts'), /medicationDues\(courses\.courses, legacy\.logs, now, timeZone\)/);
     // No device-local day helper is left in the Pets model.
     assert.doesNotMatch(read('src/lib/pets/care.ts'), /isSameLocalDay|getFullYear\(\)/);
   });

@@ -1,9 +1,9 @@
 'use client';
 
-import { useId } from 'react';
+import { useId, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
-  currentMedications,
   feedingCountLabel,
   feedingHeadline,
   feedingPlan,
@@ -20,7 +20,10 @@ import { cn } from '@/lib/utils';
 import { FeedingRing } from './feeding-ring';
 import { MedicationChips } from './medication-chip';
 import { FeedingWeekStrip, MealSlotsStatus, SetMealTimesButton } from './meal-status';
-import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
+import { GiveDoseDialog } from './give-dose-dialog';
+import { useMedicationState } from './medication-api';
+import { medicationAttention } from '@/lib/pets/medication-course';
+import { usePetLogs } from './pet-log-api';
 import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
@@ -46,14 +49,15 @@ export function usePetCare(pet: PetProfile, householdId: string) {
   const { household } = useAuth();
   const timeZone = household?.timeZone ?? null;
   const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', PET_FEEDING_WINDOW);
-  const medications = useMedicationCountdownLogs(householdId, pet.id);
+  // Courses (their next scheduled dose) and legacy countdowns (D-P8), most urgent first (P3).
+  const medications = useMedicationState(householdId, pet.id, now, timeZone);
   const unknown = feedings.loading || Boolean(feedings.error);
   const meal: MealStatus | null = unknown ? null : mealStatus(pet, feedings.logs, now, timeZone);
   // The legacy plan (no confirmed slots), for the detailed form's defaults and older readers.
   const plan = meal?.kind === 'legacy' ? meal.plan : feedingPlan(pet);
   const status: FeedingStatus | null = meal ? ringView(meal) : null;
   // Most urgent first; empty while loading or unavailable.
-  const dues = medications.loading || medications.error ? [] : currentMedications(medications.logs, now, timeZone);
+  const dues = medications.dues;
   // The quick-feed food type waits for the history (never Dry by default while loading).
   const food = quickFeedFood(feedingHistoryState(feedings), feedings.logs[0]?.foodType);
   // The feed operation's fallback for a pet without a feeding-state document (household day).
@@ -81,8 +85,8 @@ function ringView(meal: MealStatus): FeedingStatus {
 /** What the attention strip and the card ring show for a pet (PE-26): a due or missed meal, or an overdue medication. */
 export function petAttention(care: Pick<PetCare, 'meal' | 'dues' | 'medications'>): { meal: string | null; medication: string | null } | null {
   const meal = mealAttention(care.meal);
-  const overdue = care.medications.error ? undefined : care.dues.find((due) => due.state === 'overdue');
-  const medication = overdue ? `${overdue.medication}: ${overdue.label.toLowerCase()}` : null;
+  // Courses and legacy countdowns alike (P3): only an overdue dose asks for attention.
+  const medication = care.medications.error ? null : medicationAttention(care.dues);
   return meal || medication ? { meal, medication } : null;
 }
 
@@ -130,6 +134,10 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
   const { now, timeZone, feedings, medications, plan, meal, status, dues, food, known } = care;
   // The Feed button is described by the fed status it acts on (PE-20b), then the hold hint.
   const statusId = useId();
+  const router = useRouter();
+  // A course chip opens Give dose here (PE-24b); a legacy chip opens the Medication tab, where it is confirmed.
+  const [givingId, setGivingId] = useState<string | null>(null);
+  const giving = givingId ? medications.courses.find((course) => course.id === givingId && course.status === 'active') ?? null : null;
 
   return (
     <>
@@ -174,8 +182,17 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
       {medications.error ? (
         <p className="text-xs text-muted-foreground">{unavailableText('The next medication dose', medications.failure ?? 'retrying')}</p>
       ) : (
-        <MedicationChips dues={dues} max={maxMedicationChips} className="self-start" />
+        <MedicationChips
+          dues={dues}
+          max={maxMedicationChips}
+          className="self-start"
+          onSelect={(due) => {
+            if (due.courseId) setGivingId(due.courseId);
+            else router.push(`/pets/${encodeURIComponent(pet.id)}?tab=medication`);
+          }}
+        />
       )}
+      <GiveDoseDialog petId={pet.id} petName={pet.name} course={giving} onOpenChange={(open) => { if (!open) setGivingId(null); }} />
 
       <div className={cn('flex flex-col gap-2', feedClassName)}>
         {meal?.kind === 'legacy' && onSetMealTimes && <SetMealTimesButton petName={pet.name} onClick={onSetMealTimes} />}

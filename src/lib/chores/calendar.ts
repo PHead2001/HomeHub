@@ -3,12 +3,21 @@
  * medication as day-keyed events, plus Week/Month grid helpers. Pure.
  */
 import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
-import { toDay } from '../../../functions/src/shared/calendar';
+import { addDays, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { choreOccurrenceKey, occurrenceChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { publicDisplayName } from '../member-directory';
 import { currentMedicationsOn, petDay, toDate, type MedicationDue as MedicationCountdown } from '../pets/care';
+import {
+  formatDoseTime,
+  nextDueOccurrence,
+  occurrencesBetween,
+  occurrenceStatus,
+  zonedInstant,
+  takenLegacyKeys,
+  type CourseView,
+} from '../../../functions/src/shared/medication-schedule';
 import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, type ChoreRecord } from './dates';
 
 export type CalendarEventKind = 'chore' | 'maintenance' | 'medication';
@@ -97,9 +106,15 @@ export type MedicationEntry = {
   dosage?: string;
   /** ISO timestamp the dose was logged for. */
   date: string;
-  /** Next dose due (`yyyy-MM-dd`), as entered with the dose. */
+  /** Next dose due (`yyyy-MM-dd`), as entered with the dose (legacy entries only). */
   nextDueDate?: string;
+  /** A course dose (P3) or a one-off dose: never a legacy countdown. */
+  courseId?: string;
+  oneOff?: boolean;
 };
+
+/** A pet's medication course for the calendar (P3). */
+export type CourseEntry = { petId: string; petName: string; course: CourseView };
 
 /**
  * Medication doses that were logged, on the household day they were given
@@ -131,15 +146,17 @@ export function medicationEvents(entries: readonly MedicationEntry[], timeZone?:
  * `today` is the household day (`yyyy-MM-dd`, PE-7b); due days are the stored
  * household calendar days, so "Due today" matches the card and the reminder.
  */
-export function medicationDueEvents(entries: readonly MedicationEntry[], today: string): CalendarEvent[] {
+export function medicationDueEvents(entries: readonly MedicationEntry[], today: string, courses: readonly CourseEntry[] = []): CalendarEvent[] {
   const byPet = new Map<string, MedicationEntry[]>();
   for (const entry of entries) {
     const list = byPet.get(entry.petId);
     if (list) list.push(entry);
     else byPet.set(entry.petId, [entry]);
   }
+  // Legacy names a course took over (D-P8) no longer count down here.
+  const taken = (petId: string) => takenLegacyKeys(courses.filter(entry => entry.petId === petId).map(entry => entry.course));
   return [...byPet.entries()].flatMap(([petId, logs]) =>
-    currentMedicationsOn(logs.map(log => ({ ...log, dosage: log.dosage ?? '' })), today).map(due => ({
+    currentMedicationsOn(logs.map(log => ({ ...log, dosage: log.dosage ?? '' })), today, taken(petId)).map(due => ({
       id: `medication-due:${petId}:${due.medication.trim().toLowerCase()}`,
       kind: 'medication' as const,
       title: due.dosage ? `${due.medication} (${due.dosage})` : due.medication,
@@ -150,6 +167,43 @@ export function medicationDueEvents(entries: readonly MedicationEntry[], today: 
       href: `/pets/${encodeURIComponent(petId)}?tab=medication`,
       medicationDue: { state: due.state, label: due.label },
     })));
+}
+
+/**
+ * Upcoming doses of medication courses (P3, PE-27d): each active course's next
+ * due dose (an overdue one joins the red rail, wherever it falls), then every
+ * scheduled occurrence in the visible range `[fromDay, untilDay]` after it, on
+ * its household day, so a twice-daily course shows both doses each day. The
+ * enumeration is bounded by the range alone (`occurrencesBetween`), never by a
+ * count from an old outstanding dose, so a dense schedule fills every visible
+ * day. A finished or ended course shows none. Occurrences come from the shared
+ * schedule model, as the pet's chips and the reminders compute them.
+ */
+export function courseDueEvents(courses: readonly CourseEntry[], now: Date, timeZone: string | null | undefined, untilDay: string, fromDay?: string): CalendarEvent[] {
+  const zone = timeZone ?? '';
+  const safeZone = safeTimeZone(zone);
+  const rangeEnd = zonedInstant(addDays(untilDay, 1), 0, safeZone) - 1;
+  const rangeStart = zonedInstant(fromDay ?? petDay(now, timeZone), 0, safeZone) - 1;
+  return courses.flatMap(({ petId, petName, course }) => {
+    const next = nextDueOccurrence(course, zone);
+    if (!next || !course.schedule) return [];
+    const later = occurrencesBetween({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, Math.max(next.at, rangeStart), rangeEnd, zone);
+    return [next, ...later].map((occurrence, index) => {
+      const status = occurrenceStatus(occurrence, now, zone);
+      const time = occurrence.time ? ` · ${formatDoseTime(occurrence.time)}` : '';
+      return {
+        id: `medication-due:${petId}:course:${course.id}:${occurrence.key}`,
+        kind: 'medication' as const,
+        title: `${course.dosage ? `${course.name} (${course.dosage})` : course.name}${time}`,
+        subtitle: petName,
+        day: occurrence.day,
+        overdue: index === 0 && status.state === 'overdue',
+        completed: false,
+        href: `/pets/${encodeURIComponent(petId)}?tab=medication&dose=${encodeURIComponent(course.id)}`,
+        medicationDue: { state: status.state, label: status.label },
+      };
+    });
+  });
 }
 
 const KIND_ORDER: Record<CalendarEventKind, number> = { chore: 0, maintenance: 1, medication: 2 };

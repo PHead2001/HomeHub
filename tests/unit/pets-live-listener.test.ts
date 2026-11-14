@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import type { ListenerStatus } from '../../src/lib/dashboard/resilient-listener';
-import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, unavailableText } from '../../src/lib/pets/live-listener';
+import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, settledPetAccess, staleNoticeText, unavailableText, type PetAccess } from '../../src/lib/pets/live-listener';
 
 type Snapshot = { metadata: { fromCache: boolean }; value: number };
 const cached = (value = 1): Snapshot => ({ metadata: { fromCache: true }, value });
@@ -132,5 +132,68 @@ describe('Pets listeners restart when access changes (finding: unauthorized neve
     for (const file of ['src/components/pets-client.tsx', 'src/app/pets/[petId]/page.tsx', 'src/components/pets/pet-log-api.ts']) {
       assert.match(read(file), /petListenerKey\(/, file);
     }
+  });
+});
+
+describe('Pets listeners wait for a settled access key (no second subscription, no loading flash)', () => {
+  type Frame = { uid: string | null; canView: boolean; settled: boolean };
+  /** Renders a sequence of auth states as the hook does: the key each render subscribes with. */
+  function keysOver(frames: Frame[]): (string | null)[] {
+    let kept: PetAccess | null = null;
+    return frames.map((frame) => {
+      kept = settledPetAccess(kept, { uid: frame.uid, canView: frame.canView }, frame.settled);
+      return kept ? petListenerKey('h1/pets', kept) : null;
+    });
+  }
+  const subscriptions = (keys: (string | null)[]) => keys.filter((key, index) => key !== null && key !== keys[index - 1]).length;
+
+  it('nothing subscribes until membership has settled; permissions arriving with it give one subscription', () => {
+    const keys = keysOver([
+      { uid: 'sam', canView: false, settled: false }, // signed in, membership still loading
+      { uid: 'sam', canView: false, settled: false },
+      { uid: 'sam', canView: true, settled: true }, // membership and permissions arrive
+      { uid: 'sam', canView: true, settled: true },
+    ]);
+    assert.deepEqual(keys.slice(0, 2), [null, null]);
+    assert.equal(subscriptions(keys), 1);
+  });
+
+  it('a membership snapshot loading again (a transient empty member) keeps the key: no re-subscribe, no skeleton', () => {
+    const keys = keysOver([
+      { uid: 'sam', canView: true, settled: true },
+      { uid: 'sam', canView: false, settled: false },
+      { uid: 'sam', canView: true, settled: true },
+    ]);
+    assert.equal(new Set(keys).size, 1);
+    assert.equal(subscriptions(keys), 1);
+  });
+
+  it('a real change once settled still recreates the listener (access revoked, granted again, another member)', () => {
+    const keys = keysOver([
+      { uid: 'sam', canView: true, settled: true },
+      { uid: 'sam', canView: false, settled: true },
+      { uid: 'sam', canView: true, settled: true },
+      { uid: 'alex', canView: true, settled: true },
+    ]);
+    assert.equal(subscriptions(keys), 4);
+    assert.match(keys[1]!, /no-view$/);
+  });
+
+  it('the kept access is the same object while nothing changes (the hook settles in one extra render)', () => {
+    const first = settledPetAccess(null, { uid: 'sam', canView: true }, true)!;
+    assert.equal(settledPetAccess(first, { uid: 'sam', canView: true }, true), first);
+    assert.equal(settledPetAccess(first, { uid: null, canView: false }, false), first);
+    assert.equal(settledPetAccess(null, { uid: 'sam', canView: true }, false), null);
+  });
+
+  it('every Pets listener keyed on access uses the settled access and reads as loading until then', () => {
+    const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
+    for (const file of ['src/components/pets-client.tsx', 'src/app/pets/[petId]/page.tsx', 'src/components/pets/pet-log-api.ts', 'src/components/pets/medication-api.ts']) {
+      const text = read(file);
+      assert.match(text, /useSettledPetAccess\(\)/, file);
+      assert.doesNotMatch(text, /canView: Boolean\(permissions/, `${file} keys on raw permissions`);
+    }
+    assert.match(read('src/components/pets/pet-log-api.ts'), /if \(householdId && !access\) return \{ logs: \[\], loading: true/);
+    assert.match(read('src/app/pets/[petId]/page.tsx'), /\(Boolean\(householdId\) && !access\)/);
   });
 });
