@@ -170,7 +170,7 @@ export function CommandPalette({
     if (!pending || pending.kind !== 'feeding' || !previewHouseholdId) return;
     let active = true;
     const intent = pending;
-    feedingPreviewLine(previewHouseholdId, intent.pet.id, previewTimeZone)
+    feedingPreviewLine(previewHouseholdId, intent.pet.id, previewTimeZone, intent.pet.profile)
       .then((line) => { if (active) setLastFed({ intent, line }); })
       .catch(() => { if (active) setLastFed({ intent, line: 'Last feeding unavailable' }); });
     return () => { active = false; };
@@ -473,6 +473,8 @@ export function CommandPalette({
           timeZone,
           opId: feedOp.current.opId,
           confirm: feedAgain && feedAgain.intent === current ? feedAgain.confirm : null,
+          // No amount typed: the meal slot's own portion (PE-22d); a typed amount is kept.
+          portionFromSlot: current.amount === null,
           onLateError: lateError,
         });
         if (result.status === 'needsConfirm') {
@@ -491,7 +493,9 @@ export function CommandPalette({
           group: petFeedToastGroup(pet.id),
           duration: FEED_UNDO_MS,
           title: result.status === 'queued' ? 'Saved on this device' : 'Feeding logged',
-          description: result.status === 'queued' ? `Couldn't check whether someone else fed ${pet.name}.` : `${pet.name} has been fed.`,
+          description: result.status === 'queued'
+            ? `Couldn't check whether someone else fed ${pet.name}.`
+            : result.slot ? `${pet.name}'s ${result.slot.name.toLowerCase()} has been logged.` : `${pet.name} has been fed.`,
           action: (
             <ToastAction
               altText={`Undo feeding for ${pet.name}`}

@@ -8,10 +8,11 @@ import { playFeedback } from '@/lib/feedback';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { formatPortion, type FeedingPlan, type FeedingStatus, type QuickFeedFood } from '@/lib/pets/care';
 import type { KnownFeedings } from '@/lib/pets/feed-decision';
+import { feedTarget, type MealStatus } from '@/lib/pets/meal-plan';
 import type { FeedPetResult } from '@/lib/pets/feed-operation';
 import type { FoodType } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
-import { FeedAgainDialog, useFeedAction, type FeedAction } from './use-feed-action';
+import { FeedAgainDialog, useFeedAction, type FeedAction, type FeedSuccess } from './use-feed-action';
 import styles from './pets.module.css';
 
 const PAWS = [
@@ -47,6 +48,12 @@ export type QuickFeedOptions = {
   petId: string;
   petName: string;
   plan: FeedingPlan;
+  /**
+   * The shared status (PE-22h): with meal slots the feed is for the target slot
+   * ("Feed dinner · 1 can") and logs that slot's portion (PE-22c/d). Null while
+   * loading or unavailable (the legacy plan's portion is shown).
+   */
+  meal?: MealStatus | null;
   /** Today's status; null when it could not be loaded (no goal or celebration claims then). */
   status: FeedingStatus | null;
   /** Food type to log (`quickFeedFood`): not ready while the feeding history loads. */
@@ -69,6 +76,10 @@ export type QuickFeedController = {
   allowed: boolean;
   saving: boolean;
   portion: string;
+  /** The meal and portion the button names ("dinner · 0.5 cans"; the portion alone without slots). */
+  label: string;
+  /** The meal slot a feed now is for ("Dinner"), null without slots or on an off-day. */
+  slotName: string | null;
   /** Food type the feeding is logged with (the latest feeding's, else Dry). */
   foodType: FoodType;
   /** False until the feeding history has loaded; `feed` does nothing until then. */
@@ -94,25 +105,33 @@ export type QuickFeedController = {
  * burst (never under reduced motion), and the toast offers Undo for 10 s to
  * everyone who can log. A call while a feeding is saving is ignored.
  */
-export function useQuickFeed({ petId, petName, plan, food, known }: QuickFeedOptions): QuickFeedController {
+export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickFeedOptions): QuickFeedController {
   const { foodType, ready, fallback: foodFallback } = food;
   const reducedMotion = useReducedMotion();
   const [burst, setBurst] = React.useState<QuickFeedController['burst']>(null);
   const sourceRef = React.useRef<FeedSource>('tap');
   const returnFocus = React.useCallback(() => focusFeedButton(petId), [petId]);
-  const portion = formatPortion(plan.amount, plan.unit);
+  // With slots the target slot's portion; the operation re-checks the slot and logs its portion.
+  const target = meal ? feedTarget(meal) : { label: formatPortion(plan.amount, plan.unit), slotName: null, amount: plan.amount, unit: plan.unit };
+  const portion = formatPortion(target.amount, target.unit);
   // Today's count comes from the operation's committed state, not from this device's view.
-  const reachedGoal = (result: { status: string; countToday: number }) =>
-    Boolean(plan.perDay) && result.status === 'saved' && result.countToday === plan.perDay;
+  const reachedGoal = (result: FeedSuccess) => result.status === 'saved' && (result.slot
+    ? Boolean(result.mealsComplete)
+    : Boolean(plan.perDay) && result.countToday === plan.perDay);
   const action = useFeedAction(petId, petName, {
     onFed: (result) => {
       playFeedback(reachedGoal(result) ? 'celebrate' : 'complete');
       if (!reducedMotion) setBurst({ key: Date.now(), source: sourceRef.current });
     },
-    describe: (result) => ({
-      title: reachedGoal(result) ? `${petName} is all fed for today` : `${petName} fed`,
-      description: foodFallback ? `${portion} of dry food logged (last feeding unavailable).` : `${portion} logged.`,
-    }),
+    describe: (result) => {
+      // What was actually written: the slot and portion the operation chose.
+      const logged = result.portion ? formatPortion(result.portion.amount, result.portion.unit) : portion;
+      const meal = result.slot ? `${result.slot.name}: ` : '';
+      return {
+        title: reachedGoal(result) ? `${petName} is all fed for today` : `${petName} fed`,
+        description: foodFallback ? `${meal}${logged} of dry food logged (last feeding unavailable).` : `${meal}${logged} logged.`,
+      };
+    },
     returnFocus,
   });
   const { allowed, run, saving } = action;
@@ -127,10 +146,10 @@ export function useQuickFeed({ petId, petName, plan, food, known }: QuickFeedOpt
     // Never log before the history says which food the pet eats.
     if (!allowed || !ready || saving) return null;
     sourceRef.current = source;
-    return run({ portion: { amount: plan.amount, unit: plan.unit }, food: foodType, known });
-  }, [allowed, ready, saving, run, plan.amount, plan.unit, foodType, known]);
+    return run({ portion: { amount: target.amount, unit: target.unit }, portionFromSlot: true, food: foodType, known });
+  }, [allowed, ready, saving, run, target.amount, target.unit, foodType, known]);
 
-  return { allowed, saving, portion, foodType, ready, foodFallback, burst, action, feed, returnFocus };
+  return { allowed, saving, portion, label: target.label, slotName: target.slotName, foodType, ready, foodFallback, burst, action, feed, returnFocus };
 }
 
 /**
@@ -185,7 +204,7 @@ export function FeedConfirmPanel({
       {quick.ready ? (
         <p id={titleId} className="break-words text-sm text-foreground">
           Log <span className="font-semibold">{quick.portion}</span> of {quick.foodType.toLowerCase()} food for{' '}
-          <span className="font-semibold">{petName}</span>?
+          <span className="font-semibold">{petName}</span>{quick.slotName ? `'s ${quick.slotName.toLowerCase()}` : ''}?
           {lastFed && <span className="mt-1 block text-xs text-muted-foreground" data-testid="feed-confirm-last-fed">{lastFed}</span>}
           {quick.foodFallback && (
             <span className="mt-1 block text-xs text-muted-foreground">The last feeding couldn&apos;t be loaded, so this logs dry food.</span>
@@ -257,11 +276,11 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
         className="w-full"
         onClick={() => void quick.feed('tap')}
         disabled={quick.saving || !quick.ready}
-        aria-label={`Feed ${options.petName}, ${quick.portion}`}
+        aria-label={`Feed ${options.petName}, ${quick.label.replace(' · ', ', ')}`}
         aria-describedby={describedBy}
       >
         {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
-        Feed · {quick.portion}
+        <span className="min-w-0 truncate">{quick.label === quick.portion ? `Feed · ${quick.portion}` : `Feed ${quick.label}`}</span>
       </Button>
       </ShortcutHint>
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}

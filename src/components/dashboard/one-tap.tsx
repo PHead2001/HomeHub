@@ -271,10 +271,11 @@ export function PetFedButton({ pet, className }: { pet: PetState; className?: st
     }),
   });
   const [failed, setFailed] = useState(false);
-  if (!feed || !action.allowed || pet.fed !== false) return null;
+  // Only for a due meal slot, as the bowl and the card show it (PE-31f, D-P3).
+  if (!feed || !action.allowed || !pet.needsMeal) return null;
   const run = async () => {
     setFailed(false);
-    const result = await action.run({ portion: { amount: feed.amount, unit: feed.unit }, food: feed.foodType, known: feed.known });
+    const result = await action.run({ portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: feed.portionFromSlot, food: feed.foodType, known: feed.known });
     // Null after a real attempt: the operation failed (its toast offers Retry too).
     if (result === null) setFailed(true);
   };

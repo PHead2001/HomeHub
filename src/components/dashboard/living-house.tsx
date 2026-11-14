@@ -91,10 +91,14 @@ function PetIcon({ type, ...props }: { type: string } & LucideProps) {
   return <PawPrint {...props} />;
 }
 
-/** "1 of 2 today. Fed 2 h ago by Sam", or the Pets module's unavailable line. */
+/**
+ * "1 of 2 meals today. Fed 2 h ago by Sam", "waiting by the bowl, Dinner due
+ * 6:00 pm. …" only when a confirmed meal slot is due (D-P3), or the Pets
+ * module's unavailable line.
+ */
 const petStatus = (pet: PetState) => (pet.fed === null
   ? pet.headline
-  : `${pet.fed ? '' : 'waiting by the bowl, '}${pet.countLabel}. ${pet.headline}${pet.feedingHint ? ` (${pet.feedingHint})` : ''}`);
+  : `${pet.needsMeal ? `waiting by the bowl, ${pet.mealLine ?? pet.countLabel}` : pet.countLabel}. ${pet.headline}${pet.feedingHint ? ` (${pet.feedingHint})` : ''}`);
 
 /* ------------------------------------------------------------------------- */
 /* SVG layers (decorative)                                                    */
@@ -131,6 +135,18 @@ function RoomShape({ placement, room, lit, active }: { placement: RoomPlacement;
 }
 
 function PetFigure({ pet, placement, hopping, onHopEnd }: { pet: PetState; placement: PetPlacement; hopping: boolean; onHopEnd: () => void }) {
+  // PE-31e: a pet that was just fed walks away from its bowl (no motion under reduced motion: it is simply elsewhere).
+  const previous = useRef<PetPlacement['mode'] | null>(null);
+  const bowlAt = useRef<{ x: number; y: number } | null>(null);
+  const [leftBowl, setLeftBowl] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (previous.current === 'bowl' && placement.mode !== 'bowl' && bowlAt.current) setLeftBowl(bowlAt.current);
+    if (placement.mode === 'bowl') {
+      bowlAt.current = placement.at;
+      setLeftBowl(null);
+    }
+    previous.current = placement.mode;
+  }, [placement.mode, placement.at]);
   const [p0, p1, p2] = [placement.path[0], placement.path[1] ?? placement.path[0], placement.path[2] ?? placement.path[0]];
   const style = {
     '--p0x': `${p0.x}px`, '--p0y': `${p0.y}px`,
@@ -139,9 +155,15 @@ function PetFigure({ pet, placement, hopping, onHopEnd }: { pet: PetState; place
     transform: `translate(${placement.at.x}px, ${placement.at.y}px)`,
   } as CSSProperties;
   return (
-    <g data-pet-figure={pet.id} data-pet-mode={placement.mode} className={cn(placement.mode === 'wander' && styles.petWalk)} style={style}>
+    <g
+      data-pet-figure={pet.id}
+      data-pet-mode={placement.mode}
+      data-left-bowl={leftBowl ? 'true' : undefined}
+      className={cn(placement.mode === 'wander' && styles.petWalk, leftBowl && styles.leaveBowl)}
+      style={leftBowl ? { ...style, '--from-x': `${leftBowl.x}px`, '--from-y': `${leftBowl.y}px` } as CSSProperties : style}
+    >
       <g className={cn(hopping && styles.hop)} onAnimationEnd={onHopEnd}>
-        <circle cx="0" cy="-9" r="9" className={cn('fill-card', pet.fed === false ? 'stroke-warning' : 'stroke-border')} strokeWidth="1.5" />
+        <circle cx="0" cy="-9" r="9" className={cn('fill-card', pet.needsMeal ? 'stroke-warning' : 'stroke-border')} strokeWidth="1.5" />
         <PetIcon type={pet.type} x={-6} y={-15} width={12} height={12} className="text-foreground" strokeWidth={2} />
       </g>
     </g>
@@ -369,16 +391,16 @@ function PetChip({ pet, describedBy, onSound }: { pet: PetState; describedBy: st
       }}
     >
       <span className="flex items-end gap-0.5">
-        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.fed === false && 'border-warning', pet.feedingHint && 'border-dashed opacity-70')}>
+        <span className={cn('flex h-8 w-8 items-center justify-center rounded-full border bg-card text-foreground', pet.needsMeal && 'border-warning', pet.feedingHint && 'border-dashed opacity-70')}>
           <PetIcon type={pet.type} aria-hidden className="h-4 w-4" />
         </span>
-        {pet.fed === false && (
+        {pet.needsMeal && (
           <svg aria-hidden viewBox="0 0 20 10" className="mb-0.5 h-2.5 w-5 text-warning">
             <path d="M1 2h18l-2.5 7h-13z" fill="currentColor" />
           </svg>
         )}
       </span>
-      <span className={cn(styles.yardLabel, styles.petName, 'max-w-[4.5rem] truncate', pet.fed === false ? 'font-medium text-warning' : 'text-muted-foreground')}>{pet.name}</span>
+      <span className={cn(styles.yardLabel, styles.petName, 'max-w-[4.5rem] truncate', pet.needsMeal ? 'font-medium text-warning' : 'text-muted-foreground')}>{pet.name}</span>
     </Link>
   );
 }

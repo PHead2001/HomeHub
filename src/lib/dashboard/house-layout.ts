@@ -253,7 +253,7 @@ export type PetPlacement = {
  * a bowl room they keep their own yard spot, clamped to the scene.
  */
 export function placePets(
-  pets: ReadonlyArray<{ id: string; fed: boolean | null }>,
+  pets: ReadonlyArray<{ id: string; fed: boolean | null; needsMeal?: boolean }>,
   layout: HouseLayout,
   roomNames: Readonly<Record<string, string>> = {},
 ): PetPlacement[] {
@@ -264,7 +264,8 @@ export function placePets(
     ?? rooms.find((room) => room.floor === bottomFloor)
     ?? null;
   const bowl: Point = bowlRoom ? floorPoint(bowlRoom, 0.86) : yard(0);
-  const hungryCount = pets.filter((pet) => pet.fed === false).length;
+  // Only a confirmed meal slot that is due sends a pet to the bowl (D-P3, PE-31d).
+  const hungryCount = pets.filter((pet) => pet.needsMeal).length;
   // The strip from the bowl to the room's left wall (inner inset plus the pet's radius).
   const from = bowl.x - 14;
   const to = bowlRoom ? bowlRoom.x + HOUSE_GEOMETRY.inset + PET_RADIUS : from;
@@ -279,7 +280,7 @@ export function placePets(
 
   return pets.map((pet, i) => {
     const home = rooms.length > 0 ? rooms[(i * 2) % rooms.length] : null;
-    if (pet.fed === false) {
+    if (pet.needsMeal) {
       const yardAt = yard(i + 1);
       const at = bowlRoom ? bowlSpot(hungry) : { x: Math.min(yardAt.x, layout.width - PET_RADIUS), y: yardAt.y };
       hungry += 1;

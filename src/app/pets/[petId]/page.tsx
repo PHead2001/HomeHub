@@ -11,7 +11,8 @@ import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
 import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
 import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
-import { feedingPlan, formatPortion, petPhotoMorphName } from '@/lib/pets/care';
+import { feedingPlan, formatPortion, loggerName, petPhotoMorphName } from '@/lib/pets/care';
+import { readMealPlan } from '@/lib/pets/meal-plan';
 import { morphStyle } from '@/lib/motion';
 import type { PetProfile } from '@/lib/pets/types';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -33,6 +34,7 @@ import { EmptyState } from '@/components/empty-state';
 import { PetPhoto } from '@/components/pets/pet-photo';
 import { petTypeLabel } from '@/components/pets/living-pet-card';
 import { PetCareSummary } from '@/components/pets/pet-care-summary';
+import { MealPlanList, SetMealTimesButton } from '@/components/pets/meal-status';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
 import type { PetFields } from '@/components/pets/pet-form';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
@@ -44,7 +46,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { toast, toastError } = useToast();
-  const { currentUser, permissions, loading: authLoading } = useAuth();
+  const { currentUser, permissions, household, loading: authLoading } = useAuth();
   const householdId = currentUser?.householdId ?? null;
   const canEdit = Boolean(permissions['pets.editProfiles']);
 
@@ -111,7 +113,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
     if (!householdId || !pet) return false;
     try {
-      await updatePet(householdId, pet.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: pet.photoUrl });
+      // Meal times are confirmed by the signed-in member, on the household's day (PE-22k).
+      const confirmer = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser), timeZone: household?.timeZone ?? null } : undefined;
+      await updatePet(householdId, pet.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: pet.photoUrl }, confirmer);
       setPetToEdit(null);
       toast({ title: 'Pet updated', description: `${pet.name}'s details are saved.` });
       return true;
@@ -190,6 +194,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   }
 
   const plan = feedingPlan(pet);
+  const mealPlan = readMealPlan(pet);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -246,7 +251,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                 <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
               </div>
               <div className="flex flex-col gap-3">
-                <PetCareSummary pet={pet} householdId={householdId} maxMedicationChips={4} />
+                <PetCareSummary pet={pet} householdId={householdId} maxMedicationChips={4} showWeek onSetMealTimes={canEdit ? () => setPetToEdit(pet) : undefined} />
               </div>
             </CardContent>
           </Card>
@@ -256,23 +261,42 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
               <CardTitle className="font-headline text-xl">Info</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              <div className="flex items-start gap-3">
-                <CalendarDays aria-hidden className="mt-1 h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                <div>
-                  <h2 className="font-semibold">Feeding schedule</h2>
-                  <p className="text-muted-foreground">{pet.foodSchedule}</p>
+              {mealPlan ? (
+                <div className="flex items-start gap-3">
+                  <Utensils aria-hidden className="mt-1 h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <h2 className="font-semibold">Meal times</h2>
+                    <MealPlanList slots={mealPlan.slots} />
+                    {canEdit && (
+                      <Button type="button" variant="outline" size="sm" className="mt-1" onClick={() => setPetToEdit(pet)}>
+                        Edit meal times
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <Utensils aria-hidden className="mt-1 h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                <div>
-                  <h2 className="font-semibold">Usual portion</h2>
-                  <p className="text-muted-foreground">
-                    {formatPortion(plan.amount, plan.unit)}
-                    {plan.perDay ? `, ${plan.perDay} ${plan.perDay === 1 ? 'time' : 'times'} a day` : ''}
-                  </p>
+              ) : (
+                <div className="flex items-start gap-3">
+                  <Utensils aria-hidden className="mt-1 h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <h2 className="font-semibold">Usual portion</h2>
+                    <p className="text-muted-foreground">
+                      {formatPortion(plan.amount, plan.unit)}
+                      {plan.perDay ? `, ${plan.perDay} ${plan.perDay === 1 ? 'time' : 'times'} a day` : ''}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">No meal times are set, so meals are not tracked by time.</p>
+                    {canEdit && <SetMealTimesButton petName={pet.name} onClick={() => setPetToEdit(pet)} className="mt-2 w-auto" />}
+                  </div>
                 </div>
-              </div>
+              )}
+              {pet.foodSchedule ? (
+                <div className="flex items-start gap-3">
+                  <CalendarDays aria-hidden className="mt-1 h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <h2 className="font-semibold">{mealPlan ? 'Schedule notes' : 'Feeding schedule'}</h2>
+                    <p className="break-words text-muted-foreground">{pet.foodSchedule}</p>
+                  </div>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </div>
@@ -285,7 +309,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
               <TabsTrigger value="care"><Sparkles className="mr-2" /> Care</TabsTrigger>
             </TabsList>
             <TabsContent value="feeding">
-              <FeedingLogClient petId={pet.id} petName={pet.name} plan={plan} />
+              <FeedingLogClient petId={pet.id} petName={pet.name} plan={plan} pet={pet} />
             </TabsContent>
             <TabsContent value="medication">
               <MedicationLogClient petId={pet.id} />

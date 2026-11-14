@@ -290,7 +290,7 @@ describe('peeks (H26)', () => {
   it('tags every linked brief phrase with what its peek shows', () => {
     const facts = {
       chores: { mineDueToday: 2, mineOverdue: 0 },
-      pets: { pets: [{ id: 'maple', name: 'Maple', fed: false }], hungry: 1, unknown: 0 },
+      pets: { pets: [{ id: 'maple', name: 'Maple', fed: false, needsMeal: true }], hungry: 1, unknown: 0 },
     } as unknown as DashboardFacts;
     const brief = buildMorningBrief(facts, { greeting: 'Morning', name: 'Alex' });
     const linked = brief.segments.filter((segment) => segment.href);

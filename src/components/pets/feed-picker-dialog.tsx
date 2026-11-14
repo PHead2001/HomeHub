@@ -5,30 +5,37 @@ import { ChevronLeft, Utensils } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { feedingCountLabel, feedingHeadline, formatPortion } from '@/lib/pets/care';
+import { feedTarget, mealCountLabel, mealHeadline } from '@/lib/pets/meal-plan';
 import type { PetProfile } from '@/lib/pets/types';
 import { usePetCare, type PetCare } from './pet-care-summary';
 import { FeedConfirmPanel, useQuickFeed } from './quick-feed-button';
 
-/** "Fed 12 min ago by Sam · 1 of 2 today", "Checking…" while loading, or "Last feeding unavailable" (PE-19). */
+/**
+ * "Fed 12 min ago by Sam · 1 of 2 today", with meal slots the card's slot status
+ * ("Dinner due 6:00 pm · 1 of 2 meals today", PE-19b), "Checking…" while
+ * loading, or "Last feeding unavailable" (PE-19).
+ */
 function fedStatusLine(care: PetCare): string {
   if (care.feedings.loading) return 'Checking last feeding…';
-  if (!care.status) return 'Last feeding unavailable';
+  if (!care.status || !care.meal) return 'Last feeding unavailable';
+  if (care.meal.kind === 'slots') return `${mealHeadline(care.meal)} · ${mealCountLabel(care.meal)}`;
   const headline = feedingHeadline(care.status, care.now, care.timeZone);
   return care.status.last ? `${headline} · ${feedingCountLabel(care.status)}` : headline;
 }
 
 function ConfirmStep({ pet, householdId, onDone }: { pet: PetProfile; householdId: string; onDone: () => void }) {
   const care = usePetCare(pet, householdId);
-  const quick = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, status: care.status, food: care.food, known: care.known });
+  const quick = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, meal: care.meal, status: care.status, food: care.food, known: care.known });
   const titleId = React.useId();
-  const lastFed = care.status?.last ? fedStatusLine(care) : null;
+  const lastFed = care.status?.last || care.meal?.kind === 'slots' ? fedStatusLine(care) : null;
   return <FeedConfirmPanel petName={pet.name} quick={quick} titleId={titleId} onDone={onDone} lastFed={lastFed} />;
 }
 
 /** One pet in the list, with its portion and fed status. */
 function PetRow({ pet, householdId, onChoose }: { pet: PetProfile; householdId: string; onChoose: () => void }) {
   const care = usePetCare(pet, householdId);
-  const portion = formatPortion(care.plan.amount, care.plan.unit);
+  const target = care.meal ? feedTarget(care.meal) : null;
+  const portion = target ? formatPortion(target.amount, target.unit) : formatPortion(care.plan.amount, care.plan.unit);
   const status = fedStatusLine(care);
   return (
     <Button

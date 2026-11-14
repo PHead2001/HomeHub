@@ -16,8 +16,9 @@ import { playFeedback } from '@/lib/feedback';
 import { formatPortion, isValidPortion, knownFoodType, PORTION_MAX, UNIT_LABELS, type FeedingPlan } from '@/lib/pets/care';
 import { authorMayDelete, knownFromLogs } from '@/lib/pets/feed-decision';
 import { feedingTimes, mayCorrectFeedTime } from '@/lib/pets/feed-plan';
+import { feedTarget, mealStatus, slotNameOf } from '@/lib/pets/meal-plan';
 import { undoFeed } from '@/lib/pets/feed-operation';
-import { FOOD_TYPES, PORTION_UNITS, type FoodType, type PetFeedingLog } from '@/lib/pets/types';
+import { FOOD_TYPES, PORTION_UNITS, type FoodType, type PetFeedingLog, type PetProfile } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { Skeleton } from './ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -55,6 +56,8 @@ interface FeedingLogProps {
   petName?: string;
   /** Planned portion; the form defaults to it (section 3: no more "1" when the plan says 1.5). */
   plan: FeedingPlan;
+  /** The pet: with meal slots the form defaults to the target meal's portion and history names each feeding's meal. */
+  pet?: PetProfile;
 }
 
 function defaults(plan: FeedingPlan, foodType: FoodType = 'Dry'): LogValues {
@@ -81,7 +84,7 @@ function backdateFor(chosen: Date | null): { future: true } | { future: false; b
   return { future: false, backdatedAt: chosen.getTime() < nowMs - BACKDATE_MARGIN_MS ? chosen : undefined };
 }
 
-export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingLogProps) {
+export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan, pet }: FeedingLogProps) {
   const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
   const now = useNow();
@@ -101,6 +104,9 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
   };
   const [formOpen, setFormOpen] = useState(false);
   const lastFoodType = knownFoodType(logs[0]?.foodType);
+  // With meal slots the form defaults to the portion of the meal a feed now is for (PE-22d).
+  const target = pet && !loading && !error ? feedTarget(mealStatus(pet, logs, now, household?.timeZone)) : null;
+  const plan: FeedingPlan = target ? { ...legacyPlan, amount: target.amount, unit: target.unit } : legacyPlan;
   // Every feeding, live or backdated, goes through the shared feed operation.
   const feeding = useFeedAction(petId, petName, {
     onFed: () => {
@@ -371,10 +377,13 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
             const recordedSameDay = times.effective && times.recorded && format(times.effective, 'yyyy-MM-dd') === format(times.recorded, 'yyyy-MM-dd');
             const recorded = times.recorded ? format(times.recorded, recordedSameDay ? 'p' : 'PPP p') : null;
             const canCorrect = mayCorrectFeedTime(log, currentUser?.uid, canDelete, now);
+            // The meal this feeding recorded, named by the plan of its own day (PE-22g).
+            const mealName = pet ? slotNameOf(pet, log, now, household?.timeZone) : null;
             return (
               <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
                 <div className="min-w-0 space-y-0.5">
                   <p className="font-semibold text-foreground">
+                    {mealName ? `${mealName} · ` : ''}
                     {formatPortion(Number(log.cups) || 0, log.foodAmountType)} of {String(log.foodType || 'dry').toLowerCase()} food
                   </p>
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">

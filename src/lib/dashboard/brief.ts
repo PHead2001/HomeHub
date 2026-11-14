@@ -86,8 +86,8 @@ export function buildMorningBrief(facts: DashboardFacts, options: { greeting: st
 
   const pets = facts.pets;
   if (pets && pets.pets.length > 0) {
-    // Only pets known to be unfed; an unavailable history (fed === null) makes no claim.
-    const hungry = pets.pets.filter((pet) => pet.fed === false);
+    // Only pets with a meal slot due now (D-P3); an unavailable history or an unconfirmed plan makes no claim.
+    const hungry = pets.pets.filter((pet) => pet.needsMeal);
     if (hungry.length === 1) {
       phrases.push([{ text: `${hungry[0].name}'s next meal`, href: petFeedingHref(hungry[0].id), peek: { kind: 'pet', id: hungry[0].id } }, { text: ' is due' }]);
     } else if (hungry.length > 1) {
