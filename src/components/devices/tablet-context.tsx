@@ -48,6 +48,8 @@ export type TabletContextValue = {
   household: TabletHousehold | null;
   roster: RosterPerson[];
   notices: DeviceNotice[];
+  /** False when a notice source returned its full window (the latest 50): older ones exist on phones. */
+  noticesComplete: boolean;
   data: DashboardData;
   shell: ShellState;
   /** "Who's here?" or the PIN pad is open: other dialogs step aside (`settingsLayer`). */

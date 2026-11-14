@@ -39,7 +39,7 @@ import { householdDayStart, householdDayZone, useHouseholdToday } from '@/lib/ho
 import { deduplicateNotifications, parseNotificationDoc } from '@/lib/notifications';
 import { NOTIFICATION_WINDOW_DAYS } from './notification-display';
 import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
-import type { DashboardFacts, RawDoc } from './facts';
+import { SECTION_LIMITS, type DashboardFacts, type RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
 import { leaderboardEnabledFrom } from './streaks';
 import { deviceStorage, readHouseOutline, readHouseSnapshot, writeHouseSnapshot, type HouseOutlineRoom } from './house-snapshot';
@@ -139,7 +139,13 @@ type PlanId = (typeof PLAN)[number]['id'];
 const plannedFor = (access: Access) => PLAN.filter((entry) => access[entry.access]);
 
 export type DashboardData = {
+  /** The dashboard's facts: lists hold short previews (`PREVIEW_LIMITS`). */
   facts: DashboardFacts;
+  /**
+   * Only with `{ sections: true }`: the same facts with no caps (`SECTION_LIMITS`), for full
+   * section views (a wall tablet's Chores, Maintenance, Calendar). Null otherwise.
+   */
+  sectionFacts: DashboardFacts | null;
   /** True until every permitted, readable section has delivered its first snapshot. */
   loading: boolean;
   /** Failure keys of failed or unauthorized groups (sections, and `feed:<petId>`); sections also appear in `facts.unavailable`. */
@@ -162,7 +168,8 @@ export type DashboardData = {
   houseOutline: HouseOutlineRoom[] | null;
 };
 
-export function useDashboardData(enabled = true): DashboardData {
+export function useDashboardData(enabled = true, options: { sections?: boolean } = {}): DashboardData {
+  const wantSections = Boolean(options.sections);
   // A person by default; a registered wall tablet provides its own scope (dashboard-scope.tsx).
   const scope = useDashboardScope();
   const { permissions } = scope;
@@ -411,9 +418,17 @@ export function useDashboardData(enabled = true): DashboardData {
 
   // A pet whose feeding history is stale says so wherever its count or fed state shows.
   const facts = useMemo(() => withFeedingHints(assembled, sections, zone), [assembled, sections, zone]);
+
+  // Full section views read the same documents with no preview caps (never a preview fact).
+  const sectionFacts = useMemo(() => (wantSections ? withFeedingHints(assembleDashboardFacts(
+    current.raw,
+    failed,
+    { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: false },
+    { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS, canView, limits: SECTION_LIMITS },
+  ).facts, sections, zone) : null), [wantSections, current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canView, sections]);
   const { facts: shown, outline } = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
 
-  return { facts: shown, loading, failed, sections, retry, now, today, timeZone: zone, context, houseOutline: outline };
+  return { facts: shown, sectionFacts, loading, failed, sections, retry, now, today, timeZone: zone, context, houseOutline: outline };
 }
 
 /**

@@ -127,6 +127,8 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
   const [household, setHousehold] = useState<TabletHousehold | null>(null);
   const [roster, setRoster] = useState<RosterPerson[]>([]);
   const [noticesByCategory, setNoticesByCategory] = useState<Record<string, DeviceNotice[]>>({});
+  // A source that returned its full window (the latest DEVICE_NOTICES_LIMIT) may have older notices.
+  const [noticesWindowFull, setNoticesWindowFull] = useState<Record<string, boolean>>({});
   const [ending, setEnding] = useState(false);
   const [listenKey, setListenKey] = useState(0);
   const stops = useRef<Array<() => void>>([]);
@@ -278,6 +280,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
         ), (snapshot) => {
           const notices = snapshot.docs.map((d) => parseDeviceNotice(d.id, d.data(), Date.now())).filter((notice): notice is DeviceNotice => notice !== null);
           setNoticesByCategory((previous) => ({ ...previous, [category]: notices }));
+          setNoticesWindowFull((previous) => ({ ...previous, [category]: snapshot.size >= DEVICE_NOTICES_LIMIT }));
         }, () => undefined));
       }
     });
@@ -361,6 +364,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
             household={household}
             roster={roster}
             notices={notices}
+            noticesComplete={!Object.entries(noticesWindowFull).some(([category, full]) => full && deviceNotificationCategories(settings.sections).includes(category as never))}
             endSession={endSession}
             runExit={runExit}
           />
@@ -428,11 +432,14 @@ function TabletFrame(props: {
   household: TabletHousehold;
   roster: RosterPerson[];
   notices: DeviceNotice[];
+  noticesComplete: boolean;
   endSession: (end: SessionEnd) => void;
   runExit: TabletContextValue['runExit'];
 }) {
-  const { householdId, deviceId, generation, settings, household, roster, notices, endSession, runExit } = props;
-  const data = useDashboardData();
+  const { householdId, deviceId, generation, settings, household, roster, notices, noticesComplete, endSession, runExit } = props;
+  // Section views need the uncapped facts (never the dashboard's previews).
+  const data = useDashboardData(true, { sections: true });
+  const sectionFacts = data.sectionFacts ?? {};
   const router = useRouter();
   const pathname = usePathname();
   const search = useSearchParams();
@@ -450,9 +457,9 @@ function TabletFrame(props: {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
   const known: KnownTargets = useMemo(() => ({
-    roomIds: data.facts.chores ? new Set(data.facts.chores.rooms.map((room) => room.id)) : undefined,
-    listIds: data.facts.shopping ? new Set(data.facts.shopping.lists.map((list) => list.id)) : undefined,
-  }), [data.facts.chores, data.facts.shopping]);
+    roomIds: sectionFacts.chores ? new Set(sectionFacts.chores.rooms.map((room) => room.id)) : undefined,
+    listIds: sectionFacts.shopping ? new Set(sectionFacts.shopping.lists.map((list) => list.id)) : undefined,
+  }), [sectionFacts.chores, sectionFacts.shopping]);
 
   const startPath = useCallback(() => pathOfView(startView(settings.startPage, settings.sections, known).view), [known, settings.sections, settings.startPage]);
 
@@ -643,6 +650,7 @@ function TabletFrame(props: {
     household,
     roster,
     notices,
+    noticesComplete,
     data,
     shell,
     prompting: prompt !== null || unlocking > 0,

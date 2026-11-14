@@ -11,6 +11,7 @@ import { CheckSquare, PawPrint, Pill } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { matchLocalIntents, type LocalIntent } from '@/lib/devices/quick-add-local';
+import { quickAddTargets } from '@/lib/devices/tablet-sections';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { useTablet } from './tablet-context';
 
@@ -21,12 +22,8 @@ export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
   const [text, setText] = useState('');
   useUnsavedInput(text.trim().length > 0);
 
-  const pets = useMemo(() => (data.facts.pets?.pets ?? []).map((pet) => ({ id: pet.id, name: pet.name })), [data.facts.pets]);
-  const chores = useMemo(() => {
-    const seen = new Map<string, { id: string; title: string }>();
-    for (const chore of [...(data.facts.chores?.todayWork ?? []), ...(data.facts.chores?.nextUp ?? [])]) seen.set(chore.id, { id: chore.id, title: chore.task });
-    return [...seen.values()];
-  }, [data.facts.chores]);
+  // Every pet and every open chore of the week (uncapped section facts, never a preview).
+  const { pets, chores } = useMemo(() => quickAddTargets(data.sectionFacts ?? {}), [data.sectionFacts]);
   const intents = matchLocalIntents(text, { pets, chores, sections: settings.sections });
 
   const choose = (intent: LocalIntent) => {

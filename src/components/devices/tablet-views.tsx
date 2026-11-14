@@ -14,7 +14,20 @@ import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-s
 import { Bell, CalendarDays, CheckSquare, PawPrint, ShoppingCart, Wrench } from 'lucide-react';
 import { DashboardLoading } from '@/components/dashboard/dashboard-loading';
 import { cn } from '@/lib/utils';
+import {
+  calendarSection,
+  choresSection,
+  maintenanceSection,
+  petsSection,
+  shoppingListsSection,
+} from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
+
+// Every section view reads the UNCAPPED section facts (`data.sectionFacts`, SECTION_LIMITS)
+// through the selectors of src/lib/devices/tablet-sections.ts, a list's own live items, or the
+// tablet's own notice listeners; never the dashboard's preview facts. Long lists
+// scroll inside the main area (the page itself never scrolls). A unit test reads this file
+// and fails if it reads the preview facts.
 
 const Dashboard = dynamic(() => import('@/components/dashboard/dashboard').then((mod) => mod.Dashboard), { ssr: false, loading: () => <DashboardLoading /> });
 
@@ -42,11 +55,11 @@ const loadingOr = (ready: boolean, failed: boolean): string | null =>
 
 function ChoresView({ roomId }: { roomId?: string }) {
   const { data } = useTablet();
-  const chores = data.facts.chores;
+  const section = choresSection(data.sectionFacts ?? {}, roomId);
   const failed = data.failed.has('chores');
-  const room = roomId ? chores?.rooms.find((r) => r.id === roomId) : undefined;
-  const work = chores?.todayWork ?? [];
-  const status = loadingOr(Boolean(chores), failed);
+  const room = section?.kind === 'room' ? section.room : undefined;
+  const work = section?.kind === 'today' ? section.work : [];
+  const status = loadingOr(Boolean(section), failed);
   return (
     <Section title={room ? `Chores: ${room.name}` : "Today's chores"} icon={CheckSquare} testId="tablet-view-chores" empty={status}>
       {room ? (
@@ -70,12 +83,12 @@ function ChoresView({ roomId }: { roomId?: string }) {
 
 function PetsView() {
   const { data } = useTablet();
-  const pets = data.facts.pets;
+  const pets = petsSection(data.sectionFacts ?? {});
   const status = loadingOr(Boolean(pets), data.failed.has('pets'));
   return (
-    <Section title="Pets" icon={PawPrint} testId="tablet-view-pets" empty={status ?? (pets && pets.pets.length === 0 ? 'No pets yet.' : null)}>
+    <Section title="Pets" icon={PawPrint} testId="tablet-view-pets" empty={status ?? (pets && pets.length === 0 ? 'No pets yet.' : null)}>
       <ul className="space-y-2">
-        {pets?.pets.map((pet) => (
+        {pets?.map((pet) => (
           <Row key={pet.id} title={pet.name} detail={`${pet.countLabel} · ${pet.headline}`} tone={pet.fed === false ? 'warn' : pet.fed ? 'ok' : null} testId={`tablet-pet-${pet.id}`} />
         ))}
       </ul>
@@ -108,9 +121,9 @@ function useListItems(householdId: string, listId: string | undefined) {
 
 function ShoppingView({ listId }: { listId?: string }) {
   const { data, householdId, navigate } = useTablet();
-  const shopping = data.facts.shopping;
-  const status = loadingOr(Boolean(shopping), data.failed.has('shopping'));
-  const lists = shopping?.lists ?? [];
+  const allLists = shoppingListsSection(data.sectionFacts ?? {});
+  const status = loadingOr(Boolean(allLists), data.failed.has('shopping'));
+  const lists = allLists ?? [];
   const selected = listId ? lists.find((list) => list.id === listId) : undefined;
   const live = useListItems(householdId, listId);
   return (
@@ -149,12 +162,12 @@ function ShoppingView({ listId }: { listId?: string }) {
 
 function MaintenanceView() {
   const { data } = useTablet();
-  const maintenance = data.facts.maintenance;
-  const status = loadingOr(Boolean(maintenance), data.failed.has('maintenance'));
+  const items = maintenanceSection(data.sectionFacts ?? {});
+  const status = loadingOr(Boolean(items), data.failed.has('maintenance'));
   return (
-    <Section title="Maintenance" icon={Wrench} testId="tablet-view-maintenance" empty={status ?? (maintenance && maintenance.items.length === 0 ? 'Nothing needs attention.' : null)}>
+    <Section title="Maintenance" icon={Wrench} testId="tablet-view-maintenance" empty={status ?? (items && items.length === 0 ? 'Nothing needs attention.' : null)}>
       <ul className="space-y-2">
-        {maintenance?.items.map((item, index) => <Row key={`${item.label}-${index}`} title={item.label} detail={`${item.statusLabel} · ${item.detail}`} tone={item.overdue ? 'warn' : null} />)}
+        {items?.map((item, index) => <Row key={`${item.label}-${index}`} title={item.label} detail={`${item.statusLabel} · ${item.detail}`} tone={item.overdue ? 'warn' : null} />)}
       </ul>
     </Section>
   );
@@ -163,8 +176,7 @@ function MaintenanceView() {
 /** Calendar has no data of its own: upcoming chores and maintenance from the sections that are on. */
 function CalendarView() {
   const { data, settings } = useTablet();
-  const chores = settings.sections.chores ? data.facts.chores?.nextUp ?? [] : [];
-  const maintenance = settings.sections.maintenance ? (data.facts.maintenance?.items ?? []).filter((item) => item.days !== null) : [];
+  const { chores, maintenance } = calendarSection(data.sectionFacts ?? {}, settings.sections);
   const empty = chores.length === 0 && maintenance.length === 0 ? 'Nothing coming up.' : null;
   return (
     <Section title="Coming up" icon={CalendarDays} testId="tablet-view-calendar" empty={empty}>
@@ -177,7 +189,7 @@ function CalendarView() {
 }
 
 function NoticesView() {
-  const { notices, household } = useTablet();
+  const { notices, noticesComplete, household } = useTablet();
   const format = (date: Date | null) => (date ? new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: household?.timeZone }).format(date) : '');
   return (
     <Section title="Household notices" icon={Bell} testId="tablet-view-notices" empty={notices.length === 0 ? 'No household notices.' : null}>
@@ -192,6 +204,7 @@ function NoticesView() {
           </li>
         ))}
       </ul>
+      {!noticesComplete && <p className="text-sm text-muted-foreground" data-testid="tablet-notices-window">These are the latest household notices; older ones are in HomeHub on a phone.</p>}
     </Section>
   );
 }
