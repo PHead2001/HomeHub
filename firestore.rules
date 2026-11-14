@@ -793,13 +793,20 @@ service cloud.firestore {
         request.resource.data.get('loggedByName', null) == resource.data.get('loggedByName', null);
     }
 
-    // `loggedAt`, `repeat`, `clockSource` and `backdated` come from the shared feed
-    // operation (src/lib/pets/feed-operation.ts, rules stage R1). They stay
-    // optional: older clients write none of them.
+    // `loggedAt`, `repeat`, `clockSource`, `backdated` and `confirmOf` come from the
+    // shared feed operation (src/lib/pets/feed-transaction.ts); `originalDate` and
+    // `dateCorrected*` from a time correction (PE-5e). Stage R2 requires the
+    // operation's fields on every new feeding (feedingCreateR2).
     function validFeedingLogFields(data, keys) {
       return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName',
-          'loggedAt', 'repeat', 'clockSource', 'backdated']) &&
+          'loggedAt', 'repeat', 'clockSource', 'backdated', 'confirmOf',
+          'originalDate', 'dateCorrectedAt', 'dateCorrectedByUid', 'dateCorrectedByName']) &&
         (!('date' in keys) || dateValue(data.date)) &&
+        (!('confirmOf' in keys) || data.confirmOf == null || nonEmptyString(data.confirmOf, 200)) &&
+        (!('originalDate' in keys) || data.originalDate == null || dateValue(data.originalDate)) &&
+        (!('dateCorrectedAt' in keys) || data.dateCorrectedAt is timestamp) &&
+        (!('dateCorrectedByUid' in keys) || nonEmptyString(data.dateCorrectedByUid, 128)) &&
+        (!('dateCorrectedByName' in keys) || optionalString(data.dateCorrectedByName, 200)) &&
         (!('loggedAt' in keys) || data.loggedAt is timestamp) &&
         (!('repeat' in keys) || data.repeat in ['none', 'confirmed', 'offline']) &&
         (!('clockSource' in keys) || data.clockSource in ['device', 'server']) &&
@@ -840,6 +847,119 @@ service cloud.firestore {
         resource.data.get('loggedByUid', null) == request.auth.uid &&
         resource.data.get('loggedAt', null) is timestamp &&
         request.time < resource.data.loggedAt + duration.value(10, 'm');
+    }
+
+    // --- Feeding rules, stage R2 (PE-23f/g/h, PE-5e) -----------------------
+    // A device clock may run ahead of the server: a device-chosen time (an
+    // offline feed, a backdated entry, a corrected time) may be at most this far
+    // in the future, the readers' clock-skew allowance (FEEDING_CLOCK_SKEW_MS).
+    function feedingDeviceTime(value) {
+      return value is timestamp && value <= request.time + duration.value(12, 'h');
+    }
+
+    function feedingStatePath(householdId, petId) {
+      return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/feeding-state/current;
+    }
+
+    // The state before this write, or null without one.
+    function feedingStateBefore(householdId, petId) {
+      return exists(feedingStatePath(householdId, petId)) ? get(feedingStatePath(householdId, petId)).data : null;
+    }
+
+    // The stored latest feed is under 90 minutes old and its log still exists
+    // (a latest feed deleted offline is not a feed, as the client reads it).
+    function feedingRecent(householdId, petId, before) {
+      return before != null &&
+        before.get('lastLogId', null) is string &&
+        before.get('lastFedAt', null) is timestamp &&
+        request.time < before.lastFedAt + duration.value(90, 'm') &&
+        exists(feedingLogPath(householdId, petId, before.lastLogId));
+    }
+
+    // Today's planned feedings are already logged: the count after this feed is
+    // above the pet's structured feedingsPerDay. (A plan read from the free-text
+    // schedule is checked by the client transaction only.)
+    function feedingDayComplete(householdId, petId) {
+      let pet = get(/databases/$(database)/documents/households/$(householdId)/pets/$(petId)).data;
+      let perDay = pet.get('feedingsPerDay', null);
+      return perDay is int && perDay > 0 &&
+        getAfter(feedingStatePath(householdId, petId)).data.get('countOnDay', 0) > perDay;
+    }
+
+    // "Feed again?" bound to what was shown (PE-23g): the confirmation names the
+    // last feeding the member was asked about. It must be the state's latest feed,
+    // or a feeding at least as new (one synced from offline after the state was
+    // written). A confirmation shown before a newer feed by someone else names an
+    // older log and is refused. Without a surviving latest feed nothing is bound.
+    function feedingConfirmBound(householdId, petId, data, before) {
+      let latest = before == null ? null : before.get('lastLogId', null);
+      let confirmOf = data.get('confirmOf', null);
+      return !(latest is string) ||
+        !exists(feedingLogPath(householdId, petId, latest)) ||
+        confirmOf == latest ||
+        (confirmOf is string &&
+          exists(feedingLogPath(householdId, petId, confirmOf)) &&
+          get(feedingLogPath(householdId, petId, confirmOf)).data.get('loggedAt', null) is timestamp &&
+          before.get('lastFedAt', null) is timestamp &&
+          get(feedingLogPath(householdId, petId, confirmOf)).data.loggedAt >= before.lastFedAt);
+    }
+
+    // Every new feeding (stage R2): signed by the writer, recorded at server time,
+    // and one of:
+    // - live: `date` is server time, written with the state in the same commit
+    //   (the state's latest feed is this log), and a repeat within 90 minutes of
+    //   the state's latest feed or past a complete day needs `repeat: 'confirmed'`
+    //   with a confirmation bound to the current state;
+    // - offline (live or backdated): queued with the device clock (`clockSource:
+    //   'device'`), no state write (the next online writer reconciles), never
+    //   further ahead than the clock-skew allowance;
+    // - backdated: a deliberately chosen earlier time, no repeat check.
+    // A create over an existing id is an update and is refused (feedingCorrected
+    // is the only update), so one press is one feeding (PE-23h).
+    function feedingCreateR2(householdId, petId, logId) {
+      let data = request.resource.data;
+      let before = feedingStateBefore(householdId, petId);
+      return data.get('loggedByUid', null) == request.auth.uid &&
+        data.get('loggedAt', null) == request.time &&
+        !('originalDate' in data) && !('dateCorrectedAt' in data) &&
+        !('dateCorrectedByUid' in data) && !('dateCorrectedByName' in data) &&
+        (
+          (data.get('repeat', null) == 'offline' &&
+            data.get('clockSource', null) == 'device' &&
+            feedingDeviceTime(data.date)) ||
+          (data.get('backdated', false) == true &&
+            data.get('repeat', null) == 'none' &&
+            feedingDeviceTime(data.date)) ||
+          (data.get('backdated', false) == false &&
+            data.get('repeat', null) in ['none', 'confirmed'] &&
+            !('clockSource' in data) &&
+            data.date == request.time &&
+            existsAfter(feedingStatePath(householdId, petId)) &&
+            getAfter(feedingStatePath(householdId, petId)).data.get('lastLogId', null) == logId &&
+            (data.repeat == 'confirmed'
+              ? feedingConfirmBound(householdId, petId, data, before)
+              : !feedingRecent(householdId, petId, before) && !feedingDayComplete(householdId, petId)))
+        );
+    }
+
+    // Correcting a feeding's effective time (PE-5e): only `date` (and its `ampm`)
+    // change, to a timestamp no further ahead than the clock-skew allowance; the
+    // first correction keeps the original in `originalDate` (immutable after),
+    // every correction records who and when. `loggedAt` and the author never
+    // change. Its author may do it for 10 minutes after `loggedAt`, members with
+    // pets.deleteLogs at any time.
+    function feedingCorrected(householdId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return after.diff(before).affectedKeys().hasOnly(['date', 'ampm', 'originalDate', 'dateCorrectedAt', 'dateCorrectedByUid', 'dateCorrectedByName']) &&
+        feedingDeviceTime(after.date) &&
+        after.get('dateCorrectedAt', null) == request.time &&
+        after.get('dateCorrectedByUid', null) == request.auth.uid &&
+        ('originalDate' in before
+          ? after.get('originalDate', null) == before.originalDate
+          : after.get('originalDate', null) == before.get('date', null)) &&
+        (hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+          feedingAuthorWithinUndoWindow(householdId));
     }
 
     // --- Feeding state (households/{h}/pets/{p}/feeding-state/current) ----
@@ -883,8 +1003,10 @@ service cloud.firestore {
     }
 
     // A new latest feed: by the writer, pointing at a log the writer owns that
-    // exists once this write commits. `prev` is exactly the replaced state (null
-    // only when there was none), so an Undo can only bring back what was there.
+    // exists once this write commits, at that log's time (stage R2: a state
+    // cannot claim an older feed than its log, which would skip the next
+    // member's "Feed again?"). `prev` is exactly the replaced state (null only
+    // when there was none), so an Undo can only bring back what was there.
     function feedingStateFed(householdId, petId) {
       let after = request.resource.data;
       return after.lastLogId is string &&
@@ -892,6 +1014,7 @@ service cloud.firestore {
         (resource == null || after.lastLogId != resource.data.get('lastLogId', null)) &&
         existsAfter(feedingLogPath(householdId, petId, after.lastLogId)) &&
         getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('loggedByUid', null) == request.auth.uid &&
+        after.get('lastFedAt', null) == getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('date', null) &&
         ((resource == null && after.get('prev', null) == null) ||
           (resource != null && feedingStateCopies(after.get('prev', null), resource.data)));
     }
@@ -900,6 +1023,18 @@ service cloud.firestore {
     function feedingStateCounted() {
       return resource != null &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay']);
+    }
+
+    // A time correction of the latest feed (PE-5e): the latest feed stays the
+    // same log, and its time becomes that log's corrected `date` (with the count).
+    function feedingStateRetimed(householdId, petId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return resource != null &&
+        after.diff(before).affectedKeys().hasOnly(['lastFedAt', 'day', 'countOnDay']) &&
+        before.get('lastLogId', null) is string &&
+        after.get('lastFedAt', null) is timestamp &&
+        after.lastFedAt == getAfter(feedingLogPath(householdId, petId, before.lastLogId)).data.get('date', null);
     }
 
     // The log a stored `prev` points at is gone once this write commits (or it points at none).
@@ -1344,21 +1479,22 @@ service cloud.firestore {
         allow read: if hasHouseholdPermission(householdId, 'pets.view');
         allow create, update, delete: if hasHouseholdPermission(householdId, 'pets.editProfiles');
 
+        // Stage R2 (docs/modules/pets/README.md): creates are the feed operation's
+        // shapes only (feedingCreateR2); the only update is a time correction.
         match /feeding-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validFeedingLogFields(request.resource.data, createdKeys()) && petLoggerOnCreate() &&
-            feedingLoggedAtOnCreate();
-          allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            feedingLoggedAtOnCreate() && feedingCreateR2(householdId, petId, logId);
+          allow update: if (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingLogFields(request.resource.data, updatedKeys()) && petLoggerUnchanged() &&
-            feedingLoggedAtUnchanged();
+            feedingLoggedAtUnchanged() && feedingCorrected(householdId);
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
             feedingAuthorWithinUndoWindow(householdId);
         }
 
-        // Rules stage R1 (compatible): validated shape and pairing with the log.
-        // Stage R2 (next release, see docs/modules/pets/README.md) adds the
-        // server-time and confirm enforcement.
+        // The feeding state: validated shape and pairing with the log (R1), the
+        // latest feed's time bound to its log (R2), time corrections (PE-5e).
         match /feeding-state/{stateId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
           allow create: if stateId == 'current' &&
@@ -1370,7 +1506,7 @@ service cloud.firestore {
             ((hasHouseholdPermission(householdId, 'pets.addLogs') && feedingStateFed(householdId, petId)) ||
               ((hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
                 (feedingStateCounted() || feedingStatePrevDropped(householdId, petId) ||
-                  feedingStateRestored(householdId, petId))));
+                  feedingStateRestored(householdId, petId) || feedingStateRetimed(householdId, petId))));
           allow delete: if false;
         }
 

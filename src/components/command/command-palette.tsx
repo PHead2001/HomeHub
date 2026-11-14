@@ -55,11 +55,12 @@ import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPor
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
 import { notifyDataChanged } from '@/lib/data-changed';
-import { FEED_UNDO_MS, feedAgainPrompt } from '@/lib/pets/feed-decision';
+import { FEED_UNDO_MS, feedAgainPrompt, petFeedToastGroup } from '@/lib/pets/feed-decision';
+import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-plan';
 import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { matchScore, useCommandIndex } from './use-command-index';
-import { addShoppingItems, createOneTimeChore, createRepeatingChore, logFeeding, logMaintenance } from './quick-add-actions';
+import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
 import { ChoreMode, FeedingMode, ItemMode } from './palette-modes';
 import { bareVerbOffer, feedingModeState, itemModeState, modeBlocker, MODE_PERMISSION, type PaletteMode } from '@/lib/dashboard/palette-mode';
@@ -154,8 +155,26 @@ export function CommandPalette({
   useEffect(() => () => shoppingSettles.invalidate(), [shoppingSettles]);
   // "Sam fed Rex 12 min ago. Feed again?" for the feeding being previewed (tied to
   // that preview, so a new or edited one never inherits the answer).
-  const [feedAgain, setFeedAgain] = useState<{ intent: QuickAddIntent; prompt: string } | null>(null);
+  // The answer is bound to the state the question was asked for (PE-23g).
+  const [feedAgain, setFeedAgain] = useState<{ intent: QuickAddIntent; prompt: string; confirm: FeedConfirm } | null>(null);
   const feedAgainPromptText = feedAgain && feedAgain.intent === pending ? feedAgain.prompt : null;
+  // One operation id per previewed feeding: pressing Confirm again (a retry, or
+  // "Feed again") reuses it, so the feeding is recorded once (PE-23h).
+  const feedOp = useRef<{ intent: QuickAddIntent; opId: string } | null>(null);
+  // "Last fed 10 min ago by Sam (wet)" in the feeding preview before saving (PE-23e).
+  const [lastFed, setLastFed] = useState<{ intent: QuickAddIntent; line: string } | null>(null);
+  const lastFedText = lastFed && lastFed.intent === pending ? lastFed.line : null;
+  const previewHouseholdId = currentUser?.householdId ?? null;
+  const previewTimeZone = household?.timeZone ?? null;
+  useEffect(() => {
+    if (!pending || pending.kind !== 'feeding' || !previewHouseholdId) return;
+    let active = true;
+    const intent = pending;
+    feedingPreviewLine(previewHouseholdId, intent.pet.id, previewTimeZone)
+      .then((line) => { if (active) setLastFed({ intent, line }); })
+      .catch(() => { if (active) setLastFed({ intent, line: 'Last feeding unavailable' }); });
+    return () => { active = false; };
+  }, [pending, previewHouseholdId, previewTimeZone]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const optionId = (i: number) => `${listId}-option-${i}`;
@@ -444,6 +463,7 @@ export function CommandPalette({
         const portion = feedingPortion(current);
         const pet = current.pet;
         const timeZone = household?.timeZone ?? null;
+        if (feedOp.current?.intent !== current) feedOp.current = { intent: current, opId: newFeedOpId() };
         const result = await logFeeding({
           householdId,
           petId: pet.id,
@@ -451,16 +471,24 @@ export function CommandPalette({
           unit: portion.unit,
           viewer: currentUser,
           timeZone,
-          confirm: feedAgainPromptText !== null,
+          opId: feedOp.current.opId,
+          confirm: feedAgain && feedAgain.intent === current ? feedAgain.confirm : null,
           onLateError: lateError,
         });
         if (result.status === 'needsConfirm') {
-          // Ask in the preview; Confirm then reads "Feed again".
-          setFeedAgain({ intent: current, prompt: feedAgainPrompt(result, pet.name, new Date(), currentUser.uid) });
+          // Ask in the preview; Confirm then reads "Feed again". A stale answer asks again.
+          const since = result.staleConfirm ? 'Someone fed since you were asked. ' : '';
+          setFeedAgain({
+            intent: current,
+            prompt: `${since}${feedAgainPrompt(result, pet.name, new Date(), currentUser.uid, timeZone)}`,
+            confirm: feedConfirmOf(result),
+          });
           return;
         }
         notifyDataChanged({ module: 'pets', householdId, petId: pet.id });
         const { dismiss } = toast({
+          // One Undo per pet (PE-8i): feeding another pet keeps this one.
+          group: petFeedToastGroup(pet.id),
           duration: FEED_UNDO_MS,
           title: result.status === 'queued' ? 'Saved on this device' : 'Feeding logged',
           description: result.status === 'queued' ? `Couldn't check whether someone else fed ${pet.name}.` : `${pet.name} has been fed.`,
@@ -629,6 +657,7 @@ export function CommandPalette({
             message={retryMessage}
             status={unconfirmedMessage}
             notice={feedAgainPromptText}
+            context={lastFedText}
             confirmLabel={feedAgainPromptText ? 'Feed again' : undefined}
             onBack={() => {
               shoppingSettles.invalidate();
@@ -779,10 +808,13 @@ function QuickAddPreview({
   message,
   status,
   notice,
+  context,
   confirmLabel = 'Confirm',
   onBack,
   onConfirm,
 }: {
+  /** Context shown before saving (the feeding's "Last fed 10 min ago by Sam (wet)"). */
+  context?: string | null;
   intent: QuickAddIntent;
   /** The palette index is still loading: no choice can be trusted yet. */
   indexLoading: boolean;
@@ -925,6 +957,9 @@ function QuickAddPreview({
       {note && <p className="mt-3 text-sm text-warning" data-testid="quick-add-mileage-note">{note}</p>}
       {status && <p role="status" className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-unconfirmed">{status}</p>}
       {message && <p role="alert" className="mt-3 text-sm text-destructive" data-testid="quick-add-retry">{message}</p>}
+      {intent.kind === 'feeding' && (
+        <p className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-last-fed">{context ?? 'Checking the last feeding…'}</p>
+      )}
       {notice && <p role="alert" className="mt-3 text-sm text-foreground" data-testid="quick-add-feed-again">{notice}</p>}
       <div className="mt-4 flex justify-between gap-2">
         <Button type="button" variant="ghost" onClick={onBack} disabled={saving}>

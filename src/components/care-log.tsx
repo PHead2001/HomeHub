@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { loggerName } from '@/lib/pets/care';
+import { loggerName, readableLogDate } from '@/lib/pets/care';
 import type { PetCareLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
@@ -152,12 +152,15 @@ export function CareLogClient({ petId }: CareLogProps) {
           {!loading && !error && logs.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No care logged yet.</p>
           )}
-          {!loading && logs.map((log) => (
+          {!loading && logs.map((log) => {
+            // A blank or unreadable legacy date renders as unknown, never a crash (PE-8c).
+            const when = readableLogDate(log.date);
+            return (
             <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
               <div className="min-w-0 space-y-0.5">
-                <p className="font-semibold text-foreground">{log.activity}</p>
+                <p className="break-words font-semibold text-foreground">{log.activity}</p>
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
-                  <span>{format(new Date(log.date), 'PPP p')}</span>
+                  <span>{when ? format(when, 'PPP p') : 'Unknown time'}</span>
                   <LoggedBy entry={log} />
                 </p>
                 {log.notes && <p className="mt-1 text-muted-foreground">{log.notes}</p>}
@@ -168,7 +171,8 @@ export function CareLogClient({ petId }: CareLogProps) {
                 </Button>
               )}
             </div>
-          ))}
+            );
+          })}
         </section>
       </CardContent>
     </Card>

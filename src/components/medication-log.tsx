@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { currentMedications, loggerName, parseLocalDate } from '@/lib/pets/care';
+import { currentMedications, loggerName, parseLocalDate, petDay, readableLogDate } from '@/lib/pets/care';
 import type { PetMedicationLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
@@ -40,9 +40,10 @@ interface MedicationLogProps {
 }
 
 export function MedicationLogClient({ petId }: MedicationLogProps) {
-  const { currentUser, permissions } = useAuth();
+  const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
   const now = useNow();
+  const timeZone = household?.timeZone ?? null;
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
@@ -51,7 +52,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
   const [formOpen, setFormOpen] = useState(false);
   const pending = useMedicationCountdownLogs(householdId, petId);
   // A failed countdown load is "unavailable", never "nothing due".
-  const dues = pending.loading || pending.error ? [] : currentMedications(pending.logs, now);
+  const dues = pending.loading || pending.error ? [] : currentMedications(pending.logs, now, timeZone);
 
   const form = useForm<LogValues>({
     resolver: zodResolver(logSchema),
@@ -164,7 +165,7 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
                   <FormItem>
                     <FormLabel>Next dose due (Optional)</FormLabel>
                     <FormControl>
-                      <Input type="date" min={format(now, 'yyyy-MM-dd')} className="sm:max-w-[220px]" {...field} />
+                      <Input type="date" min={petDay(now, timeZone)} className="sm:max-w-[220px]" {...field} />
                     </FormControl>
                     <FormDescription>Shows a countdown on the pet&apos;s card.</FormDescription>
                     <FormMessage />
@@ -208,12 +209,14 @@ export function MedicationLogClient({ petId }: MedicationLogProps) {
           )}
           {!loading && logs.map((log) => {
             const nextDue = parseLocalDate(log.nextDueDate);
+            // A blank or unreadable legacy date renders as unknown, never a crash (PE-8b).
+            const given = readableLogDate(log.date);
             return (
               <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
                 <div className="min-w-0 space-y-0.5">
-                  <p className="text-foreground"><span className="font-semibold">{log.medication}</span> · {log.dosage}</p>
+                  <p className="break-words text-foreground"><span className="font-semibold">{log.medication}</span> · {log.dosage}</p>
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
-                    <span>{format(new Date(log.date), 'PPP p')}</span>
+                    <span>{given ? format(given, 'PPP p') : 'Unknown time'}</span>
                     <LoggedBy entry={log} />
                   </p>
                   {nextDue && <p className="text-muted-foreground">Next dose {format(nextDue, 'PPP')}</p>}

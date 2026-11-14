@@ -28,11 +28,13 @@ interface EditPetDialogProps {
   /** Resolves true when saved; failures are reported by the caller as outcome toasts. */
   onUpdatePet: (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean) => Promise<boolean>;
   onOpenChange: (isOpen: boolean) => void;
+  /** Where focus goes on close (PE-20e): the pet's actions button when opened from its menu. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 const ID_PREFIX = "edit-pet";
 
-export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogProps) {
+export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus }: EditPetDialogProps) {
   const [values, setValues] = useState<PetFormState>(EMPTY_PET_FORM);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [isPhotoRemoved, setIsPhotoRemoved] = useState(false);
@@ -86,7 +88,8 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
     }
     setSaving(true);
     try {
-      const saved = await onUpdatePet(petFieldsFromForm(values), photoFile, isPhotoRemoved);
+      // An unchanged type keeps the stored photo hint (legacy species art, PE-8a).
+      const saved = await onUpdatePet(petFieldsFromForm(values, pet), photoFile, isPhotoRemoved);
       if (saved) onOpenChange(false);
     } finally {
       setSaving(false);
@@ -95,10 +98,13 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
 
   return (
     <Dialog open={!!pet} onOpenChange={(isOpen) => { if (!saving) onOpenChange(isOpen); }}>
-      <DialogContent className="max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] overflow-y-auto sm:max-w-[460px]">
+      <DialogContent
+        className="max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] overflow-y-auto sm:max-w-[460px]"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
-            <DialogTitle className="font-headline">Edit {pet?.name}</DialogTitle>
+            <DialogTitle className="font-headline break-words">Edit {pet?.name}</DialogTitle>
             <DialogDescription>
               Update the photo, type, feeding schedule and usual portion.
             </DialogDescription>
@@ -112,7 +118,10 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange }: EditPetDialogP
             existingPhotoUrl={hasRealPhoto(pet?.photoUrl) ? pet?.photoUrl : undefined}
             nameDisabled
           />
-          <DialogFooter className="pt-2">
+          <DialogFooter className="gap-2 pt-2">
+            <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
             <Button type="submit" disabled={saving}>
               {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
               Save Changes

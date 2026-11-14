@@ -2202,8 +2202,12 @@ describe('content shapes: pet logs', () => {
   const logs = (user: Identity, kind: string) => collection(dbFor(user), 'households', householdA, 'pets', 'maple', kind);
   const log = (user: Identity, kind: string, id: string) => doc(logs(user, kind), id);
   const by = (user: Identity) => ({ loggedByUid: user.uid, loggedByName: 'Someone' });
-  // Pre-operation feeding shape (older clients); medication-log.tsx and care-log.tsx onSubmit
-  const feeding = (user: Identity) => ({ date: new Date(), cups: 1.5, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM', ...by(user) });
+  // Pre-operation feeding shape (clients before the shared feed operation): refused since rules stage R2.
+  const legacyFeeding = (user: Identity) => ({ date: new Date(), cups: 1.5, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM', ...by(user) });
+  // A feeding queued offline by the shared feed operation (feed-transaction.ts): no state write.
+  const offlineFeeding = (user: Identity, overrides: Record<string, unknown> = {}) => ({
+    ...legacyFeeding(user), loggedAt: serverTimestamp(), repeat: 'offline', clockSource: 'device', ...overrides,
+  });
   const medication = (user: Identity) => ({ date: new Date().toISOString(), medication: 'Flea drops', dosage: '1 dose', notes: '', nextDueDate: '2026-09-01', ...by(user) });
   const care = (user: Identity) => ({ date: new Date().toISOString(), activity: 'Walk', notes: '', ...by(user) });
 
@@ -2221,40 +2225,47 @@ describe('content shapes: pet logs', () => {
     });
   });
 
-  test('every shipped log write shape is accepted', async () => {
-    await assertSucceeds(addDoc(logs(users.member, 'feeding-logs'), feeding(users.member)));
-    await assertSucceeds(addDoc(logs(users.child, 'feeding-logs'), feeding(users.child)));
+  test('every current log write shape is accepted', async () => {
+    await assertSucceeds(addDoc(logs(users.member, 'feeding-logs'), offlineFeeding(users.member)));
+    await assertSucceeds(addDoc(logs(users.child, 'feeding-logs'), offlineFeeding(users.child)));
     await assertSucceeds(addDoc(logs(users.member, 'medication-logs'), medication(users.member)));
     const { nextDueDate: _due, ...noDue } = medication(users.member);
     void _due;
     await assertSucceeds(addDoc(logs(users.member, 'medication-logs'), noDue));
     await assertSucceeds(addDoc(logs(users.member, 'care-logs'), care(users.member)));
-    // Clients from before "who logged it" (count + 1 ids, no logger), including overwriting an older entry.
-    const legacy = { cups: 1, foodAmountType: 'Cups', foodType: 'Wet', comments: '', date: new Date(), ampm: 'PM' };
-    await assertSucceeds(setDoc(log(users.member, 'feeding-logs', '2'), legacy));
-    await assertSucceeds(setDoc(log(users.member, 'feeding-logs', '1'), legacy));
+    // Medication and care entries from before "who logged it" are still accepted.
     await assertSucceeds(addDoc(logs(users.member, 'care-logs'), { date: new Date().toISOString(), activity: 'Brush', notes: '' }));
   });
 
+  test('stage R2: feedings from before the shared feed operation are refused, and logs are never overwritten', async () => {
+    // Pre-operation shapes (no loggedAt, no repeat, or no logger) and count + 1 ids.
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), legacyFeeding(users.member)));
+    const legacy = { cups: 1, foodAmountType: 'Cups', foodType: 'Wet', comments: '', date: new Date(), ampm: 'PM' };
+    await assertFails(setDoc(log(users.member, 'feeding-logs', '2'), legacy));
+    await assertFails(setDoc(log(users.member, 'feeding-logs', '1'), legacy));
+    // Existing entries are not edited (the only update is a time correction).
+    await assertFails(updateDoc(log(users.member, 'feeding-logs', 'signed'), { comments: 'Ate half' }));
+    await assertFails(updateDoc(log(users.owner, 'feeding-logs', '1'), { cups: 2 }));
+  });
+
   test('loggedByUid must be the writer and cannot change afterwards', async () => {
-    await assertFails(addDoc(logs(users.member, 'feeding-logs'), feeding(users.child)));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), offlineFeeding(users.child)));
+    const { loggedByUid: _uid, ...unsigned } = offlineFeeding(users.member);
+    void _uid;
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), unsigned));
     await assertFails(addDoc(logs(users.member, 'medication-logs'), medication(users.owner)));
     await assertFails(addDoc(logs(users.member, 'care-logs'), care(users.child)));
     await assertFails(addDoc(logs(users.member, 'care-logs'), { date: new Date().toISOString(), activity: 'Walk', notes: '', loggedByName: 'Forged' }));
     await assertFails(updateDoc(log(users.owner, 'feeding-logs', 'signed'), { loggedByUid: users.owner.uid }));
     await assertFails(updateDoc(log(users.member, 'feeding-logs', 'signed'), { loggedByName: 'Someone else' }));
     await assertFails(updateDoc(log(users.member, 'feeding-logs', 'signed'), { loggedByUid: deleteField() }));
-    // An old client overwriting a signed entry would drop who logged it: refused.
-    await assertFails(setDoc(log(users.member, 'feeding-logs', 'signed'), { cups: 2, foodAmountType: 'Cups', foodType: 'Dry', comments: '', date: new Date(), ampm: 'AM' }));
-    // Other fields of a signed entry with a legacy field can still change.
-    await assertSucceeds(updateDoc(log(users.member, 'feeding-logs', 'signed'), { comments: 'Ate half' }));
   });
 
   test('log shapes are validated', async () => {
-    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), treats: 3 }));
-    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), cups: 'one' }));
-    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), ampm: 'noon' }));
-    await assertFails(addDoc(logs(users.member, 'feeding-logs'), { ...feeding(users.member), comments: 'x'.repeat(2001) }));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), offlineFeeding(users.member, { treats: 3 })));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), offlineFeeding(users.member, { cups: 'one' })));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), offlineFeeding(users.member, { ampm: 'noon' })));
+    await assertFails(addDoc(logs(users.member, 'feeding-logs'), offlineFeeding(users.member, { comments: 'x'.repeat(2001) })));
     await assertFails(addDoc(logs(users.member, 'medication-logs'), { ...medication(users.member), medication: 'x'.repeat(201) }));
     await assertFails(addDoc(logs(users.member, 'medication-logs'), { ...medication(users.member), refill: true }));
     await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), activity: 5 }));
@@ -2275,14 +2286,23 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   const state = (user: Identity, household = householdA, id = 'current') =>
     doc(dbOf(user), 'households', household, 'pets', 'rex', 'feeding-state', id);
   const minutesAgo = (minutes: number) => Timestamp.fromMillis(Date.now() - minutes * 60_000);
-  // src/lib/pets/feed-operation.ts feedPet (online): server times, repeat, signed.
-  const liveFeeding = (user: Identity, overrides: Record<string, unknown> = {}) => ({
+  // src/lib/pets/feed-transaction.ts runFeed (online): server times, signed. The seeded
+  // state's latest feed is 2 minutes old, so a live feed here is a confirmed repeat,
+  // bound to that feed ("Feed again?" answered for it).
+  // An override of `undefined` leaves the field out.
+  const defined = (data: Record<string, unknown>) => Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined));
+  const liveFeeding = (user: Identity, overrides: Record<string, unknown> = {}) => defined({
     date: serverTimestamp(), loggedAt: serverTimestamp(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry',
-    comments: '', ampm: 'AM', loggedByUid: user.uid, loggedByName: 'Someone', repeat: 'none', ...overrides,
+    comments: '', ampm: 'AM', loggedByUid: user.uid, loggedByName: 'Someone', repeat: 'confirmed', confirmOf: 'recent', ...overrides,
+  });
+  // A feeding queued offline (no state write).
+  const offlineFeeding = (user: Identity, overrides: Record<string, unknown> = {}) => defined({
+    date: new Date(), loggedAt: serverTimestamp(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry',
+    comments: '', ampm: 'AM', loggedByUid: user.uid, loggedByName: 'Someone', repeat: 'offline', clockSource: 'device', ...overrides,
   });
   const stateFor = (user: Identity, logId: string, overrides: Record<string, unknown> = {}) => ({
     lastLogId: logId, lastFedAt: serverTimestamp(), lastFedByUid: user.uid, lastFedByName: 'Someone',
-    day: '2026-11-10', countOnDay: 1, prev: null, ...overrides,
+    day: '2026-11-10', countOnDay: 2, prev: null, ...overrides,
   });
   const previous = {
     lastLogId: 'older', lastFedAt: Timestamp.fromDate(new Date('2026-11-10T08:00:00.000Z')),
@@ -2291,24 +2311,29 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   // The seeded state's six fields (its exact copy is the only valid `prev` for the next feed).
   let current: Record<string, unknown> = {};
   const STATE_FIELDS = ['lastLogId', 'lastFedAt', 'lastFedByUid', 'lastFedByName', 'day', 'countOnDay'];
-  // What feed-operation.ts previousOf() writes: the stored state's six fields, read back.
+  // What feed-transaction.ts previousOf() writes: the stored state's six fields, read back.
   const replacedState = async (user: Identity) => {
     const data = (await getDoc(state(user))).data() ?? {};
     return Object.fromEntries(STATE_FIELDS.map(field => [field, data[field] ?? null]));
   };
-  const feedBatch = (user: Identity, stateData: (logId: string) => Record<string, unknown>) => {
+  const feedBatch = (user: Identity, stateData: (logId: string) => Record<string, unknown>, logOverrides: Record<string, unknown> = {}, id?: string) => {
     const batch = writeBatch(dbOf(user));
-    const ref = doc(logs(user));
-    batch.set(ref, liveFeeding(user));
+    const ref = id ? log(user, id) : doc(logs(user));
+    batch.set(ref, liveFeeding(user, logOverrides));
     batch.set(state(user), stateData(ref.id));
     return batch;
+  };
+  const seedState = async (data: Record<string, unknown>) => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), ...petPath, 'feeding-state', 'current'), data);
+    });
   };
 
   beforeEach(async () => {
     instances = new Map();
     current = {
       lastLogId: 'recent', lastFedAt: minutesAgo(2), lastFedByUid: users.member.uid, lastFedByName: 'Member',
-      day: '2026-11-10', countOnDay: 2,
+      day: '2026-11-10', countOnDay: 1,
     };
     await environment.withSecurityRulesDisabled(async context => {
       const db = context.firestore();
@@ -2319,7 +2344,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
       });
       // The member's feed from 2 minutes ago (inside the 10-minute window) and one from 11 minutes ago.
       await setDoc(doc(db, ...petPath, 'feeding-logs', 'recent'), {
-        date: minutesAgo(2), loggedAt: minutesAgo(2), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '',
+        date: current.lastFedAt, loggedAt: current.lastFedAt, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '',
         ampm: 'AM', loggedByUid: users.member.uid, loggedByName: 'Member', repeat: 'none',
       });
       await setDoc(doc(db, ...petPath, 'feeding-logs', 'stale'), {
@@ -2333,28 +2358,17 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   test('a feed writes the log and the state together; members and children may', async () => {
     for (const user of [users.member, users.child]) {
       const prev = await replacedState(user);
-      await assertSucceeds(feedBatch(user, logId => stateFor(user, logId, { countOnDay: 3, prev })).commit());
+      // Each "Feed again?" is answered for the latest feed at that moment.
+      await assertSucceeds(feedBatch(user, logId => stateFor(user, logId, { prev }), { confirmOf: prev.lastLogId }).commit());
     }
-    // The first feed of a pet without state has no prev.
+    // The first feed of a pet without state has no prev (and nothing to repeat).
     await environment.withSecurityRulesDisabled(async context => {
       await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-state', 'current'));
     });
-    await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId)).commit());
+    await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId, { countOnDay: 1 }), { repeat: 'none', confirmOf: undefined }).commit());
     // Readable with pets.view (guest), not by another household.
     await assertSucceeds(getDoc(state(users.guest)));
     await assertFails(getDoc(state(users.ownerB)));
-  });
-
-  test('the new feeding-log fields are validated', async () => {
-    await assertSucceeds(addDoc(logs(users.member), liveFeeding(users.member, { repeat: 'confirmed' })));
-    await assertSucceeds(addDoc(logs(users.member), liveFeeding(users.member, { repeat: 'offline', clockSource: 'device', date: new Date() })));
-    await assertSucceeds(addDoc(logs(users.member), liveFeeding(users.member, { backdated: true, date: Timestamp.fromDate(new Date('2026-11-09T12:00:00Z')) })));
-    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { repeat: 'twice' })));
-    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { clockSource: 'sundial' })));
-    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { backdated: 'yes' })));
-    // loggedAt is the server time of the write: a chosen one (which would stretch the delete window) is refused.
-    await assertFails(addDoc(logs(users.member), liveFeeding(users.member, { loggedAt: inMinutes(5) })));
-    await assertFails(updateDoc(log(users.member, 'recent'), { loggedAt: serverTimestamp() }));
   });
 
   test('state writes are validated and paired with an existing log', async () => {
@@ -2367,6 +2381,8 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
       batch.set(state(member, householdA, id), { ...stateFor(member, ref.id, { prev: current }), ...data });
       return batch.commit();
     };
+    await assertSucceeds(write({}));
+    await seedState({ ...current, prev: previous });
     await assertFails(write({}, null)); // no log behind it
     await assertFails(write({ lastLogId: 'older' }, null)); // someone else's log
     await assertFails(write({ countOnDay: -1 }));
@@ -2375,6 +2391,8 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     await assertFails(write({ mood: 'happy' }));
     await assertFails(write({ prev: { ...previous, extra: true } }));
     await assertFails(write({}, liveFeeding(member), 'other'));
+    // Stage R2: the latest feed's time is its log's time (an older time would skip the next "Feed again?").
+    await assertFails(write({ lastFedAt: minutesAgo(200) }));
     // A guest (pets.view only) and another household cannot write.
     const guestBatch = writeBatch(dbOf(users.guest));
     guestBatch.set(state(users.guest), stateFor(users.guest, 'recent'));
@@ -2391,7 +2409,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     batch.set(state(users.member), stateFor(users.child, ref.id, { prev: current }));
     await assertFails(batch.commit());
     // A log signed by someone else cannot be created either.
-    await assertFails(addDoc(logs(users.member), liveFeeding(users.child)));
+    await assertFails(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: current }), { loggedByUid: users.child.uid }).commit());
   });
 
   test('a new feed must carry the replaced state exactly as prev (no fabricated snapshot to restore later)', async () => {
@@ -2408,7 +2426,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     const batch = writeBatch(dbOf(member));
     const ref = doc(logs(member));
     batch.set(ref, liveFeeding(member));
-    batch.set(state(member), stateFor(member, ref.id, { countOnDay: 3, prev: current }));
+    batch.set(state(member), stateFor(member, ref.id, { prev: current }));
     await assertSucceeds(batch.commit());
     const undo = writeBatch(dbOf(member));
     undo.delete(log(member, ref.id));
@@ -2462,7 +2480,7 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     // Restoring `prev` while the log still exists is refused.
     await assertFails(setDoc(state(users.member), { ...previous, countOnDay: 1, prev: null }));
     // Count-only changes are allowed.
-    await assertSucceeds(updateDoc(state(users.member), { countOnDay: 1 }));
+    await assertSucceeds(updateDoc(state(users.member), { countOnDay: 0 }));
     // Delete the latest log and restore `prev` in one commit.
     const undo = writeBatch(db);
     undo.delete(log(users.member, 'recent'));
@@ -2471,8 +2489,8 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
   });
 
   test('the author may delete their own feeding for 10 minutes; others need pets.deleteLogs', async () => {
-    // Just logged through the operation, then deleted by its author (a member without pets.deleteLogs).
-    const ref = await addDoc(logs(users.member), liveFeeding(users.member));
+    // Just logged (queued offline, then synced), then deleted by its author (a member without pets.deleteLogs).
+    const ref = await addDoc(logs(users.member), offlineFeeding(users.member));
     await assertSucceeds(deleteDoc(log(users.member, ref.id)));
     await assertSucceeds(deleteDoc(log(users.member, 'recent')));
     // After 10 minutes, refused.
@@ -2484,6 +2502,138 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     await assertFails(deleteDoc(log(users.guest, 'stale')));
     await assertFails(deleteDoc(log(users.ownerB, 'stale')));
     await assertSucceeds(deleteDoc(log(users.owner, 'stale')));
+  });
+
+  describe('stage R2: the check, its confirmation and server time are enforced (PE-23f/g/h)', () => {
+    test('a live feed inside 90 minutes without a confirmation is refused (the check cannot be skipped)', async () => {
+      const member = users.member;
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: current }), { repeat: 'none', confirmOf: undefined }).commit());
+      // A live log without the paired state write is refused too.
+      await assertFails(addDoc(logs(member), liveFeeding(member)));
+      await assertFails(addDoc(logs(member), liveFeeding(member, { repeat: 'none', confirmOf: undefined })));
+      // Confirmed, bound to the latest feed: accepted.
+      await assertSucceeds(feedBatch(member, logId => stateFor(member, logId, { prev: current })).commit());
+    });
+
+    test('a stale confirmation (asked before a newer feed) is refused; one bound to a newer synced feed is accepted', async () => {
+      const member = users.member;
+      // Answered for the older feed, but "recent" came since: refused.
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: current }), { confirmOf: 'older' }).commit());
+      // No confirmation named at all: refused.
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: current }), { confirmOf: null }).commit());
+      // A feed queued offline synced after the state was written is newer than the state's latest:
+      // a confirmation for it is current.
+      const synced = await addDoc(logs(users.child), offlineFeeding(users.child));
+      await assertSucceeds(feedBatch(member, logId => stateFor(member, logId, { prev: current }), { confirmOf: synced.id }).commit());
+    });
+
+    test('older than 90 minutes: a plain feed passes until the day is complete', async () => {
+      const member = users.member;
+      const old = { ...current, lastFedAt: minutesAgo(200) };
+      await environment.withSecurityRulesDisabled(async context => {
+        await updateDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'recent'), { date: old.lastFedAt });
+      });
+      await seedState({ ...old, prev: previous });
+      // The second of two planned feedings: accepted without asking.
+      await assertSucceeds(feedBatch(member, logId => stateFor(member, logId, { prev: old, countOnDay: 2 }), { repeat: 'none', confirmOf: undefined }).commit());
+      // A third on the same day (still over 90 minutes after the latest) needs "Feed again?".
+      await seedState({ ...old, countOnDay: 2, prev: previous });
+      const complete = { ...old, countOnDay: 2 };
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: complete, countOnDay: 3 }), { repeat: 'none', confirmOf: undefined }).commit());
+      await assertSucceeds(feedBatch(member, logId => stateFor(member, logId, { prev: complete, countOnDay: 3 })).commit());
+    });
+
+    test('a latest feed whose log was deleted (offline) is not a feed to repeat', async () => {
+      await environment.withSecurityRulesDisabled(async context => {
+        await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'recent'));
+      });
+      await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: current }), { repeat: 'none', confirmOf: undefined }).commit());
+    });
+
+    test('server time: a live feed with a chosen date, or a device time far ahead, is refused', async () => {
+      const member = users.member;
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: current, lastFedAt: inMinutes(5) }), { date: inMinutes(5) }).commit());
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: current, lastFedAt: minutesAgo(1) }), { date: minutesAgo(1) }).commit());
+      // Offline and backdated entries carry the device clock: up to the 12-hour skew allowance.
+      await assertSucceeds(addDoc(logs(member), offlineFeeding(member, { date: inMinutes(60) })));
+      await assertFails(addDoc(logs(member), offlineFeeding(member, { date: inMinutes(13 * 60) })));
+      await assertFails(addDoc(logs(member), offlineFeeding(member, { clockSource: undefined })));
+      const backdated = { repeat: 'none', clockSource: undefined, backdated: true };
+      await assertSucceeds(addDoc(logs(member), offlineFeeding(member, { ...backdated, date: minutesAgo(300) })));
+      await assertFails(addDoc(logs(member), offlineFeeding(member, { ...backdated, date: inMinutes(13 * 60) })));
+      // A chosen loggedAt (it would stretch the author's delete window) is refused.
+      await assertFails(addDoc(logs(member), offlineFeeding(member, { loggedAt: inMinutes(5) })));
+      await assertFails(updateDoc(log(member, 'recent'), { loggedAt: serverTimestamp() }));
+      // Correction fields cannot be set on a new feeding.
+      await assertFails(addDoc(logs(member), offlineFeeding(member, { originalDate: minutesAgo(5) })));
+    });
+
+    test('an id is used once: writing a feeding over an existing one is refused (one press, one feeding)', async () => {
+      const member = users.member;
+      await assertSucceeds(setDoc(log(member, 'press-0001'), offlineFeeding(member)));
+      await assertFails(setDoc(log(member, 'press-0001'), offlineFeeding(member)));
+      await assertFails(setDoc(log(member, 'recent'), offlineFeeding(member)));
+      // A live feed reusing an existing id, with its state write: refused.
+      await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: current }), {}, 'stale').commit());
+    });
+
+    test('roles and households: a guest, another household or a signed-out caller cannot feed', async () => {
+      await assertFails(addDoc(logs(users.guest), offlineFeeding(users.guest)));
+      await assertFails(addDoc(collection(dbOf(users.ownerB), 'households', householdA, 'pets', 'rex', 'feeding-logs'), offlineFeeding(users.ownerB)));
+      const anonymous = environment.unauthenticatedContext().firestore();
+      await assertFails(addDoc(collection(anonymous, 'households', householdA, 'pets', 'rex', 'feeding-logs'), offlineFeeding(users.member)));
+    });
+  });
+
+  describe('correcting a feeding time (PE-5e)', () => {
+    const correction = (user: Identity, date: Timestamp, from: unknown, overrides: Record<string, unknown> = {}) => ({
+      date, originalDate: from, dateCorrectedAt: serverTimestamp(), dateCorrectedByUid: user.uid, dateCorrectedByName: 'Someone', ...overrides,
+    });
+
+    test('the author may correct within 10 minutes; pets.deleteLogs at any time; loggedAt never changes', async () => {
+      const recent = (await getDoc(log(users.member, 'recent'))).data()!;
+      await assertSucceeds(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(30), recent.date)));
+      // A second correction keeps the first original time.
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(40), minutesAgo(30))));
+      await assertSucceeds(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(40), recent.date)));
+      // After 10 minutes the author cannot; the owner (pets.deleteLogs) can.
+      const stale = (await getDoc(log(users.member, 'stale'))).data()!;
+      await assertFails(updateDoc(log(users.member, 'stale'), correction(users.member, minutesAgo(20), stale.date)));
+      await assertSucceeds(updateDoc(log(users.owner, 'stale'), correction(users.owner, minutesAgo(20), stale.date)));
+      // Legacy entries without loggedAt: only pets.deleteLogs.
+      const older = (await getDoc(log(users.owner, 'older'))).data()!;
+      await assertFails(updateDoc(log(users.child, 'older'), correction(users.child, minutesAgo(600), older.date)));
+      await assertSucceeds(updateDoc(log(users.owner, 'older'), correction(users.owner, minutesAgo(600), older.date)));
+    });
+
+    test('a correction into the future, a forged corrector, a wrong original or any other change is refused', async () => {
+      const recent = (await getDoc(log(users.member, 'recent'))).data()!;
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, inMinutes(13 * 60), recent.date)));
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(30), recent.date, { dateCorrectedByUid: users.owner.uid })));
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(30), minutesAgo(90))));
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(30), recent.date, { dateCorrectedAt: minutesAgo(1) })));
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(30), recent.date, { cups: 3 })));
+      await assertFails(updateDoc(log(users.member, 'recent'), correction(users.member, minutesAgo(30), recent.date, { loggedAt: serverTimestamp() })));
+      // Someone else's entry within its 10 minutes (a member without pets.deleteLogs), a guest, another household.
+      await assertFails(updateDoc(log(users.child, 'recent'), correction(users.child, minutesAgo(30), recent.date)));
+      await assertFails(updateDoc(log(users.guest, 'recent'), correction(users.guest, minutesAgo(30), recent.date)));
+      await assertFails(updateDoc(doc(dbOf(users.ownerB), ...petPath, 'feeding-logs', 'recent'), correction(users.ownerB, minutesAgo(30), recent.date)));
+    });
+
+    test('the state follows a corrected latest feed only to that log’s new time', async () => {
+      const recent = (await getDoc(log(users.member, 'recent'))).data()!;
+      const corrected = minutesAgo(30);
+      const wrong = writeBatch(dbOf(users.member));
+      wrong.update(log(users.member, 'recent'), correction(users.member, corrected, recent.date));
+      wrong.update(state(users.member), { lastFedAt: minutesAgo(300) });
+      await assertFails(wrong.commit());
+      const right = writeBatch(dbOf(users.member));
+      right.update(log(users.member, 'recent'), correction(users.member, corrected, recent.date));
+      right.update(state(users.member), { lastFedAt: corrected, countOnDay: 1 });
+      await assertSucceeds(right.commit());
+      // Moving the latest feed's time without correcting its log is refused.
+      await assertFails(updateDoc(state(users.member), { lastFedAt: minutesAgo(500) }));
+    });
   });
 });
 

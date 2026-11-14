@@ -13,6 +13,8 @@ import {
   PORTION_MAX,
   parseFeedingsPerDay,
   parsePortion,
+  speciesHintFor,
+  UNIT_LABELS,
   type PetFormErrors,
   type PetFormValues,
 } from '@/lib/pets/care';
@@ -167,7 +169,7 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
               </SelectTrigger>
               <SelectContent>
                 {PORTION_UNITS.map((unit) => (
-                  <SelectItem key={unit} value={unit}>{unit}</SelectItem>
+                  <SelectItem key={unit} value={unit}>{UNIT_LABELS[unit]}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -182,14 +184,18 @@ export function PetFormFields({ idPrefix, values, errors, onChange, onPhotoChang
   );
 }
 
-/** Firestore fields for a pet from the form (optional numbers only when set). */
-export function petFieldsFromForm(values: PetFormState) {
+/**
+ * Firestore fields for a pet from the form (optional numbers only when set).
+ * `previous` is the stored pet when editing: an unchanged type keeps its photo
+ * hint, so legacy species art survives a save (PE-8a).
+ */
+export function petFieldsFromForm(values: PetFormState, previous?: Pick<PetProfile, 'type' | 'dataAiHint'> | null) {
   const perDay = values.feedingsPerDay.trim() ? Number(values.feedingsPerDay) : null;
   const amount = values.portionAmount.trim() ? Number(values.portionAmount) : null;
   return {
     name: values.name.trim(),
     type: values.type,
-    dataAiHint: values.type.toLowerCase(),
+    dataAiHint: speciesHintFor(values.type, previous),
     foodSchedule: values.foodSchedule.trim(),
     feedingsPerDay: perDay,
     portionAmount: amount,

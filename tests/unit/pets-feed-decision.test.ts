@@ -117,9 +117,9 @@ describe('feed operation: the "Feed again?" check (PE-23)', () => {
   });
 
   it('the online feed reads from feedReadStart; Undo counts from the day start', () => {
-    const op = readFileSync(resolve(process.cwd(), 'src/lib/pets/feed-operation.ts'), 'utf8');
-    assert.match(op, /dayFeedings\(householdId, petId, feedReadStart\(today, now, timeZone\)\)/);
-    assert.match(op, /dayFeedings\(householdId, petId, householdDayStart\(today, timeZone\)\)/);
+    const op = readFileSync(resolve(process.cwd(), 'src/lib/pets/feed-transaction.ts'), 'utf8');
+    assert.match(op, /dayFeedings\(db, householdId, petId, feedReadStart\(today, now, timeZone\)\)/);
+    assert.match(op, /dayFeedings\(db, householdId, petId, householdDayStart\(today, timeZone\)\)/);
   });
 
   it('works without a state document, from the logs the client already has', () => {
@@ -283,15 +283,18 @@ describe('feed operation: every entry point uses it', () => {
     assert.match(read('src/components/pets/hold-to-feed.tsx'), /feed\('hold'\)/);
   });
 
-  it('online feeds and undos count the day from the logs read in the transaction', () => {
-    const op = read('src/lib/pets/feed-operation.ts');
-    assert.equal((op.match(/await dayFeedings\(/g) ?? []).length, 2, 'feedPet and undoFeed');
+  it('online feeds, undos and time corrections count the day from the logs read in the transaction', () => {
+    const op = read('src/lib/pets/feed-transaction.ts');
+    assert.equal((op.match(/await dayFeedings\(/g) ?? []).length, 3, 'runFeed, runUndoFeed and runCorrectFeedTime');
+    assert.match(op, /const recent = await dayFeedings\(db, householdId, petId, feedReadStart/, 'runFeed');
     assert.doesNotMatch(op, /reconcileDayCount|Math\.max/);
+    // The app binds its Firestore; nothing else writes feedings.
+    assert.match(read('src/lib/pets/feed-operation.ts'), /runFeed\(db, input\)/);
   });
 
   it('online feeds use server time; offline ones are marked and say so', () => {
-    const op = read('src/lib/pets/feed-operation.ts');
-    assert.match(op, /date: live \? serverTimestamp\(\) : fedAt/);
+    const op = read('src/lib/pets/feed-transaction.ts');
+    assert.match(op, /date: plan\.live \? serverTimestamp\(\) : Timestamp\.fromDate\(plan\.fedAt\)/);
     assert.match(op, /loggedAt: serverTimestamp\(\)/);
     assert.match(op, /clockSource: 'device'/);
     assert.match(op, /runTransaction/);

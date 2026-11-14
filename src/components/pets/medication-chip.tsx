@@ -4,7 +4,8 @@ import { chipOverflow, type MedicationDue } from '@/lib/pets/care';
 
 const STATE_CLASSES: Record<MedicationDue['state'], string> = {
   overdue: 'border-destructive/40 bg-destructive/10 text-destructive',
-  due: 'border-warning/40 bg-warning/15 text-warning',
+  // Warning text stays on a 10% tint, the strength the AA preset check covers (PE-20c); "due" is told apart by its border.
+  due: 'border-warning/80 bg-warning/10 text-warning',
   soon: 'border-warning/40 bg-warning/10 text-warning',
   upcoming: 'border-border bg-muted/60 text-muted-foreground',
 };

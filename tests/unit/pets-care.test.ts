@@ -35,8 +35,11 @@ import {
   toDate,
   validatePetForm,
 } from '../../src/lib/pets/care';
+import { deviceTimeZone } from '../../src/lib/household-day';
 
 const at = (y: number, m: number, d: number, h = 12, min = 0) => new Date(y, m - 1, d, h, min);
+// `at` builds device-local times; these cases pass the device zone as the household zone.
+const LOCAL = deviceTimeZone();
 const now = at(2026, 8, 1, 12, 0);
 
 describe('species art', () => {
@@ -138,7 +141,9 @@ describe('feeding plan', () => {
       feedingPlan({ foodSchedule: '1.5 cups twice daily', feedingsPerDay: 3, portionAmount: 0.75, portionUnit: 'Scoops' }),
       { perDay: 3, amount: 0.75, unit: 'Scoops' },
     );
-    assert.deepEqual(feedingPlan({ foodSchedule: 'free feed' }), { perDay: null, amount: 1, unit: 'Cups' });
+    // An explicitly non-daily schedule has no daily target and says so (PE-18b).
+    assert.deepEqual(feedingPlan({ foodSchedule: 'free feed' }), { perDay: null, amount: 1, unit: 'Cups', nonDaily: true });
+    assert.deepEqual(feedingPlan({ foodSchedule: 'free feed', feedingsPerDay: 2 }), { perDay: 2, amount: 1, unit: 'Cups' });
   });
 
   it('formats portions with correct singular and plural units', () => {
@@ -157,31 +162,32 @@ describe('feeding status', () => {
   ];
 
   it('counts today, finds the latest and fills the ring', () => {
-    const status = feedingStatus(logs, { perDay: 2 }, now);
+    const status = feedingStatus(logs, { perDay: 2 }, now, LOCAL);
     assert.equal(status.fedToday, 1);
     assert.equal(status.progress, 0.5);
     assert.equal(status.complete, false);
     assert.equal(status.last?.by, 'Sam');
-    assert.equal(feedingHeadline(status, now), 'Fed 4 h ago by Sam');
+    assert.equal(feedingHeadline(status, now, LOCAL), 'Fed 4 h ago by Sam');
     assert.equal(feedingCountLabel(status), '1 of 2 today');
   });
 
   it('marks the day complete when the target is met', () => {
-    const status = feedingStatus([...logs, { date: at(2026, 8, 1, 11, 0) }], { perDay: 2 }, now);
+    const status = feedingStatus([...logs, { date: at(2026, 8, 1, 11, 0) }], { perDay: 2 }, now, LOCAL);
     assert.equal(status.fedToday, 2);
     assert.equal(status.complete, true);
     assert.equal(status.progress, 1);
-    assert.equal(feedingHeadline(status, now), 'Fed 1 h ago');
+    assert.equal(feedingHeadline(status, now, LOCAL), 'Fed 1 h ago');
   });
 
   it('handles no target, no logs, string and Timestamp-like dates', () => {
-    const empty = feedingStatus([], { perDay: null }, now);
-    assert.equal(feedingHeadline(empty, now), 'No feedings logged yet');
+    const empty = feedingStatus([], { perDay: null }, now, LOCAL);
+    assert.equal(feedingHeadline(empty, now, LOCAL), 'No feedings logged yet');
     assert.equal(feedingCountLabel(empty), 'Not fed today');
     const mixed = feedingStatus(
       [{ date: at(2026, 8, 1, 9).toISOString() }, { date: { toDate: () => at(2026, 8, 1, 10) } }],
       { perDay: null },
       now,
+      LOCAL,
     );
     assert.equal(mixed.fedToday, 2);
     assert.equal(feedingCountLabel(mixed), '2 today');
@@ -189,11 +195,11 @@ describe('feeding status', () => {
   });
 
   it('formats relative times', () => {
-    assert.equal(formatAgo(at(2026, 8, 1, 11, 59), now), '1 min ago');
-    assert.equal(formatAgo(new Date(now.getTime() - 30_000), now), 'just now');
-    assert.equal(formatAgo(at(2026, 7, 31, 20), now), 'yesterday');
-    assert.equal(formatAgo(at(2026, 7, 28, 20), now), '4 days ago');
-    assert.match(formatAgo(at(2026, 7, 1), now), /^on /);
+    assert.equal(formatAgo(at(2026, 8, 1, 11, 59), now, LOCAL), '1 min ago');
+    assert.equal(formatAgo(new Date(now.getTime() - 30_000), now, LOCAL), 'just now');
+    assert.equal(formatAgo(at(2026, 7, 31, 20), now, LOCAL), 'yesterday');
+    assert.equal(formatAgo(at(2026, 7, 28, 20), now, LOCAL), '4 days ago');
+    assert.match(formatAgo(at(2026, 7, 1), now, LOCAL), /^on /);
   });
 });
 
@@ -207,6 +213,7 @@ describe('medication countdown', () => {
         { date: '2026-07-30T10:00:00.000Z', medication: 'Ear drops', dosage: '2 drops' },
       ],
       now,
+      LOCAL,
     );
     assert.equal(due?.medication, 'Heartworm');
     assert.equal(due?.days, 2);
@@ -225,15 +232,15 @@ describe('medication countdown', () => {
       { date: '2026-07-30T10:00:00.000Z', medication: 'Ear drops', dosage: '2 drops' },
       { date: '2026-07-30T10:00:00.000Z', medication: 'Antibiotic', dosage: '1', nextDueDate: '2026-08-03' },
     ];
-    const dues = currentMedications(logs, now);
+    const dues = currentMedications(logs, now, LOCAL);
     assert.deepEqual(dues.map((due) => [due.medication, due.label]), [
       ['Joint support', 'Overdue by 2 days'],
       ['Antibiotic', 'Due in 2 days'],
       ['Heartworm', 'Due in 2 days'],
       ['flea prevention', 'Due in 25 days'],
     ]);
-    assert.equal(nextMedication(logs, now)?.medication, dues[0].medication);
-    assert.deepEqual(currentMedications([], now), []);
+    assert.equal(nextMedication(logs, now, LOCAL)?.medication, dues[0].medication);
+    assert.deepEqual(currentMedications([], now, LOCAL), []);
   });
 
   it('folds extra chips into +N, never +1', () => {

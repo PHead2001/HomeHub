@@ -42,15 +42,15 @@ export function petTypeLabel(pet: Pick<PetProfile, 'type' | 'dataAiHint'>): stri
 
 /** Peek card facts (H26) for the pet link: what the card does not already show in full. */
 function PetPeek({ pet, care }: { pet: PetProfile; care: PetCare }) {
-  const { plan, status, dues, now } = care;
+  const { plan, status, dues, now, timeZone } = care;
   return (
     <div className="space-y-1.5" data-testid={`pet-peek-${pet.id}`}>
-      <p className="font-semibold text-foreground">{pet.name}</p>
+      <p className="break-words font-semibold text-foreground">{pet.name}</p>
       <p className="text-xs text-muted-foreground">
         {petTypeLabel(pet)} · {formatPortion(plan.amount, plan.unit)}{plan.perDay ? `, ${plan.perDay}× a day` : ''}
       </p>
       {pet.foodSchedule && <p className="line-clamp-2 text-xs text-muted-foreground">{pet.foodSchedule}</p>}
-      {status && <p className="text-xs text-foreground">{feedingHeadline(status, now)}</p>}
+      {status && <p className="text-xs text-foreground">{feedingHeadline(status, now, timeZone)}</p>}
       {dues.length > 0 && (
         <ul className="space-y-0.5 text-xs text-foreground">
           {dues.map((due) => <li key={due.medication}>{due.medication}: {due.label}</li>)}
@@ -129,6 +129,7 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
                 variant="secondary"
                 size="icon"
                 aria-label={`Open actions for ${pet.name}`}
+                data-pet-actions={pet.id}
                 className="h-9 w-9 rounded-full bg-background/80 shadow-raised hover:bg-background"
               >
                 <MoreVertical className="h-4 w-4" />
@@ -151,7 +152,8 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
       <div className="flex flex-1 flex-col gap-3 p-4">
         {/* `static` keeps the stretched link positioned against the card, not the peek wrapper. */}
         <PeekCard peek={<PetPeek pet={pet} care={care} />} className="static min-w-0">
-          <h2 className="font-headline text-xl font-semibold leading-tight">
+          {/* Long names without spaces wrap and clamp at two lines instead of being clipped (PE-20d). */}
+          <h2 className="line-clamp-2 break-words font-headline text-xl font-semibold leading-tight [overflow-wrap:anywhere]" title={pet.name}>
             {/* Stretched link: the whole card opens the pet; other controls sit above it. */}
             {/* Not draggable and no touch callout, so holding the photo (through this link's layer) stays a hold. */}
             <Link

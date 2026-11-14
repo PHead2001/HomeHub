@@ -6,8 +6,9 @@
  *
  * "Today" here is the household day (`household.timeZone`, default
  * America/Chicago), computed with the shared `localDay` from
- * functions/src/shared/calendar.ts. (No `src/lib/household-day.ts` helper exists
- * on main yet; switch to it once the dashboard data PR adds one.)
+ * functions/src/shared/calendar.ts (the zone rule of `src/lib/household-day.ts`).
+ * The whole planning of one feed (idempotency, the bound confirmation, the state
+ * write) lives in `feed-plan.ts`, on top of these decisions.
  */
 import { UNDO_WINDOW_MS } from '../undo-window';
 import { DEFAULT_TIME_ZONE, localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
@@ -27,6 +28,15 @@ export const AUTHOR_DELETE_WINDOW_MS = 10 * 60_000;
 
 /** Document id of the per-pet state: `households/{h}/pets/{p}/feeding-state/current`. */
 export const FEEDING_STATE_ID = 'current';
+
+/**
+ * Toast group of a pet's feeding Undo (PE-8i, D-P13): one group per pet, so a
+ * newer feeding of the same pet replaces its toast, while feeding the cat keeps
+ * the dog's Undo on screen.
+ */
+export function petFeedToastGroup(petId: string): string {
+  return `pet-feed:${petId}`;
+}
 
 /** The household day of an instant. */
 export function householdDay(instant: Date, timeZone?: string | null): string {
@@ -69,6 +79,8 @@ export function readFeedingState(data: Record<string, unknown> | null | undefine
 
 /** What a client already knows from the feeding logs it has loaded (fallback while a pet has no state document). */
 export type KnownFeedings = {
+  /** The newest feeding's log id, when the logs carry ids. */
+  lastLogId?: string | null;
   lastFedAt: Date | null;
   lastFedByUid?: string | null;
   lastFedByName: string | null;
@@ -83,21 +95,26 @@ export type KnownFeedings = {
  */
 export function knownFromLogs(logs: FeedingEntry[], now: Date, timeZone?: string | null): KnownFeedings {
   const today = householdDay(now, timeZone);
-  let last: { date: Date; uid: string | null; name: string | null } | null = null;
+  let last: { id: string | null; date: Date; uid: string | null; name: string | null } | null = null;
   let countToday = 0;
   for (const log of logs) {
     const date = seenFeedingDate(log.date, now);
     if (!date) continue;
     if (householdDay(date, timeZone) === today) countToday += 1;
-    if (!last || date > last.date) last = { date, uid: text(log.loggedByUid), name: log.loggedByName?.trim() || null };
+    if (!last || date > last.date) last = { id: text(log.id), date, uid: text(log.loggedByUid), name: log.loggedByName?.trim() || null };
   }
-  return { lastFedAt: last?.date ?? null, lastFedByUid: last?.uid ?? null, lastFedByName: last?.name ?? null, countToday };
+  return { lastLogId: last?.id ?? null, lastFedAt: last?.date ?? null, lastFedByUid: last?.uid ?? null, lastFedByName: last?.name ?? null, countToday };
 }
 
 export type FeedCheck = {
   needsConfirm: boolean;
   /** `recent`: fed under 90 minutes ago (wins); `complete`: today's planned feedings are done. */
   reason: 'recent' | 'complete' | null;
+  /**
+   * The log of the last feeding the check saw (null when none, or unknown). A
+   * "Feed again?" answer is bound to it and to `countToday` (PE-23g).
+   */
+  lastLogId: string | null;
   lastFedAt: Date | null;
   lastFedByUid: string | null;
   lastFedByName: string | null;
@@ -127,10 +144,12 @@ export function feedConfirmDecision(input: {
   const { state, known, now, perDay } = input;
   const today = householdDay(now, input.timeZone);
   let lastFedAt = state?.lastFedAt ?? null;
+  let lastLogId = lastFedAt ? state?.lastLogId ?? null : null;
   let lastFedByUid = state?.lastFedByUid ?? null;
   let lastFedByName = state?.lastFedByName ?? null;
   if (known?.lastFedAt && (!lastFedAt || known.lastFedAt > lastFedAt)) {
     lastFedAt = known.lastFedAt;
+    lastLogId = known.lastLogId ?? null;
     lastFedByUid = known.lastFedByUid ?? null;
     lastFedByName = known.lastFedByName;
   }
@@ -140,15 +159,15 @@ export function feedConfirmDecision(input: {
   const recent = Boolean(lastFedAt) && now.getTime() - lastFedAt!.getTime() < FEED_REPEAT_WINDOW_MS;
   const complete = perDay != null && perDay > 0 && countToday >= perDay;
   const reason = recent ? 'recent' : complete ? 'complete' : null;
-  return { needsConfirm: reason !== null, reason, lastFedAt, lastFedByUid, lastFedByName, countToday, perDay };
+  return { needsConfirm: reason !== null, reason, lastLogId, lastFedAt, lastFedByUid, lastFedByName, countToday, perDay };
 }
 
 type PromptInput = Pick<FeedCheck, 'reason' | 'lastFedAt' | 'lastFedByUid' | 'lastFedByName' | 'perDay'>;
 
 /** Why the member is asked: "Sam fed Rex 12 min ago." (or "You fed…", or the complete-day line). */
-export function feedAgainReason(check: PromptInput, petName: string, now: Date, viewerUid?: string | null): string {
+export function feedAgainReason(check: PromptInput, petName: string, now: Date, viewerUid?: string | null, timeZone?: string | null): string {
   const who = viewerUid && check.lastFedByUid === viewerUid ? 'You' : check.lastFedByName;
-  const ago = check.lastFedAt ? formatAgo(check.lastFedAt, now) : null;
+  const ago = check.lastFedAt ? formatAgo(check.lastFedAt, now, timeZone) : null;
   const fedLine = ago ? (who ? `${who} fed ${petName} ${ago}.` : `${petName} was fed ${ago}.`) : '';
   if (check.reason === 'complete') {
     const done = check.perDay ? `${petName} has had all ${check.perDay} feedings today.` : `${petName} is all fed today.`;
@@ -158,14 +177,18 @@ export function feedAgainReason(check: PromptInput, petName: string, now: Date, 
 }
 
 /** "Sam fed Rex 12 min ago. Feed again?" */
-export function feedAgainPrompt(check: PromptInput, petName: string, now: Date, viewerUid?: string | null): string {
-  return `${feedAgainReason(check, petName, now, viewerUid)} Feed again?`;
+export function feedAgainPrompt(check: PromptInput, petName: string, now: Date, viewerUid?: string | null, timeZone?: string | null): string {
+  return `${feedAgainReason(check, petName, now, viewerUid, timeZone)} Feed again?`;
 }
 
-/** "Last fed 12 min ago by Sam" for places that show last-fed context. */
-export function lastFedLine(lastFedAt: Date | null, lastFedByName: string | null, now: Date): string {
+/**
+ * "Last fed 12 min ago by Sam (wet)" for places that show last-fed context before
+ * logging (the palette preview, PE-23e / QA-17).
+ */
+export function lastFedLine(lastFedAt: Date | null, lastFedByName: string | null, now: Date, timeZone?: string | null, foodType?: string | null): string {
   if (!lastFedAt) return 'No feedings logged yet';
-  return `Last fed ${formatAgo(lastFedAt, now)}${lastFedByName ? ` by ${lastFedByName}` : ''}`;
+  const food = foodType ? ` (${foodType.toLowerCase()})` : '';
+  return `Last fed ${formatAgo(lastFedAt, now, timeZone)}${lastFedByName ? ` by ${lastFedByName}` : ''}${food}`;
 }
 
 /** The instant a household day starts (for the bounded "today's feedings" read). */

@@ -15,8 +15,10 @@ import {
   type CollectionReference,
   type Query,
   type QueryDocumentSnapshot,
+  type QuerySnapshot,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { resilientListener } from '@/lib/dashboard/resilient-listener';
 import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { PetCareLog, PetFeedingLog, PetMedicationLog } from '@/lib/pets/types';
 
@@ -86,7 +88,13 @@ type UnionSpec = {
   max?: number;
 };
 
-/** Subscribes to one or more queries; resolves once each has answered, keyed so stale results never show. */
+/**
+ * Subscribes to one or more queries; resolves once each has answered, keyed so
+ * stale results never show. Each query is a resilient listener (PE-8g, the HP-5
+ * pattern of `resilientListener`): a failed one resubscribes with bounded
+ * backoff and at once on `online` or when the page becomes visible, and while it
+ * is down the logs are reported as unavailable (`error`), never as empty.
+ */
 function useLiveUnion({ key, householdId, petId, kind, mode, sinceMs, max }: UnionSpec) {
   const [state, setState] = useState<KeyedLogs<Record<string, unknown>[]>>(EMPTY_KEYED);
 
@@ -97,22 +105,31 @@ function useLiveUnion({ key, householdId, petId, kind, mode, sinceMs, max }: Uni
       ? [query(ref, where('nextDueDate', '>=', ''))]
       : dateShapeQueries(ref, sinceMs == null ? null : new Date(sinceMs), max);
     const results: (Record<string, unknown>[] | undefined)[] = queries.map(() => undefined);
-    let failed = false;
-    const unsubscribes = queries.map((shape, index) =>
-      onSnapshot(
-        shape,
-        (snapshot) => {
-          results[index] = snapshot.docs.map((entry) => normalizeEntry(kind, entry));
-          if (!failed && results.every(Boolean)) setState({ key, logs: results as Record<string, unknown>[][], error: null });
-        },
-        (error) => {
-          failed = true;
-          console.error(`Error loading ${kind}:`, error);
-          setState({ key, logs: [], error });
+    const errors: unknown[] = queries.map(() => null);
+    const publish = () => {
+      const error = errors.find((value) => value !== null);
+      if (error) setState({ key, logs: [], error });
+      else if (results.every(Boolean)) setState({ key, logs: [...results] as Record<string, unknown>[][], error: null });
+    };
+    const handles = queries.map((shape, index) =>
+      resilientListener<QuerySnapshot>(
+        (next, error) => onSnapshot(shape, next, error),
+        {
+          next: (snapshot) => {
+            results[index] = snapshot.docs.map((entry) => normalizeEntry(kind, entry));
+            errors[index] = null;
+            publish();
+          },
+          status: (status) => {
+            if (status.kind === 'live') return;
+            console.error(`Error loading ${kind}:`, status.error);
+            errors[index] = status.error ?? new Error('unavailable');
+            publish();
+          },
         },
       ),
     );
-    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+    return () => handles.forEach((handle) => handle.stop());
   }, [key, householdId, petId, kind, mode, sinceMs, max]);
 
   return state;

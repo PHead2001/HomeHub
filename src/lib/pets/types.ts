@@ -39,6 +39,14 @@ export type PetFeedingLog = FeedingLog & LoggedBy & {
   clockSource?: 'device' | 'server';
   /** A deliberately chosen past time from the detailed form. */
   backdated?: boolean;
+  /** With `repeat: 'confirmed'`: the last feeding's log the member was asked about ("Feed again?", PE-23g). */
+  confirmOf?: string | null;
+  /** The effective time before its first correction (PE-5e); `date` is the corrected time. */
+  originalDate?: unknown;
+  /** Server time of the latest correction of `date`, and who made it. */
+  dateCorrectedAt?: unknown;
+  dateCorrectedByUid?: string;
+  dateCorrectedByName?: string;
 };
 
 export type PetMedicationLog = MedicationLog & LoggedBy & {

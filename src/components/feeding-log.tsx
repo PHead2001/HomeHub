@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format, parse } from 'date-fns';
-import { CalendarIcon, ChevronDown, Loader2, PlusCircle, Trash2 } from 'lucide-react';
+import { CalendarIcon, ChevronDown, Clock, Loader2, PlusCircle, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -13,8 +13,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
-import { formatPortion, isValidPortion, knownFoodType, PORTION_MAX, type FeedingPlan } from '@/lib/pets/care';
+import { formatPortion, isValidPortion, knownFoodType, PORTION_MAX, UNIT_LABELS, type FeedingPlan } from '@/lib/pets/care';
 import { authorMayDelete, knownFromLogs } from '@/lib/pets/feed-decision';
+import { feedingTimes, mayCorrectFeedTime } from '@/lib/pets/feed-plan';
 import { undoFeed } from '@/lib/pets/feed-operation';
 import { FOOD_TYPES, PORTION_UNITS, type FoodType, type PetFeedingLog } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
@@ -30,6 +31,7 @@ import { LoggedBy } from './pets/logged-by';
 import { usePetLogs } from './pets/pet-log-api';
 import { FeedAgainDialog, useFeedAction } from './pets/use-feed-action';
 import { useNow } from './pets/use-now';
+import { CorrectFeedTimeDialog, type CorrectableFeeding } from './pets/correct-feed-time-dialog';
 
 const logSchema = z.object({
   date: z.date(),
@@ -88,6 +90,14 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
   const { logs, loading, error } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', 100);
   const [useCurrentTime, setUseCurrentTime] = useState(true);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
+  const [logToCorrect, setLogToCorrect] = useState<CorrectableFeeding | null>(null);
+  // The history control that opened a dialog gets focus back when it closes (PE-20e).
+  const [returnTo, setReturnTo] = useState<HTMLElement | null>(null);
+  const focusBack = (event: Event) => {
+    if (!returnTo?.isConnected) return;
+    event.preventDefault();
+    returnTo.focus();
+  };
   const [formOpen, setFormOpen] = useState(false);
   const lastFoodType = knownFoodType(logs[0]?.foodType);
   // Every feeding, live or backdated, goes through the shared feed operation.
@@ -149,6 +159,13 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
   return (
     <>
     <FeedAgainDialog action={feeding} petName={petName} />
+    <CorrectFeedTimeDialog
+      petId={petId}
+      petName={petName}
+      log={logToCorrect}
+      onOpenChange={(open) => !open && setLogToCorrect(null)}
+      onCloseAutoFocus={focusBack}
+    />
     <PetLogDeleteAlert
       open={!!logToDelete}
       logType="feeding"
@@ -279,7 +296,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {PORTION_UNITS.map((unit) => <SelectItem key={unit} value={unit}>{unit}</SelectItem>)}
+                          {PORTION_UNITS.map((unit) => <SelectItem key={unit} value={unit}>{UNIT_LABELS[unit]}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -347,7 +364,12 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
             <p className="py-4 text-center text-sm text-muted-foreground">No feedings logged yet.</p>
           )}
           {!loading && logs.map((log) => {
-            const when = format(new Date(log.date), 'PPP p');
+            // When the pet ate (effective, correctable) and when it was saved (recorded, immutable), PE-5e.
+            const times = feedingTimes(log);
+            const when = times.effective ? format(times.effective, 'PPP p') : 'Unknown time';
+            const recordedSameDay = times.effective && times.recorded && format(times.effective, 'yyyy-MM-dd') === format(times.recorded, 'yyyy-MM-dd');
+            const recorded = times.recorded ? format(times.recorded, recordedSameDay ? 'p' : 'PPP p') : null;
+            const canCorrect = mayCorrectFeedTime(log, currentUser?.uid, canDelete, now);
             return (
               <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
                 <div className="min-w-0 space-y-0.5">
@@ -358,14 +380,43 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan }: FeedingL
                     <span>{when}</span>
                     <LoggedBy entry={log} />
                   </p>
+                  {(times.showRecorded || times.corrected) && (
+                    <p className="text-xs text-muted-foreground" data-testid={`feeding-times-${log.id}`}>
+                      {times.corrected
+                        ? `Time changed${times.corrected.byName ? ` by ${times.corrected.byName}` : ''}${times.corrected.from ? ` (was ${format(times.corrected.from, 'PPP p')})` : ''}. `
+                        : log.repeat === 'offline'
+                          ? 'Saved offline with this device’s clock. '
+                          : log.backdated
+                            ? 'Logged for an earlier time. '
+                            : ''}
+                      {recorded && `Recorded ${recorded}.`}
+                    </p>
+                  )}
                   {log.comments && <p className="mt-1 text-muted-foreground">{log.comments}</p>}
                 </div>
-                {/* pets.deleteLogs, or the author within 10 minutes of logging (PE-2). */}
-                {(canDelete || authorMayDelete(log, currentUser?.uid, now)) && (
-                  <Button variant="ghost" size="icon" aria-label={`Delete feeding log from ${when}`} className="h-8 w-8 flex-shrink-0" onClick={() => setLogToDelete(log.id)}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
+                <div className="flex flex-shrink-0 items-center gap-1">
+                  {/* pets.deleteLogs, or the author within 10 minutes of logging (PE-5e, same window as delete). */}
+                  {canCorrect && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Change the time of the feeding from ${when}`}
+                      className="h-8 w-8"
+                      onClick={(event) => {
+                        setReturnTo(event.currentTarget);
+                        setLogToCorrect({ id: log.id, date: times.effective, loggedByUid: log.loggedByUid, loggedAt: log.loggedAt });
+                      }}
+                    >
+                      <Clock className="h-4 w-4" />
+                    </Button>
+                  )}
+                  {/* pets.deleteLogs, or the author within 10 minutes of logging (PE-2). */}
+                  {(canDelete || authorMayDelete(log, currentUser?.uid, now)) && (
+                    <Button variant="ghost" size="icon" aria-label={`Delete feeding log from ${when}`} className="h-8 w-8" onClick={() => setLogToDelete(log.id)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
               </div>
             );
           })}
