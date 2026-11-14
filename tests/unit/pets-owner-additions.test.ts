@@ -41,6 +41,7 @@ import {
 import {
   DuplicatePetNameError,
   PET_PHOTO_MAX_BYTES,
+  canOptimizePetPhoto,
   duplicatePetName,
   isPetId,
   newPetId,
@@ -323,6 +324,17 @@ describe('pet profile: ids, names, vet and photos (PE-30, PE-28a, PE-21e/f)', ()
     const api = read('src/components/pets/pet-profile-api.ts');
     assert.match(api, /petPhotoFolder\(householdId, petId\)/);
     assert.ok(api.indexOf('runUpdatePet(db') < api.indexOf('deleteReplacedPhoto(householdId, petId, replaced)'));
+  });
+});
+
+describe('pet photos on any storage host', () => {
+  it('lets next/image optimize only configured hosts; the Storage emulator and other hosts are drawn unoptimized (never a crash)', () => {
+    assert.equal(canOptimizePetPhoto('https://firebasestorage.googleapis.com/v0/b/x/o/p.jpg?alt=media'), true);
+    assert.equal(canOptimizePetPhoto('/favicon.ico'), true);
+    assert.equal(canOptimizePetPhoto('http://127.0.0.1:9199/v0/b/demo-x.appspot.com/o/p.png?alt=media'), false);
+    assert.equal(canOptimizePetPhoto('https://example.com/p.jpg'), false);
+    assert.equal(canOptimizePetPhoto('//evil.example/p.jpg'), false);
+    assert.equal(canOptimizePetPhoto('not a url'), false);
   });
 });
 

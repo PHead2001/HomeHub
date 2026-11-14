@@ -163,3 +163,23 @@ export function ownedPhotoPath(
   const shared = (scope.otherPetPhotoUrls ?? []).some((other) => storagePathOfUrl(other, scope.bucket) === path);
   return shared ? null : path;
 }
+
+/** Hosts `next.config` lets `next/image` optimize; any other photo is drawn unoptimized. */
+const OPTIMIZED_HOSTS = new Set(['firebasestorage.googleapis.com', 'placehold.co', 'lh3.googleusercontent.com']);
+
+/**
+ * Whether `next/image` may optimize a photo URL: same-origin paths and the
+ * configured https hosts. Anything else (the Storage emulator's
+ * `http://127.0.0.1:9199/…` download URLs, another host) is passed through
+ * unoptimized, since `next/image` throws on an unconfigured host and would
+ * take the whole Pets view down with it.
+ */
+export function canOptimizePetPhoto(url: string): boolean {
+  if (url.startsWith('/') && !url.startsWith('//')) return true;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && OPTIMIZED_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}

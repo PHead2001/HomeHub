@@ -4,6 +4,7 @@ import * as React from 'react';
 import Image from 'next/image';
 import { cn } from '@/lib/utils';
 import { hasRealPhoto, PET_PHOTO_FOCUS } from '@/lib/pets/care';
+import { canOptimizePetPhoto } from '@/lib/pets/profile';
 import { SpeciesAvatar } from './species-avatar';
 
 export type PetPhotoProps = {
@@ -39,6 +40,7 @@ export function PetPhoto({ name, type, hint, photoUrl, sizes, priority, classNam
           fill
           sizes={sizes}
           priority={priority}
+          unoptimized={!canOptimizePetPhoto(photoUrl)}
           className="object-cover"
           style={{ objectPosition: PET_PHOTO_FOCUS }}
           onError={() => setFailedUrl(photoUrl)}
