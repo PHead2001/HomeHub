@@ -25,7 +25,6 @@ import { deviceHeartbeatAction, endPinSessionAction } from '@/app/devices/action
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { readDeviceSettings } from '@/lib/devices/settings';
 import { forgetHouseholdOnDevice } from '@/lib/auth/household-scope';
-import { classifyListenerError } from '@/lib/auth/live-membership';
 import {
   DEVICE_ENDED_KEY,
   DEVICE_NOTICES_LIMIT,
@@ -43,6 +42,8 @@ import {
   type SessionSignal,
 } from '@/lib/devices/device-session';
 import { deleteDeviceDatabase } from '@/lib/devices/device-store';
+import { tabletListener } from '@/lib/devices/tablet-listener';
+import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
 import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
 import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, type DeviceRefusal } from '@/lib/devices/action-policy';
@@ -66,8 +67,7 @@ import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
 import { setDeviceWeather } from '@/lib/dashboard/use-weather';
 import { AppearanceProvider, useAppearance } from '@/components/appearance-provider';
 import { toast } from '@/hooks/use-toast';
-import { householdPermissions } from '@/lib/permissions';
-import type { HouseholdPermission } from '@/lib/types';
+import { appearanceFromRecord, devicePermissions, weatherFromRecord } from '@/lib/devices/tablet-settings-apply';
 import type { DeviceSettings } from '@/lib/devices/types';
 import {
   TabletContext,
@@ -130,7 +130,6 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
   // A source that returned its full window (the latest DEVICE_NOTICES_LIMIT) may have older notices.
   const [noticesWindowFull, setNoticesWindowFull] = useState<Record<string, boolean>>({});
   const [ending, setEnding] = useState(false);
-  const [listenKey, setListenKey] = useState(0);
   const stops = useRef<Array<() => void>>([]);
   const exitGate = useRef<ExitGate>({ inFlight: null, deferred: null });
 
@@ -218,48 +217,61 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
     }
   }, [householdId, signal]);
 
-  const retryLater = useCallback((ms: number) => {
-    const id = window.setTimeout(() => setListenKey((key) => key + 1), ms);
-    stops.current.push(() => window.clearTimeout(id));
-  }, []);
 
-  // The tablet's own record, its household and the roster, from the server (SL-3b).
+  // The tablet's own record, its household and the roster, from the server (SL-3b). Every
+  // listener retries on its own (tabletListener); a settled denial of the record or the
+  // household asks the server whether the tablet was removed.
   useEffect(() => {
     if (endingSession) return;
     let stopped = false;
     void Promise.all([import('@/lib/firebase'), import('firebase/firestore')]).then(([{ db }, fs]) => {
       if (stopped) return;
       const { doc, collection, onSnapshot } = fs;
-      const onError = (target: 'record' | 'household') => (error: unknown) => {
-        if (classifyListenerError(error) === 'denied') void confirmDenied();
-        retryLater(target === 'record' ? 15_000 : 20_000);
-      };
-      stops.current.push(onSnapshot(doc(db, 'households', householdId, 'devices', deviceId), { includeMetadataChanges: true }, (snapshot) => {
-        signal({ kind: 'record', fromCache: snapshot.metadata.fromCache, exists: snapshot.exists(), status: snapshot.get('status'), generation: snapshot.get('generation'), endedReason: snapshot.get('endedReason') });
-        if (snapshot.exists() && snapshot.get('status') === 'active' && snapshot.get('generation') === generation) setSettings(readDeviceSettings(snapshot.data()));
-      }, onError('record')));
-      stops.current.push(onSnapshot(doc(db, 'households', householdId), { includeMetadataChanges: true }, (snapshot) => {
-        signal({ kind: 'household', fromCache: snapshot.metadata.fromCache, exists: snapshot.exists(), deleting: Boolean(snapshot.get('deletingAt')) });
-        if (!snapshot.exists()) return;
-        const data = snapshot.data() ?? {};
-        setHousehold({
-          name: typeof data.name === 'string' && data.name.trim() ? data.name : 'Home',
-          timeZone: typeof data.timeZone === 'string' ? data.timeZone : 'America/Chicago',
-          quietHours: readQuietHours(data.quietHours),
-          pointsPin: readPointsPinPolicy(data as { devicePolicy?: { pointsPin?: unknown } }),
-        });
-      }, onError('household')));
-      stops.current.push(onSnapshot(collection(db, 'households', householdId, 'members'), (snapshot) => {
-        setRoster(rosterFrom(snapshot.docs.map((d) => ({ id: d.id, data: d.data() }))));
-      }, () => retryLater(30_000)));
+      const recordRef = doc(db, 'households', householdId, 'devices', deviceId);
+      const householdRef = doc(db, 'households', householdId);
+      const fromServer = (snapshot: { metadata: { fromCache: boolean } }) => !snapshot.metadata.fromCache;
+      const denied = () => { void confirmDenied(); };
+      stops.current.push(tabletListener<DocumentSnapshot>(
+        (next, error) => onSnapshot(recordRef, { includeMetadataChanges: true }, next, error),
+        {
+          confirmed: fromServer,
+          onDenied: denied,
+          next: (snapshot) => {
+            signal({ kind: 'record', fromCache: snapshot.metadata.fromCache, exists: snapshot.exists(), status: snapshot.get('status'), generation: snapshot.get('generation'), endedReason: snapshot.get('endedReason') });
+            if (snapshot.exists() && snapshot.get('status') === 'active' && snapshot.get('generation') === generation) setSettings(readDeviceSettings(snapshot.data()));
+          },
+        },
+      ).stop);
+      stops.current.push(tabletListener<DocumentSnapshot>(
+        (next, error) => onSnapshot(householdRef, { includeMetadataChanges: true }, next, error),
+        {
+          confirmed: fromServer,
+          onDenied: denied,
+          next: (snapshot) => {
+            signal({ kind: 'household', fromCache: snapshot.metadata.fromCache, exists: snapshot.exists(), deleting: Boolean(snapshot.get('deletingAt')) });
+            if (!snapshot.exists()) return;
+            const data = snapshot.data() ?? {};
+            setHousehold({
+              name: typeof data.name === 'string' && data.name.trim() ? data.name : 'Home',
+              timeZone: typeof data.timeZone === 'string' ? data.timeZone : 'America/Chicago',
+              quietHours: readQuietHours(data.quietHours),
+              pointsPin: readPointsPinPolicy(data as { devicePolicy?: { pointsPin?: unknown } }),
+            });
+          },
+        },
+      ).stop);
+      stops.current.push(tabletListener<QuerySnapshot>(
+        (next, error) => onSnapshot(collection(db, 'households', householdId, 'members'), { includeMetadataChanges: true }, next, error),
+        { confirmed: fromServer, next: (snapshot) => setRoster(rosterFrom(snapshot.docs.map((d) => ({ id: d.id, data: d.data() })))) },
+      ).stop);
     });
     return () => {
       stopped = true;
       stopListeners();
     };
-  }, [confirmDenied, deviceId, generation, householdId, listenKey, retryLater, signal, stopListeners]);
+  }, [confirmDenied, deviceId, generation, householdId, signal, stopListeners]);
 
-  // The six household-wide notification listeners (5.6): one per enabled source.
+  // The six household-wide notification listeners (5.6): one per enabled source, each retrying on its own.
   const sectionsKey = settings ? JSON.stringify(settings.sections) : '';
   useEffect(() => {
     if (!settings || endingSession) return;
@@ -271,17 +283,24 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
       const categories = deviceNotificationCategories(settings.sections);
       setNoticesByCategory((previous) => Object.fromEntries(Object.entries(previous).filter(([category]) => categories.includes(category as never))));
       for (const category of categories) {
-        local.push(onSnapshot(query(
+        const q = query(
           collection(db, 'households', householdId, 'notifications'),
           where('audience', 'array-contains', '*'),
           where('category', '==', category),
           orderBy('createdAt', 'desc'),
           limit(DEVICE_NOTICES_LIMIT),
-        ), (snapshot) => {
-          const notices = snapshot.docs.map((d) => parseDeviceNotice(d.id, d.data(), Date.now())).filter((notice): notice is DeviceNotice => notice !== null);
-          setNoticesByCategory((previous) => ({ ...previous, [category]: notices }));
-          setNoticesWindowFull((previous) => ({ ...previous, [category]: snapshot.size >= DEVICE_NOTICES_LIMIT }));
-        }, () => undefined));
+        );
+        local.push(tabletListener<QuerySnapshot>(
+          (next, error) => onSnapshot(q, { includeMetadataChanges: true }, next, error),
+          {
+            confirmed: (snapshot) => !snapshot.metadata.fromCache,
+            next: (snapshot) => {
+              const notices = snapshot.docs.map((d) => parseDeviceNotice(d.id, d.data(), Date.now())).filter((notice): notice is DeviceNotice => notice !== null);
+              setNoticesByCategory((previous) => ({ ...previous, [category]: notices }));
+              setNoticesWindowFull((previous) => ({ ...previous, [category]: snapshot.size >= DEVICE_NOTICES_LIMIT }));
+            },
+          },
+        ).stop);
       }
     });
     return () => {
@@ -290,7 +309,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
     };
     // `sectionsKey` stands for settings.sections.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [householdId, sectionsKey, listenKey]);
+  }, [householdId, sectionsKey]);
 
   // Heartbeat: at start, when visible, on reconnect, every 5 minutes while visible.
   useEffect(() => {
@@ -348,7 +367,8 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
     uid: '',
     email: '',
     greetingName: null,
-    permissions: devicePermissions(settings),
+    permissions: devicePermissions(settings.sections),
+    seasonal: settings.display.seasonal,
   };
 
   return (
@@ -375,28 +395,20 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
   );
 }
 
-/** View permissions from the tablet's sections only; no write permission at all (read-only until F4). */
-function devicePermissions(settings: DeviceSettings): Record<HouseholdPermission, boolean> {
-  const permissions = Object.fromEntries(householdPermissions.map((permission) => [permission, false])) as Record<HouseholdPermission, boolean>;
-  permissions['chores.view'] = settings.sections.chores;
-  permissions['shopping.view'] = settings.sections.shopping;
-  permissions['pets.view'] = settings.sections.pets;
-  permissions['maintenance.view'] = settings.sections.maintenance;
-  return permissions;
-}
-
 /** Comfort settings from the record (D-T2): theme, text size (115 % by default), motion, sound. */
 function ComfortSync({ settings }: { settings: DeviceSettings }) {
   const { setPreferences } = useAppearance();
-  const { theme, textScale, motion, sound } = settings.comfort;
+  // Every value from the record (tablet-settings-apply.ts): a previous personal session's
+  // colour preset, haptics or text size on this browser never carries over.
+  const appearanceKey = JSON.stringify(appearanceFromRecord(settings.comfort));
   useEffect(() => {
-    setPreferences({ mode: theme, textScale, reduceMotion: motion === 'reduced', sound });
-  }, [setPreferences, theme, textScale, motion, sound]);
+    setPreferences(JSON.parse(appearanceKey));
+  }, [setPreferences, appearanceKey]);
   // Weather from the record's display settings, never a person's preference (S12, HP-18b).
-  const { weather, weatherPlace, temperatureUnit } = settings.display;
+  const weatherKey = JSON.stringify(weatherFromRecord(settings.display));
   useEffect(() => {
-    setDeviceWeather({ enabled: weather, city: weatherPlace, unit: temperatureUnit === 'F' ? 'fahrenheit' : 'celsius' });
-  }, [weather, weatherPlace, temperatureUnit]);
+    setDeviceWeather(JSON.parse(weatherKey));
+  }, [weatherKey]);
   // Kiosk behaviour on the shell (WT-14h/i): no pull-to-refresh, heavy effects off.
   useEffect(() => {
     const root = document.documentElement;

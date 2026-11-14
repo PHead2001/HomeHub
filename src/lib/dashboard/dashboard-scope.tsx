@@ -25,6 +25,11 @@ export type DashboardScope = {
   /** First name for the greeting (never on a tablet). */
   greetingName: string | null;
   permissions: Record<HouseholdPermission, boolean>;
+  /**
+   * Wall tablets: the house's seasonal touches from the device record (the house's own
+   * toggle is hidden). Absent for a person: their own choice on this device applies.
+   */
+  seasonal?: boolean;
 };
 
 const DashboardScopeContext = createContext<DashboardScope | null>(null);

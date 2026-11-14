@@ -11,6 +11,8 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
+import { tabletListener } from '@/lib/devices/tablet-listener';
+import type { QuerySnapshot } from 'firebase/firestore';
 import { Bell, CalendarDays, CheckSquare, PawPrint, ShoppingCart, Wrench } from 'lucide-react';
 import { DashboardLoading } from '@/components/dashboard/dashboard-loading';
 import { cn } from '@/lib/utils';
@@ -105,11 +107,15 @@ function useListItems(householdId: string, listId: string | undefined) {
     let stopped = false;
     void Promise.all([import('@/lib/firebase'), import('firebase/firestore')]).then(([{ db }, { collection, onSnapshot }]) => {
       if (stopped) return;
-      stop = onSnapshot(
-        collection(db, 'households', householdId, 'shopping-lists', listId, 'items'),
-        (snapshot) => setState({ listId, items: neededListItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))), failed: false }),
-        () => setState((previous) => ({ listId, items: previous?.listId === listId ? previous.items : null, failed: true })),
-      );
+      const ref = collection(db, 'households', householdId, 'shopping-lists', listId, 'items');
+      stop = tabletListener<QuerySnapshot>(
+        (next, error) => onSnapshot(ref, { includeMetadataChanges: true }, next, error),
+        {
+          confirmed: (snapshot) => !snapshot.metadata.fromCache,
+          next: (snapshot) => setState({ listId, items: neededListItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))), failed: false }),
+          onDenied: () => setState((previous) => ({ listId, items: previous?.listId === listId ? previous.items : null, failed: true })),
+        },
+      ).stop;
     });
     return () => {
       stopped = true;

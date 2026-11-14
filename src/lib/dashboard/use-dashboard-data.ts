@@ -35,6 +35,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useDashboardScope } from './dashboard-scope';
+import { TABLET_DENIED_RECOVERY_MS } from '@/lib/devices/tablet-listener';
 import { householdDayStart, householdDayZone, useHouseholdToday } from '@/lib/household-day';
 import { deduplicateNotifications, parseNotificationDoc } from '@/lib/notifications';
 import { NOTIFICATION_WINDOW_DAYS } from './notification-display';
@@ -173,6 +174,7 @@ export function useDashboardData(enabled = true, options: { sections?: boolean }
   // A person by default; a registered wall tablet provides its own scope (dashboard-scope.tsx).
   const scope = useDashboardScope();
   const { permissions } = scope;
+  const deviceScope = scope.kind === 'device';
   const zone = householdDayZone(scope.timeZone);
   const householdId = enabled ? scope.householdId : null;
   const uid = scope.uid;
@@ -241,6 +243,9 @@ export function useDashboardData(enabled = true, options: { sections?: boolean }
         },
         // Only a server answer resets the backoff and the permission-denied count.
         confirmed: (value) => !fromCache(value),
+        // A wall tablet never restarts by itself: a settled denial is retried every minute
+        // (its revocation flow ends a tablet that really lost access).
+        ...(deviceScope ? { recoverUnauthorizedAfterMs: TABLET_DENIED_RECOVERY_MS } : {}),
       });
       handles.add(handle);
       return () => {
