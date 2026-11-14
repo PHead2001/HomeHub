@@ -193,7 +193,11 @@ type Segment = {
   interval: boolean;
   /** An "every N hours" that does not divide the day (every 5 hours). */
   badInterval: boolean;
+  /** The part says "daily", "a day", "per day" (its count is a daily total). */
+  daily: boolean;
 };
+
+const DAILY = /\b(?:daily|a\s+day|per\s+day|each\s+day|every\s+day)\b|\/\s*day\b/;
 
 const COUNT_WORDS = /\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:x|times|meals?|feedings?|feeds?)\b/;
 const EVERY_HOURS = /\bevery\s+(\d+|one|two|three|four|six|eight|twelve)\s*(?:hours?|hrs?|h)\b/;
@@ -242,7 +246,69 @@ function readSegment(raw: string): Segment {
     const value = stated ? toNumber(stated[1]) : null;
     if (value && Number.isInteger(value)) count = value;
   }
-  return { times, groups, portion, count, interval: Boolean(every) && !badInterval, badInterval };
+  return { times, groups, portion, count, interval: Boolean(every) && !badInterval, badInterval, daily: DAILY.test(raw) };
+}
+
+/* ------------------------------------------------------------------------- */
+/* Stated counts against named meals: the one rule                            */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * How one part's stated count is read. A **daily total** is a count that
+ * qualifies the day ("once daily", "twice a day", "3x per day"), any "every N
+ * hours", or a count in a part that names no meal ("2 meals", "twice"). A
+ * **per-meal** count qualifies the meals of its own part ("once in the
+ * morning", "twice at 8am").
+ */
+export type CountUse =
+  | { kind: 'total'; count: number; interval: boolean }
+  | { kind: 'perMeal'; count: number; placed: number };
+
+function countUse(segment: Segment): CountUse | null {
+  if (segment.count === null) return null;
+  const placed = segment.times.length > 0 ? segment.times.length : segment.groups.length;
+  if (segment.interval || segment.daily || placed === 0) return { kind: 'total', count: segment.count, interval: segment.interval };
+  return { kind: 'perMeal', count: segment.count, placed };
+}
+
+export type CountVerdict =
+  /** The counts agree with the meals: a plan of the named meals, or of `total` default meals when none are named. */
+  | { kind: 'plan'; total: number | null; interval: boolean }
+  /** No suggestion; `target` is the stated count kept as the legacy daily target. */
+  | { kind: 'ambiguous'; reason: string; target: number | null };
+
+/**
+ * The one rule for stated counts (PE-6). A daily total is compared with every
+ * meal named anywhere in the text (`mealCount`, synonyms and repeats merged):
+ * equal, it is a plan; different, it is ambiguous with no suggestion and the
+ * stated total stays the legacy daily target. Two different daily totals are
+ * ambiguous with the first as the target. A per-meal count must equal the
+ * meals of its own part; otherwise ambiguous, the target counting it (with a
+ * daily total, the total). A total with no meal named is checked against the
+ * six-meal limit before any meal is built. A bare "daily" with nothing else is
+ * one meal a day.
+ */
+export function reconcileCounts(uses: CountUse[], mealCount: number, bareDaily = false): CountVerdict {
+  const totals = uses.filter((use): use is Extract<CountUse, { kind: 'total' }> => use.kind === 'total');
+  const mismatched = uses.filter((use): use is Extract<CountUse, { kind: 'perMeal' }> => use.kind === 'perMeal' && use.count !== use.placed);
+  const total = totals.length > 0 ? totals[0].count : null;
+  if (totals.some((use) => use.count !== total)) return { kind: 'ambiguous', reason: 'The schedule states different daily counts.', target: total };
+  if (total !== null) {
+    if (mealCount === 0) {
+      if (!Number.isFinite(total) || total > MEAL_SLOTS_MAX) return { kind: 'ambiguous', reason: `More than ${MEAL_SLOTS_MAX} meals a day: set the times yourself.`, target: total };
+      return { kind: 'plan', total, interval: totals[0].interval };
+    }
+    if (mealCount !== total) return { kind: 'ambiguous', reason: `It says ${total} a day but names ${mealCount} ${mealCount === 1 ? 'meal' : 'meals'}.`, target: total };
+    if (mismatched.length > 0) return { kind: 'ambiguous', reason: 'A count and the meals it names disagree.', target: total };
+    return { kind: 'plan', total, interval: false };
+  }
+  if (mismatched.length > 0) {
+    // "twice in the morning": the feedings it states, beyond the meals it names.
+    const implied = mealCount + mismatched.reduce((sum, use) => sum + Math.max(0, use.count - use.placed), 0);
+    return { kind: 'ambiguous', reason: 'A count and the meals it names disagree.', target: implied };
+  }
+  if (mealCount === 0 && bareDaily) return { kind: 'plan', total: 1, interval: false };
+  return { kind: 'plan', total: null, interval: false };
 }
 
 /** Parts of a schedule: "1 cup in the morning, 1/2 cup at night" → two parts. */
@@ -300,14 +366,10 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
 
   type Meal = { name: string; minutes: number; guessed: boolean; group: MealGroup; portion: Segment['portion']; segment: number };
   const meals: Meal[] = [];
-  const counts: number[] = [];
-  let conflict: string | null = null;
-  let interval: number | null = null;
-  /** A count stated inside a part that conflicts with it, kept for the legacy target. */
-  let explicit: number | null = null;
+  const uses: CountUse[] = [];
+  let badInterval = false;
   for (const [index, segment] of segments.entries()) {
-    if (segment.badInterval) conflict = 'The interval does not divide the day into whole meals.';
-    const placed = segment.times.length > 0 ? segment.times.length : segment.groups.length;
+    if (segment.badInterval) badInterval = true;
     if (segment.times.length > 0) {
       // A part of the day next to a single time names it ("breakfast 7am").
       const label = segment.groups.length === 1 && segment.times.length === 1 ? segment.groups[0] : null;
@@ -320,26 +382,9 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
         meals.push({ name: MEAL_GROUPS[group].name, minutes: MEAL_GROUPS[group].minutes, guessed: true, group, portion: segment.portion, segment: index });
       }
     }
-    if (segment.count === null) continue;
-    if (placed === 0) {
-      counts.push(segment.count);
-      if (segment.interval) interval = segment.count;
-    } else if (segment.count > 1 && segment.count !== placed) {
-      // "twice daily at 8am", "three times a day at 8am, noon and 6pm": a daily total
-      // stated next to some of its meals. It is the stated count: it must match every
-      // meal the text names, and it stays the legacy daily target when they disagree.
-      counts.push(segment.count);
-    } else if (segment.count !== placed) {
-      // "once at 8am and 6pm" in one part: a count of one that names more meals.
-      conflict = 'A count and the meals it names disagree.';
-      explicit ??= segment.count;
-    }
+    const use = countUse(segment);
+    if (use) uses.push(use);
   }
-
-  // A bare "daily" with nothing else is one meal a day (as before), only as a guess.
-  if (meals.length === 0 && counts.length === 0 && /\b(?:daily|a day|per day|every day)\b/.test(text)) counts.push(1);
-  const stated = counts.length > 0 ? counts[0] : null;
-  if (counts.some((count) => count !== stated)) conflict = 'The schedule states different counts.';
 
   // Two mentions of one time, or of one part of the day without a time, are one meal.
   const unique: Meal[] = [];
@@ -350,16 +395,15 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
     else if (!same.portion && meal.portion) same.portion = meal.portion;
   }
 
-  // An explicit count always wins over the number of meals named for the legacy target.
-  if (conflict) return { kind: 'ambiguous', reason: conflict, perDay: dailyTarget(stated ?? explicit ?? (unique.length || null)) };
-  if (unique.length > 0 && stated !== null && stated !== unique.length) {
-    return { kind: 'ambiguous', reason: `It says ${stated} a day but names ${unique.length} ${unique.length === 1 ? 'meal' : 'meals'}.`, perDay: dailyTarget(stated) };
+  const bareDaily = meals.length === 0 && uses.length === 0 && DAILY.test(text);
+  const verdict = reconcileCounts(uses, unique.length, bareDaily);
+  if (badInterval) {
+    const target = verdict.kind === 'ambiguous' ? verdict.target : verdict.total ?? (unique.length || null);
+    return { kind: 'ambiguous', reason: 'The interval does not divide the day into whole meals.', perDay: dailyTarget(target) };
   }
-  // A stated count is checked before any meals are made from it: "9999999999 meals"
-  // must never allocate (the form parses as the member types).
-  if (unique.length === 0 && stated !== null && (!Number.isFinite(stated) || stated > MEAL_SLOTS_MAX)) {
-    return { kind: 'ambiguous', reason: `More than ${MEAL_SLOTS_MAX} meals a day: set the times yourself.`, perDay: dailyTarget(stated) };
-  }
+  if (verdict.kind === 'ambiguous') return { kind: 'ambiguous', reason: verdict.reason, perDay: dailyTarget(verdict.target) };
+  const stated = verdict.total;
+  const interval = verdict.interval ? stated : null;
 
   let planned: { name: string; minutes: number; guessed: boolean; portion: Segment['portion']; source: SuggestedMeal['source'] }[];
   if (unique.length > 0) planned = unique.map((meal) => ({ ...meal, source: meal.guessed ? 'part' : 'time' }));

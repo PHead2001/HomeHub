@@ -95,6 +95,79 @@ describe('PE-6: reading a free-text schedule', () => {
     assert.equal(parseFeedingsPerDay('twice daily, morning'), 2);
   });
 
+  it('reads every stated count by one rule: daily totals against all named meals, per-meal counts against their own (generated)', () => {
+    // The rule, implemented directly from the case's parts (the oracle).
+    type Total = { words: string; count: number; interval?: boolean };
+    const TOTALS: (Total | null)[] = [
+      null,
+      { words: 'once', count: 1 }, { words: 'twice', count: 2 }, { words: '2 times', count: 2 },
+      { words: 'three times', count: 3 }, { words: '3x', count: 3 },
+      { words: 'every 8 hours', count: 3, interval: true }, { words: 'every 12 hours', count: 2, interval: true },
+    ];
+    const QUALIFIERS = ['daily', 'a day', 'per day', ''];
+    // Meal lists: the first entry is how a meal reads after a count ("at 8am"), the second alone ("8am").
+    type Meal = [string, string];
+    const MEALS: { name: string; meals: Meal[]; perMeal?: boolean }[] = [
+      { name: 'none', meals: [] },
+      { name: '1 time', meals: [['at 8am', '8am']] },
+      { name: '2 times', meals: [['at 8am', '8am'], ['at 6pm', '6pm']] },
+      { name: '3 times', meals: [['at 7am', '7am'], ['at noon', 'noon'], ['at 6pm', '6pm']] },
+      { name: '1 part', meals: [['in the morning', 'morning']] },
+      { name: '2 parts', meals: [['in the morning', 'morning'], ['in the evening', 'evening']] },
+      { name: '3 parts', meals: [['at breakfast', 'breakfast'], ['at lunch', 'lunch'], ['at dinner', 'dinner']] },
+      { name: 'once …, once …', meals: [['once in the morning', 'once in the morning'], ['once at night', 'once at night']], perMeal: true },
+    ];
+    const SEPARATORS = [', ', ' and ', '; ', ' then '];
+    let checked = 0;
+    for (const total of TOTALS) {
+      for (const qualifier of total?.interval ? [''] : QUALIFIERS) {
+        for (const list of MEALS) {
+          for (const sep of SEPARATORS) {
+            // Two shapes: the count attached to the first meal ("twice daily at 8am, 6pm"), or a part of its own ("twice daily, 8am, 6pm").
+            for (const attached of [true, false]) {
+              if (!total && !qualifier && list.meals.length === 0) continue;
+              if (attached && (!total || list.meals.length === 0 || list.perMeal)) continue;
+              const head = [total?.words, qualifier].filter(Boolean).join(' ');
+              const mealWords = list.meals.map(([after, alone], index) => (attached && index === 0 ? after : list.perMeal ? after : alone));
+              const text = attached
+                ? [`${head} ${mealWords[0]}`, ...mealWords.slice(1)].join(sep)
+                : [head, ...mealWords].filter(Boolean).join(sep);
+              const named = list.meals.length;
+              // Oracle.
+              let expected: { kind: 'plan'; perDay: number } | { kind: 'ambiguous'; perDay: number | null };
+              const isTotal = total && (qualifier !== '' || total.interval || !attached);
+              if (isTotal) {
+                expected = named === 0 || named === total!.count ? { kind: 'plan', perDay: total!.count } : { kind: 'ambiguous', perDay: total!.count };
+              } else if (total) {
+                // A per-meal count on the first meal (no "daily"): it must be 1 for its one meal.
+                expected = total.count === 1 ? { kind: 'plan', perDay: named } : { kind: 'ambiguous', perDay: named + total.count - 1 };
+              } else {
+                // No count: the named meals; "daily" alone is one meal a day.
+                expected = { kind: 'plan', perDay: named === 0 ? 1 : named };
+              }
+              const parsed = parseSchedule(text);
+              assert.equal(parsed.kind, expected.kind, `${text}: kind`);
+              assert.equal(parseFeedingsPerDay(text), expected.perDay, `${text}: daily target`);
+              if (parsed.kind === 'plan') assert.equal(parsed.meals.length, expected.perDay, `${text}: meals`);
+              else assert.deepEqual(draftFromSuggestion(parsed), [], `${text}: no suggestion`);
+              checked += 1;
+            }
+          }
+        }
+      }
+    }
+    assert.ok(checked > 500, `checked ${checked} cases`);
+    // Two different daily totals: ambiguous, the first is the target.
+    for (const [text, perDay] of [['twice daily, 3 times a day', 2], ['once a day; twice daily', 1], ['3x a day, 8am, noon, 6pm, twice daily', 3]] as const) {
+      assert.equal(parseSchedule(text).kind, 'ambiguous', text);
+      assert.equal(parseFeedingsPerDay(text), perDay, text);
+    }
+    // The reported variants.
+    assert.equal(parseSchedule('once daily at 8am and 6pm').kind, 'ambiguous');
+    assert.equal(parseFeedingsPerDay('once daily at 8am and 6pm'), 1);
+    assert.equal(parseFeedingsPerDay('once daily, breakfast and dinner'), 1);
+  });
+
   it('keeps a stated daily count as the legacy target when the times it names disagree ("twice daily at 8am")', () => {
     const conflicting: [string, number][] = [
       ['twice daily at 8am', 2],
