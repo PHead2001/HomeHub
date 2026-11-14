@@ -2,7 +2,9 @@ import 'server-only';
 
 import { getAppCheck } from 'firebase-admin/app-check';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
+import type { DecodedIdToken } from 'firebase-admin/auth';
 import { deviceUid, readDeviceClaims, type DeviceClaims } from '@/lib/devices/types';
+import { classifyVerifyError } from '@/lib/devices/verify-errors';
 import { finishRevocationForRecord, withRetries, type RevocationOutcome } from '@functions/shared/device-revocation';
 
 // Device principal identity (docs/modules/devices/README.md, "Device identity"):
@@ -49,27 +51,37 @@ export type DeviceIdentity = {
 };
 
 export class DeviceAuthError extends Error {
-  constructor(readonly code: 'unauthenticated' | 'not_a_device' | 'wrong_household' | 'device_revoked' | 'household_deleting') {
+  constructor(readonly code: 'unauthenticated' | 'not_a_device' | 'wrong_household' | 'device_revoked' | 'household_deleting' | 'unavailable') {
     super(code);
   }
 }
 
+export type VerifyIdToken = (idToken: string, checkRevoked: boolean) => Promise<DecodedIdToken>;
+
 /**
  * Verifies a device ID token (revocation and disabled users checked) and its record:
  * the token is a well-formed device principal of `householdId`, the household exists
- * and is not being deleted, and the record is `active` at the token's generation.
+ * and is not being deleted, and the record is `active` at the token's generation. A
+ * revoked, disabled or deleted credential is `device_revoked`, an invalid or expired token
+ * `unauthenticated`; a verifier outage (network, internal error, quota, unknown) is
+ * `unavailable`, which never ends a tablet's session (`classifyVerifyError`).
+ * `verifyIdToken` is injectable for tests.
  */
-export const verifyDevice = async (idToken: unknown, householdId: unknown): Promise<DeviceIdentity> => {
+export const verifyDevice = async (
+  idToken: unknown,
+  householdId: unknown,
+  verifyIdToken: VerifyIdToken = (token, checkRevoked) => adminAuth.verifyIdToken(token, checkRevoked),
+): Promise<DeviceIdentity> => {
   if (typeof idToken !== 'string' || !idToken) throw new DeviceAuthError('unauthenticated');
   let decoded;
   try {
-    decoded = await adminAuth.verifyIdToken(idToken, true);
+    decoded = await verifyIdToken(idToken, true);
   } catch (error) {
-    const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
-    if (code === 'auth/id-token-revoked' || code === 'auth/user-disabled' || code === 'auth/user-not-found') {
-      throw new DeviceAuthError('device_revoked');
-    }
-    throw new DeviceAuthError('unauthenticated');
+    const failure = classifyVerifyError(error);
+    if (failure === 'revoked') throw new DeviceAuthError('device_revoked');
+    if (failure === 'invalid') throw new DeviceAuthError('unauthenticated');
+    console.warn('Device token could not be verified right now.', error instanceof Error ? error.message : String(error));
+    throw new DeviceAuthError('unavailable');
   }
   const claims = readDeviceClaims({ ...decoded, uid: decoded.uid, email: decoded.email, signInProvider: decoded.firebase?.sign_in_provider });
   if (!claims) throw new DeviceAuthError('not_a_device');

@@ -304,9 +304,21 @@ describe('abuse limits and App Check', () => {
     await refusedWith(redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: '203.0.113.10' }, { now, limits }), 'not_found');
   });
 
+  test('no known address is still limited per address, in the shared "unknown" bucket (PR #176 review)', async () => {
+    const now = later(240);
+    const limits = { perAddress: 2, perInstance: 10_000 };
+    for (let index = 0; index < 2; index += 1) {
+      await refusedWith(redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: null }, { now, limits }), 'not_found');
+    }
+    await refusedWith(redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: null }, { now, limits }), 'rate_limited');
+    await refusedWith(redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: 'unknown' }, { now, limits }), 'rate_limited');
+    await refusedWith(redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: '203.0.113.50' }, { now, limits }), 'not_found');
+  });
+
   test('per instance: also without a known address', async () => {
-    const now = later(120);
-    const limits = { perAddress: 10, perInstance: 3 };
+    // Later than every other window in this file (entries ahead of `now` still count).
+    const now = later(600);
+    const limits = { perAddress: 100, perInstance: 3 };
     for (let index = 0; index < 3; index += 1) {
       await refusedWith(redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: null }, { now, limits }), 'not_found');
     }

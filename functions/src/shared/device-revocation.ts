@@ -14,6 +14,7 @@ export type DeviceAuthClient = {
   getUser(uid: string): Promise<{
     uid: string; disabled: boolean;
     customClaims?: {[key: string]: unknown};
+    metadata?: {creationTime?: string};
   }>;
   revokeRefreshTokens(uid: string): Promise<void>;
   deleteUser(uid: string): Promise<void>;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { clientAddress, isIpAddress, trustedProxyHopsFromEnv } from '../../src/lib/devices/client-address';
+import { UNKNOWN_CLIENT, clientAddress, isIpAddress, trustedProxyHopsFromEnv } from '../../src/lib/devices/client-address';
 
 // The client address used to rate-limit device-code redemption: never the first
 // X-Forwarded-For hop (the client can set it), but the entry the platform's front end
@@ -28,15 +28,25 @@ describe('clientAddress', () => {
     assert.equal(clientAddress(headers('::ffff:203.0.113.7, 10.0.0.1')), '::ffff:203.0.113.7');
   });
 
-  it('absent, too short or malformed chains give no address (the per-instance limit still applies)', () => {
-    assert.equal(clientAddress(headers(null)), null);
-    assert.equal(clientAddress(headers('')), null);
-    assert.equal(clientAddress(headers('10.0.0.1')), null);
-    assert.equal(clientAddress(headers('203.0.113.7, , 10.0.0.1')), null);
-    assert.equal(clientAddress(headers('evil, 10.0.0.1')), null);
-    assert.equal(clientAddress(headers('203.0.113.7:4444, 10.0.0.1')), null);
-    assert.equal(clientAddress(headers('[2001:db8::1], 10.0.0.1')), null);
-    assert.equal(clientAddress(headers('256.1.1.1, 10.0.0.1')), null);
+  it('absent, too short, or an invalid trusted entry: the shared "unknown" bucket, never no bucket', () => {
+    assert.equal(UNKNOWN_CLIENT, 'unknown');
+    assert.equal(clientAddress(headers(null)), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('')), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('10.0.0.1')), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('203.0.113.7, , 10.0.0.1')), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('evil, 10.0.0.1')), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('203.0.113.7:4444, 10.0.0.1')), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('[2001:db8::1], 10.0.0.1')), UNKNOWN_CLIENT);
+    assert.equal(clientAddress(headers('256.1.1.1, 10.0.0.1')), UNKNOWN_CLIENT);
+  });
+
+  it('garbage a caller puts left of the trusted entry never removes the address (PR #176 review)', () => {
+    for (const prefix of ['garbage', '', ' ', 'x'.repeat(500), '1.2.3.4:80', '[::1]', 'evil, more evil', 'unknown']) {
+      assert.equal(clientAddress(headers(`${prefix}, 203.0.113.7, 10.0.0.1`)), '203.0.113.7', JSON.stringify(prefix));
+    }
+    assert.equal(clientAddress(headers('garbage,203.0.113.7,10.0.0.1')), '203.0.113.7');
+    // Only the trusted position is read; what the platform's proxies added after it is not.
+    assert.equal(clientAddress(headers('203.0.113.7, not-an-ip')), '203.0.113.7');
   });
 
   it('a spoofed entry cannot shift the trusted position', () => {

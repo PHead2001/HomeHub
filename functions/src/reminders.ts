@@ -681,7 +681,39 @@ export const DEVICE_SWEEP_UTC_HOUR = 3;
 
 export type DeviceSweepResult = {
   ran: boolean; checked: number; finished: number; orphans: number;
-  failed: number;
+  spared: number; failed: number;
+};
+
+/**
+ * Whether a `device_` Auth user that looked orphaned must be kept: its
+ * household or its device record exists now, or the user was created after
+ * the sweep started (a pairing racing the sweep).
+ * @param {Db} db Firestore (Admin SDK).
+ * @param {DeviceAuthClient} auth Admin Auth.
+ * @param {string} uid The Auth user's id.
+ * @param {string} householdId The household its claims name ("" if none).
+ * @param {string} deviceId The device id (uid suffix).
+ * @param {number} sweepStartedAt When the sweep started (ms).
+ * @return {Promise<boolean>} True to keep the user.
+ */
+const deviceUserStillWanted = async (
+  db: Db,
+  auth: DeviceAuthClient,
+  uid: string,
+  householdId: string,
+  deviceId: string,
+  sweepStartedAt: number,
+): Promise<boolean> => {
+  if (householdId) {
+    const house = db.collection("households").doc(householdId);
+    const [household, record] = await Promise.all([
+      house.get(), house.collection("devices").doc(deviceId).get(),
+    ]);
+    if (household.exists || record.exists) return true;
+  }
+  const fresh = await auth.getUser(uid);
+  const created = Date.parse(fresh.metadata?.creationTime ?? "");
+  return Number.isFinite(created) && created >= sweepStartedAt;
 };
 
 /**
@@ -705,10 +737,11 @@ export const sweepDeviceRevocations = async (
   force = false,
 ): Promise<DeviceSweepResult> => {
   const result: DeviceSweepResult = {
-    ran: false, checked: 0, finished: 0, orphans: 0, failed: 0,
+    ran: false, checked: 0, finished: 0, orphans: 0, spared: 0, failed: 0,
   };
   if (!force && now.getUTCHours() !== DEVICE_SWEEP_UTC_HOUR) return result;
   result.ran = true;
+  const sweepStartedAt = Date.now();
   const households = await db.collection("households").select().get();
   const existing = new Set(households.docs.map((d) => d.id));
   for (const household of households.docs) {
@@ -738,6 +771,14 @@ export const sweepDeviceRevocations = async (
       if (householdId && existing.has(householdId)) continue;
       const deviceId = user.uid.slice(DEVICE_UID_PREFIX.length);
       try {
+        // The household list above was read before this page: re-read what
+        // the user names now (a household created and a tablet paired during
+        // the sweep is no orphan); spare users created after the sweep began.
+        if (await deviceUserStillWanted(db, auth, user.uid, householdId,
+          deviceId, sweepStartedAt)) {
+          result.spared++;
+          continue;
+        }
         await finishRevocationForRecord(auth, deviceId, null);
         result.orphans++;
       } catch {

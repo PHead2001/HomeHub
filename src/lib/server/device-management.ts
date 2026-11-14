@@ -5,6 +5,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
 import { INVITE_CHARS } from '@/lib/invite-codes';
 import { DEVICE_CODE_TTL_MS, MAX_LIVE_DEVICE_CODES, normalizeDeviceCode } from '@/lib/devices/device-codes';
+import { UNKNOWN_CLIENT } from '@/lib/devices/client-address';
 import {
   DEVICE_NAME_MAX,
   DEVICE_ROOM_MAX,
@@ -30,6 +31,7 @@ import {
   revokeDeviceSessions,
   verifyDevice,
   verifyRedemptionAppCheck,
+  type VerifyIdToken,
 } from '@/lib/server/device-identity';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import type { VerifiedCaller } from '@/lib/server/household-membership';
@@ -543,6 +545,7 @@ export const REDEEM_LIMITS = { perAddress: 10, perInstance: 300 };
  * limited-use App Check token (fails closed outside the emulator).
  */
 export const redeemDeviceCodeGuarded = async (
+  /** The client address (`clientAddress`); a missing one shares the 'unknown' bucket. */
   input: { code: unknown; nonce: unknown; appCheckToken: unknown; address: string | null },
   options: { now?: Date; limits?: { perAddress: number; perInstance: number } } = {},
 ): Promise<RedeemResult> => {
@@ -550,7 +553,8 @@ export const redeemDeviceCodeGuarded = async (
   const limits = options.limits ?? REDEEM_LIMITS;
   const nowMs = (options.now ?? new Date()).getTime();
   if (!takeRateSlot('redeem:instance', limits.perInstance, nowMs)) throw new DeviceError('rate_limited');
-  if (input.address && !takeRateSlot(`redeem:address:${input.address}`, limits.perAddress, nowMs)) throw new DeviceError('rate_limited');
+  // Never skipped: a missing or untrusted address is limited in the one 'unknown' bucket.
+  if (!takeRateSlot(`redeem:address:${input.address || UNKNOWN_CLIENT}`, limits.perAddress, nowMs)) throw new DeviceError('rate_limited');
   if (!(await verifyRedemptionAppCheck(input.appCheckToken))) throw new DeviceError('app_check_failed');
   return redeemDeviceCode({ code: input.code, nonce: input.nonce }, options.now);
 };
@@ -612,14 +616,17 @@ export const HEARTBEAT_LIMIT_PER_MINUTE = 6;
 export const recordDeviceHeartbeat = async (
   input: { idToken: unknown; householdId: unknown; appVersion: unknown },
   now = new Date(),
+  options: { verifyIdToken?: VerifyIdToken } = {},
 ): Promise<{ written: boolean }> => {
   requireFlag();
   let identity;
   try {
-    identity = await verifyDevice(input?.idToken, input?.householdId);
+    identity = await verifyDevice(input?.idToken, input?.householdId, options.verifyIdToken);
   } catch (error) {
     if (error instanceof DeviceAuthError) {
-      throw new DeviceError(error.code === 'household_deleting' || error.code === 'device_revoked' ? error.code : 'unauthenticated');
+      // `unavailable` (a verifier outage) is retryable: the tablet keeps its session.
+      const passed = error.code === 'household_deleting' || error.code === 'device_revoked' || error.code === 'unavailable';
+      throw new DeviceError(passed ? error.code : 'unauthenticated');
     }
     throw error;
   }

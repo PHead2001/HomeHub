@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { RETRYABLE_REDEEM_REFUSALS, keepPendingAfter, pendingFor } from '../../src/lib/devices/setup-pending';
 import { devicePrincipalOf, retryDeviceClaims, type ClaimRetryTrigger, type Principal } from '../../src/lib/devices/principal';
 import type { RedeemRefusal } from '../../src/lib/devices/types';
+import { classifyVerifyError, endsTabletSession } from '../../src/lib/devices/verify-errors';
 
 // PR #176 review: the setup screen keeps its redemption nonce for every outcome a retry
 // can still recover, and a tablet whose claims were unreadable at start (offline restore)
@@ -129,5 +130,24 @@ describe('unresolved tablet claims', () => {
     online.fire();
     await settle();
     assert.deepEqual(handed, []);
+  });
+});
+
+describe('verifier failures: only a verdict on the credential ends a tablet session (PR #176 review)', () => {
+  it('revoked, disabled or deleted credentials are revoked; invalid or expired tokens are invalid', () => {
+    for (const code of ['auth/id-token-revoked', 'auth/user-disabled', 'auth/user-not-found']) assert.equal(classifyVerifyError({ code }), 'revoked', code);
+    for (const code of ['auth/argument-error', 'auth/invalid-id-token', 'auth/id-token-expired', 'auth/invalid-argument']) assert.equal(classifyVerifyError({ code }), 'invalid', code);
+  });
+
+  it('outages are transient: internal errors, network, quota, timeouts, unknown or missing codes', () => {
+    for (const error of [
+      { code: 'auth/internal-error' }, { code: 'app/network-error' }, { code: 'auth/quota-exceeded' },
+      { code: 'app/network-timeout' }, { code: 'auth/something-new' }, new Error('ECONNRESET'), null, 'boom',
+    ]) assert.equal(classifyVerifyError(error), 'transient', JSON.stringify(error));
+  });
+
+  it('the tablet ends its session only for revoked, deleting or invalid; never for unavailable or failed', () => {
+    for (const code of ['device_revoked', 'household_deleting', 'unauthenticated']) assert.equal(endsTabletSession(code), true, code);
+    for (const code of ['unavailable', 'failed', 'rate_limited', 'invalid_input', 'conflict']) assert.equal(endsTabletSession(code), false, code);
   });
 });

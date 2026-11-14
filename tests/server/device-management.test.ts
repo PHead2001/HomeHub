@@ -161,6 +161,22 @@ describe('heartbeat', () => {
     await refusedWith(recordDeviceHeartbeat({ idToken: tablet.session.idToken, householdId: H, appVersion: BUILD }, new Date(t0.getTime() + 10)), 'rate_limited');
   });
 
+  test('a verifier outage is unavailable (retryable); only credential verdicts are terminal (PR #176 review)', async () => {
+    const tablet = await pair();
+    const failing = (error: unknown) => async () => { throw error; };
+    const beat = (verifyIdToken: () => Promise<never>) =>
+      recordDeviceHeartbeat({ idToken: tablet.session.idToken, householdId: H, appVersion: BUILD }, new Date(Date.now() + 14_400_000), { verifyIdToken });
+    await refusedWith(beat(failing(Object.assign(new Error('internal'), { code: 'auth/internal-error' }))), 'unavailable');
+    await refusedWith(beat(failing(Object.assign(new Error('network'), { code: 'app/network-error' }))), 'unavailable');
+    await refusedWith(beat(failing(new Error('socket hang up'))), 'unavailable');
+    await refusedWith(beat(failing(Object.assign(new Error('expired'), { code: 'auth/id-token-expired' }))), 'unauthenticated');
+    await refusedWith(beat(failing(Object.assign(new Error('revoked'), { code: 'auth/id-token-revoked' }))), 'device_revoked');
+    // The record and the Auth user are untouched by an outage; the next beat works.
+    assert.equal((await record(tablet.deviceId).get()).get('status'), 'active');
+    assert.equal(await userState(`device_${tablet.deviceId}`), 'enabled');
+    assert.deepEqual(await recordDeviceHeartbeat({ idToken: tablet.session.idToken, householdId: H, appVersion: BUILD }, new Date(Date.now() + 14_500_000)), { written: true });
+  });
+
   test('refused for a personal token, another household, a removed tablet or an old generation', async () => {
     const tablet = await pair();
     await refusedWith(recordDeviceHeartbeat({ idToken: await personToken(owner), householdId: H, appVersion: BUILD }), 'unauthenticated');
@@ -261,6 +277,43 @@ describe('unpaired records, the Devices list and the daily sweep', () => {
     assert.ok(Math.abs(new Date(result.serverNow).getTime() - Date.now()) < 60_000);
     assert.equal(await userState(`device_${tablet.deviceId}`), 'missing');
     await refusedWith(reconcileDeviceSessions(member, H), 'forbidden');
+  });
+
+  test('the sweep spares a tablet whose household was created after it listed households (PR #176 review)', async () => {
+    const raceHouse = 'device-sweep-race-house';
+    const raceDevice = 'RaceDevice0000000000';
+    created.add(raceDevice);
+    await adminDb.recursiveDelete(adminDb.collection('households').doc(raceHouse));
+    // The Auth user exists before the sweep starts; its household does not yet.
+    await mintDeviceCredential(raceDevice, raceHouse, 1);
+    let paired = false;
+    const racingAuth = new Proxy(adminAuth, {
+      get(target, property, receiver) {
+        if (property === 'listUsers') {
+          return async (max?: number, pageToken?: string) => {
+            if (!paired) {
+              // Between the sweep's household listing and its user listing, the household is
+              // created and the tablet paired.
+              paired = true;
+              const house = adminDb.collection('households').doc(raceHouse);
+              await house.set({ name: 'Race', ownerUid: owner.uid });
+              await house.collection('devices').doc(raceDevice).set({ status: 'active', generation: 1, name: 'Race', room: 'R' });
+            }
+            return target.listUsers(max, pageToken);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    try {
+      const result = await sweepDeviceRevocations(adminDb, racingAuth, new Date(Date.UTC(2026, 10, 13, DEVICE_SWEEP_UTC_HOUR)), true);
+      assert.equal(paired, true);
+      assert.ok(result.spared >= 1);
+      assert.equal(await userState(`device_${raceDevice}`), 'enabled', 'the newly paired tablet keeps its Auth user');
+    } finally {
+      await adminDb.recursiveDelete(adminDb.collection('households').doc(raceHouse));
+    }
   });
 
   test('the daily sweep deletes, disables and revokes as the records say, and removes orphaned tablet users', async () => {

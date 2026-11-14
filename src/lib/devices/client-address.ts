@@ -1,6 +1,7 @@
 // The client address used to rate-limit unauthenticated device-code redemption.
 //
-// The first X-Forwarded-For entry is whatever the client sent, so it is never trusted.
+// The first X-Forwarded-For entry is whatever the client sent, so it is never trusted
+// (nor is anything else left of the trusted position: those entries are never parsed).
 // Each proxy appends the address it received the request from; the entry appended by
 // the platform's front end is therefore the rightmost one not added by HomeHub's own
 // proxies. `trustedProxyHops` is how many entries those proxies append after it (on
@@ -25,18 +26,22 @@ export const trustedProxyHopsFromEnv = (value: string | undefined): number => {
   return value !== undefined && value !== '' && Number.isInteger(parsed) && parsed >= 0 && parsed <= 5 ? parsed : DEFAULT_TRUSTED_PROXY_HOPS;
 };
 
+/** The one rate-limit bucket shared by every request whose address cannot be trusted. */
+export const UNKNOWN_CLIENT = 'unknown';
+
 /**
- * The client's address: the X-Forwarded-For entry `trustedProxyHops` places left of the
- * rightmost one. Null when the header is absent, has fewer entries than that, or any
- * entry is not a bare IP address (a malformed chain is not trusted at all); callers
- * then rely on the per-instance limit only.
+ * The client's rate-limit bucket: the X-Forwarded-For entry `trustedProxyHops` places left
+ * of the rightmost one, the entry the platform's front end appended. Only that entry is
+ * validated: whatever a caller prepends is ignored. When the header is absent, too short,
+ * or the trusted entry is not a bare IP address, the answer is `UNKNOWN_CLIENT`, a single
+ * bucket that is still rate-limited (the per-address limit is never skipped).
  */
-export const clientAddress = (headers: HeaderSource, trustedProxyHops = DEFAULT_TRUSTED_PROXY_HOPS): string | null => {
+export const clientAddress = (headers: HeaderSource, trustedProxyHops = DEFAULT_TRUSTED_PROXY_HOPS): string => {
   const raw = headers.get('x-forwarded-for');
-  if (!raw) return null;
-  const entries = raw.split(',').map(entry => entry.trim());
-  if (entries.some(entry => !isIpAddress(entry))) return null;
+  if (!raw) return UNKNOWN_CLIENT;
+  const entries = raw.split(',');
   const index = entries.length - 1 - trustedProxyHops;
-  if (index < 0) return null;
-  return entries[index].toLowerCase();
+  if (index < 0) return UNKNOWN_CLIENT;
+  const trusted = entries[index].trim();
+  return isIpAddress(trusted) ? trusted.toLowerCase() : UNKNOWN_CLIENT;
 };

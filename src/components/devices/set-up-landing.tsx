@@ -8,6 +8,7 @@ import type { Principal } from '@/lib/devices/principal';
 import { deviceHeartbeatAction } from '@/app/household/device-actions';
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { readDeviceSettings } from '@/lib/devices/settings';
+import { endsTabletSession } from '@/lib/devices/verify-errors';
 import { forgetHouseholdOnDevice } from '@/lib/auth/household-scope';
 
 // The minimal screen a registered wall tablet shows until the tablet shell lands
@@ -104,7 +105,8 @@ export default function DeviceSetUpLanding({ principal }: { principal: TabletPri
       if (document.visibilityState !== 'visible' || !auth.currentUser) return;
       try {
         const result = await deviceHeartbeatAction({ idToken: await auth.currentUser.getIdToken(), householdId, appVersion: BUILD_ID });
-        if (!result.ok && (result.code === 'device_revoked' || result.code === 'household_deleting' || result.code === 'unauthenticated')) end('removed');
+        // Only a verdict about this tablet ends the session; an outage is retried later.
+        if (!result.ok && endsTabletSession(result.code)) end('removed');
       } catch {
         // Offline or unreachable: the next beat tries again.
       }
