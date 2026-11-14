@@ -14,6 +14,7 @@ import {
 } from '@/app/household/pin-actions';
 import { createChildIdentityAction, updateChildIdentityAction } from '@/app/household/child-actions';
 import { KidPinDialog, KidProfileDialog, uploadKidPhoto, type KidProfileSave } from './child-identity-dialog';
+import { saveKidProfile } from './kid-profile-save';
 
 // Members-tab controls for wall tablets (docs/modules/devices/README.md, "Actors" and
 // "PINs"): kid profiles (add, edit, set or clear their PIN, remove) and, for account
@@ -50,7 +51,7 @@ export function useMemberTabletControls({ householdId, currentMember, members }:
   const enabled = devicesEnabled && Boolean(householdId) && Boolean(currentMember) &&
     (currentMember!.status ?? 'active') === 'active' && (currentMember!.role === 'owner' || currentMember!.role === 'admin');
   const [statuses, setStatuses] = useState<Record<string, { hasPin: boolean; locked: boolean }>>({});
-  const [kidDialog, setKidDialog] = useState<{ open: boolean; child: HouseholdMember | null; seq: number }>({ open: false, child: null, seq: 0 });
+  const [kidDialog, setKidDialog] = useState<{ open: boolean; child: HouseholdMember | null; seq: number; createdId: string | null }>({ open: false, child: null, seq: 0, createdId: null });
   const [pinDialog, setPinDialog] = useState<{ open: boolean; child: HouseholdMember | null; seq: number }>({ open: false, child: null, seq: 0 });
 
   // Refreshed whenever the member list changes (a new kid profile, someone removed).
@@ -109,7 +110,7 @@ export function useMemberTabletControls({ householdId, currentMember, members }:
 
   const run = useCallback((member: HouseholdMember, action: MemberTabletAction) => {
     void (async () => {
-      if (action === 'edit-kid') return setKidDialog(current => ({ open: true, child: member, seq: current.seq + 1 }));
+      if (action === 'edit-kid') return setKidDialog(current => ({ open: true, child: member, seq: current.seq + 1, createdId: null }));
       if (action === 'set-kid-pin') return setPinDialog(current => ({ open: true, child: member, seq: current.seq + 1 }));
       if (action === 'clear-pin') {
         const ok = await call(`Couldn't clear ${name(member)}'s PIN`, (idToken, householdId) => member.kind === 'identity'
@@ -126,39 +127,33 @@ export function useMemberTabletControls({ householdId, currentMember, members }:
   }, [call, refresh, toast]);
 
   const saveKid: KidProfileSave = async ({ name: kidName, photo, removePhoto }) => {
-    let childId = kidDialog.child?.uid ?? null;
-    if (!childId) {
-      let created: string | null = null;
-      const ok = await call("Couldn't add the kid profile", async (idToken, householdId) => {
-        const result = await createChildIdentityAction({ idToken, householdId, name: kidName });
-        if (result.ok) created = result.data.childId;
-        return result;
-      });
-      if (!ok || !created) return false;
-      childId = created;
-    }
-    const id = childId;
-    let avatarUrl: string | null | undefined;
-    if (photo && householdId) {
-      try {
-        avatarUrl = await uploadKidPhoto(householdId, id, photo);
-      } catch (error) {
-        toastError(error, "Couldn't upload the photo");
-        return Boolean(!kidDialog.child);
-      }
-    } else if (removePhoto) {
-      avatarUrl = null;
-    }
-    const needsUpdate = Boolean(kidDialog.child) || avatarUrl !== undefined;
-    if (needsUpdate) {
-      const ok = await call("Couldn't save the kid profile", (idToken, householdId) => updateChildIdentityAction({
-        idToken, householdId, childId: id,
-        ...(kidDialog.child ? { name: kidName } : {}),
-        ...(avatarUrl !== undefined ? { avatarUrl } : {}),
-      }));
-      if (!ok) return false;
-    }
-    toast({ title: kidDialog.child ? 'Kid profile saved' : 'Kid profile added', description: kidDialog.child ? undefined : `${kidName} now appears on wall tablets.` });
+    const editing = Boolean(kidDialog.child);
+    const result = await saveKidProfile({
+      create: async (kidNameToCreate) => {
+        let created: string | null = null;
+        const ok = await call("Couldn't add the kid profile", async (idToken, householdId) => {
+          const outcome = await createChildIdentityAction({ idToken, householdId, name: kidNameToCreate });
+          if (outcome.ok) created = outcome.data.childId;
+          return outcome;
+        });
+        return ok && created ? { ok: true, childId: created } : { ok: false };
+      },
+      upload: async (childId, file) => {
+        if (!householdId) return null;
+        try {
+          return await uploadKidPhoto(householdId, childId, file);
+        } catch (error) {
+          toastError(error, "Couldn't upload the photo");
+          return null;
+        }
+      },
+      update: (childId, patch) => call("Couldn't save the kid profile", (idToken, householdId) =>
+        updateChildIdentityAction({ idToken, householdId, childId, ...patch })),
+    }, { existingId: kidDialog.child?.uid ?? kidDialog.createdId }, { name: kidName, photo, removePhoto });
+    // Remember a profile created by this dialog, so pressing Save again updates it.
+    if (result.childId && !kidDialog.child) setKidDialog(current => ({ ...current, createdId: result.childId }));
+    if (!result.ok) return false;
+    toast({ title: editing ? 'Kid profile saved' : 'Kid profile added', description: editing ? undefined : `${kidName} now appears on wall tablets.` });
     refresh();
     return true;
   };
@@ -182,5 +177,5 @@ export function useMemberTabletControls({ householdId, currentMember, members }:
     </>
   ) : null;
 
-  return { enabled, actionsFor, run, openCreateKid: () => setKidDialog(current => ({ open: true, child: null, seq: current.seq + 1 })), dialogs };
+  return { enabled, actionsFor, run, openCreateKid: () => setKidDialog(current => ({ open: true, child: null, seq: current.seq + 1, createdId: null })), dialogs };
 }

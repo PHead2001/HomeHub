@@ -25,6 +25,7 @@ import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { devicesEnabled } from '@/lib/server/device-identity';
 import { takeRateSlot } from '@/lib/server/device-management';
+import { addressBucket } from '@/lib/devices/rate-window';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import {
   appliedEntry,
@@ -171,7 +172,8 @@ const millis = (value: unknown): number | null => {
  * Limits applied BEFORE a token is verified, keyed independently of anything the caller
  * claims (never the unsigned `hh_device` of the token): one bucket per trusted client
  * address (`clientAddress` from src/lib/devices/client-address.ts, passed by the server
- * actions) and one per server instance. A tablet's own budget is spent only after its
+ * actions; IPv6 by /64) before anything, and one per server instance once the token's
+ * signature has been checked locally. A tablet's own budget is spent only after its
  * token is verified (`takeDeviceBudget`), so a forged token naming a tablet can never
  * starve it. Library callers with no request (tests, internal use) pass no address and
  * only the per-instance bucket applies.
@@ -182,12 +184,19 @@ export const PRE_AUTH_LIMITS = {
   pinEnd: { perAddress: 60, perInstance: 1200 },
 } as const;
 
-export const preAuthLimit = (kind: keyof typeof PRE_AUTH_LIMITS, clientAddress: string | undefined, nowMs: number) => {
-  const limits = PRE_AUTH_LIMITS[kind];
-  if (!takeRateSlot(`pre:${kind}:instance`, limits.perInstance, nowMs)) throw new DeviceActionError('rate_limited');
-  if (clientAddress !== undefined && !takeRateSlot(`pre:${kind}:address:${clientAddress}`, limits.perAddress, nowMs)) {
+/** Before anything else: the caller's address bucket (IPv6 by /64, `addressBucket`). */
+export const preAuthAddressLimit = (kind: keyof typeof PRE_AUTH_LIMITS, clientAddress: string | undefined, nowMs: number) => {
+  if (clientAddress !== undefined && !takeRateSlot(`pre:${kind}:address:${addressBucket(clientAddress)}`, PRE_AUTH_LIMITS[kind].perAddress, nowMs)) {
     throw new DeviceActionError('rate_limited');
   }
+};
+
+/**
+ * The per-instance bucket, charged only once the token's signature has been checked
+ * locally (no network), so requests with tokens that are not genuine never spend it.
+ */
+export const preAuthInstanceLimit = (kind: keyof typeof PRE_AUTH_LIMITS, nowMs: number) => {
+  if (!takeRateSlot(`pre:${kind}:instance`, PRE_AUTH_LIMITS[kind].perInstance, nowMs)) throw new DeviceActionError('rate_limited');
 };
 
 /** A verified tablet's own per-minute budget (keyed by the verified device id). */
@@ -201,20 +210,36 @@ export const takeDeviceBudget = (kind: string, claims: DeviceClaims, max: number
  * verifier outage: `unavailable`, which never ends a tablet's session), a
  * well-formed device principal (a personal token: `not_a_device`) of this household.
  */
-export const verifyDeviceToken = async (idToken: unknown, householdId: unknown): Promise<DeviceClaims> => {
+export const verifyDeviceToken = async (
+  idToken: unknown,
+  householdId: unknown,
+  options: { onSignatureVerified?: () => void } = {},
+): Promise<DeviceClaims> => {
   if (typeof idToken !== 'string' || !idToken) throw new DeviceActionError('unauthenticated');
-  let decoded;
-  try {
-    decoded = await adminAuth.verifyIdToken(idToken, true);
-  } catch (error) {
-    // Same reading as verifyDevice (F1): only a verdict on the credential ends a tablet's
-    // session; a verifier outage is `unavailable` (retry later, never a re-pair).
+  // Same reading as verifyDevice (F1): only a verdict on the credential ends a tablet's
+  // session; a verifier outage is `unavailable` (retry later, never a re-pair).
+  const refuse = (error: unknown): never => {
     const failure = classifyVerifyError(error);
     if (failure === 'revoked') throw new DeviceActionError('device_revoked');
     if (failure === 'invalid') throw new DeviceActionError('unauthenticated');
     console.warn('Device token could not be verified right now.', error instanceof Error ? error.message : String(error));
     throw new DeviceActionError('unavailable');
+  };
+  let decoded;
+  // The local signature and expiry check first (no revocation lookup); only a genuine
+  // token goes on to spend shared budgets and the revocation check.
+  try {
+    decoded = await adminAuth.verifyIdToken(idToken, false);
+  } catch (error) {
+    refuse(error);
   }
+  options.onSignatureVerified?.();
+  try {
+    decoded = await adminAuth.verifyIdToken(idToken, true);
+  } catch (error) {
+    refuse(error);
+  }
+  if (!decoded) throw new DeviceActionError('unauthenticated');
   const claims = readDeviceClaims({ ...decoded, uid: decoded.uid, email: decoded.email, signInProvider: decoded.firebase?.sign_in_provider });
   if (!claims) throw new DeviceActionError('not_a_device');
   if (typeof householdId !== 'string' || claims.hh_household !== householdId) throw new DeviceActionError('wrong_household');
@@ -373,10 +398,19 @@ const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabi
  */
 export async function authorizeDeviceAction(
   request: DeviceActionRequest,
-  now: Date = new Date(),
-  options: { undoProven?: ReadonlySet<DeviceCapability>; clientAddress?: string } = {},
+  nowInput?: Date,
+  options: {
+    undoProven?: ReadonlySet<DeviceCapability>;
+    clientAddress?: string;
+    /** The server clock (injectable for tests). Default: a fixed `nowInput` when given, else the real time. */
+    clock?: () => Date;
+  } = {},
 ): Promise<DeviceAuthority> {
   const undoProven = options.undoProven ?? UNDO_PROVEN;
+  // Read again inside every transaction attempt (precheck), so a retried transaction never
+  // accepts a session that expired, or an admin-PIN session that went stale, meanwhile.
+  const clock = options.clock ?? (nowInput ? () => nowInput : () => new Date());
+  const now = nowInput ?? clock();
   // Step 1: shape.
   if (!request || typeof request !== 'object' || exceedsPayloadBudget(request, DEVICE_REQUEST_MAX_BYTES)) {
     throw new DeviceActionError('invalid_input');
@@ -398,9 +432,11 @@ export async function authorizeDeviceAction(
   const presented = request.pinSessionId !== undefined && request.pinSessionId !== null && request.pinSessionId !== '';
   // Step 2a: pre-auth limits (per client address and per instance), before the token's
   // network check and never keyed by the identity the token claims.
-  preAuthLimit('gate', options.clientAddress, now.getTime());
-  // Steps 3-4: token and household.
-  const claims = await verifyDeviceToken(request.idToken, request.householdId);
+  preAuthAddressLimit('gate', options.clientAddress, now.getTime());
+  // Steps 3-4: token and household (the per-instance bucket after the local signature check).
+  const claims = await verifyDeviceToken(request.idToken, request.householdId, {
+    onSignatureVerified: () => preAuthInstanceLimit('gate', now.getTime()),
+  });
   // Step 2b: the verified tablet's own budget (60 a minute).
   takeDeviceBudget('gate', claims, GATE_LIMIT_PER_MINUTE, now.getTime());
   const householdRef = householdRefOf(claims.hh_household);
@@ -452,6 +488,8 @@ export async function authorizeDeviceAction(
     },
   };
   let current = first;
+  // The time of the latest precheck: finalize stores and slides with it.
+  let checkedAt = now;
 
   authority.hooks = {
     precheck: async (tx: Tx) => {
@@ -459,8 +497,10 @@ export async function authorizeDeviceAction(
         read(ref => tx.get(ref)),
         ledgerRef ? tx.get(ledgerRef) : Promise.resolve(null),
       ]);
-      current = evaluate(snaps, claims, evaluationRequest, policy, now, undoProven);
-      checkQueued(request.queued, policy, current.required, now);
+      checkedAt = clock();
+      authority.now = checkedAt;
+      current = evaluate(snaps, claims, evaluationRequest, policy, checkedAt, undoProven);
+      checkQueued(request.queued, policy, current.required, checkedAt);
       authority.actor = current.actor;
       authority.level = current.level;
       authority.deviceName = current.deviceName;
@@ -479,12 +519,12 @@ export async function authorizeDeviceAction(
         if (!undo) {
           tx.set(ledgerRef, appliedEntry({
             capability, actorUid: current.actor.uid, generation: claims.hh_gen, targetPath: outcome.targetPath,
-            summary: outcome.summary, deviceCreatedAt, now,
+            summary: outcome.summary, deviceCreatedAt, now: checkedAt,
           }));
         } else if (outcome.undo === 'reversed') {
-          tx.update(ledgerRef, undoneUpdate(now));
+          tx.update(ledgerRef, undoneUpdate(checkedAt));
         } else if (outcome.undo === 'tombstone') {
-          tx.set(ledgerRef, tombstoneEntry({ undoCapability: capability, actorUid: current.actor.uid, generation: claims.hh_gen, deviceCreatedAt, now }));
+          tx.set(ledgerRef, tombstoneEntry({ undoCapability: capability, actorUid: current.actor.uid, generation: claims.hh_gen, deviceCreatedAt, now: checkedAt }));
         }
       }
       if (current.level === 'pin' && current.actor) {
@@ -492,13 +532,13 @@ export async function authorizeDeviceAction(
           action: 'device.action', actorUid: current.actor.uid, actorName: current.actor.name, via: 'device',
           deviceId: claims.hh_device, deviceName: current.deviceName, level: 'pin',
           targetName: outcome.targetName ?? null, details: { capability },
-        }, now);
+        }, checkedAt);
       }
       // The session slides last: every gated use that passes keeps it alive for 2 idle minutes.
       if (current.sessionInUse && sessionRef) {
         tx.update(sessionRef, {
-          lastUsedAt: Timestamp.fromDate(now),
-          expiresAt: Timestamp.fromMillis(now.getTime() + PIN_SESSION_IDLE_MS),
+          lastUsedAt: Timestamp.fromDate(checkedAt),
+          expiresAt: Timestamp.fromMillis(checkedAt.getTime() + PIN_SESSION_IDLE_MS),
         });
       }
     },

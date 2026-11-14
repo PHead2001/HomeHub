@@ -60,6 +60,8 @@ env:
   # Rotation: add HOMEHUB_PIN_PEPPER_V2 and set CURRENT to V2, keeping V1.
   - variable: HOMEHUB_PIN_PEPPER_V1
     secret: homehubPinPepperV1
+    availability:
+      - RUNTIME
 
   - variable: HOMEHUB_PIN_PEPPER_CURRENT
     value: V1

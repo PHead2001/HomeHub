@@ -20,6 +20,7 @@ export type DeviceAuditAction =
   | 'pin.set'
   | 'pin.cleared'
   | 'pin.locked'
+  | 'pin.device_locked'
   | 'pin.lockout_cleared'
   | 'child.created'
   | 'child.updated'

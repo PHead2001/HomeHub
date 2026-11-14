@@ -120,6 +120,29 @@ describe('8.4 step 2: rate', () => {
     assert.equal(authority.deviceId, victim.deviceId);
   });
 
+  test('tokens that fail the local signature check never spend the per-instance bucket (security review 2)', async () => {
+    const windows = (globalThis as { __homeHubDeviceWindows?: Map<string, number[]> }).__homeHubDeviceWindows!;
+    const at = time.advance(61_000);
+    const count = () => (windows.get('pre:gate:instance') ?? []).filter(entry => entry === at.getTime()).length;
+    const before = count();
+    for (let i = 0; i < 25; i++) {
+      await refused(authorizeDeviceAction(req({ idToken: forgedFor(tablet.deviceId) }), at, { clientAddress: `2001:db8:77:${i}::1` }), 'unauthenticated');
+    }
+    assert.equal(count(), before);
+    await authorizeDeviceAction({ idToken: tablet.idToken, householdId: H, capability: 'device.comfort' }, at);
+    assert.equal(count(), before + 1);
+  });
+
+  test('IPv6 callers are limited per /64, however they rotate the rest of the address (security review 2)', async () => {
+    const at = time.advance(61_000);
+    let limited = false;
+    for (let i = 0; i < 300 && !limited; i++) {
+      limited = await authorizeDeviceAction(req({ idToken: forgedFor('Whatever000000000000') }), at, { clientAddress: `2001:db8:99:1:${i.toString(16)}::1` })
+        .then(() => false, (error: unknown) => error instanceof DeviceActionError && error.code === 'rate_limited');
+    }
+    assert.ok(limited);
+  });
+
   test('60 gated calls a minute per verified tablet; unauthenticated callers are limited per address before verification', async () => {
     const t = await pairTablet(H, owner, created, 'Busy tablet');
     const at = time.advance(61_000);
@@ -370,6 +393,41 @@ describe('hooks inside the mutation transaction (S1)', () => {
     // The same Undo again is idempotent.
     const again = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
     await adminDb.runTransaction(async tx => assert.equal((await again.hooks.precheck(tx)).undo, 'already'));
+  });
+
+  test('a tombstone suppresses only the same actor\'s original at the same generation (security review 6)', async () => {
+    const at = time.advance(61_000);
+    const id = opId();
+    const undo = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: id, actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
+    await adminDb.runTransaction(async tx => {
+      assert.equal((await undo.hooks.precheck(tx)).undo, 'tombstone');
+      undo.hooks.finalize(tx, { targetPath: '', summary: {}, undo: 'tombstone' });
+    });
+    const stored = (await house(H).collection('devices').doc(tablet.deviceId).collection('ops').doc(id).get()).data()!;
+    assert.equal(stored.actorUid, child.uid);
+    assert.equal(stored.generation, 1);
+    // Another actor's feed under that opId: a conflict, not silently "already undone".
+    const other = await authorizeDeviceAction(req({ opId: id, actorUid: KID }), at, { undoProven: proven });
+    await refused(adminDb.runTransaction(tx => other.hooks.precheck(tx)), 'conflict');
+    const same = await authorizeDeviceAction(req({ opId: id, actorUid: child.uid }), at, { undoProven: proven });
+    await refused(adminDb.runTransaction(tx => same.hooks.precheck(tx)), 'already_undone');
+  });
+
+  test('precheck reads the clock again: a session that expires before a retried transaction is refused (security review 9)', async () => {
+    let t = time.advance(61_000).getTime();
+    const clockFn = () => new Date(t);
+    const session = await unlock(member.uid, PIN.member, tablet, new Date(t));
+    const authority = await authorizeDeviceAction(req({ pinSessionId: session }), undefined, { clock: clockFn });
+    assert.equal(authority.level, 'pin');
+    t += 121_000;
+    await refused(adminDb.runTransaction(tx => authority.hooks.precheck(tx)), 'pin_session_invalid');
+    // Admin-PIN freshness is judged at the precheck too.
+    const adminSession = await unlock(admin.uid, PIN.admin, tablet, new Date(t));
+    t += 29_000;
+    const settings = await authorizeDeviceAction({ idToken: tablet.idToken, householdId: H, capability: 'device.settings', actorUid: admin.uid, pinSessionId: adminSession },
+      undefined, { clock: clockFn });
+    t += 2_000;
+    await refused(adminDb.runTransaction(tx => settings.hooks.precheck(tx)), 'pin_fresh_required');
   });
 
   test('actor rules: the original actor, or the named permission at PIN level', async () => {

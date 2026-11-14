@@ -78,10 +78,14 @@ describe('create, update, remove', () => {
     const { childId } = await createChildIdentity(owner, { householdId: H, name: 'Mia' });
     assert.deepEqual((await updateChildIdentity(admin, { householdId: H, childId, name: 'Mila' })).changed, ['name']);
     const path = `households/${H}/members/${childId}/avatar/a.png`;
-    const url = `https://firebasestorage.googleapis.com/v0/b/demo/o/${encodeURIComponent(path)}?alt=media`;
+    const bucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!;
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media`;
     assert.deepEqual((await updateChildIdentity(admin, { householdId: H, childId, avatarUrl: url })).changed, ['photo']);
     assert.equal((await kidRecord(childId))?.avatarUrl, url);
-    const elsewhere = `https://firebasestorage.googleapis.com/v0/b/demo/o/${encodeURIComponent(`households/other/members/${childId}/avatar/a.png`)}`;
+    const elsewhere = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(`households/other/members/${childId}/avatar/a.png`)}`;
+    // Another bucket, even with the right path, is refused (security review 8).
+    const otherBucket = `https://firebasestorage.googleapis.com/v0/b/someone-else.appspot.com/o/${encodeURIComponent(path)}?alt=media`;
+    await membershipErr(updateChildIdentity(admin, { householdId: H, childId, avatarUrl: otherBucket }), 'invalid_input');
     await membershipErr(updateChildIdentity(admin, { householdId: H, childId, avatarUrl: elsewhere }), 'invalid_input');
     await membershipErr(updateChildIdentity(admin, { householdId: H, childId, avatarUrl: 'https://evil.example/a.png' }), 'invalid_input');
     await membershipErr(updateChildIdentity(member, { householdId: H, childId, name: 'X' }), 'missing_permission');

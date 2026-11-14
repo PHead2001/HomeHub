@@ -21,11 +21,17 @@ export const kidAvatarPath = (householdId: string, childId: string, fileName: st
   `households/${householdId}/members/${childId}/avatar/${fileName}`;
 
 /**
- * The Storage object path of a Firebase Storage download URL, or null. Production
- * URLs only (`https://firebasestorage.googleapis.com/v0/b/<bucket>/o/<path>`); with the
- * emulators on, the local Storage emulator's URLs too.
+ * The Storage object path of a Firebase Storage download URL in the app's own bucket
+ * (`NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`), or null. Production URLs only
+ * (`https://firebasestorage.googleapis.com/v0/b/<bucket>/o/<path>`); with the emulators
+ * on, the local Storage emulator's URLs too.
  */
-export const kidAvatarPathOf = (url: unknown): string | null => {
+export const kidAvatarPathOf = (
+  url: unknown,
+  expectedBucket: string | undefined = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+): string | null => {
+  // Only the app's own Storage bucket; without one configured nothing is accepted.
+  if (!expectedBucket) return null;
   if (typeof url !== 'string') return null;
   let parsed: URL;
   try {
@@ -37,10 +43,11 @@ export const kidAvatarPathOf = (url: unknown): string | null => {
   const emulator = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === 'true' &&
     parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost');
   if (!production && !emulator) return null;
-  const match = /^\/v0\/b\/[^/]+\/o\/([^/]+)$/.exec(parsed.pathname);
+  const match = /^\/v0\/b\/([^/]+)\/o\/([^/]+)$/.exec(parsed.pathname);
   if (!match) return null;
   try {
-    const path = decodeURIComponent(match[1]);
+    if (decodeURIComponent(match[1]) !== expectedBucket) return null;
+    const path = decodeURIComponent(match[2]);
     return /^households\/[^/]+\/members\/kid_[A-Za-z0-9]{20}\/avatar\/[^/]+$/.test(path) ? path : null;
   } catch {
     return null;

@@ -20,6 +20,9 @@ import {
 } from '../../src/lib/devices/action-policy';
 import {
   DEVICE_LOCK_CAP_MS,
+  MEMBER_FAILURES_SINCE_SUCCESS_LOCK,
+  clearedDeviceGuard,
+  clearedMemberGuard,
   deviceLockDuration,
   emptyDeviceGuard,
   emptyMemberGuard,
@@ -33,6 +36,8 @@ import {
 } from '../../src/lib/devices/pins';
 import { PIN_SCRYPT_PARAMS, currentPepperId, hashPinValue, hashesEqual, newPinSalt, pepperFor } from '../../src/lib/server/pin-hash';
 import { isChildIdentityUid, kidAvatarPathOf, readChildName } from '../../src/lib/devices/child-identities';
+import { addressBucket, sweepRateWindows, takeRateWindowSlot, type RateWindows } from '../../src/lib/devices/rate-window';
+import { saveKidProfile, type KidSaveDeps } from '../../src/components/household/kid-profile-save';
 import { assignablePeople, personFromMemberRecord } from '../../src/lib/member-directory';
 import { canAssignRole, canTransferOwnership } from '../../src/lib/household-policy';
 import { describeAuditActor } from '../../src/components/household/household-model';
@@ -363,11 +368,79 @@ describe('lockout arithmetic', () => {
     const locked = (twentieth as { guard: MemberGuard }).guard;
     assert.ok('refused' in reserveMemberGuard(locked, 'next', t0 + 31_000));
     // The 20th was right: it lifts only its own lock and entry.
-    const settled = settleMemberGuardCorrect(locked, 'twentieth');
+    const settled = settleMemberGuardCorrect(locked, 'twentieth', (twentieth as { seq: number }).seq);
     assert.equal(settled.lockedAt, null);
     assert.equal(settled.recentFailures.length, 19);
     // Someone else's correct PIN never lifts it.
-    assert.ok(settleMemberGuardCorrect(locked, 'f3').lockedAt);
+    assert.ok(settleMemberGuardCorrect(locked, 'f3', 4).lockedAt);
+  });
+
+  it('slow guessing: 50 failures since the last correct PIN hard-lock, whatever the pace (security review 1)', () => {
+    let guard: MemberGuard = emptyMemberGuard();
+    // One failure every 4 minutes never reaches 20 within an hour ...
+    for (let i = 0; i < MEMBER_FAILURES_SINCE_SUCCESS_LOCK - 1; i++) {
+      const result = reserveMemberGuard(guard, `slow${i}`, t0 + i * 4 * 60_000);
+      assert.ok(!('refused' in result) && !result.locked, `failure ${i}`);
+      guard = result.guard;
+    }
+    // ... but the 50th since the last correct PIN locks.
+    const fiftieth = reserveMemberGuard(guard, 'slow49', t0 + 49 * 4 * 60_000);
+    assert.ok(!('refused' in fiftieth) && fiftieth.locked);
+    assert.equal((fiftieth as { guard: MemberGuard }).guard.lockedReason, 'total');
+    // A correct PIN in between forgives the earlier ones (not concurrent later ones).
+    const early = (reserveMemberGuard(emptyMemberGuard(), 'early', t0) as { guard: MemberGuard }).guard;
+    const mine = reserveMemberGuard(early, 'right', t0 + 1) as { guard: MemberGuard; seq: number };
+    const later = reserveMemberGuard(mine.guard, 'concurrent', t0 + 2) as { guard: MemberGuard; seq: number };
+    const settled = settleMemberGuardCorrect(later.guard, 'right', mine.seq);
+    assert.deepEqual(settled.sinceSuccess.map(f => f.id), ['concurrent']);
+  });
+
+  it('clearing a lockout keeps the sequence numbers monotonic (security review 4)', () => {
+    let device = emptyDeviceGuard();
+    for (const id of ['a', 'b', 'c']) device = (reserveDeviceGuard(device, id, t0) as { guard: DeviceGuard }).guard;
+    const inflight = reserveDeviceGuard(device, 'inflight', t0) as { guard: DeviceGuard; seq: number };
+    const cleared = clearedDeviceGuard(inflight.guard);
+    assert.equal(cleared.seq, inflight.guard.seq);
+    assert.equal(cleared.failures, 0);
+    // A failure after the clear stays when the earlier in-flight attempt turns out right.
+    const after = reserveDeviceGuard(cleared, 'after', t0) as { guard: DeviceGuard; seq: number };
+    assert.ok(after.seq > inflight.seq);
+    assert.deepEqual(settleDeviceGuardCorrect(after.guard, inflight.seq).attempts.map(a => a.id), ['after']);
+    const member = reserveMemberGuard(emptyMemberGuard(), 'm', t0) as { guard: MemberGuard; seq: number };
+    assert.equal(clearedMemberGuard(member.guard).seq, member.seq);
+    assert.deepEqual(clearedMemberGuard(member.guard).sinceSuccess, []);
+  });
+});
+
+describe('rate windows (security review 2)', () => {
+  it('counts per key per minute', () => {
+    const windows: RateWindows = new Map();
+    for (let i = 0; i < 3; i++) assert.ok(takeRateWindowSlot(windows, 'k', 3, 1000));
+    assert.equal(takeRateWindowSlot(windows, 'k', 3, 1000), false);
+    assert.ok(takeRateWindowSlot(windows, 'k', 3, 61_001));
+  });
+
+  it('deletes keys whose window has emptied and stays bounded', () => {
+    const windows: RateWindows = new Map();
+    const options = { sweepEvery: 10, maxKeys: 100 };
+    for (let i = 0; i < 50; i++) takeRateWindowSlot(windows, `old${i}`, 5, 0, options);
+    for (let i = 0; i < 10; i++) takeRateWindowSlot(windows, `new${i}`, 5, 120_000, options);
+    assert.ok([...windows.keys()].every(key => key.startsWith('new')), 'emptied windows were swept');
+    sweepRateWindows(windows, 300_000);
+    assert.equal(windows.size, 0);
+    for (let i = 0; i < 500; i++) takeRateWindowSlot(windows, `flood${i}`, 5, 400_000, options);
+    assert.ok(windows.size <= 100);
+    assert.ok(windows.has('flood499'));
+  });
+
+  it('IPv6 addresses share a bucket per /64; IPv4 and mapped IPv4 stay per address', () => {
+    assert.equal(addressBucket('2001:db8:1:2:aaaa::1'), addressBucket('2001:db8:1:2:ffff:ffff:ffff:ffff'));
+    assert.notEqual(addressBucket('2001:db8:1:2::1'), addressBucket('2001:db8:1:3::1'));
+    assert.equal(addressBucket('2001:0db8:0001:0002::1'), '2001:db8:1:2::/64');
+    assert.equal(addressBucket('2001:db8::1'), '2001:db8:0:0::/64');
+    assert.equal(addressBucket('::ffff:203.0.113.9'), '203.0.113.9');
+    assert.equal(addressBucket('203.0.113.9'), '203.0.113.9');
+    assert.equal(addressBucket('unknown'), 'unknown');
   });
 });
 
@@ -406,7 +479,7 @@ describe('PIN hashing (S7)', () => {
     assert.equal(currentPepperId({ HOMEHUB_PIN_PEPPER_CURRENT: 'V1', HOMEHUB_PIN_PEPPER_v1: secret }), null);
     // The repository's apphosting.yaml names exactly these variables.
     const yaml = readFileSync('apphosting.yaml', 'utf8');
-    assert.match(yaml, /- variable: HOMEHUB_PIN_PEPPER_V1\r?\n\s+secret: homehubPinPepperV1/);
+    assert.match(yaml, /- variable: HOMEHUB_PIN_PEPPER_V1\r?\n\s+secret: homehubPinPepperV1\r?\n\s+availability:\r?\n\s+- RUNTIME\r?\n/);
     assert.match(yaml, /- variable: HOMEHUB_PIN_PEPPER_CURRENT\r?\n\s+value: V1\r?\n/);
   });
 });
@@ -420,9 +493,12 @@ describe('kid profiles', () => {
     assert.equal(readChildName('mia@example.com'), null);
     assert.equal(readChildName('x'.repeat(41)), null);
     const path = 'households/H/members/kid_ABCDEFGHIJ0123456789/avatar/a.png';
-    assert.equal(kidAvatarPathOf(`https://firebasestorage.googleapis.com/v0/b/bucket/o/${encodeURIComponent(path)}?alt=media`), path);
-    assert.equal(kidAvatarPathOf(`https://evil.example/v0/b/bucket/o/${encodeURIComponent(path)}`), null);
-    assert.equal(kidAvatarPathOf(`https://firebasestorage.googleapis.com/v0/b/bucket/o/${encodeURIComponent('users/u/avatars/a.png')}`), null);
+    assert.equal(kidAvatarPathOf(`https://firebasestorage.googleapis.com/v0/b/bucket/o/${encodeURIComponent(path)}?alt=media`, 'bucket'), path);
+    // Only the app's own bucket (security review 8); no bucket configured: nothing accepted.
+    assert.equal(kidAvatarPathOf(`https://firebasestorage.googleapis.com/v0/b/other-bucket/o/${encodeURIComponent(path)}?alt=media`, 'bucket'), null);
+    assert.equal(kidAvatarPathOf(`https://firebasestorage.googleapis.com/v0/b/bucket/o/${encodeURIComponent(path)}?alt=media`, ''), null);
+    assert.equal(kidAvatarPathOf(`https://evil.example/v0/b/bucket/o/${encodeURIComponent(path)}`, 'bucket'), null);
+    assert.equal(kidAvatarPathOf(`https://firebasestorage.googleapis.com/v0/b/bucket/o/${encodeURIComponent('users/u/avatars/a.png')}`, 'bucket'), null);
   });
 
   it('the member directory includes kid profiles (names, leaderboard) but pickers leave them out (HO-15d)', () => {
@@ -440,6 +516,39 @@ describe('kid profiles', () => {
     assert.deepEqual(canAssignRole(owner, kid, 'member'), { ok: false, reason: 'identity_fixed_role' });
     assert.deepEqual(canTransferOwnership(owner, kid), { ok: false, reason: 'target_identity' });
     assert.deepEqual(canAssignRole(owner, { ...kid, kind: 'account' as const }, 'member'), { ok: true });
+  });
+});
+
+describe('kid profile save (Codex B: a retry after a failed photo step never duplicates)', () => {
+  const deps = (log: string[], failUpdate: () => boolean): KidSaveDeps => ({
+    create: async (name) => { log.push(`create:${name}`); return { ok: true, childId: 'kid_NEW00000000000000000' }; },
+    upload: async (childId) => { log.push(`upload:${childId}`); return 'https://photo'; },
+    update: async (childId, patch) => { log.push(`update:${childId}:${Object.keys(patch).sort().join(',')}`); return !failUpdate(); },
+  });
+
+  it('a failed update after create keeps the new id; the retry updates that profile', async () => {
+    const log: string[] = [];
+    let fail = true;
+    const first = await saveKidProfile(deps(log, () => fail), { existingId: null }, { name: 'Mia', photo: {} as File, removePhoto: false });
+    assert.deepEqual(first, { ok: false, childId: 'kid_NEW00000000000000000' });
+    fail = false;
+    const retry = await saveKidProfile(deps(log, () => fail), { existingId: first.childId }, { name: 'Mia', photo: {} as File, removePhoto: false });
+    assert.deepEqual(retry, { ok: true, childId: 'kid_NEW00000000000000000' });
+    assert.equal(log.filter(entry => entry.startsWith('create')).length, 1);
+    assert.deepEqual(log, [
+      'create:Mia', 'upload:kid_NEW00000000000000000', 'update:kid_NEW00000000000000000:avatarUrl',
+      'upload:kid_NEW00000000000000000', 'update:kid_NEW00000000000000000:avatarUrl,name',
+    ]);
+  });
+
+  it('create without a photo needs no update; editing sends the name', async () => {
+    const log: string[] = [];
+    assert.deepEqual(await saveKidProfile(deps(log, () => false), { existingId: null }, { name: 'Noa', photo: null, removePhoto: false }),
+      { ok: true, childId: 'kid_NEW00000000000000000' });
+    assert.deepEqual(log, ['create:Noa']);
+    const edit: string[] = [];
+    await saveKidProfile(deps(edit, () => false), { existingId: 'kid_OLD00000000000000000' }, { name: 'Noah', photo: null, removePhoto: true });
+    assert.deepEqual(edit, ['update:kid_OLD00000000000000000:avatarUrl,name']);
   });
 });
 

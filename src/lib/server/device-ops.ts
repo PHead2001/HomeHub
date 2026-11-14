@@ -75,6 +75,11 @@ export const classifyActionAttempt = (
   // A tombstone records the Undo capability that wrote it: only an action that Undo
   // reverses is "already undone"; anything else under the same opId is a conflict.
   if (entry.tombstone && !undoAccepts(entry.capability, attempt.capability)) throw new DeviceActionError('conflict');
+  // A tombstone suppresses only the original of the same actor at the same credential
+  // generation; anything else under that opId is a conflict.
+  if (entry.tombstone && (entry.actorUid !== attempt.actorUid || entry.generation !== attempt.generation)) {
+    throw new DeviceActionError('conflict');
+  }
   if (entry.state === 'undone') throw new DeviceActionError('already_undone');
   if (entry.capability !== attempt.capability || entry.actorUid !== attempt.actorUid || entry.generation !== attempt.generation) {
     throw new DeviceActionError('conflict');

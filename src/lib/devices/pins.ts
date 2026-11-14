@@ -98,40 +98,85 @@ export const settleDeviceGuardCorrect = (guard: DeviceGuard, seq: number): Devic
   };
 };
 
-/** `members/{uid}/private/pinGuard`: failures across tablets in the last hour. */
+/**
+ * Failures for one person since their last correct PIN, across tablets and without a
+ * time window: at this count every PIN for them is refused until an owner or admin (or
+ * they themselves, from their phone) clears it. This bounds slow guessing that stays
+ * under the hourly limit and the tablet backoff.
+ */
+export const MEMBER_FAILURES_SINCE_SUCCESS_LOCK = 50;
+
+/**
+ * `members/{uid}/private/pinGuard`: failures across tablets in the last hour, and every
+ * failure since the last correct PIN. Entries carry the attempt id and a monotonic
+ * sequence number, so a correct PIN forgives only failures recorded at or before its own
+ * reservation (re-review R2).
+ */
 export type MemberGuard = {
   recentFailures: Array<{ id: string; at: number }>;
+  sinceSuccess: Array<{ id: string; seq: number }>;
+  seq: number;
   lockedAt: number | null;
   /** The attempt whose provisional failure set the lock. */
   lockedByAttempt: string | null;
+  /** Which limit set the lock: 20 within an hour, or 50 since the last correct PIN. */
+  lockedReason: 'hour' | 'total' | null;
 };
 
-export const emptyMemberGuard = (): MemberGuard => ({ recentFailures: [], lockedAt: null, lockedByAttempt: null });
+export const emptyMemberGuard = (): MemberGuard => ({
+  recentFailures: [], sinceSuccess: [], seq: 0, lockedAt: null, lockedByAttempt: null, lockedReason: null,
+});
 
 export const reserveMemberGuard = (
   guard: MemberGuard,
   attemptId: string,
   nowMs: number,
-): { guard: MemberGuard; locked: boolean } | GuardRefusal => {
+): { guard: MemberGuard; locked: boolean; seq: number } | GuardRefusal => {
   if (guard.lockedAt !== null) return { refused: 'pin_locked_member' };
+  const seq = guard.seq + 1;
   const recent = guard.recentFailures.filter(f => nowMs - f.at < MEMBER_FAILURE_WINDOW_MS);
   const recentFailures = [...recent, { id: attemptId, at: nowMs }].slice(-MEMBER_FAILURES_BEFORE_LOCK);
-  const locked = recentFailures.length >= MEMBER_FAILURES_BEFORE_LOCK;
+  const sinceSuccess = [...guard.sinceSuccess, { id: attemptId, seq }].slice(-MEMBER_FAILURES_SINCE_SUCCESS_LOCK);
+  const hour = recentFailures.length >= MEMBER_FAILURES_BEFORE_LOCK;
+  const total = sinceSuccess.length >= MEMBER_FAILURES_SINCE_SUCCESS_LOCK;
+  const locked = hour || total;
   return {
     locked,
-    guard: { recentFailures, lockedAt: locked ? nowMs : null, lockedByAttempt: locked ? attemptId : null },
+    seq,
+    guard: {
+      recentFailures,
+      sinceSuccess,
+      seq,
+      lockedAt: locked ? nowMs : null,
+      lockedByAttempt: locked ? attemptId : null,
+      lockedReason: locked ? (hour ? 'hour' : 'total') : null,
+    },
   };
 };
 
-/** A correct PIN removes only its own provisional entry, and the lock only if it set it. */
-export const settleMemberGuardCorrect = (guard: MemberGuard, attemptId: string): MemberGuard => {
+/**
+ * A correct PIN removes only its own hourly entry, forgives the failures since the last
+ * correct PIN that were recorded at or before its own reservation (never those of
+ * concurrent attempts), and lifts the lock only if its own provisional failure set it.
+ */
+export const settleMemberGuardCorrect = (guard: MemberGuard, attemptId: string, seq: number): MemberGuard => {
   const own = guard.lockedByAttempt === attemptId;
   return {
+    ...guard,
     recentFailures: guard.recentFailures.filter(f => f.id !== attemptId),
+    sinceSuccess: guard.sinceSuccess.filter(f => f.seq > seq),
     lockedAt: own ? null : guard.lockedAt,
     lockedByAttempt: own ? null : guard.lockedByAttempt,
+    lockedReason: own ? null : guard.lockedReason,
   };
 };
+
+/**
+ * Clearing a lockout empties a guard but keeps its sequence number, so an attempt still in
+ * flight (reserved before the clear) can never forgive a failure recorded after it.
+ */
+export const clearedDeviceGuard = (guard: DeviceGuard): DeviceGuard => ({ ...emptyDeviceGuard(), seq: guard.seq });
+export const clearedMemberGuard = (guard: MemberGuard): MemberGuard => ({ ...emptyMemberGuard(), seq: guard.seq });
 
 /** Idle length of a PIN session (D-T3, WT-5d, WT-22c). */
 export const PIN_SESSION_IDLE_MS = 120_000;

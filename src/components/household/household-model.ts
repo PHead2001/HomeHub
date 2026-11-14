@@ -336,6 +336,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'pin.set': 'Set a tablet PIN',
   'pin.cleared': 'Cleared a tablet PIN',
   'pin.locked': 'Tablet PIN locked after too many wrong tries',
+  'pin.device_locked': 'Tablet PIN paused on one tablet after wrong tries',
   'pin.lockout_cleared': 'Unlocked a tablet PIN',
   'child.created': 'Added a kid profile',
   'child.updated': 'Edited a kid profile',

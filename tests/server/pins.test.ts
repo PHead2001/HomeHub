@@ -76,6 +76,10 @@ before(async () => {
 });
 
 beforeEach(async () => {
+  // The per-person PIN-set budget is about real people at a phone; tests set PINs far more
+  // often than that, so each test starts with a fresh budget (the limit has its own test).
+  const windows = (globalThis as { __homeHubDeviceWindows?: Map<string, number[]> }).__homeHubDeviceWindows;
+  for (const key of [...(windows?.keys() ?? [])]) if (key.startsWith('pin-set:')) windows!.delete(key);
   // Every test starts with no PINs and no lockouts.
   const members = await house(H).collection('members').get();
   for (const m of members.docs) {
@@ -263,6 +267,11 @@ describe('verification and lockouts (7.3, 7.4)', () => {
     assert.equal(guard.failures, 0);
     assert.equal(guard.lockouts, 0);
     assert.equal(guard.lockedUntil, null);
+    // Every tablet-level lock left an activity entry by the tablet (security review 1).
+    const paused = (await house(H).collection('auditLogs').where('action', '==', 'pin.device_locked').get()).docs
+      .filter(d => d.get('targetUid') === member.uid && d.get('deviceId') === t.deviceId);
+    assert.equal(paused.length, expected.length);
+    assert.ok(paused.every(d => String(d.get('actorUid')).startsWith('device_')));
   });
 
   test('per person across tablets: 20 wrong within an hour hard-locks on every tablet until cleared; owners and admins are told', async () => {
@@ -280,7 +289,11 @@ describe('verification and lockouts (7.3, 7.4)', () => {
     await deviceErr(verify(tablet, member.uid, '4826', c.advance(1000)), 'pin_locked_member');
     assert.ok((await memberGuard(member.uid))?.lockedAt);
     const audit = await house(H).collection('auditLogs').where('action', '==', 'pin.locked').get();
-    assert.ok(audit.docs.some(d => d.get('targetUid') === member.uid));
+    const entry = audit.docs.find(d => d.get('targetUid') === member.uid);
+    assert.ok(entry);
+    // Written by the tablet (actor), about the person (target).
+    assert.match(entry!.get('actorUid'), /^device_/);
+    assert.equal(entry!.get('details')?.reason, 'hour');
     const notices = await house(H).collection('notifications').where('sourceType', '==', 'pin-locked').get();
     const audience = new Set(notices.docs.map(d => d.get('targetUserUid')));
     assert.ok(audience.has(owner.uid) && audience.has(admin.uid) && audience.has(admin2.uid));
@@ -303,8 +316,8 @@ describe('verification and lockouts (7.3, 7.4)', () => {
     const codes = twin.map(error => (error as DeviceActionError).code).sort();
     assert.deepEqual(codes, ['busy', 'pin_wrong']);
     assert.equal((await memberGuard(member.uid))?.recentFailures.length, 7);
-    // Default per-instance hash limit: 4 at once, the rest busy (never counted).
-    const many = await Promise.all(tablets.map(t => verify(t, member.uid, '7391', new Date(at.getTime() + 120_000)).catch(error => error)));
+    // Admission: twice the hash slots may wait for a slot at once, the rest are busy (never counted).
+    const many = await Promise.all(tablets.map(t => verify(t, member.uid, '7391', new Date(at.getTime() + 120_000), { limits: { concurrentHashes: 2 } }).catch(error => error)));
     const busy = many.filter(error => (error as DeviceActionError).code === 'busy').length;
     assert.ok(busy >= 2);
     assert.equal((await memberGuard(member.uid))?.recentFailures.length, 7 + (6 - busy));
@@ -405,6 +418,70 @@ describe('PIN sessions (7.5): what ends them', () => {
     await leaveHousehold(child, H);
     assert.equal(await pinDoc(child.uid), undefined);
     assert.equal(await memberGuard(child.uid), undefined);
+  });
+});
+
+describe('round 2: lock announcements, slow guessing, set limits, cleared guards', () => {
+  test('a reserved attempt that reaches the person-wide limit but is right announces nothing (Codex A)', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const tablets: Tablet[] = [];
+    for (let i = 0; i < 5; i++) tablets.push(await pairTablet(H, owner, created, `Announce ${i}`));
+    const c = clock(Date.parse('2026-12-01T09:00:00Z'));
+    const auditBefore = (await house(H).collection('auditLogs').where('action', '==', 'pin.locked').get()).size;
+    const noticesBefore = (await house(H).collection('notifications').where('sourceType', '==', 'pin-locked').get()).size;
+    // 19 wrong (4 + 4 + 4 + 4 + 3), then the 20th attempt is the right PIN.
+    let n = 0;
+    for (const t of tablets) {
+      for (let i = 0; i < 4 && n < 19; i++, n++) await deviceErr(verify(t, member.uid, '7391', c.advance(1000)), 'pin_wrong');
+    }
+    const result = await verify(tablets[4], member.uid, '4826', c.advance(1000));
+    assert.ok(result.pinSessionId);
+    assert.equal((await memberGuard(member.uid))?.lockedAt, null);
+    assert.equal((await house(H).collection('auditLogs').where('action', '==', 'pin.locked').get()).size, auditBefore);
+    assert.equal((await house(H).collection('notifications').where('sourceType', '==', 'pin-locked').get()).size, noticesBefore);
+  });
+
+  test('50 failures since the last correct PIN lock every tablet, reported with that reason (security review 1)', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const t = await pairTablet(H, owner, created, 'Slow tablet');
+    // 49 earlier failures since the last correct PIN, spread over days (none in the last hour).
+    await house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').set({
+      recentFailures: [], sinceSuccess: Array.from({ length: 49 }, (_, i) => ({ id: `old${i}`, seq: i + 1 })), seq: 49,
+      lockedAt: null, lockedByAttempt: null, lockedReason: null,
+    });
+    const at = clock(Date.parse('2026-12-02T09:00:00Z')).now();
+    await deviceErr(verify(t, member.uid, '7391', at), 'pin_locked_member');
+    assert.equal((await memberGuard(member.uid))?.lockedReason, 'total');
+    const entries = (await house(H).collection('auditLogs').where('action', '==', 'pin.locked').get()).docs
+      .filter(d => d.get('details')?.reason === 'total' && d.get('targetUid') === member.uid);
+    assert.equal(entries.length, 1);
+    await clearPinLockout(admin, { householdId: H, targetUid: member.uid });
+    assert.ok(await verify(t, member.uid, '4826', new Date(at.getTime() + 7000)));
+  });
+
+  test('clearing a lockout keeps each guard\'s sequence number (security review 4)', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const t = await pairTablet(H, owner, created, 'Clear tablet');
+    const at = clock(Date.parse('2026-12-03T09:00:00Z')).now();
+    await deviceErr(verify(t, member.uid, '7391', at), 'pin_wrong');
+    await deviceErr(verify(t, member.uid, '7391', new Date(at.getTime() + 7000)), 'pin_wrong');
+    const guardRef = house(H).collection('devices').doc(t.deviceId).collection('pinGuards').doc(member.uid);
+    const before = (await guardRef.get()).get('seq');
+    const memberSeq = (await memberGuard(member.uid))?.seq;
+    assert.equal(before, 2);
+    await clearPinLockout(admin, { householdId: H, targetUid: member.uid });
+    const after = (await guardRef.get()).data()!;
+    assert.equal(after.seq, before);
+    assert.equal(after.failures, 0);
+    assert.equal((await memberGuard(member.uid))?.seq, memberSeq);
+  });
+
+  test('PIN sets are limited per person (security review 3)', async () => {
+    const at = new Date('2026-12-04T09:00:00Z');
+    for (let i = 0; i < 10; i++) await setMyPin(admin2, { householdId: H, pin: '2580' }, at);
+    await pinErr(setMyPin(admin2, { householdId: H, pin: '2580' }, at), 'busy');
+    await pinErr(setChildPin(admin2, { householdId: H, childId: KID, pin: '9314' }, at), 'busy');
+    assert.ok(await setMyPin(admin2, { householdId: H, pin: '2580' }, new Date(at.getTime() + 61_000)));
   });
 });
 
