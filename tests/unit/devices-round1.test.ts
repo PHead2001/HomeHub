@@ -106,7 +106,7 @@ describe('a tablet removed while switched off is cleared at the next start (revi
     assert.equal(hasTabletMarker(storage), true);
     const { ran, deps: d } = deps();
     assert.equal(await recoverFormerTablet(d, storage), 'ran');
-    assert.deepEqual(ran, ['db', 'household', 'firestore', 'push', 'navigate']);
+    assert.deepEqual(ran, ['db', 'household', 'push', 'firestore', 'navigate']);
     assert.equal(hasTabletMarker(storage), false);
     assert.equal(await recoverFormerTablet(d, storage), 'not-needed', 'the marker is gone: no second run');
   });
