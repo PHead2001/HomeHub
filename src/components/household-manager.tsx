@@ -405,7 +405,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
       {/* Module pages are not mounted until membership is approved, so they never fetch. */}
       <Dialog open={true} onOpenChange={() => {}}>
         <DialogContent
-          className="max-h-[100dvh] max-w-4xl overflow-y-auto"
+          className="max-h-[100svh] max-w-4xl overflow-y-auto"
           onInteractOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
           hideClose
