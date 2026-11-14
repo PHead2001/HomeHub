@@ -18,7 +18,7 @@ import {
   type QuerySnapshot,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { resilientListener } from '@/lib/dashboard/resilient-listener';
+import { petSnapshotListener } from '@/lib/pets/live-listener';
 import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { PetCareLog, PetFeedingLog, PetMedicationLog } from '@/lib/pets/types';
 
@@ -91,7 +91,7 @@ type UnionSpec = {
 /**
  * Subscribes to one or more queries; resolves once each has answered, keyed so
  * stale results never show. Each query is a resilient listener (PE-8g, the HP-5
- * pattern of `resilientListener`): a failed one resubscribes with bounded
+ * pattern, `petSnapshotListener`): a failed one resubscribes with bounded
  * backoff and at once on `online` or when the page becomes visible, and while it
  * is down the logs are reported as unavailable (`error`), never as empty.
  */
@@ -112,8 +112,9 @@ function useLiveUnion({ key, householdId, petId, kind, mode, sinceMs, max }: Uni
       else if (results.every(Boolean)) setState({ key, logs: [...results] as Record<string, unknown>[][], error: null });
     };
     const handles = queries.map((shape, index) =>
-      resilientListener<QuerySnapshot>(
-        (next, error) => onSnapshot(shape, next, error),
+      petSnapshotListener<QuerySnapshot>(
+        // Metadata changes too: a cached answer that turns into a server answer is seen (only that resets the retries).
+        (next, error) => onSnapshot(shape, { includeMetadataChanges: true }, next, error),
         {
           next: (snapshot) => {
             results[index] = snapshot.docs.map((entry) => normalizeEntry(kind, entry));

@@ -888,9 +888,12 @@ service cloud.firestore {
 
     // "Feed again?" bound to what was shown (PE-23g): the confirmation names the
     // last feeding the member was asked about. It must be the state's latest feed,
-    // or a feeding at least as new (one synced from offline after the state was
-    // written). A confirmation shown before a newer feed by someone else names an
-    // older log and is refused. Without a surviving latest feed nothing is bound.
+    // or a feeding at least as new by effective time (`date`, when the pet ate:
+    // one synced from offline after the state was written, or one whose time was
+    // corrected to after the state's latest), the same notion the client's
+    // planFeed uses to pick the last feed. A confirmation shown before a newer feed
+    // by someone else names an older log and is refused. Without a surviving
+    // latest feed nothing is bound.
     function feedingConfirmBound(householdId, petId, data, before) {
       let latest = before == null ? null : before.get('lastLogId', null);
       let confirmOf = data.get('confirmOf', null);
@@ -899,9 +902,9 @@ service cloud.firestore {
         confirmOf == latest ||
         (confirmOf is string &&
           exists(feedingLogPath(householdId, petId, confirmOf)) &&
-          get(feedingLogPath(householdId, petId, confirmOf)).data.get('loggedAt', null) is timestamp &&
+          get(feedingLogPath(householdId, petId, confirmOf)).data.get('date', null) is timestamp &&
           before.get('lastFedAt', null) is timestamp &&
-          get(feedingLogPath(householdId, petId, confirmOf)).data.loggedAt >= before.lastFedAt);
+          get(feedingLogPath(householdId, petId, confirmOf)).data.date >= before.lastFedAt);
     }
 
     // Every new feeding (stage R2): signed by the writer, recorded at server time,

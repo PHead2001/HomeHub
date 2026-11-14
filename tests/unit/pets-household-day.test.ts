@@ -140,6 +140,25 @@ describe('one shared minute clock (PE-21c, PE-7d)', () => {
     assert.equal(fake.timers.length, 0, 'no timer once nobody listens');
   });
 
+  it('wake events (online, pageshow, visible) replace the pending timer instead of adding a chain', () => {
+    const fake = fakeEnvironment(at('2026-11-10T12:00:10Z'));
+    const clock = createMinuteClock(fake.environment);
+    const stop = clock.subscribe(() => undefined);
+    assert.equal(fake.timers.length, 1);
+    for (const event of ['online', 'pageshow', 'visibilitychange', 'online', 'pageshow', 'visibilitychange']) {
+      fake.fire(event);
+      assert.equal(fake.timers.length, 1, `still one pending timer after ${event}`);
+    }
+    // A wake within the same minute and one after it both keep a single timer.
+    fake.setTime(at('2026-11-10T12:03:00Z'));
+    fake.fire('online');
+    assert.equal(fake.timers.length, 1);
+    fake.advance(120_000);
+    assert.equal(fake.timers.length, 1);
+    stop();
+    assert.equal(fake.timers.length, 0, 'nothing left after the last unsubscribe');
+  });
+
   it('catches up at once when the page becomes visible again (timers stall while hidden)', () => {
     const fake = fakeEnvironment(at('2026-11-10T12:00:10Z'));
     const clock = createMinuteClock(fake.environment);
@@ -201,7 +220,7 @@ describe('Pets copy and small fixes (PE-8, PE-18)', () => {
   it('pet listeners recover instead of failing for good (PE-8g) and errors say what happened (PE-18c)', () => {
     const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
     for (const file of ['src/components/pets/pet-log-api.ts', 'src/components/pets-client.tsx', 'src/app/pets/[petId]/page.tsx']) {
-      assert.match(read(file), /resilientListener/, file);
+      assert.match(read(file), /petSnapshotListener/, file);
     }
     assert.doesNotMatch(read('src/components/pets-client.tsx'), /window\.location\.reload/);
     assert.match(read('src/components/pets-client.tsx'), /loadFailed === 'unauthorized'/);

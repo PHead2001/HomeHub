@@ -2527,6 +2527,23 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
       await assertSucceeds(feedBatch(member, logId => stateFor(member, logId, { prev: current }), { confirmOf: synced.id }).commit());
     });
 
+    test('the confirmation follows effective time: a log corrected to be the newest is current', async () => {
+      // "stale" was saved 11 minutes ago and corrected to 1 minute ago: it is now newer than the state's
+      // latest feed ("recent", 2 minutes ago), so the client names it, and the rule agrees.
+      await environment.withSecurityRulesDisabled(async context => {
+        await updateDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'stale'), {
+          date: minutesAgo(1), originalDate: minutesAgo(11), dateCorrectedAt: minutesAgo(1), dateCorrectedByUid: users.owner.uid,
+        });
+      });
+      await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: current }), { confirmOf: 'stale' }).commit());
+    });
+
+    test('a feeding saved recently but eating earlier than the latest feed is a stale confirmation', async () => {
+      // Synced from offline just now (loggedAt now), but the pet ate 30 minutes ago: older than "recent".
+      const synced = await addDoc(logs(users.child), offlineFeeding(users.child, { date: minutesAgo(30) }));
+      await assertFails(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: current }), { confirmOf: synced.id }).commit());
+    });
+
     test('older than 90 minutes: a plain feed passes until the day is complete', async () => {
       const member = users.member;
       const old = { ...current, lastFedAt: minutesAgo(200) };

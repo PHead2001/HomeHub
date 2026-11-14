@@ -49,12 +49,22 @@ export function createMinuteClock(environment: ClockEnvironment): MinuteClock {
     if (timer !== null) environment.clearTimeout(timer);
     const at = environment.now().getTime();
     const wait = MINUTE_MS - (at % MINUTE_MS) + BOUNDARY_SLACK_MS;
-    timer = environment.setTimeout(tick, wait);
+    timer = environment.setTimeout(onTimer, wait);
   };
+  // A tick from the timer or from a wake event (online, pageshow, visible). It
+  // always replaces the pending timeout (schedule clears it), so wakes never add
+  // a second timer chain and an unsubscribe leaves none behind.
   const tick = () => {
-    timer = null;
     if (refresh()) listeners.forEach((listener) => listener());
     if (listeners.size > 0) schedule();
+    else if (timer !== null) {
+      environment.clearTimeout(timer);
+      timer = null;
+    }
+  };
+  const onTimer = () => {
+    timer = null;
+    tick();
   };
   const onVisibility = () => {
     if (environment.document?.visibilityState !== 'hidden') tick();

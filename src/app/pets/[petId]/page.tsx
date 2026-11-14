@@ -8,7 +8,8 @@ import { ArrowLeft, CalendarDays, Edit, MoreVertical, Pill, Sparkles, Trash2, Ut
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { resilientListener, type ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import { petSnapshotListener } from '@/lib/pets/live-listener';
 import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
 import { feedingPlan, formatPortion, petPhotoMorphName } from '@/lib/pets/care';
 import { morphStyle } from '@/lib/motion';
@@ -76,8 +77,8 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   const petHandle = useRef<ResilientHandle | null>(null);
   useEffect(() => {
     if (!householdId || !docKey) return;
-    const handle = resilientListener<DocumentSnapshot>(
-      (next, error) => onSnapshot(doc(db, 'households', householdId, 'pets', petId), next, error),
+    const handle = petSnapshotListener<DocumentSnapshot>(
+      (next, error) => onSnapshot(doc(db, 'households', householdId, 'pets', petId), { includeMetadataChanges: true }, next, error),
       {
         next: (snapshot) => {
           setLoaded({

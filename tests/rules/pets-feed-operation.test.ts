@@ -130,6 +130,36 @@ describe('the feed operation on the emulator with the real rules', () => {
     assert.equal(await feedingCount(), 3);
   });
 
+  test('after a correction makes an older feeding the newest, "Feed again?" binds to it and a current answer writes', async () => {
+    // A by Sam, then B by the owner (confirmed), then A corrected to after B: A is the newest by effective time.
+    const a = saved(await runFeed(session(people.sam), press(people.sam)));
+    const ownerPress = press(people.owner);
+    const ownerAsked = await runFeed(session(people.owner), ownerPress);
+    assert.equal(ownerAsked.status, 'needsConfirm');
+    const b = saved(await runFeed(session(people.owner), { ...ownerPress, confirm: ownerAsked.status === 'needsConfirm' ? feedConfirmOf(ownerAsked) : null }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await runCorrectFeedTime(session(people.owner), {
+      householdId: household, petId: 'rex', logId: a.logId, date: new Date(), user: { uid: people.owner.uid, name: 'Owner' }, canDeleteLogs: true, timeZone: TZ,
+    });
+    const state = (await getDoc(stateOf(session(people.owner)))).data()!;
+    assert.equal(state.lastLogId, b.logId, 'the state still names B');
+    // Alex is asked about A (the newest by effective time) and answers: the feed is written once.
+    const alexPress = press(people.alex);
+    const asked = await runFeed(session(people.alex), alexPress);
+    assert.equal(asked.status, 'needsConfirm');
+    assert.equal(asked.status === 'needsConfirm' && asked.lastLogId, a.logId);
+    const answer = asked.status === 'needsConfirm' ? feedConfirmOf(asked) : null;
+    const fed = saved(await runFeed(session(people.alex), { ...alexPress, confirm: answer }));
+    assert.equal((await getDoc(doc(logsOf(session(people.alex)), fed.logId))).data()!.confirmOf, a.logId);
+    assert.equal(await feedingCount(), 3);
+    // That answer is now stale for a new press: it asks again (naming Alex) and writes nothing.
+    const again = await runFeed(session(people.sam), press(people.sam, { confirm: answer }));
+    assert.equal(again.status, 'needsConfirm');
+    assert.equal(again.status === 'needsConfirm' && again.staleConfirm, true);
+    assert.equal(again.status === 'needsConfirm' && again.lastFedByUid, people.alex.uid);
+    assert.equal(await feedingCount(), 3);
+  });
+
   test('Undo restores the previous feed; a correction moves the effective time and keeps the recorded one', async () => {
     const first = saved(await runFeed(session(people.sam), press(people.sam)));
     const asked = await runFeed(session(people.alex), press(people.alex, { opId: 'alex-press-0001' }));

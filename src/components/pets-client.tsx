@@ -7,7 +7,8 @@ import { PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
-import { resilientListener, type ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import { petSnapshotListener } from '@/lib/pets/live-listener';
 import type { PetProfile } from '@/lib/pets/types';
 import { FEED_SHORTCUT_PARAM, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
@@ -71,8 +72,8 @@ export function PetsClient() {
   // and on `online` / page visible; already loaded pets stay while it retries.
   useEffect(() => {
     if (!householdId) return;
-    const handle = resilientListener<QuerySnapshot>(
-      (next, error) => onSnapshot(collection(db, 'households', householdId, 'pets'), next, error),
+    const handle = petSnapshotListener<QuerySnapshot>(
+      (next, error) => onSnapshot(collection(db, 'households', householdId, 'pets'), { includeMetadataChanges: true }, next, error),
       {
         next: (result) => {
           const next = result.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetProfile);
