@@ -6,9 +6,10 @@ import {
   DeviceActionError,
   assertActorRule,
   authorizeDeviceAction,
+  preAuthAddressLimit,
   type DeviceActionRequest,
 } from '../../src/lib/server/device-gate';
-import { createDeviceRepairCode, redeemDeviceCode, removeDevice, updateDeviceSettings } from '../../src/lib/server/device-management';
+import { createDeviceRepairCode, redeemDeviceCode, redeemDeviceCodeGuarded, removeDevice, takeRateSlot, updateDeviceSettings } from '../../src/lib/server/device-management';
 import { setChildPin, setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { updateDeviceComfort } from '../../src/lib/server/device-comfort';
 import { deviceOperationContext } from '../../src/lib/server/operation-context';
@@ -16,6 +17,14 @@ import { deviceHeartbeatAction, updateDeviceComfortAction } from '../../src/app/
 import type { DeviceCapability } from '../../src/lib/devices/action-policy';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
 import { clock, house, opId, pairTablet, seedKid, type Tablet } from './device-actor-helpers';
+
+
+/**
+ * The gate with an injected clock: a test's `at` is the server time for authorization and
+ * for every precheck (production passes no clock and reads the real time each time).
+ */
+const authorize = (request: Parameters<typeof authorizeDeviceAction>[0], at?: Date, options: Parameters<typeof authorizeDeviceAction>[1] = {}) =>
+  authorizeDeviceAction(request, { ...options, ...(at ? { clock: () => at } : {}) });
 
 // The device action gate (docs/modules/devices/README.md, "The device action gate";
 // design 8.3-8.5, S1): every check of 8.4 in order with its refusal code, forged
@@ -85,19 +94,19 @@ after(async () => {
 
 describe('8.4 step 1: shape', () => {
   test('oversized requests, unknown capabilities, not-on-tablets and never classes, missing or malformed opIds', async () => {
-    await refused(authorizeDeviceAction(req({ actorUid: 'x'.repeat(20_000) }), time.now()), 'invalid_input');
-    await refused(authorizeDeviceAction(req({ capability: 'pets.feed.everything' }), time.now()), 'unclassified');
-    await refused(authorizeDeviceAction(req({ capability: 'shopping.add' }), time.now()), 'not_on_tablets');
-    await refused(authorizeDeviceAction(req({ capability: 'ai.parse' }), time.now()), 'not_on_tablets');
-    await refused(authorizeDeviceAction(req({ capability: 'profile.edit' }), time.now()), 'not_on_tablets');
-    await refused(authorizeDeviceAction(req({ opId: undefined }), time.now()), 'invalid_input');
-    await refused(authorizeDeviceAction(req({ opId: 'not-a-uuid' }), time.now()), 'invalid_input');
+    await refused(authorize(req({ actorUid: 'x'.repeat(20_000) }), time.now()), 'invalid_input');
+    await refused(authorize(req({ capability: 'pets.feed.everything' }), time.now()), 'unclassified');
+    await refused(authorize(req({ capability: 'shopping.add' }), time.now()), 'not_on_tablets');
+    await refused(authorize(req({ capability: 'ai.parse' }), time.now()), 'not_on_tablets');
+    await refused(authorize(req({ capability: 'profile.edit' }), time.now()), 'not_on_tablets');
+    await refused(authorize(req({ opId: undefined }), time.now()), 'invalid_input');
+    await refused(authorize(req({ opId: 'not-a-uuid' }), time.now()), 'invalid_input');
   });
 
   test('the server flag off refuses everything (unavailable: retryable, never ends the session)', async () => {
     process.env.HOMEHUB_DEVICES_ENABLED = 'false';
     try {
-      await refused(authorizeDeviceAction(req(), time.now()), 'unavailable');
+      await refused(authorize(req(), time.now()), 'unavailable');
       await refused(verifyDevicePin({ idToken: tablet.idToken, householdId: H, actorUid: member.uid, pin: PIN.member }, { now: time.now() }), 'unavailable');
     } finally {
       process.env.HOMEHUB_DEVICES_ENABLED = 'true';
@@ -113,10 +122,10 @@ describe('8.4 step 2: rate', () => {
     const victim = await pairTablet(H, owner, created, 'Victim tablet');
     const at = time.advance(61_000);
     for (let i = 0; i < 70; i++) {
-      await refused(authorizeDeviceAction(req({ idToken: forgedFor(victim.deviceId) }, victim), at, { clientAddress: '203.0.113.9' }), 'unauthenticated');
+      await refused(authorize(req({ idToken: forgedFor(victim.deviceId) }, victim), at, { clientAddress: '203.0.113.9' }), 'unauthenticated');
     }
     // The real tablet still has its whole budget.
-    const authority = await authorizeDeviceAction({ idToken: victim.idToken, householdId: H, capability: 'device.comfort' }, at, { clientAddress: '198.51.100.7' });
+    const authority = await authorize({ idToken: victim.idToken, householdId: H, capability: 'device.comfort' }, at, { clientAddress: '198.51.100.7' });
     assert.equal(authority.deviceId, victim.deviceId);
   });
 
@@ -126,18 +135,62 @@ describe('8.4 step 2: rate', () => {
     const count = () => (windows.get('pre:gate:instance') ?? []).filter(entry => entry === at.getTime()).length;
     const before = count();
     for (let i = 0; i < 25; i++) {
-      await refused(authorizeDeviceAction(req({ idToken: forgedFor(tablet.deviceId) }), at, { clientAddress: `2001:db8:77:${i}::1` }), 'unauthenticated');
+      await refused(authorize(req({ idToken: forgedFor(tablet.deviceId) }), at, { clientAddress: `2001:db8:77:${i}::1` }), 'unauthenticated');
     }
     assert.equal(count(), before);
-    await authorizeDeviceAction({ idToken: tablet.idToken, householdId: H, capability: 'device.comfort' }, at);
+    await authorize({ idToken: tablet.idToken, householdId: H, capability: 'device.comfort' }, at);
     assert.equal(count(), before + 1);
+  });
+
+  test('a valid token that is not a tablet token of this household never spends the per-instance bucket', async () => {
+    const windows = (globalThis as { __homeHubDeviceWindows?: Map<string, number[]> }).__homeHubDeviceWindows!;
+    const at = time.advance(61_000);
+    const count = (key: string) => (windows.get(key) ?? []).filter(entry => entry === at.getTime()).length;
+    const personal = await personToken(owner);
+    await refused(authorize(req({ idToken: personal }), at), 'not_a_device');
+    await refused(authorize(req({ householdId: HB }), at), 'wrong_household');
+    assert.equal(count('pre:gate:instance'), 0);
+    await refused(verifyDevicePin({ idToken: personal, householdId: H, actorUid: member.uid, pin: PIN.member }, { now: at }), 'not_a_device');
+    assert.equal(count('pre:pin:instance'), 0);
+  });
+
+  test('address buckets live apart from verified keys: a flood of addresses never evicts a tablet\'s window', async () => {
+    const at = time.advance(61_000);
+    takeRateSlot(`gate:${tablet.deviceId}`, 60, at.getTime());
+    for (let i = 0; i < 25_000; i++) preAuthAddressLimit('gate', `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`, at.getTime());
+    const windows = (globalThis as { __homeHubDeviceWindows?: Map<string, number[]> }).__homeHubDeviceWindows!;
+    assert.ok(windows.has(`gate:${tablet.deviceId}`));
+  });
+
+  test('code redemption is limited per /64 for IPv6 callers', async () => {
+    const at = new Date(time.advance(61_000).getTime());
+    let limited = false;
+    for (let i = 0; i < 12 && !limited; i++) {
+      limited = await redeemDeviceCodeGuarded({ code: 'ZZZZ-ZZZZ-ZZ', nonce: nonce(), appCheckToken: null, address: `2001:db8:5:6:${i.toString(16)}::9` }, { now: at })
+        .then(() => false, (error: unknown) => (error as { code?: string }).code === 'rate_limited');
+    }
+    assert.ok(limited);
+  });
+
+  test('without an injected clock the gate reads the real time, again at precheck', async () => {
+    const before = Date.now();
+    const authority = await authorizeDeviceAction({ idToken: tablet.idToken, householdId: H, capability: 'device.comfort' });
+    assert.ok(authority.now.getTime() >= before && authority.now.getTime() <= Date.now());
+    const first = authority.now.getTime();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await adminDb.runTransaction(tx => authority.hooks.precheck(tx));
+    assert.ok(authority.now.getTime() > first);
+    const result = await updateDeviceComfort({ idToken: tablet.idToken, householdId: H, comfort: { theme: 'light' } });
+    assert.deepEqual(result.changed, ['comfort']);
+    const updatedAt = (await house(H).collection('devices').doc(tablet.deviceId).get()).get('updatedAt');
+    assert.ok(Math.abs(updatedAt.toMillis() - Date.now()) < 60_000);
   });
 
   test('IPv6 callers are limited per /64, however they rotate the rest of the address (security review 2)', async () => {
     const at = time.advance(61_000);
     let limited = false;
     for (let i = 0; i < 300 && !limited; i++) {
-      limited = await authorizeDeviceAction(req({ idToken: forgedFor('Whatever000000000000') }), at, { clientAddress: `2001:db8:99:1:${i.toString(16)}::1` })
+      limited = await authorize(req({ idToken: forgedFor('Whatever000000000000') }), at, { clientAddress: `2001:db8:99:1:${i.toString(16)}::1` })
         .then(() => false, (error: unknown) => error instanceof DeviceActionError && error.code === 'rate_limited');
     }
     assert.ok(limited);
@@ -146,12 +199,12 @@ describe('8.4 step 2: rate', () => {
   test('60 gated calls a minute per verified tablet; unauthenticated callers are limited per address before verification', async () => {
     const t = await pairTablet(H, owner, created, 'Busy tablet');
     const at = time.advance(61_000);
-    for (let i = 0; i < 60; i++) await authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, at);
-    await refused(authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, at), 'rate_limited');
+    for (let i = 0; i < 60; i++) await authorize({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, at);
+    await refused(authorize({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, at), 'rate_limited');
     // One address flooding with forged tokens is cut off before any verification.
     let limited = false;
     for (let i = 0; i < 400 && !limited; i++) {
-      limited = await authorizeDeviceAction(req({ idToken: forgedFor('Whatever000000000000') }), at, { clientAddress: '192.0.2.44' })
+      limited = await authorize(req({ idToken: forgedFor('Whatever000000000000') }), at, { clientAddress: '192.0.2.44' })
         .then(() => false, (error: unknown) => error instanceof DeviceActionError && error.code === 'rate_limited');
     }
     assert.ok(limited, 'the per-address pre-auth limit applies');
@@ -160,12 +213,12 @@ describe('8.4 step 2: rate', () => {
 
 describe('8.4 steps 3-5: token, household, registration', () => {
   test('garbage, personal tokens, another household, a household being deleted', async () => {
-    await refused(authorizeDeviceAction(req({ idToken: 'garbage' }), time.now()), 'unauthenticated');
-    await refused(authorizeDeviceAction(req({ idToken: await personToken(owner) }), time.now()), 'not_a_device');
-    await refused(authorizeDeviceAction(req({ householdId: HB }), time.now()), 'wrong_household');
+    await refused(authorize(req({ idToken: 'garbage' }), time.now()), 'unauthenticated');
+    await refused(authorize(req({ idToken: await personToken(owner) }), time.now()), 'not_a_device');
+    await refused(authorize(req({ householdId: HB }), time.now()), 'wrong_household');
     const deleting = await pairTablet(HD, ownerD, created, 'D tablet');
     await house(HD).update({ deletingAt: Timestamp.now() });
-    await refused(authorizeDeviceAction(req({ householdId: HD, actorUid: ownerD.uid }, deleting), time.now()), 'household_deleting');
+    await refused(authorize(req({ householdId: HD, actorUid: ownerD.uid }, deleting), time.now()), 'household_deleting');
   });
 
   test('a removed tablet and an older credential generation are refused (device_revoked)', async () => {
@@ -173,11 +226,11 @@ describe('8.4 steps 3-5: token, household, registration', () => {
     // Re-paired elsewhere: the old token carries the old generation.
     const { code } = await createDeviceRepairCode(owner, { householdId: H, deviceId: spare.deviceId });
     const repaired = await redeemDeviceCode({ code, nonce: nonce() });
-    await refused(authorizeDeviceAction(req({}, spare), time.now()), 'device_revoked');
+    await refused(authorize(req({}, spare), time.now()), 'device_revoked');
     const fresh = await signIn(repaired.customToken);
-    await authorizeDeviceAction({ idToken: fresh.idToken, householdId: H, capability: 'device.comfort' }, time.now());
+    await authorize({ idToken: fresh.idToken, householdId: H, capability: 'device.comfort' }, time.now());
     await removeDevice(owner, { householdId: H, deviceId: spare.deviceId });
-    await refused(authorizeDeviceAction({ idToken: fresh.idToken, householdId: H, capability: 'device.comfort' }, time.now()), 'device_revoked');
+    await refused(authorize({ idToken: fresh.idToken, householdId: H, capability: 'device.comfort' }, time.now()), 'device_revoked');
   });
 });
 
@@ -185,23 +238,23 @@ describe('8.4 step 6: section', () => {
   test('a capability in a section switched off is refused; Home is always on', async () => {
     const t = await pairTablet(H, owner, created, 'Hall tablet');
     await updateDeviceSettings(owner, { householdId: H, deviceId: t.deviceId, patch: { sections: { pets: false } } });
-    await refused(authorizeDeviceAction(req({}, t), time.now()), 'section_off');
-    await authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, time.now());
+    await refused(authorize(req({}, t), time.now()), 'section_off');
+    await authorize({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, time.now());
   });
 });
 
 describe('8.4 step 7: actor', () => {
   test('missing, unknown, another household, guest, pending, device uid', async () => {
     const at = time.advance(61_000);
-    await refused(authorizeDeviceAction(req({ actorUid: undefined }), at), 'actor_required');
-    await refused(authorizeDeviceAction(req({ actorUid: 'nobody' }), at), 'actor_not_member');
-    await refused(authorizeDeviceAction(req({ actorUid: memberB.uid }), at), 'actor_not_member');
-    await refused(authorizeDeviceAction(req({ actorUid: guest.uid }), at), 'actor_guest');
-    await refused(authorizeDeviceAction(req({ actorUid: pending.uid }), at), 'actor_inactive');
-    await refused(authorizeDeviceAction(req({ actorUid: `device_${tablet.deviceId}` }), at), 'actor_not_member');
-    await refused(authorizeDeviceAction(req({ actorUid: '../members/g-owner' }), at), 'actor_not_member');
+    await refused(authorize(req({ actorUid: undefined }), at), 'actor_required');
+    await refused(authorize(req({ actorUid: 'nobody' }), at), 'actor_not_member');
+    await refused(authorize(req({ actorUid: memberB.uid }), at), 'actor_not_member');
+    await refused(authorize(req({ actorUid: guest.uid }), at), 'actor_guest');
+    await refused(authorize(req({ actorUid: pending.uid }), at), 'actor_inactive');
+    await refused(authorize(req({ actorUid: `device_${tablet.deviceId}` }), at), 'actor_not_member');
+    await refused(authorize(req({ actorUid: '../members/g-owner' }), at), 'actor_not_member');
     // Household B's tablet cannot act for household A's members, even naming A.
-    await refused(authorizeDeviceAction(req({ householdId: H, actorUid: member.uid }, tabletB), at), 'wrong_household');
+    await refused(authorize(req({ householdId: H, actorUid: member.uid }, tabletB), at), 'wrong_household');
   });
 });
 
@@ -209,17 +262,17 @@ describe('8.4 steps 8-10: capability, level, PIN', () => {
   test('permissions come from the stored record; admin-PIN capabilities need the owner or admin role', async () => {
     const at = time.advance(61_000);
     const memberSession = await unlock(member.uid, PIN.member, tablet, at);
-    await refused(authorizeDeviceAction(req({ capability: 'pets.pet.delete', pinSessionId: memberSession }), at), 'forbidden');
-    await refused(authorizeDeviceAction(req({ capability: 'chores.take', actorUid: child.uid }), at), 'forbidden');
-    await refused(authorizeDeviceAction(req({ capability: 'device.settings', opId: undefined, pinSessionId: memberSession }), at), 'admin_pin_required');
+    await refused(authorize(req({ capability: 'pets.pet.delete', pinSessionId: memberSession }), at), 'forbidden');
+    await refused(authorize(req({ capability: 'chores.take', actorUid: child.uid }), at), 'forbidden');
+    await refused(authorize(req({ capability: 'device.settings', opId: undefined, pinSessionId: memberSession }), at), 'admin_pin_required');
   });
 
   test('face* needs a PIN until its Undo is proven; no PIN set → no_pin_set; no session → pin_required', async () => {
     const at = time.advance(61_000);
-    await refused(authorizeDeviceAction(req({ actorUid: child.uid }), at), 'no_pin_set');
-    await refused(authorizeDeviceAction(req(), at), 'pin_required');
+    await refused(authorize(req({ actorUid: child.uid }), at), 'no_pin_set');
+    await refused(authorize(req(), at), 'pin_required');
     const session = await unlock(member.uid, PIN.member, tablet, at);
-    const authority = await authorizeDeviceAction(req({ pinSessionId: session }), at);
+    const authority = await authorize(req({ pinSessionId: session }), at);
     assert.equal(authority.level, 'pin');
     assert.deepEqual(authority.attribution, { deviceId: tablet.deviceId, deviceName: 'Kitchen tablet', generation: 1, actorUid: member.uid, level: 'pin' });
     assert.equal(authority.actor?.name, 'Max');
@@ -227,27 +280,27 @@ describe('8.4 steps 8-10: capability, level, PIN', () => {
 
   test('once proven, face is enough; a valid session records PIN; an invalid one is ignored', async () => {
     const at = time.advance(61_000);
-    const face = await authorizeDeviceAction(req({ actorUid: child.uid }), at, { undoProven: proven });
+    const face = await authorize(req({ actorUid: child.uid }), at, { undoProven: proven });
     assert.equal(face.level, 'face');
     assert.equal(face.attribution?.level, 'face');
     const session = await unlock(member.uid, PIN.member, tablet, at);
-    assert.equal((await authorizeDeviceAction(req({ pinSessionId: session }), at, { undoProven: proven })).level, 'pin');
-    assert.equal((await authorizeDeviceAction(req({ pinSessionId: 'A'.repeat(43) }), at, { undoProven: proven })).level, 'face');
-    assert.equal((await authorizeDeviceAction(req({ actorUid: admin.uid, pinSessionId: session }), at, { undoProven: proven })).level, 'face');
+    assert.equal((await authorize(req({ pinSessionId: session }), at, { undoProven: proven })).level, 'pin');
+    assert.equal((await authorize(req({ pinSessionId: 'A'.repeat(43) }), at, { undoProven: proven })).level, 'face');
+    assert.equal((await authorize(req({ actorUid: admin.uid, pinSessionId: session }), at, { undoProven: proven })).level, 'face');
   });
 
   test('forged level, role and permissions are ignored; an owner face unlocks nothing dangerous (WT-7a)', async () => {
     const at = time.advance(61_000);
     const forged = { ...req({ capability: 'pets.pet.delete', actorUid: owner.uid }), level: 'pin', role: 'owner', permissions: { 'pets.editProfiles': true } } as DeviceActionRequest;
-    await refused(authorizeDeviceAction(forged, at, { undoProven: proven }), 'pin_required');
+    await refused(authorize(forged, at, { undoProven: proven }), 'pin_required');
     // A member claiming the owner role and pets.editProfiles is still refused by the stored record.
     const memberForged = { ...req({ capability: 'pets.pet.delete' }), role: 'owner', permissions: { 'pets.editProfiles': true } } as DeviceActionRequest;
-    await refused(authorizeDeviceAction(memberForged, at), 'forbidden');
+    await refused(authorize(memberForged, at), 'forbidden');
   });
 
   test('points PIN: Off / Kids only / Everyone (D-T10), feeding never', async () => {
     const at = time.advance(61_000);
-    const complete = (actorUid: string) => authorizeDeviceAction(req({ capability: 'chores.complete', actorUid }), at, { undoProven: proven });
+    const complete = (actorUid: string) => authorize(req({ capability: 'chores.complete', actorUid }), at, { undoProven: proven });
     await house(H).update({ devicePolicy: { pointsPin: 'off' } });
     assert.equal((await complete(KID)).level, 'face');
     assert.equal((await complete(member.uid)).level, 'face');
@@ -256,11 +309,11 @@ describe('8.4 steps 8-10: capability, level, PIN', () => {
     await refused(complete(child.uid), 'no_pin_set');
     assert.equal((await complete(member.uid)).level, 'face');
     const kidSession = await unlock(KID, PIN.kid, tablet, at);
-    assert.equal((await authorizeDeviceAction(req({ capability: 'chores.complete', actorUid: KID, pinSessionId: kidSession }), at, { undoProven: proven })).level, 'pin');
+    assert.equal((await authorize(req({ capability: 'chores.complete', actorUid: KID, pinSessionId: kidSession }), at, { undoProven: proven })).level, 'pin');
     await house(H).update({ devicePolicy: { pointsPin: 'everyone' } });
     await refused(complete(member.uid), 'pin_required');
     await refused(complete(owner.uid), 'pin_required');
-    assert.equal((await authorizeDeviceAction(req({ actorUid: member.uid }), at, { undoProven: proven })).level, 'face');
+    assert.equal((await authorize(req({ actorUid: member.uid }), at, { undoProven: proven })).level, 'face');
     await house(H).update({ devicePolicy: { pointsPin: 'off' } });
   });
 
@@ -268,17 +321,17 @@ describe('8.4 steps 8-10: capability, level, PIN', () => {
     const at = time.advance(61_000);
     const session = await unlock(member.uid, PIN.member, tablet, at);
     // Another member, another tablet.
-    await refused(authorizeDeviceAction(req({ actorUid: admin.uid, pinSessionId: session }), at), 'pin_session_invalid');
+    await refused(authorize(req({ actorUid: admin.uid, pinSessionId: session }), at), 'pin_session_invalid');
     const other = await pairTablet(H, owner, created, 'Other tablet');
-    await refused(authorizeDeviceAction(req({ pinSessionId: session }, other), at), 'pin_session_invalid');
+    await refused(authorize(req({ pinSessionId: session }, other), at), 'pin_session_invalid');
     // Idle: 2 minutes after the last use it is gone; each use that commits slides it.
-    const authority = await authorizeDeviceAction(req({ pinSessionId: session }), new Date(at.getTime() + 100_000));
+    const authority = await authorize(req({ pinSessionId: session }), new Date(at.getTime() + 100_000));
     await adminDb.runTransaction(async tx => {
       await authority.hooks.precheck(tx);
       authority.hooks.finalize(tx, { targetPath: `households/${H}/pets/p1/feeding-logs/x`, summary: {} });
     });
-    await authorizeDeviceAction(req({ pinSessionId: session }), new Date(at.getTime() + 200_000));
-    await refused(authorizeDeviceAction(req({ pinSessionId: session }), new Date(at.getTime() + 221_000)), 'pin_session_invalid');
+    await authorize(req({ pinSessionId: session }), new Date(at.getTime() + 200_000));
+    await refused(authorize(req({ pinSessionId: session }), new Date(at.getTime() + 221_000)), 'pin_session_invalid');
     const pinActions = (await house(H).collection('auditLogs').where('action', '==', 'device.action').get()).docs.map(d => d.data());
     assert.ok(pinActions.some(entry => entry.actorUid === member.uid && entry.level === 'pin' && entry.deviceName === 'Kitchen tablet' && entry.details?.capability === 'pets.feed'));
   });
@@ -286,7 +339,7 @@ describe('8.4 steps 8-10: capability, level, PIN', () => {
   test('admin-PIN capabilities need a session at most 30 s old (S9)', async () => {
     const at = time.advance(60_000);
     const session = await unlock(admin.uid, PIN.admin, tablet, at);
-    const settings = (seconds: number) => authorizeDeviceAction({ idToken: tablet.idToken, householdId: H, capability: 'device.settings', actorUid: admin.uid, pinSessionId: session },
+    const settings = (seconds: number) => authorize({ idToken: tablet.idToken, householdId: H, capability: 'device.settings', actorUid: admin.uid, pinSessionId: session },
       new Date(at.getTime() + seconds * 1000));
     assert.equal((await settings(30)).level, 'pin');
     await refused(settings(31), 'pin_fresh_required');
@@ -297,7 +350,7 @@ describe('8.4 step 11: queued replays', () => {
   test('stale or future intents, PIN-level intents and non-queueable capabilities are refused', async () => {
     const at = time.advance(61_000);
     const queued = (createdAt: Date, extra: Partial<DeviceActionRequest> = {}) =>
-      authorizeDeviceAction(req({ queued: { createdAt: createdAt.toISOString() }, ...extra }), at, { undoProven: proven });
+      authorize(req({ queued: { createdAt: createdAt.toISOString() }, ...extra }), at, { undoProven: proven });
     assert.equal((await queued(new Date(at.getTime() - 60_000))).level, 'face');
     await refused(queued(new Date(at.getTime() - 25 * 3600_000)), 'stale_intent');
     await refused(queued(new Date(at.getTime() + 6 * 60_000)), 'stale_intent');
@@ -314,18 +367,18 @@ describe('hooks inside the mutation transaction (S1)', () => {
   test('precheck sees a removal, a member removal and a PIN change committed after authorize', async () => {
     const t = await pairTablet(H, owner, created, 'Race tablet');
     const at = time.advance(61_000);
-    const authority = await authorizeDeviceAction(req({ actorUid: child.uid }, t), at, { undoProven: proven });
+    const authority = await authorize(req({ actorUid: child.uid }, t), at, { undoProven: proven });
     await house(H).collection('members').doc(child.uid).update({ status: 'deleting' });
     await refused(adminDb.runTransaction(tx => authority.hooks.precheck(tx)), 'actor_inactive');
     await house(H).collection('members').doc(child.uid).update({ status: 'active' });
 
     const session = await unlock(member.uid, PIN.member, t, at);
-    const pinAuthority = await authorizeDeviceAction(req({ pinSessionId: session }, t), at);
+    const pinAuthority = await authorize(req({ pinSessionId: session }, t), at);
     await setMyPin(member, { householdId: H, pin: '7391' });
     await refused(adminDb.runTransaction(tx => pinAuthority.hooks.precheck(tx)), 'pin_session_invalid');
     await setMyPin(member, { householdId: H, pin: PIN.member });
 
-    const late = await authorizeDeviceAction(req({ actorUid: child.uid }, t), at, { undoProven: proven });
+    const late = await authorize(req({ actorUid: child.uid }, t), at, { undoProven: proven });
     await removeDevice(owner, { householdId: H, deviceId: t.deviceId });
     await refused(adminDb.runTransaction(tx => late.hooks.precheck(tx)), 'device_revoked');
   });
@@ -334,7 +387,7 @@ describe('hooks inside the mutation transaction (S1)', () => {
     const at = time.advance(61_000);
     const id = opId();
     const run = async (extra: Partial<DeviceActionRequest>) => {
-      const authority = await authorizeDeviceAction(req({ opId: id, actorUid: child.uid, ...extra }), at, { undoProven: proven });
+      const authority = await authorize(req({ opId: id, actorUid: child.uid, ...extra }), at, { undoProven: proven });
       const ctx = deviceOperationContext(authority);
       return adminDb.runTransaction(async tx => {
         const { replay } = await authority.hooks.precheck(tx);
@@ -356,13 +409,13 @@ describe('hooks inside the mutation transaction (S1)', () => {
 
     // Undo first (tombstone), then the original: refused, nothing applied.
     const early = opId();
-    const undo = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: early, actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
+    const undo = await authorize(req({ capability: 'pets.feed.undo', opId: early, actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
     await adminDb.runTransaction(async tx => {
       const plan = await undo.hooks.precheck(tx);
       assert.equal(plan.undo, 'tombstone');
       undo.hooks.finalize(tx, { targetPath: '', summary: {}, undo: 'tombstone' });
     });
-    const original = await authorizeDeviceAction(req({ opId: early, actorUid: child.uid }), at, { undoProven: proven });
+    const original = await authorize(req({ opId: early, actorUid: child.uid }), at, { undoProven: proven });
     await refused(adminDb.runTransaction(tx => original.hooks.precheck(tx)), 'already_undone');
   });
 
@@ -371,34 +424,34 @@ describe('hooks inside the mutation transaction (S1)', () => {
     const session = await unlock(admin.uid, PIN.admin, tablet, at);
     const id = opId();
     // A PIN-level note pin is applied under this opId ...
-    const pinNote = await authorizeDeviceAction(req({ capability: 'pets.note.pin', opId: id, actorUid: admin.uid, pinSessionId: session }), at);
+    const pinNote = await authorize(req({ capability: 'pets.note.pin', opId: id, actorUid: admin.uid, pinSessionId: session }), at);
     await adminDb.runTransaction(async tx => {
       await pinNote.hooks.precheck(tx);
       pinNote.hooks.finalize(tx, { targetPath: `households/${H}/pets/p1/notes/n1`, summary: {} });
     });
     // ... and the note-add Undo must not treat it as its own.
-    const undo = await authorizeDeviceAction(req({ capability: 'pets.note.undo', opId: id, actorUid: admin.uid, pinSessionId: session }), at);
+    const undo = await authorize(req({ capability: 'pets.note.undo', opId: id, actorUid: admin.uid, pinSessionId: session }), at);
     await refused(adminDb.runTransaction(tx => undo.hooks.precheck(tx)), 'conflict');
     // A tombstone written by one Undo refuses an unrelated action under the same opId as a conflict.
     const early = opId();
-    const feedUndo = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    const feedUndo = await authorize(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
     await adminDb.runTransaction(async tx => {
       assert.equal((await feedUndo.hooks.precheck(tx)).undo, 'tombstone');
       feedUndo.hooks.finalize(tx, { targetPath: '', summary: {}, undo: 'tombstone' });
     });
-    const unrelated = await authorizeDeviceAction(req({ capability: 'pets.dose.give', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    const unrelated = await authorize(req({ capability: 'pets.dose.give', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
     await refused(adminDb.runTransaction(tx => unrelated.hooks.precheck(tx)), 'conflict');
-    const backdated = await authorizeDeviceAction(req({ capability: 'pets.feed.backdated', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    const backdated = await authorize(req({ capability: 'pets.feed.backdated', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
     await refused(adminDb.runTransaction(tx => backdated.hooks.precheck(tx)), 'already_undone');
     // The same Undo again is idempotent.
-    const again = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    const again = await authorize(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
     await adminDb.runTransaction(async tx => assert.equal((await again.hooks.precheck(tx)).undo, 'already'));
   });
 
   test('a tombstone suppresses only the same actor\'s original at the same generation (security review 6)', async () => {
     const at = time.advance(61_000);
     const id = opId();
-    const undo = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: id, actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
+    const undo = await authorize(req({ capability: 'pets.feed.undo', opId: id, actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
     await adminDb.runTransaction(async tx => {
       assert.equal((await undo.hooks.precheck(tx)).undo, 'tombstone');
       undo.hooks.finalize(tx, { targetPath: '', summary: {}, undo: 'tombstone' });
@@ -407,9 +460,9 @@ describe('hooks inside the mutation transaction (S1)', () => {
     assert.equal(stored.actorUid, child.uid);
     assert.equal(stored.generation, 1);
     // Another actor's feed under that opId: a conflict, not silently "already undone".
-    const other = await authorizeDeviceAction(req({ opId: id, actorUid: KID }), at, { undoProven: proven });
+    const other = await authorize(req({ opId: id, actorUid: KID }), at, { undoProven: proven });
     await refused(adminDb.runTransaction(tx => other.hooks.precheck(tx)), 'conflict');
-    const same = await authorizeDeviceAction(req({ opId: id, actorUid: child.uid }), at, { undoProven: proven });
+    const same = await authorize(req({ opId: id, actorUid: child.uid }), at, { undoProven: proven });
     await refused(adminDb.runTransaction(tx => same.hooks.precheck(tx)), 'already_undone');
   });
 
@@ -417,14 +470,14 @@ describe('hooks inside the mutation transaction (S1)', () => {
     let t = time.advance(61_000).getTime();
     const clockFn = () => new Date(t);
     const session = await unlock(member.uid, PIN.member, tablet, new Date(t));
-    const authority = await authorizeDeviceAction(req({ pinSessionId: session }), undefined, { clock: clockFn });
+    const authority = await authorize(req({ pinSessionId: session }), undefined, { clock: clockFn });
     assert.equal(authority.level, 'pin');
     t += 121_000;
     await refused(adminDb.runTransaction(tx => authority.hooks.precheck(tx)), 'pin_session_invalid');
     // Admin-PIN freshness is judged at the precheck too.
     const adminSession = await unlock(admin.uid, PIN.admin, tablet, new Date(t));
     t += 29_000;
-    const settings = await authorizeDeviceAction({ idToken: tablet.idToken, householdId: H, capability: 'device.settings', actorUid: admin.uid, pinSessionId: adminSession },
+    const settings = await authorize({ idToken: tablet.idToken, householdId: H, capability: 'device.settings', actorUid: admin.uid, pinSessionId: adminSession },
       undefined, { clock: clockFn });
     t += 2_000;
     await refused(adminDb.runTransaction(tx => settings.hooks.precheck(tx)), 'pin_fresh_required');
@@ -432,25 +485,25 @@ describe('hooks inside the mutation transaction (S1)', () => {
 
   test('actor rules: the original actor, or the named permission at PIN level', async () => {
     const at = time.advance(61_000);
-    const childUndo = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
+    const childUndo = await authorize(req({ capability: 'pets.feed.undo', actorUid: child.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
     assertActorRule(childUndo, child.uid);
     assert.throws(() => assertActorRule(childUndo, member.uid), (error: unknown) => error instanceof DeviceActionError && error.code === 'forbidden');
-    const adminFace = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', actorUid: admin.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
+    const adminFace = await authorize(req({ capability: 'pets.feed.undo', actorUid: admin.uid }), at, { undoProven: new Set(['pets.feed.undo']) });
     assert.throws(() => assertActorRule(adminFace, member.uid), (error: unknown) => error instanceof DeviceActionError && error.code === 'pin_required');
     const adminSession = await unlock(admin.uid, PIN.admin, tablet, at);
-    const adminPin = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', actorUid: admin.uid, pinSessionId: adminSession }), at, { undoProven: new Set(['pets.feed.undo']) });
+    const adminPin = await authorize(req({ capability: 'pets.feed.undo', actorUid: admin.uid, pinSessionId: adminSession }), at, { undoProven: new Set(['pets.feed.undo']) });
     assertActorRule(adminPin, member.uid);
   });
 });
 
 describe('device-class actions (no actor)', () => {
   test('comfort from the tablet: comfort fields only, through the gate; heartbeat; personal tokens refused', async () => {
-    const result = await updateDeviceComfort({ idToken: tablet.idToken, householdId: H, comfort: { theme: 'dark', textScale: 130 } }, time.now());
+    const result = await updateDeviceComfort({ idToken: tablet.idToken, householdId: H, comfort: { theme: 'dark', textScale: 130 } }, { clock: () => time.now() });
     assert.deepEqual(result.changed, ['comfort']);
     const record = (await house(H).collection('devices').doc(tablet.deviceId).get()).data()!;
     assert.equal(record.comfort.theme, 'dark');
     assert.equal(record.updatedVia, 'tablet-comfort');
-    await refused(updateDeviceComfort({ idToken: tablet.idToken, householdId: H, comfort: { theme: 'neon' } }, time.now()), 'invalid_input');
+    await refused(updateDeviceComfort({ idToken: tablet.idToken, householdId: H, comfort: { theme: 'neon' } }, { clock: () => time.now() }), 'invalid_input');
     const viaAction = await updateDeviceComfortAction({ idToken: tablet.idToken, householdId: H, comfort: { sound: false } });
     assert.ok(viaAction.ok);
     const personal = await updateDeviceComfortAction({ idToken: await personToken(owner), householdId: H, comfort: { sound: true } });

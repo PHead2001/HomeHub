@@ -3,6 +3,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
+import type { DecodedIdToken } from 'firebase-admin/auth';
 import { exceedsPayloadBudget } from '@/ai/action-auth';
 import { effectivePermissions } from '@/lib/household-policy';
 import {
@@ -24,8 +25,7 @@ import { classifyVerifyError } from '@/lib/devices/verify-errors';
 import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { devicesEnabled } from '@/lib/server/device-identity';
-import { takeRateSlot } from '@/lib/server/device-management';
-import { addressBucket } from '@/lib/devices/rate-window';
+import { takeAddressRateSlot, takeRateSlot } from '@/lib/server/device-management';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import {
   appliedEntry,
@@ -186,7 +186,7 @@ export const PRE_AUTH_LIMITS = {
 
 /** Before anything else: the caller's address bucket (IPv6 by /64, `addressBucket`). */
 export const preAuthAddressLimit = (kind: keyof typeof PRE_AUTH_LIMITS, clientAddress: string | undefined, nowMs: number) => {
-  if (clientAddress !== undefined && !takeRateSlot(`pre:${kind}:address:${addressBucket(clientAddress)}`, PRE_AUTH_LIMITS[kind].perAddress, nowMs)) {
+  if (clientAddress !== undefined && !takeAddressRateSlot(`pre:${kind}`, clientAddress, PRE_AUTH_LIMITS[kind].perAddress, nowMs)) {
     throw new DeviceActionError('rate_limited');
   }
 };
@@ -225,25 +225,29 @@ export const verifyDeviceToken = async (
     console.warn('Device token could not be verified right now.', error instanceof Error ? error.message : String(error));
     throw new DeviceActionError('unavailable');
   };
-  let decoded;
-  // The local signature and expiry check first (no revocation lookup); only a genuine
-  // token goes on to spend shared budgets and the revocation check.
+  const claimsOf = (decoded: DecodedIdToken): DeviceClaims => {
+    const claims = readDeviceClaims({ ...decoded, uid: decoded.uid, email: decoded.email, signInProvider: decoded.firebase?.sign_in_provider });
+    if (!claims) throw new DeviceActionError('not_a_device');
+    if (typeof householdId !== 'string' || claims.hh_household !== householdId) throw new DeviceActionError('wrong_household');
+    return claims;
+  };
+  // The local signature and expiry check first (no revocation lookup), then the device
+  // claims and household: only a genuine tablet token of this household goes on to spend
+  // shared budgets and the revocation check.
+  let decoded: DecodedIdToken | undefined;
   try {
     decoded = await adminAuth.verifyIdToken(idToken, false);
   } catch (error) {
     refuse(error);
   }
+  claimsOf(decoded!);
   options.onSignatureVerified?.();
   try {
     decoded = await adminAuth.verifyIdToken(idToken, true);
   } catch (error) {
     refuse(error);
   }
-  if (!decoded) throw new DeviceActionError('unauthenticated');
-  const claims = readDeviceClaims({ ...decoded, uid: decoded.uid, email: decoded.email, signInProvider: decoded.firebase?.sign_in_provider });
-  if (!claims) throw new DeviceActionError('not_a_device');
-  if (typeof householdId !== 'string' || claims.hh_household !== householdId) throw new DeviceActionError('wrong_household');
-  return claims;
+  return claimsOf(decoded!);
 };
 
 /** 8.4 steps 4-5: the household exists and is not being deleted; the record is active at the token's generation. */
@@ -398,19 +402,18 @@ const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabi
  */
 export async function authorizeDeviceAction(
   request: DeviceActionRequest,
-  nowInput?: Date,
   options: {
     undoProven?: ReadonlySet<DeviceCapability>;
     clientAddress?: string;
-    /** The server clock (injectable for tests). Default: a fixed `nowInput` when given, else the real time. */
+    /** The server clock; the real time unless a test injects one. */
     clock?: () => Date;
   } = {},
 ): Promise<DeviceAuthority> {
   const undoProven = options.undoProven ?? UNDO_PROVEN;
   // Read again inside every transaction attempt (precheck), so a retried transaction never
   // accepts a session that expired, or an admin-PIN session that went stale, meanwhile.
-  const clock = options.clock ?? (nowInput ? () => nowInput : () => new Date());
-  const now = nowInput ?? clock();
+  const clock = options.clock ?? (() => new Date());
+  const now = clock();
   // Step 1: shape.
   if (!request || typeof request !== 'object' || exceedsPayloadBudget(request, DEVICE_REQUEST_MAX_BYTES)) {
     throw new DeviceActionError('invalid_input');
