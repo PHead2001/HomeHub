@@ -74,8 +74,9 @@ export async function createDeviceCode(ownerPage: Page, name: string, room: stri
   await ownerPage.getByLabel('Tablet name').fill(name);
   await ownerPage.getByLabel('Room').fill(room);
   await ownerPage.getByRole('button', { name: 'Create code' }).click();
-  const code = ownerPage.getByText(/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{2}$/);
-  await expect(code).toBeVisible();
+  // The dialog's big code display (the Devices list shows the same code under "Unused tablet codes").
+  const code = ownerPage.getByTestId('device-code-value');
+  await expect(code).toHaveText(/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{2}$/);
   return (await code.textContent())!.trim();
 }
 

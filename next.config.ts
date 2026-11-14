@@ -16,6 +16,10 @@ const nextConfig: NextConfig = {
   // The Playwright suite drives the dev server at 127.0.0.1. Development only;
   // production builds do not use this setting.
   allowedDevOrigins: ['127.0.0.1'],
+  // No Next.js dev-tools indicator: in `next dev` its round button sits at the bottom-left
+  // over the wall tablet's rail (the Add button at 1263x818) and intercepts the e2e
+  // suite's taps. Development only; production builds never show it.
+  devIndicators: false,
   env: {
     NEXT_PUBLIC_HOMEHUB_BUILD_ID: HOMEHUB_BUILD_ID,
   },
