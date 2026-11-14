@@ -107,6 +107,17 @@ export const settleDeviceGuardCorrect = (guard: DeviceGuard, seq: number): Devic
 export const MEMBER_FAILURES_SINCE_SUCCESS_LOCK = 50;
 
 /**
+ * Failures for one person within any 24 hours, across tablets. A correct PIN never resets
+ * this count (it only withdraws its own provisional entry), so regular correct use cannot
+ * hide a steady trickle of wrong ones. At this count: hard lock (`lockedReason: 'day'`).
+ */
+export const MEMBER_FAILURES_PER_DAY_LOCK = 30;
+export const MEMBER_DAY_WINDOW_MS = 24 * 60 * 60_000;
+
+/** Owners and admins are told once when one person's PIN locks this many tablets within 24 hours. */
+export const TABLET_LOCKS_ALERT_COUNT = 3;
+
+/**
  * `members/{uid}/private/pinGuard`: failures across tablets in the last hour, and every
  * failure since the last correct PIN. Entries carry the attempt id and a monotonic
  * sequence number, so a correct PIN forgives only failures recorded at or before its own
@@ -114,56 +125,87 @@ export const MEMBER_FAILURES_SINCE_SUCCESS_LOCK = 50;
  */
 export type MemberGuard = {
   recentFailures: Array<{ id: string; at: number }>;
+  /** Every failure within the last 24 hours (at most MEMBER_FAILURES_PER_DAY_LOCK). */
+  dayFailures: Array<{ id: string; at: number }>;
+  /** Tablet-level locks of this person within the last 24 hours (attempt id, time). */
+  tabletLocks: Array<{ id: string; at: number }>;
+  /** When owners and admins were last told about repeated tablet locks. */
+  repeatAlertAt: number | null;
   sinceSuccess: Array<{ id: string; seq: number }>;
   seq: number;
   lockedAt: number | null;
   /** The attempt whose provisional failure set the lock. */
   lockedByAttempt: string | null;
-  /** Which limit set the lock: 20 within an hour, or 50 since the last correct PIN. */
-  lockedReason: 'hour' | 'total' | null;
+  /** Which limit set the lock: 20 within an hour, 30 within 24 hours, or 50 since the last correct PIN. */
+  lockedReason: MemberLockReason | null;
 };
 
+export type MemberLockReason = 'hour' | 'day' | 'total';
+
 export const emptyMemberGuard = (): MemberGuard => ({
-  recentFailures: [], sinceSuccess: [], seq: 0, lockedAt: null, lockedByAttempt: null, lockedReason: null,
+  recentFailures: [], dayFailures: [], tabletLocks: [], repeatAlertAt: null, sinceSuccess: [], seq: 0,
+  lockedAt: null, lockedByAttempt: null, lockedReason: null,
 });
 
 export const reserveMemberGuard = (
   guard: MemberGuard,
   attemptId: string,
   nowMs: number,
+  options: { tabletLock?: boolean } = {},
 ): { guard: MemberGuard; locked: boolean; seq: number } | GuardRefusal => {
   if (guard.lockedAt !== null) return { refused: 'pin_locked_member' };
   const seq = guard.seq + 1;
   const recent = guard.recentFailures.filter(f => nowMs - f.at < MEMBER_FAILURE_WINDOW_MS);
   const recentFailures = [...recent, { id: attemptId, at: nowMs }].slice(-MEMBER_FAILURES_BEFORE_LOCK);
+  const day = guard.dayFailures.filter(f => nowMs - f.at < MEMBER_DAY_WINDOW_MS);
+  const dayFailures = [...day, { id: attemptId, at: nowMs }].slice(-MEMBER_FAILURES_PER_DAY_LOCK);
   const sinceSuccess = [...guard.sinceSuccess, { id: attemptId, seq }].slice(-MEMBER_FAILURES_SINCE_SUCCESS_LOCK);
-  const hour = recentFailures.length >= MEMBER_FAILURES_BEFORE_LOCK;
-  const total = sinceSuccess.length >= MEMBER_FAILURES_SINCE_SUCCESS_LOCK;
-  const locked = hour || total;
+  const lockedTablets = guard.tabletLocks.filter(l => nowMs - l.at < MEMBER_DAY_WINDOW_MS);
+  const tabletLocks = options.tabletLock ? [...lockedTablets, { id: attemptId, at: nowMs }].slice(-20) : lockedTablets;
+  const reason: MemberLockReason | null =
+    recentFailures.length >= MEMBER_FAILURES_BEFORE_LOCK ? 'hour'
+      : dayFailures.length >= MEMBER_FAILURES_PER_DAY_LOCK ? 'day'
+        : sinceSuccess.length >= MEMBER_FAILURES_SINCE_SUCCESS_LOCK ? 'total' : null;
+  const locked = reason !== null;
   return {
     locked,
     seq,
     guard: {
+      ...guard,
       recentFailures,
+      dayFailures,
+      tabletLocks,
       sinceSuccess,
       seq,
       lockedAt: locked ? nowMs : null,
       lockedByAttempt: locked ? attemptId : null,
-      lockedReason: locked ? (hour ? 'hour' : 'total') : null,
+      lockedReason: reason,
     },
   };
 };
 
 /**
- * A correct PIN removes only its own hourly entry, forgives the failures since the last
- * correct PIN that were recorded at or before its own reservation (never those of
- * concurrent attempts), and lifts the lock only if its own provisional failure set it.
+ * Whether owners and admins should now be told that this person's PIN keeps locking
+ * tablets: TABLET_LOCKS_ALERT_COUNT tablet locks within 24 hours, and no such notice in
+ * the last 24 hours (one notice per episode).
+ */
+export const repeatTabletLockAlertDue = (guard: MemberGuard, nowMs: number): boolean =>
+  guard.tabletLocks.filter(l => nowMs - l.at < MEMBER_DAY_WINDOW_MS).length >= TABLET_LOCKS_ALERT_COUNT &&
+  (guard.repeatAlertAt === null || nowMs - guard.repeatAlertAt >= MEMBER_DAY_WINDOW_MS);
+
+/**
+ * A correct PIN removes only its own provisional entries (hourly, daily and any tablet
+ * lock it set), forgives the failures since the last correct PIN that were recorded at or
+ * before its own reservation (never those of concurrent attempts; the 24-hour count is
+ * never forgiven), and lifts the lock only if its own provisional failure set it.
  */
 export const settleMemberGuardCorrect = (guard: MemberGuard, attemptId: string, seq: number): MemberGuard => {
   const own = guard.lockedByAttempt === attemptId;
   return {
     ...guard,
     recentFailures: guard.recentFailures.filter(f => f.id !== attemptId),
+    dayFailures: guard.dayFailures.filter(f => f.id !== attemptId),
+    tabletLocks: guard.tabletLocks.filter(l => l.id !== attemptId),
     sinceSuccess: guard.sinceSuccess.filter(f => f.seq > seq),
     lockedAt: own ? null : guard.lockedAt,
     lockedByAttempt: own ? null : guard.lockedByAttempt,

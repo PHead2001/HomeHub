@@ -76,7 +76,7 @@ export async function endPinSessionAction(input: { idToken: string; householdId:
 /** Comfort settings from the tablet (anyone at it): theme, text size, motion, sound. */
 export async function updateDeviceComfortAction(input: { idToken: string; householdId: string; comfort: Record<string, unknown> }): Promise<TabletActionResult<{ changed: string[]; settings: DeviceSettings }>> {
   try {
-    return { ok: true, data: await updateDeviceComfort(input, new Date(), { clientAddress: await requestAddress() }) };
+    return { ok: true, data: await updateDeviceComfort(input, { clientAddress: await requestAddress() }) };
   } catch (error) {
     return refusal(error, 'Tablet comfort settings');
   }

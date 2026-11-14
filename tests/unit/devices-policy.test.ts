@@ -20,7 +20,10 @@ import {
 } from '../../src/lib/devices/action-policy';
 import {
   DEVICE_LOCK_CAP_MS,
+  MEMBER_FAILURES_PER_DAY_LOCK,
   MEMBER_FAILURES_SINCE_SUCCESS_LOCK,
+  TABLET_LOCKS_ALERT_COUNT,
+  repeatTabletLockAlertDue,
   clearedDeviceGuard,
   clearedMemberGuard,
   deviceLockDuration,
@@ -377,14 +380,14 @@ describe('lockout arithmetic', () => {
 
   it('slow guessing: 50 failures since the last correct PIN hard-lock, whatever the pace (security review 1)', () => {
     let guard: MemberGuard = emptyMemberGuard();
-    // One failure every 4 minutes never reaches 20 within an hour ...
+    // One failure an hour never reaches 20 within an hour or 30 within a day ...
     for (let i = 0; i < MEMBER_FAILURES_SINCE_SUCCESS_LOCK - 1; i++) {
-      const result = reserveMemberGuard(guard, `slow${i}`, t0 + i * 4 * 60_000);
+      const result = reserveMemberGuard(guard, `slow${i}`, t0 + i * 60 * 60_000);
       assert.ok(!('refused' in result) && !result.locked, `failure ${i}`);
       guard = result.guard;
     }
     // ... but the 50th since the last correct PIN locks.
-    const fiftieth = reserveMemberGuard(guard, 'slow49', t0 + 49 * 4 * 60_000);
+    const fiftieth = reserveMemberGuard(guard, 'slow49', t0 + 49 * 60 * 60_000);
     assert.ok(!('refused' in fiftieth) && fiftieth.locked);
     assert.equal((fiftieth as { guard: MemberGuard }).guard.lockedReason, 'total');
     // A correct PIN in between forgives the earlier ones (not concurrent later ones).
@@ -393,6 +396,42 @@ describe('lockout arithmetic', () => {
     const later = reserveMemberGuard(mine.guard, 'concurrent', t0 + 2) as { guard: MemberGuard; seq: number };
     const settled = settleMemberGuardCorrect(later.guard, 'right', mine.seq);
     assert.deepEqual(settled.sinceSuccess.map(f => f.id), ['concurrent']);
+  });
+
+  it('the 24-hour count is never forgiven by a correct PIN: 30 within a day lock (reason day)', () => {
+    let guard: MemberGuard = emptyMemberGuard();
+    for (let i = 0; i < MEMBER_FAILURES_PER_DAY_LOCK - 1; i++) {
+      const wrong = reserveMemberGuard(guard, `w${i}`, t0 + i * 40 * 60_000) as { guard: MemberGuard; locked: boolean };
+      assert.equal(wrong.locked, false, `failure ${i}`);
+      guard = wrong.guard;
+      // A correct PIN after each: it withdraws only its own entry.
+      const right = reserveMemberGuard(guard, `r${i}`, t0 + i * 40 * 60_000 + 1) as { guard: MemberGuard; seq: number };
+      guard = settleMemberGuardCorrect(right.guard, `r${i}`, right.seq);
+    }
+    assert.equal(guard.dayFailures.length, MEMBER_FAILURES_PER_DAY_LOCK - 1);
+    assert.equal(guard.sinceSuccess.length, 0);
+    const last = reserveMemberGuard(guard, 'last', t0 + 29 * 40 * 60_000 - 1000) as { guard: MemberGuard; locked: boolean };
+    assert.equal(last.locked, true);
+    assert.equal(last.guard.lockedReason, 'day');
+    // Failures older than 24 hours no longer count.
+    const later = reserveMemberGuard(guard, 'later', t0 + 30 * 3600_000) as { guard: MemberGuard; locked: boolean };
+    assert.equal(later.locked, false);
+  });
+
+  it('repeated tablet locks: one notice at the 3rd within 24 hours, then none for a day', () => {
+    let guard: MemberGuard = emptyMemberGuard();
+    for (let i = 0; i < TABLET_LOCKS_ALERT_COUNT; i++) {
+      assert.equal(repeatTabletLockAlertDue(guard, t0 + i * 1000), false);
+      guard = (reserveMemberGuard(guard, `lock${i}`, t0 + i * 1000, { tabletLock: true }) as { guard: MemberGuard }).guard;
+    }
+    assert.equal(repeatTabletLockAlertDue(guard, t0 + 5000), true);
+    const told = { ...guard, repeatAlertAt: t0 + 5000 };
+    const fourth = (reserveMemberGuard(told, 'lock3', t0 + 6000, { tabletLock: true }) as { guard: MemberGuard }).guard;
+    assert.equal(repeatTabletLockAlertDue(fourth, t0 + 6000), false);
+    assert.equal(repeatTabletLockAlertDue(told, t0 + 25 * 3600_000), false, 'old locks have aged out');
+    // A correct attempt that set a tablet lock withdraws it.
+    const right = reserveMemberGuard(emptyMemberGuard(), 'right', t0, { tabletLock: true }) as { guard: MemberGuard; seq: number };
+    assert.equal(settleMemberGuardCorrect(right.guard, 'right', right.seq).tabletLocks.length, 0);
   });
 
   it('clearing a lockout keeps the sequence numbers monotonic (security review 4)', () => {

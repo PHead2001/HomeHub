@@ -7,6 +7,7 @@ import { rank } from '@/lib/household-policy';
 import { POINTS_PIN_POLICIES, readPointsPinPolicy, type PointsPinPolicy } from '@/lib/devices/action-policy';
 import {
   DEVICE_FAILURES_BEFORE_LOCK,
+  TABLET_LOCKS_ALERT_COUNT,
   PIN_SESSION_IDLE_MS,
   clearedDeviceGuard,
   clearedMemberGuard,
@@ -17,8 +18,10 @@ import {
   settleDeviceGuardCorrect,
   settleMemberGuardCorrect,
   validatePinFormat,
+  repeatTabletLockAlertDue,
   type DeviceGuard,
   type MemberGuard,
+  type MemberLockReason,
 } from '@/lib/devices/pins';
 import type { HouseholdRole } from '@/lib/types';
 import { readDeviceSettings } from '@/lib/devices/settings';
@@ -105,6 +108,8 @@ const requireId = (value: unknown, message = 'That household or person was not f
 /** scrypt computations at once for verification, and for setting PINs. */
 export const PIN_HASH_CONCURRENCY = 4;
 export const PIN_SET_HASH_CONCURRENCY = 2;
+/** PIN sets admitted at once per instance (running and waiting for a slot). */
+export const PIN_SET_ADMISSION = 6;
 /** Verifications admitted at once (waiting for a hash slot included); beyond this: `busy`. */
 export const PIN_VERIFY_ADMISSION_FACTOR = 2;
 /** PIN sets per person per minute (personal sessions). */
@@ -140,10 +145,16 @@ const hashNewPin = async (pin: string): Promise<StoredHash> => {
   const pepperId = currentPepperId();
   const pepper = pepperId ? pepperFor(pepperId) : null;
   if (!pepperId || !pepper) throw new PinError('pin_unavailable', "PINs aren't working right now. Try again later.");
-  if (pools.set.running >= PIN_SET_HASH_CONCURRENCY * 4) throw new PinError('busy', 'One moment, try again.');
-  const salt = newPinSalt();
-  const hash = await withPoolSlot(pools.set, PIN_SET_HASH_CONCURRENCY, () => hashPinValue(pin, salt, pepper));
-  return { hash: hash.toString('base64'), salt: salt.toString('base64'), params: PIN_SCRYPT_PARAMS, pepperId };
+  // Running and waiting callers together are bounded; beyond that the answer is `busy`.
+  if (pools.set.admitted >= PIN_SET_ADMISSION) throw new PinError('busy', 'One moment, try again.');
+  pools.set.admitted += 1;
+  try {
+    const salt = newPinSalt();
+    const hash = await withPoolSlot(pools.set, PIN_SET_HASH_CONCURRENCY, () => hashPinValue(pin, salt, pepper));
+    return { hash: hash.toString('base64'), salt: salt.toString('base64'), params: PIN_SCRYPT_PARAMS, pepperId };
+  } finally {
+    pools.set.admitted -= 1;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -464,18 +475,31 @@ const readMemberGuard = (snap: Snap): MemberGuard => {
     ? d.sinceSuccess.filter((f: unknown): f is { id: string; seq: number } =>
       Boolean(f) && typeof (f as { id?: unknown }).id === 'string' && typeof (f as { seq?: unknown }).seq === 'number')
     : [];
+  const timed = (value: unknown) => Array.isArray(value)
+    ? value.flatMap((f: unknown) => {
+      const entry = f as { id?: unknown; at?: unknown };
+      const at = millisOf(entry?.at);
+      return typeof entry?.id === 'string' && at !== null ? [{ id: entry.id, at }] : [];
+    })
+    : [];
   return {
     recentFailures,
+    dayFailures: timed(d.dayFailures),
+    tabletLocks: timed(d.tabletLocks),
+    repeatAlertAt: millisOf(d.repeatAlertAt),
     sinceSuccess,
     seq: typeof d.seq === 'number' ? d.seq : 0,
     lockedAt: millisOf(d.lockedAt),
     lockedByAttempt: typeof d.lockedByAttempt === 'string' ? d.lockedByAttempt : null,
-    lockedReason: d.lockedReason === 'hour' || d.lockedReason === 'total' ? d.lockedReason : null,
+    lockedReason: d.lockedReason === 'hour' || d.lockedReason === 'day' || d.lockedReason === 'total' ? d.lockedReason : null,
   };
 };
 
 const storeMemberGuard = (guard: MemberGuard) => ({
   recentFailures: guard.recentFailures.map(f => ({ id: f.id, at: Timestamp.fromMillis(f.at) })),
+  dayFailures: guard.dayFailures.map(f => ({ id: f.id, at: Timestamp.fromMillis(f.at) })),
+  tabletLocks: guard.tabletLocks.map(l => ({ id: l.id, at: Timestamp.fromMillis(l.at) })),
+  repeatAlertAt: guard.repeatAlertAt === null ? null : Timestamp.fromMillis(guard.repeatAlertAt),
   sinceSuccess: guard.sinceSuccess,
   seq: guard.seq,
   lockedAt: guard.lockedAt === null ? null : Timestamp.fromMillis(guard.lockedAt),
@@ -491,8 +515,11 @@ export const PIN_VERIFY_LIMITS = { perDevicePerMinute: 10, concurrentHashes: PIN
 
 export type VerifyPinResult = { ok: true; pinSessionId: string; expiresAt: string };
 
-/** Test seams: run between the compare and transaction B, or inside B before it writes. */
-export type VerifyPinTestHooks = { afterCompare?: () => Promise<void>; duringSettle?: () => void };
+/**
+ * Test seams: right after the compare (either outcome), inside B before it writes, and
+ * inside a lock announcement before it writes.
+ */
+export type VerifyPinTestHooks = { afterCompare?: () => Promise<void>; duringSettle?: () => void; duringAnnounce?: () => void };
 
 type Reserved = {
   hash: string;
@@ -504,7 +531,7 @@ type Reserved = {
   seq: number;
   memberSeq: number;
   memberLocked: boolean;
-  memberLockReason: 'hour' | 'total' | null;
+  memberLockReason: MemberLockReason | null;
   deviceGuard: DeviceGuard;
 };
 
@@ -573,12 +600,16 @@ export const verifyDevicePin = async (
       ]);
       recheck(household, record, member);
       if (!hasPin(pinSnap)) throw new DeviceActionError('no_pin_set');
-      const memberReservation = reserveMemberGuard(readMemberGuard(mGuardSnap), attemptId, now.getTime());
-      if ('refused' in memberReservation) throw new DeviceActionError('pin_locked_member');
+      const memberGuard = readMemberGuard(mGuardSnap);
+      if (memberGuard.lockedAt !== null) throw new DeviceActionError('pin_locked_member');
       const deviceReservation = reserveDeviceGuard(readDeviceGuard(dGuardSnap), attemptId, now.getTime());
       if ('refused' in deviceReservation) {
         throw new DeviceActionError('pin_locked', deviceReservation.refused === 'pin_locked' ? deviceReservation.retryAfterSec : undefined);
       }
+      // A tablet lock this attempt sets is also counted for the person (repeat-lock notice).
+      const tabletLock = deviceReservation.guard.lockedBySeq === deviceReservation.seq;
+      const memberReservation = reserveMemberGuard(memberGuard, attemptId, now.getTime(), { tabletLock });
+      if ('refused' in memberReservation) throw new DeviceActionError('pin_locked_member');
       // Fail closed before counting anything when the pepper is missing.
       const pepperId = pinSnap.get('pepperId');
       if (!pepperFor(pepperId)) throw new DeviceActionError('pin_unavailable');
@@ -605,16 +636,28 @@ export const verifyDevicePin = async (
     if (!pepper) throw new DeviceActionError('pin_unavailable');
     const presented = await hash(pin, Buffer.from(reserved.salt, 'base64'), pepper, reserved.params);
     const correct = hashesEqual(presented, Buffer.from(reserved.hash, 'base64'));
+    await options.testHooks?.afterCompare?.();
     if (!correct) {
       // Already counted in A. A lock this attempt set is announced now that it proved wrong.
       const deviceLocked = reserved.deviceGuard.lockedBySeq === reserved.seq && reserved.deviceGuard.lockedUntil !== null;
       if (reserved.memberLocked || deviceLocked) {
-        await announceLocks({
+        const announcement = {
           householdRef, recordRef, deviceId: claims.hh_device, actorUid, attemptId, seq: reserved.seq,
           member: reserved.memberLocked ? reserved.memberLockReason ?? 'hour' : null,
           deviceLockMinutes: deviceLocked ? Math.round((reserved.deviceGuard.lockedUntil! - now.getTime()) / 60_000) : null,
           now,
-        }).catch(error => console.error('PIN lock could not be announced', error instanceof Error ? error.message : String(error)));
+          duringAnnounce: options.testHooks?.duringAnnounce,
+        };
+        // One retry, then a structured error (ids and reason only, no names).
+        await announceLocks(announcement)
+          .catch(() => announceLocks(announcement))
+          .catch(error => console.error(JSON.stringify({
+            event: 'pin_lock_announcement_failed',
+            householdId: householdRef.id,
+            deviceId: claims.hh_device,
+            reason: announcement.member ?? 'tablet',
+            error: error instanceof Error ? error.name : 'unknown',
+          })));
       }
       if (reserved.memberLocked) throw new DeviceActionError('pin_locked_member');
       if (deviceLocked) {
@@ -630,7 +673,6 @@ export const verifyDevicePin = async (
       const value = await hash(pin, salt, pepperFor(currentId)!);
       rehash = { hash: value.toString('base64'), salt: salt.toString('base64'), params: PIN_SCRYPT_PARAMS, pepperId: currentId };
     }
-    await options.testHooks?.afterCompare?.();
 
     // 6. Settle (transaction B).
     const secret = randomBytes(32).toString('base64url');
@@ -684,35 +726,37 @@ export const verifyDevicePin = async (
  */
 const announceLocks = async (input: {
   householdRef: DocRef; recordRef: DocRef; deviceId: string; actorUid: string; attemptId: string; seq: number;
-  member: 'hour' | 'total' | null; deviceLockMinutes: number | null; now: Date;
+  member: MemberLockReason | null; deviceLockMinutes: number | null; now: Date; duringAnnounce?: () => void;
 }) => {
   const { householdRef, now } = input;
   await adminDb.runTransaction(async tx => {
-    const [record, person, mGuard, dGuard, admins] = await Promise.all([
+    const [household, record, person, mGuard, dGuard, admins] = await Promise.all([
+      tx.get(householdRef),
       tx.get(input.recordRef),
       tx.get(householdRef.collection('members').doc(input.actorUid)),
       tx.get(memberGuardRef(householdRef, input.actorUid)),
       tx.get(deviceGuardRef(householdRef, input.deviceId, input.actorUid)),
       tx.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
     ]);
+    // Nothing is written for a household that is gone or being deleted.
+    if (!household.exists || household.get('deletingAt')) return;
+    input.duringAnnounce?.();
     const tabletName = readDeviceSettings(record.data()).name;
     const tablet = { actorUid: deviceUid(input.deviceId), actorName: tabletName, via: 'device' as const, deviceId: input.deviceId, deviceName: tabletName };
     const personName = publicName(person.get('displayName'));
     const memberGuard = readMemberGuard(mGuard);
-    if (input.member && memberGuard.lockedByAttempt === input.attemptId) {
-      writeDeviceAudit(tx, householdRef, {
-        action: 'pin.locked', ...tablet, targetUid: input.actorUid, targetName: personName, details: { reason: input.member },
-      }, now);
-      for (const admin of admins.docs.filter(d => (d.get('status') ?? 'active') === 'active')) {
-        tx.set(householdRef.collection('notifications').doc(`pin-locked-${input.actorUid}-${now.getTime()}-${admin.id}`), {
+    const recipients = admins.docs.filter(d => (d.get('status') ?? 'active') === 'active');
+    const notify = (id: string, title: string, message: string, sourceType: string) => {
+      for (const admin of recipients) {
+        tx.set(householdRef.collection('notifications').doc(`${id}-${admin.id}`), {
           householdId: householdRef.id,
           category: 'system',
-          title: 'Tablet PIN locked',
-          message: `${personName}'s tablet PIN is locked after too many wrong tries. Unlock it in Household, Members.`,
+          title,
+          message,
           createdAt: Timestamp.fromDate(now),
           expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
           deepLink: MEMBERS_LINK,
-          sourceType: 'pin-locked',
+          sourceType,
           sourceId: input.actorUid,
           stateKey: String(now.getTime()),
           targetUserUid: admin.id,
@@ -721,12 +765,25 @@ const announceLocks = async (input: {
           dismissedBy: {},
         });
       }
+    };
+    if (input.member && memberGuard.lockedByAttempt === input.attemptId) {
+      writeDeviceAudit(tx, householdRef, {
+        action: 'pin.locked', ...tablet, targetUid: input.actorUid, targetName: personName, details: { reason: input.member },
+      }, now);
+      notify(`pin-locked-${input.actorUid}-${now.getTime()}`, 'Tablet PIN locked',
+        `${personName}'s tablet PIN is locked after too many wrong tries. Unlock it in Household, Members.`, 'pin-locked');
     }
     if (input.deviceLockMinutes !== null && readDeviceGuard(dGuard).lockedBySeq === input.seq) {
       writeDeviceAudit(tx, householdRef, {
         action: 'pin.device_locked', ...tablet, targetUid: input.actorUid, targetName: personName,
         details: { minutes: input.deviceLockMinutes },
       }, now);
+      // Repeated tablet locks for one person: one notice per 24 hours.
+      if (repeatTabletLockAlertDue(memberGuard, now.getTime())) {
+        tx.set(mGuard.ref, { repeatAlertAt: Timestamp.fromDate(now) }, { merge: true });
+        notify(`pin-tablet-locks-${input.actorUid}-${now.getTime()}`, 'Tablet PIN keeps locking',
+          `${personName}'s tablet PIN locked ${TABLET_LOCKS_ALERT_COUNT} tablets within a day. Check in with them, or unlock it in Household, Members.`, 'pin-tablet-locks');
+      }
     }
   });
 };
