@@ -64,7 +64,9 @@ export function ImageUpload({ onFileChange, existingImageUrl, previewAlt = 'Sele
         <input {...getInputProps()} />
         {preview ? (
           <div className="relative w-full h-32">
-            <Image src={preview} alt={previewAlt} fill sizes="(max-width: 640px) 80vw, 400px" className="rounded-md object-contain" />
+            {/* Unoptimized: the preview is a picked file (a data URL) or a stored photo on any host (the
+                Storage emulator's http://127.0.0.1:9199 URLs included), which next/image would throw on. */}
+            <Image src={preview} alt={previewAlt} fill unoptimized sizes="(max-width: 640px) 80vw, 400px" className="rounded-md object-contain" />
             <Button type="button" variant="destructive" size="icon" aria-label={`Remove ${previewAlt.toLowerCase()}`} className="absolute top-1 right-1 z-10 h-11 w-11 [@media(pointer:coarse)]:h-12 [@media(pointer:coarse)]:w-12" onClick={handleRemove}>
               <X className="h-4 w-4" />
             </Button>
