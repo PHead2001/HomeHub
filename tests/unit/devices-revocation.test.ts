@@ -8,7 +8,11 @@ import {
   destinationAfter,
   deviceNotificationCategories,
   endedNote,
+  exitGateSettle,
+  exitGateSignal,
+  exitSessionEnd,
   type ClearDeps,
+  type ExitGate,
   type ClearStep,
 } from '../../src/lib/devices/device-session';
 import { defaultSections } from '../../src/lib/devices/settings';
@@ -101,5 +105,39 @@ describe('household-wide notification listeners (5.6, JC-23)', () => {
     assert.deepEqual(deviceNotificationCategories({ ...defaultSections(), chores: false, shopping: false }), ['pets', 'maintenance', 'system', 'general']);
     assert.deepEqual(deviceNotificationCategories({ chores: false, shopping: false, pets: false, calendar: false, maintenance: false }), ['system', 'general']);
     assert.equal(DEVICE_NOTICES_LIMIT, 50);
+  });
+});
+
+describe('the note after this tablet’s own exit (14.6)', () => {
+  it('each exit maps to its own end and note', () => {
+    assert.equal(exitSessionEnd('remove'), 'removed');
+    assert.equal(exitSessionEnd('new-code'), 'new-code');
+    assert.equal(exitSessionEnd('personal-sign-in'), 'personal-sign-in');
+    assert.equal(endedNote(exitSessionEnd('remove')), 'This tablet was removed.');
+    assert.equal(endedNote(exitSessionEnd('new-code')), 'This tablet was signed out. Enter a new code to set it up again.');
+    assert.match(endedNote(exitSessionEnd('personal-sign-in'))!, /^This tablet was signed out\./);
+    assert.equal(destinationAfter(exitSessionEnd('personal-sign-in')), '/');
+    assert.equal(destinationAfter(exitSessionEnd('new-code')), '/setup');
+  });
+
+  it('a record kept for a re-pair says which exit ended it; a remote removal stays "removed"', () => {
+    const record = (status: string, endedReason?: string) => ({ kind: 'record' as const, fromCache: false, exists: true, status, generation: 4, endedReason });
+    assert.equal(decideSessionEnd(record('unpaired', 'new-code'), 3), 'new-code');
+    assert.equal(decideSessionEnd(record('unpaired', 'personal-sign-in'), 3), 'personal-sign-in');
+    assert.equal(decideSessionEnd(record('removed', 'removed'), 3), 'removed');
+    assert.equal(decideSessionEnd(record('removed', 'household-deleted'), 3), 'removed');
+    assert.equal(decideSessionEnd(record('unpaired'), 3), 'removed');
+  });
+
+  it('while the exit is in flight, signals wait; the exit’s result decides', () => {
+    const idle: ExitGate = { inFlight: null, deferred: null };
+    assert.deepEqual(exitGateSignal(idle, 'removed'), { gate: idle, endNow: 'removed' }, 'no exit running: a signal ends at once');
+    let gate: ExitGate = { inFlight: 'new-code', deferred: null };
+    const raced = exitGateSignal(gate, 'removed');
+    assert.equal(raced.endNow, null, 'the revocation signal racing the exit waits');
+    gate = raced.gate;
+    assert.deepEqual(exitGateSettle(gate, true), { gate: idle, endNow: 'new-code' }, 'success: the exit’s own end');
+    assert.deepEqual(exitGateSettle(gate, false), { gate: idle, endNow: 'removed' }, 'failure: the signal that arrived meanwhile');
+    assert.deepEqual(exitGateSettle({ inFlight: 'removed', deferred: null }, false), { gate: idle, endNow: null }, 'failure with no signal: the session continues');
   });
 });

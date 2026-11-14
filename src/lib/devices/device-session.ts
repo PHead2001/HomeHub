@@ -23,6 +23,8 @@ export const endedNote = (value: string | null): string | null => {
       return 'This household was deleted, so this tablet was signed out.';
     case 'new-code':
       return 'This tablet was signed out. Enter a new code to set it up again.';
+    case 'personal-sign-in':
+      return 'This tablet was signed out. Sign in with your personal account.';
     default:
       return null;
   }
@@ -30,7 +32,7 @@ export const endedNote = (value: string | null): string | null => {
 
 /** What a listener or an action answer tells the tablet about its session. */
 export type SessionSignal =
-  | { kind: 'record'; fromCache: boolean; exists: boolean; status?: unknown; generation?: unknown }
+  | { kind: 'record'; fromCache: boolean; exists: boolean; status?: unknown; generation?: unknown; endedReason?: unknown }
   | { kind: 'household'; fromCache: boolean; exists: boolean; deleting: boolean }
   | { kind: 'denied'; target: 'record' | 'household' }
   | { kind: 'signed-out' }
@@ -48,6 +50,8 @@ export function decideSessionEnd(signal: SessionSignal, tokenGeneration: number)
     case 'record':
       if (signal.fromCache) return null;
       if (!signal.exists) return 'removed';
+      // A record kept for a re-pair says which exit ended it (only the tablet's own exits write these).
+      if (signal.status === 'unpaired' && (signal.endedReason === 'new-code' || signal.endedReason === 'personal-sign-in')) return signal.endedReason;
       if (signal.status !== 'active') return 'removed';
       if (signal.generation !== tokenGeneration) return 'repaired';
       return null;
@@ -113,6 +117,32 @@ export async function clearTabletSession(deps: ClearDeps): Promise<ClearStep[]> 
   }
   return failed;
 }
+
+/** The tablet's protected exits (design 14.6). */
+export type TabletExitKind = 'remove' | 'personal-sign-in' | 'new-code';
+
+/**
+ * How a session ended by this tablet's own exit ends, decided from the exit itself (never
+ * from the revocation signal that races it): Remove is a removal; the two exits that keep
+ * the record for a re-pair are sign-outs.
+ */
+export const exitSessionEnd = (exit: TabletExitKind): SessionEnd =>
+  exit === 'remove' ? 'removed' : exit;
+
+/**
+ * While this tablet's own exit is in flight, session ends from listeners and answers wait:
+ * the exit's result decides (success: the exit's end; failure: whatever signal arrived
+ * meanwhile, if any). Pure state for the shell.
+ */
+export type ExitGate = { inFlight: SessionEnd | null; deferred: SessionEnd | null };
+
+export const exitGateSignal = (gate: ExitGate, end: SessionEnd): { gate: ExitGate; endNow: SessionEnd | null } =>
+  gate.inFlight ? { gate: { ...gate, deferred: gate.deferred ?? end }, endNow: null } : { gate, endNow: end };
+
+export const exitGateSettle = (gate: ExitGate, ok: boolean): { gate: ExitGate; endNow: SessionEnd | null } => {
+  const endNow = ok ? gate.inFlight : gate.deferred;
+  return { gate: { inFlight: null, deferred: null }, endNow };
+};
 
 /** Where the tablet goes once cleared: the sign-in screen for a personal sign-in, else setup. */
 export const destinationAfter = (end: SessionEnd): string => (end === 'personal-sign-in' ? '/' : '/setup');

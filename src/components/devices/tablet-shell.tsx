@@ -13,7 +13,7 @@
 // tablet is refused until the device actions exist (F4): the action pipeline and the
 // offline queue are in place for them.
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { signOut } from 'firebase/auth';
@@ -30,6 +30,9 @@ import {
   DEVICE_NOTICES_LIMIT,
   clearTabletSession,
   decideSessionEnd,
+  exitGateSettle,
+  exitGateSignal,
+  type ExitGate,
   destinationAfter,
   deviceNotificationCategories,
   type SessionEnd,
@@ -145,7 +148,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
   const [ending, setEnding] = useState(false);
   const [listenKey, setListenKey] = useState(0);
   const stops = useRef<Array<() => void>>([]);
-  const pendingExit = useRef<SessionEnd | null>(null);
+  const exitGate = useRef<ExitGate>({ inFlight: null, deferred: null });
 
   const stopListeners = useCallback(() => {
     stops.current.forEach((stop) => { try { stop(); } catch { /* already stopped */ } });
@@ -153,10 +156,9 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
   }, []);
 
   /** Section 13: clear everything this browser holds for the tablet, in order, then leave. */
-  const endSession = useCallback((end: SessionEnd) => {
+  const clearAndLeave = useCallback((reason: SessionEnd) => {
     if (endingSession) return;
     endingSession = true;
-    const reason = pendingExit.current ?? end;
     setEnding(true);
     void clearTabletSession({
       'stop-listeners': stopListeners,
@@ -182,6 +184,28 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
       'navigate': () => window.location.replace(new URL(destinationAfter(reason), window.location.origin).href),
     });
   }, [stopListeners]);
+
+  /** Any session end; while this tablet's own exit is in flight it waits for the exit's result. */
+  const endSession = useCallback((end: SessionEnd) => {
+    const { gate, endNow } = exitGateSignal(exitGate.current, end);
+    exitGate.current = gate;
+    if (endNow) clearAndLeave(endNow);
+  }, [clearAndLeave]);
+
+  /** Runs one of this tablet's exits; the note and destination come from the exit, not the race. */
+  const runExit = useCallback(async <T extends { ok: boolean }>(end: SessionEnd, call: () => Promise<T>): Promise<T> => {
+    exitGate.current = { inFlight: end, deferred: null };
+    let ok = false;
+    try {
+      const result = await call();
+      ok = result.ok;
+      return result;
+    } finally {
+      const { gate, endNow } = exitGateSettle(exitGate.current, ok);
+      exitGate.current = gate;
+      if (endNow) clearAndLeave(endNow);
+    }
+  }, [clearAndLeave]);
 
   const signal = useCallback((value: SessionSignal) => {
     const end = decideSessionEnd(value, generation);
@@ -222,7 +246,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
         retryLater(target === 'record' ? 15_000 : 20_000);
       };
       stops.current.push(onSnapshot(doc(db, 'households', householdId, 'devices', deviceId), { includeMetadataChanges: true }, (snapshot) => {
-        signal({ kind: 'record', fromCache: snapshot.metadata.fromCache, exists: snapshot.exists(), status: snapshot.get('status'), generation: snapshot.get('generation') });
+        signal({ kind: 'record', fromCache: snapshot.metadata.fromCache, exists: snapshot.exists(), status: snapshot.get('status'), generation: snapshot.get('generation'), endedReason: snapshot.get('endedReason') });
         if (snapshot.exists() && snapshot.get('status') === 'active' && snapshot.get('generation') === generation) setSettings(readDeviceSettings(snapshot.data()));
       }, onError('record')));
       stops.current.push(onSnapshot(doc(db, 'households', householdId), { includeMetadataChanges: true }, (snapshot) => {
@@ -347,7 +371,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
             roster={roster}
             notices={notices}
             endSession={endSession}
-            pendingExitRef={pendingExit}
+            runExit={runExit}
           />
         </Suspense>
       </DashboardScopeProvider>
@@ -415,9 +439,9 @@ function TabletFrame(props: {
   roster: RosterPerson[];
   notices: DeviceNotice[];
   endSession: (end: SessionEnd) => void;
-  pendingExitRef: MutableRefObject<SessionEnd | null>;
+  runExit: TabletContextValue['runExit'];
 }) {
-  const { householdId, deviceId, generation, settings, household, roster, notices, endSession, pendingExitRef } = props;
+  const { householdId, deviceId, generation, settings, household, roster, notices, endSession, runExit } = props;
   const data = useDashboardData();
   const router = useRouter();
   const pathname = usePathname();
@@ -639,10 +663,8 @@ function TabletFrame(props: {
     runAction,
     requestAdmin,
     idToken,
-    endSession: (end) => {
-      pendingExitRef.current = end;
-      endSession(end);
-    },
+    endSession,
+    runExit,
     openSettings: () => setSettingsOpen(true),
     openQuickAdd: () => setQuickAddOpen(true),
     person,
