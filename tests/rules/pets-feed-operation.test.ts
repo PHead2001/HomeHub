@@ -215,6 +215,61 @@ describe('the feed operation on the emulator with the real rules', () => {
     assert.equal(await feedingCount(), 2);
   });
 
+  test('a feeding that synced from a device 5 minutes fast never blocks a confirmed feed', async () => {
+    const past = Timestamp.fromMillis(Date.now() - 30 * 60_000);
+    const ahead = Timestamp.fromMillis(Date.now() + 5 * 60_000);
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      const logs = (id: string) => doc(db, 'households', household, 'pets', 'rex', 'feeding-logs', id);
+      await setDoc(logs('sam-a'), {
+        date: past, loggedAt: past, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+        loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: 'none',
+      });
+      // Kim's feeding, queued offline on a phone whose clock runs 5 minutes fast, has synced (no state write).
+      await setDoc(logs('kim-offline'), {
+        date: ahead, loggedAt: Timestamp.now(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+        loggedByUid: people.owner.uid, loggedByName: 'Kim', repeat: 'offline', clockSource: 'device',
+      });
+      await setDoc(doc(db, 'households', household, 'pets', 'rex', 'feeding-state', 'current'), {
+        lastLogId: 'sam-a', lastFedAt: past, lastFedByUid: people.sam.uid, lastFedByName: 'Sam', day: null, countOnDay: 1, prev: null,
+      });
+    });
+    const alexPress = press(people.alex);
+    const asked = await runFeed(session(people.alex), alexPress);
+    assert.equal(asked.status, 'needsConfirm');
+    assert.equal(asked.status === 'needsConfirm' && asked.lastLogId, 'kim-offline');
+    const fed = saved(await runFeed(session(people.alex), { ...alexPress, confirm: asked.status === 'needsConfirm' ? feedConfirmOf(asked) : null }));
+    const state = (await getDoc(stateOf(session(people.alex)))).data()!;
+    assert.equal(state.lastLogId, fed.logId, 'the live feed is the latest');
+    assert.equal(state.prev?.lastLogId, 'kim-offline', 'the feeding ahead of the server clock is the previous one');
+    assert.equal(await feedingCount(), 3);
+  });
+
+  test('a legacy string-dated feeding is never what "Feed again?" names; the confirmation binds to the state and writes', async () => {
+    const a = Timestamp.fromMillis(Date.now() - 60 * 60_000);
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      const logs = (id: string) => doc(db, 'households', household, 'pets', 'rex', 'feeding-logs', id);
+      await setDoc(logs('a-ts'), {
+        date: a, loggedAt: a, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+        loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: 'none',
+      });
+      // A legacy entry from before the feed operation, half an hour later, dated with an ISO string.
+      await setDoc(logs('b-legacy'), {
+        date: new Date(Date.now() - 30 * 60_000).toISOString(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+      });
+      await setDoc(doc(db, 'households', household, 'pets', 'rex', 'feeding-state', 'current'), {
+        lastLogId: 'a-ts', lastFedAt: a, lastFedByUid: people.sam.uid, lastFedByName: 'Sam', day: null, countOnDay: 2, prev: null,
+      });
+    });
+    const alexPress = press(people.alex);
+    const asked = await runFeed(session(people.alex), alexPress);
+    assert.equal(asked.status, 'needsConfirm');
+    assert.equal(asked.status === 'needsConfirm' && asked.lastLogId, 'a-ts');
+    saved(await runFeed(session(people.alex), { ...alexPress, confirm: asked.status === 'needsConfirm' ? feedConfirmOf(asked) : null }));
+    assert.equal(await feedingCount(), 3);
+  });
+
   test('Undo restores the previous feed; a correction moves the effective time and keeps the recorded one', async () => {
     const first = saved(await runFeed(session(people.sam), press(people.sam)));
     const asked = await runFeed(session(people.alex), press(people.alex, { opId: 'alex-press-0001' }));

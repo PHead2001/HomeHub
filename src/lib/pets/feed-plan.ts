@@ -17,6 +17,7 @@ import {
   countOnHouseholdDay,
   feedConfirmDecision,
   householdDay,
+  isNameableFeedingDate,
   knownFromLogs,
   newerKnown,
   withSurvivingLatest,
@@ -128,8 +129,6 @@ export type DerivedFeed = { logId: string; at: Date; rawDate: unknown; byUid: st
  */
 export type DerivedFeedingState = { latest: DerivedFeed | null; prev: DerivedFeed | null; day: string; countOnDay: number };
 
-const isStoredTimestamp = (value: unknown) =>
-  value instanceof Date || Boolean(value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function');
 
 /**
  * Derives the state from surviving logs (later entries with the same id win, so
@@ -147,7 +146,7 @@ export function deriveFeedingState(logs: StateLog[], options: { now: Date; timeZ
   const today = householdDay(now, timeZone);
   const limit = now.getTime() + FEEDING_CLOCK_SKEW_MS;
   const named = surviving
-    .map((log) => ({ log, at: isStoredTimestamp(log.date) ? toDate(log.date) : null }))
+    .map((log) => ({ log, at: isNameableFeedingDate(log.date) ? toDate(log.date) : null }))
     .filter((entry): entry is { log: StateLog; at: Date } => entry.at !== null && entry.at.getTime() <= limit)
     .sort((a, b) =>
       Number(b.log.id === options.latestId) - Number(a.log.id === options.latestId) ||

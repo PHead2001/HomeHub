@@ -103,15 +103,54 @@ export type KnownFeedings = {
  */
 export function knownFromLogs(logs: FeedingEntry[], now: Date, timeZone?: string | null): KnownFeedings {
   const today = householdDay(now, timeZone);
-  let last: { id: string | null; date: Date; uid: string | null; name: string | null } | null = null;
+  let last: { id: string | null; date: Date; raw: number; uid: string | null; name: string | null } | null = null;
   let countToday = 0;
   for (const log of logs) {
     const date = seenFeedingDate(log.date, now);
     if (!date) continue;
     if (householdDay(date, timeZone) === today) countToday += 1;
-    if (!last || date > last.date) last = { id: text(log.id), date, uid: text(log.loggedByUid), name: log.loggedByName?.trim() || null };
+    // Only a feeding the state (and so the rules) can name may be the last feed (`isNameableFeedingDate`).
+    if (!isNameableFeedingDate(log.date)) continue;
+    const raw = toDate(log.date)!.getTime();
+    if (!last || raw > last.raw) last = { id: text(log.id), date, raw, uid: text(log.loggedByUid), name: log.loggedByName?.trim() || null };
   }
   return { lastLogId: last?.id ?? null, lastFedAt: last?.date ?? null, lastFedByUid: last?.uid ?? null, lastFedByName: last?.name ?? null, countToday };
+}
+
+/**
+ * Which feedings can be named as the latest or previous feed (by the state, by
+ * "Feed again?" and in `confirmOf`): those with a stored Timestamp date (a Date
+ * in pure code). The rules can only compare Timestamps, so a legacy entry with an
+ * ISO-string date is counted for its day but never named or confirmed. Among
+ * nameable feedings the latest is the one with the latest stored date (within
+ * the clock-skew allowance); a live feed being written is the latest. This is
+ * the one definition `knownFromLogs`, `deriveFeedingState` and the rules
+ * (feedingStateHonest, feedingConfirmBound) share.
+ */
+export function isNameableFeedingDate(value: unknown): boolean {
+  return value instanceof Date || Boolean(value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function');
+}
+
+/** The palette preview's line when the feeding history could not be read. */
+export const LAST_FEEDING_UNAVAILABLE = 'Last feeding unavailable';
+
+/**
+ * "Last fed 10 min ago by Sam (wet)" for the palette's feeding preview (PE-23e),
+ * from both date-shape reads of the newest feedings. Both are required: if
+ * either read failed the history is unknown, never "No feedings logged yet" or
+ * an older feeding shown as the latest.
+ */
+export function lastFedPreview(
+  reads: PromiseSettledResult<(FeedingEntry & { foodType?: unknown })[]>[],
+  now: Date,
+  timeZone?: string | null,
+): string {
+  if (reads.some((read) => read.status === 'rejected')) return LAST_FEEDING_UNAVAILABLE;
+  const logs = reads.flatMap((read) => (read.status === 'fulfilled' ? read.value : []));
+  const known = knownFromLogs(logs, now, timeZone);
+  const latest = known.lastLogId ? logs.find((log) => log.id === known.lastLogId) : undefined;
+  const food = latest && typeof latest.foodType === 'string' ? latest.foodType : null;
+  return lastFedLine(known.lastFedAt, known.lastFedByName, now, timeZone, food);
 }
 
 export type FeedCheck = {

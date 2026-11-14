@@ -13,6 +13,7 @@ import {
   feedReadStart,
   householdDay,
   knownFromLogs,
+  lastFedPreview,
   readFeedingState,
   countOnHouseholdDay,
   householdDayStart,
@@ -261,5 +262,23 @@ describe('feed operation: every entry point uses it', () => {
     assert.match(ui, /Couldn't check whether someone else fed/);
     assert.match(ui, /duration: FEED_UNDO_MS/);
     assert.match(ui, /Retry/);
+  });
+});
+
+describe('the palette preview never reads a failed history as "no feedings" (finding: latestFeedings swallowed failures)', () => {
+  const now = at('2026-11-10T22:00:00Z');
+  const recent = { id: 'r', date: at('2026-11-10T21:50:00Z'), loggedByName: 'Sam', foodType: 'Wet' };
+  const ok = (logs: unknown[]) => ({ status: 'fulfilled' as const, value: logs as never[] });
+  const failed = { status: 'rejected' as const, reason: new Error('unavailable') };
+
+  it('both reads failing, or either one, says the last feeding is unavailable', () => {
+    assert.equal(lastFedPreview([failed, failed], now, CHI), 'Last feeding unavailable');
+    assert.equal(lastFedPreview([ok([recent]), failed], now, CHI), 'Last feeding unavailable');
+    assert.equal(lastFedPreview([failed, ok([])], now, CHI), 'Last feeding unavailable');
+  });
+
+  it('with both reads it names the latest feeding and its food', () => {
+    assert.equal(lastFedPreview([ok([recent]), ok([])], now, CHI), 'Last fed 10 min ago by Sam (wet)');
+    assert.equal(lastFedPreview([ok([]), ok([])], now, CHI), 'No feedings logged yet');
   });
 });

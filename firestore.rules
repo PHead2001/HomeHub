@@ -965,7 +965,18 @@ service cloud.firestore {
           exists(feedingLogPath(householdId, petId, confirmOf)) &&
           get(feedingLogPath(householdId, petId, confirmOf)).data.get('date', null) is timestamp &&
           before.get('lastFedAt', null) is timestamp &&
-          get(feedingLogPath(householdId, petId, confirmOf)).data.date >= before.lastFedAt);
+          feedingNow(get(feedingLogPath(householdId, petId, confirmOf)).data.date) >= feedingNow(before.lastFedAt));
+    }
+
+    // A feeding's effective time as the rules compare feedings: its stored
+    // `date`, where a time ahead of the server clock (a device clock running
+    // ahead, within the 12-hour allowance) counts as now. A live feed written now
+    // is therefore never "older" than a feeding that synced from a fast clock,
+    // so supported skew never blocks a feed. The client orders by the stored
+    // date with a live feed first (isNameableFeedingDate in feed-decision.ts),
+    // which this comparison always accepts.
+    function feedingNow(at) {
+      return at > request.time ? request.time : at;
     }
 
     // Every new feeding (stage R2): signed by the writer, recorded at server time,
@@ -1083,7 +1094,7 @@ service cloud.firestore {
             prev.lastLogId != after.get('lastLogId', null) &&
             after.get('lastFedAt', null) is timestamp &&
             prev.get('lastFedAt', null) is timestamp &&
-            prev.lastFedAt <= after.lastFedAt &&
+            feedingNow(prev.lastFedAt) <= feedingNow(after.lastFedAt) &&
             feedingStateNames(householdId, petId, prev.lastLogId, prev.lastFedAt,
               prev.get('lastFedByUid', null), prev.get('lastFedByName', null))));
     }
@@ -1102,7 +1113,7 @@ service cloud.firestore {
         !existsAfter(feedingLogPath(householdId, petId, before.lastLogId)) ||
         getAfter(feedingLogPath(householdId, petId, before.lastLogId)).data.get('date', null) != before.get('lastFedAt', null) ||
         (after.get('lastFedAt', null) is timestamp && before.get('lastFedAt', null) is timestamp &&
-          after.lastFedAt >= before.lastFedAt);
+          feedingNow(after.lastFedAt) >= feedingNow(before.lastFedAt));
     }
 
     function validMedicationLogFields(data, keys) {

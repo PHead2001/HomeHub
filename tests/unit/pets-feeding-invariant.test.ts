@@ -29,7 +29,14 @@ const TZ = 'America/Chicago';
 const MIN = 60_000;
 const PER_DAY = 2;
 
-type Log = { id: string; date: Date; loggedByUid: string; loggedByName: string };
+/** A log's stored date: a Timestamp (here a Date) or a legacy ISO string. */
+type Log = { id: string; date: Date | string; loggedByUid: string; loggedByName: string };
+const timeOf = (log: Log) => (typeof log.date === 'string' ? new Date(log.date) : log.date).getTime();
+/** The rules can only compare Timestamps: a legacy string-dated feeding is never named or confirmed. */
+const nameable = (log: Log | undefined): log is Log => Boolean(log) && typeof log!.date !== 'string';
+/** Effective time as the rules compare it: anything ahead of the server clock counts as now. */
+const clamp = (time: number, serverNow: Date) => Math.min(time, serverNow.getTime());
+const SKEW = 12 * 60 * MIN;
 type Ref = { logId: string; at: Date; byUid: string | null; byName: string | null };
 type StateDoc = { lastLogId: string | null; lastFedAt: Date | null; lastFedByUid: string | null; lastFedByName: string | null; day: string; countOnDay: number; prev: Ref | null };
 
@@ -49,46 +56,57 @@ function stateDoc(derived: DerivedFeedingState, live: { id: string; serverNow: D
 
 /* ---- the rules, mirrored ------------------------------------------------ */
 
-function honest(state: StateDoc, logs: Map<string, Log>): boolean {
+function honest(state: StateDoc, logs: Map<string, Log>, serverNow: Date): boolean {
   const named = (id: string | null, at: Date | null, uid: string | null, name: string | null) => {
     if (id === null) return at === null && uid === null && name === null;
     const log = logs.get(id);
-    return Boolean(log) && log!.date.getTime() === at?.getTime() && log!.loggedByUid === uid && log!.loggedByName === name;
+    return nameable(log) && timeOf(log) === at?.getTime() && log.loggedByUid === uid && log.loggedByName === name;
   };
   if (!named(state.lastLogId, state.lastFedAt, state.lastFedByUid, state.lastFedByName)) return false;
   if (!state.prev) return true;
   return state.prev.logId !== state.lastLogId && named(state.prev.logId, state.prev.at, state.prev.byUid, state.prev.byName) &&
-    state.lastFedAt !== null && state.prev.at.getTime() <= state.lastFedAt.getTime();
+    state.lastFedAt !== null && clamp(state.prev.at.getTime(), serverNow) <= clamp(state.lastFedAt.getTime(), serverNow);
 }
 
-function moveAllowed(before: StateDoc | null, after: StateDoc, logsAfter: Map<string, Log>): boolean {
+function moveAllowed(before: StateDoc | null, after: StateDoc, logsAfter: Map<string, Log>, serverNow: Date): boolean {
   if (!before || before.lastLogId === null || after.lastLogId === before.lastLogId) return true;
   const old = logsAfter.get(before.lastLogId);
-  if (!old || old.date.getTime() !== before.lastFedAt?.getTime()) return true;
-  return after.lastFedAt !== null && before.lastFedAt !== null && after.lastFedAt.getTime() >= before.lastFedAt.getTime();
+  if (!old || typeof old.date === 'string' || timeOf(old) !== before.lastFedAt?.getTime()) return true;
+  return after.lastFedAt !== null && before.lastFedAt !== null &&
+    clamp(after.lastFedAt.getTime(), serverNow) >= clamp(before.lastFedAt.getTime(), serverNow);
 }
 
 const rulesRecent = (before: StateDoc | null, logsBefore: Map<string, Log>, serverNow: Date) =>
   Boolean(before?.lastLogId && before.lastFedAt && logsBefore.has(before.lastLogId) && serverNow.getTime() < before.lastFedAt.getTime() + FEED_REPEAT_WINDOW_MS);
 
-function rulesBound(before: StateDoc | null, logsBefore: Map<string, Log>, confirmOf: string | null): boolean {
+function rulesBound(before: StateDoc | null, logsBefore: Map<string, Log>, confirmOf: string | null, serverNow: Date): boolean {
   const latest = before?.lastLogId ?? null;
   if (!latest || !logsBefore.has(latest) || confirmOf === latest) return true;
   const named = confirmOf ? logsBefore.get(confirmOf) : undefined;
-  return Boolean(named && before!.lastFedAt && named.date.getTime() >= before!.lastFedAt.getTime());
+  return nameable(named) && before!.lastFedAt !== null &&
+    clamp(timeOf(named), serverNow) >= clamp(before!.lastFedAt.getTime(), serverNow);
 }
 
 /* ---- the reference: what the surviving logs imply ----------------------- */
 
-function expected(logs: Map<string, Log>, deviceNow: Date) {
-  const sorted = [...logs.values()].sort((a, b) => b.date.getTime() - a.date.getTime());
+function expected(logs: Map<string, Log>, deviceNow: Date, liveId: string | null) {
+  const limit = deviceNow.getTime() + SKEW;
+  const sorted = [...logs.values()]
+    .filter((log) => nameable(log) && timeOf(log) <= limit)
+    // A live feed first, then the latest stored date; equal dates by id (the documented tie-break).
+    .sort((a, b) => Number(b.id === liveId) - Number(a.id === liveId) || timeOf(b) - timeOf(a) || a.id.localeCompare(b.id));
   const today = petDay(deviceNow, TZ);
+  // Counted as readers count: every date shape; a time ahead (within the allowance) counts as now.
+  const seen = (log: Log) => (timeOf(log) > limit ? null : new Date(Math.min(timeOf(log), deviceNow.getTime())));
   return {
     latest: sorted[0]?.id ?? null,
-    latestAt: sorted[0]?.date.getTime() ?? null,
+    latestAt: sorted[0] ? timeOf(sorted[0]) : null,
     prev: sorted[1]?.id ?? null,
-    prevAt: sorted[1]?.date.getTime() ?? null,
-    countOnDay: sorted.filter((log) => petDay(log.date, TZ) === today).length,
+    prevAt: sorted[1] ? timeOf(sorted[1]) : null,
+    countOnDay: [...logs.values()].filter((log) => {
+      const day = seen(log);
+      return day !== null && petDay(day, TZ) === today;
+    }).length,
   };
 }
 
@@ -125,16 +143,16 @@ function run(seed: number, steps: number) {
       existing: null,
     };
   };
-  const check = (label: string, before: StateDoc | null, after: StateDoc, deviceNow: Date) => {
-    const want = expected(logs, deviceNow);
-    const where = `seed ${seed}, ${trace.join(' > ')} > ${label}`;
+  const check = (label: string, before: StateDoc | null, after: StateDoc, deviceNow: Date, serverNow: Date, liveId: string | null) => {
+    const want = expected(logs, deviceNow, liveId);
+    const where = `seed ${seed}, ${trace.join(' > ')} > ${label}; logs (min from server now): ${[...logs.values()].map((log) => `${log.id}${typeof log.date === 'string' ? 's' : ''}@${Math.round((timeOf(log) - serverNow.getTime()) / MIN)}`).join(' ')}; device ${Math.round((deviceNow.getTime() - serverNow.getTime()) / MIN)}`;
     assert.equal(after.lastLogId, want.latest, `latest: ${where}`);
     assert.equal(after.lastFedAt?.getTime() ?? null, want.latestAt, `lastFedAt: ${where}`);
     assert.equal(after.prev?.logId ?? null, want.prev, `prev: ${where}`);
     assert.equal(after.prev?.at.getTime() ?? null, want.prevAt, `prev time: ${where}`);
     assert.equal(after.countOnDay, want.countOnDay, `count: ${where}`);
-    assert.ok(honest(after, logs), `rules refuse the state (not honest): ${where}`);
-    assert.ok(moveAllowed(before, after, logs), `rules refuse the state (latest moved back): ${where}`);
+    assert.ok(honest(after, logs, serverNow), `rules refuse the state (not honest): ${where}`);
+    assert.ok(moveAllowed(before, after, logs, serverNow), `rules refuse the state (latest moved back): ${where}`);
   };
 
   for (let step = 0; step < steps; step += 1) {
@@ -145,7 +163,7 @@ function run(seed: number, steps: number) {
     if (petDay(new Date(serverNow + skew), TZ) !== petDay(server, TZ)) skew = 0;
     const device = new Date(serverNow + skew);
     const user = pick(users);
-    const op = pick(['live', 'live', 'offline', 'backdated', 'delete', 'correct']);
+    const op = pick(['live', 'live', 'offline', 'offline', 'legacy', 'backdated', 'delete', 'correct']);
     const before = state;
     const logsBefore = new Map(logs);
 
@@ -155,6 +173,11 @@ function run(seed: number, steps: number) {
       const intent = { userUid: user.uid, userName: user.name, logId: id, backdatedAt };
       let plan = planFeed(snapshotFor(device), intent);
       if (plan.kind === 'needsConfirm') {
+        // What the member is shown is a feeding the rules can bind a confirmation to, never older than the state's.
+        if (plan.check.lastLogId) {
+          assert.ok(nameable(logsBefore.get(plan.check.lastLogId)), `asked about a feeding the rules cannot name: seed ${seed}, ${trace.join(' > ')}`);
+          assert.ok(rulesBound(before, logsBefore, plan.check.lastLogId, server), `asked about a feeding older than the state names: seed ${seed}, ${trace.join(' > ')}`);
+        }
         const confirm = feedConfirmOf(plan.check);
         assert.ok(confirmStillHolds(confirm, plan.check));
         plan = planFeed(snapshotFor(device), { ...intent, confirm });
@@ -165,16 +188,23 @@ function run(seed: number, steps: number) {
         assert.ok(!rulesRecent(before, logsBefore, server), `planned plain but the rules see a recent feed: seed ${seed}, ${trace.join(' > ')} > ${op}`);
         assert.ok(plan.state.countOnDay <= PER_DAY, `planned plain past a complete day: seed ${seed}`);
       }
-      if (plan.live && plan.repeat === 'confirmed') assert.ok(rulesBound(before, logsBefore, plan.confirmOf), `confirmation not bound: seed ${seed}`);
+      if (plan.live && plan.repeat === 'confirmed') assert.ok(rulesBound(before, logsBefore, plan.confirmOf, server), `confirmation not bound: seed ${seed}, ${trace.join(' > ')}`);
       const date = plan.live ? server : backdatedAt!;
       logs.set(id, { id, date, loggedByUid: user.uid, loggedByName: user.name });
       state = stateDoc(plan.state, plan.live ? { id, serverNow: server } : null);
       trace.push(`${op}:${id}`);
-      check(op, before, state, device);
+      check(op, before, state, device, server, plan.live ? id : null);
     } else if (op === 'offline') {
+      // Synced from a device whose clock may run ahead, up to the supported skew (less both clocks' margins).
       const id = `log-${next++}`;
-      logs.set(id, { id, date: new Date(serverNow - Math.floor(random() * 30) * MIN), loggedByUid: user.uid, loggedByName: user.name });
-      trace.push(`offline:${id}`);
+      const ahead = random() < 0.4 ? Math.floor(random() * (SKEW - 10 * MIN)) : -Math.floor(random() * 30) * MIN;
+      logs.set(id, { id, date: new Date(serverNow + ahead), loggedByUid: user.uid, loggedByName: user.name });
+      trace.push(`offline:${id}${ahead > 0 ? '+' : ''}`);
+    } else if (op === 'legacy') {
+      // A legacy entry (before the feed operation) with an ISO-string date.
+      const id = `log-${next++}`;
+      logs.set(id, { id, date: new Date(serverNow - Math.floor(1 + random() * 3000) * MIN).toISOString(), loggedByUid: user.uid, loggedByName: user.name });
+      trace.push(`legacy:${id}`);
     } else if (logs.size > 0) {
       const target = pick([...logs.keys()].sort());
       if (op === 'delete') {
@@ -183,7 +213,7 @@ function run(seed: number, steps: number) {
         trace.push(`delete:${target}`);
         if (derived) {
           state = stateDoc(derived, null);
-          check(op, before, state, device);
+          check(op, before, state, device, server, null);
         }
       } else {
         const newDate = new Date(serverNow - Math.floor(1 + random() * 3000) * MIN);
@@ -192,7 +222,7 @@ function run(seed: number, steps: number) {
         trace.push(`correct:${target}`);
         if (derived) {
           state = stateDoc(derived, null);
-          check(op, before, state, device);
+          check(op, before, state, device, server, null);
         }
       }
     }
@@ -200,7 +230,7 @@ function run(seed: number, steps: number) {
 }
 
 describe('the feeding state always reflects the surviving logs by effective time (model test)', () => {
-  it('holds over 300 random sequences of every feeding write, with device clocks ±5 min', () => {
+  it('holds over 300 random sequences of every feeding write: device clocks ±5 min, offline clocks ahead, legacy string dates', () => {
     for (let seed = 1; seed <= 300; seed += 1) run(seed, 40);
   });
 

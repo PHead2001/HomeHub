@@ -294,3 +294,22 @@ describe('a plain feed the rules refused (device clock far off) becomes "Feed ag
     assert.equal(answered.kind === 'write' && answered.confirmOf, 'sam-1');
   });
 });
+
+describe('legacy ISO-string feedings are counted but never named or confirmed (finding: undo C leaves A; the check asked about B)', () => {
+  it('the check names the same feeding the state names', () => {
+    // A (Timestamp) 16:00, B (legacy string) 17:00; C was undone, so the state names A.
+    const now = at('2026-11-10T23:30:00Z'); // 17:30 in Chicago
+    const a = { id: 'A', date: at('2026-11-10T22:00:00Z'), loggedByUid: 'sam', loggedByName: 'Sam' };
+    const b = { id: 'B', date: '2026-11-10T23:00:00.000Z', loggedByUid: 'kim', loggedByName: 'Kim' };
+    const plan = planFeed(snapshot({
+      now,
+      perDay: 4,
+      stored: state({ lastLogId: 'A', lastFedAt: a.date, countOnDay: 2 }),
+      recent: [a, b],
+    }), { userUid: 'alex' });
+    assert.equal(plan.kind, 'needsConfirm');
+    if (plan.kind !== 'needsConfirm') return;
+    assert.equal(plan.check.lastLogId, 'A', 'never a legacy string-dated feeding, which the rules cannot verify');
+    assert.equal(plan.check.countToday, 2, 'legacy entries still count for the day');
+  });
+});
