@@ -484,7 +484,8 @@ export type PetFormErrors = Partial<Record<keyof PetFormValues, string>>;
  * being edited. When editing, pass the stored values as `original`: a value the
  * member did not change is never rejected by a rule newer than the document (name
  * or schedule length, feedings per day, portion bounds), so older pets stay
- * editable. (The name cannot be changed while editing.)
+ * editable. A changed name (a rename, PE-30c) is checked against the other pets'
+ * names, case-insensitively.
  */
 export function validatePetForm(values: PetFormValues, existingNames: string[] = [], original?: PetFormValues, options: { hasMealTimes?: boolean } = {}): PetFormErrors {
   const errors: PetFormErrors = {};
@@ -526,7 +527,7 @@ export function petHref(petId: string): string {
 }
 
 /** The pet page's tabs, selectable with `?tab=`. */
-export const PET_TABS = ['feeding', 'medication', 'care'] as const;
+export const PET_TABS = ['feeding', 'medication', 'care', 'notes'] as const;
 export type PetTab = (typeof PET_TABS)[number];
 
 /** The tab a `?tab=` value selects (Feeding for a missing or unknown value). */

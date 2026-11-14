@@ -19,7 +19,8 @@ import type { PetCareLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { addPetLog, deletePetLog, usePetLogs } from './pets/pet-log-api';
+import { addPetLog, deletePetLog, useHistoryWindow, usePetLogs } from './pets/pet-log-api';
+import { LoadMoreHistory } from './pets/load-more';
 import { unavailableText } from '@/lib/pets/live-listener';
 
 const logSchema = z.object({
@@ -39,7 +40,8 @@ export function CareLogClient({ petId }: CareLogProps) {
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error, failure } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', 100);
+  const history = useHistoryWindow(petId);
+  const { logs, loading, error, failure, hasMore, loadingMore } = usePetLogs<PetCareLog>(householdId, petId, 'care-logs', history.max);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
 
@@ -174,6 +176,7 @@ export function CareLogClient({ petId }: CareLogProps) {
             </div>
             );
           })}
+          {!loading && !error && <LoadMoreHistory hasMore={hasMore} loadingMore={loadingMore} onLoadMore={history.loadMore} what="care entries" />}
         </section>
       </CardContent>
     </Card>

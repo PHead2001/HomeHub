@@ -49,7 +49,16 @@ export async function deletePetLog(householdId: string, petId: string, kind: Oth
  * `failure` says why `error` is set: `retrying` (resubscribing on its own) or
  * `unauthorized` (access was refused), so a history says which (PE-18c).
  */
-type LiveLogs<T> = { logs: T[]; loading: boolean; error: unknown; failure?: LiveFailure };
+type LiveLogs<T> = {
+  logs: T[];
+  loading: boolean;
+  error: unknown;
+  failure?: LiveFailure;
+  /** History pages (PE-21h): the window may hold more entries than shown ("Load more"). */
+  hasMore?: boolean;
+  /** A larger window is loading; the entries already shown stay (no jump back to a skeleton). */
+  loadingMore?: boolean;
+};
 type KeyedLogs<T> = { key: string | null; logs: T[]; error: unknown; failure?: LiveFailure };
 const EMPTY_KEYED = { key: null, logs: [], error: null };
 
@@ -155,16 +164,40 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
   // Keyed on the settled access (`useSettledPetAccess`): until membership has
   // loaded nothing subscribes and the logs read as loading, never as empty.
   const access = useSettledPetAccess();
-  const key = access ? petListenerKey(householdId ? `${householdId}/${petId}/${kind}/${max}` : null, access) : null;
+  const base = householdId ? `${householdId}/${petId}/${kind}/` : null;
+  const key = access ? petListenerKey(base ? `${base}${max}` : null, access) : null;
+  // The reader part of the key (`|uid|view`): a larger page keeps the shown entries only for the same reader.
+  const reader = key && base ? key.slice(`${base}${max}`.length) : '';
   const state = useLiveUnion({ key, householdId, petId, kind, mode: 'shapes', max });
 
   if (householdId && !access) return { logs: [], loading: true, error: null };
   if (!key) return { logs: [], loading: false, error: null };
-  // Until the current subscriptions answer, show loading (never another pet's logs).
-  if (state.key !== key) return { logs: [], loading: true, error: null };
-  if (state.error) return { logs: [], loading: false, error: state.error, failure: state.failure };
   const lists = state.logs as unknown as (T & { id: string; date: unknown })[][];
-  return { logs: newestFirst(lists, max) as T[], loading: false, error: null };
+  if (state.key !== key) {
+    // A larger page of the same history (PE-21h, "Load more") keeps the entries
+    // already shown while it loads; anything else shows loading (never another pet's logs).
+    const previousMax = base && state.key?.startsWith(base) && state.key.endsWith(reader)
+      ? Number(state.key.slice(base.length, state.key.length - reader.length))
+      : Number.NaN;
+    if (!state.error && Number.isFinite(previousMax) && previousMax < max) {
+      return { logs: newestFirst(lists, previousMax) as T[], loading: false, error: null, loadingMore: true, hasMore: true };
+    }
+    return { logs: [], loading: true, error: null };
+  }
+  if (state.error) return { logs: [], loading: false, error: state.error, failure: state.failure };
+  // Both date shapes are limited to `max`: when they hold `max` or more together, older entries may exist.
+  const total = lists.reduce((sum, list) => sum + list.length, 0);
+  return { logs: newestFirst(lists, max) as T[], loading: false, error: null, hasMore: total >= max };
+}
+
+/** The page size and step of a paginated pet history (PE-21h). */
+export const HISTORY_PAGE = 25;
+
+/** A history window that grows by `HISTORY_PAGE` ("Load more"), reset when the pet changes. */
+export function useHistoryWindow(petId: string, page = HISTORY_PAGE): { max: number; loadMore: () => void } {
+  const [state, setState] = useState({ petId, max: page });
+  const max = state.petId === petId ? state.max : page;
+  return { max, loadMore: () => setState({ petId, max: max + page }) };
 }
 
 /**

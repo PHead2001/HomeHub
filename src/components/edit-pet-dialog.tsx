@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button"
 import {
@@ -14,6 +14,7 @@ import {
 import { hasRealPhoto } from "@/lib/pets/care";
 import { readMealPlan } from "@/lib/pets/meal-plan";
 import type { PetProfile } from "@/lib/pets/types";
+import { usePetPhotoDraft, type PetPhotoChoice } from "./pets/pet-photo-draft";
 import {
   EMPTY_PET_FORM,
   NO_DRAFT_ERRORS,
@@ -30,8 +31,13 @@ import {
 
 interface EditPetDialogProps {
   pet: PetProfile | null;
-  /** Resolves true when saved; failures are reported by the caller as outcome toasts. */
-  onUpdatePet: (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean) => Promise<boolean>;
+  /** The other pets' names (a rename is checked against them, case-insensitive, PE-30c). */
+  otherNames?: string[];
+  /**
+   * Resolves true when saved, `'name-taken'` when a fresh read found the name in
+   * use (shown under the field); other failures are reported by the caller as toasts.
+   */
+  onUpdatePet: (fields: PetFields, photo: PetPhotoChoice) => Promise<boolean | 'name-taken'>;
   onOpenChange: (isOpen: boolean) => void;
   /** Where focus goes on close (PE-20e): the pet's actions button when opened from its menu. */
   onCloseAutoFocus?: (event: Event) => void;
@@ -39,10 +45,12 @@ interface EditPetDialogProps {
 
 const ID_PREFIX = "edit-pet";
 
-export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus }: EditPetDialogProps) {
+const NO_NAMES: string[] = [];
+
+export function EditPetDialog({ pet, otherNames = NO_NAMES, onUpdatePet, onOpenChange, onCloseAutoFocus }: EditPetDialogProps) {
   const [values, setValues] = useState<PetFormState>(EMPTY_PET_FORM);
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [isPhotoRemoved, setIsPhotoRemoved] = useState(false);
+  const storedPhoto = pet?.photoUrl;
+  const photo = usePetPhotoDraft(useCallback(() => hasRealPhoto(storedPhoto), [storedPhoto]));
   const [errors, setErrors] = useState<PetDraftErrors>(NO_DRAFT_ERRORS);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -62,40 +70,43 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
     const stored = petFormFromProfile(pet);
     setValues(stored);
     setOriginal(stored);
-    setPhotoFile(null);
-    setIsPhotoRemoved(false);
+    photo.reset();
     setErrors(NO_DRAFT_ERRORS);
     setSubmitted(false);
   }
 
-  const handlePhotoChange = (file: File | null) => {
-    setPhotoFile(file);
-    // A new file replaces the photo; null means the member removed it.
-    setIsPhotoRemoved(file === null);
-  };
-
   const change = (patch: Partial<PetFormState>) => {
     const next = { ...values, ...patch };
     setValues(next);
-    if (submitted) setErrors(validatePetDraft(next, [], original, Boolean(pet && readMealPlan(pet))));
+    if (submitted) setErrors(validatePetDraft(next, otherNames, original, Boolean(pet && readMealPlan(pet))));
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (saving) return;
     setSubmitted(true);
-    // The name cannot change here, so duplicate names are not re-checked.
-    const nextErrors = validatePetDraft(values, [], original, Boolean(pet && readMealPlan(pet)));
+    if (photo.busy) return;
+    // A renamed pet is checked against the other pets' names (PE-30c).
+    const nextErrors = validatePetDraft(values, otherNames, original, Boolean(pet && readMealPlan(pet)));
     setErrors(nextErrors);
     if (hasDraftErrors(nextErrors)) {
       focusFirstError(ID_PREFIX, nextErrors);
       return;
     }
+    if (photo.error) {
+      // The rejected photo is still shown: point at it instead of saving without it.
+      document.getElementById(`${ID_PREFIX}-photo`)?.focus();
+      return;
+    }
     setSaving(true);
     try {
       // An unchanged type keeps the stored photo hint (legacy species art, PE-8a).
-      const saved = await onUpdatePet(petFieldsFromForm(values, pet), photoFile, isPhotoRemoved);
-      if (saved) onOpenChange(false);
+      const saved = await onUpdatePet(petFieldsFromForm(values, pet), photo.choice);
+      if (saved === 'name-taken') {
+        const taken = { ...nextErrors, fields: { ...nextErrors.fields, name: `You already have a pet named ${values.name.trim()}.` } };
+        setErrors(taken);
+        focusFirstError(ID_PREFIX, taken);
+      } else if (saved) onOpenChange(false);
     } finally {
       setSaving(false);
     }
@@ -111,7 +122,7 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
           <DialogHeader>
             <DialogTitle className="font-headline break-words">Edit {pet?.name}</DialogTitle>
             <DialogDescription>
-              Update the photo, type, feeding schedule and meal times.
+              Rename, or update the photo, type, feeding schedule, meal times and vet.
             </DialogDescription>
           </DialogHeader>
           <PetFormFields
@@ -119,16 +130,17 @@ export function EditPetDialog({ pet, onUpdatePet, onOpenChange, onCloseAutoFocus
             values={values}
             errors={errors}
             onChange={change}
-            onPhotoChange={handlePhotoChange}
+            onPhotoChange={(file) => void photo.pick(file)}
             existingPhotoUrl={hasRealPhoto(pet?.photoUrl) ? pet?.photoUrl : undefined}
-            nameDisabled
+            photoBusy={photo.busy}
+            photoError={photo.error}
             pet={pet}
           />
           <DialogFooter className="gap-2 pt-2">
             <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || photo.busy}>
               {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
               Save Changes
             </Button>

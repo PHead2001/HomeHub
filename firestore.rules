@@ -1187,6 +1187,92 @@ service cloud.firestore {
         mealPlanWrite(resource.data, request.resource.data);
     }
 
+    // --- Pet profile fields (P5: PE-30, PE-28a, PE-28c) ----------------------
+    // The name (a rename changes only this field; the id never changes), the
+    // optional vet contact and the weight unit are validated when written or
+    // changed (`keys`: every key on create, the affected keys on update), so an
+    // older pet with values from before these checks stays editable. The name
+    // cannot be removed or blank.
+    function petProfileFieldsValid(data, keys) {
+      return (!('name' in keys) || (data.get('name', null) is string && data.name.trim().size() >= 1 && data.name.size() <= 40)) &&
+        (!('vetName' in keys) || !('vetName' in data) || nonEmptyString(data.vetName, 80)) &&
+        (!('vetClinic' in keys) || !('vetClinic' in data) || nonEmptyString(data.vetClinic, 80)) &&
+        (!('vetPhone' in keys) || !('vetPhone' in data) ||
+          (data.vetPhone is string && data.vetPhone.matches('^[+]?[0-9 ().-]{3,30}$'))) &&
+        (!('weightUnit' in keys) || !('weightUnit' in data) || data.weightUnit in ['kg', 'lb']);
+    }
+
+    function petExists(householdId, petId) {
+      return exists(/databases/$(database)/documents/households/$(householdId)/pets/$(petId));
+    }
+
+    // --- Pet notes and weights (P5: PE-29, PE-28b, D-P10, D-P11) -------------
+    // Created signed by the writer at server time (`loggedAt == request.time`)
+    // under an existing pet, with an effective `date` at most 10 minutes ahead
+    // of the server (a device clock running ahead). A create over an existing
+    // id is an update, and an update must be a real edit, so a reused id is
+    // refused (one add, one record).
+    function petRecordDate(value) {
+      return value is timestamp && value <= request.time + duration.value(10, 'm');
+    }
+
+    function petNoteTag(value) {
+      return value in ['behaviour', 'health', 'training', 'vet'];
+    }
+
+    function petNoteText(data) {
+      return data.get('text', null) is string && data.text.trim().size() >= 1 && data.text.size() <= 500;
+    }
+
+    function petNoteCreate(householdId, petId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['text', 'tag', 'pinned', 'pinnedAt', 'date', 'loggedAt', 'loggedByUid', 'loggedByName']) &&
+        data.keys().hasAll(['text', 'pinned', 'date', 'loggedAt', 'loggedByUid']) &&
+        petNoteText(data) &&
+        (!('tag' in data) || petNoteTag(data.tag)) &&
+        data.pinned is bool &&
+        (data.pinned ? data.get('pinnedAt', null) == request.time : !('pinnedAt' in data)) &&
+        petRecordDate(data.date) &&
+        data.loggedAt == request.time &&
+        data.loggedByUid == request.auth.uid &&
+        (!('loggedByName' in data) || nonEmptyString(data.loggedByName, 200)) &&
+        petExists(householdId, petId);
+    }
+
+    // An edit (text, tag) is stamped with the editor and server time; pinning
+    // stamps `pinnedAt` (pinning a pinned note again moves it first), unpinning
+    // removes it. Author, times and the effective date never change. Allowed to
+    // pets.editProfiles, or to the note's author with pets.addLogs (D-P11).
+    function petNoteUpdate(householdId) {
+      let after = request.resource.data;
+      let changed = after.diff(resource.data).affectedKeys();
+      return changed.size() > 0 &&
+        changed.hasOnly(['text', 'tag', 'editedAt', 'editedByUid', 'editedByName', 'pinned', 'pinnedAt']) &&
+        (hasHouseholdPermission(householdId, 'pets.editProfiles') ||
+          (hasHouseholdPermission(householdId, 'pets.addLogs') && resource.data.get('loggedByUid', null) == request.auth.uid)) &&
+        petNoteText(after) &&
+        (!('tag' in after) || petNoteTag(after.tag)) &&
+        (!changed.hasAny(['text', 'tag', 'editedAt', 'editedByUid', 'editedByName']) ||
+          (after.get('editedAt', null) == request.time && after.get('editedByUid', null) == request.auth.uid &&
+            (!('editedByName' in after) || nonEmptyString(after.editedByName, 200)))) &&
+        after.get('pinned', null) is bool &&
+        (!changed.hasAny(['pinned', 'pinnedAt']) ||
+          (after.pinned ? after.get('pinnedAt', null) == request.time : !('pinnedAt' in after)));
+    }
+
+    function petWeightCreate(householdId, petId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['value', 'unit', 'date', 'loggedAt', 'loggedByUid', 'loggedByName']) &&
+        data.keys().hasAll(['value', 'unit', 'date', 'loggedAt', 'loggedByUid']) &&
+        data.unit in ['kg', 'lb'] &&
+        boundedNumber(data.value, 0, data.unit == 'kg' ? 500 : 1100) && data.value > 0 &&
+        petRecordDate(data.date) &&
+        data.loggedAt == request.time &&
+        data.loggedByUid == request.auth.uid &&
+        (!('loggedByName' in data) || nonEmptyString(data.loggedByName, 200)) &&
+        petExists(householdId, petId);
+    }
+
     // --- Feeding state (households/{h}/pets/{p}/feeding-state/current) ----
     // The shared feed operation keeps the latest feed and the household day's
     // count here, written in the same transaction as the log it describes.
@@ -2010,10 +2096,41 @@ service cloud.firestore {
 
       match /pets/{petId} {
         allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
-        // Meal plans are validated (P2); other pet fields are as in 2.1.
-        allow create: if hasHouseholdPermission(householdId, 'pets.editProfiles') && petMealPlanCreate();
-        allow update: if hasHouseholdPermission(householdId, 'pets.editProfiles') && petMealPlanUpdate();
-        allow delete: if hasHouseholdPermission(householdId, 'pets.editProfiles');
+        // Meal plans are validated (P2); the name, vet contact and weight unit (P5);
+        // other pet fields are as in 2.1.
+        allow create: if hasHouseholdPermission(householdId, 'pets.editProfiles') && petMealPlanCreate() &&
+          'name' in request.resource.data &&
+          petProfileFieldsValid(request.resource.data, request.resource.data.keys().toSet());
+        allow update: if hasHouseholdPermission(householdId, 'pets.editProfiles') && petMealPlanUpdate() &&
+          petProfileFieldsValid(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+        // Deleting a pet runs on the server (D-P12: `deletePetAction` removes it with
+        // everything under it, its photos and open reminders); a client delete would
+        // leave its histories behind.
+        allow delete: if false;
+
+        // Every sub-collection create below requires the pet to exist (P5), so nothing
+        // lands under a pet once the delete cascade has removed its document.
+
+        // Notes (P5: PE-29, D-P11): pinned facts and dated behaviour entries.
+        match /notes/{noteId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') && petNoteCreate(householdId, petId);
+          allow update: if petNoteUpdate(householdId) && deviceAttributionKept();
+          // pets.deleteLogs; a pinned note is profile data, so pets.editProfiles too;
+          // its author with pets.addLogs for 10 minutes after writing it.
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+            (resource.data.get('pinned', false) == true && hasHouseholdPermission(householdId, 'pets.editProfiles')) ||
+            feedingAuthorWithinUndoWindow(householdId);
+        }
+
+        // Weights (P5: PE-28b, D-P10): create and delete only.
+        match /weights/{weightId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') && petWeightCreate(householdId, petId);
+          allow update: if false;
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+            feedingAuthorWithinUndoWindow(householdId);
+        }
 
         // Stage R2 (docs/modules/pets/README.md): creates are the feed operation's
         // shapes only (feedingCreateR2); the only update is a time correction.
@@ -2021,7 +2138,8 @@ service cloud.firestore {
           allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validFeedingLogFields(request.resource.data, createdKeys()) && petLoggerOnCreate() &&
-            feedingLoggedAtOnCreate() && feedingCreateR2(householdId, petId, logId);
+            feedingLoggedAtOnCreate() && feedingCreateR2(householdId, petId, logId) &&
+            petExists(householdId, petId);
           allow update: if (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingLogFields(request.resource.data, updatedKeys()) && petLoggerUnchanged() &&
             feedingLoggedAtUnchanged() && feedingCorrected(householdId) && deviceAttributionKept();
@@ -2037,7 +2155,8 @@ service cloud.firestore {
           allow create: if stateId == 'current' &&
             (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingState(request.resource.data) &&
-            feedingStateHonest(householdId, petId);
+            feedingStateHonest(householdId, petId) &&
+            petExists(householdId, petId);
           allow update: if stateId == 'current' &&
             (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingState(request.resource.data) &&
@@ -2072,15 +2191,17 @@ service cloud.firestore {
         // the history (a pet's delete cascade is server-side, D-P12).
         match /medication-courses/{courseId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
-          allow create: if courseCreated(householdId);
+          allow create: if courseCreated(householdId) && petExists(householdId, petId);
           allow update: if courseUpdated(householdId, petId, courseId);
           allow delete: if false;
         }
 
         match /care-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
+          // Only under an existing pet (P5): nothing lands under a pet being deleted.
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate() &&
+            petExists(householdId, petId);
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validCareLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged() &&
             deviceAttributionKept();

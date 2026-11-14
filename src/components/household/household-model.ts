@@ -342,6 +342,8 @@ const AUDIT_LABELS: Record<string, string> = {
   'child.created': 'Added a kid profile',
   'child.updated': 'Edited a kid profile',
   'child.removed': 'Removed a kid profile',
+  // Written by the Pets delete action (D-P12).
+  'pet.deleted': 'Deleted a pet',
 };
 
 /** Plain-language sentence for an audit entry; unknown actions fall back to a readable form. */
@@ -355,6 +357,7 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
     return `Approved a member as ${roleLabel(details.role as HouseholdRole)}`;
   }
   if (log.action === 'member.removed' && details.pending === true) return 'Denied a request to join';
+  if (log.action === 'pet.deleted' && typeof details.petName === 'string' && details.petName.trim()) return `Deleted the pet ${details.petName.trim()}`;
   if (base) return base;
   const words = log.action.replace(/[._]+/g, ' ').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Household activity';

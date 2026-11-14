@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button"
 import {
@@ -23,28 +23,37 @@ import {
   type PetFields,
   type PetFormState,
 } from "./pets/pet-form";
+import { usePetPhotoDraft } from "./pets/pet-photo-draft";
+import { newPetId } from "@/lib/pets/profile";
 
 interface AddPetDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Names already used in the household (duplicates are rejected inline). */
   existingNames: string[];
-  /** Resolves true when saved; failures are reported by the caller as outcome toasts. */
-  onAddPet: (fields: PetFields, photoFile: File | null) => Promise<boolean>;
+  /**
+   * Resolves true when saved, `'name-taken'` when a fresh read found the name in
+   * use; other failures are reported by the caller as outcome toasts. `petId` is
+   * the dialog's one id (PE-30b), so a double submit or a retry writes one pet.
+   */
+  onAddPet: (petId: string, fields: PetFields, photoFile: File | null) => Promise<boolean | 'name-taken'>;
 }
 
 const ID_PREFIX = "add-pet";
 
 export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: AddPetDialogProps) {
   const [values, setValues] = useState<PetFormState>(EMPTY_PET_FORM);
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const photo = usePetPhotoDraft(useCallback(() => false, []));
+  // One id per opening (a new pet is never keyed by its name).
+  const [petId, setPetId] = useState(newPetId);
   const [errors, setErrors] = useState<PetDraftErrors>(NO_DRAFT_ERRORS);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const reset = () => {
     setValues(EMPTY_PET_FORM);
-    setPhotoFile(null);
+    photo.reset();
+    setPetId(newPetId());
     setErrors(NO_DRAFT_ERRORS);
     setSubmitted(false);
   };
@@ -60,16 +69,25 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
     event.preventDefault();
     if (saving) return;
     setSubmitted(true);
+    if (photo.busy) return;
     const nextErrors = validatePetDraft(values, existingNames);
     setErrors(nextErrors);
     if (hasDraftErrors(nextErrors)) {
       focusFirstError(ID_PREFIX, nextErrors);
       return;
     }
+    if (photo.error) {
+      document.getElementById(`${ID_PREFIX}-photo`)?.focus();
+      return;
+    }
     setSaving(true);
     try {
-      const saved = await onAddPet(petFieldsFromForm(values), photoFile);
-      if (saved) {
+      const saved = await onAddPet(petId, petFieldsFromForm(values), photo.choice.kind === 'replace' ? photo.choice.file : null);
+      if (saved === 'name-taken') {
+        const taken = { ...nextErrors, fields: { ...nextErrors.fields, name: `You already have a pet named ${values.name.trim()}.` } };
+        setErrors(taken);
+        focusFirstError(ID_PREFIX, taken);
+      } else if (saved) {
         onOpenChange(false);
         reset();
       }
@@ -100,7 +118,9 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
             values={values}
             errors={errors}
             onChange={change}
-            onPhotoChange={setPhotoFile}
+            onPhotoChange={(file) => void photo.pick(file)}
+            photoBusy={photo.busy}
+            photoError={photo.error}
           />
           <DialogFooter className="gap-2 pt-2">
             {/* PE-18d: an explicit way out besides the corner X and Escape. */}
@@ -115,7 +135,7 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || photo.busy}>
               {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
               Save Pet
             </Button>

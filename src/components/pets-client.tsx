@@ -20,14 +20,16 @@ import { DeletePetAlert } from './delete-pet-alert';
 import { EditPetDialog } from './edit-pet-dialog';
 import { EmptyState } from './empty-state';
 import { Button } from './ui/button';
-import { Skeleton } from './ui/skeleton';
 import { LivingPetCard, type PetAttention } from './pets/living-pet-card';
+import { PETS_GRID, PetsGridSkeleton } from './pets/pets-skeleton';
 import { PetsPageHeader } from './pets/pets-page-header';
 import { createPet, deletePet, updatePet } from './pets/pet-profile-api';
 import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
+import type { PetPhotoChoice } from './pets/pet-photo-draft';
+import { DuplicatePetNameError, otherPetNames } from '@/lib/pets/profile';
 
-const GRID = 'grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
+const GRID = PETS_GRID;
 
 /**
  * Needs-attention strip (PE-26): pets with a meal past its slot time (due, or
@@ -59,23 +61,6 @@ function AttentionStrip({ pets, attention }: { pets: PetProfile[]; attention: Re
         })}
       </ul>
     </section>
-  );
-}
-
-function PetSkeleton() {
-  return (
-    <div className="overflow-hidden rounded-lg border bg-card shadow-raised" aria-hidden>
-      <Skeleton className="aspect-[4/3] w-full rounded-none" />
-      <div className="space-y-3 p-4">
-        <Skeleton className="h-6 w-1/2" />
-        <Skeleton className="h-4 w-1/4" />
-        <div className="flex items-center gap-3">
-          <Skeleton className="h-12 w-12 rounded-full" />
-          <Skeleton className="h-4 flex-1" />
-        </div>
-        <Skeleton className="h-10 w-full" />
-      </div>
-    </div>
   );
 }
 
@@ -188,27 +173,30 @@ export function PetsClient() {
   // Meal times are confirmed by the signed-in member, on the household's day (PE-22k).
   const confirmer = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser), timeZone: household?.timeZone ?? null } : undefined;
 
-  const handleAddPet = async (fields: PetFields, photoFile: File | null): Promise<boolean> => {
+  const handleAddPet = async (petId: string, fields: PetFields, photoFile: File | null): Promise<boolean | 'name-taken'> => {
     if (!householdId) return false;
     try {
-      await createPet(householdId, fields, photoFile, confirmer);
+      await createPet(householdId, petId, fields, photoFile, confirmer);
       toast({ title: 'Pet added', description: `${fields.name} has joined the household.` });
       return true;
     } catch (error) {
+      if (error instanceof DuplicatePetNameError) return 'name-taken';
       console.error('Error adding pet:', error);
       toastError(error, "Couldn't add the pet");
       return false;
     }
   };
 
-  const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
+  const handleUpdatePet = async (fields: PetFields, photo: PetPhotoChoice): Promise<boolean | 'name-taken'> => {
     if (!householdId || !petToEdit) return false;
     try {
-      await updatePet(householdId, petToEdit.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: petToEdit.photoUrl }, confirmer);
-      toast({ title: 'Pet updated', description: `${petToEdit.name}'s details are saved.` });
+      // A rename keeps the pet's id and every history under it (PE-30b).
+      await updatePet(householdId, petToEdit.id, fields, photo, petToEdit.name, confirmer);
+      toast({ title: 'Pet updated', description: `${fields.name}'s details are saved.` });
       setPetToEdit(null);
       return true;
     } catch (error) {
+      if (error instanceof DuplicatePetNameError) return 'name-taken';
       console.error('Error updating pet:', error);
       toastError(error, "Couldn't update the pet");
       return false;
@@ -220,8 +208,9 @@ export function PetsClient() {
     setPetToDelete(null);
     if (!householdId || !target) return;
     try {
+      // On the server: the pet, its histories, notes, weights, photos and open reminders (D-P12).
       await deletePet(householdId, target.id);
-      toast({ title: 'Pet deleted', description: `${target.name} has been removed.` });
+      toast({ title: 'Pet deleted', description: `${target.name} and everything logged for them have been removed.` });
     } catch (error) {
       console.error('Error deleting pet:', error);
       toastError(error, "Couldn't delete the pet");
@@ -249,7 +238,7 @@ export function PetsClient() {
       {canFeed && householdId && (
         <FeedPickerDialog open={feedPickerOpen} onOpenChange={setFeedPickerOpen} pets={pets} householdId={householdId} />
       )}
-      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} onCloseAutoFocus={backToMenu} />
+      <EditPetDialog pet={petToEdit} otherNames={petToEdit ? otherPetNames(pets, petToEdit.id) : undefined} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} onCloseAutoFocus={backToMenu} />
       <DeletePetAlert
         isOpen={!!petToDelete}
         petName={petToDelete?.name}
@@ -259,10 +248,8 @@ export function PetsClient() {
       />
 
       {loading ? (
-        <div className={GRID} role="status" aria-label="Loading pets">
-          <PetSkeleton />
-          <PetSkeleton />
-          <PetSkeleton />
+        <div role="status" aria-busy="true" aria-label="Loading pets">
+          <PetsGridSkeleton />
         </div>
       ) : pets.length > 0 && householdId ? (
         <>

@@ -30,6 +30,12 @@ export type PetProfile = Omit<Pet, 'type'> & {
   mealPlan?: MealPlan;
   /** Plans that applied before the current one, oldest first (PE-22g; at most `MEAL_PLAN_HISTORY_MAX`). */
   mealPlanHistory?: MealPlanHistoryEntry[];
+  /** Optional vet contact (P5, PE-28a): name and clinic up to 80 characters, the phone digits and separators (up to 30). */
+  vetName?: string;
+  vetClinic?: string;
+  vetPhone?: string;
+  /** The unit the pet's weights are shown in (P5, PE-28c); kg when absent. */
+  weightUnit?: 'kg' | 'lb';
 };
 
 /** One meal of the day (PE-22a). `id` never changes when the meal is renamed or moved. */
