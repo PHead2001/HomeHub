@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, test } from 'node:test';
-import { assertFails, assertSucceeds, initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
+import { assertFails, assertSucceeds, initializeTestEnvironment, type RulesTestEnvironment, type TokenOptions } from '@firebase/rules-unit-testing';
 import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, serverTimestamp, setDoc, Timestamp, updateDoc, type Firestore } from 'firebase/firestore';
 import { newRecordOpId } from '../../src/lib/pets/notes';
 import { NoteChangedError, RecordIdTakenError, runCreateNote, runCreateWeight, runEditNote, runSetNotePinned } from '../../src/lib/pets/record-transaction';
@@ -245,10 +245,54 @@ describe('pet profile: rename, vet contact, weight unit, delete (PE-30, PE-28a, 
     await assertFails(setDoc(doc(session(people.owner), 'households', household, 'pet-deletions', 'rex'), { petId: 'rex' }));
   });
 
-  test('care entries need an existing pet (nothing lands under a deleted pet)', async () => {
+  test('every pet sub-collection create needs an existing pet (nothing lands under a deleted pet)', async () => {
+    const db = session(people.sam);
+    const under = (pet: string, kind: string, id: string) => doc(db, 'households', household, 'pets', pet, kind, id);
     const care = { date: new Date().toISOString(), activity: 'Walk', notes: '', loggedByUid: people.sam.uid, loggedByName: 'Sam' };
-    await assertSucceeds(setDoc(doc(session(people.sam), 'households', household, 'pets', 'rex', 'care-logs', 'c1'), care));
-    await assertFails(setDoc(doc(session(people.sam), 'households', household, 'pets', 'ghost', 'care-logs', 'c1'), care));
+    await assertSucceeds(setDoc(under('rex', 'care-logs', 'c1'), care));
+    await assertFails(setDoc(under('ghost', 'care-logs', 'c1'), care));
+    // A feeding queued offline (no state write) and a medication course: the same shape is
+    // accepted under Rex and refused under a pet that does not exist.
+    const offlineFeeding = {
+      date: new Date(), loggedAt: serverTimestamp(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+      loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: 'offline', clockSource: 'device',
+    };
+    await assertSucceeds(setDoc(under('rex', 'feeding-logs', 'feed-offline-1'), offlineFeeding));
+    await assertFails(setDoc(under('ghost', 'feeding-logs', 'feed-offline-1'), offlineFeeding));
+    const course = {
+      name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'days', everyDays: 1, times: ['08:00', '20:00'] }, startDay: '2026-11-01', endDay: null,
+      status: 'active', legacyKeys: [], lastDose: null, prevDose: null, coveredUntil: null,
+      createdAt: serverTimestamp(), createdByUid: people.sam.uid, createdByName: 'Sam', updatedAt: serverTimestamp(), updatedByUid: people.sam.uid, updatedByName: 'Sam',
+    };
+    await assertSucceeds(setDoc(under('rex', 'medication-courses', 'apoquel'), course));
+    await assertFails(setDoc(under('ghost', 'medication-courses', 'apoquel'), course));
+    const legacyDose = { date: new Date().toISOString(), medication: 'Flea drops', dosage: '1 dose', notes: '', loggedByUid: people.sam.uid, loggedByName: 'Sam' };
+    await assertSucceeds(setDoc(under('rex', 'medication-logs', 'm1'), legacyDose));
+    await assertFails(setDoc(under('ghost', 'medication-logs', 'm1'), legacyDose));
+    // Notes and weights: covered above (a missing pet is refused).
+  });
+
+  test('a registered tablet whose pets section is on reads notes and weights; personal clients never write deviceAttribution', async () => {
+    await setDoc(noteRef(session(people.sam), 'n1'), entry(people.sam));
+    await setDoc(weightRef(session(people.sam), 'w1'), weighing(people.sam));
+    await admin(async (db) => {
+      const record = (pets: boolean) => ({ name: 'Kitchen', status: 'active', generation: 2, sections: { chores: true, shopping: true, pets, calendar: true, maintenance: true }, startPage: { kind: 'home' } });
+      await setDoc(doc(db, 'households', household, 'devices', 'tab-on'), record(true));
+      await setDoc(doc(db, 'households', household, 'devices', 'tab-off'), record(false));
+    });
+    const tablet = (deviceId: string) => environment.authenticatedContext(`device_${deviceId}`, {
+      hh_kind: 'device', hh_household: household, hh_device: deviceId, hh_gen: 2, firebase: { sign_in_provider: 'custom', identities: {} },
+    } as unknown as TokenOptions).firestore() as unknown as Firestore;
+    await assertSucceeds(getDoc(noteRef(tablet('tab-on'), 'n1')));
+    await assertSucceeds(getDoc(weightRef(tablet('tab-on'), 'w1')));
+    await assertFails(getDoc(noteRef(tablet('tab-off'), 'n1')));
+    await assertFails(getDoc(weightRef(tablet('tab-off'), 'w1')));
+    // A tablet never writes directly (device actions run on the server).
+    await assertFails(setDoc(noteRef(tablet('tab-on'), 'n9'), entry(people.sam)));
+    await assertFails(deleteDoc(weightRef(tablet('tab-on'), 'w1')));
+    await assertFails(setDoc(noteRef(session(people.sam), 'n2'), entry(people.sam, { deviceAttribution: { deviceId: 'd1' } })));
+    await assertFails(setDoc(weightRef(session(people.sam), 'w2'), weighing(people.sam, { deviceAttribution: { deviceId: 'd1' } })));
+    await assertFails(updateDoc(noteRef(session(people.sam), 'n1'), { pinned: true, pinnedAt: serverTimestamp(), deviceAttribution: { deviceId: 'd1' } }));
   });
 });
 

@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { collection, limit as limitTo, onSnapshot, orderBy, query, where, type Query, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
+import { useAuth } from '@/hooks/use-auth';
+import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
 import { behaviourEntries, headlineNote, pinnedNotes, PINNED_NOTES_MAX, readNote, type PetNote } from '@/lib/pets/notes';
 import { readWeight, type WeightEntry } from '@/lib/pets/weights';
 import {
@@ -58,8 +59,12 @@ export type LiveList<T> = {
  * larger limit of the same query keeps the items already shown while it loads
  * ("Load more", PE-21h); another pet's items never show.
  */
-function useLiveDocs<T>(base: string | null, max: number, build: (() => Query) | null, read: (id: string, data: Record<string, unknown>) => T): LiveList<T> {
+function useLiveDocs<T>(scope: string | null, max: number, build: (() => Query) | null, read: (id: string, data: Record<string, unknown>) => T): LiveList<T> {
   const [state, setState] = useState<LiveDocs<T>>({ key: null, items: [], size: 0, loaded: false, failed: false, error: null });
+  // Keyed on the reader too (P3's pattern, `petListenerKey`): a listener refused before
+  // access returned, or for another member, is recreated instead of staying refused.
+  const { currentUser, permissions } = useAuth();
+  const base = petListenerKey(scope, { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) });
   const key = base ? `${base}#${max}` : null;
 
   useEffect(() => {
