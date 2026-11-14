@@ -14,7 +14,16 @@ export type DeviceAuditAction =
   | 'device.repaired'
   | 'device.settings_changed'
   | 'device.removed'
-  | 'device.exited';
+  | 'device.exited'
+  | 'device.action'
+  | 'device.policy_changed'
+  | 'pin.set'
+  | 'pin.cleared'
+  | 'pin.locked'
+  | 'pin.lockout_cleared'
+  | 'child.created'
+  | 'child.updated'
+  | 'child.removed';
 
 export type DeviceAuditEntry = {
   action: DeviceAuditAction;
@@ -22,8 +31,16 @@ export type DeviceAuditEntry = {
   actorName: string | null;
   deviceId?: string;
   deviceName?: string;
-  /** Where the change was made: a person's Devices list, or the tablet itself. */
-  via: 'devices-list' | 'device';
+  /** The person or record the entry is about (PIN and kid-profile entries, device actions). */
+  targetUid?: string;
+  targetName?: string | null;
+  /** Device actions: the verification level the server decided (face or PIN). */
+  level?: 'face' | 'pin';
+  /**
+   * Where the change was made: a person's Devices list, the tablet itself, the
+   * Members tab, or the person's own Profile.
+   */
+  via: 'devices-list' | 'device' | 'members' | 'profile';
   details?: Record<string, string | number | boolean | null>;
 };
 
@@ -44,7 +61,11 @@ export const writeDeviceAudit = (
     actorName: entry.actorName,
     action: entry.action,
     ...(entry.deviceId ? { deviceId: entry.deviceId } : {}),
-    ...(entry.deviceName ? { targetName: entry.deviceName, deviceName: entry.deviceName } : {}),
+    ...(entry.deviceName ? { deviceName: entry.deviceName } : {}),
+    ...(entry.targetUid ? { targetUid: entry.targetUid } : {}),
+    ...(entry.targetName !== undefined || entry.deviceName
+      ? { targetName: entry.targetName !== undefined ? entry.targetName : entry.deviceName } : {}),
+    ...(entry.level ? { level: entry.level } : {}),
     via: entry.via,
     createdAt: now.toISOString(),
     details,

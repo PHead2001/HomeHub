@@ -29,6 +29,8 @@ export const isOwnerOnlyPermission = (permission: HouseholdPermission): boolean 
 export type PolicyMember = Pick<HouseholdMember, 'uid' | 'role'> & {
   status?: HouseholdMember['status'];
   permissions?: PermissionOverrides;
+  /** `'identity'`: a kid profile with no sign-in (fixed Child role, never an owner). */
+  kind?: HouseholdMember['kind'];
 };
 
 export type PolicyRefusal =
@@ -49,7 +51,11 @@ export type PolicyRefusal =
   /** The actor tried to grant a permission they do not hold. */
   | 'grant_unheld'
   /** The target is still pending and has no permissions to edit, or cannot become owner. */
-  | 'target_pending';
+  | 'target_pending'
+  /** A kid profile's role is fixed at Child. */
+  | 'identity_fixed_role'
+  /** A kid profile cannot become the owner. */
+  | 'target_identity';
 
 export type PolicyDecision = { ok: true } | { ok: false; reason: PolicyRefusal };
 
@@ -133,6 +139,7 @@ export const canAssignRole = (
 ): PolicyDecision => {
   const manageable = canManageMember(actor, target);
   if (!manageable.ok) return manageable;
+  if (target?.kind === 'identity') return refuse('identity_fixed_role');
   if (!assignableRoles.includes(newRole)) return refuse('role_not_assignable');
   return rank(newRole) < rank(actor!.role) ? allow : refuse('role_too_high');
 };
@@ -214,6 +221,7 @@ export const canTransferOwnership = (actor: PolicyMember | null | undefined, tar
   if (!isActiveOwner(actor)) return refuse('owner_only');
   if (!target) return refuse('not_member');
   if (actor.uid === target.uid) return refuse('self');
+  if (target.kind === 'identity') return refuse('target_identity');
   if (target.role === 'newuser' || !isActive(target)) return refuse('target_pending');
   return allow;
 };
@@ -228,6 +236,8 @@ const REFUSAL_MESSAGES: Record<PolicyRefusal, string> = {
   owner_only: 'Only the household owner can do that.',
   grant_unheld: "You can't give someone a permission you don't have yourself.",
   target_pending: 'Approve this person first.',
+  identity_fixed_role: "A kid profile's role is always Child.",
+  target_identity: "A kid profile can't own the household.",
 };
 
 /** Plain-language sentence for a refusal, for toasts, tooltips and server results. */

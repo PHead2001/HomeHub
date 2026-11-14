@@ -24,6 +24,7 @@ import { ConfirmActionDialog, type ConfirmRequest } from '@/components/household
 import { DeviceCodeDialog, type ShownDeviceCode } from '@/components/household/device-code-dialog';
 import { DeviceSettingsDialog } from '@/components/household/device-settings-form';
 import { relativeTime } from '@/components/household/household-model';
+import { PointsPinSetting } from '@/components/household/points-pin-setting';
 import {
   createDeviceCodeAction,
   createDeviceRepairCodeAction,
@@ -392,6 +393,7 @@ export function DevicesTab({ householdId }: { householdId: string }) {
       )}
 
       {adding && <NewDeviceDialog onClose={() => setAdding(false)} onCreate={createCode} />}
+      <PointsPinSetting householdId={householdId} />
       <DeviceCodeDialog shown={shownCode} onClose={() => setShownCode(null)} />
       {editing && (
         <DeviceSettingsDialog

@@ -16,6 +16,8 @@ This module owns Firebase Authentication session handling, Google sign-in, email
 - Manage browser push-notification subscription.
 - Log out.
 
+- **Tablet PIN** card on Profile (only with the wall-tablet flag on; active owners, admins, members and children with an account, never guests): set, change or remove your own PIN for wall tablets and unlock it after too many wrong tries, from your own signed-in session (`src/components/profile/tablet-pin-card.tsx`, server actions in `src/app/household/pin-actions.ts`). The card never sees a stored PIN, only whether one is set or locked. See [Devices](../devices/README.md), "PINs".
+
 ## Entry Points
 
 - `src/contexts/auth-context.tsx`

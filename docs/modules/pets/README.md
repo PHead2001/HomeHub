@@ -124,6 +124,8 @@ The homepage AI Overview may include pet count and a seven-day care-log count fo
 - Duplicate names are rejected in the add dialog against the loaded list (case-insensitive); IDs carry a random suffix, so two clients adding the same name at once still create two documents.
 - Reduced motion (system or in-app) shows end states instantly: no blink, idle sway, ring transition, paw burst, card stagger, count ticker or photo morph.
 
+- `deviceAttribution` (which wall tablet, which person, face or PIN; written by tablet actions, F4, docs/modules/devices/README.md) is outside every pet-log and feeding-state allow-list, so a personal client cannot add it, and updates of feeding, medication and care logs must leave it unchanged (`deviceAttributionKept`).
+
 ## Validation
 
 - Run `npm.cmd run lint` and `npm.cmd run typecheck` after implementation changes.

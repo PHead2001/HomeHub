@@ -36,6 +36,7 @@ import {
 import { getDeterministicNotificationId } from '@/lib/notifications';
 import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
 import { DEVICE_CODE_AS_INVITE_MESSAGE } from '@/lib/devices/device-codes';
+import { writeDeviceAudit } from '@/lib/server/device-audit';
 import {
   markHouseholdDevicesRemoved,
   readHouseholdDevicesForDeletion,
@@ -54,6 +55,7 @@ export type MembershipErrorCode =
   | 'not_found'
   | 'household_deleting'
   | 'conflict'
+  | 'unavailable'
   | 'failed';
 import { notificationAudience } from '@functions/shared/notification-audience';
 import { unassignedChoreFields } from '@functions/shared/assignee';
@@ -79,6 +81,16 @@ const memberContactRef = (householdRef: FirebaseFirestore.DocumentReference, uid
   householdRef.collection('members').doc(uid).collection('private').doc('contact');
 
 const memberContact = (email: string, now: Date) => ({ email, updatedAt: now.toISOString() });
+
+/**
+ * A member's tablet PIN documents (`private/pin`, `private/pinGuard`; written only by
+ * src/lib/server/pins.ts, unreadable to every client). Deleted with the membership
+ * (removal, leaving, household deletion), so someone who rejoins has no PIN.
+ */
+const memberPinRefs = (householdRef: FirebaseFirestore.DocumentReference, uid: string) => [
+  householdRef.collection('members').doc(uid).collection('private').doc('pin'),
+  householdRef.collection('members').doc(uid).collection('private').doc('pinGuard'),
+];
 
 /** The email in a member's contact document, or "" (see functions/src/shared/member-contact.ts). */
 const contactEmail = (snapshot: FirebaseFirestore.DocumentSnapshot | null | undefined): string =>
@@ -435,6 +447,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
+    memberPinRefs(householdRef, caller.uid).forEach(ref => transaction.delete(ref));
     foldDepartingStatsKey(transaction, statsSnap, caller.uid, caller.email);
     recordDepartedIdentity(transaction, householdRef, opsSnap, caller.uid, caller.email, now);
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
@@ -532,6 +545,7 @@ export const deleteHousehold = async (
   deviceCodes.docs.forEach(d => batch.delete(d.ref));
   members.docs.forEach(d => {
     batch.delete(memberContactRef(householdRef, d.id));
+    memberPinRefs(householdRef, d.id).forEach(ref => batch.delete(ref));
     batch.delete(d.ref);
   });
   batch.delete(householdRef);
@@ -581,6 +595,7 @@ const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot, contact?: 
     permissions: (data.permissions && typeof data.permissions === 'object' ? data.permissions : {}) as PermissionOverrides,
     email: contactEmail(contact),
     displayName: typeof data.displayName === 'string' && data.displayName ? data.displayName : undefined,
+    kind: data.kind === 'identity' ? 'identity' : 'account',
   };
 };
 
@@ -973,9 +988,20 @@ export const updateMemberPermissions = async (
  * and recurring templates become unassigned; completed chores keep their history.
  */
 export const removeMember = async (caller: VerifiedCaller, householdId: string, targetUid: string, now = new Date()): Promise<{ denied: boolean }> => {
-  return adminDb.runTransaction(async transaction => {
+  let removedIdentity: string | null = null;
+  const result = await adminDb.runTransaction(async transaction => {
+    removedIdentity = null;
     const context = await loadActor(transaction, caller, householdId);
     const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
+    // A kid profile is removed by the kid-profile body, with its authority (owner or admin role).
+    if (target.kind === 'identity') {
+      requireIdentityManager(context.actor);
+      await removeIdentityInTransaction(transaction, context.householdRef, target, {
+        uid: caller.uid, name: context.actor.displayName || caller.displayName || null,
+      }, now);
+      removedIdentity = target.uid;
+      return { denied: false };
+    }
     enforce(canManageMember(context.actor, target));
     const profileRef = target.email ? adminDb.collection('users').doc(target.email) : null;
     // Assigned by email (older records) or by uid.
@@ -1000,6 +1026,7 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const denied = target.role === 'newuser';
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
+    memberPinRefs(context.householdRef, target.uid).forEach(pinRef => transaction.delete(pinRef));
     // The email upkeep credited them by: the contact document's, else the record's.
     const departingEmail = contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email;
     if (!denied) {
@@ -1023,6 +1050,60 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     });
     return { denied };
   });
+  if (removedIdentity) await deleteIdentityAvatarFiles(householdId, removedIdentity);
+  return result;
+};
+
+// ---------------------------------------------------------------------------
+// Kid profiles (child identities; docs/modules/devices/README.md, "Actors")
+//
+// `members/kid_<id>` records with `kind: 'identity'`, role Child, no contact document,
+// no Auth user and no email. Created, edited and removed by owners and admins (role)
+// through src/lib/server/child-identities.ts; `removeMember` routes a kid profile here.
+// ---------------------------------------------------------------------------
+
+/** Owners and admins (role, active) manage kid profiles (JC-22). */
+export const requireIdentityManager = (actor: PolicyMember) => {
+  if ((actor.status ?? 'active') !== 'active' || (actor.role !== 'owner' && actor.role !== 'admin')) {
+    throw new MembershipError('Only owners and admins can manage kid profiles.', 'missing_permission');
+  }
+};
+
+/**
+ * The removal body for a kid profile, inside the caller's transaction (all reads first):
+ * open chores and recurring templates assigned to it become unassigned, completed chores
+ * keep their history (stats are keyed by uid, so nothing needs folding), and the record
+ * and its PIN documents are deleted. The avatar file is deleted after the commit
+ * (`deleteIdentityAvatarFiles`).
+ */
+export const removeIdentityInTransaction = async (
+  transaction: FirebaseFirestore.Transaction,
+  householdRef: FirebaseFirestore.DocumentReference,
+  target: { uid: string; displayName?: string },
+  actor: { uid: string; name: string | null },
+  now: Date,
+) => {
+  const [chores, templates] = await Promise.all([
+    transaction.get(householdRef.collection('chores').where('assignedToUid', '==', target.uid)),
+    transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', target.uid)),
+  ]);
+  transaction.delete(householdRef.collection('members').doc(target.uid));
+  memberPinRefs(householdRef, target.uid).forEach(ref => transaction.delete(ref));
+  chores.docs.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
+  templates.docs.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
+  transaction.update(householdRef, { updatedAt: now.toISOString() });
+  writeDeviceAudit(transaction, householdRef, {
+    action: 'child.removed', actorUid: actor.uid, actorName: actor.name, via: 'members',
+    targetUid: target.uid, targetName: target.displayName ?? null,
+  }, now);
+};
+
+/** Deletes a kid profile's photo files (best effort, after the removal commits). */
+export const deleteIdentityAvatarFiles = async (householdId: string, uid: string) => {
+  const bucket = adminStorageBucket();
+  if (!bucket) return;
+  await bucket.deleteFiles({ prefix: `households/${householdId}/members/${uid}/avatar/` })
+    .catch(error => console.warn('Kid profile photo could not be deleted.', error instanceof Error ? error.message : String(error)));
 };
 
 /**

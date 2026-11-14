@@ -16,6 +16,8 @@ import {
 } from '../../src/lib/server/device-management';
 import * as householdActions from '../../src/app/household/actions';
 import * as deviceActions from '../../src/app/household/device-actions';
+import * as pinActions from '../../src/app/household/pin-actions';
+import * as childActions from '../../src/app/household/child-actions';
 import * as choreActions from '../../src/app/chores/actions';
 import * as shoppingActions from '../../src/app/shopping/actions';
 import * as automationActions from '../../src/app/automation/actions';
@@ -190,15 +192,17 @@ describe('device tokens on personal paths, personal tokens on device paths', () 
       idToken: deviceToken, householdId: H, name: 'Renamed by tablet', confirmName: `House ${H}`, code: 'ABCD-EFGH-JK', memberUid: owner.uid,
       role: 'member', overrides: {}, choreIds: ['c1'], choreId: 'c1', completionId: 'x', listId: 'l1', tripId: 'trip-1', mode: 'putAway', items: [],
       url: 'https://ha.example', token: 'x', deviceId: 'abcdefghij0123456789', patch: { name: 'x' }, room: 'x',
+      pin: '2580', targetUid: owner.uid, childId: 'kid_ABCDEFGHIJ0123456789', pointsPin: 'everyone',
     };
-    const modules: Record<string, Record<string, unknown>> = { householdActions, deviceActions, choreActions, shoppingActions, automationActions };
+    // PIN and kid-profile management (F2) are personal-only too.
+    const modules: Record<string, Record<string, unknown>> = { householdActions, deviceActions, pinActions, childActions, choreActions, shoppingActions, automationActions };
     let checked = 0;
     for (const [moduleName, actions] of Object.entries(modules)) {
       for (const [name, action] of Object.entries(actions)) {
         if (typeof action !== 'function') continue;
-        // The two device endpoints take no personal token: redemption is unauthenticated
-        // (code + nonce), the heartbeat takes the device's own token.
-        if (name === 'redeemDeviceCodeAction' || name === 'deviceHeartbeatAction') continue;
+        // Redemption takes no token (code + nonce); actions a tablet calls with its own
+        // token live in src/app/devices/actions.ts.
+        if (name === 'redeemDeviceCodeAction') continue;
         const outcome = await (action as (value: unknown) => Promise<unknown>)(input).catch((error: unknown) => ({ ok: false, thrown: String(error) }));
         assert.ok(outcome && typeof outcome === 'object' && (outcome as { ok?: unknown }).ok !== true, `${moduleName}.${name} must refuse a device token`);
         checked += 1;

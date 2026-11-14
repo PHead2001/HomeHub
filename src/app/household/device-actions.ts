@@ -6,7 +6,6 @@ import {
   createDeviceCode,
   createDeviceRepairCode,
   reconcileDeviceSessions,
-  recordDeviceHeartbeat,
   redeemDeviceCodeGuarded,
   removeDevice,
   revokeDeviceCode,
@@ -23,7 +22,8 @@ import type { DeviceManagementRefusal, DeviceSettings, RedeemRefusal } from '@/l
 // Management actions authenticate a personal caller (`verifyCaller`: a verified ID
 // token with an email, so a device token is refused) and the server checks the
 // owner/admin role inside each transaction. Redemption is the one unauthenticated
-// device endpoint; the heartbeat takes the device's own ID token.
+// device endpoint. Actions a tablet calls with its own token (heartbeat, PIN
+// verification, comfort) live in src/app/devices/actions.ts.
 
 export type DeviceActionResult<T> = { ok: true; data: T } | { ok: false; code: DeviceManagementRefusal; message: string };
 export type RedeemActionResult = { ok: true; data: RedeemResult } | { ok: false; code: RedeemRefusal; message: string };
@@ -101,14 +101,5 @@ export async function redeemDeviceCodeAction(input: { code: string; nonce: strin
     const code: RedeemRefusal = error instanceof DeviceError ? error.code as RedeemRefusal : 'failed';
     if (code === 'failed') console.error('Device code redemption failed', error instanceof Error ? error.message : String(error));
     return { ok: false, code, message: REDEEM_REFUSAL_COPY[code] ?? REDEEM_REFUSAL_COPY.failed };
-  }
-}
-
-/** The tablet's heartbeat: truthful last seen (server time) and its running build. */
-export async function deviceHeartbeatAction(input: { idToken: string; householdId: string; appVersion: string }): Promise<DeviceActionResult<{ written: boolean }>> {
-  try {
-    return { ok: true, data: await recordDeviceHeartbeat(input) };
-  } catch (error) {
-    return failure(error);
   }
 }

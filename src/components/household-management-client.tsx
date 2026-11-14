@@ -60,6 +60,7 @@ import {
   changedPermissions,
   INVITE_STATE_LABELS,
   describeAuditAction,
+  describeAuditActor,
   householdManagerReads,
   memberStat,
   householdNameError,
@@ -76,6 +77,7 @@ import { useHouseholdLiveData } from '@/components/household/use-household-live-
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
 import { DevicesTab } from '@/components/household/devices-tab';
+import { useMemberTabletControls } from '@/components/household/member-tablet-controls';
 
 // Wall tablets ship dark behind the public devices flag (docs/modules/devices/README.md).
 const devicesEnabled = process.env.NEXT_PUBLIC_HOMEHUB_DEVICES === 'true';
@@ -140,6 +142,13 @@ export function HouseholdManagementClient() {
     ownEmail: currentUser?.email ?? null,
   });
   const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
+  // Wall tablets: kid profiles and tablet PINs (owners and admins, devices flag on).
+  const tablet = useMemberTabletControls({ householdId: household?.id, currentMember, members });
+  // Kid profiles are managed by role (owner or admin), as the server enforces.
+  const isOwnerOrAdminRole = Boolean(currentMember && (currentMember.status ?? 'active') === 'active' &&
+    (currentMember.role === 'owner' || currentMember.role === 'admin'));
+  const canRemoveMember = (member: HouseholdMember) =>
+    member.kind === 'identity' ? isOwnerOrAdminRole : canManageMember(currentMember, member).ok;
   // Live: the auth context listens to the household document.
   const householdDisplayName = household?.name ?? '';
 
@@ -298,7 +307,7 @@ export function HouseholdManagementClient() {
   };
 
   const removeMember = async (member: HouseholdMember, denied = false) => {
-    if (!household?.id || !canManageMember(currentMember, member).ok) return;
+    if (!household?.id || !canRemoveMember(member)) return;
     const householdId = household.id;
     const removed = await runAction(denied ? 'Could not deny the request' : 'Could not remove the member', (idToken) =>
       removeMemberAction({ idToken, householdId, memberUid: member.uid }));
@@ -322,7 +331,7 @@ export function HouseholdManagementClient() {
     roles: assignableRoles.filter((role) => canAssignRole(currentMember, member, role).ok),
     canCustomize: canEditPermissions(currentMember, member).ok,
     canTransfer: canTransferOwnership(currentMember, member).ok,
-    canRemove: canManageMember(currentMember, member).ok,
+    canRemove: canRemoveMember(member),
   });
 
   const askRoleChange = (member: HouseholdMember, nextRole: HouseholdRole) => setConfirm({
@@ -346,7 +355,9 @@ export function HouseholdManagementClient() {
 
   const askRemove = (member: HouseholdMember) => setConfirm({
     title: `Remove ${memberName(member)}?`,
-    description: `They lose access to ${householdDisplayName} right away. Open chores assigned to them become unassigned.`,
+    description: member.kind === 'identity'
+      ? 'The kid profile disappears from wall tablets. Open chores assigned to it become unassigned; completed chores stay in the history.'
+      : `They lose access to ${householdDisplayName} right away. Open chores assigned to them become unassigned.`,
     confirmLabel: 'Remove',
     destructive: true,
     onConfirm: () => removeMember(member),
@@ -594,6 +605,16 @@ export function HouseholdManagementClient() {
           )}
 
           <TabsContent value="members" className="space-y-4 pt-4">
+            {tablet.enabled && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-muted-foreground">Kids without their own account can still use wall tablets.</p>
+                <Button variant="outline" onClick={tablet.openCreateKid}>
+                  <UserPlus className="mr-2 h-4 w-4" aria-hidden />
+                  Add a kid profile
+                </Button>
+              </div>
+            )}
+            {tablet.dialogs}
             {live.membersFailed && (
               <p role="status" className="rounded-md border border-warning/50 bg-warning/10 p-3 text-sm">
                 We couldn&apos;t load everyone right now. Check your connection; this list updates on its own.
@@ -633,6 +654,8 @@ export function HouseholdManagementClient() {
                     onCustomize={openCustomize}
                     onTransfer={askTransfer}
                     onRemove={askRemove}
+                    tablet={tablet.actionsFor(member)}
+                    onTablet={tablet.run}
                   />
                 ))}
                 <Card>
@@ -660,6 +683,8 @@ export function HouseholdManagementClient() {
                     onCustomize={openCustomize}
                     onTransfer={askTransfer}
                     onRemove={askRemove}
+                    tablet={tablet.actionsFor(member)}
+                    onTablet={tablet.run}
                   />
                 ))}
               </Stagger>
@@ -702,7 +727,7 @@ export function HouseholdManagementClient() {
                   ) : (
                     <ol className="space-y-2">
                       {auditLogs.slice(0, 50).map(log => {
-                        const actor = log.actorName || log.actorEmail || 'HomeHub';
+                        const actor = describeAuditActor(log);
                         const target = log.targetName || log.targetEmail;
                         return (
                           <li key={log.id} className="rounded-md border border-border-subtle p-3">
