@@ -14,8 +14,6 @@
  */
 import {
   AUTHOR_DELETE_WINDOW_MS,
-  becomesLatest,
-  countAfterFeed,
   countOnHouseholdDay,
   feedConfirmDecision,
   householdDay,
@@ -84,8 +82,8 @@ export type FeedSnapshot = {
   stored: FeedingStateView | null;
   /** Whether the stored latest feed's log still exists (one deleted offline is not a feed). */
   latestSurvives: boolean;
-  /** Surviving feedings dated from `feedReadStart` on (both date shapes), with their ids. */
-  recent: FeedingEntry[];
+  /** Surviving feedings dated from `feedReadStart` on (both date shapes) and the newest ones, with their ids. */
+  recent: StateLog[];
   /** The caller's loaded logs: used only while the pet has no state document. */
   known?: KnownFeedings | null;
   /** This press's own log (`feedLogId(opId)`) when it already exists. */
@@ -95,18 +93,103 @@ export type FeedSnapshot = {
 export type FeedIntent = {
   /** The member credited with the feed (the signed-in member). */
   userUid: string;
+  /** Their name as stored on the log (`loggedByName`). */
+  userName?: string | null;
+  /** This press's log id (`feedLogId(opId)`). */
+  logId?: string;
   /** The answer to an earlier "Feed again?", bound to the state it was shown for. */
   confirm?: FeedConfirm | null;
   /** A deliberately chosen past time (the detailed form): no repeat check. */
   backdatedAt?: Date | null;
+  /**
+   * The rules refused this press as a plain feed (their server clock saw a
+   * recent feed that this device's clock did not): ask "Feed again?" instead of
+   * planning the same plain feed again.
+   */
+  serverRefusedPlain?: boolean;
 };
 
-/** How the state document changes with a new log. */
-export type FeedStatePlan =
-  /** The new log becomes the latest feed (`prev` = the replaced state). */
-  | { kind: 'latest'; day: string; countOnDay: number }
-  /** An older backdated entry: only today's count changes. */
-  | { kind: 'count'; day: string; countOnDay: number };
+/* ------------------------------------------------------------------------- */
+/* The feeding state, derived from the surviving logs (one rule for every write) */
+/* ------------------------------------------------------------------------- */
+
+/** A log as the derivation reads it: its raw stored `date` (a Firestore Timestamp, a Date or a legacy string). */
+export type StateLog = FeedingEntry & { id: string };
+
+/** A feeding named by the state: its log, effective time (and the raw stored value to write back), author. */
+export type DerivedFeed = { logId: string; at: Date; rawDate: unknown; byUid: string | null; byName: string | null };
+
+/**
+ * What `feeding-state/current` must hold: the latest and the previous surviving
+ * feeding by effective time (`date`), and today's count (household day). Every
+ * online writer (feed, backdated entry, Undo or delete, time correction) stores
+ * exactly this, computed from the logs it read plus its own change, so the
+ * state never carries a stale snapshot (a corrected or deleted previous feed).
+ */
+export type DerivedFeedingState = { latest: DerivedFeed | null; prev: DerivedFeed | null; day: string; countOnDay: number };
+
+const isStoredTimestamp = (value: unknown) =>
+  value instanceof Date || Boolean(value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function');
+
+/**
+ * Derives the state from surviving logs (later entries with the same id win, so
+ * a caller passes its own change last). Only Timestamp-dated logs can be named
+ * (the rules compare `lastFedAt` with the log's `date`; legacy ISO-string
+ * entries still count for the day); a date beyond the clock-skew allowance is
+ * ignored, as every reader ignores it. `latestId` makes a live feed the latest
+ * whatever the device clocks say (it is server time "now").
+ */
+export function deriveFeedingState(logs: StateLog[], options: { now: Date; timeZone?: string | null; latestId?: string | null }): DerivedFeedingState {
+  const { now, timeZone } = options;
+  const byId = new Map<string, StateLog>();
+  for (const log of logs) byId.set(log.id, log);
+  const surviving = [...byId.values()];
+  const today = householdDay(now, timeZone);
+  const limit = now.getTime() + FEEDING_CLOCK_SKEW_MS;
+  const named = surviving
+    .map((log) => ({ log, at: isStoredTimestamp(log.date) ? toDate(log.date) : null }))
+    .filter((entry): entry is { log: StateLog; at: Date } => entry.at !== null && entry.at.getTime() <= limit)
+    .sort((a, b) =>
+      Number(b.log.id === options.latestId) - Number(a.log.id === options.latestId) ||
+      b.at.getTime() - a.at.getTime() ||
+      a.log.id.localeCompare(b.log.id));
+  const feed = (entry: { log: StateLog; at: Date } | undefined): DerivedFeed | null => entry
+    ? {
+        logId: entry.log.id,
+        at: entry.at,
+        rawDate: entry.log.date,
+        byUid: typeof entry.log.loggedByUid === 'string' ? entry.log.loggedByUid : null,
+        byName: typeof entry.log.loggedByName === 'string' ? entry.log.loggedByName : null,
+      }
+    : null;
+  return { latest: feed(named[0]), prev: feed(named[1]), day: today, countOnDay: countOnHouseholdDay(surviving, today, timeZone, now) };
+}
+
+/** The state after deleting a feeding (Undo or a history delete); null when the pet has no state yet. */
+export function planFeedDelete(input: { now: Date; timeZone?: string | null; logs: StateLog[]; logId: string; hasState: boolean }): DerivedFeedingState | null {
+  if (!input.hasState) return null;
+  return deriveFeedingState(input.logs.filter((log) => log.id !== input.logId), input);
+}
+
+/**
+ * The state after correcting a feeding's time (PE-5e): the corrected log at its
+ * new time takes its place by effective time, as latest, previous or neither,
+ * and today's count follows. Null when the pet has no state yet.
+ */
+export function planFeedCorrection(input: {
+  now: Date;
+  timeZone?: string | null;
+  logs: StateLog[];
+  logId: string;
+  newDate: Date;
+  /** The stored value written to the log (a Timestamp), so the state names the identical time. */
+  rawNewDate?: unknown;
+  hasState: boolean;
+}): DerivedFeedingState | null {
+  if (!input.hasState) return null;
+  const corrected = input.logs.find((log) => log.id === input.logId);
+  return deriveFeedingState([...input.logs, { ...corrected, id: input.logId, date: input.rawNewDate ?? input.newDate }], input);
+}
 
 export type FeedPlan =
   /** This press was already recorded by an earlier attempt: report it, write nothing. */
@@ -124,8 +207,9 @@ export type FeedPlan =
       /** With `confirmed`: the last feeding's log the member saw when asked (stored as `confirmOf`). */
       confirmOf: string | null;
       fedAt: Date;
-      state: FeedStatePlan | null;
-      /** Today's count after this feed (0 when the entry is on another day). */
+      /** The state to store: derived from the surviving logs and this feed. */
+      state: DerivedFeedingState;
+      /** Today's count after this feed. */
       countToday: number;
       perDay: number | null;
     };
@@ -135,8 +219,8 @@ export type FeedPlan =
  * press wins (idempotent replay); then, for a live feed, the repeat check (the
  * last known feed under 90 minutes ago, or today's count complete); a
  * confirmation only passes while it still describes the current state; else
- * the write: the log, and the state when the log becomes the latest feed or
- * changes today's count.
+ * the write: the log, and the state derived from the surviving logs with it
+ * (`deriveFeedingState`; a live feed is the latest).
  */
 export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
   const { now, timeZone, perDay, stored, recent } = snapshot;
@@ -157,31 +241,29 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
   let repeat: 'none' | 'confirmed' = 'none';
   let confirmOf: string | null = null;
   if (!backdatedAt) {
-    const check = feedConfirmDecision({ state, known: latestKnown, now, timeZone, perDay, countToday });
-    if (check.needsConfirm) {
-      if (!confirmStillHolds(intent.confirm, check)) {
-        return { kind: 'needsConfirm', check, staleConfirm: Boolean(intent.confirm) };
-      }
+    const decided = feedConfirmDecision({ state, known: latestKnown, now, timeZone, perDay, countToday });
+    // The rules refused this press as plain (their clock saw a recent feed): ask instead of retrying it.
+    const check = !decided.needsConfirm && intent.serverRefusedPlain
+      ? { ...decided, needsConfirm: true, reason: decided.lastFedAt ? 'recent' as const : 'complete' as const }
+      : decided;
+    if (check.needsConfirm && !confirmStillHolds(intent.confirm, check)) {
+      return { kind: 'needsConfirm', check, staleConfirm: Boolean(intent.confirm) };
+    }
+    // An answer that still holds is written as confirmed even when this device's
+    // clock no longer sees a repeat (the rules, on server time, may still).
+    if (check.needsConfirm || confirmStillHolds(intent.confirm, check)) {
       repeat = 'confirmed';
       confirmOf = check.lastLogId;
     }
   }
 
   const fedAt = backdatedAt ?? now;
-  const count = countAfterFeed({ day: today, countOnDay: countToday }, householdDay(fedAt, timeZone));
-  let statePlan: FeedStatePlan | null = null;
-  if (becomesLatest(fedAt, Boolean(backdatedAt), state, latestKnown)) statePlan = { kind: 'latest', ...count };
-  else if (stored && (count.day !== stored.day || count.countOnDay !== stored.countOnDay)) statePlan = { kind: 'count', ...count };
-  return {
-    kind: 'write',
-    live: !backdatedAt,
-    repeat,
-    confirmOf,
-    fedAt,
-    state: statePlan,
-    countToday: count.day === today ? count.countOnDay : 0,
-    perDay,
-  };
+  const logId = intent.logId ?? 'new-feeding';
+  const derived = deriveFeedingState(
+    [...recent, { id: logId, date: fedAt, loggedByUid: intent.userUid, loggedByName: intent.userName ?? undefined }],
+    { now, timeZone, latestId: backdatedAt ? null : logId },
+  );
+  return { kind: 'write', live: !backdatedAt, repeat, confirmOf, fedAt, state: derived, countToday: derived.countOnDay, perDay };
 }
 
 /**
@@ -251,29 +333,6 @@ export function checkFeedCorrection(input: {
   return { ok: true };
 }
 
-/**
- * How the state changes when a feeding's time is corrected: today's count is
- * recounted with the log at its new time; when the log is the latest feed, its
- * time follows (`lastFedAt` = the corrected `date`). Null when nothing changes.
- */
-export function planCorrectionState(input: {
-  stored: FeedingStateView | null;
-  logId: string;
-  newDate: Date;
-  /** Surviving feedings from today's household start (the corrected log may or may not be among them). */
-  recent: FeedingEntry[];
-  now: Date;
-  timeZone?: string | null;
-}): { lastFedAt?: Date; day: string; countOnDay: number } | null {
-  const { stored, logId, newDate, now, timeZone } = input;
-  if (!stored) return null;
-  const today = householdDay(now, timeZone);
-  const logs = [...input.recent.filter((log) => log.id !== logId), { id: logId, date: newDate }];
-  const countOnDay = countOnHouseholdDay(logs, today, timeZone, now);
-  if (stored.lastLogId === logId) return { lastFedAt: newDate, day: today, countOnDay };
-  if (stored.day !== today || stored.countOnDay !== countOnDay) return { day: today, countOnDay };
-  return null;
-}
 
 /**
  * The two times of a feeding as history shows them (PE-5e): `effective` is when

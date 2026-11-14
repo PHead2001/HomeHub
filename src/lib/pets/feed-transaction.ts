@@ -36,14 +36,12 @@ import {
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline';
-import { feedingPlan, toDate, type FeedingEntry } from './care';
+import { feedingPlan } from './care';
 import {
   FEEDING_STATE_ID,
   feedReadStart,
   householdDay,
   householdDayStart,
-  countOnHouseholdDay,
-  planUndo,
   readFeedingState,
   type FeedCheck,
   type KnownFeedings,
@@ -51,11 +49,15 @@ import {
 import {
   checkFeedCorrection,
   feedLogId,
-  planCorrectionState,
   planFeed,
+  planFeedCorrection,
+  planFeedDelete,
   planOfflineFeed,
+  type DerivedFeed,
+  type DerivedFeedingState,
   type FeedConfirm,
   type FeedPlan,
+  type StateLog,
 } from './feed-plan';
 import type { FoodType, PetProfile, PortionUnit } from './types';
 
@@ -86,6 +88,8 @@ export type FeedPetInput = {
   known?: KnownFeedings | null;
   /** Reports a queued (offline) write that the server later refuses. */
   onLateError?: (error: unknown) => void;
+  /** This device's clock (injected in tests to model a clock ahead of or behind the server). */
+  clock?: () => Date;
 };
 
 export type FeedPetResult =
@@ -98,9 +102,9 @@ export type FeedPetResult =
 
 type WritePlan = Extract<FeedPlan, { kind: 'write' }>;
 
-function logData(input: FeedPetInput, plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null }): DocumentData {
+function logData(input: FeedPetInput, plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null }, stamp?: Timestamp): DocumentData {
   return {
-    date: plan.live ? serverTimestamp() : Timestamp.fromDate(plan.fedAt),
+    date: plan.live ? serverTimestamp() : stamp ?? Timestamp.fromDate(plan.fedAt),
     loggedAt: serverTimestamp(),
     cups: input.portion.amount,
     foodAmountType: input.portion.unit,
@@ -116,16 +120,28 @@ function logData(input: FeedPetInput, plan: { fedAt: Date; live: boolean; repeat
   };
 }
 
-/** The stored fields of a state, kept as stored (Timestamps unchanged), for `prev`. */
-function previousOf(raw: DocumentData | null) {
-  if (!raw) return null;
+/** A stored time as read (a Timestamp, kept exactly), else the Date as a Timestamp. */
+function storedTime(raw: unknown, at: Date): unknown {
+  return raw && typeof raw === 'object' && typeof (raw as { toMillis?: unknown }).toMillis === 'function' ? raw : Timestamp.fromDate(at);
+}
+
+/**
+ * The state document for a derived state (`deriveFeedingState`): each named
+ * feeding at its log's stored time (server time for this press's live log), so
+ * the rules can compare them exactly (feedingStateHonest).
+ */
+function stateDocument(derived: DerivedFeedingState, liveLogId: string | null): DocumentData {
+  const at = (feed: DerivedFeed) => (feed.logId === liveLogId ? serverTimestamp() : storedTime(feed.rawDate, feed.at));
+  const latest = derived.latest;
+  const prev = derived.prev;
   return {
-    lastLogId: raw.lastLogId ?? null,
-    lastFedAt: raw.lastFedAt ?? null,
-    lastFedByUid: raw.lastFedByUid ?? null,
-    lastFedByName: raw.lastFedByName ?? null,
-    day: raw.day ?? null,
-    countOnDay: typeof raw.countOnDay === 'number' ? raw.countOnDay : 0,
+    lastLogId: latest?.logId ?? null,
+    lastFedAt: latest ? at(latest) : null,
+    lastFedByUid: latest?.byUid ?? null,
+    lastFedByName: latest?.byName ?? null,
+    day: derived.day,
+    countOnDay: Math.min(derived.countOnDay, 1000),
+    prev: prev ? { lastLogId: prev.logId, lastFedAt: at(prev), lastFedByUid: prev.byUid, lastFedByName: prev.byName } : null,
   };
 }
 
@@ -139,7 +155,7 @@ const DAY_READ_LIMIT = 100;
  * callback, so a conflicting feed or Undo (each writes the state document) makes
  * the transaction retry with a fresh read.
  */
-export async function dayFeedings(db: Firestore, householdId: string, petId: string, start: Date): Promise<FeedingEntry[]> {
+export async function dayFeedings(db: Firestore, householdId: string, petId: string, start: Date): Promise<StateLog[]> {
   // Date-only or differently formatted strings compare as text: a one-day margin keeps them in range.
   const stringFloor = new Date(start.getTime() - 24 * 3_600_000).toISOString().slice(0, 10);
   const ref = logsRef(db, householdId, petId);
@@ -147,7 +163,24 @@ export async function dayFeedings(db: Firestore, householdId: string, petId: str
     getDocs(query(ref, where('date', '>=', Timestamp.fromDate(start)), orderBy('date', 'desc'), limit(DAY_READ_LIMIT))),
     getDocs(query(ref, where('date', '>=', stringFloor), orderBy('date', 'desc'), limit(DAY_READ_LIMIT))),
   ]);
-  return shapes.flatMap((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as FeedingEntry));
+  return shapes.flatMap((snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as StateLog));
+}
+
+/** Lowest Timestamp, so the Timestamp-shape query matches every Timestamp date. */
+const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
+
+/**
+ * What the state is derived from: today's feedings (`dayFeedings` from `start`)
+ * plus the newest Timestamp-dated feedings whatever their day (the latest and
+ * previous feed may be days old). Read in the transaction callback, as
+ * `dayFeedings`, so a conflicting state write makes the attempt retry.
+ */
+async function stateFeedings(db: Firestore, householdId: string, petId: string, start: Date): Promise<StateLog[]> {
+  const [day, newest] = await Promise.all([
+    dayFeedings(db, householdId, petId, start),
+    getDocs(query(logsRef(db, householdId, petId), where('date', '>=', MIN_TIMESTAMP), orderBy('date', 'desc'), limit(5))),
+  ]);
+  return [...day, ...newest.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as StateLog)];
 }
 
 /**
@@ -160,22 +193,23 @@ export async function runFeed(db: Firestore, input: FeedPetInput): Promise<FeedP
   const logId = feedLogId(input.opId);
   if (isBrowserOffline()) return feedOffline(db, input, logId);
   try {
-    return await feedOnline(db, input, logId);
+    return await feedOnline(db, input, logId, false);
   } catch (error) {
-    // A commit that raced another writer can be refused by the rules, which then
-    // judge it against the newer documents (this press's log already exists, or
-    // the state now names someone else's feed) instead of reporting a conflict.
-    // Run the press once more on a fresh read: it then finds its own log, or asks
-    // "Feed again?". A refusal that is real is refused again and thrown.
+    // A refused commit: it raced another writer (this press's log already exists,
+    // or the state now names someone else's feed), or the rules' server clock saw
+    // a recent feed this device's clock did not. Run the press once more on a
+    // fresh read, never planning the same plain feed: it finds its own log, or
+    // asks "Feed again?" (so a skewed clock never ends in an endless Retry). A
+    // refusal that is real is refused again and thrown.
     if (!isPermissionDenied(error)) throw error;
-    return feedOnline(db, input, logId);
+    return feedOnline(db, input, logId, true);
   }
 }
 
 const isPermissionDenied = (error: unknown) =>
   Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === 'permission-denied');
 
-async function feedOnline(db: Firestore, input: FeedPetInput, logId: string): Promise<FeedPetResult> {
+async function feedOnline(db: Firestore, input: FeedPetInput, logId: string, serverRefusedPlain: boolean): Promise<FeedPetResult> {
   const { householdId, petId, known, timeZone } = input;
   return runTransaction(db, async (tx) => {
     const logRef = doc(logsRef(db, householdId, petId), logId);
@@ -187,12 +221,13 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string): Pr
     const stored = readFeedingState(raw);
     // A latest feed deleted offline is not a feed (its log is gone).
     const latestSurvives = stored?.lastLogId ? (await tx.get(doc(logsRef(db, householdId, petId), stored.lastLogId))).exists() : false;
-    const now = new Date();
+    const now = input.clock?.() ?? new Date();
     const today = householdDay(now, timeZone);
     // Surviving feedings from today's start or the last 90 minutes, whichever is
-    // earlier, read on every attempt (a feeding just before household midnight
-    // still counts as recent; today's count comes from today's logs only).
-    const recent = await dayFeedings(db, householdId, petId, feedReadStart(today, now, timeZone));
+    // earlier, plus the newest ones, read on every attempt (a feeding just before
+    // household midnight still counts as recent; today's count comes from today's
+    // logs only; the state is derived from them).
+    const recent = await stateFeedings(db, householdId, petId, feedReadStart(today, now, timeZone));
     const plan = planFeed(
       {
         now,
@@ -204,11 +239,11 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string): Pr
         known,
         existing: existingSnapshot.exists() ? { loggedByUid: (existingSnapshot.get('loggedByUid') as string | undefined) ?? null } : null,
       },
-      { userUid: input.user.uid, confirm: input.confirm, backdatedAt: input.backdatedAt },
+      { userUid: input.user.uid, userName: input.user.name, logId, confirm: input.confirm, backdatedAt: input.backdatedAt, serverRefusedPlain },
     );
     if (plan.kind === 'already') return { status: 'saved', logId, countToday: plan.countToday, perDay: plan.perDay, replayed: true } as const;
     if (plan.kind === 'needsConfirm') return { status: 'needsConfirm', staleConfirm: plan.staleConfirm, ...plan.check } as const;
-    writeFeed(tx, db, input, logRef.id, plan, raw);
+    writeFeed(tx, db, input, logRef.id, plan);
     return { status: 'saved', logId, countToday: plan.countToday, perDay: plan.perDay } as const;
   });
 }
@@ -219,29 +254,20 @@ function writeFeed(
   input: FeedPetInput,
   logId: string,
   plan: WritePlan,
-  raw: DocumentData | null,
 ) {
   const { householdId, petId } = input;
-  tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, plan));
-  if (plan.state?.kind === 'latest') {
-    tx.set(stateRef(db, householdId, petId), {
-      lastLogId: logId,
-      lastFedAt: plan.live ? serverTimestamp() : Timestamp.fromDate(plan.fedAt),
-      lastFedByUid: input.user.uid,
-      lastFedByName: input.user.name,
-      day: plan.state.day,
-      countOnDay: plan.state.countOnDay,
-      prev: previousOf(raw),
-    });
-  } else if (plan.state?.kind === 'count') {
-    // An older backdated entry: only today's count can change, never who fed last.
-    tx.update(stateRef(db, householdId, petId), { day: plan.state.day, countOnDay: plan.state.countOnDay });
-  }
+  // A backdated entry's log and state carry the same Timestamp, so the rules see one time.
+  const stamp = Timestamp.fromDate(plan.fedAt);
+  tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, plan, stamp));
+  const state = plan.live
+    ? plan.state
+    : { ...plan.state, latest: plan.state.latest?.logId === logId ? { ...plan.state.latest, rawDate: stamp } : plan.state.latest, prev: plan.state.prev?.logId === logId ? { ...plan.state.prev, rawDate: stamp } : plan.state.prev };
+  tx.set(stateRef(db, householdId, petId), stateDocument(state, plan.live ? logId : null));
 }
 
 async function feedOffline(db: Firestore, input: FeedPetInput, logId: string): Promise<FeedPetResult> {
   const { householdId, petId, known, timeZone } = input;
-  const now = new Date();
+  const now = input.clock?.() ?? new Date();
   const logRef = doc(logsRef(db, householdId, petId), logId);
   // Only what this device has cached: this press's log (already queued?), the pet's plan and the last state it saw.
   const [existing, petSnapshot, stateSnapshot] = await Promise.all([
@@ -290,37 +316,15 @@ export async function runUndoFeed(db: Firestore, input: {
     const stateSnapshot = await tx.get(stateRef(db, householdId, petId));
     const logSnapshot = await tx.get(logRef);
     if (!logSnapshot.exists()) return;
-    const raw = stateSnapshot.exists() ? stateSnapshot.data() : null;
-    const state = readFeedingState(raw);
-    // Restoring `prev` only brings back a feed whose log still exists.
-    const prevLogId = state?.lastLogId === logId ? state.prevLogId : null;
-    const prevSurvives = prevLogId ? (await tx.get(doc(logsRef(db, householdId, petId), prevLogId))).exists() : false;
-    const date = toDate(logSnapshot.get('date'));
-    const plan = planUndo(state, { id: logId, day: date ? householdDay(date, timeZone) : null }, prevSurvives);
-    // The count is today's surviving feedings, read now (repairs a count left by an offline delete).
     const now = new Date();
     const today = householdDay(now, timeZone);
-    const countOnDay = state ? countOnHouseholdDay(await dayFeedings(db, householdId, petId, householdDayStart(today, timeZone)), today, timeZone, now, logId) : 0;
+    // The state is derived again from the surviving logs without this one: the
+    // previous feed comes back at its own (possibly corrected) time, never from
+    // an old snapshot, and today's count repairs any offline delete.
+    const logs = await stateFeedings(db, householdId, petId, householdDayStart(today, timeZone));
+    const derived = planFeedDelete({ now, timeZone, logs, logId, hasState: stateSnapshot.exists() });
     tx.delete(logRef);
-    if (plan.kind === 'restore') {
-      const prev = plan.restorePrev ? previousOf(raw?.prev ?? null) : null;
-      tx.set(stateRef(db, householdId, petId), {
-        lastLogId: prev?.lastLogId ?? null,
-        lastFedAt: prev?.lastFedAt ?? null,
-        lastFedByUid: prev?.lastFedByUid ?? null,
-        lastFedByName: prev?.lastFedByName ?? null,
-        day: today,
-        countOnDay,
-        prev: null,
-      });
-    } else if (plan.kind === 'count' || (state && (state.day !== today || state.countOnDay !== countOnDay))) {
-      // Deleting the feed `prev` points at clears `prev`, so no later Undo restores it.
-      tx.update(stateRef(db, householdId, petId), {
-        day: today,
-        countOnDay,
-        ...(plan.kind === 'count' && plan.dropPrev ? { prev: null } : {}),
-      });
-    }
+    if (derived) tx.set(stateRef(db, householdId, petId), stateDocument(derived, null));
   });
   return 'saved';
 }
@@ -365,8 +369,7 @@ export async function runCorrectFeedTime(db: Firestore, input: {
     const check = checkFeedCorrection({ log: data, viewerUid: input.user.uid, canDeleteLogs: input.canDeleteLogs, newDate: date, now });
     if (!check.ok) throw new FeedCorrectionError(check.reason);
     const today = householdDay(now, timeZone);
-    const recent = await dayFeedings(db, householdId, petId, householdDayStart(today, timeZone));
-    const stored = readFeedingState(stateSnapshot.exists() ? stateSnapshot.data() : null);
+    const read = await stateFeedings(db, householdId, petId, householdDayStart(today, timeZone));
     const stamp = Timestamp.fromDate(date);
     tx.update(logRef, {
       date: stamp,
@@ -376,14 +379,19 @@ export async function runCorrectFeedTime(db: Firestore, input: {
       dateCorrectedByUid: input.user.uid,
       dateCorrectedByName: input.user.name,
     });
-    const statePlan = planCorrectionState({ stored, logId, newDate: date, recent, now, timeZone });
-    if (statePlan) {
-      tx.update(stateRef(db, householdId, petId), {
-        ...(statePlan.lastFedAt ? { lastFedAt: stamp } : {}),
-        day: statePlan.day,
-        countOnDay: statePlan.countOnDay,
-      });
-    }
+    // The corrected feeding takes its place by effective time (latest, previous
+    // or neither); the state is derived again, so a corrected previous feed is
+    // never restored later at its old time.
+    const derived = planFeedCorrection({
+      now,
+      timeZone,
+      logs: [...read, { id: logId, ...data } as StateLog],
+      logId,
+      newDate: date,
+      rawNewDate: stamp,
+      hasState: stateSnapshot.exists(),
+    });
+    if (derived) tx.set(stateRef(db, householdId, petId), stateDocument(derived, null));
   });
   return 'saved';
 }

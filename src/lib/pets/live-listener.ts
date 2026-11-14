@@ -69,3 +69,15 @@ export function unavailableText(subject: string, failure: LiveFailure): string {
     ? `${subject} isn't available to you: your access to pets changed.`
     : `${subject} is unavailable right now. Reconnecting…`;
 }
+
+/**
+ * The identity of a Pets listener: what it reads (`scope`, e.g. household and
+ * pet) and who reads it (the member's uid and whether they hold `pets.view`).
+ * Listeners are keyed on it, so when access returns (pets.view granted again)
+ * or another member signs in, a listener that settled on `unauthorized` is
+ * recreated instead of staying refused until a reload. Null without a scope.
+ */
+export function petListenerKey(scope: string | null, access: { uid?: string | null; canView: boolean }): string | null {
+  if (!scope) return null;
+  return `${scope}|${access.uid ?? ''}|${access.canView ? 'view' : 'no-view'}`;
+}

@@ -2412,17 +2412,17 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     await assertFails(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: current }), { loggedByUid: users.child.uid }).commit());
   });
 
-  test('a new feed must carry the replaced state exactly as prev (no fabricated snapshot to restore later)', async () => {
+  test('the state names real feedings: each at its own time, author and name (no fabricated previous feed)', async () => {
     const member = users.member;
-    // prev.lastLogId matches, but who and when are fabricated: refused.
+    // prev names "recent", but with a fabricated author or time: refused.
     await assertFails(feedBatch(member, logId => stateFor(member, logId, {
-      prev: { ...current, lastFedByUid: users.child.uid, lastFedByName: 'Child', lastFedAt: minutesAgo(1) },
+      prev: { ...current, lastFedByUid: users.child.uid, lastFedByName: 'Child' },
     })).commit());
-    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, countOnDay: 9 } })).commit());
-    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, day: '2026-11-09' } })).commit());
-    // null may not discard an existing latest feed.
-    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: null })).commit());
-    // The exact replaced state is accepted, and Undo can then bring back only that.
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, lastFedAt: minutesAgo(1) } })).commit());
+    // prev naming a log that does not exist, or the latest feed itself: refused.
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { ...current, lastLogId: 'missing' } })).commit());
+    await assertFails(feedBatch(member, logId => stateFor(member, logId, { prev: { lastLogId: logId, lastFedAt: serverTimestamp(), lastFedByUid: member.uid, lastFedByName: 'Someone' } })).commit());
+    // The real previous feed, or none, is accepted; Undo then names the surviving feed at its own time.
     const batch = writeBatch(dbOf(member));
     const ref = doc(logs(member));
     batch.set(ref, liveFeeding(member));
@@ -2430,62 +2430,67 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
     await assertSucceeds(batch.commit());
     const undo = writeBatch(dbOf(member));
     undo.delete(log(member, ref.id));
-    undo.set(state(member), { ...current, prev: null });
+    undo.set(state(member), { ...current, prev: { ...previous } });
     await assertSucceeds(undo.commit());
   });
 
-  test('deleting the feed prev points at clears prev; a deleted prev is never restored', async () => {
-    // Dropping prev while its log still exists is refused.
-    await assertFails(updateDoc(state(users.member), { prev: null }));
-    // Delete the older feed prev points at (pets.deleteLogs) and clear prev in one commit.
-    const drop = writeBatch(dbOf(users.owner));
-    drop.delete(log(users.owner, 'older'));
-    drop.update(state(users.owner), { countOnDay: 1, prev: null });
-    await assertSucceeds(drop.commit());
-    // Then deleting the latest feed clears it (nothing survives to restore).
-    const clear = writeBatch(dbOf(users.member));
-    clear.delete(log(users.member, 'recent'));
-    clear.set(state(users.member), { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: '2026-11-10', countOnDay: 0, prev: null });
-    await assertSucceeds(clear.commit());
+  test('the latest feed only moves back in time when the feed it named is gone or was corrected', async () => {
+    // "older" is a real feed, but "recent" (the latest) still exists unchanged: naming "older" is refused.
+    await assertFails(setDoc(state(users.member), { ...previous, prev: null }));
+    await assertFails(updateDoc(state(users.member), { lastLogId: 'older', lastFedAt: previous.lastFedAt, lastFedByUid: users.child.uid, lastFedByName: 'Child' }));
+    // Count-only and previous-feed changes are fine; so is clearing prev.
+    await assertSucceeds(updateDoc(state(users.member), { countOnDay: 0 }));
+    await assertSucceeds(updateDoc(state(users.member), { prev: null }));
+    // Moving forward to a newer feed (one that synced from offline) is fine.
+    const synced = await addDoc(logs(users.child), offlineFeeding(users.child, { date: minutesAgo(1) }));
+    const syncedData = (await getDoc(log(users.child, synced.id))).data()!;
+    await assertSucceeds(updateDoc(state(users.member), {
+      lastLogId: synced.id, lastFedAt: syncedData.date, lastFedByUid: users.child.uid, lastFedByName: 'Someone',
+      prev: { lastLogId: 'recent', lastFedAt: current.lastFedAt, lastFedByUid: users.member.uid, lastFedByName: 'Member' },
+    }));
   });
 
-  test('a prev whose log is gone cannot be restored, and clearing needs a gone prev', async () => {
-    const cleared = { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: '2026-11-10', countOnDay: 1, prev: null };
-    // prev's log still exists: clearing the latest feed instead of restoring it is refused.
-    const discard = writeBatch(dbOf(users.member));
-    discard.delete(log(users.member, 'recent'));
-    discard.set(state(users.member), cleared);
-    await assertFails(discard.commit());
-    // prev's log was deleted outside the operation (an old client): restoring it is refused, clearing is allowed.
+  test('deleting the latest feed: the state names a surviving feed at its own time, or nothing', async () => {
+    // Restoring a feed whose log is gone is refused; naming the surviving one, or clearing, is accepted.
     await environment.withSecurityRulesDisabled(async context => {
       await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'older'));
     });
-    const restore = writeBatch(dbOf(users.member));
-    restore.delete(log(users.member, 'recent'));
-    restore.set(state(users.member), { ...previous, countOnDay: 1, prev: null });
-    await assertFails(restore.commit());
-    const clear = writeBatch(dbOf(users.member));
-    clear.delete(log(users.member, 'recent'));
-    clear.set(state(users.member), cleared);
-    await assertSucceeds(clear.commit());
+    const restoreGone = writeBatch(dbOf(users.member));
+    restoreGone.delete(log(users.member, 'recent'));
+    restoreGone.set(state(users.member), { ...previous, countOnDay: 0, prev: null });
+    await assertFails(restoreGone.commit());
+    const stale = (await getDoc(log(users.member, 'stale'))).data()!;
+    const toStale = writeBatch(dbOf(users.member));
+    toStale.delete(log(users.member, 'recent'));
+    toStale.set(state(users.member), { lastLogId: 'stale', lastFedAt: stale.date, lastFedByUid: users.member.uid, lastFedByName: 'Member', day: '2026-11-10', countOnDay: 1, prev: null });
+    await assertSucceeds(toStale.commit());
   });
 
-  test('undo restores exactly the stored prev, or only changes the count', async () => {
-    const db = dbOf(users.member);
-    // Restoring something other than `prev` (an old whole snapshot) is refused.
-    const forged = writeBatch(db);
-    forged.delete(log(users.member, 'recent'));
-    forged.set(state(users.member), { ...previous, lastLogId: 'stale', countOnDay: 1, prev: null });
-    await assertFails(forged.commit());
-    // Restoring `prev` while the log still exists is refused.
-    await assertFails(setDoc(state(users.member), { ...previous, countOnDay: 1, prev: null }));
-    // Count-only changes are allowed.
-    await assertSucceeds(updateDoc(state(users.member), { countOnDay: 0 }));
-    // Delete the latest log and restore `prev` in one commit.
-    const undo = writeBatch(db);
-    undo.delete(log(users.member, 'recent'));
-    undo.set(state(users.member), { ...previous, countOnDay: 0, prev: null });
-    await assertSucceeds(undo.commit());
+  test('a corrected previous feed comes back at its corrected time, never its old one (feed A, feed B, correct A, undo B)', async () => {
+    // State: latest "recent" (B), previous "older" (A). A is corrected to 01:00 by the owner.
+    const corrected = Timestamp.fromDate(new Date('2026-11-10T07:00:00.000Z'));
+    const correct = writeBatch(dbOf(users.owner));
+    correct.update(log(users.owner, 'older'), {
+      date: corrected, originalDate: previous.lastFedAt, dateCorrectedAt: serverTimestamp(), dateCorrectedByUid: users.owner.uid, dateCorrectedByName: 'Owner',
+    });
+    // Keeping the old time of A as prev is refused; its corrected time is accepted.
+    correct.update(state(users.owner), { prev: { ...previous } });
+    await assertFails(correct.commit());
+    const correct2 = writeBatch(dbOf(users.owner));
+    correct2.update(log(users.owner, 'older'), {
+      date: corrected, originalDate: previous.lastFedAt, dateCorrectedAt: serverTimestamp(), dateCorrectedByUid: users.owner.uid, dateCorrectedByName: 'Owner',
+    });
+    correct2.update(state(users.owner), { prev: { ...previous, lastFedAt: corrected } });
+    await assertSucceeds(correct2.commit());
+    // Undo B: naming A at its old time is refused, at its corrected time accepted.
+    const old = writeBatch(dbOf(users.member));
+    old.delete(log(users.member, 'recent'));
+    old.set(state(users.member), { ...previous, countOnDay: 0, prev: null });
+    await assertFails(old.commit());
+    const fresh = writeBatch(dbOf(users.member));
+    fresh.delete(log(users.member, 'recent'));
+    fresh.set(state(users.member), { ...previous, lastFedAt: corrected, countOnDay: 0, prev: null });
+    await assertSucceeds(fresh.commit());
   });
 
   test('the author may delete their own feeding for 10 minutes; others need pets.deleteLogs', async () => {
@@ -2564,7 +2569,8 @@ describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {
       await environment.withSecurityRulesDisabled(async context => {
         await deleteDoc(doc(context.firestore(), ...petPath, 'feeding-logs', 'recent'));
       });
-      await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: current }), { repeat: 'none', confirmOf: undefined }).commit());
+      // The derived previous feed is a surviving one (none named here).
+      await assertSucceeds(feedBatch(users.member, logId => stateFor(users.member, logId, { prev: null }), { repeat: 'none', confirmOf: undefined }).commit());
     });
 
     test('server time: a live feed with a chosen date, or a device time far ahead, is refused', async () => {

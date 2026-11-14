@@ -994,86 +994,54 @@ service cloud.firestore {
       return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/feeding-logs/$(logId);
     }
 
-    // `snapshot` (a `prev` map) holds exactly the six stored fields of `state`.
-    function feedingStateCopies(snapshot, state) {
-      return snapshot is map &&
-        snapshot.get('lastLogId', null) == state.get('lastLogId', null) &&
-        snapshot.get('lastFedAt', null) == state.get('lastFedAt', null) &&
-        snapshot.get('lastFedByUid', null) == state.get('lastFedByUid', null) &&
-        snapshot.get('lastFedByName', null) == state.get('lastFedByName', null) &&
-        snapshot.get('day', null) == state.get('day', null) &&
-        snapshot.get('countOnDay', 0) == state.get('countOnDay', 0);
+    // The feeding state names real feedings: a feeding it names is a log that
+    // exists once this write commits, with that log's own effective time
+    // (`date`, a timestamp), author and name; or nothing (all four null).
+    function feedingStateNames(householdId, petId, id, at, uid, name) {
+      return (id == null && at == null && uid == null && name == null) ||
+        (id is string &&
+          existsAfter(feedingLogPath(householdId, petId, id)) &&
+          getAfter(feedingLogPath(householdId, petId, id)).data.get('date', null) is timestamp &&
+          getAfter(feedingLogPath(householdId, petId, id)).data.date == at &&
+          getAfter(feedingLogPath(householdId, petId, id)).data.get('loggedByUid', null) == uid &&
+          getAfter(feedingLogPath(householdId, petId, id)).data.get('loggedByName', null) == name);
     }
 
-    // A new latest feed: by the writer, pointing at a log the writer owns that
-    // exists once this write commits, at that log's time (stage R2: a state
-    // cannot claim an older feed than its log, which would skip the next
-    // member's "Feed again?"). `prev` is exactly the replaced state (null only
-    // when there was none), so an Undo can only bring back what was there.
-    function feedingStateFed(householdId, petId) {
+    // The state is derived from the surviving logs (src/lib/pets/feed-plan.ts
+    // deriveFeedingState): its latest feed and its previous feed are real logs at
+    // their own effective times, the previous one is another log and not newer.
+    // No snapshot is ever restored, so a corrected or deleted feeding can't come
+    // back with an old time.
+    function feedingStateHonest(householdId, petId) {
       let after = request.resource.data;
-      return after.lastLogId is string &&
-        after.lastFedByUid == request.auth.uid &&
-        (resource == null || after.lastLogId != resource.data.get('lastLogId', null)) &&
-        existsAfter(feedingLogPath(householdId, petId, after.lastLogId)) &&
-        getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('loggedByUid', null) == request.auth.uid &&
-        after.get('lastFedAt', null) == getAfter(feedingLogPath(householdId, petId, after.lastLogId)).data.get('date', null) &&
-        ((resource == null && after.get('prev', null) == null) ||
-          (resource != null && feedingStateCopies(after.get('prev', null), resource.data)));
+      let prev = after.get('prev', null);
+      return feedingStateNames(householdId, petId, after.get('lastLogId', null), after.get('lastFedAt', null),
+          after.get('lastFedByUid', null), after.get('lastFedByName', null)) &&
+        (prev == null ||
+          (prev.get('lastLogId', null) is string &&
+            prev.lastLogId != after.get('lastLogId', null) &&
+            after.get('lastFedAt', null) is timestamp &&
+            prev.get('lastFedAt', null) is timestamp &&
+            prev.lastFedAt <= after.lastFedAt &&
+            feedingStateNames(householdId, petId, prev.lastLogId, prev.lastFedAt,
+              prev.get('lastFedByUid', null), prev.get('lastFedByName', null))));
     }
 
-    // Only the day count changes (an older backdated entry, or deleting an older log).
-    function feedingStateCounted() {
-      return resource != null &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay']);
-    }
-
-    // A time correction of the latest feed (PE-5e): the latest feed stays the
-    // same log, and its time becomes that log's corrected `date` (with the count).
-    function feedingStateRetimed(householdId, petId) {
-      let before = resource.data;
+    // The client can't be proven to name the newest log (rules can't query), so
+    // the latest feed may only move back in time when the feeding it named is
+    // gone after this write (Undo, delete) or its time changed in this write
+    // (a correction); otherwise it stays or moves forward (a newer feed, or one
+    // that synced from offline). A member can't hide a recent feed this way.
+    function feedingLatestMoveAllowed(householdId, petId) {
       let after = request.resource.data;
-      return resource != null &&
-        after.diff(before).affectedKeys().hasOnly(['lastFedAt', 'day', 'countOnDay']) &&
-        before.get('lastLogId', null) is string &&
-        after.get('lastFedAt', null) is timestamp &&
-        after.lastFedAt == getAfter(feedingLogPath(householdId, petId, before.lastLogId)).data.get('date', null);
-    }
-
-    // The log a stored `prev` points at is gone once this write commits (or it points at none).
-    function feedingPrevGone(householdId, petId, prev) {
-      return prev == null || !(prev.get('lastLogId', null) is string) ||
-        !existsAfter(feedingLogPath(householdId, petId, prev.lastLogId));
-    }
-
-    // Deleting the feed `prev` points at (an older log): `prev` is cleared with
-    // the count, so a later Undo never brings back a deleted feed.
-    function feedingStatePrevDropped(householdId, petId) {
-      return resource != null &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['day', 'countOnDay', 'prev']) &&
-        request.resource.data.get('prev', null) == null &&
-        resource.data.get('prev', null) != null &&
-        feedingPrevGone(householdId, petId, resource.data.prev);
-    }
-
-    // Undo of the latest feed: that log is gone after this write, and the latest
-    // feed becomes exactly the stored `prev` while its log still exists, or
-    // nothing when there is no surviving `prev`; never another snapshot.
-    function feedingStateRestored(householdId, petId) {
-      let before = resource.data;
-      let after = request.resource.data;
-      let prev = before.get('prev', null);
-      return before.get('lastLogId', null) is string &&
-        !existsAfter(feedingLogPath(householdId, petId, before.lastLogId)) &&
-        after.get('prev', null) == null &&
-        ((feedingPrevGone(householdId, petId, prev) &&
-            after.lastLogId == null && after.lastFedAt == null &&
-            after.lastFedByUid == null && after.lastFedByName == null) ||
-          (!feedingPrevGone(householdId, petId, prev) &&
-            after.lastLogId == prev.get('lastLogId', null) &&
-            after.lastFedAt == prev.get('lastFedAt', null) &&
-            after.lastFedByUid == prev.get('lastFedByUid', null) &&
-            after.lastFedByName == prev.get('lastFedByName', null)));
+      let before = resource == null ? null : resource.data;
+      return before == null ||
+        !(before.get('lastLogId', null) is string) ||
+        after.get('lastLogId', null) == before.lastLogId ||
+        !existsAfter(feedingLogPath(householdId, petId, before.lastLogId)) ||
+        getAfter(feedingLogPath(householdId, petId, before.lastLogId)).data.get('date', null) != before.get('lastFedAt', null) ||
+        (after.get('lastFedAt', null) is timestamp && before.get('lastFedAt', null) is timestamp &&
+          after.lastFedAt >= before.lastFedAt);
     }
 
     function validMedicationLogFields(data, keys) {
@@ -1496,20 +1464,20 @@ service cloud.firestore {
             feedingAuthorWithinUndoWindow(householdId);
         }
 
-        // The feeding state: validated shape and pairing with the log (R1), the
-        // latest feed's time bound to its log (R2), time corrections (PE-5e).
+        // The feeding state: a cache of the surviving logs by effective time
+        // (latest, previous, today's count), written with every online feed,
+        // Undo, delete and time correction; see feedingStateHonest.
         match /feeding-state/{stateId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view');
           allow create: if stateId == 'current' &&
-            hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingState(request.resource.data) &&
-            feedingStateFed(householdId, petId);
+            feedingStateHonest(householdId, petId);
           allow update: if stateId == 'current' &&
+            (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingState(request.resource.data) &&
-            ((hasHouseholdPermission(householdId, 'pets.addLogs') && feedingStateFed(householdId, petId)) ||
-              ((hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
-                (feedingStateCounted() || feedingStatePrevDropped(householdId, petId) ||
-                  feedingStateRestored(householdId, petId) || feedingStateRetimed(householdId, petId))));
+            feedingStateHonest(householdId, petId) &&
+            feedingLatestMoveAllowed(householdId, petId);
           allow delete: if false;
         }
 

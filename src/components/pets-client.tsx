@@ -8,7 +8,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
-import { petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
+import { petListenerKey, petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
 import type { PetProfile } from '@/lib/pets/types';
 import { FEED_SHORTCUT_PARAM, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
@@ -53,8 +53,10 @@ export function PetsClient() {
   // Keyed by household so a household switch never shows the previous pets.
   // `failed`: the list could not be read (`retrying`: it resubscribes on its own;
   // `unauthorized`: access was refused, so no "Try again" is offered, PE-18c).
-  const [snapshot, setSnapshot] = useState<{ householdId: string | null; pets: PetProfile[]; loaded: boolean; failed: false | 'retrying' | 'unauthorized' }>({
-    householdId: null,
+  // Keyed by the listener (household, member, pets.view), so access returning starts a fresh read.
+  const listKey = petListenerKey(householdId ? `${householdId}/pets` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  const [snapshot, setSnapshot] = useState<{ key: string | null; pets: PetProfile[]; loaded: boolean; failed: false | 'retrying' | 'unauthorized' }>({
+    key: null,
     pets: [],
     loaded: false,
     failed: false,
@@ -71,20 +73,20 @@ export function PetsClient() {
   // A resilient listener (PE-8g): a failed read resubscribes with bounded backoff
   // and on `online` / page visible; already loaded pets stay while it retries.
   useEffect(() => {
-    if (!householdId) return;
+    if (!householdId || !listKey) return;
     const handle = petSnapshotListener<QuerySnapshot>(
       (next, error) => onSnapshot(collection(db, 'households', householdId, 'pets'), { includeMetadataChanges: true }, next, error),
       {
         next: (result) => {
           const next = result.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as PetProfile);
-          setSnapshot({ householdId, pets: next.sort((a, b) => a.name.localeCompare(b.name)), loaded: true, failed: false });
+          setSnapshot({ key: listKey, pets: next.sort((a, b) => a.name.localeCompare(b.name)), loaded: true, failed: false });
         },
         status: (status) => {
           if (status.kind === 'live') return;
           console.error('Error loading pets:', status.error);
-          setSnapshot((previous) => previous.householdId === householdId && previous.loaded
+          setSnapshot((previous) => previous.key === listKey && previous.loaded
             ? { ...previous, failed: status.kind }
-            : { householdId, pets: [], loaded: false, failed: status.kind });
+            : { key: listKey, pets: [], loaded: false, failed: status.kind });
         },
       },
     );
@@ -93,9 +95,10 @@ export function PetsClient() {
       handle.stop();
       if (listHandle.current === handle) listHandle.current = null;
     };
-  }, [householdId]);
+    // Recreated when the member or their pets.view changes: a refused list recovers when access returns.
+  }, [householdId, listKey]);
 
-  const ready = snapshot.householdId === householdId && (snapshot.loaded || snapshot.failed !== false);
+  const ready = snapshot.key === listKey && (snapshot.loaded || snapshot.failed !== false);
   const loading = Boolean(householdId) && !ready;
   const pets = useMemo(() => (ready ? snapshot.pets : []), [ready, snapshot.pets]);
   const loadFailed = ready && !snapshot.loaded ? snapshot.failed : false;

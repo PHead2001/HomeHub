@@ -14,8 +14,16 @@ import { UNDO_WINDOW_MS } from '../undo-window';
 import { DEFAULT_TIME_ZONE, localDay, safeTimeZone, zonedMidnightIso } from '../../../functions/src/shared/calendar';
 import { formatAgo, seenFeedingDate, toDate, type FeedingEntry } from './care';
 
-/** A feeding this recent asks "Feed again?" (audit PE-1/PE-23: "under about 90 minutes"). */
+/** A feeding this recent asks "Feed again?" (audit PE-1/PE-23: "under about 90 minutes"). The rules use it on server time. */
 export const FEED_REPEAT_WINDOW_MS = 90 * 60_000;
+
+/**
+ * The client asks a little longer than the rules refuse (90 + 5 minutes on this
+ * device's clock), so a device clock up to 5 minutes off never plans a plain feed
+ * the rules then refuse on server time. Beyond that, a refused plain feed turns
+ * into "Feed again?" (`serverRefusedPlain` in feed-plan.ts).
+ */
+export const FEED_CLOCK_MARGIN_MS = 5 * 60_000;
 
 /**
  * How long the Undo toast stays (audit 16.3: the 10-second Undo for everyone who
@@ -156,7 +164,7 @@ export function feedConfirmDecision(input: {
   const stateCount = state && state.day === today ? state.countOnDay : 0;
   const countToday = typeof input.countToday === 'number' ? input.countToday : Math.max(stateCount, known?.countToday ?? 0);
   // A future time (another device's clock) counts as recent.
-  const recent = Boolean(lastFedAt) && now.getTime() - lastFedAt!.getTime() < FEED_REPEAT_WINDOW_MS;
+  const recent = Boolean(lastFedAt) && now.getTime() - lastFedAt!.getTime() < FEED_REPEAT_WINDOW_MS + FEED_CLOCK_MARGIN_MS;
   const complete = perDay != null && perDay > 0 && countToday >= perDay;
   const reason = recent ? 'recent' : complete ? 'complete' : null;
   return { needsConfirm: reason !== null, reason, lastLogId, lastFedAt, lastFedByUid, lastFedByName, countToday, perDay };
@@ -239,56 +247,6 @@ export function newerKnown(a: KnownFeedings | null | undefined, b: KnownFeedings
 export function withSurvivingLatest(state: FeedingStateView | null, latestSurvives: boolean): FeedingStateView | null {
   if (!state || latestSurvives || !state.lastLogId) return state;
   return { ...state, lastFedAt: null, lastFedByUid: null, lastFedByName: null };
-}
-
-/** The day count after logging a feeding on `logDay`. */
-export function countAfterFeed(base: { day: string; countOnDay: number }, logDay: string): { day: string; countOnDay: number } {
-  if (logDay === base.day) return { day: base.day, countOnDay: base.countOnDay + 1 };
-  // A later day starts a new count; an earlier (backdated) day leaves today's count alone.
-  if (logDay > base.day) return { day: logDay, countOnDay: 1 };
-  return base;
-}
-
-/**
- * Whether a new feeding at `fedAt` becomes the state's latest feed. Live feeds
- * always do; a backdated entry only when it is newer than every feeding known.
- */
-export function becomesLatest(fedAt: Date, backdated: boolean, state: FeedingStateView | null, known?: KnownFeedings | null): boolean {
-  if (!backdated) return true;
-  const latest = [state?.lastFedAt, known?.lastFedAt].filter((value): value is Date => Boolean(value));
-  return latest.every((date) => fedAt > date);
-}
-
-export type UndoPlan =
-  | { kind: 'none' }
-  /**
-   * The undone log was the latest feed: restore `prev` (who and when) when its
-   * log still exists (`restorePrev`), otherwise clear the latest feed; set the count.
-   */
-  | { kind: 'restore'; day: string | null; countOnDay: number; restorePrev: boolean }
-  /** An older log: the count drops (when it was on the counted day), and `prev` is cleared when it pointed at this log. */
-  | { kind: 'count'; day: string | null; countOnDay: number; dropPrev: boolean };
-
-/**
- * How deleting a feeding changes the state (Undo and history deletes). Only the
- * fields that log affected change: the previous feed is restored only when the
- * state still points at this log, so an Undo never writes an old snapshot over a
- * newer feed by someone else, and never brings back a feed whose log is gone:
- * deleting the feed `prev` points at clears `prev`, and restoring needs `prev`'s
- * log to still exist (`prevSurvives`, read in the same transaction). Undoing the
- * record does not undo the meal: the next feed still runs the last-fed check
- * (audit 17.2, WT-20).
- */
-export function planUndo(state: FeedingStateView | null, log: { id: string; day: string | null }, prevSurvives = true): UndoPlan {
-  if (!state) return { kind: 'none' };
-  const sameDay = log.day !== null && log.day === state.day;
-  const countOnDay = sameDay ? Math.max(0, state.countOnDay - 1) : state.countOnDay;
-  if (state.lastLogId === log.id) {
-    return { kind: 'restore', day: state.day, countOnDay, restorePrev: state.prevLogId !== null && prevSurvives };
-  }
-  const dropPrev = state.prevLogId === log.id;
-  if (dropPrev || (sameDay && state.countOnDay > 0)) return { kind: 'count', day: state.day, countOnDay, dropPrev };
-  return { kind: 'none' };
 }
 
 /** Whether the author may still delete their own feeding (rules: within 10 minutes of `loggedAt`). */

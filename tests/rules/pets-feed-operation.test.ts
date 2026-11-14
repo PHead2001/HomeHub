@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, doc, getDoc, getDocs, setDoc, type Firestore } from 'firebase/firestore';
+import { Timestamp, collection, doc, getDoc, getDocs, setDoc, type Firestore } from 'firebase/firestore';
 import { runCorrectFeedTime, runFeed, runUndoFeed, type FeedPetInput, type FeedPetResult } from '../../src/lib/pets/feed-transaction';
 import { feedConfirmOf, newFeedOpId } from '../../src/lib/pets/feed-plan';
 import { toDate } from '../../src/lib/pets/care';
@@ -142,7 +142,9 @@ describe('the feed operation on the emulator with the real rules', () => {
       householdId: household, petId: 'rex', logId: a.logId, date: new Date(), user: { uid: people.owner.uid, name: 'Owner' }, canDeleteLogs: true, timeZone: TZ,
     });
     const state = (await getDoc(stateOf(session(people.owner)))).data()!;
-    assert.equal(state.lastLogId, b.logId, 'the state still names B');
+    // The correction re-derives the state by effective time: A is now the latest, B the previous.
+    assert.equal(state.lastLogId, a.logId, 'the state names A, the newest by effective time');
+    assert.equal(state.prev?.lastLogId, b.logId);
     // Alex is asked about A (the newest by effective time) and answers: the feed is written once.
     const alexPress = press(people.alex);
     const asked = await runFeed(session(people.alex), alexPress);
@@ -158,6 +160,59 @@ describe('the feed operation on the emulator with the real rules', () => {
     assert.equal(again.status === 'needsConfirm' && again.staleConfirm, true);
     assert.equal(again.status === 'needsConfirm' && again.lastFedByUid, people.alex.uid);
     assert.equal(await feedingCount(), 3);
+  });
+
+  test('correcting the feeding before the latest, then undoing the latest, leaves the corrected time (never a stale snapshot)', async () => {
+    const a = saved(await runFeed(session(people.sam), press(people.sam)));
+    const ownerPress = press(people.owner);
+    const ownerAsked = await runFeed(session(people.owner), ownerPress);
+    assert.equal(ownerAsked.status, 'needsConfirm');
+    const b = saved(await runFeed(session(people.owner), { ...ownerPress, confirm: ownerAsked.status === 'needsConfirm' ? feedConfirmOf(ownerAsked) : null }));
+    // A really happened yesterday evening: corrected by the owner (pets.deleteLogs).
+    const yesterday = new Date(Date.now() - 26 * 3_600_000);
+    yesterday.setMilliseconds(0);
+    await runCorrectFeedTime(session(people.owner), {
+      householdId: household, petId: 'rex', logId: a.logId, date: yesterday, user: { uid: people.owner.uid, name: 'Owner' }, canDeleteLogs: true, timeZone: TZ,
+    });
+    // B was a mistake: undone.
+    await runUndoFeed(session(people.owner), { householdId: household, petId: 'rex', logId: b.logId, timeZone: TZ });
+    const state = (await getDoc(stateOf(session(people.owner)))).data()!;
+    assert.equal(state.lastLogId, a.logId);
+    assert.equal(toDate(state.lastFedAt)?.getTime(), yesterday.getTime(), "the latest feed carries A's corrected time");
+    // So the next feed is not asked "Feed again?" about a feeding that happened yesterday.
+    const next = await runFeed(session(people.alex), press(people.alex));
+    assert.equal(next.status, 'saved');
+  });
+
+  test('device clocks: within 5 minutes the device asks itself; far off, a refused plain feed becomes "Feed again?" (never an endless Retry)', async () => {
+    // Sam fed Rex 89 minutes ago (server time): the rules see a recent feed until 90 minutes.
+    const fedAt = Timestamp.fromMillis(Date.now() - 89 * 60_000);
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'households', household, 'pets', 'rex', 'feeding-logs', 'sam-earlier'), {
+        date: fedAt, loggedAt: fedAt, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+        loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: 'none',
+      });
+      await setDoc(doc(db, 'households', household, 'pets', 'rex', 'feeding-state', 'current'), {
+        lastLogId: 'sam-earlier', lastFedAt: fedAt, lastFedByUid: people.sam.uid, lastFedByName: 'Sam', day: null, countOnDay: 1, prev: null,
+      });
+    });
+    // Clocks 2 minutes fast, or 20 minutes slow: the device itself asks.
+    for (const offset of [2, -20]) {
+      const asked = await runFeed(session(people.alex), press(people.alex, { clock: () => new Date(Date.now() + offset * 60_000) }));
+      assert.equal(asked.status, 'needsConfirm', `clock ${offset} min`);
+    }
+    // 20 minutes fast: the device plans a plain feed, the rules refuse it, and the press asks instead.
+    const fast = () => new Date(Date.now() + 20 * 60_000);
+    const alexPress = press(people.alex, { clock: fast });
+    const asked = await runFeed(session(people.alex), alexPress);
+    assert.equal(asked.status, 'needsConfirm');
+    assert.equal(asked.status === 'needsConfirm' && asked.lastFedByUid, people.sam.uid);
+    assert.equal(await feedingCount(), 1);
+    // Answering writes once, confirmed.
+    const fed = saved(await runFeed(session(people.alex), { ...alexPress, confirm: asked.status === 'needsConfirm' ? feedConfirmOf(asked) : null }));
+    assert.equal((await getDoc(doc(logsOf(session(people.alex)), fed.logId))).data()!.repeat, 'confirmed');
+    assert.equal(await feedingCount(), 2);
   });
 
   test('Undo restores the previous feed; a correction moves the effective time and keeps the recorded one', async () => {

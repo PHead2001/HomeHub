@@ -9,7 +9,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
-import { liveAnswer, liveFailure, liveNotice, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
+import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
 import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
 import { feedingPlan, formatPortion, petPhotoMorphName } from '@/lib/pets/care';
 import { morphStyle } from '@/lib/motion';
@@ -72,7 +72,8 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   // path so navigating between pets never shows the previous one. A resilient
   // listener (PE-8g): a failed read resubscribes on its own (backoff, `online`,
   // page visible); a refused one is reported as no access, without "Try again" (PE-18c).
-  const docKey = householdId ? `${householdId}/${petId}` : null;
+  // Keyed by member and pets.view too, so a page refused for lack of access recovers when access returns.
+  const docKey = petListenerKey(householdId ? `${householdId}/${petId}` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
   const [loaded, setLoaded] = useState<LiveState<PetProfile>>({ key: null, value: null, loaded: false, failed: false });
   const petHandle = useRef<ResilientHandle | null>(null);
   useEffect(() => {

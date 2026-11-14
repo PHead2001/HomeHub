@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import type { ListenerStatus } from '../../src/lib/dashboard/resilient-listener';
-import { liveAnswer, liveFailure, liveNotice, petSnapshotListener, staleNoticeText, unavailableText } from '../../src/lib/pets/live-listener';
+import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, unavailableText } from '../../src/lib/pets/live-listener';
 
 type Snapshot = { metadata: { fromCache: boolean }; value: number };
 const cached = (value = 1): Snapshot => ({ metadata: { fromCache: true }, value });
@@ -113,5 +113,24 @@ describe('a listener that fails after loading keeps the content and says why (PE
       assert.match(read(file), /unavailableText\(/, file);
     }
     assert.match(read('src/components/pets/pet-log-api.ts'), /failures\[index\] = status\.kind/);
+  });
+});
+
+describe('Pets listeners restart when access changes (finding: unauthorized never recovers)', () => {
+  it('the listener key follows the member and their pets.view, so granting access resubscribes', () => {
+    const denied = petListenerKey('h1/pets', { uid: 'sam', canView: false });
+    const granted = petListenerKey('h1/pets', { uid: 'sam', canView: true });
+    assert.ok(denied && granted);
+    assert.notEqual(denied, granted, 'pets.view granted: a new listener');
+    assert.notEqual(petListenerKey('h1/pets', { uid: 'alex', canView: true }), granted, 'another member: a new listener');
+    assert.equal(petListenerKey('h1/pets', { uid: 'sam', canView: true }), granted, 'nothing changed: the same listener');
+    assert.equal(petListenerKey(null, { uid: 'sam', canView: true }), null);
+  });
+
+  it('the pet list, the pet page and the log histories key their listeners on it', () => {
+    const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
+    for (const file of ['src/components/pets-client.tsx', 'src/app/pets/[petId]/page.tsx', 'src/components/pets/pet-log-api.ts']) {
+      assert.match(read(file), /petListenerKey\(/, file);
+    }
   });
 });

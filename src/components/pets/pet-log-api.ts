@@ -18,7 +18,14 @@ import {
   type QuerySnapshot,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
+import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
+import { useAuth } from '@/hooks/use-auth';
+
+/** Who reads: listeners are recreated when the member or their pets.view changes (access returning recovers). */
+function usePetAccess() {
+  const { currentUser, permissions } = useAuth();
+  return { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) };
+}
 import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { PetCareLog, PetFeedingLog, PetMedicationLog } from '@/lib/pets/types';
 
@@ -151,7 +158,7 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
   kind: PetLogKind,
   max = 50,
 ): LiveLogs<T> {
-  const key = householdId ? `${householdId}/${petId}/${kind}/${max}` : null;
+  const key = petListenerKey(householdId ? `${householdId}/${petId}/${kind}/${max}` : null, usePetAccess());
   const state = useLiveUnion({ key, householdId, petId, kind, mode: 'shapes', max });
 
   if (!key) return { logs: [], loading: false, error: null };
@@ -171,7 +178,7 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
  * single-field indexes.
  */
 export function useMedicationCountdownLogs(householdId: string | null | undefined, petId: string): LiveLogs<PetMedicationLog> {
-  const key = householdId ? `${householdId}/${petId}` : null;
+  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
   const dated = useLiveUnion({ key, householdId, petId, kind: 'medication-logs', mode: 'dated' });
 
   const datedReady = dated.key === key && !dated.error;

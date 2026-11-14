@@ -5,8 +5,7 @@ import { describe, it } from 'node:test';
 import {
   AUTHOR_DELETE_WINDOW_MS,
   authorMayDelete,
-  becomesLatest,
-  countAfterFeed,
+  FEED_CLOCK_MARGIN_MS,
   FEED_REPEAT_WINDOW_MS,
   FEED_UNDO_MS,
   feedAgainPrompt,
@@ -14,7 +13,6 @@ import {
   feedReadStart,
   householdDay,
   knownFromLogs,
-  planUndo,
   readFeedingState,
   countOnHouseholdDay,
   householdDayStart,
@@ -50,12 +48,15 @@ describe('feed operation: the "Feed again?" check (PE-23)', () => {
     assert.equal(inside.reason, 'recent');
     assert.equal(inside.lastFedByName, 'Sam');
     assert.equal(feedConfirmDecision({ ...base, now: new Date(fedAt.getTime() + FEED_REPEAT_WINDOW_MS - 1) }).needsConfirm, true);
-    const after = feedConfirmDecision({ ...base, now: new Date(fedAt.getTime() + FEED_REPEAT_WINDOW_MS) });
+    // The device asks 5 minutes longer than the rules refuse on server time (the clock margin).
+    assert.equal(feedConfirmDecision({ ...base, now: new Date(fedAt.getTime() + FEED_REPEAT_WINDOW_MS + FEED_CLOCK_MARGIN_MS - 1) }).needsConfirm, true);
+    const after = feedConfirmDecision({ ...base, now: new Date(fedAt.getTime() + FEED_REPEAT_WINDOW_MS + FEED_CLOCK_MARGIN_MS) });
     assert.equal(after.needsConfirm, false);
     assert.equal(after.reason, null);
     // A time from a device clock that runs ahead still counts as recent.
     assert.equal(feedConfirmDecision({ ...base, now: new Date(fedAt.getTime() - minutes(5)) }).reason, 'recent');
     assert.equal(FEED_REPEAT_WINDOW_MS, 90 * 60_000);
+    assert.equal(FEED_CLOCK_MARGIN_MS, 5 * 60_000);
   });
 
   it('asks when today is complete, from the pet schedule when known', () => {
@@ -118,8 +119,8 @@ describe('feed operation: the "Feed again?" check (PE-23)', () => {
 
   it('the online feed reads from feedReadStart; Undo counts from the day start', () => {
     const op = readFileSync(resolve(process.cwd(), 'src/lib/pets/feed-transaction.ts'), 'utf8');
-    assert.match(op, /dayFeedings\(db, householdId, petId, feedReadStart\(today, now, timeZone\)\)/);
-    assert.match(op, /dayFeedings\(db, householdId, petId, householdDayStart\(today, timeZone\)\)/);
+    assert.match(op, /stateFeedings\(db, householdId, petId, feedReadStart\(today, now, timeZone\)\)/);
+    assert.match(op, /stateFeedings\(db, householdId, petId, householdDayStart\(today, timeZone\)\)/);
   });
 
   it('works without a state document, from the logs the client already has', () => {
@@ -180,8 +181,8 @@ describe('feed operation: the state document', () => {
       { id: 'f', date: at('2026-11-12T00:00:00Z') }, // far in the future: ignored
     ];
     assert.equal(countOnHouseholdDay(logs, today, CHI, now), 2);
-    // Online, offline, online: the third feed persists 3.
-    assert.deepEqual(countAfterFeed({ day: today, countOnDay: countOnHouseholdDay(logs, today, CHI, now) }, today), { day: today, countOnDay: 3 });
+    // Online, offline, online: the third feed counts 3.
+    assert.equal(countOnHouseholdDay([...logs, { id: 'c', date: now }], today, CHI, now), 3);
     // The log being deleted in the same commit is left out.
     assert.equal(countOnHouseholdDay(logs, today, CHI, now, 'a'), 1);
     assert.equal(householdDayStart(today, CHI).toISOString(), '2026-11-10T06:00:00.000Z');
@@ -208,53 +209,10 @@ describe('feed operation: the state document', () => {
     assert.equal(newerKnown(null, older), older);
   });
 
-  it('counts per household day; backdated entries count only on their own day', () => {
-    assert.deepEqual(countAfterFeed({ day: '2026-11-10', countOnDay: 1 }, '2026-11-10'), { day: '2026-11-10', countOnDay: 2 });
-    assert.deepEqual(countAfterFeed({ day: '2026-11-09', countOnDay: 3 }, '2026-11-10'), { day: '2026-11-10', countOnDay: 1 });
-    assert.deepEqual(countAfterFeed({ day: '2026-11-10', countOnDay: 2 }, '2026-11-09'), { day: '2026-11-10', countOnDay: 2 });
-  });
-
-  it('a backdated entry becomes the latest feed only when it is newer than every known feed', () => {
-    const current = state({ lastFedAt: at('2026-11-10T14:00:00Z') });
-    assert.equal(becomesLatest(at('2026-11-10T13:00:00Z'), true, current), false);
-    assert.equal(becomesLatest(at('2026-11-10T14:30:00Z'), true, current), true);
-    assert.equal(becomesLatest(at('2026-11-10T14:30:00Z'), true, current, { lastFedAt: at('2026-11-10T14:45:00Z'), lastFedByName: null, countToday: 1 }), false);
-    assert.equal(becomesLatest(at('2026-11-10T13:00:00Z'), false, current), true);
-    assert.equal(becomesLatest(at('2026-11-10T13:00:00Z'), true, null), true);
-  });
 });
 
-describe('feed operation: undo planning (PE-2, WT-20)', () => {
-  it('undoing the latest feed restores prev and drops the count', () => {
-    assert.deepEqual(planUndo(state({ countOnDay: 2 }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 1, restorePrev: true });
-    // The latest feed logged on another day (just past midnight): restore, count unchanged.
-    assert.deepEqual(planUndo(state({ countOnDay: 2 }), { id: 'log-1', day: '2026-11-09' }), { kind: 'restore', day: '2026-11-10', countOnDay: 2, restorePrev: true });
-    assert.deepEqual(planUndo(state({ countOnDay: 0 }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0, restorePrev: true });
-    // No prev: the latest feed is cleared.
-    assert.deepEqual(planUndo(state({ prevLogId: null }), { id: 'log-1', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0, restorePrev: false });
-  });
-
-  it('a deleted predecessor is never restored (feed A, feed B, delete A, delete B)', () => {
-    // After A then B: latest B, prev A. Deleting A clears prev (and lowers the count).
-    const afterB = state({ lastLogId: 'B', prevLogId: 'A', countOnDay: 2 });
-    assert.deepEqual(planUndo(afterB, { id: 'A', day: '2026-11-10' }), { kind: 'count', day: '2026-11-10', countOnDay: 1, dropPrev: true });
-    // Even when A was on another day, prev is still cleared.
-    assert.deepEqual(planUndo(afterB, { id: 'A', day: '2026-11-09' }), { kind: 'count', day: '2026-11-10', countOnDay: 2, dropPrev: true });
-    // Then deleting B clears the latest feed instead of restoring A.
-    const afterDeleteA = state({ lastLogId: 'B', prevLogId: null, hasPrev: false, countOnDay: 1 });
-    assert.deepEqual(planUndo(afterDeleteA, { id: 'B', day: '2026-11-10' }), { kind: 'restore', day: '2026-11-10', countOnDay: 0, restorePrev: false });
-    // A prev whose log was deleted some other way (an old client) is not restored either.
-    assert.deepEqual(planUndo(afterB, { id: 'B', day: '2026-11-10' }, false), { kind: 'restore', day: '2026-11-10', countOnDay: 1, restorePrev: false });
-  });
-
-  it('after a newer feed by someone else, only the count changes (never an old snapshot over newer data)', () => {
-    const newer = state({ lastLogId: 'log-2', lastFedByName: 'Alex', countOnDay: 2 });
-    assert.deepEqual(planUndo(newer, { id: 'log-1', day: '2026-11-10' }), { kind: 'count', day: '2026-11-10', countOnDay: 1, dropPrev: false });
-    assert.deepEqual(planUndo(newer, { id: 'log-1', day: '2026-11-09' }), { kind: 'none' });
-    assert.deepEqual(planUndo(newer, { id: 'log-1', day: null }), { kind: 'none' });
-    assert.deepEqual(planUndo(null, { id: 'log-1', day: '2026-11-10' }), { kind: 'none' });
-  });
-
+describe('feed operation: delete windows (PE-2, WT-20)', () => {
+  // Undo and deletes re-derive the state from the surviving logs: see tests/unit/pets-feeding-invariant.test.ts.
   it('the author may delete for 10 minutes; Undo shows for 10 seconds', () => {
     const now = at('2026-11-10T14:09:00Z');
     const log = { loggedByUid: 'sam', loggedAt: at('2026-11-10T14:00:00Z') };
@@ -285,8 +243,8 @@ describe('feed operation: every entry point uses it', () => {
 
   it('online feeds, undos and time corrections count the day from the logs read in the transaction', () => {
     const op = read('src/lib/pets/feed-transaction.ts');
-    assert.equal((op.match(/await dayFeedings\(/g) ?? []).length, 3, 'runFeed, runUndoFeed and runCorrectFeedTime');
-    assert.match(op, /const recent = await dayFeedings\(db, householdId, petId, feedReadStart/, 'runFeed');
+    assert.equal((op.match(/await stateFeedings\(/g) ?? []).length, 3, 'runFeed, runUndoFeed and runCorrectFeedTime');
+    assert.match(op, /const recent = await stateFeedings\(db, householdId, petId, feedReadStart/, 'runFeed');
     assert.doesNotMatch(op, /reconcileDayCount|Math\.max/);
     // The app binds its Firestore; nothing else writes feedings.
     assert.match(read('src/lib/pets/feed-operation.ts'), /runFeed\(db, input\)/);
@@ -294,7 +252,7 @@ describe('feed operation: every entry point uses it', () => {
 
   it('online feeds use server time; offline ones are marked and say so', () => {
     const op = read('src/lib/pets/feed-transaction.ts');
-    assert.match(op, /date: plan\.live \? serverTimestamp\(\) : Timestamp\.fromDate\(plan\.fedAt\)/);
+    assert.match(op, /date: plan\.live \? serverTimestamp\(\) : stamp \?\? Timestamp\.fromDate\(plan\.fedAt\)/);
     assert.match(op, /loggedAt: serverTimestamp\(\)/);
     assert.match(op, /clockSource: 'device'/);
     assert.match(op, /runTransaction/);

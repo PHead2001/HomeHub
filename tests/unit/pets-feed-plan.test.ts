@@ -11,7 +11,8 @@ import {
   feedLogId,
   mayCorrectFeedTime,
   newFeedOpId,
-  planCorrectionState,
+  planFeedCorrection,
+  planFeedDelete,
   planFeed,
   planOfflineFeed,
   type FeedSnapshot,
@@ -85,13 +86,18 @@ describe('feed plan: "Feed again?" is bound to the state it was shown for (PE-23
   });
 
   it('a current answer writes a confirmed feed bound to that last feed', () => {
-    const plan = planFeed(snapshot(), { userUid: 'alex', confirm: { lastLogId: 'sam-1', countToday: 1 } });
+    const plan = planFeed(snapshot(), { userUid: 'alex', userName: 'Alex', logId: 'alex-1', confirm: { lastLogId: 'sam-1', countToday: 1 } });
     assert.equal(plan.kind, 'write');
     if (plan.kind !== 'write') return;
     assert.equal(plan.repeat, 'confirmed');
     assert.equal(plan.confirmOf, 'sam-1');
     assert.equal(plan.live, true);
-    assert.deepEqual(plan.state, { kind: 'latest', day: '2026-11-10', countOnDay: 2 });
+    // The state: this feed is the latest, Sam's the previous, two today.
+    assert.equal(plan.state.latest?.logId, 'alex-1');
+    assert.equal(plan.state.latest?.byName, 'Alex');
+    assert.equal(plan.state.prev?.logId, 'sam-1');
+    assert.equal(plan.state.day, '2026-11-10');
+    assert.equal(plan.state.countOnDay, 2);
     assert.equal(plan.countToday, 2);
   });
 
@@ -148,13 +154,16 @@ describe('feed plan: "Feed again?" is bound to the state it was shown for (PE-23
   });
 
   it('backdated entries skip the check; an older one only changes the count of its own day', () => {
-    const older = planFeed(snapshot(), { userUid: 'alex', backdatedAt: new Date(NOW.getTime() - minutes(60)) });
+    const older = planFeed(snapshot(), { userUid: 'alex', logId: 'alex-old', backdatedAt: new Date(NOW.getTime() - minutes(60)) });
     assert.equal(older.kind, 'write');
     if (older.kind !== 'write') return;
     assert.equal(older.live, false);
-    assert.deepEqual(older.state, { kind: 'count', day: '2026-11-10', countOnDay: 2 });
-    const yesterday = planFeed(snapshot(), { userUid: 'alex', backdatedAt: at('2026-11-09T15:00:00Z') });
-    assert.equal(yesterday.kind === 'write' && yesterday.state, null);
+    // Sam's newer feed stays the latest; the backdated entry is the previous one and counts today.
+    assert.equal(older.state.latest?.logId, 'sam-1');
+    assert.equal(older.state.prev?.logId, 'alex-old');
+    assert.equal(older.state.countOnDay, 2);
+    const yesterday = planFeed(snapshot(), { userUid: 'alex', logId: 'alex-y', backdatedAt: at('2026-11-09T15:00:00Z') });
+    assert.equal(yesterday.kind === 'write' && yesterday.state.latest?.logId, 'sam-1');
     // Today's count stays as it was.
     assert.equal(yesterday.kind === 'write' && yesterday.countToday, 1);
   });
@@ -192,21 +201,25 @@ describe('correcting a feeding time (PE-5e)', () => {
     assert.deepEqual(checkFeedCorrection({ ...base, viewerUid: 'alex', newDate: new Date(NOW.getTime() - minutes(40)) }), { ok: false, reason: 'not-allowed' });
   });
 
-  it('the latest feed’s time follows its log, and today’s count is recounted', () => {
-    const stored = state();
-    const recent = [{ id: 'sam-1', date: new Date(NOW.getTime() - minutes(12)) }];
-    // Moved to yesterday evening: no longer today's.
-    assert.deepEqual(
-      planCorrectionState({ stored, logId: 'sam-1', newDate: at('2026-11-10T03:00:00Z'), recent, now: NOW, timeZone: CHI }),
-      { lastFedAt: at('2026-11-10T03:00:00Z'), day: '2026-11-10', countOnDay: 0 },
-    );
-    // An older log moved from yesterday into today: only the count.
-    assert.deepEqual(
-      planCorrectionState({ stored, logId: 'old', newDate: at('2026-11-10T13:00:00Z'), recent, now: NOW, timeZone: CHI }),
-      { day: '2026-11-10', countOnDay: 2 },
-    );
-    assert.equal(planCorrectionState({ stored: null, logId: 'x', newDate: NOW, recent, now: NOW, timeZone: CHI }), null);
-    assert.equal(planCorrectionState({ stored, logId: 'old', newDate: at('2026-11-08T13:00:00Z'), recent, now: NOW, timeZone: CHI }), null);
+  it('a correction re-derives the state: the corrected feeding takes its place by effective time', () => {
+    const logs = [
+      { id: 'a', date: new Date(NOW.getTime() - minutes(60)), loggedByUid: 'sam', loggedByName: 'Sam' },
+      { id: 'b', date: new Date(NOW.getTime() - minutes(12)), loggedByUid: 'kim', loggedByName: 'Kim' },
+    ];
+    const base = { now: NOW, timeZone: CHI, logs, hasState: true };
+    // The latest moved to yesterday evening: the other feeding becomes the latest, the count drops.
+    const latestBack = planFeedCorrection({ ...base, logId: 'b', newDate: at('2026-11-10T03:00:00Z') })!;
+    assert.deepEqual([latestBack.latest?.logId, latestBack.prev?.logId, latestBack.countOnDay], ['a', 'b', 1]);
+    // The previous feeding moved to yesterday: it stays the previous one, at its new time (never its old one).
+    const prevBack = planFeedCorrection({ ...base, logId: 'a', newDate: at('2026-11-09T20:00:00Z') })!;
+    assert.equal(prevBack.prev?.at.toISOString(), '2026-11-09T20:00:00.000Z');
+    // An older feeding moved after the latest becomes the latest.
+    const forward = planFeedCorrection({ ...base, logId: 'a', newDate: new Date(NOW.getTime() - minutes(2)) })!;
+    assert.deepEqual([forward.latest?.logId, forward.prev?.logId], ['a', 'b']);
+    assert.equal(planFeedCorrection({ ...base, hasState: false, logId: 'a', newDate: NOW }), null);
+    // Deleting the latest brings back the previous at its current time.
+    assert.deepEqual(planFeedDelete({ ...base, logId: 'b' })?.latest?.logId, 'a');
+    assert.equal(planFeedDelete({ ...base, hasState: false, logId: 'b' }), null);
   });
 
   it('history shows the recorded time only when it tells something', () => {
@@ -241,5 +254,43 @@ describe('feeding Undo toasts: one group per pet (PE-8i, D-P13)', () => {
     const palette = read('src/components/command/command-palette.tsx');
     assert.match(palette, /feedOp\.current = \{ intent: current, opId: newFeedOpId\(\) \}/);
     assert.match(palette, /confirm: feedConfirmOf\(result\)/);
+  });
+});
+
+describe('client and rules agree on "recent" despite device clock skew (finding: 89 min, clock 2 min fast)', () => {
+  // The rules' decision for a plain live feed (firestore.rules feedingRecent), on server time.
+  const rulesAcceptPlain = (lastFedAt: Date | null, serverNow: Date) => !lastFedAt || serverNow.getTime() >= lastFedAt.getTime() + minutes(90);
+
+  it('a device clock up to 5 minutes off never plans a plain feed the rules refuse', () => {
+    const serverNow = NOW;
+    for (let skew = -5; skew <= 5; skew += 1) {
+      for (let age = 80; age <= 100; age += 1) {
+        const lastFedAt = new Date(serverNow.getTime() - minutes(age));
+        const plan = planFeed(snapshot({
+          now: new Date(serverNow.getTime() + minutes(skew)),
+          perDay: 2,
+          stored: state({ lastFedAt, countOnDay: 1 }),
+          recent: [{ id: 'sam-1', date: lastFedAt, loggedByUid: 'sam', loggedByName: 'Sam' }],
+        }), { userUid: 'alex' });
+        if (plan.kind === 'write' && plan.repeat === 'none') {
+          assert.ok(rulesAcceptPlain(lastFedAt, serverNow), `age ${age} min, clock ${skew} min: planned plain but the rules refuse`);
+        }
+      }
+    }
+  });
+});
+
+describe('a plain feed the rules refused (device clock far off) becomes "Feed again?"', () => {
+  it('never plans the same plain feed again; the answer then writes a confirmed feed', () => {
+    const lastFedAt = new Date(NOW.getTime() - minutes(110)); // the device thinks 110 min; the server saw under 90
+    const base = snapshot({ perDay: 3, stored: state({ lastFedAt }), recent: [{ id: 'sam-1', date: lastFedAt, loggedByUid: 'sam', loggedByName: 'Sam' }] });
+    assert.equal(planFeed(base, { userUid: 'alex' }).kind, 'write');
+    const asked = planFeed(base, { userUid: 'alex', serverRefusedPlain: true });
+    assert.equal(asked.kind, 'needsConfirm');
+    if (asked.kind !== 'needsConfirm') return;
+    assert.equal(asked.check.reason, 'recent');
+    const answered = planFeed(base, { userUid: 'alex', confirm: feedConfirmOf(asked.check) });
+    assert.equal(answered.kind === 'write' && answered.repeat, 'confirmed');
+    assert.equal(answered.kind === 'write' && answered.confirmOf, 'sam-1');
   });
 });
