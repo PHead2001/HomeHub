@@ -97,6 +97,12 @@ async function openPets(page: Page, at: Date) {
 }
 
 const card = (page: Page, petId: string) => page.getByTestId(`pet-card-${petId}`);
+/**
+ * A toast's own text, inside the toast list (the "Notifications" region). Radix also
+ * repeats each toast in a live region (`role="status"`) outside it, so an unscoped
+ * text match finds two elements.
+ */
+const toastText = (page: Page, text: string) => page.getByRole('region', { name: /^Notifications/ }).getByText(text, { exact: true });
 const mealState = (scope: Locator) => scope.getByTestId('meal-slots-status').locator('[data-meal-state]');
 
 async function openContext(browser: Browser, viewport: { width: number; height: number }) {
@@ -139,7 +145,7 @@ test.describe('pets: meal slots (P2)', () => {
     await dialog.getByLabel('Time').nth(1).fill('17:30');
     await dialog.getByRole('button', { name: 'Save Changes' }).click();
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByText('Pet updated', { exact: true })).toBeVisible();
+    await expect(toastText(page, 'Pet updated')).toBeVisible();
 
     await expect.poll(async () => {
       const data = (await household.collection('pets').doc('pixel').get()).data() ?? {};
@@ -221,7 +227,7 @@ test.describe('pets: meal slots (P2)', () => {
     await expect(biscuit).toContainText('0/2');
 
     await biscuit.getByRole('button', { name: 'Feed Biscuit, supper, 0.5 cans' }).click();
-    await expect(page.getByText('Supper: 0.5 cans logged.')).toBeVisible();
+    await expect(toastText(page, 'Supper: 0.5 cans logged.')).toBeVisible();
     await expect(biscuit).toContainText('1/2');
     await expect(biscuit).toContainText(/Supper ✓ \d{1,2}:\d{2} (am|pm) · Alex/);
     await expect.poll(async () => (await slotPetLogs()).map(({ slotId, cups, foodAmountType, repeat }) => ({ slotId, cups, foodAmountType, repeat })))
@@ -245,7 +251,7 @@ test.describe('pets: meal slots (P2)', () => {
     await openPets(page, new Date());
     const biscuit = card(page, SLOT_PET);
     await biscuit.getByRole('button', { name: 'Feed Biscuit, supper, 0.5 cans' }).click();
-    await expect(page.getByText('Biscuit is all fed for today', { exact: true })).toBeVisible();
+    await expect(toastText(page, 'Biscuit is all fed for today')).toBeVisible();
     await expect(mealState(biscuit)).toHaveAttribute('data-meal-state', 'complete');
     await expect(biscuit).toContainText('Meal done today');
     await expect(biscuit).not.toHaveAttribute('data-attention', /.+/);

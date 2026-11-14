@@ -20,6 +20,7 @@ import {
   slotsFedOn,
   slotWindows,
   targetSlot,
+  slotsFromDraft,
   validateMealDraft,
   type MealSlotDraft,
 } from '../../src/lib/pets/meal-plan';
@@ -91,6 +92,19 @@ describe('PE-6: reading a free-text schedule', () => {
     assert.equal(parseSchedule('').kind, 'empty');
     // The legacy daily target keeps the stated count of an ambiguous text.
     assert.equal(parseFeedingsPerDay('twice daily, morning'), 2);
+  });
+
+  it('rejects oversized or non-finite counts before expanding them (no allocation, no freeze while typing)', () => {
+    for (const text of ['9999999999 meals daily', '7 meals a day', '1e400 meals', '99999999999999999999 times a day', 'every 99999999 hours']) {
+      const started = Date.now();
+      const parsed = parseSchedule(text);
+      // Never a suggestion ("1e400" is not even read as a count).
+      assert.notEqual(parsed.kind, 'plan', text);
+      assert.ok(Date.now() - started < 200, `${text} took ${Date.now() - started} ms`);
+    }
+    assert.equal(parseSchedule('9999999999 meals daily').kind, 'ambiguous');
+    assert.equal(parseSchedule('6 meals a day').kind, 'plan');
+    assert.equal(parseFeedingsPerDay('9999999999 meals daily'), null, 'no absurd legacy daily target either');
   });
 
   it('marks counts without times as guessed times, and names them as such', () => {
@@ -375,6 +389,15 @@ describe('schedule history: past days use the plan in force that day (PE-22g, PE
 
 describe('meal plan form validation (PE-22k)', () => {
   const row = (overrides: Partial<MealSlotDraft> = {}): MealSlotDraft => ({ id: 'a', name: 'Breakfast', time: '07:00', amount: '1', unit: 'Cups', offDays: [], ...overrides });
+  it('refuses a portion that rounds to 0, so an accepted draft always saves a valid plan (rules: amount > 0)', () => {
+    const tiny = validateMealDraft([row({ amount: '0.004' })]);
+    assert.equal(tiny.rows[0].amount, 'Use an amount above 0 and up to 50.');
+    assert.deepEqual(validateMealDraft([row({ amount: '0.005' })]).rows[0], {}, '0.005 rounds to 0.01');
+    assert.equal(slotsFromDraft([row({ amount: '0.005' })])[0].amount, 0.01);
+    assert.equal(validateMealDraft([row({ amount: '50.004' })]).rows[0].amount, undefined, '50.004 rounds to 50');
+    assert.ok(validateMealDraft([row({ amount: '50.006' })]).rows[0].amount);
+  });
+
   it('names, times, amounts and days per row; distinct times; at most six meals', () => {
     assert.deepEqual(validateMealDraft([row()]), { rows: [{}], plan: null });
     const errors = validateMealDraft([row({ name: ' ', time: '', amount: '0' }), row({ id: 'b', offDays: [0, 1, 2, 3, 4, 5, 6] })]);

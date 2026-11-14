@@ -253,6 +253,11 @@ function segmentsOf(text: string): string[] {
     .filter(Boolean);
 }
 
+/** A count usable as the legacy daily target (1-12, as `feedingsPerDay`), else null. */
+function dailyTarget(count: number | null): number | null {
+  return count !== null && Number.isInteger(count) && count >= 1 && count <= 12 ? count : null;
+}
+
 /** Default meal times for a bare count ("twice daily": breakfast and dinner). */
 function defaultMeals(count: number): { name: string; minutes: number }[] {
   const named = (groups: MealGroup[]) => groups.map((group) => ({ name: MEAL_GROUPS[group].name, minutes: MEAL_GROUPS[group].minutes }));
@@ -337,9 +342,14 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
     else if (!same.portion && meal.portion) same.portion = meal.portion;
   }
 
-  if (conflict) return { kind: 'ambiguous', reason: conflict, perDay: stated ?? (unique.length || null) };
+  if (conflict) return { kind: 'ambiguous', reason: conflict, perDay: dailyTarget(stated ?? (unique.length || null)) };
   if (unique.length > 0 && stated !== null && stated !== unique.length) {
-    return { kind: 'ambiguous', reason: `It says ${stated} a day but names ${unique.length} ${unique.length === 1 ? 'meal' : 'meals'}.`, perDay: stated };
+    return { kind: 'ambiguous', reason: `It says ${stated} a day but names ${unique.length} ${unique.length === 1 ? 'meal' : 'meals'}.`, perDay: dailyTarget(stated) };
+  }
+  // A stated count is checked before any meals are made from it: "9999999999 meals"
+  // must never allocate (the form parses as the member types).
+  if (unique.length === 0 && stated !== null && (!Number.isFinite(stated) || stated > MEAL_SLOTS_MAX)) {
+    return { kind: 'ambiguous', reason: `More than ${MEAL_SLOTS_MAX} meals a day: set the times yourself.`, perDay: dailyTarget(stated) };
   }
 
   let planned: { name: string; minutes: number; guessed: boolean; portion: Segment['portion']; source: SuggestedMeal['source'] }[];
@@ -349,7 +359,7 @@ export function parseSchedule(schedule?: string | null): ParsedSchedule {
   } else return { kind: 'empty' };
 
   if (planned.length > MEAL_SLOTS_MAX) {
-    return { kind: 'ambiguous', reason: `More than ${MEAL_SLOTS_MAX} meals a day: set the times yourself.`, perDay: planned.length <= 12 ? planned.length : null };
+    return { kind: 'ambiguous', reason: `More than ${MEAL_SLOTS_MAX} meals a day: set the times yourself.`, perDay: dailyTarget(planned.length) };
   }
 
   // Portions: per meal where stated; a single stated portion applies to every meal.

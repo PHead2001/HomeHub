@@ -632,6 +632,14 @@ export function draftFromSuggestion(parsed: ParsedSchedule, newId: () => string 
 
 export type MealSlotErrors = Partial<Record<'name' | 'time' | 'amount' | 'offDays', string>>;
 
+/**
+ * A row's amount as it is saved: two decimals. Validation checks this value, so
+ * an accepted draft never stores an amount the rules refuse (0.004 → 0).
+ */
+function draftAmount(text: string): number {
+  return Math.round(Number(text) * 100) / 100;
+}
+
 /** Inline errors per row and for the plan; an empty draft is valid (no plan). */
 export function validateMealDraft(rows: MealSlotDraft[]): { rows: MealSlotErrors[]; plan: string | null } {
   const errors = rows.map<MealSlotErrors>((row) => {
@@ -640,8 +648,7 @@ export function validateMealDraft(rows: MealSlotDraft[]): { rows: MealSlotErrors
     if (!name) rowErrors.name = 'Name this meal.';
     else if (name.length > MEAL_SLOT_NAME_MAX) rowErrors.name = `Keep it under ${MEAL_SLOT_NAME_MAX + 1} characters.`;
     if (!TIME.test(row.time)) rowErrors.time = 'Pick a time.';
-    const amount = Number(row.amount);
-    if (!row.amount.trim() || !isValidPortion(amount)) rowErrors.amount = 'Use an amount above 0 and up to 50.';
+    if (!row.amount.trim() || !isValidPortion(draftAmount(row.amount))) rowErrors.amount = 'Use an amount above 0 and up to 50.';
     if (row.offDays.length >= 7) rowErrors.offDays = 'Serve it on at least one day.';
     return rowErrors;
   });
@@ -657,7 +664,7 @@ export function slotsFromDraft(rows: MealSlotDraft[]): MealSlot[] {
   return rows
     .map((row) => {
       const offDays = [...new Set(row.offDays)].filter((day) => day >= 0 && day <= 6).sort((a, b) => a - b);
-      return { id: row.id, name: row.name.trim(), time: row.time, amount: Math.round(Number(row.amount) * 100) / 100, unit: row.unit, ...(offDays.length ? { offDays } : {}) };
+      return { id: row.id, name: row.name.trim(), time: row.time, amount: draftAmount(row.amount), unit: row.unit, ...(offDays.length ? { offDays } : {}) };
     })
     .sort((a, b) => a.time.localeCompare(b.time));
 }
