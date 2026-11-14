@@ -1,8 +1,10 @@
 'use client';
 
+import { useId } from 'react';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   currentMedications,
+  feedingCountLabel,
   feedingHeadline,
   feedingPlan,
   feedingHistoryState,
@@ -20,22 +22,29 @@ import { MedicationChips } from './medication-chip';
 import { useMedicationCountdownLogs, usePetLogs } from './pet-log-api';
 import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
+import { unavailableText } from '@/lib/pets/live-listener';
 
-/** A pet's live care data: feedings, the plan and today's status, and every current medication countdown. */
+/**
+ * A pet's live care data: feedings, the plan and today's status, and every
+ * current medication countdown. "Today", "yesterday" and "Due today" are the
+ * household's day (`household.timeZone`, PE-7a/b), and `now` comes from the one
+ * shared minute clock (PE-21c), so every card rolls over at household midnight.
+ */
 export function usePetCare(pet: PetProfile, householdId: string) {
   const now = useNow();
   const { household } = useAuth();
+  const timeZone = household?.timeZone ?? null;
   const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 20);
   const medications = useMedicationCountdownLogs(householdId, pet.id);
   const plan = feedingPlan(pet);
-  const status = feedings.loading || feedings.error ? null : feedingStatus(feedings.logs, plan, now);
+  const status = feedings.loading || feedings.error ? null : feedingStatus(feedings.logs, plan, now, timeZone);
   // Most urgent first; empty while loading or unavailable.
-  const dues = medications.loading || medications.error ? [] : currentMedications(medications.logs, now);
+  const dues = medications.loading || medications.error ? [] : currentMedications(medications.logs, now, timeZone);
   // The quick-feed food type waits for the history (never Dry by default while loading).
   const food = quickFeedFood(feedingHistoryState(feedings), feedings.logs[0]?.foodType);
   // The feed operation's fallback for a pet without a feeding-state document (household day).
-  const known = feedings.loading || feedings.error ? null : knownFromLogs(feedings.logs, now, household?.timeZone);
-  return { now, feedings, medications, plan, status, dues, food, known };
+  const known = feedings.loading || feedings.error ? null : knownFromLogs(feedings.logs, now, timeZone);
+  return { now, timeZone, feedings, medications, plan, status, dues, food, known };
 }
 
 export type PetCare = ReturnType<typeof usePetCare>;
@@ -44,7 +53,8 @@ export type PetCare = ReturnType<typeof usePetCare>;
 function FeedingCount({ status }: { status: FeedingStatus }) {
   if (status.perDay) return <><NumberTicker value={status.fedToday} animateOnMount={false} /> of {status.perDay} today</>;
   if (status.fedToday > 0) return <><NumberTicker value={status.fedToday} animateOnMount={false} /> today</>;
-  return <>Not fed today</>;
+  // An off-day of a non-daily schedule is not a missed meal (PE-18b).
+  return <>{feedingCountLabel(status)}</>;
 }
 
 /**
@@ -75,7 +85,9 @@ function OwnCareSummary(props: SummaryProps) {
 }
 
 function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedicationChips = 2 }: SummaryProps & { care: PetCare }) {
-  const { now, feedings, medications, plan, status, dues, food, known } = care;
+  const { now, timeZone, feedings, medications, plan, status, dues, food, known } = care;
+  // The Feed button is described by the fed status it acts on (PE-20b), then the hold hint.
+  const statusId = useId();
 
   return (
     <>
@@ -88,13 +100,13 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           </div>
         </div>
       ) : !status ? (
-        <p className="text-sm text-muted-foreground">Feeding status is unavailable right now.</p>
+        <p id={statusId} className="text-sm text-muted-foreground">{unavailableText('Feeding status', feedings.failure ?? 'retrying')}</p>
       ) : (
         <div className="flex items-center gap-3">
           <FeedingRing status={status} />
-          <div className="min-w-0">
+          <div id={statusId} className="min-w-0">
             <p className={cn('text-sm font-medium', status.last ? 'text-foreground' : 'text-muted-foreground')}>
-              {feedingHeadline(status, now)}
+              {feedingHeadline(status, now, timeZone)}
             </p>
             <p className={cn('text-xs', status.complete ? 'font-medium text-success' : 'text-muted-foreground')}>
               {status.complete && status.perDay ? 'All fed today' : <FeedingCount status={status} />}
@@ -104,7 +116,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
       )}
 
       {medications.error ? (
-        <p className="text-xs text-muted-foreground">Next medication dose is unavailable right now.</p>
+        <p className="text-xs text-muted-foreground">{unavailableText('The next medication dose', medications.failure ?? 'retrying')}</p>
       ) : (
         <MedicationChips dues={dues} max={maxMedicationChips} className="self-start" />
       )}
@@ -118,7 +130,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           food={food}
           known={known}
           controller={feed}
-          describedBy={feedHintId}
+          describedBy={feedings.loading ? feedHintId : [statusId, feedHintId].filter(Boolean).join(' ')}
           variant={status?.complete ? 'secondary' : 'default'}
           className="w-full"
         />

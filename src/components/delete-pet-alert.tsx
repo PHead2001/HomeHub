@@ -18,15 +18,17 @@ interface DeletePetAlertProps {
   petName?: string;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Where focus goes on close (PE-20e), when the dialog was opened from a menu. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export function DeletePetAlert({ isOpen, petName, onConfirm, onCancel }: DeletePetAlertProps) {
+export function DeletePetAlert({ isOpen, petName, onConfirm, onCancel, onCloseAutoFocus }: DeletePetAlertProps) {
   const target = petName || "this pet";
   return (
     <AlertDialog open={isOpen} onOpenChange={(open) => !open && onCancel()}>
-      <AlertDialogContent>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete {target}?</AlertDialogTitle>
+          <AlertDialogTitle className="break-words">Delete {target}?</AlertDialogTitle>
           <AlertDialogDescription>
             This permanently removes {target} from your household. This action cannot be undone.
           </AlertDialogDescription>

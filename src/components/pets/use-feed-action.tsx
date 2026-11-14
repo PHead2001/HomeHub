@@ -15,13 +15,17 @@ import { ToastAction } from '@/components/ui/toast';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { loggerName } from '@/lib/pets/care';
-import { FEED_UNDO_MS, feedAgainPrompt, feedAgainReason } from '@/lib/pets/feed-decision';
+import { FEED_UNDO_MS, feedAgainPrompt, feedAgainReason, petFeedToastGroup } from '@/lib/pets/feed-decision';
+import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-plan';
 import { feedPet, undoFeed, type FeedPetInput, type FeedPetResult } from '@/lib/pets/feed-operation';
 
 /** A feeding request as an entry point describes it; who, where and the zone come from the session. */
 export type FeedRequest = Pick<FeedPetInput, 'portion' | 'food' | 'comments' | 'backdatedAt' | 'known'>;
 
 export type FeedSuccess = Extract<FeedPetResult, { status: 'saved' | 'queued' }>;
+
+/** One press: its request, its operation id, and the "Feed again?" answer it carries (if any). */
+type FeedAttempt = { request: FeedRequest; opId: string; confirm: FeedConfirm | null };
 
 export type FeedAction = {
   /** The member may log feedings (`pets.addLogs`); they can then also Undo their own feed. */
@@ -41,6 +45,11 @@ export type FeedAction = {
 type Callbacks = {
   /** Called after a feeding is saved or queued (feedback, burst, closing a form). */
   onFed?: (result: FeedSuccess) => void;
+  /**
+   * Where focus goes once the toast's Undo ran (PE-20e), usually the control
+   * that fed (the toast's own button disappears with it).
+   */
+  returnFocus?: () => void;
   /** Toast title and description for a saved feeding. */
   describe?: (result: FeedSuccess) => { title: string; description?: string };
 };
@@ -52,13 +61,20 @@ type Callbacks = {
  * the author delete their own feeding for 10 minutes), the honest offline copy
  * ("Saved on this device…", only once the write is queued), and a failure toast
  * with Retry. A call while a feeding is saving is ignored.
+ *
+ * One press is one intent (PE-23h): `run` takes a new operation id, and "Feed
+ * again" and Retry reuse it, so a retry after an uncertain response finds the
+ * first write instead of adding a second. "Feed again" sends the state the
+ * question was shown for (PE-23g); if someone fed since, the operation asks
+ * again with the new feeder. Each pet's Undo toast has its own group (PE-8i), so
+ * feeding a second pet keeps the first pet's Undo.
  */
 export function useFeedAction(petId: string, petName: string, callbacks: Callbacks = {}): FeedAction {
   const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
   const [saving, setSaving] = React.useState(false);
   const savingRef = React.useRef(false);
-  const [asked, setAsked] = React.useState<{ request: FeedRequest; prompt: string; reason: string } | null>(null);
+  const [asked, setAsked] = React.useState<{ attempt: FeedAttempt; prompt: string; reason: string } | null>(null);
   const callbacksRef = React.useRef(callbacks);
   React.useEffect(() => { callbacksRef.current = callbacks; });
   const allowed = Boolean(permissions['pets.addLogs']);
@@ -66,8 +82,9 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
   const timeZone = household?.timeZone ?? null;
 
   // Retry from the failure toast runs the same request again.
-  const retryRef = React.useRef<(request: FeedRequest, confirm: boolean) => void>(() => undefined);
-  const execute = React.useCallback(async (request: FeedRequest, confirm: boolean): Promise<FeedPetResult | null> => {
+  const retryRef = React.useRef<(attempt: FeedAttempt) => void>(() => undefined);
+  const execute = React.useCallback(async (attempt: FeedAttempt): Promise<FeedPetResult | null> => {
+    const { request, opId, confirm } = attempt;
     if (!allowed || !householdId || !currentUser || savingRef.current) return null;
     savingRef.current = true;
     setSaving(true);
@@ -77,6 +94,7 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
         ...request,
         householdId,
         petId,
+        opId,
         confirm,
         timeZone,
         user: { uid: currentUser.uid, name: loggerName(currentUser) },
@@ -84,10 +102,12 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
       });
       if (result.status === 'needsConfirm') {
         const now = new Date();
+        // The next answer is bound to this state; a stale one is asked again, naming the new feeder.
+        const since = result.staleConfirm ? 'Someone fed since you were asked. ' : '';
         setAsked({
-          request,
-          prompt: feedAgainPrompt(result, petName, now, currentUser.uid),
-          reason: feedAgainReason(result, petName, now, currentUser.uid),
+          attempt: { request, opId, confirm: feedConfirmOf(result) },
+          prompt: `${since}${feedAgainPrompt(result, petName, now, currentUser.uid, timeZone)}`,
+          reason: `${since}${feedAgainReason(result, petName, now, currentUser.uid, timeZone)}`,
         });
         return result;
       }
@@ -95,7 +115,7 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
       callbacksRef.current.onFed?.(result);
       const described = callbacksRef.current.describe?.(result) ?? { title: `${petName} fed` };
       const { dismiss } = toast({
-        group: 'pet-feed',
+        group: petFeedToastGroup(petId),
         duration: FEED_UNDO_MS,
         ...(result.status === 'queued'
           ? { title: 'Saved on this device', description: `Couldn't check whether someone else fed ${petName}.` }
@@ -105,6 +125,7 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
             altText={`Undo feeding for ${petName}`}
             onClick={async () => {
               dismiss();
+              callbacksRef.current.returnFocus?.();
               try {
                 await undoFeed({ householdId, petId, logId: result.logId, timeZone, onLateError: lateError });
               } catch (error) {
@@ -120,7 +141,7 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
     } catch (error) {
       toastError(error, `Couldn't log ${petName}'s feeding`, {
         action: (
-          <ToastAction altText={`Try logging ${petName}'s feeding again`} onClick={() => retryRef.current(request, confirm)}>
+          <ToastAction altText={`Try logging ${petName}'s feeding again`} onClick={() => retryRef.current(attempt)}>
             Retry
           </ToastAction>
         ),
@@ -133,24 +154,40 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
   }, [allowed, householdId, currentUser, petId, petName, timeZone, toast, toastError]);
 
   React.useEffect(() => {
-    retryRef.current = (request, confirm) => void execute(request, confirm);
+    // Retry runs the same press again: the same operation id and the same answer.
+    retryRef.current = (attempt) => void execute(attempt);
   }, [execute]);
 
-  const run = React.useCallback((request: FeedRequest) => execute(request, false), [execute]);
+  // A new press: a new operation id.
+  const run = React.useCallback((request: FeedRequest) => execute({ request, opId: newFeedOpId(), confirm: null }), [execute]);
   const acceptPrompt = React.useCallback(async () => {
     if (!asked) return null;
-    return execute(asked.request, true);
+    return execute(asked.attempt);
   }, [asked, execute]);
   const cancelPrompt = React.useCallback(() => setAsked(null), []);
 
   return { allowed, saving, prompt: asked?.prompt ?? null, reason: asked?.reason ?? null, run, acceptPrompt, cancelPrompt };
 }
 
-/** The "Feed again?" question as a dialog (Feed again / Cancel). */
-export function FeedAgainDialog({ action, petName }: { action: Pick<FeedAction, 'prompt' | 'reason' | 'acceptPrompt' | 'cancelPrompt' | 'saving'>; petName: string }) {
+/**
+ * The "Feed again?" question as a dialog (Feed again / Cancel). It opens without
+ * a trigger, so `returnFocus` names where focus goes when it closes (PE-20e).
+ */
+export function FeedAgainDialog({
+  action,
+  petName,
+  returnFocus,
+}: {
+  action: Pick<FeedAction, 'prompt' | 'reason' | 'acceptPrompt' | 'cancelPrompt' | 'saving'>;
+  petName: string;
+  returnFocus?: () => void;
+}) {
   return (
     <AlertDialog open={action.prompt !== null} onOpenChange={(open) => !open && action.cancelPrompt()}>
-      <AlertDialogContent data-testid="feed-again-dialog">
+      <AlertDialogContent
+        data-testid="feed-again-dialog"
+        onCloseAutoFocus={returnFocus ? (event) => { event.preventDefault(); returnFocus(); } : undefined}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>Feed {petName} again?</AlertDialogTitle>
           <AlertDialogDescription>{action.reason}</AlertDialogDescription>

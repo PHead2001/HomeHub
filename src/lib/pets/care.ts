@@ -3,6 +3,8 @@
  * section 3 Pets items). No Firebase or React imports, so they are unit tested.
  */
 import { sharedId } from '../motion';
+import { diffDays, localDay } from '../../../functions/src/shared/calendar';
+import { householdDayZone } from '../household-day';
 import { FOOD_TYPES, type FoodType, type LoggedBy, type PetMedicationLog, type PetProfile, type PortionUnit } from './types';
 
 /* ------------------------------------------------------------------------- */
@@ -30,6 +32,17 @@ export function speciesArt(type?: string | null, hint?: string | null): SpeciesA
     }
   }
   return 'other';
+}
+
+/**
+ * The photo hint (`dataAiHint`) to save with a pet's type (PE-8a). A new pet, or
+ * a changed type, gets the type's own hint; saving with the type unchanged keeps
+ * the stored hint, so a legacy "Other" pet drawn as a rabbit stays a rabbit.
+ */
+export function speciesHintFor(type: string, previous?: { type?: string | null; dataAiHint?: string | null } | null): string {
+  const kept = previous?.dataAiHint?.trim();
+  if (previous && previous.type === type && kept) return kept;
+  return type.toLowerCase();
 }
 
 export const SPECIES_ART_LABEL: Record<SpeciesArt, string> = {
@@ -202,6 +215,12 @@ export type FeedingPlan = {
   perDay: number | null;
   amount: number;
   unit: PortionUnit;
+  /**
+   * The schedule is explicitly not daily ("every other day", "twice a week") and no
+   * structured daily count is set: a day without a feeding may be an off-day, so
+   * it is never shown as a missed meal (PE-18b).
+   */
+  nonDaily?: boolean;
 };
 
 export const DEFAULT_PORTION = { amount: 1, unit: 'Cups' as PortionUnit };
@@ -213,7 +232,8 @@ export function feedingPlan(pet: Pick<PetProfile, 'foodSchedule' | 'feedingsPerD
   // A stored portion outside the accepted bounds would make the detailed form's default invalid.
   const amount = isPositive(pet.portionAmount) && isValidPortion(pet.portionAmount) ? pet.portionAmount : parsedPortion?.amount ?? DEFAULT_PORTION.amount;
   const unit = pet.portionUnit ?? parsedPortion?.unit ?? DEFAULT_PORTION.unit;
-  return { perDay, amount, unit };
+  const nonDaily = !isPositiveInteger(pet.feedingsPerDay) && isNonDailySchedule(pet.foodSchedule);
+  return { perDay, amount, unit, ...(nonDaily ? { nonDaily: true } : {}) };
 }
 
 function isPositive(value: unknown): value is number {
@@ -233,6 +253,14 @@ const UNIT_NAMES: Record<PortionUnit, [string, string]> = {
   Cans: ['can', 'cans'],
   Scoops: ['scoop', 'scoops'],
   Other: ['portion', 'portions'],
+};
+
+/** Lower-case unit names for pickers and labels ("cups", "cans"; PE-18e). Stored values keep their case. */
+export const UNIT_LABELS: Record<PortionUnit, string> = {
+  Cups: 'cups',
+  Cans: 'cans',
+  Scoops: 'scoops',
+  Other: 'other',
 };
 
 export function formatNumber(value: number): string {
@@ -262,36 +290,58 @@ export function toDate(value: unknown): Date | null {
   return null;
 }
 
-export function isSameLocalDay(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+/**
+ * The household day (`yyyy-MM-dd`) of an instant (16.1 D-6, PE-7): every "today",
+ * "yesterday" and day count in Pets uses the household's time zone
+ * (`household.timeZone`, default America/Chicago) through the shared `localDay`
+ * that the server reminders and the dashboard use, never the viewer's device zone.
+ */
+export function petDay(instant: Date, timeZone?: string | null): string {
+  return localDay(instant, householdDayZone(timeZone));
 }
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
 
-/** "just now", "5 min ago", "2 h ago", "yesterday", "3 days ago", or a date. */
-export function formatAgo(date: Date, now: Date): string {
+/**
+ * Under this age a past time always reads in hours, even across midnight: a
+ * feeding at 23:00 reads "1 h ago" at 00:30, never "yesterday" (PE-8h).
+ */
+const HOURS_ACROSS_MIDNIGHT_MS = 12 * HOUR;
+
+/**
+ * "just now", "5 min ago", "2 h ago", "yesterday", "3 days ago", or "on Mar 3".
+ * Days are household days (`timeZone`); a time ahead of `now` (another device's
+ * clock) reads "just now".
+ */
+export function formatAgo(date: Date, now: Date, timeZone?: string | null): string {
   const diff = now.getTime() - date.getTime();
   if (diff < MINUTE) return 'just now';
   if (diff < HOUR) return `${Math.floor(diff / MINUTE)} min ago`;
-  if (diff < DAY && isSameLocalDay(date, now)) return `${Math.floor(diff / HOUR)} h ago`;
-  const days = calendarDaysBetween(date, now);
+  const days = calendarDaysBetween(date, now, timeZone);
+  if (diff < HOURS_ACROSS_MIDNIGHT_MS || days === 0) return `${Math.floor(diff / HOUR)} h ago`;
   if (days <= 1) return 'yesterday';
   if (days < 7) return `${days} days ago`;
-  return `on ${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  return `on ${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: householdDayZone(timeZone) })}`;
 }
 
-function startOfLocalDay(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+/** Whole household days from `a` to `b` (positive when `b` is later); a DST day still counts once. */
+export function calendarDaysBetween(a: Date, b: Date, timeZone?: string | null): number {
+  return diffDays(petDay(b, timeZone), petDay(a, timeZone));
 }
 
-/** Whole calendar days from `a` to `b` (positive when `b` is later). */
-export function calendarDaysBetween(a: Date, b: Date): number {
-  return Math.round((startOfLocalDay(b) - startOfLocalDay(a)) / DAY);
+/**
+ * A stored log date for display, or null when it is blank or unreadable, so a
+ * malformed legacy entry shows "Unknown time" instead of crashing its history
+ * (PE-8b, PE-8c). Epoch 0 is how an unreadable feeding date is carried for
+ * sorting, so it is unknown too.
+ */
+export function readableLogDate(value: unknown): Date | null {
+  const date = toDate(value);
+  return date && date.getTime() > 0 ? date : null;
 }
 
-/** Parses `yyyy-MM-dd` as a local calendar date. */
+/** Parses `yyyy-MM-dd` as a calendar date (a local Date at its midnight, for display; day math uses the string). */
 export function parseLocalDate(value?: string | null): Date | null {
   const match = (value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
@@ -303,7 +353,7 @@ export function parseLocalDate(value?: string | null): Date | null {
 /* Feeding status                                                             */
 /* ------------------------------------------------------------------------- */
 
-export type FeedingEntry = { date: unknown } & LoggedBy;
+export type FeedingEntry = { date: unknown; id?: string } & LoggedBy;
 
 export type FeedingStatus = {
   fedToday: number;
@@ -312,6 +362,8 @@ export type FeedingStatus = {
   progress: number;
   complete: boolean;
   last: { date: Date; by: string | null } | null;
+  /** The plan is not daily (PE-18b): a day without a feeding may be an off-day. */
+  nonDaily?: boolean;
 };
 
 /**
@@ -329,31 +381,37 @@ export function seenFeedingDate(value: unknown, now: Date): Date | null {
   return date > now ? now : date;
 }
 
-export function feedingStatus(logs: FeedingEntry[], plan: Pick<FeedingPlan, 'perDay'>, now: Date): FeedingStatus {
+/** Today's feedings (the household day, PE-7a) against the plan, and the latest feeding. */
+export function feedingStatus(logs: FeedingEntry[], plan: Pick<FeedingPlan, 'perDay' | 'nonDaily'>, now: Date, timeZone?: string | null): FeedingStatus {
   let fedToday = 0;
   let last: FeedingStatus['last'] = null;
+  const today = petDay(now, timeZone);
   for (const log of logs) {
     const date = seenFeedingDate(log.date, now);
     if (!date) continue;
-    if (isSameLocalDay(date, now)) fedToday += 1;
+    if (petDay(date, timeZone) === today) fedToday += 1;
     if (!last || date > last.date) last = { date, by: log.loggedByName?.trim() || null };
   }
   const perDay = plan.perDay;
   const progress = perDay ? Math.min(1, fedToday / perDay) : fedToday > 0 ? 1 : 0;
-  return { fedToday, perDay, progress, complete: perDay ? fedToday >= perDay : fedToday > 0, last };
+  return { fedToday, perDay, progress, complete: perDay ? fedToday >= perDay : fedToday > 0, last, ...(plan.nonDaily ? { nonDaily: true } : {}) };
 }
 
-/** "Fed 2 h ago by Sam" / "Not fed today" / "No feedings logged yet". */
-export function feedingHeadline(status: FeedingStatus, now: Date): string {
+/** "Fed 2 h ago by Sam" / "No feedings logged yet" (household days for "yesterday"). */
+export function feedingHeadline(status: FeedingStatus, now: Date, timeZone?: string | null): string {
   if (!status.last) return 'No feedings logged yet';
-  const ago = formatAgo(status.last.date, now);
+  const ago = formatAgo(status.last.date, now, timeZone);
   return `Fed ${ago}${status.last.by ? ` by ${status.last.by}` : ''}`;
 }
 
-/** "1 of 2 today" / "2 today" / "Not fed today". */
+/**
+ * "1 of 2 today" / "2 today" / "Not fed today"; on a non-daily schedule an unfed
+ * day reads "No feeding planned daily" (PE-18b: an off-day is not a missed meal).
+ */
 export function feedingCountLabel(status: FeedingStatus): string {
   if (status.perDay) return `${status.fedToday} of ${status.perDay} today`;
-  return status.fedToday > 0 ? `${status.fedToday} today` : 'Not fed today';
+  if (status.fedToday > 0) return `${status.fedToday} today`;
+  return status.nonDaily ? 'No feeding planned daily' : 'Not fed today';
 }
 
 /* ------------------------------------------------------------------------- */
@@ -363,7 +421,10 @@ export function feedingCountLabel(status: FeedingStatus): string {
 export type MedicationDue = {
   medication: string;
   dosage: string;
+  /** The due day as a local Date, for display only. */
   due: Date;
+  /** The due day as stored (`yyyy-MM-dd`, a household calendar day). */
+  dueDay: string;
   /** Calendar days until due (negative when overdue). */
   days: number;
   state: 'overdue' | 'due' | 'soon' | 'upcoming';
@@ -379,7 +440,17 @@ type MedicationCountdownInput = Pick<PetMedicationLog, 'date' | 'medication' | '
  * countdown. This is the one countdown rule: the pet card chips, the Medication
  * tab, the calendar's upcoming doses and (mirrored) the server reminders use it.
  */
-export function currentMedications(logs: MedicationCountdownInput[], now: Date): MedicationDue[] {
+export function currentMedications(logs: MedicationCountdownInput[], now: Date, timeZone?: string | null): MedicationDue[] {
+  return currentMedicationsOn(logs, petDay(now, timeZone));
+}
+
+/**
+ * `currentMedications` on a given household day (`yyyy-MM-dd`, PE-7b): days until
+ * due count household calendar days, as the server reminder does, so the card,
+ * the Medication tab and the Calendar agree with it on "Due today" across
+ * midnight and daylight-saving changes.
+ */
+export function currentMedicationsOn(logs: MedicationCountdownInput[], today: string): MedicationDue[] {
   const latest = new Map<string, { at: number; log: MedicationCountdownInput }>();
   for (const log of logs) {
     const key = (log.medication ?? '').trim().toLowerCase();
@@ -391,16 +462,16 @@ export function currentMedications(logs: MedicationCountdownInput[], now: Date):
   const dues: MedicationDue[] = [];
   for (const { log } of latest.values()) {
     const due = parseLocalDate(log.nextDueDate);
-    if (!due) continue;
-    const days = calendarDaysBetween(now, due);
-    dues.push({ medication: log.medication, dosage: log.dosage, due, days, ...medicationState(days) });
+    if (!due || !log.nextDueDate) continue;
+    const days = diffDays(log.nextDueDate, today);
+    dues.push({ medication: log.medication, dosage: log.dosage, due, dueDay: log.nextDueDate, days, ...medicationState(days) });
   }
-  return dues.sort((a, b) => a.due.getTime() - b.due.getTime() || a.medication.localeCompare(b.medication));
+  return dues.sort((a, b) => a.dueDay.localeCompare(b.dueDay) || a.medication.localeCompare(b.medication));
 }
 
 /** The most urgent medication dose (the first of `currentMedications`), or null. */
-export function nextMedication(logs: MedicationCountdownInput[], now: Date): MedicationDue | null {
-  return currentMedications(logs, now)[0] ?? null;
+export function nextMedication(logs: MedicationCountdownInput[], now: Date, timeZone?: string | null): MedicationDue | null {
+  return currentMedications(logs, now, timeZone)[0] ?? null;
 }
 
 /** Splits chips into the shown ones and the "+N" overflow count. */
@@ -536,6 +607,15 @@ export function validatePetForm(values: PetFormValues, existingNames: string[] =
 /** The pet's page. */
 export function petHref(petId: string): string {
   return `/pets/${encodeURIComponent(petId)}`;
+}
+
+/** The pet page's tabs, selectable with `?tab=`. */
+export const PET_TABS = ['feeding', 'medication', 'care'] as const;
+export type PetTab = (typeof PET_TABS)[number];
+
+/** The tab a `?tab=` value selects (Feeding for a missing or unknown value). */
+export function petTabFromParam(value: string | null | undefined): PetTab {
+  return (PET_TABS as readonly string[]).includes(value ?? '') ? (value as PetTab) : 'feeding';
 }
 
 /** Shared-element name of a pet's photo: the /pets card photo morphs into the pet page hero (H12). */

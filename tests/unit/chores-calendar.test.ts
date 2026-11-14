@@ -8,7 +8,7 @@ import { stableSlugify } from '../../src/lib/utils';
 import {
   choreEvents, groupByDay, maintenanceCalendarItems, occurrenceIds, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, sortEvents, weekDays,
 } from '../../src/lib/chores/calendar';
-import { currentMedications } from '../../src/lib/pets/care';
+import { currentMedicationsOn } from '../../src/lib/pets/care';
 
 const chore = (overrides: Partial<ChoreRecord>): ChoreRecord => ({
   id: 'c1',
@@ -51,10 +51,14 @@ describe('calendar events', () => {
     assert.equal(events[1].href, '/maintenance');
   });
 
-  it('places medication doses on the local day they were logged', () => {
+  it('places medication doses on the household day they were logged (PE-7b)', () => {
     const logged = new Date(2026, 6, 31, 20, 0);
-    const [event] = medicationEvents([{ id: 'm', petId: 'maple', petName: 'Maple', medication: 'Heartworm', dosage: '1 tab', date: logged.toISOString() }]);
-    assert.equal(event.day, dayKey(logged));
+    const [event] = medicationEvents([{ id: 'm', petId: 'maple', petName: 'Maple', medication: 'Heartworm', dosage: '1 tab', date: logged.toISOString() }], 'UTC');
+    assert.equal(event.day, logged.toISOString().slice(0, 10));
+    // 03:00 UTC on Aug 1 is still Jul 31 in Chicago: the household's day, whatever the device zone.
+    const lateDose = [{ id: 'n', petId: 'maple', petName: 'Maple', medication: 'Heartworm', date: '2026-08-01T03:00:00.000Z' }];
+    assert.equal(medicationEvents(lateDose, 'America/Chicago')[0].day, '2026-07-31');
+    assert.equal(medicationEvents(lateDose, 'Europe/London')[0].day, '2026-08-01');
     assert.equal(event.title, 'Heartworm (1 tab)');
     assert.equal(event.href, '/pets/maple');
     assert.equal(medicationEvents([{ id: 'x', petId: 'p', petName: 'P', medication: 'M', date: 'nope' }]).length, 0);
@@ -77,8 +81,7 @@ describe('calendar events', () => {
     ]);
     assert.equal(events[0].href, '/pets/maple?tab=medication');
     // Not a fork: the same doses, labels and order as the pet card chips.
-    const today = new Date(2026, 7, 1);
-    const maple = currentMedications(entries.filter(e => e.petId === 'maple').map(e => ({ ...e, dosage: e.dosage ?? '' })), today);
+    const maple = currentMedicationsOn(entries.filter(e => e.petId === 'maple').map(e => ({ ...e, dosage: e.dosage ?? '' })), '2026-08-01');
     assert.deepEqual(events.filter(e => e.subtitle === 'Maple').map(e => e.medicationDue?.label), maple.map(due => due.label));
     // Overdue doses join the red rail; logged doses stay separate events.
     assert.deepEqual(overdueRail(events).map(e => e.title), ['Ear drops (2 drops)']);
@@ -92,7 +95,9 @@ describe('calendar events', () => {
     assert.match(source, /<ToggleGroupItem value="day"/);
     assert.match(source, /e\.key === 'ArrowLeft' \|\| e\.key === 'ArrowRight'/);
     assert.match(source, /addDaysToKey\(selectedDay, direction\)/);
-    assert.match(source, /medicationDueEvents\(medication, today\)/);
+    // Medication days are the household's (PE-7b), not the device's.
+    assert.match(source, /medicationEvents\(medication, timeZone\)/);
+    assert.match(source, /medicationDueEvents\(medication, householdToday\)/);
     assert.match(source, /<Stagger as="ol"/);
     assert.match(source, /<PeekCard/);
   });
