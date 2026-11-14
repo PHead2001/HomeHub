@@ -1267,6 +1267,311 @@ service cloud.firestore {
           feedingNow(after.lastFedAt) >= feedingNow(before.lastFedAt));
     }
 
+    // --- Medication courses and doses (P3, docs/modules/pets/README.md) -------
+    // A course (`medication-courses/{courseId}`) has a stable id and a
+    // confirmed schedule; its `lastDose` names the latest dose (the occurrence
+    // it covered), written in the same commit as that dose's log, so two
+    // sessions giving the same occurrence serialize on the course. Course doses
+    // are created once (the press's id), never edited; removing one (Undo,
+    // history delete) moves the pointer in the same commit. Legacy, name-keyed
+    // entries (no `courseId`) keep their 2.1 rules (D-P8).
+
+    function medicationLogPath(householdId, petId, logId) {
+      return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/medication-logs/$(logId);
+    }
+
+    function medicationCoursePath(householdId, petId, courseId) {
+      return /databases/$(database)/documents/households/$(householdId)/pets/$(petId)/medication-courses/$(courseId);
+    }
+
+    function medicationDay(value) {
+      return value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function medicationTime(value) {
+      return value is string && value.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+
+    function medicationTimes(times) {
+      return times is list && times.size() <= 6 &&
+        (times.size() < 1 || medicationTime(times[0])) &&
+        (times.size() < 2 || medicationTime(times[1])) &&
+        (times.size() < 3 || medicationTime(times[2])) &&
+        (times.size() < 4 || medicationTime(times[3])) &&
+        (times.size() < 5 || medicationTime(times[4])) &&
+        (times.size() < 6 || medicationTime(times[5]));
+    }
+
+    // "days": every 1-90 days at up to six wall times (none: due all day);
+    // "hours": every 2-72 hours from the first dose time.
+    function validCourseSchedule(schedule) {
+      return schedule is map && (
+        (schedule.keys().hasOnly(['kind', 'everyDays', 'times']) && schedule.keys().hasAll(['kind', 'everyDays', 'times']) &&
+          schedule.kind == 'days' && schedule.everyDays is int &&
+          schedule.everyDays >= 1 && schedule.everyDays <= 90 && medicationTimes(schedule.times)) ||
+        (schedule.keys().hasOnly(['kind', 'everyHours', 'firstTime']) && schedule.keys().hasAll(['kind', 'everyHours', 'firstTime']) &&
+          schedule.kind == 'hours' && schedule.everyHours is int &&
+          schedule.everyHours >= 2 && schedule.everyHours <= 72 && medicationTime(schedule.firstTime)));
+    }
+
+    function validDosePointer(pointer) {
+      return pointer == null || (pointer is map &&
+        pointer.keys().hasOnly(['logId', 'occurrence', 'occurrenceAt', 'givenAt', 'byUid', 'byName']) &&
+        nonEmptyString(pointer.get('logId', null), 200) &&
+        nonEmptyString(pointer.get('occurrence', null), 40) &&
+        pointer.get('occurrenceAt', null) is timestamp &&
+        (pointer.get('givenAt', null) == null || pointer.givenAt is timestamp) &&
+        optionalString(pointer.get('byUid', null), 128) &&
+        optionalString(pointer.get('byName', null), 200));
+    }
+
+    function validCourseFields(data) {
+      return data.keys().hasOnly([
+          'name', 'dosage', 'schedule', 'startDay', 'endDay', 'status', 'legacyKeys',
+          'lastDose', 'prevDose', 'coveredUntil',
+          'createdAt', 'createdByUid', 'createdByName', 'updatedAt', 'updatedByUid', 'updatedByName',
+          'finishedAt', 'finishedByUid', 'finishedByName']) &&
+        data.keys().hasAll(['name', 'dosage', 'schedule', 'startDay', 'status']) &&
+        nonEmptyString(data.name, 80) &&
+        boundedString(data.dosage, 80) &&
+        medicationDay(data.startDay) &&
+        (data.get('endDay', null) == null || (medicationDay(data.endDay) && data.endDay >= data.startDay)) &&
+        data.status in ['active', 'finished'] &&
+        (data.schedule == null ? data.status == 'finished' : validCourseSchedule(data.schedule)) &&
+        (!('legacyKeys' in data) || boundedList(data.legacyKeys, 10)) &&
+        validDosePointer(data.get('lastDose', null)) &&
+        validDosePointer(data.get('prevDose', null)) &&
+        (data.get('coveredUntil', null) == null || data.coveredUntil is timestamp) &&
+        optionalString(data.get('createdByName', null), 200) &&
+        optionalString(data.get('updatedByName', null), 200) &&
+        optionalString(data.get('finishedByName', null), 200);
+    }
+
+    // A new course: an active one with a schedule (pets.editProfiles), or a
+    // legacy medication finished without one (pets.addLogs, D-P8), always
+    // signed by the writer at server time and without doses yet.
+    function courseCreated(householdId) {
+      let data = request.resource.data;
+      return validCourseFields(data) &&
+        data.get('createdAt', null) == request.time &&
+        data.get('createdByUid', null) == request.auth.uid &&
+        data.get('lastDose', null) == null && data.get('prevDose', null) == null &&
+        data.get('coveredUntil', null) == null &&
+        ((data.status == 'active' &&
+            hasHouseholdPermission(householdId, 'pets.editProfiles') &&
+            data.get('updatedAt', null) == request.time &&
+            data.get('updatedByUid', null) == request.auth.uid &&
+            data.get('finishedAt', null) == null) ||
+          (data.status == 'finished' &&
+            hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            data.get('legacyKeys', []).size() >= 1 &&
+            data.get('finishedAt', null) == request.time &&
+            data.get('finishedByUid', null) == request.auth.uid));
+    }
+
+    // Name, dosage, schedule, days, or a legacy name merged in (keys only grow).
+    // A schedule edit may set `coveredUntil` (the new occurrence that replaces
+    // the one last given), at most 92 days ahead like a dose's occurrence.
+    function courseEdited(householdId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return hasHouseholdPermission(householdId, 'pets.editProfiles') &&
+        before.status == 'active' && after.status == 'active' &&
+        after.diff(before).affectedKeys().hasOnly(['name', 'dosage', 'schedule', 'startDay', 'endDay', 'legacyKeys', 'coveredUntil', 'updatedAt', 'updatedByUid', 'updatedByName']) &&
+        (after.get('coveredUntil', null) == null || after.coveredUntil < request.time + duration.value(92, 'd')) &&
+        after.schedule != null &&
+        after.get('legacyKeys', []).hasAll(before.get('legacyKeys', [])) &&
+        after.get('updatedAt', null) == request.time &&
+        after.get('updatedByUid', null) == request.auth.uid;
+    }
+
+    function courseFinished(householdId) {
+      let after = request.resource.data;
+      return after.status == 'finished' &&
+        after.get('finishedAt', null) == request.time &&
+        after.get('finishedByUid', null) == request.auth.uid &&
+        optionalString(after.get('finishedByName', null), 200) &&
+        hasHouseholdPermission(householdId, 'pets.addLogs');
+    }
+
+    // Undo of Finish: its finisher for 10 minutes, or pets.editProfiles.
+    function courseResumed(householdId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return before.status == 'finished' && after.status == 'active' &&
+        before.schedule != null &&
+        after.get('finishedAt', null) == null &&
+        after.get('finishedByUid', null) == null &&
+        after.get('finishedByName', null) == null &&
+        (hasHouseholdPermission(householdId, 'pets.editProfiles') ||
+          (hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            before.get('finishedByUid', null) == request.auth.uid &&
+            before.get('finishedAt', null) is timestamp &&
+            request.time < before.finishedAt + duration.value(10, 'm')));
+    }
+
+    // The pointer names an existing (after this write) dose of this course, with its fields.
+    function dosePointsAtLog(householdId, petId, courseId, pointer) {
+      let log = getAfter(medicationLogPath(householdId, petId, pointer.logId)).data;
+      return existsAfter(medicationLogPath(householdId, petId, pointer.logId)) &&
+        log.get('courseId', null) == courseId &&
+        log.get('occurrence', null) == pointer.occurrence &&
+        log.get('occurrenceAt', null) == pointer.occurrenceAt &&
+        log.get('date', null) == pointer.get('givenAt', null) &&
+        log.get('loggedByUid', null) == pointer.get('byUid', null);
+    }
+
+    // Give dose: the new latest dose is a log this writer creates in this commit;
+    // `prevDose` is exactly the replaced pointer, or nothing.
+    function doseGiven(householdId, petId, courseId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let pointer = after.get('lastDose', null);
+      return before.status == 'active' &&
+        pointer != null &&
+        pointer.get('byUid', null) == request.auth.uid &&
+        !exists(medicationLogPath(householdId, petId, pointer.logId)) &&
+        dosePointsAtLog(householdId, petId, courseId, pointer) &&
+        (after.get('prevDose', null) == null || after.prevDose == before.get('lastDose', null)) &&
+        hasHouseholdPermission(householdId, 'pets.addLogs');
+    }
+
+    // Undo or delete of the latest dose: its log is gone after this write, and
+    // the pointer names a surviving dose of this course, or nothing.
+    function doseRemoved(householdId, petId, courseId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return after.get('prevDose', null) == null &&
+        (after.get('lastDose', null) == null ||
+          dosePointsAtLog(householdId, petId, courseId, after.lastDose)) &&
+        mayRemoveDoses(householdId);
+    }
+
+    // The remembered previous dose was removed: forget it.
+    function dosePrevDropped(householdId, petId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return before.get('prevDose', null) != null &&
+        after.get('prevDose', null) == null &&
+        !existsAfter(medicationLogPath(householdId, petId, before.prevDose.logId)) &&
+        mayRemoveDoses(householdId);
+    }
+
+    function mayRemoveDoses(householdId) {
+      let member = myMember(householdId);
+      return hasMemberDoc(householdId) &&
+        (memberHasPermission(member, 'pets.addLogs') || memberHasPermission(member, 'pets.deleteLogs'));
+    }
+
+    // Which update this is, decided from the changed keys first, so a commit
+    // (the dose's log plus this pointer) stays within the rules' evaluation
+    // budget: a dose pointer move (given, removed, or a stale previous dose
+    // dropped), finish or its Undo, or an edit (the full document validated).
+    function courseUpdated(householdId, petId, courseId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let changed = after.diff(before).affectedKeys();
+      let lastBefore = before.get('lastDose', null);
+      return changed.hasOnly(['lastDose', 'prevDose'])
+        ? validDosePointer(after.get('lastDose', null)) && validDosePointer(after.get('prevDose', null)) &&
+          (after.get('lastDose', null) == lastBefore
+            ? dosePrevDropped(householdId, petId)
+            : (lastBefore != null && !existsAfter(medicationLogPath(householdId, petId, lastBefore.logId))
+              ? doseRemoved(householdId, petId, courseId)
+              : doseGiven(householdId, petId, courseId)))
+        : (changed.hasOnly(['status', 'finishedAt', 'finishedByUid', 'finishedByName'])
+          ? (before.status == 'active' ? courseFinished(householdId) : courseResumed(householdId))
+          : validCourseFields(after) && courseEdited(householdId));
+    }
+
+    // The course's surviving latest dose (before this write), or null.
+    function courseLatestDose(householdId, petId, course) {
+      let last = course.get('lastDose', null);
+      return last != null && exists(medicationLogPath(householdId, petId, last.logId)) ? last : null;
+    }
+
+    // A course dose: given now (server time) or at a chosen earlier time within
+    // 7 days (never in the future), for one occurrence of an active course,
+    // signed by the writer. When the course's surviving latest dose already
+    // covers this occurrence (that one or a later one), it needs
+    // `repeat: 'confirmed'` naming that dose (`confirmOf`), so a stale answer
+    // cannot record over a newer dose. A dose at or after the latest becomes
+    // the course's `lastDose` in the same commit.
+    function courseDoseCreate(householdId, petId, logId) {
+      let data = request.resource.data;
+      let coursePath = medicationCoursePath(householdId, petId, data.get('courseId', ''));
+      let course = get(coursePath).data;
+      let last = courseLatestDose(householdId, petId, course);
+      return data.keys().hasOnly(['courseId', 'occurrence', 'occurrenceAt', 'date', 'loggedAt', 'medication', 'dosage', 'notes',
+          'loggedByUid', 'loggedByName', 'repeat', 'confirmOf', 'backdated']) &&
+        data.keys().hasAll(['courseId', 'occurrence', 'occurrenceAt', 'date', 'loggedAt', 'medication', 'dosage', 'loggedByUid', 'repeat']) &&
+        nonEmptyString(data.courseId, 200) &&
+        data.occurrence is string &&
+        data.occurrence.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}(T([01][0-9]|2[0-3]):[0-5][0-9])?$') &&
+        data.occurrenceAt is timestamp &&
+        data.occurrenceAt < request.time + duration.value(92, 'd') &&
+        boundedString(data.medication, 200) &&
+        boundedString(data.dosage, 200) &&
+        (!('notes' in data) || optionalString(data.notes, 2000)) &&
+        data.loggedByUid == request.auth.uid &&
+        optionalString(data.get('loggedByName', null), 200) &&
+        data.loggedAt == request.time &&
+        data.date is timestamp &&
+        (data.get('backdated', false) == true
+          ? (data.date < request.time && data.date > request.time - duration.value(7, 'd'))
+          : (!('backdated' in data) || data.backdated == false) && data.date == request.time) &&
+        data.repeat in ['none', 'confirmed'] &&
+        (data.repeat == 'confirmed' ? data.get('confirmOf', null) is string : !('confirmOf' in data)) &&
+        exists(coursePath) &&
+        course.status == 'active' &&
+        (last != null && last.occurrenceAt >= data.occurrenceAt
+          ? data.repeat == 'confirmed' && data.confirmOf == last.logId
+          : true) &&
+        (last != null && data.occurrenceAt < last.occurrenceAt
+          ? true
+          : getAfter(coursePath).data.get('lastDose', null) != null &&
+            getAfter(coursePath).data.lastDose.logId == logId);
+    }
+
+    // A dose outside any course: history only (no schedule, no reminders).
+    function oneOffDoseCreate() {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['oneOff', 'date', 'loggedAt', 'medication', 'dosage', 'notes', 'loggedByUid', 'loggedByName', 'backdated']) &&
+        data.oneOff == true &&
+        nonEmptyString(data.get('medication', null), 200) &&
+        boundedString(data.get('dosage', ''), 200) &&
+        (!('notes' in data) || optionalString(data.notes, 2000)) &&
+        data.get('loggedByUid', null) == request.auth.uid &&
+        optionalString(data.get('loggedByName', null), 200) &&
+        data.get('loggedAt', null) == request.time &&
+        data.get('date', null) is timestamp &&
+        (data.get('backdated', false) == true
+          ? (data.date < request.time && data.date > request.time - duration.value(7, 'd'))
+          : data.date == request.time);
+    }
+
+    // Removing a course dose must move the course's pointer off it in the same commit.
+    function courseDoseRemovable(householdId, petId, logId) {
+      let courseId = resource.data.get('courseId', null);
+      return courseId == null ||
+        !existsAfter(medicationCoursePath(householdId, petId, courseId)) ||
+        getAfter(medicationCoursePath(householdId, petId, courseId)).data.get('lastDose', null) == null ||
+        getAfter(medicationCoursePath(householdId, petId, courseId)).data.lastDose.logId != logId;
+    }
+
+    // The author of a course or one-off dose may remove it for 10 minutes (Undo).
+    function medicationAuthorWithinUndoWindow(householdId) {
+      return hasHouseholdPermission(householdId, 'pets.addLogs') &&
+        resource.data.get('loggedByUid', null) == request.auth.uid &&
+        resource.data.get('loggedAt', null) is timestamp &&
+        request.time < resource.data.loggedAt + duration.value(10, 'm');
+    }
+
+    // A legacy (2.1-shape) entry: no course and not a one-off dose.
+    function legacyMedicationShape(data) {
+      return !('courseId' in data) && !('oneOff' in data) && !('occurrence' in data) && !('loggedAt' in data);
+    }
+
     function validMedicationLogFields(data, keys) {
       return keys.hasOnly(['date', 'medication', 'dosage', 'notes', 'nextDueDate', 'loggedByUid', 'loggedByName']) &&
         (!('date' in keys) || dateValue(data.date)) &&
@@ -1724,14 +2029,32 @@ service cloud.firestore {
           allow delete: if false;
         }
 
+        // Course doses (courseDoseCreate), one-off doses, and legacy 2.1-shape
+        // entries (D-P8: cached older clients keep working). Course and one-off
+        // doses are never edited (a create over an existing id is refused).
         match /medication-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
-          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+          allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') && (
+            ('courseId' in request.resource.data && courseDoseCreate(householdId, petId, logId)) ||
+            ('oneOff' in request.resource.data && oneOffDoseCreate()) ||
+            (legacyMedicationShape(request.resource.data) &&
+              validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate()));
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
+            legacyMedicationShape(resource.data) && legacyMedicationShape(request.resource.data) &&
             validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged() &&
             deviceAttributionKept();
-          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+          allow delete: if (hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+              medicationAuthorWithinUndoWindow(householdId)) &&
+            courseDoseRemovable(householdId, petId, logId);
+        }
+
+        // Medication courses (P3). Never deleted from the client: finishing keeps
+        // the history (a pet's delete cascade is server-side, D-P12).
+        match /medication-courses/{courseId} {
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
+          allow create: if courseCreated(householdId);
+          allow update: if courseUpdated(householdId, petId, courseId);
+          allow delete: if false;
         }
 
         match /care-logs/{logId} {

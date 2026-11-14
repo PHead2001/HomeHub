@@ -34,11 +34,12 @@ import { NumberTicker } from '@/components/motion/number-ticker';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import { PeekCard } from '@/components/dashboard/peek-card';
 import { toDate } from '@/lib/pets/care';
+import { readCourse } from '@/lib/pets/medication-course';
 import { cn } from '@/lib/utils';
 import { addDaysToKey, dayFromKey, isDayKey, type ChoreRecord } from '@/lib/chores/dates';
 import {
-  choreEvents, groupByDay, maintenanceCalendarItems, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
-  type CalendarEvent, type CalendarMember, type MedicationEntry, type RecurringTemplate,
+  choreEvents, courseDueEvents, groupByDay, maintenanceCalendarItems, plannedRecurringEvents, isSameMonth, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, overdueRail, rescheduleFields, shiftMonth, weekDays,
+  type CalendarEvent, type CalendarMember, type CourseEntry, type MedicationEntry, type RecurringTemplate,
 } from '@/lib/chores/calendar';
 
 type View = 'day' | 'week' | 'month';
@@ -243,6 +244,7 @@ export function HouseholdCalendar() {
   const [assets, setAssets] = useState<HomeAsset[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [medication, setMedication] = useState<MedicationEntry[]>([]);
+  const [courses, setCourses] = useState<CourseEntry[]>([]);
   const [sourceErrors, setSourceErrors] = useState<SourceErrors>({});
   const [view, setView] = useState<View>(initialView);
   const reduced = useReducedMotion();
@@ -303,20 +305,34 @@ export function HouseholdCalendar() {
       if (canViewPets) {
         tasks.push((async () => {
           const pets = await getDocs(collection(db, 'households', householdId, 'pets'));
-          const logs = await Promise.all(pets.docs.map(async petDoc => {
+          const loaded = await Promise.all(pets.docs.map(async petDoc => {
             const pet = petDoc.data() as Pet;
-            const meds = await getDocs(collection(db, 'households', householdId, 'pets', petDoc.id, 'medication-logs'));
-            return meds.docs.map(m => {
-              const log = m.data() as MedicationLog & { nextDueDate?: string };
-              // Dates may be ISO strings or (legacy) Firestore timestamps.
+            const [meds, courseSnap] = await Promise.all([
+              getDocs(collection(db, 'households', householdId, 'pets', petDoc.id, 'medication-logs')),
+              getDocs(collection(db, 'households', householdId, 'pets', petDoc.id, 'medication-courses')),
+            ]);
+            const logs = meds.docs.map(m => {
+              const log = m.data() as MedicationLog & { nextDueDate?: string; courseId?: string; oneOff?: boolean };
+              // Dates may be ISO strings or Firestore timestamps.
               const date = toDate(log.date as unknown)?.toISOString() ?? '';
               return {
                 id: m.id, petId: petDoc.id, petName: pet.name || 'Pet', medication: log.medication || 'Medication', dosage: log.dosage, date,
                 ...(typeof log.nextDueDate === 'string' ? { nextDueDate: log.nextDueDate } : {}),
+                ...(typeof log.courseId === 'string' ? { courseId: log.courseId } : {}),
+                ...(log.oneOff === true ? { oneOff: true } : {}),
               };
             });
+            // Courses (P3): their occurrences come from the shared schedule model.
+            const petCourses = courseSnap.docs.flatMap(c => {
+              const course = readCourse(c.id, c.data());
+              return course ? [{ petId: petDoc.id, petName: pet.name || 'Pet', course }] : [];
+            });
+            return { logs, courses: petCourses };
           }));
-          if (active) setMedication(logs.flat());
+          if (active) {
+            setMedication(loaded.flatMap(entry => entry.logs));
+            setCourses(loaded.flatMap(entry => entry.courses));
+          }
         })().catch(() => { errors.pets = 'Pet medication could not be loaded.'; }));
       }
       await Promise.all(tasks);
@@ -339,8 +355,10 @@ export function HouseholdCalendar() {
     ...plannedRecurringEvents(templates, chores, members, today, visibleDays[0], visibleDays[visibleDays.length - 1]),
     ...maintenanceEvents(maintenance),
     ...medicationEvents(medication, timeZone),
-    ...medicationDueEvents(medication, householdToday),
-  ], [chores, templates, members, maintenance, medication, today, visibleDays, timeZone, householdToday]);
+    ...medicationDueEvents(medication, householdToday, courses),
+    // Recomputed with the household day; a label such as "Due since 8:00 PM" uses the time of computing.
+    ...courseDueEvents(courses, new Date(), timeZone, visibleDays[visibleDays.length - 1] > householdToday ? visibleDays[visibleDays.length - 1] : householdToday),
+  ], [chores, templates, members, maintenance, medication, courses, today, visibleDays, timeZone, householdToday]);
   const byDay = useMemo(() => groupByDay(events), [events]);
   const rail = useMemo(() => overdueRail(events), [events]);
 
