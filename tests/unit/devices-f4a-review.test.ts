@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { choreAnswerMeaning, queuedSendResult, SENDABLE_CAPABILITIES } from '../../src/lib/devices/device-action-answers';
 import { createRevertRegistry, runUndo, type UndoFlowDeps } from '../../src/lib/devices/undo-flow';
 import { createQueuedAction, dropNotice, withSendFields, type QueuedDeviceAction } from '../../src/lib/devices/offline-queue';
-import { journalEntry, type UndoJournalEntry } from '../../src/lib/devices/undo-journal';
+import { journalEntry, journalStep, type UndoJournalEntry } from '../../src/lib/devices/undo-journal';
 import { queuedUndoInTime, QUEUED_UNDO_DEVICE_GAP_MS } from '../../src/lib/devices/queued-undo';
 import type { DeviceCapability } from '../../src/lib/devices/action-policy';
 
@@ -65,17 +65,17 @@ describe('queued answers: every capability\'s outcome shapes (E)', () => {
   });
 });
 
-const entryOf = (over: Partial<UndoJournalEntry> = {}): UndoJournalEntry => ({
-  ...journalEntry({ opId: randomUUID(), ...SESSION, capability: 'chores.complete', actorUid: 'mia', label: 'Dishes', sentAt: T0, viaQueue: false }),
-  respondedAt: T0, state: 'confirmed', ...over,
-});
+/** An applied live action (answered at T0), or a never-sent queued one (`queued`). */
+const entryOf = (over: { opId?: string; queued?: boolean } = {}): UndoJournalEntry => {
+  const fresh = journalEntry({ opId: over.opId ?? randomUUID(), ...SESSION, capability: 'chores.complete', actorUid: 'mia', label: 'Dishes', at: T0, queued: over.queued });
+  return over.queued ? fresh : journalStep(fresh, { type: 'answered', at: T0, undoable: true });
+};
 
 const deps = (over: Partial<UndoFlowDeps> = {}) => {
   const calls: string[] = [];
   const base: UndoFlowDeps = {
-    queueGet: async () => undefined,
     removeIfNeverSent: async () => false,
-    markJournal: async (_opId, patch) => { calls.push(`journal:${patch.state}`); },
+    step: async (event) => { calls.push(`journal:${event.type}`); },
     enqueueUndo: async () => { calls.push('enqueue'); },
     queueRefusal: null,
     authorize: async (forcePin) => { calls.push(`authorize:${forcePin}`); return { actorUid: 'mia' }; },
@@ -87,14 +87,14 @@ const deps = (over: Partial<UndoFlowDeps> = {}) => {
 };
 
 describe('Undo with local storage unavailable (C)', () => {
-  it('a queue that cannot be read: the Undo still goes to the server by opId', async () => {
-    const { calls, deps: d } = deps({ queueGet: async () => { throw new Error('IndexedDB unavailable'); } });
-    assert.deepEqual(await runUndo(entryOf(), d), { kind: 'undone' });
+  it('a queue that cannot be read: a sent-or-unsent queued action is undone on the server by opId', async () => {
+    const { calls, deps: d } = deps({ removeIfNeverSent: async () => { throw new Error('IndexedDB unavailable'); } });
+    assert.deepEqual(await runUndo(entryOf({ queued: true }), d), { kind: 'undone' });
     assert.ok(calls.includes('send:face'));
   });
 
   it('a journal that cannot be written changes nothing for the server', async () => {
-    const { calls, deps: d } = deps({ markJournal: async () => { throw new Error('quota'); } });
+    const { calls, deps: d } = deps({ step: async () => { throw new Error('quota'); } });
     assert.deepEqual(await runUndo(entryOf(), d), { kind: 'undone' });
     assert.ok(calls.includes('send:face'));
   });
@@ -136,8 +136,8 @@ describe('Undo needing the original actor\'s PIN, also after a reload (A)', () =
 describe('the dashboard learns when an action is taken back (D)', () => {
   it('a never-sent queued Done undone on the tablet', async () => {
     const queued: QueuedDeviceAction = createQueuedAction({ opId: randomUUID(), kind: 'action', ...SESSION, capability: 'chores.complete', actorUid: 'mia', actorName: 'Mia', intent: { choreId: 'c1' } }, new Date(T0));
-    const { calls, deps: d } = deps({ queueGet: async () => queued, removeIfNeverSent: async () => true, online: false });
-    assert.deepEqual(await runUndo(entryOf({ opId: queued.opId, viaQueue: true }), d), { kind: 'undone-locally' });
+    const { calls, deps: d } = deps({ removeIfNeverSent: async () => true, online: false });
+    assert.deepEqual(await runUndo(entryOf({ opId: queued.opId, queued: true }), d), { kind: 'undone-locally' });
     assert.equal(calls.some((c) => c.startsWith('send') || c === 'enqueue'), false);
     const registry = createRevertRegistry();
     let reverted = 0;
@@ -149,9 +149,9 @@ describe('the dashboard learns when an action is taken back (D)', () => {
 
   it('a sent entry is never removed locally', async () => {
     const sent = withSendFields(createQueuedAction({ opId: randomUUID(), kind: 'action', ...SESSION, capability: 'chores.complete', actorUid: 'mia', actorName: 'Mia', intent: {} }, new Date(T0)), { attempts: 1, sendState: 'uncertain' });
-    const { calls, deps: d } = deps({ queueGet: async () => sent, removeIfNeverSent: async () => { calls.push('remove'); return false; } });
-    assert.deepEqual(await runUndo(entryOf({ opId: sent.opId, viaQueue: true }), d), { kind: 'undone' });
-    assert.equal(calls.includes('remove'), false);
+    const { calls, deps: d } = deps({ removeIfNeverSent: async () => { calls.push('remove'); return sent.attempts === 0; } });
+    assert.deepEqual(await runUndo(entryOf({ opId: sent.opId, queued: true }), d), { kind: 'undone' });
+    assert.ok(calls.includes('send:face'), 'removeIfNeverSent refused (it was sent): sent to the server by opId');
   });
 
   it('guard: the dashboard\'s Done clears its local state when the tablet takes it back', () => {
@@ -197,7 +197,7 @@ describe('round 2: nothing that needs a PIN or a durable queue is ever queued (A
     assert.deepEqual(await runUndo(entryOf(), d), { kind: 'needs-connection', reason: 'needs-pin' });
     assert.equal(calls.includes('enqueue'), false);
     assert.equal(calls.some((c) => c.startsWith('send')), false);
-    assert.ok(calls.includes('journal:confirmed'));
+    assert.equal(calls.some((c) => c.startsWith('journal:undo-sent')), false, 'the entry stays as it is, still undoable');
   });
 
   it('a PIN-level Undo whose send gets no answer is not queued either', async () => {
@@ -215,8 +215,9 @@ describe('round 2: nothing that needs a PIN or a durable queue is ever queued (A
   it('guards: actions are saved offline only when queueable and durable; a refused save returns not-ok', () => {
     const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
     assert.match(runtime, /const canQueue = !actor\.pinSessionId && queueAllowed\(capability, \{ pointsPin, actorRole: who\.role \}\);/);
-    assert.match(runtime, /const refusal = queueRefusal\(\{ queueable: canQueue, durable: queue\.durable \}\);\s*if \(refusal\) \{\s*reverts\.current\.forget\(opId\);\s*toast\(\{ variant: 'destructive', description: QUEUE_REFUSAL_COPY\[refusal\] \}\);\s*return \{ ok: false \};/);
-    assert.match(runtime, /if \(canQueue && queue\.durable\) \{/);
+    // The decisions themselves are in performAction (model-tested); the runtime passes the refusal in.
+    assert.match(runtime, /queueRefusal: queueRefusal\(\{ queueable: canQueue, durable: queue\.durable \}\),/);
+    assert.match(runtime, /case 'not-queued':\s*reverts\.current\.forget\(opId\);\s*toast\(\{ variant: 'destructive', description: QUEUE_REFUSAL_COPY\[result\.reason\] \}\);\s*return \{ ok: false \};/);
     assert.match(runtime, /queueRefusal: queueRefusal\(\{ queueable: queueAllowed\(undoCapability,/);
   });
 });
