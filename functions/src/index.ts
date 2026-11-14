@@ -12,7 +12,10 @@ import {
 } from "firebase-admin/firestore";
 import {getMessaging, type MulticastMessage} from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
-import {readMemberContacts, runHouseholdReminders} from "./reminders";
+import {
+  readMemberContacts, runHouseholdReminders, sweepDeviceRevocations,
+} from "./reminders";
+import {getAuth} from "firebase-admin/auth";
 import {withContactEmails} from "./shared/member-contact";
 import {
   clampText,
@@ -247,6 +250,18 @@ export const householdUpkeep = onSchedule(
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+    // Daily: finish the sign-out of removed, unpaired or re-paired wall
+    // tablets (docs/modules/devices/README.md). Isolated like a household.
+    try {
+      const sweep = await sweepDeviceRevocations(db, getAuth(), now);
+      if (sweep.ran) logger.info("Wall-tablet sign-out sweep finished.", sweep);
+      if (sweep.failed > 0) totals.failed++;
+    } catch (error) {
+      totals.failed++;
+      logger.error("Wall-tablet sign-out sweep failed.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     logger.info("Household upkeep finished.", totals);
     if (totals.failed > 0) {

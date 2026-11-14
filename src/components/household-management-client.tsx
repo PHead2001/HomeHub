@@ -75,10 +75,14 @@ import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
+import { DevicesTab } from '@/components/household/devices-tab';
+
+// Wall tablets ship dark behind the public devices flag (docs/modules/devices/README.md).
+const devicesEnabled = process.env.NEXT_PUBLIC_HOMEHUB_DEVICES === 'true';
 
 const INVITE_TTL_MINUTES = 30;
 
-const householdTabs = ['overview', 'invites', 'members', 'roles', 'activity', 'danger'];
+const householdTabs = ['overview', 'invites', 'members', 'roles', 'devices', 'activity', 'danger'];
 
 export function HouseholdManagementClient() {
   const { currentUser, household, currentMember, permissions, leaveHousehold, deleteHousehold } = useAuth();
@@ -99,10 +103,13 @@ export function HouseholdManagementClient() {
   // firestore.rules: audit entries are readable with `household.manageMembers`, the
   // invite list with `household.manageInvites` (role defaults and overrides both count).
   const canReadAudit = Boolean(canManageMembers);
+  // Wall tablets: owners and admins by role (never a permission override), as the server and rules enforce.
+  const canManageDevices = devicesEnabled && Boolean(currentMember && (currentMember.role === 'owner' || currentMember.role === 'admin') &&
+    (currentMember.status ?? 'active') === 'active');
 
   const visibleTabs = useMemo(
-    () => householdTabs.filter((tab) => (tab === 'invites' ? canManageInvites : tab === 'activity' ? canReadAudit : true)),
-    [canManageInvites, canReadAudit],
+    () => householdTabs.filter((tab) => (tab === 'invites' ? canManageInvites : tab === 'activity' ? canReadAudit : tab === 'devices' ? canManageDevices : true)),
+    [canManageDevices, canManageInvites, canReadAudit],
   );
   const [activeTab, setActiveTab] = useState(() =>
     requestedTab && householdTabs.includes(requestedTab) ? requestedTab : 'overview');
@@ -448,6 +455,7 @@ export function HouseholdManagementClient() {
               )}
             </TabsTrigger>
             <TabsTrigger value="roles">Roles</TabsTrigger>
+            {canManageDevices && <TabsTrigger value="devices">Devices</TabsTrigger>}
             {canReadAudit && <TabsTrigger value="activity">Activity</TabsTrigger>}
             <TabsTrigger value="danger">Danger Zone</TabsTrigger>
           </TabsList>
@@ -669,6 +677,12 @@ export function HouseholdManagementClient() {
               onSave={askSavePermissions}
             />
           </TabsContent>
+
+          {canManageDevices && household?.id && (
+            <TabsContent value="devices" className="space-y-4 pt-4">
+              <DevicesTab householdId={household.id} />
+            </TabsContent>
+          )}
 
           {canReadAudit && (
             <TabsContent value="activity" className="space-y-4 pt-4">

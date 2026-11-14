@@ -19,7 +19,7 @@ import {
 } from "firebase/firestore";
 import { getMessaging, isSupported } from "firebase/messaging";
 import { connectStorageEmulator, getStorage } from "firebase/storage";
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from "firebase/app-check";
 import { app, auth, firebaseConfig, firebaseEmulatorMode } from "./firebase-app";
 import {
   decideLocalPersistence,
@@ -41,12 +41,17 @@ type AppCheckState = typeof globalThis & {
 // emulators. Local development against the real project registers a debug token
 // instead, because localhost is not an allowed domain for the key.
 const appCheckSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY;
+/**
+ * The App Check instance when App Check runs in this page (null otherwise). Wall-tablet
+ * setup asks it for a limited-use token (docs/modules/devices/README.md).
+ */
+export let appCheck: AppCheck | null = null;
 if (typeof window !== "undefined" && !firebaseEmulatorMode && appCheckSiteKey) {
   const appCheckState = globalThis as AppCheckState;
   if (!appCheckState.__homeHubAppCheckStarted) {
     const debugToken = process.env.NEXT_PUBLIC_APP_CHECK_DEBUG_TOKEN;
     if (debugToken) appCheckState.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
-    initializeAppCheck(app, {
+    appCheck = initializeAppCheck(app, {
       provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
       isTokenAutoRefreshEnabled: true,
     });

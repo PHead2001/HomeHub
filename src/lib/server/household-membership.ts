@@ -3,7 +3,7 @@ import 'server-only';
 import { randomInt } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
-import { normalizeInviteCode } from '@/lib/invite-codes';
+import { INVITE_CHARS, normalizeInviteCode } from '@/lib/invite-codes';
 import { foldLegacyStatsKeys, readChoreStats } from '@functions/shared/chore-stats';
 import { formerMemberKey } from '@functions/shared/former-member';
 import { randomBytes } from 'node:crypto';
@@ -35,6 +35,12 @@ import {
 } from '@/lib/household-records';
 import { getDeterministicNotificationId } from '@/lib/notifications';
 import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
+import { DEVICE_CODE_AS_INVITE_MESSAGE } from '@/lib/devices/device-codes';
+import {
+  markHouseholdDevicesRemoved,
+  readHouseholdDevicesForDeletion,
+  revokeHouseholdDeviceUsers,
+} from '@/lib/server/device-management';
 import type { Household, HouseholdMember, HouseholdPermission, HouseholdRole, InviteCode, PermissionOverrides } from '@/lib/types';
 
 /**
@@ -132,7 +138,12 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
   return adminDb.runTransaction(async transaction => {
     const inviteRef = adminDb.collection('inviteCodes').doc(code);
     const inviteSnap = await transaction.get(inviteRef);
-    if (!inviteSnap.exists) throw new MembershipError('That invite code was not found. Check it and try again.');
+    if (!inviteSnap.exists) {
+      // A wall-tablet code typed here is pointed at its own flow; it is never redeemed here.
+      const deviceCode = await transaction.get(adminDb.collection('deviceCodes').doc(code));
+      if (deviceCode.exists) throw new MembershipError(DEVICE_CODE_AS_INVITE_MESSAGE, 'invalid_input');
+      throw new MembershipError('That invite code was not found. Check it and try again.');
+    }
 
     const invite = inviteSnap.data() || {};
     if (invite.revokedAt) throw new MembershipError('That invite code was cancelled. Ask for a new one.');
@@ -446,21 +457,33 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
 
 // Deleting: owner only, confirmed by typing the household name.
 // 1. One transaction verifies the owner, marks the household `deletingAt`, sets every
-//    membership to status 'deleting' and revokes every invite. Rules grant nothing to a
-//    non-active membership, so from this point no client can read or write household
+//    membership to status 'deleting', revokes every invite, marks every wall tablet
+//    `removed` (generation bumped) and revokes every unused device code. Rules grant
+//    nothing to a non-active membership or a removed tablet (and refuse every tablet read
+//    once `deletingAt` is set), so from this point no client can read or write household
 //    data or files, and joining/leaving are refused on the server.
-// 2. Files, then every data subcollection, are removed.
-// 3. Profiles, invites, memberships and the household document go in one final batch.
-// If step 2 or 3 fails, the household stays frozen and the owner can run delete again.
-export const deleteHousehold = async (caller: VerifiedCaller, householdId: string, confirmName: string, now = new Date()) => {
+// 2. Every tablet's refresh tokens are revoked and its Auth user deleted, before any data
+//    is deleted (best effort, retried; the daily sweep finishes what fails).
+// 3. Files, then every data subcollection (devices included), are removed.
+// 4. Profiles, invites, memberships and the household document go in one final batch.
+// If step 3 or 4 fails, the household stays frozen and the owner can run delete again.
+export const deleteHousehold = async (
+  caller: VerifiedCaller,
+  householdId: string,
+  confirmName: string,
+  now = new Date(),
+  // Injectable for tests that force a failure after the tablets are signed out.
+  steps: { deleteFiles?: (householdId: string) => Promise<void> } = {},
+) => {
   const householdRef = adminDb.collection('households').doc(householdId);
   const invitesQuery = adminDb.collection('inviteCodes').where('householdId', '==', householdId);
   await adminDb.runTransaction(async transaction => {
-    const [household, memberSnap, members, invites] = await Promise.all([
+    const [household, memberSnap, members, invites, devices] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(householdRef.collection('members').doc(caller.uid)),
       transaction.get(householdRef.collection('members')),
       transaction.get(invitesQuery),
+      readHouseholdDevicesForDeletion(transaction, householdRef),
     ]);
     if (!household.exists) throw new MembershipError('That household no longer exists.');
     const resuming = Boolean(household.get('deletingAt'));
@@ -476,17 +499,24 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
     transaction.update(householdRef, { deletingAt: Timestamp.fromDate(now), deletingByUid: caller.uid });
     members.docs.forEach(d => transaction.update(d.ref, { status: 'deleting' }));
     invites.docs.forEach(d => transaction.update(d.ref, { revokedAt: now.toISOString() }));
+    markHouseholdDevicesRemoved(transaction, devices, caller.uid, now);
   });
 
-  await deleteHouseholdFiles(householdId);
+  // Every tablet of the household (this run's, or a resumed run's) is signed out before
+  // any data deletion.
+  const deviceRecords = await householdRef.collection('devices').get();
+  await revokeHouseholdDeviceUsers(deviceRecords.docs.map(d => d.id));
+
+  await (steps.deleteFiles ?? deleteHouseholdFiles)(householdId);
   const subcollections = await householdRef.listCollections();
   for (const collection of subcollections) {
     if (collection.id !== 'members') await adminDb.recursiveDelete(collection);
   }
 
-  const [members, invites] = await Promise.all([
+  const [members, invites, deviceCodes] = await Promise.all([
     householdRef.collection('members').get(),
     adminDb.collection('inviteCodes').where('householdId', '==', householdId).get(),
+    adminDb.collection('deviceCodes').where('householdId', '==', householdId).get(),
   ]);
   // Each member's email (the key of their profile) comes from their contact document.
   const contacts = await Promise.all(members.docs.map(d => memberContactRef(householdRef, d.id).get()));
@@ -499,6 +529,7 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
     }
   });
   invites.docs.forEach(d => batch.delete(d.ref));
+  deviceCodes.docs.forEach(d => batch.delete(d.ref));
   members.docs.forEach(d => {
     batch.delete(memberContactRef(householdRef, d.id));
     batch.delete(d.ref);
@@ -517,7 +548,6 @@ export const deleteHousehold = async (caller: VerifiedCaller, householdId: strin
 // time from the server clock; nothing the caller sends is trusted for either.
 // ---------------------------------------------------------------------------
 
-const INVITE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const INVITE_TTL_MS = 30 * 60 * 1000;
 const INVITE_CODE_ATTEMPTS = 6;
 

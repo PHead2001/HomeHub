@@ -17,6 +17,67 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
+    // Device principals: registered wall tablets (docs/modules/devices/README.md).
+    // A device token has no email, so signedIn() and every member helper stay
+    // false for it. Device access is added only as separate `||` clauses on
+    // reads; no write rule has a device clause (device changes go through server
+    // actions). Every helper takes the household from the PATH and requires the
+    // token to name that household; the device record read is the one under that
+    // path's household.
+    // ---------------------------------------------------------------------
+
+    function isDevicePrincipal() {
+      return request.auth != null &&
+        request.auth.token.get('hh_kind', '') == 'device' &&
+        request.auth.token.firebase.get('sign_in_provider', '') == 'custom' &&
+        !('email' in request.auth.token) &&
+        request.auth.token.get('hh_device', '') is string &&
+        request.auth.uid == 'device_' + request.auth.token.get('hh_device', '') &&
+        request.auth.token.get('hh_gen', null) is number;
+    }
+
+    function deviceDocPath(householdId) {
+      return /databases/$(database)/documents/households/$(householdId)/devices/$(request.auth.token.hh_device);
+    }
+
+    function householdDocPath(householdId) {
+      return /databases/$(database)/documents/households/$(householdId);
+    }
+
+    // The token names this household (no document read).
+    function isDevice(householdId) {
+      return isDevicePrincipal() && request.auth.token.get('hh_household', '') == householdId;
+    }
+
+    // Registered, active, current credential generation, household not being deleted.
+    // isDevice() first, so a personal request short-circuits before any get().
+    function deviceActive(householdId) {
+      return isDevice(householdId) &&
+        get(deviceDocPath(householdId)).data.get('status', '') == 'active' &&
+        get(deviceDocPath(householdId)).data.get('generation', null) == request.auth.token.hh_gen &&
+        !('deletingAt' in get(householdDocPath(householdId)).data);
+    }
+
+    // Chores, shopping, pets, calendar, maintenance: the device record's switch.
+    function sectionEnabled(householdId, section) {
+      return deviceActive(householdId) &&
+        get(deviceDocPath(householdId)).data.get('sections', {}).get(section, false) == true;
+    }
+
+    // Household-wide ('*') notices of a source the tablet shows. Only the exact
+    // per-category queries the tablet runs can be proven (one category each).
+    function deviceNotificationReadable(householdId) {
+      return deviceActive(householdId) &&
+        resource.data.audience.hasAny(['*']) &&
+        (resource.data.category == 'system' ||
+          resource.data.category == 'general' ||
+          (resource.data.category == 'chores' && sectionEnabled(householdId, 'chores')) ||
+          (resource.data.category == 'pets' && sectionEnabled(householdId, 'pets')) ||
+          (resource.data.category == 'shopping' && sectionEnabled(householdId, 'shopping')) ||
+          (resource.data.category == 'maintenance' && sectionEnabled(householdId, 'maintenance')));
+    }
+
+    // ---------------------------------------------------------------------
     // Household membership
     //
     // households/{householdId}/members/{uid} is the only authority for access.
@@ -1216,7 +1277,9 @@ service cloud.firestore {
     match /households/{householdId} {
       // Approved members (and, during a deletion, members who were approved: see
       // isDeletingMember). A pending person uses `householdName` on their own record.
-      allow get: if isApprovedMember(householdId) || isDeletingMember(householdId);
+      allow get: if isApprovedMember(householdId) || isDeletingMember(householdId) ||
+        // A tablet reads its household only once no legacy email copy is left on it.
+        (deviceActive(householdId) && !resource.data.keys().hasAny(['memberEmails', 'ownerEmail']));
       allow list: if false;
       // Households are created, renamed, re-owned and deleted only by the server
       // (Admin SDK); no one writes memberEmails or ownerEmail any more (release C).
@@ -1227,8 +1290,9 @@ service cloud.firestore {
       allow delete: if false;
 
       match /members/{memberUid} {
-        allow get: if isApprovedMember(householdId) || (signedIn() && request.auth.uid == memberUid);
-        allow list: if isApprovedMember(householdId);
+        allow get: if isApprovedMember(householdId) || (signedIn() && request.auth.uid == memberUid) ||
+          deviceActive(householdId);
+        allow list: if isApprovedMember(householdId) || deviceActive(householdId);
 
         // Membership records are written only by the server (household creation,
         // joining, approval, role and permission changes, removal, leaving, transfer).
@@ -1245,12 +1309,25 @@ service cloud.firestore {
         }
       }
 
+      // Registered tablets: owners and admins read and list them (the Devices tab); a
+      // tablet reads its own record in every status (to observe removal). Written
+      // only by the server. ops, pinSessions and pinGuards fall to the catch-all deny.
+      match /devices/{deviceId} {
+        allow get: if isOwnerOrAdmin(householdId) ||
+          (isDevice(householdId) && deviceId == request.auth.token.hh_device);
+        allow list: if isOwnerOrAdmin(householdId);
+        allow write: if false;
+      }
+
       match /notifications/{notificationId} {
         // Only documents addressed to the reader ([uid]) or to everyone (['*']).
         // A list query must carry where('audience', 'array-contains-any', [uid, '*'])
         // (or array-contains of either value); one without it is refused.
-        allow get, list: if hasHouseholdPermission(householdId, 'notifications.view') &&
-          resource.data.audience.hasAny([request.auth.uid, '*']);
+        // A tablet reads household-wide notices of the sections it shows, through
+        // where('audience', 'array-contains', '*') and where('category', '==', c).
+        allow get, list: if (hasHouseholdPermission(householdId, 'notifications.view') &&
+          resource.data.audience.hasAny([request.auth.uid, '*'])) ||
+          deviceNotificationReadable(householdId);
         allow create: if validNewNotification(householdId);
         allow update: if notificationAddressedToCaller() && (
           (hasHouseholdPermission(householdId, 'notifications.dismiss') && updatesOnlyOwnNotificationState()) ||
@@ -1259,7 +1336,7 @@ service cloud.firestore {
       }
 
       match /maintenance-attachments/{attachmentId} {
-        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view') || sectionEnabled(householdId, 'maintenance');
         allow create: if hasHouseholdPermission(householdId, 'maintenance.edit') && validNewMaintenanceAttachment(householdId);
         allow update: if false;
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
@@ -1273,7 +1350,7 @@ service cloud.firestore {
       }
 
       match /chores/{choreId} {
-        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow read: if hasHouseholdPermission(householdId, 'chores.view') || sectionEnabled(householdId, 'chores');
         allow create: if hasHouseholdPermission(householdId, 'chores.create') &&
           choreCreatedWithServerCompletion() &&
           request.resource.data.keys().hasAll(['task']) &&
@@ -1315,7 +1392,7 @@ service cloud.firestore {
       // Household chore display preferences (leaderboard on/off). Owners and
       // admins change them; everyone who sees chores reads them.
       match /chore-settings/{settingId} {
-        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow read: if hasHouseholdPermission(householdId, 'chores.view') || sectionEnabled(householdId, 'chores');
         allow create, update: if settingId == 'preferences' &&
           isOwnerOrAdmin(householdId) &&
           request.resource.data.keys().hasOnly(['leaderboardEnabled', 'updatedAt']) &&
@@ -1325,7 +1402,7 @@ service cloud.firestore {
       }
 
       match /chore-templates/{templateId} {
-        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow read: if hasHouseholdPermission(householdId, 'chores.view') || sectionEnabled(householdId, 'chores');
         allow create: if hasHouseholdPermission(householdId, 'chores.create') &&
           request.resource.data.keys().hasAll(['task']) &&
           validChoreTemplateFields(request.resource.data, writtenKeys()) &&
@@ -1337,7 +1414,7 @@ service cloud.firestore {
       }
 
       match /rooms/{roomId} {
-        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow read: if hasHouseholdPermission(householdId, 'chores.view') || sectionEnabled(householdId, 'chores');
         allow create, update: if hasHouseholdPermission(householdId, 'chores.edit');
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
       }
@@ -1345,12 +1422,12 @@ service cloud.firestore {
       // Yearly chore totals (stats/chores-{year}), written only by server upkeep when
       // it removes old completed chores. Read-only for members who can view chores.
       match /stats/{statId} {
-        allow read: if hasHouseholdPermission(householdId, 'chores.view');
+        allow read: if hasHouseholdPermission(householdId, 'chores.view') || sectionEnabled(householdId, 'chores');
         allow write: if false;
       }
 
       match /shopping-lists/{listId} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           request.resource.data.keys().hasAll(['name']) &&
           validShoppingListFields(request.resource.data, writtenKeys());
@@ -1363,7 +1440,7 @@ service cloud.firestore {
         // it) takes no more ticks, adds or category edits, and orphans left by older
         // clients cannot be revived. Deletes stay allowed, for cleanup.
         match /items/{itemId} {
-          allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+          allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
           allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
             shoppingListExists(householdId, listId) &&
             request.resource.data.keys().hasAll(['name']) &&
@@ -1379,7 +1456,7 @@ service cloud.firestore {
         }
 
         match /config/{configId} {
-          allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+          allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
           allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
             shoppingListExists(householdId, listId) &&
             validShoppingConfig(request.resource.data, writtenKeys());
@@ -1388,7 +1465,7 @@ service cloud.firestore {
       }
 
       match /pantry-inventory/{itemId} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           request.resource.data.keys().hasAll(['name']) &&
           validPantryFields(request.resource.data, writtenKeys());
@@ -1400,7 +1477,7 @@ service cloud.firestore {
       }
 
       match /barcode-library/{barcodeId} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           barcodeId.size() <= 128 &&
           validBarcodeItemFields(householdId, request.resource.data, writtenKeys());
@@ -1411,7 +1488,7 @@ service cloud.firestore {
 
       // Stores and their aisle order (per-store category order, SH-34).
       match /stores/{storeId} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow create: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           storeId.size() <= 200 &&
           request.resource.data.keys().hasAll(['name', 'createdByUid', 'updatedAt']) &&
@@ -1423,7 +1500,7 @@ service cloud.firestore {
 
       // Household shopping preferences: one document, `preferences`.
       match /shopping-settings/{settingId} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow create, update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           settingId == 'preferences' &&
           validShoppingSettingsFields(request.resource.data, writtenKeys());
@@ -1433,27 +1510,27 @@ service cloud.firestore {
 
       // Trip history: written only by the server's put-away and its Undo (Admin SDK).
       match /trips/{tripId} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow write: if false;
       }
 
       // Usuals (one per item nameKey): created, counted and deleted only by the
       // server; clients may correct the name and category.
       match /shopping-usuals/{nameKey} {
-        allow read: if hasHouseholdPermission(householdId, 'shopping.view');
+        allow read: if hasHouseholdPermission(householdId, 'shopping.view') || sectionEnabled(householdId, 'shopping');
         allow create, delete: if false;
         allow update: if hasHouseholdPermission(householdId, 'shopping.edit') &&
           validShoppingUsualUpdate(request.resource.data, writtenKeys());
       }
 
       match /pets/{petId} {
-        allow read: if hasHouseholdPermission(householdId, 'pets.view');
+        allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
         allow create, update, delete: if hasHouseholdPermission(householdId, 'pets.editProfiles');
 
         // Stage R2 (docs/modules/pets/README.md): creates are the feed operation's
         // shapes only (feedingCreateR2); the only update is a time correction.
         match /feeding-logs/{logId} {
-          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validFeedingLogFields(request.resource.data, createdKeys()) && petLoggerOnCreate() &&
             feedingLoggedAtOnCreate() && feedingCreateR2(householdId, petId, logId);
@@ -1468,7 +1545,7 @@ service cloud.firestore {
         // (latest, previous, today's count), written with every online feed,
         // Undo, delete and time correction; see feedingStateHonest.
         match /feeding-state/{stateId} {
-          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
           allow create: if stateId == 'current' &&
             (hasHouseholdPermission(householdId, 'pets.addLogs') || hasHouseholdPermission(householdId, 'pets.deleteLogs')) &&
             validFeedingState(request.resource.data) &&
@@ -1482,7 +1559,7 @@ service cloud.firestore {
         }
 
         match /medication-logs/{logId} {
-          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validMedicationLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
@@ -1491,7 +1568,7 @@ service cloud.firestore {
         }
 
         match /care-logs/{logId} {
-          allow read: if hasHouseholdPermission(householdId, 'pets.view');
+          allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
@@ -1501,7 +1578,7 @@ service cloud.firestore {
       }
 
       match /home-assets/{assetId} {
-        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view') || sectionEnabled(householdId, 'maintenance');
         allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit') &&
           householdIdMatchesPath(householdId) &&
           validHomeAssetFields(request.resource.data, writtenKeys());
@@ -1509,7 +1586,7 @@ service cloud.firestore {
       }
 
       match /vehicles/{vehicleId} {
-        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view') || sectionEnabled(householdId, 'maintenance');
         allow create, update: if hasHouseholdPermission(householdId, 'maintenance.edit') &&
           householdIdMatchesPath(householdId) &&
           validVehicleFields(request.resource.data, writtenKeys());
@@ -1517,7 +1594,7 @@ service cloud.firestore {
       }
 
       match /maintenance/{logId} {
-        allow read: if hasHouseholdPermission(householdId, 'maintenance.view');
+        allow read: if hasHouseholdPermission(householdId, 'maintenance.view') || sectionEnabled(householdId, 'maintenance');
         allow create: if hasHouseholdPermission(householdId, 'maintenance.createLogs') &&
           householdIdMatchesPath(householdId) &&
           validMaintenanceLogFields(request.resource.data, writtenKeys());
@@ -1554,6 +1631,14 @@ service cloud.firestore {
     // household.manageInvites who also hold household.view read their household's
     // codes (the Invite Codes tab).
     // ---------------------------------------------------------------------
+
+    // Device codes (wall-tablet pairing): created, revoked and redeemed only by the
+    // server. Owners and admins (role, not a permission override) of the code's
+    // household read them (the Devices tab and the creator's live "Paired" status).
+    match /deviceCodes/{code} {
+      allow read: if resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId);
+      allow write: if false;
+    }
 
     match /inviteCodes/{code} {
       allow read: if resource.data.householdId is string &&

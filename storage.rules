@@ -48,6 +48,38 @@ service firebase.storage {
             : roleHasPermission(member.role, permission)));
     }
 
+    // Device principals: registered wall tablets (docs/modules/devices/README.md).
+    // Reads only; no device uploads. Storage rules may read at most two Firestore
+    // documents per evaluation, so the device check reads the device record only:
+    // `status` is already `removed` from the first step of a household deletion.
+    // The household is always the PATH's household, and the token must name it.
+    function isDevicePrincipal() {
+      return request.auth != null &&
+        request.auth.token.get('hh_kind', '') == 'device' &&
+        request.auth.token.firebase.get('sign_in_provider', '') == 'custom' &&
+        !('email' in request.auth.token) &&
+        request.auth.token.get('hh_device', '') is string &&
+        request.auth.uid == 'device_' + request.auth.token.get('hh_device', '') &&
+        request.auth.token.get('hh_gen', null) is number &&
+        request.auth.token.get('hh_household', '') is string;
+    }
+
+    function deviceRecordPath(householdId) {
+      return /databases/(default)/documents/households/$(householdId)/devices/$(request.auth.token.hh_device);
+    }
+
+    function deviceActiveForStorage(householdId) {
+      return isDevicePrincipal() &&
+        request.auth.token.hh_household == householdId &&
+        firestore.get(deviceRecordPath(householdId)).data.get('status', '') == 'active' &&
+        firestore.get(deviceRecordPath(householdId)).data.get('generation', null) == request.auth.token.hh_gen;
+    }
+
+    function deviceSectionForStorage(householdId, section) {
+      return deviceActiveForStorage(householdId) &&
+        firestore.get(deviceRecordPath(householdId)).data.get('sections', {}).get(section, false) == true;
+    }
+
     function isImage(maxBytes) {
       return request.resource != null &&
         request.resource.size <= maxBytes &&
@@ -61,7 +93,7 @@ service firebase.storage {
     }
 
     match /households/{householdId}/maintenance/{targetType}/{targetId}/{fileName} {
-      allow read: if hasPermission(householdId, 'maintenance.view');
+      allow read: if hasPermission(householdId, 'maintenance.view') || deviceSectionForStorage(householdId, 'maintenance');
       allow create: if hasPermission(householdId, 'maintenance.edit') &&
         targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
         validMaintenanceFile();
@@ -70,13 +102,13 @@ service firebase.storage {
     }
 
     match /households/{householdId}/barcode-library/{allPaths=**} {
-      allow read: if hasPermission(householdId, 'shopping.view');
+      allow read: if hasPermission(householdId, 'shopping.view') || deviceSectionForStorage(householdId, 'shopping');
       allow create, update: if hasPermission(householdId, 'shopping.edit') && isImage(5 * 1024 * 1024);
       allow delete: if hasPermission(householdId, 'shopping.delete');
     }
 
     match /households/{householdId}/pets/{allPaths=**} {
-      allow read: if hasPermission(householdId, 'pets.view');
+      allow read: if hasPermission(householdId, 'pets.view') || deviceSectionForStorage(householdId, 'pets');
       allow create, update: if hasPermission(householdId, 'pets.editProfiles') && isImage(10 * 1024 * 1024);
       allow delete: if hasPermission(householdId, 'pets.editProfiles');
     }
@@ -90,8 +122,11 @@ service firebase.storage {
       return signedIn() && (request.auth.uid == owner || request.auth.token.email == owner);
     }
 
+    // A tablet reads profile photos for its "Who's here?" row: account-ID folders only,
+    // never an email-named folder (the folder name is an email).
     match /users/{owner}/avatars/{allPaths=**} {
-      allow read: if signedIn();
+      allow read: if signedIn() ||
+        (isDevicePrincipal() && deviceActiveForStorage(request.auth.token.hh_household) && !owner.matches('.*@.*'));
       allow create, update: if signedIn() && request.auth.uid == owner && isImage(5 * 1024 * 1024);
       allow delete: if ownsAvatarFolder(owner);
     }
