@@ -106,11 +106,32 @@ describe('8.4 step 1: shape', () => {
 });
 
 describe('8.4 step 2: rate', () => {
-  test('60 gated calls a minute per tablet, keyed before the token is verified', async () => {
-    const forged = `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(JSON.stringify({ hh_device: 'RateOnlyDevice000000' })).toString('base64url')}.x`;
-    const at = time.advance(60_000);
-    for (let i = 0; i < 60; i++) await refused(authorizeDeviceAction(req({ idToken: forged }), at), 'unauthenticated');
-    await refused(authorizeDeviceAction(req({ idToken: forged }), at), 'rate_limited');
+  const forgedFor = (deviceId: string) =>
+    `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(JSON.stringify({ hh_device: deviceId, hh_household: H, hh_kind: 'device', hh_gen: 1 })).toString('base64url')}.x`;
+
+  test('forged tokens naming a real tablet never spend its budget (Codex P2: pre-auth limiter)', async () => {
+    const victim = await pairTablet(H, owner, created, 'Victim tablet');
+    const at = time.advance(61_000);
+    for (let i = 0; i < 70; i++) {
+      await refused(authorizeDeviceAction(req({ idToken: forgedFor(victim.deviceId) }, victim), at, { clientAddress: '203.0.113.9' }), 'unauthenticated');
+    }
+    // The real tablet still has its whole budget.
+    const authority = await authorizeDeviceAction({ idToken: victim.idToken, householdId: H, capability: 'device.comfort' }, at, { clientAddress: '198.51.100.7' });
+    assert.equal(authority.deviceId, victim.deviceId);
+  });
+
+  test('60 gated calls a minute per verified tablet; unauthenticated callers are limited per address before verification', async () => {
+    const t = await pairTablet(H, owner, created, 'Busy tablet');
+    const at = time.advance(61_000);
+    for (let i = 0; i < 60; i++) await authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, at);
+    await refused(authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'device.comfort' }, at), 'rate_limited');
+    // One address flooding with forged tokens is cut off before any verification.
+    let limited = false;
+    for (let i = 0; i < 400 && !limited; i++) {
+      limited = await authorizeDeviceAction(req({ idToken: forgedFor('Whatever000000000000') }), at, { clientAddress: '192.0.2.44' })
+        .then(() => false, (error: unknown) => error instanceof DeviceActionError && error.code === 'rate_limited');
+    }
+    assert.ok(limited, 'the per-address pre-auth limit applies');
   });
 });
 
@@ -320,6 +341,35 @@ describe('hooks inside the mutation transaction (S1)', () => {
     });
     const original = await authorizeDeviceAction(req({ opId: early, actorUid: child.uid }), at, { undoProven: proven });
     await refused(adminDb.runTransaction(tx => original.hooks.precheck(tx)), 'already_undone');
+  });
+
+  test('an Undo is accepted only for the actions it reverses (Codex P2: no prefix matching)', async () => {
+    const at = time.advance(61_000);
+    const session = await unlock(admin.uid, PIN.admin, tablet, at);
+    const id = opId();
+    // A PIN-level note pin is applied under this opId ...
+    const pinNote = await authorizeDeviceAction(req({ capability: 'pets.note.pin', opId: id, actorUid: admin.uid, pinSessionId: session }), at);
+    await adminDb.runTransaction(async tx => {
+      await pinNote.hooks.precheck(tx);
+      pinNote.hooks.finalize(tx, { targetPath: `households/${H}/pets/p1/notes/n1`, summary: {} });
+    });
+    // ... and the note-add Undo must not treat it as its own.
+    const undo = await authorizeDeviceAction(req({ capability: 'pets.note.undo', opId: id, actorUid: admin.uid, pinSessionId: session }), at);
+    await refused(adminDb.runTransaction(tx => undo.hooks.precheck(tx)), 'conflict');
+    // A tombstone written by one Undo refuses an unrelated action under the same opId as a conflict.
+    const early = opId();
+    const feedUndo = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    await adminDb.runTransaction(async tx => {
+      assert.equal((await feedUndo.hooks.precheck(tx)).undo, 'tombstone');
+      feedUndo.hooks.finalize(tx, { targetPath: '', summary: {}, undo: 'tombstone' });
+    });
+    const unrelated = await authorizeDeviceAction(req({ capability: 'pets.dose.give', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    await refused(adminDb.runTransaction(tx => unrelated.hooks.precheck(tx)), 'conflict');
+    const backdated = await authorizeDeviceAction(req({ capability: 'pets.feed.backdated', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    await refused(adminDb.runTransaction(tx => backdated.hooks.precheck(tx)), 'already_undone');
+    // The same Undo again is idempotent.
+    const again = await authorizeDeviceAction(req({ capability: 'pets.feed.undo', opId: early, actorUid: admin.uid, pinSessionId: session }), at);
+    await adminDb.runTransaction(async tx => assert.equal((await again.hooks.precheck(tx)).undo, 'already'));
   });
 
   test('actor rules: the original actor, or the named permission at PIN level', async () => {

@@ -7,8 +7,11 @@ import {
   UNDO_PROVEN,
   backdatedCapability,
   deviceRefusalResponse,
+  UNDO_OF,
   isDeviceCapability,
+  isUndoCapability,
   readPointsPinPolicy,
+  undoAccepts,
   requiredLevel,
   requiresOpId,
   type DeviceCapability,
@@ -131,6 +134,48 @@ describe('policy table', () => {
     for (const capability of DEVICE_CAPABILITIES) {
       if (policy(capability).queueable) assert.equal(policy(capability).levelClass, 'face', capability);
     }
+  });
+});
+
+describe('Undo targets (Codex P2: explicit map, no prefix matching)', () => {
+  const expected: Record<string, string[]> = {
+    'pets.feed.undo': ['pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old'],
+    'pets.dose.undo': ['pets.dose.give', 'pets.dose.give.old'],
+    'pets.care.undo': ['pets.care.add'],
+    'pets.note.undo': ['pets.note.add'],
+    'pets.weight.undo': ['pets.weight.add'],
+    'chores.complete.undo': ['chores.complete'],
+    'chores.take.undo': ['chores.take'],
+    'notifications.dismiss.undo': ['notifications.dismiss'],
+  };
+
+  it('every Undo capability has an explicit list of the actions it reverses, and nothing else is a key', () => {
+    const undos = DEVICE_CAPABILITIES.filter(isUndoCapability).sort();
+    assert.deepEqual(Object.keys(UNDO_OF).sort(), undos);
+    assert.deepEqual(Object.keys(expected).sort(), undos);
+    for (const [undo, targets] of Object.entries(UNDO_OF)) {
+      assert.deepEqual([...targets].sort(), [...expected[undo]].sort(), undo);
+      for (const target of targets) assert.ok(isDeviceCapability(target) && !isUndoCapability(target), `${undo} -> ${target}`);
+    }
+  });
+
+  it('across every pair of catalog capabilities, an Undo accepts only its mapped actions', () => {
+    let accepted = 0;
+    for (const undo of DEVICE_CAPABILITIES) {
+      for (const forward of DEVICE_CAPABILITIES) {
+        const ok = undoAccepts(undo, forward);
+        const want = isUndoCapability(undo) && (expected[undo] ?? []).includes(forward);
+        assert.equal(ok, want, `${undo} on ${forward}`);
+        if (ok) accepted += 1;
+      }
+    }
+    assert.equal(accepted, Object.values(expected).flat().length);
+    // The prefix trap: a note Undo never reverses pin/unpin/edit/delete of a note.
+    for (const forward of ['pets.note.pin', 'pets.note.unpin', 'pets.note.editPinned', 'pets.note.delete'] as const) {
+      assert.equal(undoAccepts('pets.note.undo', forward), false);
+    }
+    assert.equal(undoAccepts('pets.feed.undo', 'pets.feed.undo'), false);
+    assert.equal(undoAccepts('pets.feed.undo', 'pets.feed.anything'), false);
   });
 });
 

@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { Timestamp } from 'firebase-admin/firestore';
-import type { DeviceCapability } from '@/lib/devices/action-policy';
+import { undoAccepts, type DeviceCapability } from '@/lib/devices/action-policy';
 import { DeviceActionError } from '@/lib/server/device-errors';
 
 // The server op ledger (docs/modules/devices/README.md, "Undo, idempotency and the op
@@ -58,14 +58,9 @@ export const readDeviceOp = (snapshot: FirebaseFirestore.DocumentSnapshot): Devi
   };
 };
 
-/** `pets.feed.undo` → `pets.feed`. */
-export const undoBase = (capability: DeviceCapability): string => capability.replace(/\.undo$/, '');
-
-/** Does a ledger entry belong to the action this Undo capability reverses? */
-export const undoMatches = (undoCapability: DeviceCapability, entry: DeviceOp): boolean => {
-  const base = undoBase(undoCapability);
-  return entry.capability === base || entry.capability.startsWith(`${base}.`);
-};
+/** Does a ledger entry record an action this Undo capability reverses (`UNDO_OF`, no prefixes)? */
+export const undoMatches = (undoCapability: DeviceCapability, entry: DeviceOp): boolean =>
+  undoAccepts(undoCapability, entry.capability);
 
 /**
  * An action's attempt against its ledger entry: none → apply; `applied` by the same
@@ -77,6 +72,9 @@ export const classifyActionAttempt = (
   attempt: { capability: DeviceCapability; actorUid: string; generation: number },
 ): { kind: 'apply' } | { kind: 'replay'; replay: DeviceOpReplay } => {
   if (!entry) return { kind: 'apply' };
+  // A tombstone records the Undo capability that wrote it: only an action that Undo
+  // reverses is "already undone"; anything else under the same opId is a conflict.
+  if (entry.tombstone && !undoAccepts(entry.capability, attempt.capability)) throw new DeviceActionError('conflict');
   if (entry.state === 'undone') throw new DeviceActionError('already_undone');
   if (entry.capability !== attempt.capability || entry.actorUid !== attempt.actorUid || entry.generation !== attempt.generation) {
     throw new DeviceActionError('conflict');
@@ -94,6 +92,11 @@ export const classifyUndoAttempt = (
   undoCapability: DeviceCapability,
 ): { kind: 'tombstone' } | { kind: 'already' } | { kind: 'applied'; entry: DeviceOp } => {
   if (!entry) return { kind: 'tombstone' };
+  // The same Undo arriving again after its own tombstone.
+  if (entry.tombstone) {
+    if (entry.capability === undoCapability) return { kind: 'already' };
+    throw new DeviceActionError('conflict');
+  }
   if (!undoMatches(undoCapability, entry)) throw new DeviceActionError('conflict');
   if (entry.state === 'undone') return { kind: 'already' };
   return { kind: 'applied', entry };
@@ -151,7 +154,8 @@ export const tombstoneEntry = (input: {
   deviceCreatedAt: string | null;
   now: Date;
 }): DeviceOp => ({
-  capability: undoBase(input.undoCapability),
+  // The Undo capability itself, so a later action is matched through UNDO_OF.
+  capability: input.undoCapability,
   actorUid: input.actorUid,
   generation: input.generation,
   targetPath: null,

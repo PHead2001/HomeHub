@@ -167,15 +167,32 @@ const millis = (value: unknown): number | null => {
   return null;
 };
 
-/** The unverified `hh_device` claim, for keying the rate limit before verification (a forged key only limits itself). */
-export const unverifiedDeviceKey = (idToken: unknown): string => {
-  if (typeof idToken !== 'string' || idToken.length > 8192) return 'invalid';
-  try {
-    const payload = JSON.parse(Buffer.from(idToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as { hh_device?: unknown };
-    return typeof payload.hh_device === 'string' && /^[A-Za-z0-9]{1,40}$/.test(payload.hh_device) ? payload.hh_device : 'invalid';
-  } catch {
-    return 'invalid';
+/**
+ * Limits applied BEFORE a token is verified, keyed independently of anything the caller
+ * claims (never the unsigned `hh_device` of the token): one bucket per trusted client
+ * address (`clientAddress` from src/lib/devices/client-address.ts, passed by the server
+ * actions) and one per server instance. A tablet's own budget is spent only after its
+ * token is verified (`takeDeviceBudget`), so a forged token naming a tablet can never
+ * starve it. Library callers with no request (tests, internal use) pass no address and
+ * only the per-instance bucket applies.
+ */
+export const PRE_AUTH_LIMITS = {
+  gate: { perAddress: 240, perInstance: 6000 },
+  pin: { perAddress: 30, perInstance: 600 },
+  pinEnd: { perAddress: 60, perInstance: 1200 },
+} as const;
+
+export const preAuthLimit = (kind: keyof typeof PRE_AUTH_LIMITS, clientAddress: string | undefined, nowMs: number) => {
+  const limits = PRE_AUTH_LIMITS[kind];
+  if (!takeRateSlot(`pre:${kind}:instance`, limits.perInstance, nowMs)) throw new DeviceActionError('rate_limited');
+  if (clientAddress !== undefined && !takeRateSlot(`pre:${kind}:address:${clientAddress}`, limits.perAddress, nowMs)) {
+    throw new DeviceActionError('rate_limited');
   }
+};
+
+/** A verified tablet's own per-minute budget (keyed by the verified device id). */
+export const takeDeviceBudget = (kind: string, claims: DeviceClaims, max: number, nowMs: number) => {
+  if (!takeRateSlot(`${kind}:${claims.hh_device}`, max, nowMs)) throw new DeviceActionError('rate_limited');
 };
 
 /**
@@ -245,7 +262,7 @@ export const hasPin = (pin: FirebaseFirestore.DocumentSnapshot | null): boolean 
 
 /**
  * A PIN session is valid for this use (7.5): not ended; not expired; for this actor; at
- * the device's current generation; at the member's current pinVersion with a PIN set;
+ * the device's current generation; at the member's current pinVersion and pinId with a PIN set;
  * the member's role unchanged since the unlock; and fresh enough when the capability
  * asks for it. Returns the refusal, or null when valid.
  */
@@ -259,6 +276,10 @@ export const pinSessionProblem = (
   if (data.endedAt || expiresAt === null || context.now.getTime() >= expiresAt) return 'pin_session_invalid';
   if (data.memberUid !== context.actorUid || data.generation !== context.generation) return 'pin_session_invalid';
   if (!hasPin(context.pin) || data.pinVersion !== context.pin!.get('pinVersion')) return 'pin_session_invalid';
+  // Bound to the PIN's random identity, never reused: pinVersion alone restarts at 1 when a
+  // member leaves (or is removed) and rejoins.
+  const pinId = context.pin!.get('pinId');
+  if (typeof pinId !== 'string' || !pinId || data.pinId !== pinId) return 'pin_session_invalid';
   if (data.roleAtUnlock !== context.role) return 'pin_session_invalid';
   if (context.freshPinSec !== undefined) {
     const createdAt = millis(data.createdAt);
@@ -353,7 +374,7 @@ const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabi
 export async function authorizeDeviceAction(
   request: DeviceActionRequest,
   now: Date = new Date(),
-  options: { undoProven?: ReadonlySet<DeviceCapability> } = {},
+  options: { undoProven?: ReadonlySet<DeviceCapability>; clientAddress?: string } = {},
 ): Promise<DeviceAuthority> {
   const undoProven = options.undoProven ?? UNDO_PROVEN;
   // Step 1: shape.
@@ -375,12 +396,13 @@ export async function authorizeDeviceAction(
   const secret = typeof request.pinSessionId === 'string' && SESSION_SECRET.test(request.pinSessionId) ? request.pinSessionId : undefined;
   // A malformed secret is a session that does not exist.
   const presented = request.pinSessionId !== undefined && request.pinSessionId !== null && request.pinSessionId !== '';
-  // Step 2: rate, before the token's network check.
-  if (!takeRateSlot(`gate:${unverifiedDeviceKey(request.idToken)}`, GATE_LIMIT_PER_MINUTE, now.getTime())) {
-    throw new DeviceActionError('rate_limited');
-  }
+  // Step 2a: pre-auth limits (per client address and per instance), before the token's
+  // network check and never keyed by the identity the token claims.
+  preAuthLimit('gate', options.clientAddress, now.getTime());
   // Steps 3-4: token and household.
   const claims = await verifyDeviceToken(request.idToken, request.householdId);
+  // Step 2b: the verified tablet's own budget (60 a minute).
+  takeDeviceBudget('gate', claims, GATE_LIMIT_PER_MINUTE, now.getTime());
   const householdRef = householdRefOf(claims.hh_household);
   const recordRef = deviceRecordRef(householdRef, claims.hh_device);
   const needsActor = policy.levelClass !== 'device';

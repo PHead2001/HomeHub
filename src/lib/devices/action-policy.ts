@@ -189,6 +189,28 @@ export const policyOf = (capability: DeviceCapability): DeviceCapabilityPolicy =
 /** An Undo capability (`….undo`): it takes the original action's opId. */
 export const isUndoCapability = (capability: DeviceCapability): boolean => capability.endsWith('.undo');
 
+/**
+ * What each Undo capability reverses: an explicit list (never a name prefix), backdated
+ * variants included. An Undo against a ledger entry of any other capability is a
+ * `conflict` (so `pets.note.undo` can never reverse a note pin, unpin, edit or delete).
+ */
+export const UNDO_OF = {
+  'pets.feed.undo': ['pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old'],
+  'pets.dose.undo': ['pets.dose.give', 'pets.dose.give.old'],
+  'pets.care.undo': ['pets.care.add'],
+  'pets.note.undo': ['pets.note.add'],
+  'pets.weight.undo': ['pets.weight.add'],
+  'chores.complete.undo': ['chores.complete'],
+  'chores.take.undo': ['chores.take'],
+  'notifications.dismiss.undo': ['notifications.dismiss'],
+} as const satisfies Partial<Record<DeviceCapability, readonly DeviceCapability[]>>;
+
+/** Does this Undo capability reverse an action recorded with `forward`? */
+export const undoAccepts = (undo: string, forward: string): boolean => {
+  const targets = (UNDO_OF as Record<string, readonly string[]>)[undo];
+  return Object.prototype.hasOwnProperty.call(UNDO_OF, undo) && Boolean(targets?.includes(forward));
+};
+
 /** Mutating face/PIN capabilities carry a client opId (section 10). */
 export const requiresOpId = (capability: DeviceCapability): boolean => {
   const policy = policyOf(capability);

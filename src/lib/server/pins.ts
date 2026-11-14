@@ -21,7 +21,6 @@ import {
 import type { HouseholdRole } from '@/lib/types';
 import { notificationAudience } from '@functions/shared/notification-audience';
 import { devicesEnabled } from '@/lib/server/device-identity';
-import { takeRateSlot } from '@/lib/server/device-management';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import {
@@ -36,7 +35,8 @@ import {
   pinRecordRef,
   pinSessionRef,
   publicName,
-  unverifiedDeviceKey,
+  preAuthLimit,
+  takeDeviceBudget,
   verifyDeviceToken,
 } from '@/lib/server/device-gate';
 import {
@@ -173,8 +173,13 @@ const loadTarget = async (tx: Tx, householdRef: DocRef, targetUid: unknown): Pro
   return view;
 };
 
-/** The PIN document after a set: a new hash, `pinVersion + 1` (every session of this person ends). */
+/**
+ * The PIN document after a set: a new hash, `pinVersion + 1`, and a new random `pinId`
+ * (every session of this person ends). `pinVersion` restarts at 1 when the document was
+ * deleted (leaving, removal), so sessions are bound to `pinId`, which is never reused.
+ */
 const pinSetDoc = (stored: StoredHash, previous: Snap, by: string, how: 'self' | 'admin-for-child', now: Date) => ({
+  pinId: randomUUID(),
   hash: stored.hash,
   salt: stored.salt,
   params: stored.params,
@@ -187,6 +192,7 @@ const pinSetDoc = (stored: StoredHash, previous: Snap, by: string, how: 'self' |
 
 /** A clear keeps `pinVersion` (bumped), so sessions stay invalid. */
 const pinClearDoc = (previous: Snap, by: string, now: Date) => ({
+  pinId: null,
   hash: null,
   salt: null,
   params: null,
@@ -461,6 +467,7 @@ type Reserved = {
   params: unknown;
   pepperId: string;
   pinVersion: number;
+  pinId: string | null;
   seq: number;
   memberLocked: boolean;
   deviceGuard: DeviceGuard;
@@ -468,7 +475,8 @@ type Reserved = {
 
 /**
  * Verifies a PIN typed on a tablet for `actorUid` and opens a PIN session. In order:
- * rate and concurrency limits before any Firestore or hash work; the token, household,
+ * pre-auth limits (client address, instance); the token; the verified tablet's budget
+ * and concurrency limits before any Firestore or hash work; the household,
  * registration and actor; transaction A counts the attempt as a failure in advance (so
  * the limits are exact under concurrency without hashing inside a transaction); the
  * async scrypt compare; transaction B re-reads the PIN record (pinVersion and hash must
@@ -478,7 +486,7 @@ type Reserved = {
  */
 export const verifyDevicePin = async (
   input: { idToken: unknown; householdId: unknown; actorUid: unknown; pin: unknown },
-  options: { now?: Date; limits?: Partial<typeof PIN_VERIFY_LIMITS>; testHooks?: VerifyPinTestHooks } = {},
+  options: { now?: Date; limits?: Partial<typeof PIN_VERIFY_LIMITS>; testHooks?: VerifyPinTestHooks; clientAddress?: string } = {},
 ): Promise<VerifyPinResult> => {
   const now = options.now ?? new Date();
   const limits = { ...PIN_VERIFY_LIMITS, ...options.limits };
@@ -489,16 +497,19 @@ export const verifyDevicePin = async (
   }
   const pin = input.pin;
   const actorUid = input.actorUid;
-  // 1. Rate and concurrency, before any Firestore or hash work.
-  const deviceKey = unverifiedDeviceKey(input.idToken);
-  if (!takeRateSlot(`pin-verify:${deviceKey}`, limits.perDevicePerMinute, now.getTime())) throw new DeviceActionError('rate_limited');
-  const pairKey = `${deviceKey}:${actorUid}`;
+  // 1a. Pre-auth limits (per client address, per instance): never keyed by the unsigned
+  // device claim, so a forged token cannot spend a real tablet's budget.
+  preAuthLimit('pin', options.clientAddress, now.getTime());
+  // 2. Token (the verified device id keys everything after this).
+  const claims = await verifyDeviceToken(input.idToken, input.householdId);
+  // 1b. The tablet's own budget and the concurrency limits, before any Firestore or hash work.
+  takeDeviceBudget('pin-verify', claims, limits.perDevicePerMinute, now.getTime());
+  const pairKey = `${claims.hh_device}:${actorUid}`;
   if (inflight.has(pairKey)) throw new DeviceActionError('busy');
   if (!tryAcquireHashSlot(limits.concurrentHashes)) throw new DeviceActionError('busy');
   inflight.add(pairKey);
   try {
-    // 2. Token, household, registration, actor.
-    const claims = await verifyDeviceToken(input.idToken, input.householdId);
+    // 2b. Household, registration, actor.
     const householdRef = householdRefOf(claims.hh_household);
     const recordRef = deviceRecordRef(householdRef, claims.hh_device);
     const memberRef = householdRef.collection('members').doc(actorUid);
@@ -564,6 +575,7 @@ export const verifyDevicePin = async (
         params: pinSnap.get('params'),
         pepperId,
         pinVersion: pinSnap.get('pinVersion'),
+        pinId: typeof pinSnap.get('pinId') === 'string' ? pinSnap.get('pinId') : null,
         seq: deviceReservation.seq,
         memberLocked: memberReservation.locked,
         deviceGuard: deviceReservation.guard,
@@ -604,7 +616,8 @@ export const verifyDevicePin = async (
         ]);
         const actor = recheck(household, record, member);
         // R2: the PIN must still be the one this attempt was compared against.
-        if (!hasPin(pinSnap) || pinSnap.get('pinVersion') !== reserved.pinVersion || pinSnap.get('hash') !== reserved.hash) {
+        if (!hasPin(pinSnap) || pinSnap.get('pinVersion') !== reserved.pinVersion || pinSnap.get('hash') !== reserved.hash ||
+          (pinSnap.get('pinId') ?? null) !== reserved.pinId) {
           throw new DeviceActionError('pin_session_invalid');
         }
         options.testHooks?.duringSettle?.();
@@ -615,6 +628,9 @@ export const verifyDevicePin = async (
           memberUid: actor.uid,
           generation: claims.hh_gen,
           pinVersion: reserved.pinVersion,
+          // The PIN's never-reused identity: a PIN set after the document was recreated
+          // (rejoining) has a different one, so this session can never validate again.
+          pinId: reserved.pinId,
           roleAtUnlock: actor.role,
           createdAt: Timestamp.fromDate(now),
           lastUsedAt: Timestamp.fromDate(now),
@@ -636,9 +652,14 @@ export const verifyDevicePin = async (
 };
 
 /** "Done" or the tablet's idle timer: ends the session now (best effort; the server expiry stands). */
-export const endPinSession = async (input: { idToken: unknown; householdId: unknown; pinSessionId: unknown }, now = new Date()) => {
+export const endPinSession = async (
+  input: { idToken: unknown; householdId: unknown; pinSessionId: unknown },
+  now = new Date(),
+  options: { clientAddress?: string } = {},
+) => {
   if (!devicesEnabled()) throw new DeviceActionError('unavailable');
-  if (!takeRateSlot(`pin-end:${unverifiedDeviceKey(input?.idToken)}`, 30, now.getTime())) throw new DeviceActionError('rate_limited');
+  preAuthLimit('pinEnd', options.clientAddress, now.getTime());
   const claims = await verifyDeviceToken(input?.idToken, input?.householdId);
+  takeDeviceBudget('pin-end', claims, 30, now.getTime());
   return endPinSessionRecord(claims, input?.pinSessionId, now);
 };

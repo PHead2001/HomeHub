@@ -408,6 +408,62 @@ describe('PIN sessions (7.5): what ends them', () => {
   });
 });
 
+describe('sessions never outlive a membership (Codex P2: PIN identity reuse)', () => {
+  const rejoin = (person: Person) => house(H).collection('members').doc(person.uid).set({
+    uid: person.uid, role: person.role, status: 'active', displayName: person.displayName, permissions: {},
+  });
+  const feed = (t: Tablet, actorUid: string, pinSessionId: string, at: Date) =>
+    authorizeDeviceAction({ idToken: t.idToken, householdId: H, capability: 'pets.feed', actorUid, pinSessionId, opId: opId() }, at);
+
+  for (const how of ['leave', 'remove'] as const) {
+    test(`${how}, rejoin with the same role and set a new PIN: the old session is refused and gone`, async () => {
+      const person = how === 'leave' ? member : member2;
+      await rejoin(person);
+      await setMyPin(person, { householdId: H, pin: '4826' });
+      const t = await pairTablet(H, owner, created, `Rejoin ${how} tablet`);
+      const c = clock(Date.parse(how === 'leave' ? '2026-11-29T09:00:00Z' : '2026-11-29T10:00:00Z'));
+      const old = (await verify(t, person.uid, '4826', c.now())).pinSessionId;
+      assert.equal((await feed(t, person.uid, old, c.now())).level, 'pin');
+      await deviceErr(verify(t, person.uid, '7391', c.advance(7000)), 'pin_wrong');
+      if (how === 'leave') await leaveHousehold(person, H);
+      else await removeMember(owner, H, person.uid);
+      // Their sessions and lockout state on every tablet are gone with the membership.
+      assert.equal((await sessionsOf(H, t.deviceId)).filter(d => d.get('memberUid') === person.uid).length, 0);
+      assert.equal((await house(H).collection('devices').doc(t.deviceId).collection('pinGuards').doc(person.uid).get()).exists, false);
+      await rejoin(person);
+      await setMyPin(person, { householdId: H, pin: '4826' });
+      assert.equal((await pinDoc(person.uid))?.pinVersion, 1);
+      await deviceErr(feed(t, person.uid, old, c.advance(1000)), 'pin_session_invalid');
+    });
+  }
+
+  test('a session from before the PIN document was recreated is refused even if its record survived', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const t = await pairTablet(H, owner, created, 'Recreated tablet');
+    const at = clock(Date.parse('2026-11-29T11:00:00Z')).now();
+    const old = (await verify(t, member.uid, '4826', at)).pinSessionId;
+    // The PIN document vanishes and is recreated at the same pinVersion (as after a rejoin).
+    await house(H).collection('members').doc(member.uid).collection('private').doc('pin').delete();
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    assert.equal((await pinDoc(member.uid))?.pinVersion, 1);
+    await deviceErr(feed(t, member.uid, old, at), 'pin_session_invalid');
+  });
+});
+
+describe('verification budget (Codex P2: pre-auth limiter)', () => {
+  test('forged tokens naming a real tablet never spend its PIN budget; its own verify still succeeds', async () => {
+    await setMyPin(member, { householdId: H, pin: '4826' });
+    const victim = await pairTablet(H, owner, created, 'PIN victim tablet');
+    const forged = `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(JSON.stringify({ hh_device: victim.deviceId, hh_household: H, hh_kind: 'device', hh_gen: 1 })).toString('base64url')}.x`;
+    const at = clock(Date.parse('2026-11-30T09:00:00Z')).now();
+    for (let i = 0; i < 15; i++) {
+      await deviceErr(verifyDevicePin({ idToken: forged, householdId: H, actorUid: member.uid, pin: '4826' }, { now: at, clientAddress: '203.0.113.9' }), 'unauthenticated');
+    }
+    const result = await verifyDevicePin({ idToken: victim.idToken, householdId: H, actorUid: member.uid, pin: '4826' }, { now: at, clientAddress: '198.51.100.7' });
+    assert.ok(result.pinSessionId);
+  });
+});
+
 /** Clears only the member-wide guard (keeps a tablet's own lockout schedule). */
 async function clearPinLockoutMemberOnly(uid: string) {
   await house(H).collection('members').doc(uid).collection('private').doc('pinGuard').delete();
