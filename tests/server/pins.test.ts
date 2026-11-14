@@ -592,7 +592,7 @@ describe('hardening: daily count, repeat tablet locks, set admission, announceme
       .filter(d => d.get('sourceId') === member.uid);
     const before = new Set((await allNotices()).map(d => d.id));
     const fresh = async () => (await allNotices()).filter(d => !before.has(d.id));
-    const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').update({ recentFailures: [], dayFailures: [] });
+    const keepHourlyCountLow = () => house(H).collection('members').doc(member.uid).collection('private').doc('pinGuard').set({ recentFailures: [], dayFailures: [] }, { merge: true });
     const lock = async (t: Tablet) => {
       await keepHourlyCountLow();
       for (let i = 0; i < 4; i++) await deviceErr(verify(t, member.uid, '7391', c.advance(7000)), 'pin_wrong');
