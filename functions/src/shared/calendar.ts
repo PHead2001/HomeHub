@@ -83,23 +83,50 @@ export const diffDays = (later: string, earlier: string): number =>
 export const dayOfWeek = (day: string): number => toUtcDate(day).getUTCDay();
 export const dayOfMonth = (day: string): number => toUtcDate(day).getUTCDate();
 
+const HOUR_MS = 60 * 60 * 1000;
+
+// The zone's offset (local wall clock minus UTC) at an instant, in ms.
+const offsetAt = (instant: number, timeZone: string): number => {
+  const minute = Math.floor(instant / 60000) * 60000;
+  const p = parts(new Date(minute), timeZone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - minute;
+};
+
 /**
- * The UTC instant of local midnight for a day in a timezone, as ISO.
+ * The instant a household wall time happens: `minutes` after local midnight
+ * of `day`. Offsets run from -12 h to +14 h, so the instant lies within
+ * [-14 h, +12 h] of the wall time read as UTC; the offsets just outside that
+ * window are the ones on both sides of any transition the time can touch.
+ * A time that happens twice (fall back) is the first one; a time that never
+ * happens (spring forward) moves forward by the gap.
+ * @param {string} day Day string.
+ * @param {number} minutes Minutes after local midnight.
+ * @param {string} timeZone IANA timezone.
+ * @return {number} Epoch milliseconds.
+ */
+export const zonedWallInstant = (
+  day: string, minutes: number, timeZone: string,
+): number => {
+  const guess = toUtcDate(day).getTime() + minutes * 60000;
+  const before = offsetAt(guess - 15 * HOUR_MS, timeZone);
+  const after = offsetAt(guess + 13 * HOUR_MS, timeZone);
+  const candidates = [guess - before, guess - after];
+  const valid = candidates.filter((at) => offsetAt(at, timeZone) ===
+    guess - at);
+  // In a gap neither reads the wanted time; the offset from before the
+  // transition places it the gap's length later.
+  return valid.length > 0 ? Math.min(...valid) : guess - before;
+};
+
+/**
+ * The UTC instant of local midnight for a day in a timezone, as ISO: the
+ * day's first instant (a midnight inside a gap moves forward).
  * @param {string} day Day string.
  * @param {string} timeZone IANA timezone.
  * @return {string} ISO timestamp.
  */
-export const zonedMidnightIso = (day: string, timeZone: string): string => {
-  const guess = toUtcDate(day).getTime();
-  // Offset of the zone at that moment, applied twice to settle DST edges.
-  let instant = guess;
-  for (let i = 0; i < 2; i++) {
-    const p = parts(new Date(instant), timeZone);
-    const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
-    instant = guess - (asUtc - instant);
-  }
-  return new Date(instant).toISOString();
-};
+export const zonedMidnightIso = (day: string, timeZone: string): string =>
+  new Date(zonedWallInstant(day, 0, timeZone)).toISOString();
 
 /**
  * Parses "HH:MM" into minutes after midnight.

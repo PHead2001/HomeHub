@@ -21,6 +21,7 @@
 // after the morning dose does not ask for it again.
 import {
   addDays, diffDays, isDayString, localDay, localMinutes, safeTimeZone,
+  zonedWallInstant,
 } from "./calendar";
 
 export const MAX_DOSE_TIMES = 6;
@@ -251,19 +252,13 @@ const wallTime = (instant: number, timeZone: string): string => {
   return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
 };
 
-// Offset of the zone at an instant: its wall time read as UTC, minus it.
-const offsetAt = (instant: number, timeZone: string): number => {
-  const minute = Math.floor(instant / 60000) * 60000;
-  const day = localDay(new Date(minute), timeZone);
-  const minutes = localMinutes(new Date(minute), timeZone);
-  return Date.parse(`${day}T00:00:00Z`) + minutes * 60000 - minute;
-};
-
 /**
  * The instant of a household wall time. A time that happens twice (the
  * fall-back hour) is the first one; a time that does not exist (the
  * spring-forward gap) moves forward by the gap, so every day keeps every
- * dose. Client and server use this one function.
+ * dose. Client and server use this one resolver (`zonedWallInstant`, shared
+ * with household midnight), which reads the offsets on both sides of the
+ * real transition in any zone.
  * @param {string} day Household day.
  * @param {number} minutes Minutes after midnight.
  * @param {string} timeZone IANA zone.
@@ -271,18 +266,7 @@ const offsetAt = (instant: number, timeZone: string): number => {
  */
 export const zonedInstant = (
   day: string, minutes: number, timeZone: string,
-): number => {
-  const guess = Date.parse(`${day}T00:00:00Z`) + minutes * 60000;
-  const candidates = [
-    guess - offsetAt(guess - 12 * HOUR_MS, timeZone),
-    guess - offsetAt(guess + 12 * HOUR_MS, timeZone),
-  ];
-  const wanted = `${day} ${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
-  const valid = candidates.filter((at) =>
-    `${localDay(new Date(at), timeZone)} ${wallTime(at, timeZone)}` ===
-      wanted);
-  return valid.length > 0 ? Math.min(...valid) : Math.max(...candidates);
-};
+): number => zonedWallInstant(day, minutes, timeZone);
 
 /* ------------------------------------------------------------------------ */
 /* Occurrences                                                              */

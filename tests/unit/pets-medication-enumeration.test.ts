@@ -20,6 +20,7 @@ import {
 } from '../../src/lib/pets/medication-course';
 import { courseDueEvents } from '../../src/lib/chores/calendar';
 import { addDays } from '../../functions/src/shared/calendar';
+import { bruteInstant } from './zoned-brute';
 
 const CHI = 'America/Chicago';
 const DAY = 86_400_000;
@@ -94,36 +95,53 @@ const TRANSITIONS = [
   { zone: 'Europe/London', day: '2026-10-25', inside: '01:30', after: '02:00' }, // overlap 1:00-2:00
   { zone: 'Australia/Sydney', day: '2026-10-04', inside: '02:30', after: '03:00' }, // gap 2:00-3:00
   { zone: 'Australia/Sydney', day: '2026-04-05', inside: '02:30', after: '03:00' }, // overlap 2:00-3:00
+  // The extreme zones (Codex round 3): far-east offsets, 45- and 30-minute offsets, a 30-minute shift.
+  { zone: 'Pacific/Auckland', day: '2026-09-27', inside: '02:30', after: '03:00' }, // gap 2:00-3:00
+  { zone: 'Pacific/Auckland', day: '2026-04-05', inside: '02:30', after: '03:00' }, // overlap 2:00-3:00
+  { zone: 'Pacific/Chatham', day: '2026-09-27', inside: '03:15', after: '03:45' }, // gap 2:45-3:45
+  { zone: 'Pacific/Chatham', day: '2026-04-05', inside: '03:15', after: '03:45' }, // overlap 2:45-3:45
+  { zone: 'Australia/Lord_Howe', day: '2026-10-04', inside: '02:15', after: '02:30' }, // gap 2:00-2:30
+  { zone: 'Australia/Lord_Howe', day: '2026-04-05', inside: '01:45', after: '02:00' }, // overlap 1:30-2:00
+  { zone: 'America/St_Johns', day: '2026-03-08', inside: '02:30', after: '03:00' }, // gap 2:00-3:00
+  { zone: 'America/St_Johns', day: '2026-11-01', inside: '01:30', after: '02:00' }, // overlap 1:00-2:00
+  { zone: 'America/Santiago', day: '2026-09-06', inside: '00:30', after: '01:00' }, // gap 0:00-1:00
 ];
+const plusMinutes = (time: string, amount: number) => {
+  const total = Math.min(23 * 60 + 59, Number(time.slice(0, 2)) * 60 + Number(time.slice(3)) + amount);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
 
 describe('every daylight-saving day: the occurrences of a day in strictly increasing instants', () => {
   test('set times inside and just after each gap and overlap', () => {
     for (const transition of TRANSITIONS) {
-      const [h, m] = transition.after.split(':').map(Number);
-      const halfAfter = `${String(h).padStart(2, '0')}:${String(m + 30).padStart(2, '0')}`;
+      const halfAfter = plusMinutes(transition.after, 30);
       const window = { schedule: { kind: 'days' as const, everyDays: 1, times: [transition.inside, transition.after, halfAfter] }, startDay: addDays(transition.day, -1), endDay: addDays(transition.day, 1) };
       const list = occurrencesAfter(window, null, transition.zone, 50);
       for (let i = 1; i < list.length; i++) assert.ok(list[i].at > list[i - 1].at, `${transition.zone} ${transition.day}: ${list[i - 1].key} then ${list[i].key}`);
       assert.ok(list.filter((occurrence) => occurrence.day === transition.day).length >= 2, `${transition.zone} ${transition.day}: the day keeps its doses`);
+      // Each dose sits where the minute-by-minute resolver puts its wall time (a missing time moves forward, a repeated one is the first).
+      for (const occurrence of list.filter((entry) => entry.day === transition.day)) {
+        assert.equal(occurrence.at, bruteInstant(occurrence.day, String(occurrence.time), transition.zone), `${transition.zone} ${occurrence.key}`);
+      }
     }
   });
 });
 
 describe('property: the enumerator never drops an occurrence inside its range, the prefill is the most recent missed one', () => {
-  const zones = [CHI, 'Europe/London', 'Australia/Sydney', 'UTC'];
-  test('150 random schedules, start days, ranges and clocks', () => {
+  const zones = [CHI, 'Europe/London', 'Australia/Sydney', 'UTC', 'Pacific/Kiritimati', 'Pacific/Pago_Pago', 'Asia/Kathmandu', 'Pacific/Chatham'];
+  test('300 random schedules, start days, ranges and clocks', () => {
     const rand = random(20261115);
-    for (let run = 0; run < 150; run++) {
+    for (let run = 0; run < 300; run++) {
       // Most runs sit on a daylight-saving day of their zone, with times in and around its gap or overlap.
       const transition = rand() < 0.6 ? TRANSITIONS[Math.floor(rand() * TRANSITIONS.length)] : null;
       const zone = transition ? transition.zone : zones[run % zones.length];
       let schedule = randomSchedule(rand);
       if (transition && schedule.kind === 'days') {
-        const extra = [transition.inside, transition.after, ...schedule.times.filter(() => rand() < 0.5)];
+        const extra = [transition.inside, transition.after, plusMinutes(transition.after, -1), ...schedule.times.filter(() => rand() < 0.5)];
         schedule = { ...schedule, times: [...new Set([...extra, ...TIMES.filter(() => rand() < 0.1)])].sort().slice(0, 6) };
       }
-      // Start days just before a 2026 daylight-saving change (the US, UK and Australian
-      // days), or anywhere in between.
+      // Start days just before a 2026 daylight-saving change (every zone in the
+      // table), or anywhere in between.
       const startDay = transition ? addDays(transition.day, -Math.floor(rand() * 3)) : addDays('2026-02-20', Math.floor(rand() * 300));
       const endDay = rand() < 0.2 ? addDays(startDay, Math.floor(rand() * 60)) : null;
       const window = { schedule, startDay, endDay };
@@ -135,6 +153,12 @@ describe('property: the enumerator never drops an occurrence inside its range, t
       const all = occurrencesAfter(window, null, zone, 100_000).filter((occurrence) => occurrence.at <= Math.max(to, now) + DAY);
       const expected = all.filter((occurrence) => occurrence.at > from && occurrence.at <= to).map((occurrence) => occurrence.key);
       const label = `${zone} ${JSON.stringify(window)} (${from}, ${to}]`;
+      // On the daylight-saving day every dose sits where the minute-by-minute resolver puts it.
+      if (transition && schedule.kind === 'days') {
+        for (const occurrence of all.filter((entry) => entry.day === transition.day)) {
+          assert.equal(occurrence.at, bruteInstant(occurrence.day, String(occurrence.time), zone), `${label} ${occurrence.key}`);
+        }
+      }
       const between = occurrencesBetween(window, from, to, zone);
       assert.deepEqual(between.map((occurrence) => occurrence.key), expected, label);
       // The walker always emits strictly increasing instants (no reordering, no duplicate instant).
