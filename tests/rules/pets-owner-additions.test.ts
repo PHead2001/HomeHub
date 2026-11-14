@@ -269,6 +269,23 @@ describe('pet profile: rename, vet contact, weight unit, delete (PE-30, PE-28a, 
     const legacyDose = { date: new Date().toISOString(), medication: 'Flea drops', dosage: '1 dose', notes: '', loggedByUid: people.sam.uid, loggedByName: 'Sam' };
     await assertSucceeds(setDoc(under('rex', 'medication-logs', 'm1'), legacyDose));
     await assertFails(setDoc(under('ghost', 'medication-logs', 'm1'), legacyDose));
+    // The feeding state: an empty state, and one naming a real signed feeding seeded under
+    // each pet (so only the pet's existence differs).
+    const emptyState = { lastLogId: null, lastFedAt: null, lastFedByUid: null, lastFedByName: null, day: null, countOnDay: 0, prev: null };
+    await assertSucceeds(setDoc(under('rex', 'feeding-state', 'current'), emptyState));
+    await assertFails(setDoc(under('ghost', 'feeding-state', 'current'), emptyState));
+    const fedAt = Timestamp.fromDate(new Date(Date.now() - 60_000));
+    await admin(async (adminDb) => {
+      for (const pet of ['maple', 'ghost']) {
+        await setDoc(doc(adminDb, 'households', household, 'pets', pet, 'feeding-logs', 'seeded'), {
+          date: fedAt, loggedAt: fedAt, cups: 1, foodType: 'Dry', foodAmountType: 'Cups', comments: '', ampm: 'AM',
+          loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: 'none',
+        });
+      }
+    });
+    const namingState = { lastLogId: 'seeded', lastFedAt: fedAt, lastFedByUid: people.sam.uid, lastFedByName: 'Sam', day: null, countOnDay: 1, prev: null };
+    await assertSucceeds(setDoc(under('maple', 'feeding-state', 'current'), namingState));
+    await assertFails(setDoc(under('ghost', 'feeding-state', 'current'), namingState));
     // Notes and weights: covered above (a missing pet is refused).
   });
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { collection, limit as limitTo, onSnapshot, orderBy, query, where, type Query, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { useAuth } from '@/hooks/use-auth';
+import { useSettledPetAccess } from './pet-access';
 import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
 import { behaviourEntries, headlineNote, pinnedNotes, PINNED_NOTES_MAX, readNote, type PetNote } from '@/lib/pets/notes';
 import { readWeight, type WeightEntry } from '@/lib/pets/weights';
@@ -61,10 +61,11 @@ export type LiveList<T> = {
  */
 function useLiveDocs<T>(scope: string | null, max: number, build: (() => Query) | null, read: (id: string, data: Record<string, unknown>) => T): LiveList<T> {
   const [state, setState] = useState<LiveDocs<T>>({ key: null, items: [], size: 0, loaded: false, failed: false, error: null });
-  // Keyed on the reader too (P3's pattern, `petListenerKey`): a listener refused before
-  // access returned, or for another member, is recreated instead of staying refused.
-  const { currentUser, permissions } = useAuth();
-  const base = petListenerKey(scope, { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) });
+  // Keyed on the settled access (`useSettledPetAccess`, P3's pattern): nothing subscribes
+  // until membership has loaded (the list reads as loading, never empty), and a listener
+  // refused before access returned, or for another member, is recreated, never kept refused.
+  const access = useSettledPetAccess();
+  const base = access ? petListenerKey(scope, access) : null;
   const key = base ? `${base}#${max}` : null;
 
   useEffect(() => {
@@ -94,6 +95,7 @@ function useLiveDocs<T>(scope: string | null, max: number, build: (() => Query) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  if (scope && !access) return { items: [], loading: true, error: null, hasMore: false, loadingMore: false };
   if (!key) return { items: [], loading: false, error: null, hasMore: false, loadingMore: false };
   if (state.key !== key) {
     const previousMax = base && state.key?.startsWith(`${base}#`) ? Number(state.key.slice(base.length + 1)) : Number.NaN;
