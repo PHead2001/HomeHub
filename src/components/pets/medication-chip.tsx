@@ -34,7 +34,7 @@ export function MedicationChip({ due, className, onSelect }: { due: MedicationDu
         type="button"
         className={cn(classes, 'relative z-10 text-left coarse:min-h-12 [@media(hover:hover)_and_(pointer:fine)]:hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring')}
         title={due.courseId ? `Give ${due.medication}` : `${due.medication}: confirm its schedule`}
-        aria-label={due.courseId ? `Give ${due.medication}, ${due.label}` : `${due.medication}, ${due.label}. Open the Medication tab`}
+        aria-label={due.courseId ? `Give ${due.medication}, ${due.label}` : `${due.medication}, ${due.label}. Confirm its schedule`}
         data-medication-state={due.state}
         data-course-id={due.courseId}
         onClick={(event) => {

@@ -79,6 +79,11 @@ async function openMedicationTab(page: Page, petId = 'maple', query = '') {
 }
 
 const giveDoseDialog = (page: Page) => page.getByTestId('give-dose-dialog');
+/** The toast list (Radix also repeats each toast's text in a live region, so page-wide text matches twice). */
+const toasts = (page: Page) => page.getByRole('region', { name: /^Notifications/ });
+const toastText = (page: Page, text: string) => toasts(page).getByText(text, { exact: true });
+/** A toast in the Notifications region by its title (as chores-ux.spec.ts finds one). */
+const toastItem = (page: Page, title: string) => toasts(page).getByRole('status').filter({ hasText: title });
 
 async function openContext(browser: Browser, viewport: { width: number; height: number }) {
   const context = await browser.newContext({ baseURL, viewport, hasTouch: true, reducedMotion: 'reduce', storageState: 'playwright/.auth/e2e-owner.json' });
@@ -100,9 +105,9 @@ test.describe('pets: medication courses (P3)', () => {
     await dialog.getByLabel('Dosage').fill('25 mg');
     await dialog.getByText('Set times of day').click();
     await dialog.getByLabel('Every how many days').fill('1');
-    await dialog.getByLabel('Dose time 1').fill('08:00');
+    await dialog.getByLabel('Dose time 1', { exact: true }).fill('08:00');
     await dialog.getByRole('button', { name: 'Add a time' }).click();
-    await dialog.getByLabel('Dose time 2').fill('20:00');
+    await dialog.getByLabel('Dose time 2', { exact: true }).fill('20:00');
     await expect(dialog.getByTestId('course-preview')).toContainText('Every day at 8:00 AM and 8:00 PM');
     await dialog.getByRole('button', { name: 'Add course' }).click();
     await expect(dialog).toBeHidden();
@@ -140,7 +145,7 @@ test.describe('pets: medication courses (P3)', () => {
     await expect(dialog.getByTestId('next-after')).toContainText('(from the schedule)');
     await dialog.getByRole('button', { name: 'Record dose' }).click();
     await expect(dialog).toBeHidden();
-    await expect(page.getByText('Apoquel recorded')).toBeVisible();
+    await expect(toastText(page, 'Apoquel recorded')).toBeVisible();
     await expect.poll(async () => (await courseDoses()).length).toBe(1);
     const [dose] = await courseDoses();
     expect(dose).toMatchObject({ courseId: COURSE_ID, medication: 'Apoquel', dosage: '1 tablet', repeat: 'none', loggedByUid: ownerUid });
@@ -176,10 +181,9 @@ test.describe('pets: medication courses (P3)', () => {
     await page.getByTestId('medication-course').filter({ hasText: 'Apoquel' }).getByRole('button', { name: 'Give dose' }).click();
     await giveDoseDialog(page).getByRole('button', { name: 'Record dose' }).click();
     await expect.poll(async () => (await courseDoses()).length).toBe(1);
-    const toast = page.getByRole('status').filter({ hasText: 'Apoquel recorded' });
-    await toast.getByRole('button', { name: 'Undo', exact: true }).click();
-    await expect(page.getByText('Dose record removed')).toBeVisible();
-    await expect(page.getByText('Only the record is removed. If the dose was given, it still counts.')).toBeVisible();
+    await toastItem(page, 'Apoquel recorded').getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(toastText(page, 'Dose record removed')).toBeVisible();
+    await expect(toastText(page, 'Only the record is removed. If the dose was given, it still counts.')).toBeVisible();
     await expect.poll(async () => (await courseDoses()).length).toBe(0);
     await expect.poll(async () => (await courseDoc())?.lastDose ?? null).toBeNull();
   });
@@ -223,14 +227,14 @@ test.describe('pets: medication courses (P3)', () => {
     await dialog.getByRole('button', { name: 'Finish course' }).click();
     await expect(dialog.getByRole('heading', { name: 'Finish Apoquel?' })).toBeVisible();
     await dialog.getByRole('button', { name: 'Finish course' }).click();
-    await expect(page.getByText('Apoquel finished')).toBeVisible();
+    await expect(toastText(page, 'Apoquel finished')).toBeVisible();
     await expect(row).toHaveCount(0);
-    await expect(page.getByText('Finished courses (1)')).toBeVisible();
+    await expect(page.getByText('Finished courses (1)', { exact: true })).toBeVisible();
     await expect.poll(async () => (await courseDoc())?.status).toBe('finished');
     expect((await courseDoses()).length).toBe(1);
     await expect(page.getByTestId('medication-entry').filter({ hasText: 'Apoquel' })).toHaveCount(1);
 
-    await page.getByRole('status').filter({ hasText: 'Apoquel finished' }).getByRole('button', { name: 'Undo', exact: true }).click();
+    await toastItem(page, 'Apoquel finished').getByRole('button', { name: 'Undo', exact: true }).click();
     await expect.poll(async () => (await courseDoc())?.status).toBe('active');
     await expect(page.getByTestId('medication-course').filter({ hasText: 'Apoquel' })).toBeVisible();
   });

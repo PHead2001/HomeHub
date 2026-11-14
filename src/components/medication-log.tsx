@@ -38,7 +38,7 @@ import type { PetMedicationLog } from '@/lib/pets/types';
 import { Skeleton } from './ui/skeleton';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { MedicationChip } from './pets/medication-chip';
+import { MedicationChip, MedicationChips } from './pets/medication-chip';
 import { CourseFormDialog, type CourseFormMode } from './pets/course-form-dialog';
 import { GiveDoseDialog, medicationRefusal, useFinishCourse } from './pets/give-dose-dialog';
 import { LegacyMedicationCard } from './pets/legacy-medication-card';
@@ -177,6 +177,24 @@ export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId 
       <CardContent className="space-y-6">
         {state.error ? <p className="text-sm text-muted-foreground">{unavailableText('Medication courses', state.failure ?? 'retrying')}</p> : null}
         {state.loading ? <Skeleton className="h-20 w-full" /> : null}
+        {state.dues.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">{state.dues.length === 1 ? 'Next dose:' : 'Next doses:'}</span>
+            {/* Every current countdown here, courses and legacy, most urgent first: this tab is the full view. */}
+            <MedicationChips
+              dues={state.dues}
+              max={state.dues.length}
+              onSelect={canGive ? (due) => {
+                // A course chip opens Give dose; a legacy one opens its schedule confirmation (D-P8).
+                if (due.courseId) setGivingId(due.courseId);
+                else {
+                  const group = state.legacy.find((entry) => entry.key === due.legacyKey);
+                  if (group) setFormMode({ kind: 'legacy', group });
+                }
+              } : undefined}
+            />
+          </div>
+        )}
 
         {state.legacy.length > 0 && (
           <section className="space-y-3" aria-label="Medications to confirm">
