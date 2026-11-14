@@ -3,7 +3,7 @@
  * medication as day-keyed events, plus Week/Month grid helpers. Pure.
  */
 import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '../../../functions/src/shared/maintenance-reminders';
-import { toDay } from '../../../functions/src/shared/calendar';
+import { addDays, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { choreOccurrenceKey, occurrenceChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
@@ -12,8 +12,9 @@ import { currentMedicationsOn, petDay, toDate, type MedicationDue as MedicationC
 import {
   formatDoseTime,
   nextDueOccurrence,
-  occurrencesAfter,
+  occurrencesBetween,
   occurrenceStatus,
+  zonedInstant,
   takenLegacyKeys,
   type CourseView,
 } from '../../../functions/src/shared/medication-schedule';
@@ -168,24 +169,25 @@ export function medicationDueEvents(entries: readonly MedicationEntry[], today: 
     })));
 }
 
-/** At most this many occurrences of one course are shown (a month of six doses a day). */
-const COURSE_OCCURRENCE_LIMIT = 200;
-
 /**
- * Upcoming doses of medication courses (P3, PE-27d): every scheduled
- * occurrence of each active course from its next due one through `untilDay`,
- * on its household day, so a twice-daily course shows both doses each day. The
- * first carries the countdown state (an overdue one joins the red rail); a
- * finished or ended course shows none. Occurrences come from the shared
+ * Upcoming doses of medication courses (P3, PE-27d): each active course's next
+ * due dose (an overdue one joins the red rail, wherever it falls), then every
+ * scheduled occurrence in the visible range `[fromDay, untilDay]` after it, on
+ * its household day, so a twice-daily course shows both doses each day. The
+ * enumeration is bounded by the range alone (`occurrencesBetween`), never by a
+ * count from an old outstanding dose, so a dense schedule fills every visible
+ * day. A finished or ended course shows none. Occurrences come from the shared
  * schedule model, as the pet's chips and the reminders compute them.
  */
-export function courseDueEvents(courses: readonly CourseEntry[], now: Date, timeZone: string | null | undefined, untilDay: string): CalendarEvent[] {
+export function courseDueEvents(courses: readonly CourseEntry[], now: Date, timeZone: string | null | undefined, untilDay: string, fromDay?: string): CalendarEvent[] {
   const zone = timeZone ?? '';
+  const safeZone = safeTimeZone(zone);
+  const rangeEnd = zonedInstant(addDays(untilDay, 1), 0, safeZone) - 1;
+  const rangeStart = zonedInstant(fromDay ?? petDay(now, timeZone), 0, safeZone) - 1;
   return courses.flatMap(({ petId, petName, course }) => {
     const next = nextDueOccurrence(course, zone);
     if (!next || !course.schedule) return [];
-    const later = occurrencesAfter({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, next.at, zone, COURSE_OCCURRENCE_LIMIT)
-      .filter(occurrence => occurrence.day <= untilDay);
+    const later = occurrencesBetween({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, Math.max(next.at, rangeStart), rangeEnd, zone);
     return [next, ...later].map((occurrence, index) => {
       const status = occurrenceStatus(occurrence, now, zone);
       const time = occurrence.time ? ` · ${formatDoseTime(occurrence.time)}` : '';

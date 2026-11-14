@@ -13,10 +13,11 @@ import {
   courseFormValues,
   doseChoices,
   doseConfirmOf,
+  doseLinkDecision,
   doseLogId,
   doseRepeatReason,
   lastDoseLine,
-  latestDoseOf,
+  deriveCourseState,
   legacyCourseId,
   medicationAttention,
   medicationDues,
@@ -24,7 +25,7 @@ import {
   occurrenceLabel,
   pendingLegacyGroups,
   planDose,
-  planUndoDose,
+  pointerAfter,
   nextDueOccurrence,
   readCourse,
   schedulePreview,
@@ -32,7 +33,6 @@ import {
   validateCourseForm,
   DOSE_UNDO_COPY,
   type CourseView,
-  type DoseLogView,
 } from '../../src/lib/pets/medication-course';
 import { MEDICATION_ACTION_PERMISSIONS, mayMedication } from '../../src/lib/pets/medication-permissions';
 import { getRolePresetPermissions } from '../../src/lib/permissions';
@@ -193,32 +193,49 @@ describe('planning a dose', () => {
   });
 });
 
-describe('Undo of a dose', () => {
-  const log = (id: string, occurrence: string, occurrenceAt: string, courseId = 'apoquel'): DoseLogView => ({
-    id, courseId, occurrence, occurrenceAt: Date.parse(occurrenceAt), date: Date.parse(occurrenceAt), loggedByUid: 'sam', loggedByName: 'Sam',
+describe('Undo of a dose: the pointer is the derived state of the surviving doses (D)', () => {
+  const rec = (logId: string, occurrence: string, occurrenceAt: string, givenAt = occurrenceAt) =>
+    ({ logId, occurrence, occurrenceAt: Date.parse(occurrenceAt), givenAt: Date.parse(givenAt), byUid: 'sam', byName: 'Sam' });
+  // Chicago CST: 8:00 = 14:00Z, 10:00 = 16:00Z, 12:00 = 18:00Z.
+  const eight = rec('eight', '2026-11-14T08:00', '2026-11-14T14:00:00Z');
+  const noon = rec('noon', '2026-11-14T12:00', '2026-11-14T18:00:00Z', '2026-11-14T16:30:00Z'); // early
+  const ten = rec('ten', '2026-11-14T10:00', '2026-11-14T16:00:00Z', '2026-11-14T16:40:00Z'); // confirmed after noon
+
+  test('record 8:00, then 12:00 early, then a confirmed 10:00, then remove 12:00: 10:00 is the latest, not 8:00', () => {
+    // The stored pointer after the three doses (each write stored the derived state).
+    const afterThree = pointerAfter({ coveredUntil: null, lastDose: null, prevDose: null }, [eight, noon, ten]);
+    assert.deepEqual([afterThree.latest?.logId, afterThree.prev?.logId], ['noon', 'ten']);
+    const stored = { coveredUntil: null, lastDose: afterThree.latest, prevDose: afterThree.prev };
+    // Remove 12:00: the surviving doses decide (a remembered prevDose alone would also be 10:00 here,
+    // and with the confirmed 10:00 recorded before 12:00 it would have been 8:00).
+    const removed = pointerAfter(stored, [eight, ten]);
+    assert.deepEqual([removed.latest?.logId, removed.prev?.logId, removed.write], ['ten', 'eight', true]);
+    const course = readCourse('apoquel', { name: 'Apoquel', dosage: '1', schedule: { kind: 'days', everyDays: 1, times: ['08:00', '10:00', '12:00', '20:00'] }, startDay: '2026-11-13', status: 'active', lastDose: { ...removed.latest!, occurrenceAt: new Date(removed.latest!.occurrenceAt), givenAt: new Date(removed.latest!.givenAt!) } })!;
+    assert.equal(nextDueOccurrence(course, CHI)?.key, '2026-11-14T12:00', '10:00 is not due again');
   });
 
-  test('the latest dose undone: the previous comes back while it exists, else the latest surviving dose', () => {
-    const c = { id: 'apoquel', lastDose: readCourse('x', { name: 'a', schedule: { kind: 'days', everyDays: 1, times: [] }, startDay: '2026-11-01', status: 'active', lastDose: pointer('2026-11-14T08:00', '2026-11-14T14:00:00Z', { logId: 'b' }) })!.lastDose, prevDose: readCourse('x', { name: 'a', schedule: { kind: 'days', everyDays: 1, times: [] }, startDay: '2026-11-01', status: 'active', lastDose: pointer('2026-11-13T20:00', '2026-11-14T02:00:00Z', { logId: 'a' }) })!.lastDose };
-    assert.deepEqual(planUndoDose(c, 'b', true, []), { kind: 'repoint', restore: c.prevDose });
-    const surviving = [log('z', '2026-11-13T08:00', '2026-11-13T14:00:00Z'), log('b', '2026-11-14T08:00', '2026-11-14T14:00:00Z'), log('other', '2026-11-14T20:00', '2026-11-15T02:00:00Z', 'other-course')];
-    const plan = planUndoDose(c, 'b', false, surviving);
-    assert.equal(plan.kind === 'repoint' && plan.restore?.logId, 'z');
-    assert.deepEqual(planUndoDose(c, 'b', false, []), { kind: 'repoint', restore: null });
+  test('a pointer stored by the old rule (12:00 with prev 8:00, the confirmed 10:00 left out) still resolves to 10:00', () => {
+    // Before the fix a dose older than the latest never rewrote the pointer, so prevDose stayed 8:00
+    // and Undo of 12:00 restored it: 10:00 was due again. The surviving records decide now.
+    const stored = { coveredUntil: null, lastDose: noon, prevDose: eight };
+    const removed = pointerAfter(stored, [eight, ten]);
+    assert.equal(removed.latest?.logId, 'ten');
   });
 
-  test("never overwrites a later dose by someone else: only a stale previous pointer is dropped", () => {
-    const c = { id: 'apoquel', lastDose: { logId: 'kims', occurrence: 'x', occurrenceAt: 2, givenAt: 2, byUid: 'kim', byName: 'Kim' }, prevDose: { logId: 'mine', occurrence: 'y', occurrenceAt: 1, givenAt: 1, byUid: 'sam', byName: 'Sam' } };
-    assert.deepEqual(planUndoDose(c, 'mine', false, []), { kind: 'dropPrev' });
-    assert.deepEqual(planUndoDose(c, 'unrelated', false, []), { kind: 'delete' });
-    assert.deepEqual(planUndoDose(null, 'mine', false, []), { kind: 'delete' });
+  test('removing an older dose keeps a later one by someone else; nothing changes when the pointer already agrees', () => {
+    const kims = { ...rec('kims', '2026-11-14T12:00', '2026-11-14T18:00:00Z'), byUid: 'kim', byName: 'Kim' };
+    const stored = { coveredUntil: null, lastDose: kims, prevDose: eight };
+    const next = pointerAfter(stored, [kims]);
+    assert.deepEqual([next.latest?.logId, next.prev, next.write], ['kims', null, true], 'the removed previous dose is forgotten');
+    assert.equal(pointerAfter({ coveredUntil: null, lastDose: kims, prevDose: null }, [kims]).write, false);
+    assert.deepEqual(pointerAfter(stored, []), { latest: null, prev: null, write: true });
   });
 
-  test('the latest surviving dose: latest occurrence, then latest given', () => {
-    const a = log('a', '2026-11-14T08:00', '2026-11-14T14:00:00Z');
-    const b = { ...log('b', '2026-11-14T08:00', '2026-11-14T14:00:00Z'), date: Date.parse('2026-11-14T15:00:00Z') };
-    assert.equal(latestDoseOf([a, b], 'apoquel')?.logId, 'b');
-    assert.equal(latestDoseOf([a, b], 'apoquel', 'b')?.logId, 'a');
+  test('ties: the latest occurrence, then the latest given, then the id', () => {
+    const a = rec('a', '2026-11-14T08:00', '2026-11-14T14:00:00Z', '2026-11-14T14:00:00Z');
+    const b = rec('b', '2026-11-14T08:00', '2026-11-14T14:00:00Z', '2026-11-14T15:00:00Z');
+    assert.equal(deriveCourseState({ coveredUntil: null }, [a, b]).latest?.logId, 'b');
+    assert.equal(deriveCourseState({ coveredUntil: null }, [b, a]).latest?.logId, 'b');
   });
 
   test('the Undo copy never says the dose itself was undone', () => {
@@ -384,7 +401,9 @@ describe('permissions come from one table (R5)', () => {
     uses('courseEdited', 'pets.course.edit');
     uses('courseFinished', 'pets.course.finish');
     uses('courseResumed', 'pets.course.finish');
-    uses('doseGiven', 'pets.dose.give');
+    // A pointer write (Give, Undo, delete) needs pets.addLogs or pets.deleteLogs (the dose's own rule needs pets.addLogs).
+    uses('mayRemoveDoses', 'pets.dose.undo');
+    assert.match(rules, /match \/medication-logs\/\{logId\} \{[\s\S]*?allow create: if hasHouseholdPermission\(householdId, 'pets\.addLogs'\)/);
   });
 
   test('role presets: anyone who logs may give, finish, create and edit a course; guests nothing (D-P19)', () => {
@@ -488,5 +507,55 @@ describe('Calendar (PE-27d, PE-24f, PE-24n)', () => {
     assert.equal(medicationDueEvents(legacy, '2026-11-14', [confirmed]).length, 0);
     const [first] = courseDueEvents([confirmed], at('2026-11-14T18:00:00Z'), CHI, '2026-11-20');
     assert.deepEqual([first.day, first.overdue, first.medicationDue?.label], ['2026-11-05', true, 'Overdue by 9 days']);
+  });
+});
+
+describe('a reminder link is consumed only after a successful read of the courses (E)', () => {
+  const active = [{ id: 'apoquel', status: 'active' as const }];
+
+  test('a failed course read keeps the link (dose stays in the URL); the recovered read opens Give dose', () => {
+    const failed = doseLinkDecision({ requested: 'apoquel', seen: null, loading: false, error: new Error('unavailable'), courses: [] });
+    assert.deepEqual(failed, { kind: 'wait' });
+    assert.deepEqual(doseLinkDecision({ requested: 'apoquel', seen: null, loading: true, error: null, courses: [] }), { kind: 'wait' });
+    assert.deepEqual(doseLinkDecision({ requested: 'apoquel', seen: null, loading: false, error: null, courses: active }), { kind: 'open', courseId: 'apoquel' });
+  });
+
+  test('a finished or missing course says so only after a successful read; handled links reset', () => {
+    assert.deepEqual(doseLinkDecision({ requested: 'apoquel', seen: null, loading: false, error: null, courses: [{ id: 'apoquel', status: 'finished' }] }), { kind: 'inactive' });
+    assert.deepEqual(doseLinkDecision({ requested: 'apoquel', seen: 'apoquel', loading: false, error: null, courses: active }), { kind: 'idle' });
+    assert.deepEqual(doseLinkDecision({ requested: null, seen: 'apoquel', loading: false, error: null, courses: active }), { kind: 'reset' });
+    assert.deepEqual(doseLinkDecision({ requested: null, seen: null, loading: false, error: null, courses: active }), { kind: 'idle' });
+  });
+
+  test('the Medication tab uses the decision (no consumption on an error)', () => {
+    const source = readFileSync('src/components/medication-log.tsx', 'utf8');
+    assert.match(source, /doseLinkDecision\(\{ requested: doseCourseId, seen: seenDose, loading: state\.loading, error: state\.error, courses: state\.courses \}\)/);
+    assert.doesNotMatch(source, /\(!doseCourseId \|\| !state\.loading\)/);
+  });
+});
+
+describe('an early dose right after a dose asks first (the duplicate check reads the derived latest dose)', () => {
+  test('a dose for the next time moments after the last one asks, naming it; an offline dose counts too', () => {
+    // Every 2 hours: 08:00 given at 9:49, then at 9:50 the nearest time is 10:00 (early).
+    const every2 = { name: 'Antibiotic', dosage: '1 ml', schedule: { kind: 'hours', everyHours: 2, firstTime: '00:00' }, startDay: '2026-11-14', status: 'active' };
+    const eight = { logId: 'eight', occurrence: '2026-11-14T08:00', occurrenceAt: at('2026-11-14T14:00:00Z'), givenAt: at('2026-11-14T15:49:00Z'), byUid: 'sam', byName: 'Sam' };
+    const now = at('2026-11-14T15:50:00Z');
+    const c = readCourse('c', { ...every2, lastDose: eight })!;
+    const { prefill } = doseChoices(c, now, CHI);
+    assert.equal(prefill?.key, '2026-11-14T10:00');
+    const asked = planDose({ now, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: prefill!.key, givenAt: null });
+    assert.equal(asked.kind, 'needsConfirm');
+    if (asked.kind !== 'needsConfirm') return;
+    assert.equal(asked.check.reason, 'recent');
+    assert.match(doseRepeatReason(asked.check, now, CHI, 'kim'), /^Sam recorded a dose 1 min ago \(the Today 8:00 AM dose\)\. The Today 10:00 AM dose would be early\.$/);
+    const written = planDose({ now, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: prefill!.key, givenAt: null, confirm: doseConfirmOf(asked.check) });
+    assert.equal(written.kind === 'write' && written.repeat, 'confirmed');
+    // The same with the 8:00 dose recorded offline (not in the pointer): the derived latest decides.
+    const offline = withOfflineDoses(readCourse('c', every2)!, [{ id: 'eight', courseId: 'c', occurrence: '2026-11-14T08:00', occurrenceAt: eight.occurrenceAt, date: eight.givenAt, repeat: 'offline', loggedByUid: 'sam', loggedByName: 'Sam' }]);
+    const offlineAsked = planDose({ now, timeZone: CHI, course: offline, lastDoseSurvives: false, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T10:00', givenAt: null });
+    assert.equal(offlineAsked.kind === 'needsConfirm' && offlineAsked.check.reason, 'recent');
+    // Once the window has passed (half the interval: 1 h), an early dose no longer asks.
+    const later = planDose({ now: at('2026-11-14T16:55:00Z'), timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T10:00', givenAt: null });
+    assert.equal(later.kind, 'write');
   });
 });

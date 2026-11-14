@@ -36,11 +36,23 @@ export const safeTimeZone = (timeZone: unknown): string => {
   }
 };
 
+// One formatter per zone: constructing Intl.DateTimeFormat is far costlier
+// than formatting with it, and schedules format thousands of instants.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+const formatterFor = (timeZone: string): Intl.DateTimeFormat => {
+  let formatter = formatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    });
+    formatters.set(timeZone, formatter);
+  }
+  return formatter;
+};
+
 const parts = (instant: Date, timeZone: string) => {
-  const formatted = new Intl.DateTimeFormat("en-US", {
-    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(instant);
+  const formatted = formatterFor(timeZone).formatToParts(instant);
   const get = (type: string) =>
     Number(formatted.find((p) => p.type === type)?.value);
   return {

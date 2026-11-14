@@ -39,23 +39,24 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline';
-import { petDay, toDate } from './care';
+import { petDay } from './care';
 import { householdDayZone } from '../household-day';
 import {
   coverageAfterEdit,
   doseLogId,
+  doseRecordsOf,
+  pointerAfter,
+  withRecords,
   legacyCourseId,
   planDose,
-  planUndoDose,
   readCourse,
   readDosePointer,
   scheduleChanged,
-  withOfflineDoses,
   type CourseFields,
   type CourseView,
   type DoseCheck,
   type DoseConfirm,
-  type DoseLogView,
+  type DosePointer,
   type DoseRefusal,
   type Occurrence,
 } from './medication-course';
@@ -121,11 +122,46 @@ export type GiveDoseResult =
   /** `queued`: offline, saved on this device; nobody else's dose could be checked. */
   | { status: 'saved' | 'queued'; logId: string; occurrence: Occurrence | null; nextAfter: Occurrence | null; replayed?: boolean };
 
-/** How many of a course's newest doses are read to find offline (and surviving) doses. */
-const LATEST_DOSES = 5;
+/** How many of a course's newest doses are read (by occurrence): the latest two and ties. */
+const LATEST_DOSES = 6;
 
 const newestCourseDoses = (db: Firestore, householdId: string, petId: string, courseId: string) =>
   query(logsRef(db, householdId, petId), where('courseId', '==', courseId), orderBy('occurrenceAt', 'desc'), limit(LATEST_DOSES));
+
+/** A course's newest surviving doses, as records and as stored (a pointer copies stored values exactly). */
+type DoseRead = { records: DosePointer[]; stored: Map<string, DocumentData> };
+
+/**
+ * The course's newest surviving doses (offline-synced ones included), read
+ * inside the attempt: the latest and the one before are among them (they are
+ * ordered by occurrence), so `deriveCourseState` over them is the course's
+ * state. Any other online dose write changes the course, so a conflicting
+ * change retries the transaction with a fresh read.
+ */
+async function readCourseDoses(db: Firestore, householdId: string, petId: string, courseId: string, excludeId?: string): Promise<DoseRead> {
+  const newest = await getDocs(newestCourseDoses(db, householdId, petId, courseId));
+  const stored = new Map<string, DocumentData>();
+  const logs = newest.docs.filter((entry) => entry.id !== excludeId).map((entry) => {
+    stored.set(entry.id, entry.data());
+    return { id: entry.id, ...entry.data() };
+  });
+  return { records: doseRecordsOf(courseId, logs), stored };
+}
+
+/** A pointer as written: the stored values of its log (a server time keeps its microseconds). */
+function storedPointer(pointer: DosePointer | null, stored: Map<string, DocumentData>, fresh?: { logId: string; value: Record<string, unknown> }): Record<string, unknown> | null {
+  if (!pointer) return null;
+  if (fresh && pointer.logId === fresh.logId) return fresh.value;
+  const log = stored.get(pointer.logId);
+  return {
+    logId: pointer.logId,
+    occurrence: pointer.occurrence,
+    occurrenceAt: log?.occurrenceAt ?? Timestamp.fromMillis(pointer.occurrenceAt),
+    givenAt: log?.date ?? (pointer.givenAt === null ? null : Timestamp.fromMillis(pointer.givenAt)),
+    byUid: typeof log?.loggedByUid === 'string' ? log.loggedByUid : pointer.byUid,
+    byName: typeof log?.loggedByName === 'string' ? log.loggedByName : pointer.byName,
+  };
+}
 
 const doseLogData = (input: GiveDoseInput, course: CourseView, plan: Extract<ReturnType<typeof planDose>, { kind: 'write' }>, given: unknown, occurrenceAt: Timestamp, backdated: boolean) => ({
   courseId: input.courseId,
@@ -176,15 +212,15 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     const course = raw ? readCourse(courseId, raw) : null;
     const lastLogId = course?.lastDose?.logId ?? null;
     const lastDoseSurvives = lastLogId ? (await tx.get(doc(logsRef(db, householdId, petId), lastLogId))).exists() : false;
-    // Doses queued offline are not in the pointer: read the course's newest doses
-    // (inside the attempt) so one that synced covers its occurrence here too.
-    const newest = course ? await getDocs(newestCourseDoses(db, householdId, petId, courseId)) : null;
+    // The course's state comes from its surviving doses (deriveCourseState): an
+    // offline dose that synced, not yet in the pointer, covers its occurrence too.
+    const doses = course ? await readCourseDoses(db, householdId, petId, courseId) : null;
     const now = new Date();
     const plan = planDose(
       {
         now,
         timeZone: input.timeZone,
-        course: course && newest ? withOfflineDoses(course, newest.docs.map((entry) => ({ id: entry.id, ...entry.data() }))) : course,
+        course: course && doses ? withRecords(course, doses.records) : course,
         lastDoseSurvives,
         existing: existing.exists()
           ? { loggedByUid: (existing.get('loggedByUid') as string | undefined) ?? null, courseId: (existing.get('courseId') as string | undefined) ?? null }
@@ -198,11 +234,14 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     const given = plan.live ? serverTimestamp() : Timestamp.fromDate(plan.givenAt);
     const occurrenceAt = Timestamp.fromMillis(plan.occurrence.at);
     tx.set(logRef, doseLogData(input, course!, plan, given, occurrenceAt, !plan.live));
-    if (plan.becomesLatest) {
+    // The pointer is the derived state after this dose (a cache that agrees with the records).
+    const fresh: DosePointer = { logId, occurrence: plan.occurrence.key, occurrenceAt: plan.occurrence.at, givenAt: plan.givenAt.getTime(), byUid: input.user.uid, byName: input.user.name };
+    const next = pointerAfter(course!, [...doses!.records, fresh]);
+    if (next.write) {
+      const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name };
       tx.update(cRef, {
-        lastDose: { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name },
-        // The replaced latest dose, as stored, for Undo (only while its log exists).
-        prevDose: lastDoseSurvives ? (raw!.lastDose ?? null) : null,
+        lastDose: storedPointer(next.latest, doses!.stored, { logId, value: freshValue }),
+        prevDose: storedPointer(next.prev, doses!.stored, { logId, value: freshValue }),
       });
     }
     return { status: 'saved', logId, occurrence: plan.occurrence, nextAfter: plan.nextAfter } as const;
@@ -231,7 +270,7 @@ async function giveDoseOffline(db: Firestore, input: GiveDoseInput, logId: strin
   const stored = courseSnapshot?.exists() ? readCourse(courseId, courseSnapshot.data()) : null;
   if (!stored) throw new MedicationActionError('offline');
   const doses = cachedDoses?.docs.map((entry) => ({ id: entry.id, ...entry.data() })) ?? [];
-  const course = withOfflineDoses(stored, doses);
+  const course = withRecords(stored, doseRecordsOf(courseId, doses));
   // Unknown here whether the latest dose was removed elsewhere: assume it stands (ask rather than double).
   const lastDoseSurvives = Boolean(course.lastDose);
   const now = new Date();
@@ -253,15 +292,6 @@ async function giveDoseOffline(db: Firestore, input: GiveDoseInput, logId: strin
 /* Undo / delete a dose                                                       */
 /* ------------------------------------------------------------------------- */
 
-const doseView = (id: string, data: DocumentData): DoseLogView => ({
-  id,
-  courseId: typeof data.courseId === 'string' ? data.courseId : null,
-  occurrence: typeof data.occurrence === 'string' ? data.occurrence : null,
-  occurrenceAt: toDate(data.occurrenceAt)?.getTime() ?? null,
-  date: toDate(data.date)?.getTime() ?? null,
-  loggedByUid: typeof data.loggedByUid === 'string' ? data.loggedByUid : null,
-  loggedByName: typeof data.loggedByName === 'string' ? data.loggedByName : null,
-});
 
 /**
  * Removes a dose record (the 10 s Undo and the history's delete) and keeps the
@@ -279,8 +309,15 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     // recorded offline, a one-off dose or a legacy entry. A course dose recorded
     // online may be the course's latest dose, which needs the pointer moved.
     const cached = await getDocFromCache(logRef).catch(() => null);
-    const courseDose = typeof cached?.get('courseId') === 'string';
+    const courseId = cached?.get('courseId');
+    const courseDose = typeof courseId === 'string';
     if (!cached?.exists() || (courseDose && cached.get('repeat') !== 'offline')) throw new MedicationActionError('offline');
+    if (courseDose) {
+      // An online write may have made this offline dose the course's latest: then its pointer must move (online).
+      const cachedCourse = await getDocFromCache(courseRef(db, householdId, petId, courseId)).catch(() => null);
+      const pointer = cachedCourse?.exists() ? readDosePointer(cachedCourse.get('lastDose')) : null;
+      if (!cachedCourse?.exists() || pointer?.logId === logId) throw new MedicationActionError('offline');
+    }
     const batch = writeBatch(db);
     batch.delete(logRef);
     return awaitWriteUnlessOffline(batch.commit(), input.onLateError);
@@ -296,39 +333,16 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     const cRef = courseRef(db, householdId, petId, courseId);
     const courseSnapshot = await tx.get(cRef);
     const raw = courseSnapshot.exists() ? courseSnapshot.data() : null;
-    const course = raw ? { id: courseId, lastDose: readDosePointer(raw.lastDose), prevDose: readDosePointer(raw.prevDose) } : null;
-    const prevId = course?.lastDose?.logId === logId ? course.prevDose?.logId ?? null : null;
-    const prevSurvives = prevId ? (await tx.get(doc(logsRef(db, householdId, petId), prevId))).exists() : false;
-    let surviving: DoseLogView[] = [];
-    // The surviving doses as stored: a pointer copies their values exactly (a server
-    // time has microseconds, which a millisecond round trip would lose).
-    const storedLogs = new Map<string, DocumentData>();
-    if (course?.lastDose?.logId === logId && !prevSurvives) {
-      // Read here, inside the attempt: any other dose writes the course, so a
-      // conflicting change retries this transaction with a fresh read.
-      const newest = await getDocs(newestCourseDoses(db, householdId, petId, courseId));
-      surviving = newest.docs.map((entry) => {
-        storedLogs.set(entry.id, entry.data());
-        return doseView(entry.id, entry.data());
-      });
-    }
-    const plan = planUndoDose(course, logId, prevSurvives, surviving);
     tx.delete(logRef);
-    if (plan.kind === 'repoint') {
-      const restore = plan.restore;
-      const stored = restore && restore.logId === course?.prevDose?.logId ? raw!.prevDose : restore
-        ? {
-            logId: restore.logId,
-            occurrence: restore.occurrence,
-            occurrenceAt: storedLogs.get(restore.logId)?.occurrenceAt ?? Timestamp.fromMillis(restore.occurrenceAt),
-            givenAt: storedLogs.get(restore.logId)?.date ?? (restore.givenAt === null ? null : Timestamp.fromMillis(restore.givenAt)),
-            byUid: restore.byUid,
-            byName: restore.byName,
-          }
-        : null;
-      tx.update(cRef, { lastDose: stored, prevDose: null });
-    } else if (plan.kind === 'dropPrev') {
-      tx.update(cRef, { prevDose: null });
+    if (!raw) return 'saved' as const;
+    // The pointer after the removal is the derived state of the surviving doses
+    // (never just the remembered previous one): record 8:00, 12:00 early, a
+    // confirmed 10:00, then remove 12:00, and 10:00 is the latest, not 8:00.
+    const pointer = { coveredUntil: null, lastDose: readDosePointer(raw.lastDose), prevDose: readDosePointer(raw.prevDose) };
+    const doses = await readCourseDoses(db, householdId, petId, courseId, logId);
+    const next = pointerAfter(pointer, doses.records);
+    if (next.write) {
+      tx.update(cRef, { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) });
     }
     return 'saved' as const;
   }));
@@ -455,7 +469,11 @@ export async function runSaveCourse(db: Firestore, input: {
     }
     if (!snapshot.exists()) throw new MedicationActionError('missing');
     if (snapshot.get('status') !== 'active') throw new MedicationActionError('not-active');
-    const stored = readCourse(input.courseId, snapshot.data());
+    const read = readCourse(input.courseId, snapshot.data());
+    // The coverage comes from the surviving doses (an offline-synced dose
+    // included), the same derived state the form's preview shows.
+    const doses = read ? await readCourseDoses(db, input.householdId, input.petId, input.courseId) : null;
+    const stored = read && doses ? withRecords(read, doses.records) : read;
     // A schedule change may count the new occurrence that replaces the one last
     // given (8:00 AM given, moved to 9:00 AM), so it is not due again.
     const moved = stored && scheduleChanged(stored, input.fields);

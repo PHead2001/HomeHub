@@ -36,6 +36,8 @@ import {
   readCourse,
   takenLegacyKeys,
   withOfflineDoses,
+  coverageAfterEdit,
+  occurrencesAfter,
   type CourseView,
 } from '../../src/lib/pets/medication-course';
 import { localDay, addDays } from '../../functions/src/shared/calendar';
@@ -87,6 +89,13 @@ const saved = (result: GiveDoseResult) => {
   assert.equal(result.status, 'saved', `expected a write, got ${JSON.stringify(result)}`);
   return result as Exclude<GiveDoseResult, { status: 'needsConfirm' }>;
 };
+
+/** Records a dose, answering "already given?" / "a dose moments ago" when asked (an intended early or repeat dose). */
+async function giveAnyway(db: Firestore, input: GiveDoseInput) {
+  const result = await runGiveDose(db, input);
+  if (result.status !== 'needsConfirm') return saved(result);
+  return saved(await runGiveDose(db, { ...input, confirm: doseConfirmOf(result.check) }));
+}
 
 before(async () => {
   environment = await initializeTestEnvironment({
@@ -184,7 +193,7 @@ describe('Give dose on the emulator with the real rules', () => {
     // Kim records the next occurrence (an early dose).
     const course = await readCourseNow();
     const next = nextDueOccurrence(course, TZ)!;
-    const two = saved(await runGiveDose(session(people.kim), { ...first, opId: newDoseOpId(), occurrenceKey: next.key, user: actor(people.kim) }));
+    const two = await giveAnyway(session(people.kim), { ...first, opId: newDoseOpId(), occurrenceKey: next.key, user: actor(people.kim) });
     assert.equal((await readCourseNow()).lastDose?.logId, two.logId);
     // Sam undoes his (older) dose: Kim's stays the latest.
     assert.equal(await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: one.logId }), 'saved');
@@ -204,7 +213,7 @@ describe('Give dose on the emulator with the real rules', () => {
     const first = await press(people.sam);
     const one = saved(await runGiveDose(session(people.sam), first));
     const next = nextDueOccurrence(await readCourseNow(), TZ)!;
-    const two = saved(await runGiveDose(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key }));
+    const two = await giveAnyway(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key });
     await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: two.logId });
     assert.equal((await readCourseNow()).lastDose?.logId, one.logId);
   });
@@ -213,9 +222,9 @@ describe('Give dose on the emulator with the real rules', () => {
     const first = await press(people.sam);
     const one = saved(await runGiveDose(session(people.sam), first));
     let next = nextDueOccurrence(await readCourseNow(), TZ)!;
-    const two = saved(await runGiveDose(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key }));
+    const two = await giveAnyway(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key });
     next = nextDueOccurrence(await readCourseNow(), TZ)!;
-    const three = saved(await runGiveDose(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key }));
+    const three = await giveAnyway(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key });
     await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: three.logId });
     assert.equal((await readCourseNow()).lastDose?.logId, two.logId, 'the previous dose');
     // No previous pointer left: the latest surviving dose is found (its server time kept exactly).
@@ -269,6 +278,44 @@ describe('Give dose on the emulator with the real rules', () => {
     assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, input.opId);
     const confirmed = saved(await runGiveDose(session(people.sam), { ...samPress, confirm: asked.status === 'needsConfirm' ? doseConfirmOf(asked.check) : null }));
     assert.equal((await readCourseNow()).lastDose?.logId, confirmed.logId);
+  });
+
+  test('Undo derives the latest from the surviving doses (D): 8:00, 12:00 early, a confirmed 10:00, remove 12:00 → 10:00', async () => {
+    const first = await press(people.sam);
+    const eight = saved(await runGiveDose(session(people.sam), first));
+    const course = await readCourseNow();
+    const [ten, noon] = occurrencesAfter({ schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay }, eight.occurrence!.at, TZ, 2);
+    const twelve = await giveAnyway(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: noon.key });
+    // The in-between dose is covered by the early one: recorded after "already given?".
+    const between = await giveAnyway(session(people.kim), { ...first, opId: newDoseOpId(), occurrenceKey: ten.key, user: actor(people.kim) });
+    let state = await readCourseNow();
+    assert.deepEqual([state.lastDose?.logId, state.prevDose?.logId], [twelve.logId, between.logId], 'the stored pointer is the derived state');
+    await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: twelve.logId });
+    state = await readCourseNow();
+    assert.equal(state.lastDose?.logId, between.logId, 'the in-between dose, not the first one');
+    assert.equal(state.prevDose?.logId, eight.logId);
+    assert.ok(nextDueOccurrence(state, TZ)!.at > ten.at, 'the in-between time is not due again');
+  });
+
+  test('a schedule edit counts an offline-synced dose (C): coverage saved as the preview shows', async () => {
+    const course = await readCourseNow();
+    const given = occurrencesAfter({ schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay }, Date.now() - 3 * 3_600_000, TZ, 1)[0];
+    // A dose recorded offline that synced: in the logs, not in the pointer.
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'households', household, 'pets', 'rex', 'medication-logs', 'offline-dose'), {
+        courseId: 'apoquel', occurrence: given.key, occurrenceAt: Timestamp.fromMillis(given.at), date: Timestamp.fromMillis(given.at),
+        loggedAt: Timestamp.now(), medication: 'Apoquel', dosage: '1 tablet', notes: '', loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: 'offline', clockSource: 'device',
+      });
+    });
+    assert.equal((await readCourseNow()).lastDose, null);
+    const fields = { name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours' as const, everyHours: 2, firstTime: '00:30' }, startDay: addDays(today(), -2), endDay: null };
+    // The preview: what a reader sees (the pointer with the offline doses).
+    const preview = coverageAfterEdit(withOfflineDoses(await readCourseNow(), await doses()), fields, TZ);
+    assert.equal(preview, given.at + 30 * 60_000);
+    await runSaveCourse(session(people.owner), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, fields, user: actor(people.owner), timeZone: TZ });
+    const edited = await readCourseNow();
+    assert.equal(edited.coveredUntil, preview, 'the saved coverage matches the preview');
+    assert.ok(nextDueOccurrence(withOfflineDoses(edited, await doses()), TZ)!.at > preview!, 'the replaced time is not due again');
   });
 
   test('Finish ends the course (no dose, no next due), history kept; its Undo resumes it', async () => {

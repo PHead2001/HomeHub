@@ -17,6 +17,9 @@ import {
   COURSE_DOSAGE_MAX,
   courseDue,
   coveredThrough,
+  deriveCourseState,
+  latestOccurrencesUpTo,
+  periodMs,
   takenLegacyKeys,
   COURSE_NAME_MAX,
   MAX_DOSE_TIMES,
@@ -27,7 +30,6 @@ import {
   isCalendarDay,
   isDoseTime,
   legacyMedicationKey,
-  nextDueOccurrence,
   occurrenceAtOrBefore,
   occurrenceByKey,
   occurrencesAfter,
@@ -157,10 +159,8 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
   const window = courseWindow(course);
   const at = now.getTime();
   const covered = (occurrence: Occurrence): DoseChoice => ({ ...occurrence, covered: isCovered(course, occurrence) });
-  const next = nextDueOccurrence(course, zone);
-  const missed = next && next.at <= at
-    ? occurrencesAfter(window, coveredThrough(course), zone, 400).filter((occurrence) => occurrence.at <= at).slice(-3)
-    : [];
+  // The most recent missed doses, found back from now (never the oldest ones after an old dose).
+  const missed = latestOccurrencesUpTo(window, coveredThrough(course), at, zone, 3);
   const latestPassed = occurrenceAtOrBefore(window, at, zone);
   const upcoming = occurrencesAfter(window, Math.max(at, coveredThrough(course) ?? -Infinity), zone, 1)[0] ?? null;
   const byKey = new Map<string, DoseChoice>();
@@ -237,9 +237,22 @@ export type DoseCheck = {
   /** The latest dose (it covers this occurrence when `reason` is `given`). */
   last: DosePointer | null;
   occurrence: Occurrence;
-  /** `given`: this occurrence (or a later one) was given; `moved`: a schedule edit counted it as given. */
-  reason: 'given' | 'moved';
+  /**
+   * `given`: this occurrence (or a later one) was given; `moved`: a schedule
+   * edit counted it as given; `recent`: a dose was given moments ago (within
+   * `doseRepeatWindowMs`), so this one may be an accidental repeat even for a
+   * later scheduled time (an early dose).
+   */
+  reason: 'given' | 'moved' | 'recent';
 };
+
+/**
+ * How soon after the latest dose another one asks first: half the dose
+ * interval, at most 12 hours (twice daily: 6 h; every 2 hours: 1 h; monthly: 12 h).
+ */
+export function doseRepeatWindowMs(schedule: CourseSchedule): number {
+  return Math.min(periodMs(schedule) / 2, 12 * 3_600_000);
+}
 
 export type DosePlan =
   | { kind: 'already' }
@@ -288,17 +301,22 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
   const givenOffline = !givenStored && Boolean(offlineDose) && occurrence.at <= offlineDose!.occurrenceAt;
   const named = givenStored ? last : givenOffline ? offlineDose : null;
   const moved = !named && course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
+  // The latest surviving dose (the derived state: the cache or a later record).
+  const latest = [last, offlineDose].filter((dose): dose is DosePointer => Boolean(dose))
+    .sort((a, b) => b.occurrenceAt - a.occurrenceAt || (b.givenAt ?? 0) - (a.givenAt ?? 0))[0] ?? null;
+  const recent = !named && !moved && latest !== null && latest.givenAt !== null &&
+    now.getTime() - latest.givenAt < doseRepeatWindowMs(course.schedule);
   let repeat: 'none' | 'confirmed' | 'offline' = 'none';
   let confirmOf: string | null = null;
-  if (named || moved) {
+  if (named || moved || recent) {
     const confirm = intent.confirm;
-    const shown = named ?? last;
+    const shown = named ?? (recent ? latest : last);
     if (!confirm || confirm.lastLogId !== (shown?.logId ?? null)) {
-      return { kind: 'needsConfirm', check: { last: shown, occurrence, reason: named ? 'given' : 'moved' }, staleConfirm: Boolean(confirm) };
+      return { kind: 'needsConfirm', check: { last: shown, occurrence, reason: named ? 'given' : moved ? 'moved' : 'recent' }, staleConfirm: Boolean(confirm) };
     }
-    if (named) {
+    if (named || recent) {
       repeat = 'confirmed';
-      confirmOf = named.logId;
+      confirmOf = shown!.logId;
     }
   }
   const after = Math.max(occurrence.at, coveredThrough({ ...course, lastDose: last }) ?? -Infinity);
@@ -323,62 +341,18 @@ export function doseConfirmOf(check: DoseCheck): DoseConfirm {
 /* Undo / delete of a dose                                                    */
 /* ------------------------------------------------------------------------- */
 
-export type DoseLogView = {
-  id: string;
-  courseId: string | null;
-  occurrence: string | null;
-  occurrenceAt: number | null;
-  date: number | null;
-  loggedByUid: string | null;
-  loggedByName: string | null;
-};
-
-export type UndoDosePlan =
-  /** The pointer does not name this log: delete it only. */
-  | { kind: 'delete' }
-  /** It was the latest dose: point at `restore` (the previous one, or the latest surviving one), or nothing. */
-  | { kind: 'repoint'; restore: DosePointer | null }
-  /** It was the remembered previous dose: forget it. */
-  | { kind: 'dropPrev' };
-
-/** A dose log as the pointer that would name it. */
-export function pointerOf(log: DoseLogView): DosePointer | null {
-  if (!log.occurrence || log.occurrenceAt === null) return null;
-  return { logId: log.id, occurrence: log.occurrence, occurrenceAt: log.occurrenceAt, givenAt: log.date, byUid: log.loggedByUid, byName: log.loggedByName };
-}
 
 /**
- * The latest surviving dose of a course among `logs` (the latest occurrence,
- * then the latest given), never `excludeId`.
+ * The course's pointer (`lastDose` / `prevDose`) after a write, derived from
+ * the surviving dose records the writer read plus its own change
+ * (`deriveCourseState`): every online write (give, Undo, delete) stores it, so
+ * the pointer is a cache that always agrees with the records. `write` is false
+ * when the stored pointer already equals it.
  */
-export function latestDoseOf(logs: DoseLogView[], courseId: string, excludeId?: string): DosePointer | null {
-  let best: DoseLogView | null = null;
-  for (const log of logs) {
-    if (log.id === excludeId || log.courseId !== courseId || log.occurrenceAt === null) continue;
-    if (!best || log.occurrenceAt > best.occurrenceAt! || (log.occurrenceAt === best.occurrenceAt && (log.date ?? 0) > (best.date ?? 0))) best = log;
-  }
-  return best ? pointerOf(best) : null;
-}
-
-/**
- * How the course's dose pointer changes when a dose log is removed (Undo or
- * the history's delete). It never overwrites a later dose by someone else:
- * when the pointer names another (newer) log, only a stale `prevDose` naming
- * the removed log is forgotten.
- */
-export function planUndoDose(
-  course: Pick<CourseView, 'id' | 'lastDose' | 'prevDose'> | null,
-  logId: string,
-  prevSurvives: boolean,
-  surviving: DoseLogView[],
-): UndoDosePlan {
-  if (!course) return { kind: 'delete' };
-  if (course.lastDose?.logId === logId) {
-    if (course.prevDose && prevSurvives) return { kind: 'repoint', restore: course.prevDose };
-    return { kind: 'repoint', restore: latestDoseOf(surviving, course.id, logId) };
-  }
-  if (course.prevDose?.logId === logId) return { kind: 'dropPrev' };
-  return { kind: 'delete' };
+export function pointerAfter(course: Pick<CourseView, 'coveredUntil' | 'lastDose' | 'prevDose'>, records: DosePointer[]): { latest: DosePointer | null; prev: DosePointer | null; write: boolean } {
+  const { latest, prev } = deriveCourseState(course, records);
+  const write = (latest?.logId ?? null) !== (course.lastDose?.logId ?? null) || (prev?.logId ?? null) !== (course.prevDose?.logId ?? null);
+  return { latest, prev, write };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -401,6 +375,12 @@ export function doseRepeatReason(check: DoseCheck, now: Date, timeZone?: string 
     return `The schedule was changed after the last dose, so the ${occurrenceLabel(check.occurrence, now, timeZone)} dose counts as given.`;
   }
   const who = byWhom(check.last, viewerUid);
+  if (check.reason === 'recent') {
+    const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
+    const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;
+    const forTime = occurrenceLabel({ day: check.last.occurrence.slice(0, 10), time: check.last.occurrence.slice(11) || null }, now, timeZone);
+    return `${whom} recorded a dose${when} (the ${forTime} dose). The ${occurrenceLabel(check.occurrence, now, timeZone)} dose would be early.`;
+  }
   const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
   const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;
   const same = check.last.occurrence === check.occurrence.key;
@@ -415,6 +395,29 @@ export const DOSE_UNDO_COPY = {
   title: 'Dose record removed',
   description: 'Only the record is removed. If the dose was given, it still counts.',
 } as const;
+
+export type DoseLinkDecision =
+  | { kind: 'idle' }
+  /** The courses are loading or their read failed (the listener retries): keep the link. */
+  | { kind: 'wait' }
+  | { kind: 'open'; courseId: string }
+  | { kind: 'inactive' }
+  /** The link was handled and has left the URL: the same reminder tapped again opens again. */
+  | { kind: 'reset' };
+
+/**
+ * What a reminder's `?dose=<courseId>` link does on the Medication tab: it is
+ * consumed (Give dose opens, or "no longer active") only after a successful
+ * read of the pet's courses, never while they load or while their listener is
+ * failing, so a link is not dropped before the read recovers.
+ */
+export function doseLinkDecision(input: { requested: string | null; seen: string | null; loading: boolean; error: unknown; courses: Pick<CourseView, 'id' | 'status'>[] }): DoseLinkDecision {
+  if (!input.requested) return input.seen ? { kind: 'reset' } : { kind: 'idle' };
+  if (input.requested === input.seen) return { kind: 'idle' };
+  if (input.loading || input.error) return { kind: 'wait' };
+  const course = input.courses.find((entry) => entry.id === input.requested && entry.status === 'active');
+  return course ? { kind: 'open', courseId: course.id } : { kind: 'inactive' };
+}
 
 /** The pet's Undo toast group for one course's doses. */
 export function petDoseToastGroup(petId: string, courseId: string): string {

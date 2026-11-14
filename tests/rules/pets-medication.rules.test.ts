@@ -240,11 +240,29 @@ describe('dose logs', () => {
     await assertSucceeds(batch.commit());
   });
 
-  test('the pointer can only name a real dose of this course', async () => {
-    await seed((db) => setDoc(logRef(db, 'someone-elses'), { ...doseLog(people.owner, occurrenceAt(-2)), date: Timestamp.now(), loggedAt: Timestamp.now() }));
-    // Planting a pointer at an existing log (not created in this commit) is not a dose.
-    await assertFails(updateDoc(courseRef(session(people.member)), { lastDose: pointerOf(people.member, 'someone-elses', occurrenceAt(-2)) }));
-    await assertFails(updateDoc(courseRef(session(people.member)), { lastDose: null }));
+  test('the pointer is a cache of the surviving doses: only real doses of the course, never back while the latest survives', async () => {
+    const early = occurrenceAt(-3);
+    const late = occurrenceAt(-1);
+    const stamp = Timestamp.fromMillis(Date.now() - 60_000);
+    const stored = (id: string, at: Timestamp) => ({ ...doseLog(people.owner, at), date: stamp, loggedAt: stamp });
+    const exact = (id: string, at: Timestamp) => ({ logId: id, occurrence: occurrenceKey(at), occurrenceAt: at, givenAt: stamp, byUid: people.owner.uid, byName: 'Name' });
+    await seed(async (db) => {
+      await setDoc(logRef(db, 'dose-early'), stored('dose-early', early));
+      await setDoc(logRef(db, 'dose-late'), { ...stored('dose-late', late), repeat: 'offline', clockSource: 'device' });
+      await updateDoc(courseRef(db), { lastDose: exact('dose-early', early) });
+    });
+    const db = session(people.member);
+    // A pointer that does not match its log's fields (a planted or made-up dose) is refused.
+    await assertFails(updateDoc(courseRef(db), { lastDose: { ...exact('dose-late', late), givenAt: Timestamp.now() } }));
+    await assertFails(updateDoc(courseRef(db), { lastDose: exact('no-such-dose', late) }));
+    // Clearing it while the dose it names survives is refused.
+    await assertFails(updateDoc(courseRef(db), { lastDose: null }));
+    // Reconciling to a later surviving dose (an offline-synced one), with the previous one: accepted.
+    await assertSucceeds(updateDoc(courseRef(db), { lastDose: exact('dose-late', late), prevDose: exact('dose-early', early) }));
+    // Moving back to the earlier dose while the later one survives: refused.
+    await assertFails(updateDoc(courseRef(db), { lastDose: exact('dose-early', early), prevDose: null }));
+    // A guest may not write it.
+    await assertFails(updateDoc(courseRef(session(people.guest)), { prevDose: null }));
   });
 
   test('offline doses: the device clock within the skew allowance, no confirmation, no pointer write', async () => {
