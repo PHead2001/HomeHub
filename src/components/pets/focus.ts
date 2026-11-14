@@ -11,7 +11,10 @@ export function focusPetActions(petId: string | null | undefined): void {
   if (typeof document === 'undefined') return;
   const escaped = petId && typeof CSS !== 'undefined' ? CSS.escape(petId) : petId;
   const actions = escaped ? document.querySelector<HTMLElement>(`[data-pet-actions="${escaped}"]`) : null;
-  (actions ?? document.querySelector<HTMLElement>('[data-pets-heading]'))?.focus();
+  // The heading shown at this width (the pet page has a phone and a wide one, PE-13c).
+  const headings = [...document.querySelectorAll<HTMLElement>('[data-pets-heading]')];
+  const heading = headings.find((element) => element.getClientRects().length > 0) ?? headings[0];
+  (actions ?? heading)?.focus();
 }
 
 /** For a dialog's `onCloseAutoFocus`: stop Radix's own return and focus the pet's actions instead. */

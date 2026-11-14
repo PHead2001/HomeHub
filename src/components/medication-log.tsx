@@ -42,7 +42,7 @@ import { MedicationChip, MedicationChips } from './pets/medication-chip';
 import { CourseFormDialog, type CourseFormMode } from './pets/course-form-dialog';
 import { GiveDoseDialog, medicationRefusal, useFinishCourse } from './pets/give-dose-dialog';
 import { LegacyMedicationCard } from './pets/legacy-medication-card';
-import { useMedicationState } from './pets/medication-api';
+import { useSharedPetCare } from './pets/care-store';
 import { usePetLogs } from './pets/pet-log-api';
 import { useNow } from './pets/use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
@@ -78,7 +78,8 @@ export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId 
   const canOneOff = mayMedication('pets.dose.oneOff', permissions);
   const canDeleteAny = Boolean(permissions['pets.deleteLogs']);
   const { logs, loading, error, failure } = usePetLogs<PetMedicationLog>(householdId, petId, 'medication-logs', 100);
-  const state = useMedicationState(householdId, petId, now, timeZone);
+  // Courses and countdowns from the household's care store (PE-21a): shared with the summary card.
+  const state = useSharedPetCare(householdId, petId).medications;
   const finish = useFinishCourse(petId);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   // The course Give dose is open for, by id, so the dialog always sees the live course.

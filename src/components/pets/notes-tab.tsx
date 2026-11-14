@@ -36,7 +36,8 @@ import { NoteChangedError } from '@/lib/pets/record-transaction';
 import { LoggedBy } from './logged-by';
 import { LoadMoreHistory } from './load-more';
 import { useHistoryWindow } from './pet-log-api';
-import { createNote, deleteNote, editNote, setNotePinned, useBehaviourEntries, usePinnedNotes } from './records-api';
+import { createNote, deleteNote, editNote, setNotePinned, useBehaviourEntries } from './records-api';
+import { useSharedPetCare } from './care-store';
 import { useNow } from './use-now';
 
 const NO_TAG = 'none';
@@ -75,7 +76,8 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
   const householdId = currentUser?.householdId ?? null;
   const actor = { uid: currentUser?.uid, permissions };
   const canAdd = mayPet('pets.note.add', permissions);
-  const pinned = usePinnedNotes(householdId, petId);
+  // The pinned list is the care store's (PE-21a), shared with the headline line.
+  const pinned = useSharedPetCare(householdId, petId).pinned;
   const history = useHistoryWindow(petId);
   const entries = useBehaviourEntries(householdId, petId, history.max);
 

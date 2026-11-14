@@ -4,7 +4,9 @@ import * as React from 'react';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { HOLD_IDLE, holdIsDeliberate, holdJustCompleted, holdReducer, type HoldEvent, type HoldState } from '@/lib/pets/hold';
 import { cn } from '@/lib/utils';
+import { steppedHoldProgress } from '@/lib/pets/board';
 import { PawBurst, type QuickFeedController } from './quick-feed-button';
+import { markHoldCaptionDone } from './use-pets-layout';
 
 const R = 26;
 const CIRCUMFERENCE = 2 * Math.PI * R;
@@ -17,11 +19,11 @@ const inside = (rect: DOMRect, x: number, y: number) => x >= rect.left && x <= r
  * button). Releasing early, pointer cancel (a scroll), leaving the photo and
  * Escape all cancel without logging. Works with mouse, pen and touch.
  *
- * The card's stretched name link covers the photo, so the handlers go on the
- * card and only presses inside the photo's box that land on the link or the
- * photo count; a short tap (under 150 ms) still opens the pet. After a hold
- * attempt (completed, released or cancelled) the following click is swallowed
- * so the card does not navigate.
+ * The handlers go on the photo's frame (`HoldPhoto` in living-pet-card.tsx),
+ * and only presses inside the photo's box count. With a mouse the photo is a
+ * link and a short click (under 150 ms) still opens the pet; on touch it is not
+ * a link (PE-11a). After a hold attempt (completed, released or cancelled) the
+ * following click is swallowed so nothing navigates.
  */
 export function useHoldToFeed(feed: QuickFeedController, photoRef: React.RefObject<HTMLElement | null>) {
   const [hold, setHold] = React.useState<HoldState>(HOLD_IDLE);
@@ -41,6 +43,8 @@ export function useHoldToFeed(feed: QuickFeedController, photoRef: React.RefObje
     if (holdJustCompleted(previous, next)) {
       swallowClick.current = true;
       void feedRef.current.feed('hold');
+      // The one-time "Hold the photo to feed" caption is done in this browser (PE-12a, D-P17).
+      markHoldCaptionDone();
     }
   }, []);
 
@@ -128,7 +132,8 @@ export function useHoldToFeed(feed: QuickFeedController, photoRef: React.RefObje
  * The fill ring over the photo while holding (progress over `HOLD_MS`, 800 ms) and the paw
  * burst when the hold logs a feeding. Decorative: the Feed button's description
  * explains the gesture and the toast announces the result. Under reduced motion
- * the ring does not animate: it shows a still "keep holding" ring instead.
+ * the ring does not sweep: it fills in three discrete steps (PE-20a), so progress
+ * is still visible without continuous motion.
  */
 export function HoldToFeedOverlay({ hold, feed }: { hold: HoldState; feed: QuickFeedController }) {
   const reduced = useReducedMotion();
@@ -141,6 +146,7 @@ export function HoldToFeedOverlay({ hold, feed }: { hold: HoldState; feed: Quick
           className="relative flex h-16 w-16 items-center justify-center rounded-full bg-background/80 shadow-overlay"
           data-testid="hold-to-feed-ring"
           data-progress={Math.round(progress * 100)}
+          data-shown-progress={Math.round((reduced ? steppedHoldProgress(progress) : progress) * 100)}
         >
           <svg viewBox="0 0 64 64" className="absolute inset-0 h-full w-full -rotate-90">
             <circle cx="32" cy="32" r={R} fill="none" strokeWidth="5" className="stroke-muted" />
@@ -152,7 +158,7 @@ export function HoldToFeedOverlay({ hold, feed }: { hold: HoldState; feed: Quick
               strokeWidth="5"
               strokeLinecap="round"
               strokeDasharray={CIRCUMFERENCE}
-              strokeDashoffset={reduced && hold.phase === 'holding' ? CIRCUMFERENCE : CIRCUMFERENCE * (1 - progress)}
+              strokeDashoffset={CIRCUMFERENCE * (1 - (reduced ? steppedHoldProgress(progress) : progress))}
               className={hold.phase === 'complete' ? 'stroke-success' : 'stroke-primary'}
             />
           </svg>

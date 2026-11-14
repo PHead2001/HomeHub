@@ -397,7 +397,13 @@ describe('pets components use tokens only', () => {
   it('every live-log consumer handles load errors separately from empty results', () => {
     // A failed subscription returns { logs: [], error }; rendering it as an empty
     // history would read as "not fed" or "nothing due".
-    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/pet-care-summary.tsx', 'src/components/pets/medication-api.ts'];
+    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/medication-api.ts'];
+    // The household care store (P4, PE-21a) runs the hooks for every card and publishes their
+    // state unchanged; its readers handle the errors.
+    const store = readFileSync(resolve(process.cwd(), 'src/components/pets/care-store.tsx'), 'utf8');
+    assert.match(store, /store\.publish\(storeKey, \{ feedings, medications, pinned \}\)/);
+    const summary = readFileSync(resolve(process.cwd(), 'src/components/pets/pet-care-summary.tsx'), 'utf8');
+    assert.ok(summary.includes('feedings.error') && summary.includes('medications.error'), 'the card reads both errors');
     const hookCall = /const\s+(\w+|\{[^}]*\})\s*=\s*(?:usePetLogs|useMedicationCountdownLogs|useMedicationCourses|useMedicationState|useOfflineDoses)\W/g;
     for (const file of files) {
       const text = readFileSync(resolve(process.cwd(), file), 'utf8');
@@ -414,7 +420,7 @@ describe('pets components use tokens only', () => {
       .filter((file) => /\.tsx?$/.test(file))
       .filter((file) => /(?:usePetLogs|useMedicationCountdownLogs|useMedicationCourses|useMedicationState|useOfflineDoses)\(/.test(readFileSync(resolve(process.cwd(), 'src/components', file), 'utf8')))
       .map((file) => `src/components/${file.split(String.fromCharCode(92)).join('/')}`)
-      .filter((file) => !files.includes(file) && !file.endsWith('pet-log-api.ts'));
+      .filter((file) => !files.includes(file) && !file.endsWith('pet-log-api.ts') && !file.endsWith('care-store.tsx'));
     assert.deepEqual(offenders, [], 'new consumers must be added to this check');
   });
 

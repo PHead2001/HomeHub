@@ -22,12 +22,57 @@ function PetCardSkeleton() {
   );
 }
 
-/** The card grid placeholder: the same cards from the route skeleton to the list (PE-21g). */
+/** The board card's placeholder: band, 80 px avatar, name and status, Feed (PE-9). */
+function BoardCardSkeleton() {
+  return (
+    <div className="flex flex-col overflow-hidden rounded-lg border bg-card shadow-raised" aria-hidden>
+      <Skeleton className="h-11 w-full rounded-none" />
+      <div className="flex flex-1 gap-4 p-4">
+        <Skeleton className="h-20 w-20 rounded-xl" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-5 w-1/2" />
+          <Skeleton className="h-7 w-3/4" />
+        </div>
+      </div>
+      <Skeleton className="mx-4 mb-4 h-11" />
+    </div>
+  );
+}
+
+/** The phone row's placeholder: 64 px avatar, name and status, Feed (PE-13a). */
+function RowCardSkeleton() {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border bg-card p-3 shadow-raised" aria-hidden>
+      <Skeleton className="h-16 w-16 rounded-full" />
+      <div className="flex-1 space-y-2">
+        <Skeleton className="h-5 w-1/2" />
+        <Skeleton className="h-4 w-3/4" />
+      </div>
+      <Skeleton className="h-12 w-24" />
+    </div>
+  );
+}
+
+/**
+ * The card placeholder: the same cards from the route skeleton to the list
+ * (PE-21g), in the shape of the view this screen gets, chosen by CSS (so the
+ * server-rendered route skeleton already has it): phone rows under 640 px, the
+ * board on wide landscape screens, the grid otherwise.
+ */
 export function PetsGridSkeleton({ count = 4 }: { count?: number }) {
   return (
-    <div className={PETS_GRID} aria-hidden>
-      {Array.from({ length: count }, (_, index) => <PetCardSkeleton key={index} />)}
-    </div>
+    <>
+      <div className="flex flex-col gap-3 sm:hidden" aria-hidden data-testid="pets-skeleton-rows">
+        {Array.from({ length: count }, (_, index) => <RowCardSkeleton key={index} />)}
+      </div>
+      {/* `[@media(min-width:1024px)_and_(orientation:landscape)]` is the board's `BOARD_QUERY` (src/lib/pets/board.ts), written out for Tailwind. */}
+      <div className={`${PETS_GRID} max-sm:hidden [@media(min-width:1024px)_and_(orientation:landscape)]:hidden`} aria-hidden data-testid="pets-skeleton-grid">
+        {Array.from({ length: count }, (_, index) => <PetCardSkeleton key={index} />)}
+      </div>
+      <div className="hidden grid-cols-2 gap-4 [@media(min-width:1024px)_and_(orientation:landscape)]:grid" aria-hidden data-testid="pets-skeleton-board">
+        {Array.from({ length: count }, (_, index) => <BoardCardSkeleton key={index} />)}
+      </div>
+    </>
   );
 }
 

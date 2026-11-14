@@ -1,10 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { collection, onSnapshot, type QuerySnapshot } from 'firebase/firestore';
-import { PlusCircle } from 'lucide-react';
+import { Hand, PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
@@ -28,8 +28,56 @@ import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
 import type { PetPhotoChoice } from './pets/pet-photo-draft';
 import { DuplicatePetNameError, otherPetNames } from '@/lib/pets/profile';
+import { boardGrid, showHoldCaption } from '@/lib/pets/board';
+import { useHoldCaptionDone, usePetsLayout, usePointerFine } from './pets/use-pets-layout';
 
 const GRID = PETS_GRID;
+/** Space kept under the board (the page's bottom padding), so the page itself never scrolls. */
+const BOARD_BOTTOM_PX = 32;
+
+/**
+ * The status-first board (PE-9, D-P1, D-P14): it fills the screen from its top to
+ * the bottom of the viewport. One to three pets share one row (one or two grow
+ * to use it, PE-9d), four are two by two, five or six three by two, so every
+ * status is on screen without scrolling (PE-9e); past six the board keeps
+ * the six-up row height and scrolls inside itself, never clipping a card.
+ */
+function PetsBoard({ count, children }: { count: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  // Measured after every render (the attention notice or the hold caption above it may come and go) and on resize.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const element = ref.current;
+      if (!element) return;
+      const top = element.getBoundingClientRect().top + window.scrollY;
+      const next = Math.max(280, Math.floor(window.innerHeight - top - BOARD_BOTTOM_PX));
+      setHeight((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  });
+  const grid = boardGrid(count);
+  const gap = 16;
+  const rowHeight = height ? Math.floor((height - gap) / 2) : null;
+  return (
+    <div
+      ref={ref}
+      className="grid gap-4"
+      data-testid="pets-board"
+      data-board-scroll={grid.scroll ? 'true' : 'false'}
+      style={{
+        gridTemplateColumns: `repeat(${grid.columns}, minmax(0, 1fr))`,
+        gridTemplateRows: grid.scroll && rowHeight ? `repeat(${grid.rows}, ${rowHeight}px)` : `repeat(${grid.rows}, minmax(0, 1fr))`,
+        height: height ?? undefined,
+        overflowY: grid.scroll ? 'auto' : 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 /**
  * Needs-attention strip (PE-26): pets with a meal past its slot time (due, or
@@ -217,15 +265,38 @@ export function PetsClient() {
     }
   };
 
+  // PE-13b: Add Pet sits in the header row on every screen, never a full-width button above the cards.
   const addButton = canEdit ? (
-    <Button onClick={() => setAddOpen(true)} className="w-full sm:w-auto">
+    <Button onClick={() => setAddOpen(true)} className="w-auto">
       <PlusCircle className="mr-2" /> Add Pet
     </Button>
   ) : null;
 
+  // The view for this screen (D-P1, PE-13a) and the one-time hold caption (PE-12a, D-P17).
+  const layout = usePetsLayout();
+  const fine = usePointerFine();
+  const [captionDone, dismissCaption] = useHoldCaptionDone();
+  const captionShown = showHoldCaption({ coarse: !fine, canFeed, done: captionDone, hasPets: pets.length > 0 });
+
+  const card = (pet: PetProfile, index: number) => (
+    <LivingPetCard
+      pet={pet}
+      householdId={householdId!}
+      canEdit={canEdit}
+      onEdit={(target) => { menuPet.current = target.id; setPetToEdit(target); }}
+      onDelete={(target) => { menuPet.current = target.id; setPetToDelete(target); }}
+      priority={index === 0}
+      index={index}
+      layout={layout}
+      roomy={layout === 'board' && pets.length <= 2}
+      onAttention={reportAttention}
+    />
+  );
+
   return (
     <div>
-      <PetsPageHeader action={addButton} />
+      {/* The board drops the subtitle (PE-9f): the space goes to the pets. */}
+      <PetsPageHeader action={addButton} subtitle={layout !== 'board'} />
       {ready && snapshot.loaded && snapshot.failed && (
         <p role="status" className="-mt-4 mb-4 text-sm text-muted-foreground" data-testid="pets-list-stale">
           {staleNoticeText(snapshot.failed === 'unauthorized' ? 'access-changed' : 'reconnecting', 'the pet list')}
@@ -253,23 +324,30 @@ export function PetsClient() {
         </div>
       ) : pets.length > 0 && householdId ? (
         <>
-        <AttentionStrip pets={pets} attention={attentionByPet} />
-        <Stagger className={GRID}>
-          {pets.map((pet, index) => (
-            <StaggerItem key={pet.id} className="min-w-0">
-              <LivingPetCard
-                pet={pet}
-                householdId={householdId}
-                canEdit={canEdit}
-                onEdit={(target) => { menuPet.current = target.id; setPetToEdit(target); }}
-                onDelete={(target) => { menuPet.current = target.id; setPetToDelete(target); }}
-                priority={index === 0}
-                index={index}
-                onAttention={reportAttention}
-              />
-            </StaggerItem>
-          ))}
-        </Stagger>
+        {captionShown && (
+          <p className="mb-3 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm text-foreground" data-testid="hold-caption">
+            <Hand aria-hidden className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1">Hold the photo to feed</span>
+            <Button type="button" variant="ghost" size="sm" onClick={dismissCaption} aria-label="Dismiss the tip: hold the photo to feed">
+              Got it
+            </Button>
+          </p>
+        )}
+        {/* On the board each card's band already says what needs attention. */}
+        {layout !== 'board' && <AttentionStrip pets={pets} attention={attentionByPet} />}
+        {layout === 'board' ? (
+          <PetsBoard count={pets.length}>
+            {pets.map((pet, index) => <div key={pet.id} className="min-h-0 min-w-0">{card(pet, index)}</div>)}
+          </PetsBoard>
+        ) : layout === 'rows' ? (
+          <Stagger className="flex flex-col gap-3" data-testid="pets-rows">
+            {pets.map((pet, index) => <StaggerItem key={pet.id} className="min-w-0">{card(pet, index)}</StaggerItem>)}
+          </Stagger>
+        ) : (
+          <Stagger className={GRID}>
+            {pets.map((pet, index) => <StaggerItem key={pet.id} className="min-w-0">{card(pet, index)}</StaggerItem>)}
+          </Stagger>
+        )}
         </>
       ) : loadFailed === 'unauthorized' ? (
         <EmptyState

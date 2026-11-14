@@ -12,6 +12,7 @@ import { feedTarget, type MealStatus } from '@/lib/pets/meal-plan';
 import type { FeedPetResult } from '@/lib/pets/feed-operation';
 import type { FoodType } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
+import { usePointerFine } from './use-pets-layout';
 import { FeedAgainDialog, useFeedAction, type FeedAction, type FeedSuccess } from './use-feed-action';
 import styles from './pets.module.css';
 
@@ -246,6 +247,8 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
   className?: string;
   size?: ButtonProps['size'];
   variant?: ButtonProps['variant'];
+  /** A short "Feed" label (phone rows, PE-13a); the accessible name keeps the portion. */
+  compact?: boolean;
 };
 
 /**
@@ -259,15 +262,15 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
  * nothing on a pet was tapped there. The full form stays on the pet page behind
  * "Log with details".
  */
-export function QuickFeedButton({ controller, describedBy, className, size, variant = 'default', ...options }: QuickFeedButtonProps) {
+export function QuickFeedButton({ controller, describedBy, className, size, variant = 'default', compact, ...options }: QuickFeedButtonProps) {
   const own = useQuickFeed(options);
   const quick = controller ?? own;
+  // The keyboard hint ("Log a feeding from anywhere  F") only with a mouse or trackpad (PE-12d, as HP-19a).
+  const fine = usePointerFine();
 
   if (!quick.allowed) return null;
 
-  return (
-    <span className={cn('relative inline-flex', className)}>
-      <ShortcutHint shortcut="log-feeding" label="Log a feeding from anywhere">
+  const button = (
       <Button
         data-feed-button={options.petId}
         type="button"
@@ -280,9 +283,13 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
         aria-describedby={describedBy}
       >
         {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
-        <span className="min-w-0 truncate">{quick.label === quick.portion ? `Feed · ${quick.portion}` : `Feed ${quick.label}`}</span>
+        <span className="min-w-0 truncate">{compact ? 'Feed' : quick.label === quick.portion ? `Feed · ${quick.portion}` : `Feed ${quick.label}`}</span>
       </Button>
-      </ShortcutHint>
+  );
+
+  return (
+    <span className={cn('relative inline-flex', className)}>
+      {fine ? <ShortcutHint shortcut="log-feeding" label="Log a feeding from anywhere">{button}</ShortcutHint> : button}
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}
       <FeedAgainDialog action={quick.action} petName={options.petName} returnFocus={quick.returnFocus} />
     </span>
