@@ -128,8 +128,8 @@ describe('policy table', () => {
     assert.equal(isDeviceCapability(undefined), false);
   });
 
-  it('UNDO_PROVEN is empty until the 10.4 proof lands (F4)', () => {
-    assert.equal(UNDO_PROVEN.size, 0);
+  it('UNDO_PROVEN holds exactly the chore capabilities whose 10.4 proof is recorded (F4a); Pets still needs its own', () => {
+    assert.deepEqual([...UNDO_PROVEN].sort(), ['chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo']);
   });
 
   it('opIds are required for face and PIN capabilities only', () => {

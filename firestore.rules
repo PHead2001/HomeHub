@@ -1525,7 +1525,9 @@ service cloud.firestore {
           choreDeviceAttributionKept() &&
           choreClientCompletionUnattributed() &&
           (
-            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks', 'completedAtServer']) &&
+            // A reopen by a chores.complete holder may also remove the device attribution of
+            // the completion it clears (choreDeviceAttributionKept allows removal only then).
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt', 'completedSubTasks', 'completedAtServer', 'deviceAttribution']) &&
               hasHouseholdPermission(householdId, 'chores.complete')) ||
             hasHouseholdPermission(householdId, 'chores.edit')
           ) &&

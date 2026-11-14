@@ -9,7 +9,6 @@ import {
   dropNotice,
   enqueue,
   neverSent,
-  planUndo,
   queueAllowed,
   removeIfNeverSent,
   retryDelay,
@@ -23,10 +22,12 @@ import { memoryStore, withQueueLock } from '../../src/lib/devices/device-store';
 import {
   expiredJournalEntries,
   journalEntry,
-  journalRemainingMs,
-  markJournal,
+  journalStep,
   pruneJournal,
   restorableUndos,
+  stepJournal,
+  undoOffer,
+  undoRoute,
   type UndoJournalEntry,
 } from '../../src/lib/devices/undo-journal';
 import type { DeviceCapability } from '../../src/lib/devices/action-policy';
@@ -255,11 +256,13 @@ describe('syncQueue (11.3)', () => {
 });
 
 describe('Undo of queued and live actions (10.3, R1)', () => {
+  const journal = (queued: boolean, at = T0) => journalEntry({ opId: randomUUID(), ...SESSION, capability: 'pets.feed', actorUid: 'mia', label: 'Fed Maple', at, queued });
+
   it('a never-sent entry is removed locally, together with its Undo', async () => {
     const store = memoryStore<QueuedDeviceAction>();
     const a = entry();
     await enqueue(store, a, noLock);
-    assert.deepEqual(planUndo({ queued: a, originalViaQueue: true, sentAt: null, online: false, now: T0 + 60_000 }), { kind: 'remove-locally' });
+    assert.equal(undoRoute(journal(true), { now: T0 + 5_000, online: false, undoCanWait: true }), 'remove-locally');
     assert.equal(await removeIfNeverSent(store, a.opId, noLock), true);
     assert.deepEqual(await store.all(), []);
   });
@@ -270,18 +273,18 @@ describe('Undo of queued and live actions (10.3, R1)', () => {
     await store.put(sentOnce);
     assert.equal(await removeIfNeverSent(store, sentOnce.opId, noLock), false);
     assert.equal((await store.all()).length, 1);
-    assert.deepEqual(planUndo({ queued: sentOnce, originalViaQueue: true, sentAt: null, online: true, now: T0 + 3_600_000 }), { kind: 'send', originalQueued: true });
-    assert.deepEqual(planUndo({ queued: sentOnce, originalViaQueue: true, sentAt: null, online: false, now: T0 }), { kind: 'queue', originalQueued: true });
-    const inflight = withSendFields(entry(), { attempts: 1, sendState: 'inflight' });
-    assert.equal(planUndo({ queued: inflight, originalViaQueue: true, sentAt: null, online: true, now: T0 }).kind, 'send');
+    const sent = journalStep(journal(true), { type: 'sync-retry', at: T0 + 1_000 });
+    assert.equal(sent.state, 'queued-sent');
+    assert.equal(undoRoute(sent, { now: T0 + 2_000, online: true, undoCanWait: true }), 'send');
+    assert.equal(undoRoute(sent, { now: T0 + 2_000, online: false, undoCanWait: true }), 'queue-undo');
+    assert.equal(undoRoute(sent, { now: T0 + 2_000, online: false, undoCanWait: false }), 'needs-connection');
   });
 
-  it('R1: a live action\'s Undo is never extended by the device clock', () => {
-    assert.deepEqual(planUndo({ queued: undefined, originalViaQueue: false, sentAt: T0, online: true, now: T0 + 9_000 }), { kind: 'send', originalQueued: false });
-    assert.deepEqual(planUndo({ queued: undefined, originalViaQueue: false, sentAt: T0, online: false, now: T0 + 9_000 }), { kind: 'queue', originalQueued: false });
-    assert.deepEqual(planUndo({ queued: undefined, originalViaQueue: false, sentAt: T0, online: true, now: T0 + 10_001 }), { kind: 'refuse', code: 'undo_expired' });
-    // A queued original that already synced: the server bounds it against its stored appliedAt.
-    assert.deepEqual(planUndo({ queued: undefined, originalViaQueue: true, sentAt: T0, online: true, now: T0 + 60_000 }), { kind: 'send', originalQueued: true });
+  it("R1: a live action's Undo is never extended by the device clock", () => {
+    const applied = journalStep(journal(false), { type: 'answered', at: T0, undoable: true });
+    assert.equal(undoRoute(applied, { now: T0 + 9_000, online: true, undoCanWait: true }), 'send');
+    assert.equal(undoRoute(applied, { now: T0 + 9_000, online: false, undoCanWait: true }), 'queue-undo');
+    assert.equal(undoRoute(applied, { now: T0 + 10_001, online: true, undoCanWait: true }), 'none');
   });
 
   it('an Undo intent records its original and whether that was queued', () => {
@@ -293,41 +296,43 @@ describe('Undo of queued and live actions (10.3, R1)', () => {
 });
 
 describe('Undo journal (10.3)', () => {
-  const live = (over: Partial<UndoJournalEntry> = {}): UndoJournalEntry => ({
-    ...journalEntry({ opId: randomUUID(), ...SESSION, capability: 'pets.feed', actorUid: 'mia', label: 'Fed Maple', sentAt: T0, viaQueue: false }),
-    ...over,
-  });
+  const live = (at = T0) => journalEntry({ opId: randomUUID(), ...SESSION, capability: 'pets.feed', actorUid: 'mia', label: 'Fed Maple', at });
+  const applied = (answeredAt: number) => journalStep(live(answeredAt), { type: 'answered', at: answeredAt, undoable: true });
 
-  it('counts the window from the server answer, on the device clock', () => {
-    assert.equal(journalRemainingMs(live(), T0 + 4_000), 6_000, 'unanswered: from the send');
-    assert.equal(journalRemainingMs(live({ respondedAt: T0 + 2_000, state: 'confirmed' }), T0 + 4_000), 8_000);
-    assert.equal(journalRemainingMs(live({ respondedAt: T0, state: 'confirmed' }), T0 + 11_000), 0);
-    assert.equal(journalRemainingMs(live({ viaQueue: true }), T0 + 1), 0, 'a queued action has no window until it syncs');
-    assert.equal(journalRemainingMs(live({ state: 'undone', respondedAt: T0 }), T0 + 1), 0);
+  it('counts the window from the server answer (or the end of a send with no answer), on the device clock', () => {
+    assert.equal(undoOffer(live(), T0 + 4_000).offered, false, 'attempting: the answer is awaited');
+    assert.equal(undoOffer(applied(T0 + 2_000), T0 + 4_000).remainingMs, 8_000);
+    assert.equal(undoOffer(applied(T0), T0 + 11_000).remainingMs, 0);
+    assert.equal(undoOffer(journalStep(live(), { type: 'no-answer', at: T0 + 3_000, queued: false }), T0 + 4_000).remainingMs, 9_000);
+    const queued = journalEntry({ opId: randomUUID(), ...SESSION, capability: 'pets.feed', actorUid: 'mia', label: 'Fed Maple', at: T0, queued: true });
+    assert.equal(undoOffer(queued, T0 + 1_000).remainingMs, 9_000, 'a queued action has its local cancellation window');
+    assert.equal(undoOffer(journalStep(applied(T0), { type: 'undone', at: T0 + 1 }), T0 + 1).offered, false);
   });
 
   it('a reload restores the toasts that still have time, and prunes the rest', async () => {
     const store = memoryStore<UndoJournalEntry>();
-    const fresh = live({ respondedAt: T0 + 5_000, state: 'confirmed' });
-    const old = live({ respondedAt: T0 - 120_000, state: 'confirmed' });
-    const undone = live({ state: 'undone', respondedAt: T0 });
+    const fresh = applied(T0 + 5_000);
+    const old = applied(T0 - 120_000);
+    const undone = journalStep(applied(T0), { type: 'undone', at: T0 });
     for (const e of [fresh, old, undone]) await store.put(e);
     const restored = restorableUndos(await store.all(), T0 + 6_000, SESSION);
     assert.deepEqual(restored.map((r) => [r.entry.opId, r.remainingMs]), [[fresh.opId, 9_000]]);
     assert.deepEqual(expiredJournalEntries(await store.all(), T0 + 6_000, SESSION).map((e) => e.opId).sort(), [old.opId, undone.opId].sort());
     assert.equal(await pruneJournal(store, T0 + 6_000, SESSION), 2);
-    await markJournal(store, fresh.opId, { state: 'undone' });
+    await stepJournal(store, fresh.opId, { type: 'undo-sent', at: T0 + 6_000, queued: false });
+    await stepJournal(store, fresh.opId, { type: 'undone', at: T0 + 6_500 });
     assert.equal((await store.get(fresh.opId))?.state, 'undone');
   });
 });
 
 describe('Undo journal entries belong to one tablet session', () => {
-  it('another device record\'s or household\'s entries are never restored and are pruned', async () => {
+  it("another device record's or household's entries are never restored and are pruned", async () => {
     const store = memoryStore<UndoJournalEntry>();
-    const base = { capability: 'pets.feed' as const, actorUid: 'mia', label: 'Fed Maple', sentAt: T0, viaQueue: false };
-    const mine = { ...journalEntry({ opId: randomUUID(), ...SESSION, ...base }), respondedAt: T0, state: 'confirmed' as const };
-    const otherDevice = { ...journalEntry({ opId: randomUUID(), ...SESSION, deviceId: 'E'.repeat(20), ...base }), respondedAt: T0, state: 'confirmed' as const };
-    const otherHousehold = { ...journalEntry({ opId: randomUUID(), ...SESSION, householdId: 'H2', ...base }), respondedAt: T0, state: 'confirmed' as const };
+    const base = { capability: 'pets.feed' as const, actorUid: 'mia', label: 'Fed Maple', at: T0 };
+    const answered = (e: UndoJournalEntry) => journalStep(e, { type: 'answered', at: T0, undoable: true });
+    const mine = answered(journalEntry({ opId: randomUUID(), ...SESSION, ...base }));
+    const otherDevice = answered(journalEntry({ opId: randomUUID(), ...SESSION, deviceId: 'E'.repeat(20), ...base }));
+    const otherHousehold = answered(journalEntry({ opId: randomUUID(), ...SESSION, householdId: 'H2', ...base }));
     for (const e of [mine, otherDevice, otherHousehold]) await store.put(e);
     assert.deepEqual(restorableUndos(await store.all(), T0 + 1_000, SESSION).map((r) => r.entry.opId), [mine.opId]);
     assert.equal(await pruneJournal(store, T0 + 1_000, SESSION), 2);

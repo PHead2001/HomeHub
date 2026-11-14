@@ -16,7 +16,7 @@ import { deviceOperationContext } from '../../src/lib/server/operation-context';
 import { deviceHeartbeatAction, updateDeviceComfortAction } from '../../src/app/devices/actions';
 import type { DeviceCapability } from '../../src/lib/devices/action-policy';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
-import { clock, house, opId, pairTablet, seedKid, type Tablet } from './device-actor-helpers';
+import { clock, house, opId, pairTablet, seedKid, tokenGeneration, type Tablet } from './device-actor-helpers';
 
 
 /**
@@ -350,8 +350,11 @@ describe('8.4 step 11: queued replays', () => {
   test('stale or future intents, PIN-level intents and non-queueable capabilities are refused', async () => {
     const at = time.advance(61_000);
     const queued = (createdAt: Date, extra: Partial<DeviceActionRequest> = {}) =>
-      authorize(req({ queued: { createdAt: createdAt.toISOString() }, ...extra }), at, { undoProven: proven });
+      authorize(req({ queued: { createdAt: createdAt.toISOString(), generation: tokenGeneration(tablet.idToken) }, ...extra }), at, { undoProven: proven });
     assert.equal((await queued(new Date(at.getTime() - 60_000))).level, 'face');
+    // The entry's credential generation travels with it: missing is invalid, another one is stale.
+    await refused(authorize(req({ queued: { createdAt: new Date(at.getTime() - 60_000).toISOString() } as never }), at, { undoProven: proven }), 'invalid_input');
+    await refused(authorize(req({ queued: { createdAt: new Date(at.getTime() - 60_000).toISOString(), generation: tokenGeneration(tablet.idToken) + 1 } }), at, { undoProven: proven }), 'stale_intent');
     await refused(queued(new Date(at.getTime() - 25 * 3600_000)), 'stale_intent');
     await refused(queued(new Date(at.getTime() + 6 * 60_000)), 'stale_intent');
     await refused(queued(new Date(at.getTime()), { capability: 'pets.feed.backdated.old' }), 'pin_required');
