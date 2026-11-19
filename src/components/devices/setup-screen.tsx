@@ -128,16 +128,20 @@ export function SetupScreen() {
   // The one-shot note after a removal.
   const [note] = useState(() => (typeof window === 'undefined' ? null : readEndedNote()));
   const submitting = useRef(false);
+  // The code as the page opened, before anything strips it from the address bar.
+  const initialCode = useRef<string | null>(typeof window === 'undefined' ? null : codeFromSetupFragment(window.location.hash));
 
   // A browser that was a tablet whose session ended while the shell was not running: its
   // data is cleared first (then the setup screen loads again).
   // The setup link's code (read into `code` above, before anything strips it) is carried
   // through that reload.
+  // Only once Auth has answered and nobody is signed in (recovery also re-checks before each step).
+  const recoveryTried = useRef(false);
   useEffect(() => {
-    if (hasTabletMarker()) void recoverFormerTabletHere(codeFromSetupFragment(window.location.hash) ?? (code || null));
-    // Once, on mount, with the code as the page opened.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (loading || currentUser || principal.kind !== 'personal' || recoveryTried.current) return;
+    recoveryTried.current = true;
+    if (hasTabletMarker()) void recoverFormerTabletHere(initialCode.current);
+  }, [currentUser, loading, principal.kind]);
 
   // Then the address bar loses the code (only once no recovery is owed: recovery reloads the
   // page with the code), and the note is not shown again.
