@@ -50,7 +50,7 @@ describe('what may queue (11.1, WT-19f)', () => {
   it('only queueable capabilities that need face level right now', () => {
     const ctx = { pointsPin: 'off' as const, actorRole: 'member' as const };
     assert.equal(queueAllowed('pets.feed', ctx, proven), true);
-    assert.equal(queueAllowed('pets.feed', ctx), false, 'not proven yet: PIN, never queued');
+    assert.equal(queueAllowed('pets.feed', ctx, new Set()), false, 'not proven: PIN, never queued');
     assert.equal(queueAllowed('pets.feed.backdated.old', ctx, proven), false, 'PIN class');
     assert.equal(queueAllowed('device.settings', ctx, proven), false);
     assert.equal(queueAllowed('device.exit.remove', ctx, proven), false);

@@ -14,7 +14,7 @@ import { setChildPin, setMyPin, verifyDevicePin } from '../../src/lib/server/pin
 import { updateDeviceComfort } from '../../src/lib/server/device-comfort';
 import { deviceOperationContext } from '../../src/lib/server/operation-context';
 import { deviceHeartbeatAction, updateDeviceComfortAction } from '../../src/app/devices/actions';
-import type { DeviceCapability } from '../../src/lib/devices/action-policy';
+import { UNDO_PROVEN, type DeviceCapability } from '../../src/lib/devices/action-policy';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
 import { clock, house, opId, pairTablet, seedKid, tokenGeneration, type Tablet } from './device-actor-helpers';
 
@@ -24,7 +24,14 @@ import { clock, house, opId, pairTablet, seedKid, tokenGeneration, type Tablet }
  * for every precheck (production passes no clock and reads the real time each time).
  */
 const authorize = (request: Parameters<typeof authorizeDeviceAction>[0], at?: Date, options: Parameters<typeof authorizeDeviceAction>[1] = {}) =>
-  authorizeDeviceAction(request, { ...options, ...(at ? { clock: () => at } : {}) });
+  authorizeDeviceAction(request, { undoProven: GATE_SUITE_PROVEN, ...options, ...(at ? { clock: () => at } : {}) });
+/**
+ * This suite exercises the gate with `pets.feed` as its example of a `face*` capability whose
+ * Undo is not proven (PIN until proven); Pets feeding is proven since F4b-1
+ * (tests/server/device-pets-undo.test.ts), so the suite's default leaves the Pets entries out.
+ * Tests that need a capability proven pass their own set.
+ */
+const GATE_SUITE_PROVEN: ReadonlySet<DeviceCapability> = new Set([...UNDO_PROVEN].filter((capability) => !capability.startsWith('pets.')));
 
 // The device action gate (docs/modules/devices/README.md, "The device action gate";
 // design 8.3-8.5, S1): every check of 8.4 in order with its refusal code, forged

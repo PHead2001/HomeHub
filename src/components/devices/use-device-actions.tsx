@@ -17,7 +17,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
-import { choreAnswerMeaning, queuedSendResult, UNDO_CAPABILITY_OF } from '@/lib/devices/device-action-answers';
+import { choreAnswerMeaning, feedAgainCheck, queuedSendResult, UNDO_CAPABILITY_OF, type FeedAgainCheck } from '@/lib/devices/device-action-answers';
 import { createRevertRegistry, performAction, QUEUE_REFUSAL_COPY, queueRefusal, runUndo, undoReoffer } from '@/lib/devices/undo-flow';
 import { deviceStore } from '@/lib/devices/device-store';
 import {
@@ -37,6 +37,7 @@ import {
   restoreJournal,
   stepJournal,
   undoOffer,
+  undoToastGroup,
   undoRefusalEvent,
   type JournalEvent,
   type UndoJournalEntry,
@@ -48,6 +49,13 @@ import {
   undoChoreCompletionFromTabletAction,
   undoTakeChoreFromTabletAction,
 } from '@/app/chores/device-actions';
+import {
+  addCareFromTabletAction,
+  feedPetFromTabletAction,
+  undoCareFromTabletAction,
+  undoFeedFromTabletAction,
+  type FeedIntent,
+} from '@/app/pets/device-actions';
 import type { TabletActor } from './tablet-context';
 
 type Answer = { ok: true; data: unknown } | { ok: false; code: DeviceRefusal; retryAfterSec?: number };
@@ -59,6 +67,14 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
   'chores.complete.undo': (base) => undoChoreCompletionFromTabletAction(base),
   'chores.take': (base, intent) => takeChoreFromTabletAction({ ...base, choreId: String(intent.choreId ?? '') }),
   'chores.take.undo': (base) => undoTakeChoreFromTabletAction(base),
+  // Pets (F4b-1): every feeding entry point on a tablet (Feed, hold, quick add, dashboard Fed,
+  // the detailed form) and care entries; the server picks a backdated feed's capability.
+  'pets.feed': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
+  'pets.feed.backdated': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
+  'pets.feed.backdated.old': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
+  'pets.feed.undo': (base) => undoFeedFromTabletAction(base),
+  'pets.care.add': (base, intent) => addCareFromTabletAction({ ...base, petId: String(intent.petId ?? ''), activity: String(intent.activity ?? ''), notes: typeof intent.notes === 'string' ? intent.notes : '' }),
+  'pets.care.undo': (base) => undoCareFromTabletAction(base),
 };
 
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);
@@ -78,7 +94,21 @@ export type DeviceActionRuntime = {
    * is taken back later: its Undo succeeds (also a never-sent queue entry removed locally) or
    * its queued replay is dropped (the dashboard then clears its local "Done").
    */
-  perform: (input: { capability: DeviceCapability; label: string; intent: Record<string, unknown>; actor: TabletActor; who: RosterPerson; onReverted?: () => void }) => Promise<{ ok: boolean; queued?: boolean; uncertain?: boolean }>;
+  perform: (input: {
+    capability: DeviceCapability;
+    label: string;
+    intent: Record<string, unknown>;
+    actor: TabletActor;
+    who: RosterPerson;
+    onReverted?: () => void;
+    /** The Undo toast's group (a feed: its pet's, `petFeedToastGroup`), kept in the journal for a reload; default: the shared device-action group. */
+    toastGroup?: string;
+    /**
+     * "Feed again?" (PE-23g): asked when the server answers that it needs a confirmation;
+     * resolves with the answer to send back with the same opId, or null (Cancel: nothing is written).
+     */
+    confirm?: (check: FeedAgainCheck) => Promise<Record<string, unknown> | null>;
+  }) => Promise<{ ok: boolean; queued?: boolean; uncertain?: boolean; data?: unknown }>;
 };
 
 export function useDeviceActions(deps: {
@@ -269,7 +299,9 @@ export function useDeviceActions(deps: {
 
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
     const handle = toast({
-      group: 'device-action',
+      // Per pet for feeds (stored in the journal, so a restored toast keeps it): another pet's
+      // feed or a chore never displaces this Undo; same-group actions replace the older one.
+      group: undoToastGroup(entry),
       description: message,
       duration: Math.max(1000, remainingMs),
       action: (
@@ -301,14 +333,16 @@ export function useDeviceActions(deps: {
   }, [offerUndo, storesOf]);
 
   // --- Actions ------------------------------------------------------------------
-  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent, actor, who, onReverted }) => {
+  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup }) => {
+    // A "Feed again?" answer is added to the intent, and goes with it into the queue if the send then gets no answer.
+    let intent = firstIntent;
     const opId = crypto.randomUUID();
     reverts.current.register(opId, onReverted);
     const { queue } = storesOf();
     const undoCapability = UNDO_CAPABILITY_OF[capability];
     // Saved for later only when it can wait (face level, no PIN) and the queue is durable here.
     const canQueue = !actor.pinSessionId && queueAllowed(capability, { pointsPin, actorRole: who.role });
-    const entry = { opId: opId.toLowerCase(), ...session.current, capability, actorUid: actor.actorUid, label };
+    const entry = { opId: opId.toLowerCase(), ...session.current, capability, actorUid: actor.actorUid, label, ...(toastGroup ? { toastGroup } : {}) };
     let meaning = { undoable: false, message: label } as ReturnType<typeof choreAnswerMeaning>;
     const result = await performAction({
       entry,
@@ -321,7 +355,18 @@ export function useDeviceActions(deps: {
         // An attempt that got no answer may have reached the server: it resends with the same opId.
         await enqueue(queue, sent ? withSendFields(queued, { attempts: 1, sendState: 'uncertain' }) : queued);
       },
-      send: () => send(capability, { actorUid: actor.actorUid, opId, ...(actor.pinSessionId ? { pinSessionId: actor.pinSessionId } : {}) }, intent),
+      send: async () => {
+        const base = { actorUid: actor.actorUid, opId, ...(actor.pinSessionId ? { pinSessionId: actor.pinSessionId } : {}) };
+        let answer = await send(capability, base, intent);
+        // "Feed again?": the same opId again, with the answer bound to the state it was shown for.
+        for (let check = answer.ok ? feedAgainCheck(capability, answer.data) : null; check; check = answer.ok ? feedAgainCheck(capability, answer.data) : null) {
+          const answered = confirm ? await confirm(check) : null;
+          if (!answered) return { ok: true as const, data: { cancelled: true } };
+          intent = { ...intent, ...answered };
+          answer = await send(capability, base, intent);
+        }
+        return answer;
+      },
       undoableAnswer: (data) => {
         meaning = choreAnswerMeaning(capability, data, label);
         return meaning.undoable;
@@ -338,7 +383,7 @@ export function useDeviceActions(deps: {
     switch (result.kind) {
       case 'applied':
         await offer(meaning.message);
-        return { ok: true };
+        return { ok: true, data: result.data };
       case 'queued':
         await offer(QUEUED_COPY);
         return { ok: true, queued: true };
@@ -349,8 +394,8 @@ export function useDeviceActions(deps: {
         return { ok: false, uncertain: true };
       case 'noop':
         reverts.current.forget(opId);
-        toast({ description: meaning.message });
-        return { ok: !meaning.notice };
+        if (meaning.message) toast({ description: meaning.message });
+        return { ok: !meaning.notice, data: result.data };
       case 'not-queued':
         reverts.current.forget(opId);
         toast({ variant: 'destructive', description: QUEUE_REFUSAL_COPY[result.reason] });

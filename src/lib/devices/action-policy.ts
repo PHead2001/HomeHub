@@ -5,6 +5,7 @@
 // refused (`unclassified`, WT-6c).
 
 import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
+import { PET_PERMISSIONS } from '@/lib/permissions';
 
 export type DeviceSection = 'home' | 'chores' | 'shopping' | 'pets' | 'calendar' | 'maintenance' | 'automation';
 
@@ -57,9 +58,10 @@ export type DeviceCapabilityPolicy = {
   freshPinSec?: number;
 };
 
-const ADD = ['pets.addLogs'] as const satisfies readonly HouseholdPermission[];
-const ADD_OR_DELETE = ['pets.addLogs', 'pets.deleteLogs'] as const satisfies readonly HouseholdPermission[];
-const EDIT_PROFILES = ['pets.editProfiles'] as const satisfies readonly HouseholdPermission[];
+// R5: the same permission names as the personal paths (rules and UI), from one place.
+const ADD = [PET_PERMISSIONS.addLogs] as const satisfies readonly HouseholdPermission[];
+const ADD_OR_DELETE = [PET_PERMISSIONS.addLogs, PET_PERMISSIONS.deleteLogs] as const satisfies readonly HouseholdPermission[];
+const EDIT_PROFILES = [PET_PERMISSIONS.editProfiles] as const satisfies readonly HouseholdPermission[];
 
 /** Face-level once proven (`face*`); queueable. */
 const faceStar = (section: DeviceSection, permissions: readonly HouseholdPermission[], extra: Partial<DeviceCapabilityPolicy> = {}): DeviceCapabilityPolicy => ({
@@ -83,22 +85,22 @@ export const DEVICE_ACTION_POLICY = {
   'pets.feed': faceStar('pets', ADD),
   'pets.feed.backdated': faceStar('pets', ADD),
   'pets.feed.backdated.old': pin('pets', ADD),
-  'pets.feed.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: 'pets.deleteLogs' }),
+  'pets.feed.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.dose.give': faceStar('pets', ADD),
   'pets.dose.give.old': pin('pets', ADD),
-  'pets.dose.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: 'pets.deleteLogs' }),
+  'pets.dose.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.care.add': faceStar('pets', ADD),
-  'pets.care.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: 'pets.deleteLogs' }),
+  'pets.care.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.note.add': faceStar('pets', ADD),
-  'pets.note.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: 'pets.deleteLogs' }),
+  'pets.note.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.weight.add': faceStar('pets', ADD),
-  'pets.weight.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: 'pets.deleteLogs' }),
+  'pets.weight.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.note.pin': pin('pets', ['pets.addLogs', 'pets.editProfiles'], { actorRule: 'author-or-permission', actorRulePermission: 'pets.editProfiles' }),
   'pets.note.unpin': pin('pets', ['pets.addLogs', 'pets.editProfiles'], { actorRule: 'author-or-permission', actorRulePermission: 'pets.editProfiles' }),
   'pets.note.editPinned': pin('pets', ['pets.addLogs', 'pets.editProfiles'], { actorRule: 'author-or-permission', actorRulePermission: 'pets.editProfiles' }),
-  'pets.note.delete': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: 'pets.deleteLogs' }),
-  'pets.log.delete': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: 'pets.deleteLogs' }),
-  'pets.log.correctTime': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: 'pets.deleteLogs' }),
+  'pets.note.delete': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
+  'pets.log.delete': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
+  'pets.log.correctTime': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.medication.confirmLegacy': pin('pets', EDIT_PROFILES),
   'pets.course.edit': pin('pets', EDIT_PROFILES),
   'pets.course.finish': pin('pets', ADD),
@@ -185,6 +187,13 @@ export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapabili
   'chores.complete.undo',
   'chores.take',
   'chores.take.undo',
+  // Pets feeding and care (F4b-1): tests/server/device-pets-undo.test.ts, the seven cases of
+  // 10.4 for pets.feed (live and backdated within 12 hours) and pets.care.add.
+  'pets.feed',
+  'pets.feed.backdated',
+  'pets.feed.undo',
+  'pets.care.add',
+  'pets.care.undo',
 ]);
 
 export const isDeviceCapability = (value: unknown): value is DeviceCapability =>
@@ -235,6 +244,28 @@ export const backdatedCapability = (
   if (kind === 'feed') return old ? 'pets.feed.backdated.old' : 'pets.feed.backdated';
   return old ? 'pets.dose.give.old' : 'pets.dose.give';
 };
+
+/**
+ * The capability of one tablet feed press, decided by the server from the feeding's
+ * effective time (JC-27, review S1): the chosen time of a backdated feed; else, for a
+ * replay from the offline queue, the queue entry's time (`queuedAt`, already bounded by the
+ * caller to the gate's 24-hour limit and to the server clock); else it is live
+ * (`pets.feed`). More than 12 hours before the server clock is `pets.feed.backdated.old`
+ * (PIN, not queueable), so a queued entry older than 12 hours is refused at face level.
+ * A retry whose opId is already applied keeps its recorded capability (FEED_CAPABILITIES,
+ * the gate's `replayFamily`), so crossing the line between attempts never changes the answer.
+ */
+export const feedCapability = (
+  input: { backdatedAt: Date | null; queuedAt: Date | null },
+  now: Date,
+): 'pets.feed' | 'pets.feed.backdated' | 'pets.feed.backdated.old' => {
+  if (input.backdatedAt) return backdatedCapability('feed', input.backdatedAt, now) as 'pets.feed.backdated' | 'pets.feed.backdated.old';
+  if (input.queuedAt && now.getTime() - input.queuedAt.getTime() > BACKDATED_FACE_WINDOW_MS) return 'pets.feed.backdated.old';
+  return 'pets.feed';
+};
+
+/** One feed press under any of its capabilities (a replay of an applied opId keeps the recorded one). */
+export const FEED_CAPABILITIES: readonly DeviceCapability[] = UNDO_OF['pets.feed.undo'];
 
 export type RequiredLevel = 'device' | 'face' | 'pin' | 'admin-pin' | 'not_on_tablets' | 'never';
 

@@ -4,7 +4,7 @@
  */
 import { sharedId } from '../motion';
 import { diffDays, localDay } from '../../../functions/src/shared/calendar';
-import { householdDayZone } from '../household-day';
+import { householdDayZone } from '../household-zone';
 import { FOOD_TYPES, type FoodType, type LoggedBy, type PetMedicationLog, type PetProfile, type PortionUnit } from './types';
 import { isNonDailySchedule, isValidPortion, parseFeedingsPerDay, parsePortion, PORTION_MAX } from './schedule-parser';
 

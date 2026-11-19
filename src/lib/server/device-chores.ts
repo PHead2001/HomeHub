@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { adminDb } from '@/lib/server/firebase-admin';
+import { withoutEmails } from '@/lib/devices/without-emails';
 import { authorizeDeviceAction } from '@/lib/server/device-gate';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { deviceOperationContext } from '@/lib/server/operation-context';
@@ -15,7 +16,6 @@ import {
 } from '@/lib/server/chore-completion';
 import type { DeviceCapability } from '@/lib/devices/action-policy';
 import type { ChoreCompletionOutcome, UndoOutcome } from '@/lib/chores/completion';
-import { publicDisplayName } from '@/lib/member-directory';
 
 // Chore actions from a registered wall tablet (docs/modules/devices/README.md, "Device
 // actions"; design 9, 10; WT-22, CH-12b). Each passes the device action gate
@@ -50,18 +50,10 @@ const authorize = (capability: DeviceCapability, input: DeviceChoreRequest, opti
 
 /**
  * What a tablet receives never carries an email (WT-10e): every `…Email` field is removed
- * from device answers, replays from the op ledger included, and names are public names.
+ * and names are public names (`src/lib/devices/without-emails.ts`; the op ledger's stored
+ * summaries go through it too, in the gate's finalize).
  */
-export const withoutEmails = <T,>(value: T): T => {
-  if (Array.isArray(value)) return value.map(withoutEmails) as T;
-  if (!value || typeof value !== 'object') return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (/email/i.test(key)) continue;
-    out[key] = /name$/i.test(key) && typeof child === 'string' ? publicDisplayName(child, '') : withoutEmails(child);
-  }
-  return out as T;
-};
+export { withoutEmails };
 
 /** Chores module errors as device refusals (a missing chore or bad id is invalid input). */
 const asDeviceError = (error: unknown): never => {
