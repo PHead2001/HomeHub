@@ -36,6 +36,7 @@ import {
   legacyMedicationKey,
   occurrenceAtOrBefore,
   occurrenceByKey,
+  occurrenceId,
   occurrencesAfter,
   readSchedule,
   type CourseSchedule,
@@ -102,7 +103,7 @@ export function medicationDues(courses: CourseView[], legacyLogs: PetMedicationL
       state: due.state,
       label: due.label,
       courseId: course.id,
-      occurrenceKey: due.occurrence.key,
+      occurrenceKey: occurrenceId(due.occurrence),
       time: due.occurrence.time ?? '',
     }];
   });
@@ -169,10 +170,10 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
   const upcoming = occurrencesAfter(window, Math.max(at, coveredThrough(course) ?? -Infinity), zone, 1)[0] ?? null;
   const byKey = new Map<string, DoseChoice>();
   for (const occurrence of [...missed, latestPassed, upcoming]) {
-    if (occurrence) byKey.set(occurrence.key, covered(occurrence));
+    if (occurrence) byKey.set(occurrenceId(occurrence), covered(occurrence));
   }
   let prefill: DoseChoice | null = null;
-  if (missed.length > 0) prefill = byKey.get(missed[missed.length - 1].key) ?? null;
+  if (missed.length > 0) prefill = byKey.get(occurrenceId(missed[missed.length - 1])) ?? null;
   else {
     // The nearest scheduled occurrence, given or not (a repeat then asks first).
     const nearest = [latestPassed, occurrencesAfter(window, at, zone, 1)[0] ?? null]
@@ -180,7 +181,7 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
       .sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at))[0];
     if (nearest) {
       prefill = covered(nearest);
-      byKey.set(prefill.key, prefill);
+      byKey.set(occurrenceId(prefill), prefill);
     }
   }
   return { prefill, choices: [...byKey.values()].sort((a, b) => a.at - b.at) };
@@ -188,16 +189,19 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
 
 /**
  * "Today 8:00 AM", "Tomorrow 8:00 PM", "Yesterday", "Nov 14, 8:00 AM" for an
- * occurrence, in the household's day (labels the Give dose choices).
+ * occurrence, in the household's day (labels the Give dose choices); the
+ * later of two occurrences at the same clock time says so.
  */
-export function occurrenceLabel(occurrence: Pick<Occurrence, 'day' | 'time'>, now: Date, timeZone?: string | null): string {
+export function occurrenceLabel(occurrence: Pick<Occurrence, 'day' | 'time' | 'fold'>, now: Date, timeZone?: string | null): string {
   const today = localDay(now, householdDayZone(timeZone));
   const time = occurrence.time ? formatDoseTime(occurrence.time) : null;
   const diff = Math.round((Date.parse(`${occurrence.day}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
   const day = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday'
     : new Date(`${occurrence.day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   if (!time) return day;
-  return diff >= -1 && diff <= 1 ? `${day} ${time}` : `${day}, ${time}`;
+  // The later of two doses at the same clock time (the clock turned back).
+  const again = occurrence.fold ? ' (again, after the clock change)' : '';
+  return diff >= -1 && diff <= 1 ? `${day} ${time}${again}` : `${day}, ${time}${again}`;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -412,7 +416,7 @@ export function doseRepeatReason(check: DoseCheck, now: Date, timeZone?: string 
   }
   const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
   const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;
-  const same = check.last.occurrence === check.occurrence.key;
+  const same = check.last.occurrenceAt === check.occurrence.at;
   const what = same
     ? `the ${occurrenceLabel(check.occurrence, now, timeZone)} dose`
     : `a dose for a later time (${occurrenceLabel({ day: check.last.occurrence.slice(0, 10), time: check.last.occurrence.slice(11) || null }, now, timeZone)})`;

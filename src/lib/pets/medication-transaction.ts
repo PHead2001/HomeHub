@@ -43,6 +43,7 @@ import { petDay } from './care';
 import {
   coveredUntilAfterSave,
   doseLogId,
+  nextDoseRevision,
   doseRecordsOf,
   pointerAfter,
   withRecords,
@@ -262,13 +263,17 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     // The pointer is the derived state after this dose (a cache that agrees with the records).
     const fresh: DosePointer = { logId, occurrence: plan.occurrence.key, occurrenceAt: plan.occurrence.at, givenAt: plan.givenAt.getTime(), byUid: input.user.uid, byName: input.user.name };
     const next = pointerAfter(course!, [...doses!.records, fresh]);
-    if (next.write) {
-      const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name };
-      tx.update(cRef, {
+    const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name };
+    // Every online dose changes the course (its dose revision, and the pointer
+    // when it moves): a concurrent writer that read the course retries on a
+    // fresh read, even when this dose precedes both pointers.
+    tx.update(cRef, {
+      doseRevision: nextDoseRevision(raw),
+      ...(next.write ? {
         lastDose: storedPointer(next.latest, doses!.stored, { logId, value: freshValue }),
         prevDose: storedPointer(next.prev, doses!.stored, { logId, value: freshValue }),
-      });
-    }
+      } : {}),
+    });
     return { status: 'saved', logId, occurrence: plan.occurrence, nextAfter: plan.nextAfter } as const;
   });
 }
@@ -366,9 +371,11 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     const pointer = { coveredUntil: null, lastDose: readDosePointer(raw.lastDose), prevDose: readDosePointer(raw.prevDose) };
     const doses = await readCourseDoses(db, householdId, petId, courseId, logId);
     const next = pointerAfter(pointer, doses.records);
-    if (next.write) {
-      tx.update(cRef, { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) });
-    }
+    // The dose revision moves on every removal too (serializes with Give dose).
+    tx.update(cRef, {
+      doseRevision: nextDoseRevision(raw),
+      ...(next.write ? { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } : {}),
+    });
     return 'saved' as const;
   }));
 }

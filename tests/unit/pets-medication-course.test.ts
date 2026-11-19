@@ -22,7 +22,10 @@ import {
   medicationAttention,
   medicationDues,
   newDoseOpId,
+  occurrenceByKey,
+  occurrenceId,
   occurrenceLabel,
+  occurrencesAfter,
   pendingLegacyGroups,
   planDose,
   pointerAfter,
@@ -560,5 +563,62 @@ describe('an early dose right after a dose asks first (the duplicate check reads
     // Once the window has passed (half the interval: 1 h), an early dose no longer asks.
     const later = planDose({ now: at('2026-11-14T16:55:00Z'), timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T10:00', givenAt: null });
     assert.equal(later.kind, 'write');
+  });
+});
+
+describe('an occurrence keeps its identity when its wall-time key repeats (Codex round 6)', () => {
+  const TROLL = 'Antarctica/Troll';
+  const hourly = (firstTime: string, startDay: string) => readCourse('t', {
+    name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 2, firstTime }, startDay, status: 'active',
+  })!;
+  const windowOf = (c: CourseView) => ({ schedule: c.schedule!, startDay: c.startDay, endDay: c.endDay });
+
+  test('Antarctica/Troll turns back two hours: both 02:30 doses are distinct, selectable and found again', () => {
+    const c = hourly('00:30', '2026-10-25');
+    const list = occurrencesAfter(windowOf(c), null, TROLL, 4);
+    assert.deepEqual(list.map((o) => [o.key, new Date(o.at).toISOString(), o.fold ?? 0]), [
+      ['2026-10-25T00:30', '2026-10-24T22:30:00.000Z', 0],
+      ['2026-10-25T02:30', '2026-10-25T00:30:00.000Z', 0],
+      ['2026-10-25T02:30', '2026-10-25T02:30:00.000Z', 1],
+      ['2026-10-25T04:30', '2026-10-25T04:30:00.000Z', 0],
+    ]);
+    assert.deepEqual(list.map(occurrenceId), ['2026-10-25T00:30', '2026-10-25T02:30', '2026-10-25T02:30~1', '2026-10-25T04:30']);
+    for (const occurrence of list) assert.equal(occurrenceByKey(windowOf(c), occurrenceId(occurrence), TROLL)?.at, occurrence.at);
+    // A stored plain key (a dose log's `occurrence`) still means the first one.
+    assert.equal(occurrenceByKey(windowOf(c), '2026-10-25T02:30', TROLL)?.at, list[1].at);
+    assert.match(occurrenceLabel(list[2], at('2026-10-25T02:40:00Z'), TROLL), /2:30 AM \(again, after the clock change\)$/);
+    assert.doesNotMatch(occurrenceLabel(list[1], at('2026-10-25T02:40:00Z'), TROLL), /again/);
+  });
+
+  test('after the first 02:30 dose, Give dose prefills the second and records it (no "already given?")', () => {
+    const first = Date.parse('2026-10-25T00:30:00Z');
+    const given = readCourse('t', {
+      name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 2, firstTime: '00:30' }, startDay: '2026-10-25', status: 'active',
+      lastDose: { logId: 'a', occurrence: '2026-10-25T02:30', occurrenceAt: new Date(first), givenAt: at('2026-10-25T00:35:00Z'), byUid: 'sam', byName: 'Sam' },
+    })!;
+    const now = at('2026-10-25T02:40:00Z');
+    const { prefill } = doseChoices(given, now, TROLL);
+    assert.equal(prefill?.at, Date.parse('2026-10-25T02:30:00Z'));
+    assert.equal(prefill?.covered, false);
+    const plan = planDose({ now, timeZone: TROLL, course: given, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: occurrenceId(prefill!), givenAt: null });
+    assert.equal(plan.kind, 'write', JSON.stringify(plan));
+    if (plan.kind !== 'write') return;
+    // The log keeps the plain key (the rules' shape) and the second instant.
+    assert.deepEqual([plan.occurrence.key, plan.occurrence.at], ['2026-10-25T02:30', Date.parse('2026-10-25T02:30:00Z')]);
+    assert.equal(plan.nextAfter?.at, Date.parse('2026-10-25T04:30:00Z'));
+    // Recording the first one again still asks (it is covered).
+    const again = planDose({ now, timeZone: TROLL, course: given, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-10-25T02:30', givenAt: null });
+    assert.equal(again.kind, 'needsConfirm');
+  });
+
+  test('America/Chicago fall-back: every hourly occurrence has its own identity and round-trips', () => {
+    for (const firstTime of ['00:00', '01:00', '01:30']) {
+      const c = hourly(firstTime, '2026-10-31');
+      const list = occurrencesAfter(windowOf(c), null, CHI, 30);
+      const ids = list.map(occurrenceId);
+      assert.equal(new Set(ids).size, ids.length, `${firstTime}: identities are unique`);
+      for (const occurrence of list) assert.equal(occurrenceByKey(windowOf(c), occurrenceId(occurrence), CHI)?.at, occurrence.at);
+      assert.ok(list.every((o) => !o.fold), 'a one-hour rollback never repeats a key every two hours');
+    }
   });
 });

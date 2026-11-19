@@ -32,6 +32,7 @@ import {
   doseRepeatReason,
   lastDoseLine,
   newDoseOpId,
+  occurrenceId,
   occurrenceLabel,
   occurrencesAfter,
   petDoseToastGroup,
@@ -154,13 +155,13 @@ export function GiveDoseDialog({
   const savingRef = React.useRef(false);
   const givenAtId = React.useId();
   const notesId = React.useId();
-  const occurrenceId = React.useId();
+  const occurrenceLegendId = React.useId();
 
   // A new opening is a new press: reset (state adjusted during render, as the pet dialogs do).
   if ((course?.id ?? null) !== shownFor) {
     setShownFor(course?.id ?? null);
     setOpId(newDoseOpId());
-    setOccurrenceKey(choices.prefill?.key ?? '');
+    setOccurrenceKey(choices.prefill ? occurrenceId(choices.prefill) : '');
     setWhen('now');
     setGivenAt('');
     setNotes('');
@@ -169,13 +170,13 @@ export function GiveDoseDialog({
     setConfirmFinish(false);
   }
   // The prefill can arrive a moment after the course (or change when the schedule changes).
-  if (course && occurrenceKey && !choices.choices.some((choice) => choice.key === occurrenceKey) && choices.prefill && !saving) {
-    setOccurrenceKey(choices.prefill.key);
+  if (course && occurrenceKey && !choices.choices.some((choice) => occurrenceId(choice) === occurrenceKey) && choices.prefill && !saving) {
+    setOccurrenceKey(occurrenceId(choices.prefill));
   } else if (course && !occurrenceKey && choices.prefill) {
-    setOccurrenceKey(choices.prefill.key);
+    setOccurrenceKey(occurrenceId(choices.prefill));
   }
 
-  const selected = choices.choices.find((choice) => choice.key === occurrenceKey) ?? null;
+  const selected = choices.choices.find((choice) => occurrenceId(choice) === occurrenceKey) ?? null;
   const nextAfter = course?.schedule && selected
     ? occurrencesAfter({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, Math.max(selected.at, coveredThrough(course) ?? -Infinity), timeZone ?? '', 1)[0] ?? null
     : null;
@@ -196,7 +197,7 @@ export function GiveDoseDialog({
     setError(null);
     try {
       const result = await giveDose({
-        householdId, petId, courseId: course.id, opId, occurrenceKey: selected.key, givenAt: chosen, notes, confirm, timeZone,
+        householdId, petId, courseId: course.id, opId, occurrenceKey: occurrenceId(selected), givenAt: chosen, notes, confirm, timeZone,
         user: { uid: currentUser.uid, name: loggerName(currentUser) },
         onLateError: (lateError) => toastError(lateError, `${course.name} for ${petName} didn't sync`),
       });
@@ -287,14 +288,14 @@ export function GiveDoseDialog({
               </div>
 
               <fieldset className="grid gap-2">
-                <legend id={occurrenceId} className="mb-1 font-medium">Which dose</legend>
+                <legend id={occurrenceLegendId} className="mb-1 font-medium">Which dose</legend>
                 {choices.choices.length === 0 ? (
                   <p className="text-muted-foreground">No dose is scheduled.</p>
                 ) : (
-                  <RadioGroup value={occurrenceKey} onValueChange={(value) => { setOccurrenceKey(value); setAsked(null); setError(null); }} aria-labelledby={occurrenceId}>
+                  <RadioGroup value={occurrenceKey} onValueChange={(value) => { setOccurrenceKey(value); setAsked(null); setError(null); }} aria-labelledby={occurrenceLegendId}>
                     {choices.choices.map((choice) => (
-                      <Label key={choice.key} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-md border px-3 py-2 font-normal coarse:min-h-12">
-                        <RadioGroupItem value={choice.key} />
+                      <Label key={occurrenceId(choice)} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-md border px-3 py-2 font-normal coarse:min-h-12">
+                        <RadioGroupItem value={occurrenceId(choice)} />
                         <span>
                           {occurrenceLabel(choice, now, timeZone)}
                           {choice.covered ? <span className="text-muted-foreground"> · already given</span> : choice.at > now.getTime() ? <span className="text-muted-foreground"> · early</span> : null}

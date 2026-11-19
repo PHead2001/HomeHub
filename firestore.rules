@@ -1328,7 +1328,7 @@ service cloud.firestore {
     function validCourseFields(data) {
       return data.keys().hasOnly([
           'name', 'dosage', 'schedule', 'startDay', 'endDay', 'status', 'legacyKeys',
-          'lastDose', 'prevDose', 'coveredUntil',
+          'lastDose', 'prevDose', 'coveredUntil', 'doseRevision',
           'createdAt', 'createdByUid', 'createdByName', 'updatedAt', 'updatedByUid', 'updatedByName',
           'finishedAt', 'finishedByUid', 'finishedByName']) &&
         data.keys().hasAll(['name', 'dosage', 'schedule', 'startDay', 'status']) &&
@@ -1358,6 +1358,7 @@ service cloud.firestore {
         data.get('createdByUid', null) == request.auth.uid &&
         data.get('lastDose', null) == null && data.get('prevDose', null) == null &&
         data.get('coveredUntil', null) == null &&
+        data.get('doseRevision', 0) == 0 &&
         ((data.status == 'active' &&
             hasHouseholdPermission(householdId, 'pets.addLogs') &&
             data.get('updatedAt', null) == request.time &&
@@ -1450,8 +1451,9 @@ service cloud.firestore {
       let before = resource.data;
       let after = request.resource.data;
       let changed = after.diff(before).affectedKeys();
-      return changed.hasOnly(['lastDose', 'prevDose'])
+      return changed.hasOnly(['lastDose', 'prevDose', 'doseRevision'])
         ? validDosePointer(after.get('lastDose', null)) && validDosePointer(after.get('prevDose', null)) &&
+          after.get('doseRevision', 0) == before.get('doseRevision', 0) + 1 &&
           coursePointerWritten(householdId, petId, courseId)
         : (changed.hasOnly(['status', 'finishedAt', 'finishedByUid', 'finishedByName'])
           ? (before.status == 'active' ? courseFinished(householdId) : courseResumed(householdId))
@@ -1522,6 +1524,7 @@ service cloud.firestore {
               ? data.repeat == 'confirmed' &&
                 (data.confirmOf == last.logId || confirmsNewerDose(householdId, petId, data, last))
               : true) &&
+            doseRevisionBumped(coursePath) &&
             // A dose at or after the latest: after this commit the pointer covers it
             // (it names this dose, or a later surviving one).
             ((last != null && data.occurrenceAt < last.occurrenceAt) ||
@@ -1563,13 +1566,26 @@ service cloud.firestore {
               : data.date == request.time));
     }
 
-    // Removing a course dose must move the course's pointer off it in the same commit.
+    // Every online dose write (a dose created online, or a removal) moves the
+    // course's dose revision on by one in the same commit, even when the
+    // pointers stay, so two writers that read the course serialize on it.
+    function doseRevisionBumped(coursePath) {
+      return getAfter(coursePath).data.get('doseRevision', 0) == get(coursePath).data.get('doseRevision', 0) + 1;
+    }
+
+    // Removing a course dose must move the course's pointer off it in the same
+    // commit, and the dose revision on (except an offline dose removed without
+    // a connection: no course write can be queued for it).
     function courseDoseRemovable(householdId, petId, logId) {
       let courseId = resource.data.get('courseId', null);
-      return courseId == null ||
-        !existsAfter(medicationCoursePath(householdId, petId, courseId)) ||
-        getAfter(medicationCoursePath(householdId, petId, courseId)).data.get('lastDose', null) == null ||
-        getAfter(medicationCoursePath(householdId, petId, courseId)).data.lastDose.logId != logId;
+      return courseId == null || courseDoseRemovedFrom(medicationCoursePath(householdId, petId, courseId), logId);
+    }
+
+    function courseDoseRemovedFrom(coursePath, logId) {
+      return !existsAfter(coursePath) ||
+        ((getAfter(coursePath).data.get('lastDose', null) == null ||
+            getAfter(coursePath).data.lastDose.logId != logId) &&
+          (resource.data.get('repeat', null) == 'offline' || doseRevisionBumped(coursePath)));
     }
 
     // The author of a course or one-off dose may remove it for 10 minutes (Undo).

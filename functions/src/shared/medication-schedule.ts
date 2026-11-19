@@ -84,6 +84,13 @@ export type CourseView = {
 export type Occurrence = {
   /** `yyyy-MM-dd` (no set time) or `yyyy-MM-ddTHH:mm` (household wall time). */
   key: string;
+  /**
+   * 1 on the later of two occurrences with the same wall-time key (an hours
+   * schedule across a clock rollback as long as its interval: Antarctica/Troll
+   * turns back two hours, so every-two-hours doses at 00:30 and 02:30 UTC
+   * both read 02:30); absent otherwise. `occurrenceId` includes it.
+   */
+  fold?: 1;
   /** Household day of the occurrence. */
   day: string;
   /** Wall time `HH:mm`, or null when due all day. */
@@ -209,6 +216,23 @@ export const readDosePointer = (value: unknown): DosePointer | null => {
  */
 export const legacyMedicationKey = (name: unknown): string =>
   typeof name === "string" ? name.trim().toLowerCase() : "";
+
+/**
+ * The course's dose revision after one more dose write: every online dose
+ * write (Give dose, Undo, a history delete; a device writer's Admin SDK
+ * transaction too) stores it on the course in the same commit, even when the
+ * pointers stay the same, so two writers that read the course serialize on it
+ * (the second retries on a fresh read and asks again). The rules require it.
+ * @param {Record<string, unknown>} data The course document as read.
+ * @return {number} The next revision.
+ */
+export const nextDoseRevision = (
+  data: Record<string, unknown> | undefined | null,
+): number => {
+  const current = data?.doseRevision;
+  return (typeof current === "number" && Number.isInteger(current) &&
+    current >= 0 ? current : 0) + 1;
+};
 
 /**
  * A stored course document as a view, or null when it is not a course.
@@ -362,8 +386,14 @@ const walkOccurrences = (
     if (after !== null && at <= after) continue;
     const day = localDay(new Date(at), timeZone);
     if (endDay && day > endDay) return;
-    if (!more({key: `${day}T${wallTime(at, timeZone)}`, day,
-      time: wallTime(at, timeZone), at})) return;
+    const key = `${day}T${wallTime(at, timeZone)}`;
+    // The same wall time as the previous occurrence: the clock turned back.
+    const prev = at - stepMs;
+    const fold = index > 0 &&
+      `${localDay(new Date(prev), timeZone)}T${wallTime(prev, timeZone)}` ===
+        key;
+    if (!more({key, day, time: wallTime(at, timeZone), at,
+      ...(fold ? {fold: 1 as const} : {})})) return;
   }
 };
 
@@ -466,24 +496,40 @@ export const latestOccurrencesUpTo = (
   return out;
 };
 
+const FOLD_SUFFIX = "~1";
+
 /**
- * The scheduled occurrence with this key, or null when the schedule has none
- * (for example after a schedule edit).
+ * An occurrence's identity: its wall-time key, with `~1` on the later of two
+ * occurrences sharing that key (`fold`). Selection and lookup use it; a
+ * dose log still stores the plain key (the rules' key shape) and the
+ * occurrence's instant, which tells the two apart.
+ * @param {Occurrence} occurrence The occurrence.
+ * @return {string} The identity.
+ */
+export const occurrenceId = (
+  occurrence: Pick<Occurrence, "key" | "fold">,
+): string => occurrence.fold ? `${occurrence.key}${FOLD_SUFFIX}` :
+  occurrence.key;
+
+/**
+ * The scheduled occurrence with this identity (`occurrenceId`; a plain
+ * stored key is the first occurrence with it), or null when the schedule has
+ * none (for example after a schedule edit).
  * @param {CourseWindow} course Schedule, start and end day.
- * @param {string} key Occurrence key.
+ * @param {string} id Occurrence identity or key.
  * @param {string} zone Household zone.
  * @return {Occurrence | null} The occurrence.
  */
 export const occurrenceByKey = (
-  course: CourseWindow, key: string, zone: string,
+  course: CourseWindow, id: string, zone: string,
 ): Occurrence | null => {
-  const day = key.slice(0, 10);
+  const day = id.slice(0, 10);
   if (!isCalendarDay(day)) return null;
   const timeZone = safeTimeZone(zone);
   // From two days before the key's day (an hours schedule's wall time moves).
   const from = zonedInstant(addDays(day, -2), 0, timeZone);
   return occurrencesAfter(course, from, timeZone, 200)
-    .find((occurrence) => occurrence.key === key) ?? null;
+    .find((occurrence) => occurrenceId(occurrence) === id) ?? null;
 };
 
 /**

@@ -307,6 +307,54 @@ describe('Give dose on the emulator with the real rules', () => {
     assert.deepEqual([log.repeat, log.confirmOf], ['confirmed', recent.logId]);
   });
 
+  test('two confirmations of a dose before both pointers serialize on the course: one records, the other asks again (Codex round 6)', async () => {
+    const course = await readCourseNow();
+    const window = { schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay };
+    // "10:00" and "12:00" are the next two occurrences; "08:00" the latest passed one.
+    const [ten, noon] = occurrencesAfter(window, Date.now(), TZ, 2);
+    const eight = occurrencesAfter(window, Date.now() - 2 * 3_600_000 - 1, TZ, 1)[0];
+    assert.ok(eight.at <= Date.now() && eight.at < ten.at);
+    const base = { householdId: household, petId: 'rex', courseId: 'apoquel', givenAt: null, timeZone: TZ };
+    const givenAt = new Date(Date.now() - 3 * 3_600_000);
+    givenAt.setMilliseconds(0);
+    saved(await runGiveDose(session(people.owner), { ...base, opId: newDoseOpId(), occurrenceKey: noon.key, givenAt, user: actor(people.owner) }));
+    const tenDose = await giveAnyway(session(people.owner), { ...base, opId: newDoseOpId(), occurrenceKey: ten.key, user: actor(people.owner) });
+    const before = await readCourseNow();
+    // Both members select 08:00 and are asked, naming the 10:00 dose given moments ago.
+    const samPress = { ...base, opId: newDoseOpId(), occurrenceKey: eight.key, user: actor(people.sam) };
+    const kimPress = { ...base, opId: newDoseOpId(), occurrenceKey: eight.key, user: actor(people.kim) };
+    const [samAsked, kimAsked] = await Promise.all([runGiveDose(session(people.sam), samPress), runGiveDose(session(people.kim), kimPress)]);
+    for (const asked of [samAsked, kimAsked]) assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, tenDose.logId);
+    const answer = samAsked.status === 'needsConfirm' ? doseConfirmOf(samAsked.check) : null;
+    // Both confirm at once: neither moves a pointer, yet only one records; the other is asked about the new dose.
+    const [a, b] = await Promise.all([
+      runGiveDose(session(people.sam), { ...samPress, confirm: answer }),
+      runGiveDose(session(people.kim), { ...kimPress, confirm: answer }),
+    ]);
+    assert.deepEqual([a.status, b.status].sort(), ['needsConfirm', 'saved'], `results: ${JSON.stringify([a, b])}`);
+    const winner = (a.status === 'saved' ? a : b) as Exclude<GiveDoseResult, { status: 'needsConfirm' }>;
+    const loser = (a.status === 'needsConfirm' ? a : b) as Extract<GiveDoseResult, { status: 'needsConfirm' }>;
+    assert.equal(loser.staleConfirm, true);
+    assert.equal(loser.check.last?.logId, winner.logId);
+    assert.equal((await doses()).length, 3);
+    const after = await readCourseNow();
+    assert.deepEqual([after.lastDose?.logId, after.prevDose?.logId], [before.lastDose?.logId, before.prevDose?.logId], 'the pointers stayed');
+  });
+
+  test('Undo moves the dose revision even when the pointers stay (Codex round 6)', async () => {
+    const first = await press(people.sam);
+    saved(await runGiveDose(session(people.sam), first));
+    const course = await readCourseNow();
+    const next = nextDueOccurrence(course, TZ)!;
+    const later = await giveAnyway(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key });
+    const revision = async () => (await getDoc(courseDoc(session(people.owner)))).get('doseRevision');
+    assert.equal(await revision(), 2);
+    // Removing the older dose: the pointer still names the later one, the revision moves.
+    await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: first.opId });
+    assert.equal((await readCourseNow()).lastDose?.logId, later.logId);
+    assert.equal(await revision(), 3);
+  });
+
   test('an offline dose newer than the stored pointer makes an answer naming the pointer stale (Codex round 5)', async () => {
     const first = await press(people.sam);
     const a = saved(await runGiveDose(session(people.sam), first));
