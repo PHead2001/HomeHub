@@ -43,6 +43,8 @@ import { petDay } from './care';
 import {
   coveredUntilAfterSave,
   doseLogId,
+  nextDoseRevision,
+  pointersName,
   doseRecordsOf,
   pointerAfter,
   withRecords,
@@ -66,7 +68,7 @@ const logsRef = (db: Firestore, householdId: string, petId: string) => collectio
 
 /** Why a medication action was refused (shown in the dialog). */
 export class MedicationActionError extends Error {
-  constructor(readonly reason: DoseRefusal | 'offline' | 'not-active' | 'exists') {
+  constructor(readonly reason: DoseRefusal | 'offline' | 'not-active' | 'exists' | 'changed') {
     super(`medication-${reason}`);
     this.name = 'MedicationActionError';
   }
@@ -133,6 +135,10 @@ const newestCourseDoses = (db: Firestore, householdId: string, petId: string, co
  * the doses tied at the read's oldest occurrence are all read: the newest
  * given one there is never cut off by the limit.
  */
+/** The course's most recently administered dose (`date` descending, the composite index): the recent-dose check measures from it. */
+const lastGivenDose = (db: Firestore, householdId: string, petId: string, courseId: string) =>
+  query(logsRef(db, householdId, petId), where('courseId', '==', courseId), orderBy('date', 'desc'), limit(1));
+
 const courseDosesAt = (db: Firestore, householdId: string, petId: string, courseId: string, occurrenceAt: unknown) =>
   query(logsRef(db, householdId, petId), where('courseId', '==', courseId), where('occurrenceAt', '==', occurrenceAt));
 
@@ -143,18 +149,24 @@ type DoseRead = { records: DosePointer[]; stored: Map<string, DocumentData> };
  * The course's newest surviving doses (offline-synced ones included), read
  * inside the attempt: the latest and the one before are among them (they are
  * ordered by occurrence), so `deriveCourseState` over them is the course's
- * state. Any other online dose write changes the course, so a conflicting
+ * state, and so is the most recently administered dose (read by given-at
+ * time: a dose given just now for an older occurrence than the newest six is
+ * still the one the recent-dose check measures from). Any other online dose write changes the course, so a conflicting
  * change retries the transaction with a fresh read.
  */
 async function readCourseDoses(db: Firestore, householdId: string, petId: string, courseId: string, excludeId?: string): Promise<DoseRead> {
-  const newest = await getDocs(newestCourseDoses(db, householdId, petId, courseId));
+  const [newest, given] = await Promise.all([
+    getDocs(newestCourseDoses(db, householdId, petId, courseId)),
+    getDocs(lastGivenDose(db, householdId, petId, courseId)),
+  ]);
   const docs = [...newest.docs];
+  const seen = new Set(docs.map((entry) => entry.id));
   const cutoff = docs.length >= LATEST_DOSES ? docs[docs.length - 1].get('occurrenceAt') : undefined;
   if (cutoff !== undefined && cutoff !== null) {
-    const seen = new Set(docs.map((entry) => entry.id));
     const tied = await getDocs(courseDosesAt(db, householdId, petId, courseId, cutoff));
-    for (const entry of tied.docs) if (!seen.has(entry.id)) docs.push(entry);
+    for (const entry of tied.docs) if (!seen.has(entry.id)) { seen.add(entry.id); docs.push(entry); }
   }
+  for (const entry of given.docs) if (!seen.has(entry.id)) docs.push(entry);
   const stored = new Map<string, DocumentData>();
   const logs = docs.filter((entry) => entry.id !== excludeId).map((entry) => {
     stored.set(entry.id, entry.data());
@@ -216,6 +228,16 @@ export async function runGiveDose(db: Firestore, input: GiveDoseInput): Promise<
   }
 }
 
+/**
+ * The course with its previous pointer dropped when that dose no longer
+ * survives (the previous dose is always among the newest doses read, so its
+ * absence means it was removed): a stale pointer is never named by "already
+ * given?" (the rules would refuse a confirmation of a removed dose); the write
+ * then stores the derived pointer, which repairs it.
+ */
+const withoutRemovedPrev = (course: CourseView, records: DosePointer[]): CourseView =>
+  course.prevDose && !records.some((record) => record.logId === course.prevDose!.logId) ? { ...course, prevDose: null } : course;
+
 async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string): Promise<GiveDoseResult> {
   const { householdId, petId, courseId } = input;
   return runTransaction(db, async (tx) => {
@@ -235,7 +257,7 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
       {
         now,
         timeZone: input.timeZone,
-        course: course && doses ? withRecords(course, doses.records) : course,
+        course: course && doses ? withRecords(withoutRemovedPrev(course, doses.records), doses.records) : course,
         lastDoseSurvives,
         existing: existing.exists()
           ? { loggedByUid: (existing.get('loggedByUid') as string | undefined) ?? null, courseId: (existing.get('courseId') as string | undefined) ?? null }
@@ -252,13 +274,17 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
     // The pointer is the derived state after this dose (a cache that agrees with the records).
     const fresh: DosePointer = { logId, occurrence: plan.occurrence.key, occurrenceAt: plan.occurrence.at, givenAt: plan.givenAt.getTime(), byUid: input.user.uid, byName: input.user.name };
     const next = pointerAfter(course!, [...doses!.records, fresh]);
-    if (next.write) {
-      const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name };
-      tx.update(cRef, {
+    const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: input.user.uid, byName: input.user.name };
+    // Every online dose changes the course (its dose revision, and the pointer
+    // when it moves): a concurrent writer that read the course retries on a
+    // fresh read, even when this dose precedes both pointers.
+    tx.update(cRef, {
+      doseRevision: nextDoseRevision(raw),
+      ...(next.write ? {
         lastDose: storedPointer(next.latest, doses!.stored, { logId, value: freshValue }),
         prevDose: storedPointer(next.prev, doses!.stored, { logId, value: freshValue }),
-      });
-    }
+      } : {}),
+    });
     return { status: 'saved', logId, occurrence: plan.occurrence, nextAfter: plan.nextAfter } as const;
   });
 }
@@ -328,10 +354,11 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     const courseDose = typeof courseId === 'string';
     if (!cached?.exists() || (courseDose && cached.get('repeat') !== 'offline')) throw new MedicationActionError('offline');
     if (courseDose) {
-      // An online write may have made this offline dose the course's latest: then its pointer must move (online).
+      // An online write may have made this offline dose the course's latest or
+      // previous dose: then a pointer must move (online). The rules refuse the
+      // same when this device's cache is behind (reported as "didn't sync").
       const cachedCourse = await getDocFromCache(courseRef(db, householdId, petId, courseId)).catch(() => null);
-      const pointer = cachedCourse?.exists() ? readDosePointer(cachedCourse.get('lastDose')) : null;
-      if (!cachedCourse?.exists() || pointer?.logId === logId) throw new MedicationActionError('offline');
+      if (!cachedCourse?.exists() || pointersName(cachedCourse.data(), logId)) throw new MedicationActionError('offline');
     }
     const batch = writeBatch(db);
     batch.delete(logRef);
@@ -356,9 +383,11 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     const pointer = { coveredUntil: null, lastDose: readDosePointer(raw.lastDose), prevDose: readDosePointer(raw.prevDose) };
     const doses = await readCourseDoses(db, householdId, petId, courseId, logId);
     const next = pointerAfter(pointer, doses.records);
-    if (next.write) {
-      tx.update(cRef, { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) });
-    }
+    // The dose revision moves on every removal too (serializes with Give dose).
+    tx.update(cRef, {
+      doseRevision: nextDoseRevision(raw),
+      ...(next.write ? { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } : {}),
+    });
     return 'saved' as const;
   }));
 }
@@ -459,6 +488,12 @@ export async function runSaveCourse(db: Firestore, input: {
   /** Legacy names this new course takes over (D-P8 confirmation). */
   legacyKeys?: string[];
   timeZone?: string | null;
+  /**
+   * Editing: the course's fields as the form opened with them. When someone
+   * else changed them meanwhile, the save is refused (`changed`) instead of
+   * silently overwriting their edit.
+   */
+  base?: CourseFields;
 }): Promise<'saved' | 'already'> {
   if (isBrowserOffline()) throw new MedicationActionError('offline');
   const ref = courseRef(db, input.householdId, input.petId, input.courseId);
@@ -485,6 +520,9 @@ export async function runSaveCourse(db: Firestore, input: {
     if (!snapshot.exists()) throw new MedicationActionError('missing');
     if (snapshot.get('status') !== 'active') throw new MedicationActionError('not-active');
     const read = readCourse(input.courseId, snapshot.data());
+    if (read && input.base && (read.name !== input.base.name || read.dosage !== input.base.dosage || scheduleChanged(read, input.base))) {
+      throw new MedicationActionError('changed');
+    }
     // The coverage comes from the surviving doses (an offline-synced dose
     // included), the same derived state the form's preview shows.
     const doses = read ? await readCourseDoses(db, input.householdId, input.petId, input.courseId) : null;

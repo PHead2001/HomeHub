@@ -108,7 +108,10 @@ describe('reading the answers', () => {
     assert.equal(check!.staleConfirm, true);
     assert.equal(check!.check.last?.logId, 'd1');
     assert.equal(check!.check.last?.byName, null);
-    assert.deepEqual(doseConfirmOf(check!.check as never), { lastLogId: 'd1' });
+    // The answer is bound to the dose it named and the occurrence it was asked for (P3 round 7).
+    assert.deepEqual(doseConfirmOf(check!.check as never), { lastLogId: 'd1', occurrence: '2026-11-14T08:00' });
+    const folded = doseAgainCheck('pets.dose.give', { result: { ...asked.result, check: { ...asked.result.check, occurrence: { ...asked.result.check.occurrence, fold: 1 } } } });
+    assert.equal(doseConfirmOf(folded!.check as never).occurrence, '2026-11-14T08:00~1', 'the later of two same-clock occurrences keeps its identity');
     assert.equal(doseRepeatReason(check!.check as never, new Date('2026-11-14T14:10:00Z'), 'America/Chicago').includes('@'), false);
     assert.equal(doseAgainCheck('pets.note.add', asked), null);
     const any = confirmCheckOf('pets.dose.give.old', asked);
@@ -205,5 +208,7 @@ describe('F4b-2 review: the 12-hour line, retries and the request shape', () => 
     const records = read('src/lib/server/pet-records.ts');
     assert.equal((records.match(/tx\.set\(logRef/g) ?? []).length, 0);
     assert.ok((records.match(/writeDose\(/g) ?? []).length >= 5);
+    // P3 round 6: the helper moves the course's dose revision on with every online dose write.
+    assert.match(records, /tx\.update\(write\.course\.ref, \{ doseRevision: nextDoseRevision\(write\.course\.data\)/);
   });
 });

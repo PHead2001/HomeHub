@@ -249,8 +249,8 @@ export const setCourseFinishedFromTablet = (input: DevicePetsRequest & { petId: 
   pinAction(input.finished === true ? 'pets.course.finish' : 'pets.course.resume', input, options, (ctx, h) => setCourseFinishedAs(adminDb, h, { petId: input.petId, courseId: input.courseId, finished: input.finished === true }, ctx));
 
 /** `pets.course.edit` (create or edit) and, with a legacy name, `pets.medication.confirmLegacy`. */
-export const saveCourseFromTablet = (input: DevicePetsRequest & { petId: unknown; courseId?: unknown; create?: unknown; values: unknown; legacyKey?: unknown }, options: DevicePetsOptions = {}) =>
-  pinAction(input.legacyKey !== undefined && input.legacyKey !== null ? 'pets.medication.confirmLegacy' : 'pets.course.edit', input, options, (ctx, h) => saveCourseAs(adminDb, h, { petId: input.petId, courseId: input.courseId, create: input.create === true, values: input.values, legacyKey: input.legacyKey }, ctx));
+export const saveCourseFromTablet = (input: DevicePetsRequest & { petId: unknown; courseId?: unknown; create?: unknown; values: unknown; legacyKey?: unknown; base?: unknown }, options: DevicePetsOptions = {}) =>
+  pinAction(input.legacyKey !== undefined && input.legacyKey !== null ? 'pets.medication.confirmLegacy' : 'pets.course.edit', input, options, (ctx, h) => saveCourseAs(adminDb, h, { petId: input.petId, courseId: input.courseId, create: input.create === true, values: input.values, legacyKey: input.legacyKey, base: input.base }, ctx));
 
 /** `pets.profile.edit`: rename, vet contact, weight unit (no photo: not on tablets). */
 export const editPetProfileFromTablet = (input: DevicePetsRequest & Omit<ProfileAsInput, 'petId'> & { petId: unknown }, options: DevicePetsOptions = {}) =>

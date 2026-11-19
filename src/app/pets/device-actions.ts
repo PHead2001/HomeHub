@@ -149,7 +149,7 @@ export async function setCourseFinishedFromTabletAction(input: Request & { petId
   return run('Tablet course finish', (address) => setCourseFinishedFromTablet(input, { clientAddress: address }));
 }
 
-export async function saveCourseFromTabletAction(input: Request & { petId: string; courseId?: string; create?: boolean; values: Record<string, unknown>; legacyKey?: string | null }) {
+export async function saveCourseFromTabletAction(input: Request & { petId: string; courseId?: string; create?: boolean; values: Record<string, unknown>; legacyKey?: string | null; base?: Record<string, unknown> | null }) {
   return run('Tablet course', (address) => saveCourseFromTablet(input, { clientAddress: address }));
 }
 
