@@ -50,7 +50,7 @@ const openPets = async (page: Page) => {
 };
 
 const forgetFace = async (page: Page) => {
-  await page.getByTestId('tablet-done').click().catch(() => undefined);
+  await page.getByTestId('tablet-done').click({ timeout: 3_000 }).catch(() => undefined);
 };
 
 const pick = async (page: Page, uid: string) => {
@@ -73,13 +73,13 @@ test('setup: the owner pairs a tablet at 1263x818', async ({ page, browser }, te
   desktopOnly(testInfo);
   test.setTimeout(90_000);
   await setOwnerPin(page);
-  await seedPet('maple');
-  await seedPet('rex');
-  await seedPet('slots', {
+  await seedPet('tab-maple');
+  await seedPet('tab-rex');
+  await seedPet('tab-slots', {
     mealPlan: { slots: [{ id: 'slot-dinner', name: 'Dinner', time: chicagoTime(-30), amount: 0.5, unit: 'Cans' }], effectiveFrom: chicagoDay(), confirmedAt: Timestamp.now(), confirmedByUid: OWNER_UID, confirmedByName: 'Owner' },
   });
-  await seedPet('offline');
-  await seedPet('care');
+  await seedPet('tab-offline');
+  await seedPet('tab-care');
   const code = await createDeviceCode(page, 'Pets tablet', 'Kitchen');
   tablet = await openTabletContext(browser, TABLET_VIEWPORTS[0]);
   await pairWithCode(tabletPage(), code);
@@ -89,33 +89,33 @@ test('a face-chosen kid feeds and is credited (by Mia on Pets tablet); Undo remo
   desktopOnly(testInfo);
   const page = tabletPage();
   await openPets(page);
-  await page.getByTestId('tablet-pet-feed-maple').click();
+  await page.getByTestId('tablet-pet-feed-tab-maple').click();
   await pick(page, KID.uid);
-  await expect.poll(async () => (await feedings('maple').get()).size, { timeout: 15_000 }).toBe(1);
-  const log = (await feedings('maple').get()).docs[0].data();
+  await expect.poll(async () => (await feedings('tab-maple').get()).size, { timeout: 15_000 }).toBe(1);
+  const log = (await feedings('tab-maple').get()).docs[0].data();
   expect(log.loggedByUid).toBe(KID.uid);
   expect(log.deviceAttribution?.deviceName).toBe('Pets tablet');
   expect(log.deviceAttribution?.level).toBe('face');
   await page.getByTestId('tablet-undo').first().click();
-  await expect.poll(async () => (await feedings('maple').get()).size, { timeout: 15_000 }).toBe(0);
+  await expect.poll(async () => (await feedings('tab-maple').get()).size, { timeout: 15_000 }).toBe(0);
 });
 
 test('a feed on another device a minute ago: the tablet asks "Feed again?" and writes the answer once', async ({}, testInfo) => {
   desktopOnly(testInfo);
   const page = tabletPage();
   const at = Timestamp.fromDate(new Date(Date.now() - 60_000));
-  await feedings('rex').doc('phone-feed').set({ date: at, loggedAt: at, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM', loggedByUid: OWNER_UID, loggedByName: 'Owner', repeat: 'none' });
-  await pet('rex').collection('feeding-state').doc('current').set({ lastLogId: 'phone-feed', lastFedAt: at, lastFedByUid: OWNER_UID, lastFedByName: 'Owner', day: chicagoDay(), countOnDay: 1, prev: null });
+  await feedings('tab-rex').doc('phone-feed').set({ date: at, loggedAt: at, cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM', loggedByUid: OWNER_UID, loggedByName: 'Owner', repeat: 'none' });
+  await pet('tab-rex').collection('feeding-state').doc('current').set({ lastLogId: 'phone-feed', lastFedAt: at, lastFedByUid: OWNER_UID, lastFedByName: 'Owner', day: chicagoDay(), countOnDay: 1, prev: null });
   await forgetFace(page);
   await openPets(page);
-  await page.getByTestId('tablet-pet-feed-rex').click();
+  await page.getByTestId('tablet-pet-feed-tab-rex').click();
   await pick(page, OWNER_UID);
   await expect(page.getByTestId('tablet-feed-again')).toBeVisible();
   await expect(page.getByTestId('tablet-feed-again')).toContainText('Owner fed');
-  expect((await feedings('rex').get()).size).toBe(1);
+  expect((await feedings('tab-rex').get()).size).toBe(1);
   await page.getByTestId('tablet-feed-again-yes').click();
-  await expect.poll(async () => (await feedings('rex').get()).size, { timeout: 15_000 }).toBe(2);
-  const confirmed = (await feedings('rex').where('repeat', '==', 'confirmed').get()).docs;
+  await expect.poll(async () => (await feedings('tab-rex').get()).size, { timeout: 15_000 }).toBe(2);
+  const confirmed = (await feedings('tab-rex').where('repeat', '==', 'confirmed').get()).docs;
   expect(confirmed).toHaveLength(1);
   expect(confirmed[0].get('confirmOf')).toBe('phone-feed');
 });
@@ -124,10 +124,10 @@ test('a meal-slot pet logs the due slot and its portion (D-P5)', async ({}, test
   desktopOnly(testInfo);
   const page = tabletPage();
   await openPets(page);
-  await page.getByTestId('tablet-pet-feed-slots').click();
+  await page.getByTestId('tablet-pet-feed-tab-slots').click();
   // The owner is still remembered (2 minutes): no "Who's here?" this time (PE-17b).
-  await expect.poll(async () => (await feedings('slots').get()).size, { timeout: 15_000 }).toBe(1);
-  const log = (await feedings('slots').get()).docs[0].data();
+  await expect.poll(async () => (await feedings('tab-slots').get()).size, { timeout: 15_000 }).toBe(1);
+  const log = (await feedings('tab-slots').get()).docs[0].data();
   expect(log.slotId).toBe('slot-dinner');
   expect(log.cups).toBe(0.5);
   expect(log.foodAmountType).toBe('Cans');
@@ -139,13 +139,13 @@ test('offline: the feed waits on the tablet and is stored once when the connecti
   await forgetFace(page);
   await openPets(page);
   await tablet!.context.setOffline(true);
-  await page.getByTestId('tablet-pet-feed-offline').click();
+  await page.getByTestId('tablet-pet-feed-tab-offline').click();
   await pick(page, KID.uid);
   await expect(page.getByText('Saved on this tablet. It syncs when the connection is back.').first()).toBeVisible();
-  expect((await feedings('offline').get()).size).toBe(0);
+  expect((await feedings('tab-offline').get()).size).toBe(0);
   await tablet!.context.setOffline(false);
-  await expect.poll(async () => (await feedings('offline').get()).size, { timeout: 45_000 }).toBe(1);
-  const log = (await feedings('offline').get()).docs[0].data();
+  await expect.poll(async () => (await feedings('tab-offline').get()).size, { timeout: 45_000 }).toBe(1);
+  const log = (await feedings('tab-offline').get()).docs[0].data();
   expect(log.loggedByUid).toBe(KID.uid);
   expect(log.repeat).toBe('offline');
   expect(log.clockSource).toBe('device');
@@ -156,11 +156,11 @@ test('a care entry for the chosen person, and its Undo', async ({}, testInfo) =>
   const page = tabletPage();
   await forgetFace(page);
   await openPets(page);
-  await page.getByTestId('tablet-pet-care-care').click();
+  await page.getByTestId('tablet-pet-care-tab-care').click();
   await page.getByTestId('tablet-care-activity').fill('Brushing');
   await page.getByTestId('tablet-care-save').click();
   await pick(page, KID.uid);
-  const entries = () => pet('care').collection('care-logs').get();
+  const entries = () => pet('tab-care').collection('care-logs').get();
   await expect.poll(async () => (await entries()).size, { timeout: 15_000 }).toBe(1);
   expect((await entries()).docs[0].get('loggedByUid')).toBe(KID.uid);
   await page.getByTestId('tablet-undo').first().click();
@@ -172,7 +172,7 @@ test('at 1263x818 the Pets view has no page scroll and 48 px controls', async ({
   const page = tabletPage();
   await openPets(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  for (const testId of ['tablet-pet-feed-maple', 'tablet-pet-care-maple']) {
+  for (const testId of ['tablet-pet-feed-tab-maple', 'tablet-pet-care-tab-maple']) {
     const box = await page.getByTestId(testId).boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(48);
     expect(box!.width).toBeGreaterThanOrEqual(48);
