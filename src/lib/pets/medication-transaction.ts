@@ -127,6 +127,15 @@ const LATEST_DOSES = 6;
 const newestCourseDoses = (db: Firestore, householdId: string, petId: string, courseId: string) =>
   query(logsRef(db, householdId, petId), where('courseId', '==', courseId), orderBy('occurrenceAt', 'desc'), limit(LATEST_DOSES));
 
+/**
+ * Every dose of the course at one occurrence. The limited read breaks ties by
+ * document id, but `deriveCourseState` ranks tied doses by given-at time, so
+ * the doses tied at the read's oldest occurrence are all read: the newest
+ * given one there is never cut off by the limit.
+ */
+const courseDosesAt = (db: Firestore, householdId: string, petId: string, courseId: string, occurrenceAt: unknown) =>
+  query(logsRef(db, householdId, petId), where('courseId', '==', courseId), where('occurrenceAt', '==', occurrenceAt));
+
 /** A course's newest surviving doses, as records and as stored (a pointer copies stored values exactly). */
 type DoseRead = { records: DosePointer[]; stored: Map<string, DocumentData> };
 
@@ -139,8 +148,15 @@ type DoseRead = { records: DosePointer[]; stored: Map<string, DocumentData> };
  */
 async function readCourseDoses(db: Firestore, householdId: string, petId: string, courseId: string, excludeId?: string): Promise<DoseRead> {
   const newest = await getDocs(newestCourseDoses(db, householdId, petId, courseId));
+  const docs = [...newest.docs];
+  const cutoff = docs.length >= LATEST_DOSES ? docs[docs.length - 1].get('occurrenceAt') : undefined;
+  if (cutoff !== undefined && cutoff !== null) {
+    const seen = new Set(docs.map((entry) => entry.id));
+    const tied = await getDocs(courseDosesAt(db, householdId, petId, courseId, cutoff));
+    for (const entry of tied.docs) if (!seen.has(entry.id)) docs.push(entry);
+  }
   const stored = new Map<string, DocumentData>();
-  const logs = newest.docs.filter((entry) => entry.id !== excludeId).map((entry) => {
+  const logs = docs.filter((entry) => entry.id !== excludeId).map((entry) => {
     stored.set(entry.id, entry.data());
     return { id: entry.id, ...entry.data() };
   });

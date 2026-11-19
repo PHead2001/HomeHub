@@ -297,6 +297,34 @@ describe('Give dose on the emulator with the real rules', () => {
     assert.ok(nextDueOccurrence(state, TZ)!.at > ten.at, 'the in-between time is not due again');
   });
 
+  test('Undo with more tied doses than the read limit keeps the newest given one (ties are all read)', async () => {
+    const course = await readCourseNow();
+    const { prefill } = doseChoices(course, new Date(), TZ);
+    const at = Timestamp.fromMillis(prefill!.at);
+    const base = Date.now() - 60 * 60_000;
+    // Eight doses at one occurrence. The newest given one has the smallest id, so a
+    // read limited by occurrence (ties by id, descending) would leave it out.
+    const ids = ['a-newest', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'z-oldest'];
+    const minutes = [70, 60, 50, 40, 30, 20, 10, 0];
+    await environment.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      for (const [index, id] of ids.entries()) {
+        await setDoc(doc(db, 'households', household, 'pets', 'rex', 'medication-logs', id), {
+          courseId: 'apoquel', occurrence: prefill!.key, occurrenceAt: at, date: Timestamp.fromMillis(base + minutes[index] * 60_000),
+          loggedAt: Timestamp.fromMillis(base + minutes[index] * 60_000), medication: 'Apoquel', dosage: '1 tablet', notes: '',
+          loggedByUid: people.sam.uid, loggedByName: 'Sam', repeat: index === ids.length - 1 ? 'none' : 'confirmed',
+        });
+      }
+      await setDoc(courseDoc(db as unknown as Firestore), {
+        lastDose: { logId: 'm1', occurrence: prefill!.key, occurrenceAt: at, givenAt: Timestamp.fromMillis(base + 60 * 60_000), byUid: people.sam.uid, byName: 'Sam' },
+      }, { merge: true });
+    });
+    await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: 'm1' });
+    const state = await readCourseNow();
+    assert.equal(state.lastDose?.logId, 'a-newest', 'the newest given dose at the tied occurrence');
+    assert.equal(state.prevDose?.logId, 'm2');
+  });
+
   test('a schedule edit counts an offline-synced dose (C): coverage saved as the preview shows', async () => {
     const course = await readCourseNow();
     const given = occurrencesAfter({ schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay }, Date.now() - 3 * 3_600_000, TZ, 1)[0];
