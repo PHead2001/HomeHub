@@ -43,10 +43,15 @@ export const weatherFromRecord = (display: DeviceSettings['display']): { enabled
   unit: display.temperatureUnit === 'F' ? 'fahrenheit' : 'celsius',
 });
 
-/** View permissions from the record's sections only; no write permission at all (read-only until F4). */
+/**
+ * What the tablet's views offer, from the record's sections: viewing, and Done on chores
+ * (sent as a device action; the server decides for the person chosen in "Who's here?").
+ * Nothing else is offered as writable (Pets follow in F4b).
+ */
 export function devicePermissions(sections: DeviceSettings['sections']): Record<HouseholdPermission, boolean> {
   const permissions = Object.fromEntries(householdPermissions.map((permission) => [permission, false])) as Record<HouseholdPermission, boolean>;
   permissions['chores.view'] = sections.chores;
+  permissions['chores.complete'] = sections.chores;
   permissions['shopping.view'] = sections.shopping;
   permissions['pets.view'] = sections.pets;
   permissions['maintenance.view'] = sections.maintenance;

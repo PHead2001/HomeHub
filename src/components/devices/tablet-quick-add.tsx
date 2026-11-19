@@ -29,7 +29,11 @@ export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
   const choose = (intent: LocalIntent) => {
     setText('');
     onClose();
-    void runAction({ capability: intent.capability, label: intent.label });
+    void runAction({
+      capability: intent.capability,
+      label: intent.label,
+      intent: intent.kind === 'complete' ? { choreId: intent.choreId } : { petId: intent.petId },
+    });
   };
 
   return (

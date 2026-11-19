@@ -179,7 +179,13 @@ export const DEVICE_CAPABILITIES = Object.keys(DEVICE_ACTION_POLICY) as DeviceCa
  * Capabilities whose Undo is proven (tracker WT-20f evidence, section 10.4). Edited only
  * in the PR that records that evidence; until then every `face*` capability needs a PIN.
  */
-export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>([]);
+export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>([
+  // Chores (F4a): tests/server/device-chores-undo.test.ts, the seven cases of 10.4.
+  'chores.complete',
+  'chores.complete.undo',
+  'chores.take',
+  'chores.take.undo',
+]);
 
 export const isDeviceCapability = (value: unknown): value is DeviceCapability =>
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(DEVICE_ACTION_POLICY, value);

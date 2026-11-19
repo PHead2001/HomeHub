@@ -64,8 +64,6 @@ type SendFields = Pick<QueuedDeviceAction, typeof SEND_FIELDS[number]>;
 
 export const RETRY_BASE_MS = 5_000;
 export const RETRY_CAP_MS = 5 * 60_000;
-/** The Undo window on the device clock for an action sent live (UNDO_WINDOW_MS). */
-export const LIVE_UNDO_WINDOW_MS = 10_000;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -161,7 +159,12 @@ export const neverSent = (entry: QueuedDeviceAction): boolean => entry.attempts 
 export const syncOrder = (entries: readonly QueuedDeviceAction[]): QueuedDeviceAction[] =>
   [...entries].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.opId.localeCompare(b.opId));
 
-export type SendResult = { ok: true } | { ok: false; code: DeviceRefusal };
+/**
+ * A sync answer. `reason` (plain words, lower case, ending with a full stop) explains a
+ * domain refusal the server answered successfully (for example "that chore isn't due yet."),
+ * so the dropped-change notice can say why.
+ */
+export type SendResult = { ok: true } | { ok: false; code: DeviceRefusal; reason?: string };
 export type QueueSender = (entry: QueuedDeviceAction) => Promise<SendResult>;
 
 export type SyncOutcome = 'delete' | 'revoked' | 'drop' | 'retry';
@@ -197,13 +200,13 @@ const ACTION_WORDS: Partial<Record<DeviceCapability, string>> = {
 };
 
 /** The one plain notice for dropped entries ("1 change from this tablet couldn't be saved: …"). */
-export function dropNotice(dropped: ReadonlyArray<{ entry: QueuedDeviceAction; code: DeviceRefusal }>): string | null {
+export function dropNotice(dropped: ReadonlyArray<{ entry: QueuedDeviceAction; code: DeviceRefusal; reason?: string }>): string | null {
   if (dropped.length === 0) return null;
   const count = dropped.length === 1 ? '1 change' : `${dropped.length} changes`;
   const first = dropped[0];
   const name = first.entry.actorName.trim() || 'Someone';
   const what = ACTION_WORDS[first.entry.capability] ?? 'do that';
-  const reason = (() => {
+  const reason = first.reason ?? (() => {
     switch (first.code) {
       case 'actor_not_member':
       case 'actor_inactive':
@@ -231,36 +234,9 @@ export function dropNotice(dropped: ReadonlyArray<{ entry: QueuedDeviceAction; c
   return `${count} from this tablet couldn't be saved: ${reason}`;
 }
 
-export type UndoPlan =
-  /** Never sent: removed from the queue together with its Undo; the server never knew. */
-  | { kind: 'remove-locally' }
-  /** Send the Undo intent by opId now. */
-  | { kind: 'send'; originalQueued: boolean }
-  /** Offline: queue the Undo intent (the server's tombstone makes the order irrelevant). */
-  | { kind: 'queue'; originalQueued: boolean }
-  | { kind: 'refuse'; code: 'undo_expired' };
-
-/**
- * How to undo an action (10.3, R1). `queued` is the action's queue entry, if it is still
- * there; `sentAt` the device time a live action was answered. An Undo is always sent to
- * the server by opId unless the action never left the tablet. R1: an Undo is accepted late
- * only when the original was itself a queued replay, so for an action sent live the device
- * clock never extends the 10 s window.
- */
-export function planUndo(input: {
-  queued: QueuedDeviceAction | undefined;
-  /** The original was sent from the queue (now or earlier). */
-  originalViaQueue: boolean;
-  /** Live actions: device time the server answered (or the send started, if unanswered). */
-  sentAt: number | null;
-  online: boolean;
-  now: number;
-}): UndoPlan {
-  if (input.queued && neverSent(input.queued)) return { kind: 'remove-locally' };
-  const originalQueued = Boolean(input.queued) || input.originalViaQueue;
-  if (!originalQueued && input.sentAt !== null && input.now - input.sentAt > LIVE_UNDO_WINDOW_MS) return { kind: 'refuse', code: 'undo_expired' };
-  return input.online ? { kind: 'send', originalQueued } : { kind: 'queue', originalQueued };
-}
+// How an Undo is routed (remove a never-sent entry locally, send by opId, queue the Undo
+// intent, or needs a connection) is the Undo journal's state machine: `undoRoute` in
+// undo-journal.ts, run by `runUndo` in undo-flow.ts.
 
 // ---------------------------------------------------------------------------
 // Store operations (each under the queue lock)
@@ -292,7 +268,7 @@ export type SyncReport = {
   deleted: number;
   /** Discarded unsent: made under another household, device record or credential generation. */
   discarded: number;
-  dropped: Array<{ entry: QueuedDeviceAction; code: DeviceRefusal }>;
+  dropped: Array<{ entry: QueuedDeviceAction; code: DeviceRefusal; reason?: string }>;
   /** A revocation code was answered: the caller runs the revocation flow. */
   revoked: boolean;
   /** Entries still waiting (backoff or after a transient failure). */
@@ -312,7 +288,18 @@ export async function syncQueue(deps: {
   session: QueueSession;
   now: () => number;
   lock?: Lock;
+  /** Called once an entry is durably marked in flight, before it is sent (the journal: queued-sent). */
+  onSending?: (entry: QueuedDeviceAction) => Promise<void> | void;
+  /** Called with each entry's outcome (the journal: confirmed, refused, or sent without an answer). */
+  onResult?: (entry: QueuedDeviceAction, outcome: SyncOutcome, result: SendResult) => Promise<void> | void;
 }): Promise<SyncReport> {
+  const hook = async (work: () => Promise<void> | void) => {
+    try {
+      await work();
+    } catch {
+      // The journal is best effort; the queue's own state decides what is sent.
+    }
+  };
   const lock = deps.lock ?? defaultLock;
   return lock(async () => {
     const report: SyncReport = { sent: 0, deleted: 0, discarded: 0, dropped: [], revoked: false, waiting: 0 };
@@ -335,6 +322,7 @@ export async function syncQueue(deps: {
       }
       const inflight = withSendFields(stored, { attempts: stored.attempts + 1, sendState: 'inflight' });
       await deps.store.put(inflight);
+      if (deps.onSending) await hook(() => deps.onSending!(inflight));
       let result: SendResult;
       try {
         result = await deps.send(inflight);
@@ -344,12 +332,14 @@ export async function syncQueue(deps: {
       }
       report.sent += 1;
       const outcome = classifySyncResult(result);
+      if (deps.onResult) await hook(() => deps.onResult!(inflight, outcome, result));
       if (outcome === 'delete') {
         await deps.store.delete(inflight.opId);
         report.deleted += 1;
       } else if (outcome === 'drop') {
         await deps.store.delete(inflight.opId);
-        report.dropped.push({ entry: inflight, code: (result as { code: DeviceRefusal }).code });
+        const refused = result as { code: DeviceRefusal; reason?: string };
+        report.dropped.push({ entry: inflight, code: refused.code, ...(refused.reason ? { reason: refused.reason } : {}) });
       } else if (outcome === 'revoked') {
         report.revoked = true;
         return report;
