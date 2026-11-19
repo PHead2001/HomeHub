@@ -3,6 +3,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
+import type { DecodedIdToken } from 'firebase-admin/auth';
 import { exceedsPayloadBudget } from '@/ai/action-auth';
 import { effectivePermissions } from '@/lib/household-policy';
 import {
@@ -24,8 +25,7 @@ import { classifyVerifyError } from '@/lib/devices/verify-errors';
 import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { devicesEnabled } from '@/lib/server/device-identity';
-import { takeRateSlot } from '@/lib/server/device-management';
-import { addressBucket } from '@/lib/devices/rate-window';
+import { takeAddressRateSlot, takeRateSlot } from '@/lib/server/device-management';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import {
   appliedEntry,
@@ -78,7 +78,7 @@ export type DeviceActionRequest = {
   /** Required for every mutating face/PIN capability (a client UUID). */
   opId?: string;
   /** Replay from the offline queue. */
-  queued?: { createdAt: string };
+  queued?: { createdAt: string; generation: number };
 };
 
 /** Stored as `deviceAttribution` next to the module's actor fields (section 12.1). */
@@ -146,6 +146,10 @@ export type DeviceAuthority = {
   attribution: DeviceAttribution | null;
   /** The server clock this authorization used (also used by the hooks). */
   now: Date;
+  /** The request is a replay from the tablet's offline queue (section 11, R1). */
+  queued: boolean;
+  /** A queued request: the device-clock time its queue entry was made (ISO), else null. */
+  queuedCreatedAt: string | null;
   hooks: DeviceTxHooks;
 };
 
@@ -186,7 +190,7 @@ export const PRE_AUTH_LIMITS = {
 
 /** Before anything else: the caller's address bucket (IPv6 by /64, `addressBucket`). */
 export const preAuthAddressLimit = (kind: keyof typeof PRE_AUTH_LIMITS, clientAddress: string | undefined, nowMs: number) => {
-  if (clientAddress !== undefined && !takeRateSlot(`pre:${kind}:address:${addressBucket(clientAddress)}`, PRE_AUTH_LIMITS[kind].perAddress, nowMs)) {
+  if (clientAddress !== undefined && !takeAddressRateSlot(`pre:${kind}`, clientAddress, PRE_AUTH_LIMITS[kind].perAddress, nowMs)) {
     throw new DeviceActionError('rate_limited');
   }
 };
@@ -225,25 +229,29 @@ export const verifyDeviceToken = async (
     console.warn('Device token could not be verified right now.', error instanceof Error ? error.message : String(error));
     throw new DeviceActionError('unavailable');
   };
-  let decoded;
-  // The local signature and expiry check first (no revocation lookup); only a genuine
-  // token goes on to spend shared budgets and the revocation check.
+  const claimsOf = (decoded: DecodedIdToken): DeviceClaims => {
+    const claims = readDeviceClaims({ ...decoded, uid: decoded.uid, email: decoded.email, signInProvider: decoded.firebase?.sign_in_provider });
+    if (!claims) throw new DeviceActionError('not_a_device');
+    if (typeof householdId !== 'string' || claims.hh_household !== householdId) throw new DeviceActionError('wrong_household');
+    return claims;
+  };
+  // The local signature and expiry check first (no revocation lookup), then the device
+  // claims and household: only a genuine tablet token of this household goes on to spend
+  // shared budgets and the revocation check.
+  let decoded: DecodedIdToken | undefined;
   try {
     decoded = await adminAuth.verifyIdToken(idToken, false);
   } catch (error) {
     refuse(error);
   }
+  claimsOf(decoded!);
   options.onSignatureVerified?.();
   try {
     decoded = await adminAuth.verifyIdToken(idToken, true);
   } catch (error) {
     refuse(error);
   }
-  if (!decoded) throw new DeviceActionError('unauthenticated');
-  const claims = readDeviceClaims({ ...decoded, uid: decoded.uid, email: decoded.email, signInProvider: decoded.firebase?.sign_in_provider });
-  if (!claims) throw new DeviceActionError('not_a_device');
-  if (typeof householdId !== 'string' || claims.hh_household !== householdId) throw new DeviceActionError('wrong_household');
-  return claims;
+  return claimsOf(decoded!);
 };
 
 /** 8.4 steps 4-5: the household exists and is not being deleted; the record is active at the token's generation. */
@@ -380,10 +388,13 @@ const evaluate = (
 };
 
 /** Section 11.3 limits for queued replays. */
-const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabilityPolicy, required: RequiredLevel, now: Date) => {
+const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabilityPolicy, required: RequiredLevel, now: Date, tokenGeneration: number) => {
   if (!queued) return;
   const createdAt = typeof queued.createdAt === 'string' ? Date.parse(queued.createdAt) : NaN;
   if (!Number.isFinite(createdAt)) throw new DeviceActionError('invalid_input');
+  // A queued entry belongs to the credential generation it was made under.
+  if (typeof queued.generation !== 'number') throw new DeviceActionError('invalid_input');
+  if (queued.generation !== tokenGeneration) throw new DeviceActionError('stale_intent');
   if (createdAt > now.getTime() + QUEUED_MAX_FUTURE_MS || now.getTime() - createdAt > QUEUED_MAX_AGE_MS) {
     throw new DeviceActionError('stale_intent');
   }
@@ -398,19 +409,18 @@ const checkQueued = (queued: DeviceActionRequest['queued'], policy: DeviceCapabi
  */
 export async function authorizeDeviceAction(
   request: DeviceActionRequest,
-  nowInput?: Date,
   options: {
     undoProven?: ReadonlySet<DeviceCapability>;
     clientAddress?: string;
-    /** The server clock (injectable for tests). Default: a fixed `nowInput` when given, else the real time. */
+    /** The server clock; the real time unless a test injects one. */
     clock?: () => Date;
   } = {},
 ): Promise<DeviceAuthority> {
   const undoProven = options.undoProven ?? UNDO_PROVEN;
   // Read again inside every transaction attempt (precheck), so a retried transaction never
   // accepts a session that expired, or an admin-PIN session that went stale, meanwhile.
-  const clock = options.clock ?? (nowInput ? () => nowInput : () => new Date());
-  const now = nowInput ?? clock();
+  const clock = options.clock ?? (() => new Date());
+  const now = clock();
   // Step 1: shape.
   if (!request || typeof request !== 'object' || exceedsPayloadBudget(request, DEVICE_REQUEST_MAX_BYTES)) {
     throw new DeviceActionError('invalid_input');
@@ -460,7 +470,7 @@ export async function authorizeDeviceAction(
 
   const first = evaluate(await read(ref => ref.get()), claims, evaluationRequest, policy, now, undoProven);
   // Step 11: queued replay.
-  checkQueued(request.queued, policy, first.required, now);
+  checkQueued(request.queued, policy, first.required, now, claims.hh_gen);
 
   const ledgerRef = opId ? opRef(householdRef, claims.hh_device, opId) : null;
   const undo = isUndoCapability(capability);
@@ -482,6 +492,8 @@ export async function authorizeDeviceAction(
     opId,
     attribution: attributionOf(first),
     now,
+    queued: Boolean(request.queued),
+    queuedCreatedAt: deviceCreatedAt,
     hooks: {
       precheck: async () => { throw new Error('unreachable'); },
       finalize: () => { throw new Error('unreachable'); },
@@ -500,7 +512,7 @@ export async function authorizeDeviceAction(
       checkedAt = clock();
       authority.now = checkedAt;
       current = evaluate(snaps, claims, evaluationRequest, policy, checkedAt, undoProven);
-      checkQueued(request.queued, policy, current.required, checkedAt);
+      checkQueued(request.queued, policy, current.required, checkedAt, claims.hh_gen);
       authority.actor = current.actor;
       authority.level = current.level;
       authority.deviceName = current.deviceName;

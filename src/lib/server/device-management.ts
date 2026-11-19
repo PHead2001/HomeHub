@@ -5,7 +5,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/server/firebase-admin';
 import { INVITE_CHARS } from '@/lib/invite-codes';
 import { DEVICE_CODE_TTL_MS, MAX_LIVE_DEVICE_CODES, normalizeDeviceCode } from '@/lib/devices/device-codes';
-import { takeRateWindowSlot } from '@/lib/devices/rate-window';
+import { addressBucket, takeRateWindowSlot } from '@/lib/devices/rate-window';
 import { UNKNOWN_CLIENT } from '@/lib/devices/client-address';
 import {
   DEVICE_NAME_MAX,
@@ -529,10 +529,25 @@ limitState.__homeHubDeviceWindows = windows;
 /**
  * Counts one call in a 60 s window; false when `max` calls were already counted. The map
  * is bounded: emptied windows are swept and the oldest keys dropped past a fixed size
- * (src/lib/devices/rate-window.ts).
+ * (src/lib/devices/rate-window.ts). For keys known to the server (a verified tablet or
+ * person, the instance); keys taken from an unauthenticated caller's address use
+ * `takeAddressRateSlot`, a separate map, so they can never push these out.
  */
 export const takeRateSlot = (key: string, max: number, nowMs = Date.now()): boolean =>
   takeRateWindowSlot(windows, key, max, nowMs);
+
+type AddressLimitState = typeof globalThis & { __homeHubDeviceAddressWindows?: Map<string, number[]> };
+const addressLimitState = globalThis as AddressLimitState;
+const addressWindows = addressLimitState.__homeHubDeviceAddressWindows || new Map<string, number[]>();
+addressLimitState.__homeHubDeviceAddressWindows = addressWindows;
+
+/**
+ * As `takeRateSlot`, for buckets keyed by a caller's client address before anything about
+ * the caller is known. The address is bucketed (IPv6 by /64, `addressBucket`) and the
+ * windows live in their own bounded map.
+ */
+export const takeAddressRateSlot = (scope: string, address: string, max: number, nowMs = Date.now()): boolean =>
+  takeRateWindowSlot(addressWindows, `${scope}:${addressBucket(address)}`, max, nowMs);
 
 export const REDEEM_LIMITS = { perAddress: 10, perInstance: 300 };
 
@@ -551,7 +566,7 @@ export const redeemDeviceCodeGuarded = async (
   const nowMs = (options.now ?? new Date()).getTime();
   if (!takeRateSlot('redeem:instance', limits.perInstance, nowMs)) throw new DeviceError('rate_limited');
   // Never skipped: a missing or untrusted address is limited in the one 'unknown' bucket.
-  if (!takeRateSlot(`redeem:address:${input.address || UNKNOWN_CLIENT}`, limits.perAddress, nowMs)) throw new DeviceError('rate_limited');
+  if (!takeAddressRateSlot('redeem', input.address || UNKNOWN_CLIENT, limits.perAddress, nowMs)) throw new DeviceError('rate_limited');
   if (!(await verifyRedemptionAppCheck(input.appCheckToken))) throw new DeviceError('app_check_failed');
   return redeemDeviceCode({ code: input.code, nonce: input.nonce }, options.now);
 };

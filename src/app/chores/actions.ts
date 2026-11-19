@@ -7,6 +7,7 @@ import { adminDb } from '@/lib/server/firebase-admin';
 import { runHouseholdReminders } from '@functions/reminders';
 import { ChoreCompletionError, completeChoresAs, reopenChoreAs, undoChoreCompletionAs } from '@/lib/server/chore-completion';
 import type { SubTaskRestore } from '@/lib/chores/completion';
+import { personalOperationContext } from '@/lib/server/operation-context';
 
 // functions/ pins its own firebase-admin version; the Firestore calls used are
 // identical across versions, so the instance is passed through untyped.
@@ -65,7 +66,9 @@ const runChoreAction = async <T>(
 
 /** Completes chores as the signed-in member (refusing any due after today). */
 export async function completeChores(input: ChoreActionContext & { choreIds: string[]; completeSubTasks?: boolean }) {
-  return runChoreAction(input, user => completeChoresAs(adminDb, user, user.householdId, input, upkeepNow()));
+  // The personal path: the verified caller as the operation's actor, no device hooks.
+  return runChoreAction(input, user => completeChoresAs(adminDb, user.householdId, input,
+    personalOperationContext({ uid: user.uid, name: user.displayName ?? '' }, upkeepNow())));
 }
 
 /** Undoes one completion, only while `completionId` is still its current completion. */

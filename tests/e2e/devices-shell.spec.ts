@@ -18,8 +18,8 @@ import {
 // The registered wall tablet's shell against the emulators (docs/modules/devices/README.md,
 // "Tablet shell", "Protected exit and Tablet settings", "Revocation on the tablet"; design
 // 13-14; WT-5, WT-8, WT-9, WT-11, WT-14, WT-16, WT-19, D-T1-D-T18): the household resting
-// view at the measured sizes, sections and deep links, local quick add (read-only tablet
-// until F4), "Who's here?", the PIN pad (wrong, right, lockout), admin settings live, the
+// view at the measured sizes, sections and deep links, local quick add (Pets refused until
+// F4b; chores: devices-chores.spec.ts), "Who's here?", the PIN pad (wrong, right, lockout), admin settings live, the
 // idle return and the ambient screen, the protected exit, and a removal observed.
 
 const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'desktop-chromium', 'tablet journeys run once, in their own tablet-sized browser');
@@ -101,7 +101,7 @@ test('sections: a switched-off section leaves the rail and its deep link lands o
   await expect(page.getByTestId('tablet-pet-maple')).toBeVisible();
 });
 
-test('quick add matches locally; every write is refused until the device actions exist', async ({}, testInfo) => {
+test('quick add matches locally; Pets stays refused on tablets until its device actions exist (F4b)', async ({}, testInfo) => {
   desktopOnly(testInfo);
   const page = tabletPage();
   await page.getByTestId('tablet-add').click();
