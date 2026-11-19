@@ -13,14 +13,18 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { tabletListener } from '@/lib/devices/tablet-listener';
-import type { QuerySnapshot } from 'firebase/firestore';
-import { Bell, CalendarDays, Check, CheckSquare, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed, Wrench } from 'lucide-react';
+import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
+import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed, Wrench } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useFeedAction } from '@/components/pets/use-feed-action';
 import { HoldToFeedOverlay, useHoldToFeed } from '@/components/pets/hold-to-feed';
 import type { QuickFeedController } from '@/components/pets/quick-feed-button';
+import { FeedEarlierDialog } from '@/components/pets/feed-earlier-dialog';
+import { FeedPressFill, useFeedPress } from '@/components/pets/feed-press';
+import type { FeedAction } from '@/components/pets/use-feed-action';
+import type { FeedingEntry } from '@/lib/pets/care';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { playFeedback } from '@/lib/feedback';
 import { formatPortion } from '@/lib/pets/care';
@@ -35,7 +39,7 @@ import {
   shoppingListsSection,
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
-import { TabletMedicationChips, TabletPetSheet } from './tablet-pet-sheet';
+import { TabletMedicationChips, TabletPetSheet, usePetLive } from './tablet-pet-sheet';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 // Every section view reads the UNCAPPED section facts (`data.sectionFacts`, SECTION_LIMITS)
@@ -159,6 +163,9 @@ function TabletPetRow({ pet, onCare, onOpen }: { pet: PetState; onCare: (pet: Pe
     returnFocus: () => undefined, feed: () => run(),
   };
   const { hold, handlers } = useHoldToFeed(controller, avatar);
+  // "When did <pet> eat?": press and hold Feed (500 ms), its clock button, right-click or Shift+Enter.
+  const [earlier, setEarlier] = useState(false);
+  const { press, handlers: pressHandlers } = useFeedPress({ enabled: action.allowed && Boolean(feed) && !action.saving, onHold: () => setEarlier(true) });
   const button = 'inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-lg border border-border px-4 text-base font-medium disabled:opacity-60';
   return (
     <li className="flex min-h-14 items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3" data-testid={`tablet-pet-${pet.id}`}>
@@ -183,20 +190,79 @@ function TabletPetRow({ pet, onCare, onOpen }: { pet: PetState; onCare: (pet: Pe
           <button type="button" className={button} onClick={() => onCare(pet)} aria-label={`Log care for ${pet.name}`} data-testid={`tablet-pet-care-${pet.id}`}>
             <HeartPulse aria-hidden className="h-5 w-5" /> Care
           </button>
-          <button
-            type="button"
-            className={cn(button, 'border-primary/40 text-primary')}
-            disabled={!feed || action.saving}
-            onClick={() => void run()}
-            aria-label={feed ? `Feed ${pet.name} ${portion}` : `Feed ${pet.name} (feeding status unavailable)`}
-            title={`Or press and hold the picture of ${pet.name} to feed.`}
-            data-testid={`tablet-pet-feed-${pet.id}`}
-          >
-            <UtensilsCrossed aria-hidden className="h-5 w-5" /> Feed
-          </button>
+          <span className="flex">
+            <button
+              type="button"
+              className={cn(button, 'relative select-none rounded-r-none border-primary/40 text-primary [-webkit-touch-callout:none] [touch-action:manipulation]')}
+              disabled={!feed || action.saving}
+              onClick={() => void run()}
+              aria-label={feed ? `Feed ${pet.name} ${portion}` : `Feed ${pet.name} (feeding status unavailable)`}
+              aria-describedby={`tablet-feed-hint-${pet.id}`}
+              title={`Or press and hold the picture of ${pet.name} to feed.`}
+              data-testid={`tablet-pet-feed-${pet.id}`}
+              data-press-phase={press.phase}
+              {...pressHandlers}
+            >
+              <UtensilsCrossed aria-hidden className="h-5 w-5" /> Feed
+              <FeedPressFill press={press} />
+            </button>
+            <button
+              type="button"
+              className={cn(button, 'rounded-l-none border-l-0 border-primary/40 px-3 text-primary')}
+              disabled={!feed || action.saving}
+              onClick={() => setEarlier(true)}
+              aria-label={`Choose feeding time for ${pet.name}`}
+              data-testid={`tablet-pet-feed-earlier-${pet.id}`}
+            >
+              <Clock aria-hidden className="h-5 w-5" />
+            </button>
+          </span>
+          <span id={`tablet-feed-hint-${pet.id}`} className="sr-only">Press and hold Feed, or use the clock button, to log an earlier feeding.</span>
         </span>
       )}
+      {earlier && feed && <TabletFeedEarlier pet={pet} action={action} onClose={() => setEarlier(false)} />}
     </li>
+  );
+}
+
+/**
+ * "When did <pet> eat?" on the tablet (owner request "Feed earlier"): the shared dialog, with
+ * the pet's meal times and recent feedings read live through the tablet's listener while it
+ * is open. Saving goes through the shared feed hook, so it is a device action: `pets.feed`
+ * with the chosen time (the server picks `pets.feed.backdated`, or the PIN-level `.old` past
+ * 12 hours), "Who's here?" first and Undo after, like Feed.
+ */
+function TabletFeedEarlier({ pet, action, onClose }: { pet: PetState; action: FeedAction; onClose: () => void }) {
+  const { householdId, household } = useTablet();
+  const feed = pet.feed;
+  const profile = usePetLive(householdId, ['pets', pet.id], 'doc', (snapshot) => ((snapshot as DocumentSnapshot).data?.() ?? null) as Record<string, unknown> | null);
+  const logs = usePetLive(
+    householdId,
+    ['pets', pet.id, 'feeding-logs'],
+    'collection',
+    (snapshot) => ('docs' in snapshot ? snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data({ serverTimestamps: 'estimate' }) }) as FeedingEntry) : []),
+    { field: 'date', max: 40 },
+  );
+  if (!feed) return null;
+  return (
+    <FeedEarlierDialog
+      open
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      petName={pet.name}
+      timeZone={household?.timeZone ?? null}
+      pet={profile && !profile.failed && profile.value ? (profile.value as Parameters<typeof FeedEarlierDialog>[0]['pet']) : null}
+      logs={logs && !logs.failed ? logs.value : null}
+      fallbackPortion={{ amount: feed.amount, unit: feed.unit }}
+      lastFed={pet.headline}
+      saving={action.saving}
+      onSave={async (choice) => (await action.run({
+        portion: choice.portion,
+        portionFromSlot: !choice.backdatedAt,
+        food: feed.foodType,
+        known: feed.known,
+        ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}),
+      })) !== null}
+    />
   );
 }
 

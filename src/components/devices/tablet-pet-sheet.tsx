@@ -51,7 +51,7 @@ const primary = 'inline-flex min-h-12 items-center justify-center rounded-lg bg-
 const field = 'min-h-12 text-base';
 
 /** One live collection or document under the pet, through the tablet's listener (null: loading; 'failed': unreadable). */
-function usePetLive<T>(householdId: string, path: string[], build: 'collection' | 'doc', read: (snapshot: QuerySnapshot | DocumentSnapshot) => T, order?: { field: string; max: number }) {
+export function usePetLive<T>(householdId: string, path: string[], build: 'collection' | 'doc', read: (snapshot: QuerySnapshot | DocumentSnapshot) => T, order?: { field: string; max: number }) {
   const key = path.join('/');
   const [state, setState] = useState<{ key: string; value: T | null; failed: boolean } | null>(null);
   useEffect(() => {

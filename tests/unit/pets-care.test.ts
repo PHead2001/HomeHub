@@ -491,7 +491,7 @@ describe('pet links, morph and shortcut', () => {
     assert.deepEqual(quickFeedFood('unavailable', undefined), { ready: true, foodType: 'Dry', fallback: true });
     const button = readFileSync(resolve(process.cwd(), 'src/components/pets/quick-feed-button.tsx'), 'utf8');
     assert.match(button, /if \(!allowed \|\| !ready \|\|/);
-    assert.equal((button.match(/disabled=\{quick\.saving \|\| !quick\.ready\}/g) ?? []).length, 2, 'Feed button and Confirm');
+    assert.equal((button.match(/disabled=\{quick\.saving \|\| !quick\.ready\}/g) ?? []).length, 3, 'Feed button, its clock (Feed earlier) and Confirm');
     assert.match(button, /last feeding unavailable/);
     const hold = readFileSync(resolve(process.cwd(), 'src/components/pets/hold-to-feed.tsx'), 'utf8');
     assert.match(hold, /!feed\.ready/);
