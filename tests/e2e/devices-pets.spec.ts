@@ -96,8 +96,15 @@ test('a face-chosen kid feeds and is credited (by Mia on Pets tablet); Undo remo
   expect(log.loggedByUid).toBe(KID.uid);
   expect(log.deviceAttribution?.deviceName).toBe('Pets tablet');
   expect(log.deviceAttribution?.level).toBe('face');
+  // The Undo toast starts below the top bar: Done, notices and settings stay reachable.
+  const bar = await page.getByTestId('tablet-top-bar').boundingBox();
+  const toast = await page.getByTestId('tablet-undo').first().boundingBox();
+  expect(toast!.y).toBeGreaterThanOrEqual(bar!.y + bar!.height);
   await page.getByTestId('tablet-undo').first().click();
   await expect.poll(async () => (await feedings('tab-maple').get()).size, { timeout: 15_000 }).toBe(0);
+  // Done ends the remembered person straight away, even with a toast on screen.
+  await page.getByTestId('tablet-done').click({ timeout: 5_000 });
+  await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
 });
 
 test('a feed on another device a minute ago: the tablet asks "Feed again?" and writes the answer once', async ({}, testInfo) => {
