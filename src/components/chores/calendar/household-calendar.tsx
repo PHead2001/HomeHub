@@ -358,7 +358,7 @@ export function HouseholdCalendar() {
     ...medicationEvents(medication, timeZone),
     ...medicationDueEvents(medication, householdToday, courses),
     // Recomputed with the household day; a label such as "Due since 8:00 PM" uses the time of computing.
-    ...courseDueEvents(courses, new Date(), timeZone, visibleDays[visibleDays.length - 1] > householdToday ? visibleDays[visibleDays.length - 1] : householdToday),
+    ...courseDueEvents(courses, new Date(), timeZone, visibleDays[visibleDays.length - 1] > householdToday ? visibleDays[visibleDays.length - 1] : householdToday, visibleDays[0]),
   ], [chores, templates, members, maintenance, medication, courses, today, visibleDays, timeZone, householdToday]);
   const byDay = useMemo(() => groupByDay(events), [events]);
   const rail = useMemo(() => overdueRail(events), [events]);

@@ -25,6 +25,7 @@ import {
   DOSE_BACKDATE_MAX_MS,
   DOSE_UNDO_COPY,
   courseDue,
+  doseLinkDecision,
   lastDoseLine,
   legacyMedicationKey,
   newDoseOpId,
@@ -97,10 +98,14 @@ export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId 
 
   // A reminder's link (`?dose=`): open Give dose for that course once the courses are
   // loaded (state adjusted during render), then drop the param (effect below).
+  // Consumed only after a successful read of the courses: while they load or their
+  // listener is failing (it keeps retrying), the link waits and `dose` stays in the URL.
   const doseCourse = doseCourseId ? state.courses.find((entry) => entry.id === doseCourseId && entry.status === 'active') ?? null : null;
-  if (doseCourseId !== seenDose && (!doseCourseId || !state.loading)) {
+  const doseLink = doseLinkDecision({ requested: doseCourseId, seen: seenDose, loading: state.loading, error: state.error, courses: state.courses });
+  if (doseLink.kind === 'reset') setSeenDose(null);
+  else if (doseLink.kind === 'open' || doseLink.kind === 'inactive') {
     setSeenDose(doseCourseId);
-    if (doseCourse) setGivingId(doseCourse.id);
+    if (doseLink.kind === 'open') setGivingId(doseLink.courseId);
   }
   useEffect(() => {
     if (!seenDose || notifiedDose.current === seenDose) {
@@ -108,7 +113,7 @@ export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId 
       return;
     }
     notifiedDose.current = seenDose;
-    if (!doseCourse && !state.error) toast({ title: 'This course is no longer active', description: 'It may have been finished. Its history is below.' });
+    if (!doseCourse) toast({ title: 'This course is no longer active', description: 'It may have been finished. Its history is below.' });
     onDoseHandled?.();
   }, [seenDose, doseCourse, state.error, onDoseHandled, toast]);
 

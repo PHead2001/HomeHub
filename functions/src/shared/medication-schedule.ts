@@ -21,6 +21,7 @@
 // after the morning dose does not ask for it again.
 import {
   addDays, diffDays, isDayString, localDay, localMinutes, safeTimeZone,
+  zonedWallInstant,
 } from "./calendar";
 
 export const MAX_DOSE_TIMES = 6;
@@ -251,19 +252,13 @@ const wallTime = (instant: number, timeZone: string): string => {
   return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
 };
 
-// Offset of the zone at an instant: its wall time read as UTC, minus it.
-const offsetAt = (instant: number, timeZone: string): number => {
-  const minute = Math.floor(instant / 60000) * 60000;
-  const day = localDay(new Date(minute), timeZone);
-  const minutes = localMinutes(new Date(minute), timeZone);
-  return Date.parse(`${day}T00:00:00Z`) + minutes * 60000 - minute;
-};
-
 /**
  * The instant of a household wall time. A time that happens twice (the
  * fall-back hour) is the first one; a time that does not exist (the
  * spring-forward gap) moves forward by the gap, so every day keeps every
- * dose. Client and server use this one function.
+ * dose. Client and server use this one resolver (`zonedWallInstant`, shared
+ * with household midnight), which reads the offsets on both sides of the
+ * real transition in any zone.
  * @param {string} day Household day.
  * @param {number} minutes Minutes after midnight.
  * @param {string} timeZone IANA zone.
@@ -271,18 +266,7 @@ const offsetAt = (instant: number, timeZone: string): number => {
  */
 export const zonedInstant = (
   day: string, minutes: number, timeZone: string,
-): number => {
-  const guess = Date.parse(`${day}T00:00:00Z`) + minutes * 60000;
-  const candidates = [
-    guess - offsetAt(guess - 12 * HOUR_MS, timeZone),
-    guess - offsetAt(guess + 12 * HOUR_MS, timeZone),
-  ];
-  const wanted = `${day} ${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
-  const valid = candidates.filter((at) =>
-    `${localDay(new Date(at), timeZone)} ${wallTime(at, timeZone)}` ===
-      wanted);
-  return valid.length > 0 ? Math.min(...valid) : Math.max(...candidates);
-};
+): number => zonedWallInstant(day, minutes, timeZone);
 
 /* ------------------------------------------------------------------------ */
 /* Occurrences                                                              */
@@ -294,29 +278,54 @@ export type CourseWindow = {
   endDay: string | null;
 };
 
-/** Safety bound on how far an enumeration walks. */
+/** Safety bound on an enumeration that is not bounded by a time range. */
 const MAX_STEPS = 2000;
 
 /**
- * Scheduled occurrences after an instant (all from the start when `after` is
- * null), in time order, at most `limit`, never past the end day.
+ * One day's occurrences of set times, in instant order. On the spring-forward
+ * day a missing time moves forward by the gap (`zonedInstant`), which can put
+ * it after a later wall time (2:30 becomes 3:30, after 3:00) or on the same
+ * instant as another (3:30): so the day is resolved, sorted by instant and
+ * deduplicated (an instant keeps the time that really reads so on the clock).
+ * @param {string} day Household day.
+ * @param {string[]} times Wall times (none: one all-day occurrence).
+ * @param {string} timeZone IANA zone.
+ * @return {Occurrence[]} Occurrences, strictly increasing.
+ */
+const dayOccurrences = (
+  day: string, times: string[], timeZone: string,
+): Occurrence[] => {
+  if (times.length === 0) {
+    return [{key: day, day, time: null, at: zonedInstant(day, 0, timeZone)}];
+  }
+  const resolved = times.map((time) => ({
+    key: `${day}T${time}`, day, time,
+    at: zonedInstant(day, toMinutes(time), timeZone),
+  })).sort((a, b) => a.at - b.at ||
+    Number(wallTime(b.at, timeZone) === b.time) -
+      Number(wallTime(a.at, timeZone) === a.time));
+  return resolved.filter((occurrence, index) =>
+    index === 0 || occurrence.at !== resolved[index - 1].at);
+};
+
+/**
+ * Walks the schedule's occurrences after `after` (from the start when null)
+ * in time order, never past the end day, until `more` says stop. Every
+ * enumeration goes through here; the callers bound it by a count from a
+ * recent point (`occurrencesAfter`) or by an explicit time range
+ * (`occurrencesBetween`), never by "the first N after some old point".
  * @param {CourseWindow} course Schedule, start and end day.
  * @param {number | null} after Exclusive lower bound (ms).
  * @param {string} zone Household zone.
- * @param {number} limit Maximum count.
- * @return {Occurrence[]} Occurrences.
+ * @param {Function} more Called with each occurrence; false stops.
+ * @param {number} maxSteps Bound on the walk.
  */
-export const occurrencesAfter = (
-  course: CourseWindow, after: number | null, zone: string, limit: number,
-): Occurrence[] => {
+const walkOccurrences = (
+  course: CourseWindow, after: number | null, zone: string,
+  more: (occurrence: Occurrence) => boolean, maxSteps: number,
+): void => {
   const timeZone = safeTimeZone(zone);
   const {schedule, startDay, endDay} = course;
-  const out: Occurrence[] = [];
-  const keep = (occurrence: Occurrence): boolean => {
-    if (endDay && occurrence.day > endDay) return false;
-    if (after === null || occurrence.at > after) out.push(occurrence);
-    return out.length < limit;
-  };
   if (schedule.kind === "days") {
     const step = schedule.everyDays;
     // Start one step before the day of `after`, aligned to the cycle.
@@ -326,32 +335,79 @@ export const occurrencesAfter = (
         addDays(localDay(new Date(after), timeZone), -1), startDay);
       if (behind > 0) day = addDays(startDay, Math.floor(behind / step) * step);
     }
-    for (let steps = 0; steps < MAX_STEPS; steps++) {
-      if (endDay && day > endDay) break;
-      const slots = schedule.times.length > 0 ? schedule.times : [null];
-      let more = true;
-      for (const time of slots) {
-        const at = zonedInstant(day, time ? toMinutes(time) : 0, timeZone);
-        more = keep({key: time ? `${day}T${time}` : day, day, time, at});
-        if (!more) break;
+    for (let steps = 0; steps < maxSteps; steps++) {
+      if (endDay && day > endDay) return;
+      for (const occurrence of dayOccurrences(day, schedule.times, timeZone)) {
+        if (after !== null && occurrence.at <= after) continue;
+        if (!more(occurrence)) return;
       }
-      if (!more) break;
       day = addDays(day, step);
     }
-    return out;
+    return;
   }
   const stepMs = schedule.everyHours * HOUR_MS;
   const anchor = zonedInstant(startDay, toMinutes(schedule.firstTime),
     timeZone);
   let index = after === null || after < anchor ? 0 :
     Math.floor((after - anchor) / stepMs);
-  for (let steps = 0; steps < MAX_STEPS; steps++, index++) {
+  for (let steps = 0; steps < maxSteps; steps++, index++) {
     const at = anchor + index * stepMs;
+    if (after !== null && at <= after) continue;
     const day = localDay(new Date(at), timeZone);
-    const time = wallTime(at, timeZone);
-    if (endDay && day > endDay) break;
-    if (!keep({key: `${day}T${time}`, day, time, at})) break;
+    if (endDay && day > endDay) return;
+    if (!more({key: `${day}T${wallTime(at, timeZone)}`, day,
+      time: wallTime(at, timeZone), at})) return;
   }
+};
+
+/**
+ * The first `limit` scheduled occurrences after an instant (all from the
+ * start when `after` is null), in time order, never past the end day. Use it
+ * only from a recent point (the latest dose, now); a range is
+ * `occurrencesBetween`.
+ * @param {CourseWindow} course Schedule, start and end day.
+ * @param {number | null} after Exclusive lower bound (ms).
+ * @param {string} zone Household zone.
+ * @param {number} limit Maximum count.
+ * @return {Occurrence[]} Occurrences.
+ */
+export const occurrencesAfter = (
+  course: CourseWindow, after: number | null, zone: string, limit: number,
+): Occurrence[] => {
+  const out: Occurrence[] = [];
+  if (limit <= 0) return out;
+  walkOccurrences(course, after, zone, (occurrence) => {
+    out.push(occurrence);
+    return out.length < limit;
+  }, MAX_STEPS);
+  return out;
+};
+
+/**
+ * Every scheduled occurrence in `(from, to]`, in time order: bounded by the
+ * range alone (no count cap), so nothing inside it is ever dropped, however
+ * dense the schedule or however old an outstanding dose.
+ * @param {CourseWindow} course Schedule, start and end day.
+ * @param {number} from Exclusive lower bound (ms).
+ * @param {number} to Inclusive upper bound (ms).
+ * @param {string} zone Household zone.
+ * @return {Occurrence[]} Occurrences.
+ */
+export const occurrencesBetween = (
+  course: CourseWindow, from: number, to: number, zone: string,
+): Occurrence[] => {
+  const out: Occurrence[] = [];
+  if (to <= from) return out;
+  // Enough steps for the range: one per day (days kind) or per interval.
+  const span = to - from;
+  const steps = course.schedule.kind === "days" ?
+    Math.ceil(span / (24 * HOUR_MS)) + 3 :
+    Math.ceil(span / (course.schedule.everyHours * HOUR_MS)) + 3;
+  walkOccurrences(course, from, zone, (occurrence) => {
+    if (occurrence.at > to) return false;
+    out.push(occurrence);
+    return true;
+  }, steps);
   return out;
 };
 
@@ -365,14 +421,42 @@ export const occurrencesAfter = (
 export const occurrenceAtOrBefore = (
   course: CourseWindow, at: number, zone: string,
 ): Occurrence | null => {
-  const timeZone = safeTimeZone(zone);
-  // Walk back far enough to cover one full cycle of either kind.
+  // Never past the end day (a course that ended: its last occurrence), and
+  // back far enough to cover one full cycle of either kind.
+  const end = course.endDay ?
+    zonedInstant(addDays(course.endDay, 1), 0, safeTimeZone(zone)) - 1 : at;
+  const upTo = Math.min(at, end);
   const span = course.schedule.kind === "days" ?
     (course.schedule.everyDays + 2) * 24 * HOUR_MS :
     (course.schedule.everyHours + 2) * HOUR_MS;
-  const list = occurrencesAfter(course, at - span, timeZone, 500)
-    .filter((occurrence) => occurrence.at <= at);
+  const list = occurrencesBetween(course, upTo - span, upTo, zone);
   return list.length > 0 ? list[list.length - 1] : null;
+};
+
+/**
+ * The most recent occurrences after `after` and at or before `at`, newest
+ * last, at most `count`: found by walking back from `at`, so it costs the
+ * same whether the last covered dose was yesterday or a year ago.
+ * @param {CourseWindow} course Schedule, start and end day.
+ * @param {number | null} after Exclusive lower bound (ms), null for none.
+ * @param {number} at Inclusive upper bound (ms), usually now.
+ * @param {string} zone Household zone.
+ * @param {number} count Maximum count.
+ * @return {Occurrence[]} Occurrences, oldest first.
+ */
+export const latestOccurrencesUpTo = (
+  course: CourseWindow, after: number | null, at: number, zone: string,
+  count: number,
+): Occurrence[] => {
+  const out: Occurrence[] = [];
+  let cursor = at;
+  while (out.length < count) {
+    const occurrence = occurrenceAtOrBefore(course, cursor, zone);
+    if (!occurrence || (after !== null && occurrence.at <= after)) break;
+    out.unshift(occurrence);
+    cursor = occurrence.at - 1;
+  }
+  return out;
 };
 
 /**
@@ -441,46 +525,128 @@ export type DoseLogInput = {
 };
 
 /**
- * The course with its latest offline dose (a dose queued without a connection
- * never moves `lastDose`; every reader combines the course with the offline
- * doses it has, as the feeding state is combined with loaded feedings).
- * @param {CourseView} course The course.
- * @param {DoseLogInput[]} logs Medication logs (any; others are ignored).
- * @return {CourseView} The course, with `offlineDose` when one is newer.
+ * A course's surviving dose records, as pointers (logs of other courses, or
+ * without an occurrence, are ignored; `excludeId` is a dose being removed).
+ * @param {string} courseId Course id.
+ * @param {DoseLogInput[]} logs Medication logs.
+ * @param {string} excludeId A log to leave out.
+ * @return {DosePointer[]} Dose records.
  */
-export const withOfflineDoses = (
-  course: CourseView, logs: DoseLogInput[],
-): CourseView => {
-  let best: DosePointer | null = course.offlineDose ?? null;
+export const doseRecordsOf = (
+  courseId: string, logs: DoseLogInput[], excludeId?: string,
+): DosePointer[] => {
+  const byId = new Map<string, DosePointer>();
   for (const log of logs) {
-    if (log.courseId !== course.id || log.repeat !== "offline" ||
-        typeof log.id !== "string" || typeof log.occurrence !== "string") {
-      continue;
-    }
+    if (log.courseId !== courseId || typeof log.id !== "string" ||
+        log.id === excludeId || typeof log.occurrence !== "string") continue;
     const occurrenceAt = toMillis(log.occurrenceAt);
     if (occurrenceAt === null) continue;
-    if (best && best.occurrenceAt >= occurrenceAt) continue;
-    best = {
+    byId.set(log.id, {
       logId: log.id, occurrence: log.occurrence, occurrenceAt,
       givenAt: toMillis(log.date),
       byUid: typeof log.loggedByUid === "string" ? log.loggedByUid : null,
       byName: typeof log.loggedByName === "string" ? log.loggedByName : null,
-    };
+    });
   }
-  return best ? {...course, offlineDose: best} : course;
+  return [...byId.values()];
 };
 
-const periodMs = (schedule: CourseSchedule): number =>
+export type CourseState = {
+  /** The latest surviving dose (latest occurrence, latest given, id). */
+  latest: DosePointer | null;
+  /** The surviving dose before it, in the same order. */
+  prev: DosePointer | null;
+  /** Occurrences up to here count as given (`latest`, `coveredUntil`). */
+  coveredThrough: number | null;
+};
+
+const doseOrder = (a: DosePointer, b: DosePointer): number =>
+  b.occurrenceAt - a.occurrenceAt || (b.givenAt ?? 0) - (a.givenAt ?? 0) ||
+  a.logId.localeCompare(b.logId);
+
+/**
+ * The one course state (mirrors the feeding state's `deriveFeedingState`):
+ * the latest dose, the one before it and the coverage, derived from the
+ * course's surviving dose records, offline-synced doses included. The stored
+ * `lastDose` / `prevDose` are a cache of `latest` / `prev` that every online
+ * write (give, Undo, delete) stores from the records it read plus its own
+ * change; readers combine the cache with the offline doses they have
+ * (`withOfflineDoses`), which is the same derivation. Previews, transactions,
+ * Undo and readers all use this function.
+ * @param {CourseView} course The course (its `coveredUntil`).
+ * @param {DosePointer[]} records Surviving dose records.
+ * @return {CourseState} The state.
+ */
+export const deriveCourseState = (
+  course: Pick<CourseView, "coveredUntil">, records: DosePointer[],
+): CourseState => {
+  const byId = new Map<string, DosePointer>();
+  for (const record of records) byId.set(record.logId, record);
+  const ordered = [...byId.values()].sort(doseOrder);
+  const latest = ordered[0] ?? null;
+  const covered = [latest?.occurrenceAt, course.coveredUntil]
+    .filter((value): value is number => typeof value === "number");
+  return {
+    latest,
+    prev: ordered[1] ?? null,
+    coveredThrough: covered.length > 0 ? Math.max(...covered) : null,
+  };
+};
+
+/**
+ * The course as a reader sees it: its stored latest dose (the cache of every
+ * online write) combined with the dose records this reader has (offline
+ * doses, or the whole history), through `deriveCourseState`. When a record is
+ * later than the cache (a dose queued offline never moves `lastDose`) it is
+ * `offlineDose`.
+ * @param {CourseView} course The course.
+ * @param {DoseLogInput[]} logs Medication logs (other courses are ignored).
+ * @return {CourseView} The course, with `offlineDose` when one is newer.
+ */
+export const withOfflineDoses = (
+  course: CourseView, logs: DoseLogInput[],
+): CourseView => withRecords(course, doseRecordsOf(course.id, logs));
+
+/**
+ * The course with the latest of its stored pointer and these dose records
+ * (`deriveCourseState`): a record later than the pointer becomes
+ * `offlineDose`, so coverage, the next dose and the repeat check all follow
+ * the derived state. Any surviving record counts (an offline one, or the
+ * full history a server or calendar reader has).
+ * @param {CourseView} course The course.
+ * @param {DosePointer[]} records Surviving dose records of the course.
+ * @return {CourseView} The course.
+ */
+export const withRecords = (
+  course: CourseView, records: DosePointer[],
+): CourseView => {
+  const {latest} = deriveCourseState(course, [
+    ...(course.lastDose ? [course.lastDose] : []),
+    ...(course.offlineDose ? [course.offlineDose] : []),
+    ...records,
+  ]);
+  if (!latest || latest.logId === course.lastDose?.logId) return course;
+  return {...course, offlineDose: latest};
+};
+
+/**
+ * The interval between doses (an average for set times): ms.
+ * @param {CourseSchedule} schedule The schedule.
+ * @return {number} Milliseconds.
+ */
+export const periodMs = (schedule: CourseSchedule): number =>
   schedule.kind === "hours" ? schedule.everyHours * HOUR_MS :
     schedule.everyDays * 24 * HOUR_MS / Math.max(1, schedule.times.length);
 
 /**
- * `coveredUntil` for a schedule edit: when the new schedule's first
- * occurrence after what was given is nearer to the given one than the
- * previous new occurrence, and within half a dose interval, it replaces the
- * given one (8:00 AM given, moved to 9:00 AM: 9:00 AM is covered). Otherwise
- * null (the latest dose alone decides). The edit form shows the resulting
- * next dose before it is saved.
+ * `coveredUntil` for an edit of the schedule, start or end day; the edit
+ * form's preview and the transaction both use it. When the new schedule's
+ * first occurrence after what is covered is nearer to it than the previous
+ * new occurrence, and within half a dose interval, it replaces the given one
+ * (8:00 AM given, moved to 9:00 AM: 9:00 AM is covered). What an earlier edit
+ * covered stays covered (`coveredUntil` never drops on an edit: adding an end
+ * day after moving 8:00 to 9:00 keeps 9:00 covered), so nothing covered
+ * becomes due again. Null when nothing is covered by an edit.
  * @param {CourseView} course The course before the edit.
  * @param {CourseWindow} next The new schedule, start and end day.
  * @param {string} zone Household zone.
@@ -491,15 +657,16 @@ export const coverageAfterEdit = (
   next: CourseWindow,
   zone: string,
 ): number | null => {
+  const kept = course.coveredUntil;
   const covered = coveredThrough(course);
-  if (covered === null) return null;
+  if (covered === null) return kept;
   const after = occurrencesAfter(next, covered, zone, 1)[0];
-  if (!after) return null;
+  if (!after) return kept;
   const before = occurrenceAtOrBefore(next, covered, zone);
   const gap = after.at - covered;
-  if (gap > periodMs(next.schedule) / 2) return null;
-  if (before && covered - before.at <= gap) return null;
-  return after.at;
+  if (gap > periodMs(next.schedule) / 2) return kept;
+  if (before && covered - before.at <= gap) return kept;
+  return kept === null ? after.at : Math.max(kept, after.at);
 };
 
 /* ------------------------------------------------------------------------ */

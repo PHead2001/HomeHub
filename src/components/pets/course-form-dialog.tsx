@@ -21,13 +21,12 @@ import { loggerName, petDay } from '@/lib/pets/care';
 import {
   MAX_DOSE_TIMES,
   courseFormValues,
-  coverageAfterEdit,
+  coveredUntilAfterSave,
   coveredThrough,
   legacyMedicationKey,
   newCourseId,
   occurrenceLabel,
   occurrencesAfter,
-  scheduleChanged,
   scheduleSummary,
   validateCourseForm,
   type CourseFormErrors,
@@ -109,10 +108,9 @@ export function CourseFormDialog({
   const names = [...new Set(courses.map((course) => course.name))];
   const { fields } = validateCourseForm(values, activeNames);
   // The next doses this schedule gives (after the latest dose when editing).
+  // Exactly what saving stores (`coveredUntilAfterSave`, as the transaction does).
   const covered = !fields || !editing ? -Infinity
-    : scheduleChanged(editing, fields)
-      ? Math.max(coveredThrough(editing) ?? -Infinity, coverageAfterEdit(editing, fields, timeZone ?? '') ?? -Infinity)
-      : coveredThrough(editing) ?? -Infinity;
+    : coveredThrough({ ...editing, coveredUntil: coveredUntilAfterSave(editing, fields, timeZone) }) ?? -Infinity;
   const preview = fields ? occurrencesAfter(fields, Number.isFinite(covered) ? covered : null, timeZone ?? '', 3) : [];
 
   const set = (patch: Partial<CourseFormValues>) => {

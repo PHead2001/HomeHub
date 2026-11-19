@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { Timestamp, getFirestore } from 'firebase-admin/firestore';
 
@@ -75,8 +75,14 @@ async function restore() {
 
 async function openMedicationTab(page: Page, petId = 'maple', query = '') {
   await page.goto(`/pets/${petId}?tab=medication${query}`);
-  await expect(page.getByRole('tab', { name: /Medication/ })).toHaveAttribute('data-state', 'active');
+  // includeHidden: a reminder link (`&dose=`) opens Give dose, a modal dialog that hides the page
+  // from the accessibility tree (aria-hidden), possibly before this check runs.
+  await expect(page.getByRole('tab', { name: /Medication/, includeHidden: true })).toHaveAttribute('data-state', 'active');
 }
+
+/** Waits for the dialog's open animation (a 95% zoom) to finish, so boxes are measured at full size. */
+const settleAnimations = (scope: Locator) =>
+  scope.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined))));
 
 const giveDoseDialog = (page: Page) => page.getByTestId('give-dose-dialog');
 /** The toast list (Radix also repeats each toast's text in a live region, so page-wide text matches twice). */
@@ -278,6 +284,7 @@ test.describe('pets: medication courses (P3)', () => {
       await openMedicationTab(page, 'maple', `&dose=${COURSE_ID}`);
       const dialog = giveDoseDialog(page);
       await expect(dialog.getByRole('heading', { name: 'Give Apoquel' })).toBeVisible();
+      await settleAnimations(dialog);
       const box = await dialog.boundingBox();
       expect(box!.width).toBeLessThanOrEqual(390);
       for (const name of ['Record dose', 'Cancel', 'Finish course']) {
@@ -311,6 +318,7 @@ test.describe('pets: medication courses (P3)', () => {
       await chip.click();
       const dialog = giveDoseDialog(page);
       await expect(dialog.getByRole('heading', { name: 'Give Apoquel' })).toBeVisible();
+      await settleAnimations(dialog);
       const box = await dialog.boundingBox();
       expect(box!.y).toBeGreaterThanOrEqual(0);
       expect(box!.y + box!.height).toBeLessThanOrEqual(818);

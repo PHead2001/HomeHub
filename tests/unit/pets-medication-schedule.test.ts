@@ -190,3 +190,31 @@ describe('state and copy', () => {
 function pick(due: ReturnType<typeof courseDue>) {
   return due ? [due.state, due.label, due.reached] : null;
 }
+
+describe('Codex round 2', () => {
+  test('A: an end-day edit after a schedule edit keeps what the first edit covered (preview = saved)', () => {
+    const given = { logId: 'eight', occurrence: '2026-11-14T08:00', occurrenceAt: new Date('2026-11-14T14:00:00Z'), givenAt: new Date('2026-11-14T14:00:00Z'), byUid: 'u', byName: 'Sam' };
+    const moved = { kind: 'days' as const, everyDays: 1, times: ['09:00', '21:00'] };
+    // 1. 8:00 given; the times move to 9:00 / 9:00 PM: 9:00 today is covered.
+    const first = coverageAfterEdit(course({ lastDose: given }), { schedule: moved, startDay: '2026-11-13', endDay: null }, CHI);
+    assert.equal(iso(first!), '2026-11-14T15:00:00.000Z');
+    // 2. An end day is added: 9:00 stays covered (the coverage never drops on an edit).
+    const afterFirst = course({ schedule: moved, lastDose: given, coveredUntil: new Date(first!) });
+    const second = coverageAfterEdit(afterFirst, { schedule: moved, startDay: '2026-11-13', endDay: '2026-11-30' }, CHI);
+    assert.equal(second, first);
+    const ended = course({ schedule: moved, endDay: '2026-11-30', lastDose: given, coveredUntil: new Date(second!) });
+    assert.equal(nextDueOccurrence(ended, CHI)?.key, '2026-11-14T21:00', '9:00 is not due again');
+  });
+
+  test('B: on the spring-forward day the walker emits occurrences in instant order, without duplicates', () => {
+    // 2:30 does not exist on 2026-03-08 in Chicago (it becomes 3:30 CDT, after 3:00 CDT).
+    const window = { schedule: { kind: 'days' as const, everyDays: 1, times: ['02:30', '03:00', '03:30'] }, startDay: '2026-03-07', endDay: '2026-03-09' };
+    const list = occurrencesAfter(window, null, CHI, 50);
+    for (let i = 1; i < list.length; i++) assert.ok(list[i].at > list[i - 1].at, `${list[i - 1].key} then ${list[i].key}`);
+    const day = list.filter((occurrence) => occurrence.day === '2026-03-08');
+    assert.deepEqual(day.map((occurrence) => [occurrence.time, iso(occurrence.at)]), [
+      ['03:00', '2026-03-08T08:00:00.000Z'],
+      ['03:30', '2026-03-08T08:30:00.000Z'], // 2:30 (moved forward to 3:30) and 3:30 are the same instant: once
+    ]);
+  });
+});
