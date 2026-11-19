@@ -37,6 +37,7 @@ import {
   restoreJournal,
   stepJournal,
   undoOffer,
+  undoToastGroup,
   undoRefusalEvent,
   type JournalEvent,
   type UndoJournalEntry,
@@ -100,6 +101,8 @@ export type DeviceActionRuntime = {
     actor: TabletActor;
     who: RosterPerson;
     onReverted?: () => void;
+    /** The Undo toast's group (a feed: its pet's, `petFeedToastGroup`), kept in the journal for a reload; default: the shared device-action group. */
+    toastGroup?: string;
     /**
      * "Feed again?" (PE-23g): asked when the server answers that it needs a confirmation;
      * resolves with the answer to send back with the same opId, or null (Cancel: nothing is written).
@@ -296,7 +299,9 @@ export function useDeviceActions(deps: {
 
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
     const handle = toast({
-      group: 'device-action',
+      // Per pet for feeds (stored in the journal, so a restored toast keeps it): another pet's
+      // feed or a chore never displaces this Undo; same-group actions replace the older one.
+      group: undoToastGroup(entry),
       description: message,
       duration: Math.max(1000, remainingMs),
       action: (
@@ -328,7 +333,7 @@ export function useDeviceActions(deps: {
   }, [offerUndo, storesOf]);
 
   // --- Actions ------------------------------------------------------------------
-  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm }) => {
+  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup }) => {
     // A "Feed again?" answer is added to the intent, and goes with it into the queue if the send then gets no answer.
     let intent = firstIntent;
     const opId = crypto.randomUUID();
@@ -337,7 +342,7 @@ export function useDeviceActions(deps: {
     const undoCapability = UNDO_CAPABILITY_OF[capability];
     // Saved for later only when it can wait (face level, no PIN) and the queue is durable here.
     const canQueue = !actor.pinSessionId && queueAllowed(capability, { pointsPin, actorRole: who.role });
-    const entry = { opId: opId.toLowerCase(), ...session.current, capability, actorUid: actor.actorUid, label };
+    const entry = { opId: opId.toLowerCase(), ...session.current, capability, actorUid: actor.actorUid, label, ...(toastGroup ? { toastGroup } : {}) };
     let meaning = { undoable: false, message: label } as ReturnType<typeof choreAnswerMeaning>;
     const result = await performAction({
       entry,

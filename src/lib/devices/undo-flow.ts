@@ -56,7 +56,7 @@ const bestEffort = async <T,>(work: () => Promise<T>, fallback: T): Promise<T> =
 
 export type PerformDeps = {
   /** The journal entry's identity (opId made before the first attempt; every retry reuses it). */
-  entry: Pick<UndoJournalEntry, 'opId' | 'householdId' | 'deviceId' | 'generation' | 'capability' | 'actorUid' | 'label'>;
+  entry: Pick<UndoJournalEntry, 'opId' | 'householdId' | 'deviceId' | 'generation' | 'capability' | 'actorUid' | 'label' | 'toastGroup'>;
   /** The action has an Undo (a journal entry is kept). */
   undoable: boolean;
   /** Writes a new journal entry (best effort). */

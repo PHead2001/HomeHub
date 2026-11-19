@@ -50,6 +50,8 @@ export type TabletActionRequest = {
    * server answers that the feed needs a confirmation (PE-23g).
    */
   subject?: string;
+  /** The Undo toast's group (feeds: `petFeedToastGroup(petId)`, so each pet keeps its own Undo). */
+  toastGroup?: string;
 };
 
 /**
