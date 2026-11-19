@@ -1464,12 +1464,29 @@ service cloud.firestore {
       return last != null && exists(medicationLogPath(householdId, petId, last.logId)) ? last : null;
     }
 
+    // A confirmation naming a dose of this course administered at or after the
+    // stored latest dose (its `date` >= the pointer's given-at time): the
+    // client names the most recently administered relevant dose (doseCheck),
+    // which may be an offline-synced dose newer than the pointer or a dose given
+    // later for an earlier occurrence. The rules see only the stored pointer, so
+    // they bind the answer to "no older than the pointer"; which newer dose is
+    // the current one is decided by the client transaction (planDose).
+    function confirmsNewerDose(householdId, petId, data, last) {
+      let path = medicationLogPath(householdId, petId, data.confirmOf);
+      return last.get('givenAt', null) is timestamp &&
+        exists(path) &&
+        get(path).data.get('courseId', null) == data.courseId &&
+        get(path).data.get('date', null) is timestamp &&
+        get(path).data.date >= last.givenAt;
+    }
+
     // A course dose: given now (server time) or at a chosen earlier time within
     // 7 days (never in the future), for one occurrence of an active course,
     // signed by the writer. When the course's surviving latest dose already
     // covers this occurrence (that one or a later one), it needs
-    // `repeat: 'confirmed'` naming that dose (`confirmOf`), so a stale answer
-    // cannot record over a newer dose. After a dose at or after the latest, the
+    // `repeat: 'confirmed'` naming that dose (`confirmOf`) or a dose of the
+    // course administered no earlier than it (confirmsNewerDose), so an answer
+    // given before the latest dose cannot record over it. After a dose at or after the latest, the
     // course's `lastDose` covers it in the same commit.
     function courseDoseCreate(householdId, petId, logId) {
       let data = request.resource.data;
@@ -1502,7 +1519,8 @@ service cloud.firestore {
             (data.repeat == 'confirmed' ? data.get('confirmOf', null) is string : !('confirmOf' in data)) &&
             course.status == 'active' &&
             (last != null && last.occurrenceAt >= data.occurrenceAt
-              ? data.repeat == 'confirmed' && data.confirmOf == last.logId
+              ? data.repeat == 'confirmed' &&
+                (data.confirmOf == last.logId || confirmsNewerDose(householdId, petId, data, last))
               : true) &&
             // A dose at or after the latest: after this commit the pointer covers it
             // (it names this dose, or a later surviving one).

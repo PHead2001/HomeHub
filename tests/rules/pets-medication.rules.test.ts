@@ -216,6 +216,24 @@ describe('dose logs', () => {
     await assertSucceeds(batch.commit());
   });
 
+  test('a confirmation may name a dose of the course given no earlier than the stored latest (an offline-synced one), never an older one', async () => {
+    const at = occurrenceAt(-1);
+    const minutesAgo = (minutes: number) => Timestamp.fromMillis(Date.now() - minutes * 60_000);
+    const stored = (by: Person, date: Timestamp, overrides: Record<string, unknown> = {}) => ({ ...doseLog(by, at), date, loggedAt: date, ...overrides });
+    await seed(async (db) => {
+      await setDoc(logRef(db, 'dose-a'), stored(people.member, minutesAgo(10)));
+      await setDoc(logRef(db, 'dose-newer'), stored(people.owner, minutesAgo(5), { repeat: 'offline', clockSource: 'device' }));
+      await setDoc(logRef(db, 'dose-older'), stored(people.owner, minutesAgo(20), { repeat: 'offline', clockSource: 'device' }));
+      await setDoc(logRef(db, 'dose-other-course'), stored(people.owner, minutesAgo(1), { courseId: 'other' }));
+      await updateDoc(courseRef(db), { lastDose: { logId: 'dose-a', occurrence: occurrenceKey(at), occurrenceAt: at, givenAt: minutesAgo(10), byUid: people.member.uid, byName: 'Name' } });
+    });
+    const confirmed = (logId: string, confirmOf: string) => giveDose(people.child, logId, at, { repeat: 'confirmed', confirmOf }, null);
+    await assertFails(confirmed('press-0061', 'dose-older'));
+    await assertFails(confirmed('press-0062', 'dose-other-course'));
+    await assertFails(confirmed('press-0063', 'no-such-dose'));
+    await assertSucceeds(confirmed('press-0064', 'dose-newer'));
+  });
+
   test('no dose for a finished course', async () => {
     await seed((db) => updateDoc(courseRef(db), { status: 'finished', finishedAt: Timestamp.now(), finishedByUid: people.owner.uid, finishedByName: 'Owner' }));
     await assertFails(giveDose(people.member, 'press-0040', occurrenceAt(-1)));

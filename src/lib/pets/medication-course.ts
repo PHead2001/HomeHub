@@ -17,7 +17,10 @@ import {
   COURSE_DOSAGE_MAX,
   courseDue,
   coverageAfterEdit,
+  courseDoses,
   coveredThrough,
+  lastAdministered,
+  newestDoseCovering,
   deriveCourseState,
   latestOccurrencesUpTo,
   periodMs,
@@ -235,7 +238,7 @@ export type DoseIntent = {
 export type DoseRefusal = 'missing' | 'finished' | 'occurrence' | 'future' | 'too-old' | 'conflict';
 
 export type DoseCheck = {
-  /** The latest dose (it covers this occurrence when `reason` is `given`). */
+  /** The dose it names (`doseCheck`; it covers this occurrence when `reason` is `given`). */
   last: DosePointer | null;
   occurrence: Occurrence;
   /**
@@ -274,6 +277,37 @@ export type DosePlan =
     };
 
 /**
+ * Whether a dose for this occurrence asks first, and the dose it names (the
+ * one definition behind "already given?" and the recent-dose warning, read by
+ * `planDose` and mirrored by the rules' `confirmOf` check):
+ * 1. A dose was administered within `doseRepeatWindowMs`: it names the most
+ *    recently administered surviving dose (`lastAdministered`: the latest
+ *    given-at time, offline-synced doses included, never the dose with the
+ *    latest occurrence), `given` when that dose covers the occurrence, else
+ *    `recent`.
+ * 2. Otherwise, when a dose covers the occurrence (that one or a later one):
+ *    `given`, naming the most recently administered of those doses
+ *    (`newestDoseCovering`), so a newer offline-synced dose than the stored
+ *    pointer is the one named and a confirmation naming an older one is stale.
+ * 3. Otherwise, when a schedule edit counted it as given: `moved`, naming no
+ *    dose (`moved` with a dose named: a recent dose, and the edit counted it).
+ * Coverage itself (what is due) still follows the latest occurrence.
+ */
+export function doseCheck(course: CourseView, occurrence: Occurrence, now: Date, lastDoseSurvives = true): DoseCheck | null {
+  if (!course.schedule) return null;
+  const doses = courseDoses(course).filter((dose) => lastDoseSurvives || dose.logId !== course.lastDose?.logId);
+  const administered = lastAdministered(doses);
+  const recent = administered !== null && administered.givenAt !== null &&
+    now.getTime() - administered.givenAt < doseRepeatWindowMs(course.schedule) ? administered : null;
+  const covering = newestDoseCovering(doses, occurrence.at);
+  const moved = course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
+  const shown = recent ?? covering;
+  if (shown) return { last: shown, occurrence, reason: shown.occurrenceAt >= occurrence.at ? 'given' : moved ? 'moved' : 'recent' };
+  // Counted as given by a schedule edit only: no dose to bind the answer to.
+  return moved ? { last: null, occurrence, reason: 'moved' } : null;
+}
+
+/**
  * Decides one Give dose press from what the writer read: the press was
  * already recorded (idempotent replay), refuse it, ask first because that
  * occurrence (or a later one) was already given (bound to the dose it names,
@@ -296,28 +330,17 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
     if (intent.givenAt.getTime() < now.getTime() - DOSE_BACKDATE_MAX_MS) return { kind: 'refused', reason: 'too-old' };
   }
   const last = snapshot.lastDoseSurvives ? course.lastDose : null;
-  // A dose recorded offline (not in `lastDose`) covers its occurrence too.
-  const offlineDose = course.offlineDose ?? null;
-  const givenStored = Boolean(last) && occurrence.at <= last!.occurrenceAt;
-  const givenOffline = !givenStored && Boolean(offlineDose) && occurrence.at <= offlineDose!.occurrenceAt;
-  const named = givenStored ? last : givenOffline ? offlineDose : null;
-  const moved = !named && course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
-  // The latest surviving dose (the derived state: the cache or a later record).
-  const latest = [last, offlineDose].filter((dose): dose is DosePointer => Boolean(dose))
-    .sort((a, b) => b.occurrenceAt - a.occurrenceAt || (b.givenAt ?? 0) - (a.givenAt ?? 0))[0] ?? null;
-  const recent = !named && !moved && latest !== null && latest.givenAt !== null &&
-    now.getTime() - latest.givenAt < doseRepeatWindowMs(course.schedule);
+  const check = doseCheck(course, occurrence, now, snapshot.lastDoseSurvives);
   let repeat: 'none' | 'confirmed' | 'offline' = 'none';
   let confirmOf: string | null = null;
-  if (named || moved || recent) {
+  if (check) {
     const confirm = intent.confirm;
-    const shown = named ?? (recent ? latest : last);
-    if (!confirm || confirm.lastLogId !== (shown?.logId ?? null)) {
-      return { kind: 'needsConfirm', check: { last: shown, occurrence, reason: named ? 'given' : moved ? 'moved' : 'recent' }, staleConfirm: Boolean(confirm) };
+    if (!confirm || confirm.lastLogId !== (check.last?.logId ?? null)) {
+      return { kind: 'needsConfirm', check, staleConfirm: Boolean(confirm) };
     }
-    if (named || recent) {
+    if (check.last) {
       repeat = 'confirmed';
-      confirmOf = shown!.logId;
+      confirmOf = check.last.logId;
     }
   }
   const after = Math.max(occurrence.at, coveredThrough({ ...course, lastDose: last }) ?? -Infinity);
@@ -364,8 +387,9 @@ const byWhom = (pointer: Pick<DosePointer, 'byUid' | 'byName'>, viewerUid?: stri
   pointer.byUid && pointer.byUid === viewerUid ? 'you' : pointer.byName || 'someone';
 
 /** "Last given 2 h ago by Sam" (the current last-dose context, PE-24k). */
-export function lastDoseLine(course: Pick<CourseView, 'lastDose'>, now: Date, timeZone?: string | null, viewerUid?: string | null): string | null {
-  const last = course.lastDose;
+export function lastDoseLine(course: Pick<CourseView, 'lastDose' | 'prevDose' | 'offlineDose' | 'doses'>, now: Date, timeZone?: string | null, viewerUid?: string | null): string | null {
+  // The most recent administration (not the dose with the latest occurrence).
+  const last = lastAdministered(courseDoses(course));
   if (!last || last.givenAt === null) return null;
   return `Last given ${formatAgo(new Date(last.givenAt), now, timeZone)} by ${byWhom(last, viewerUid)}`;
 }

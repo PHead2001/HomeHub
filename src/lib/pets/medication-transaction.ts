@@ -133,6 +133,10 @@ const newestCourseDoses = (db: Firestore, householdId: string, petId: string, co
  * the doses tied at the read's oldest occurrence are all read: the newest
  * given one there is never cut off by the limit.
  */
+/** The course's most recently administered dose (`date` descending, the composite index): the recent-dose check measures from it. */
+const lastGivenDose = (db: Firestore, householdId: string, petId: string, courseId: string) =>
+  query(logsRef(db, householdId, petId), where('courseId', '==', courseId), orderBy('date', 'desc'), limit(1));
+
 const courseDosesAt = (db: Firestore, householdId: string, petId: string, courseId: string, occurrenceAt: unknown) =>
   query(logsRef(db, householdId, petId), where('courseId', '==', courseId), where('occurrenceAt', '==', occurrenceAt));
 
@@ -143,18 +147,24 @@ type DoseRead = { records: DosePointer[]; stored: Map<string, DocumentData> };
  * The course's newest surviving doses (offline-synced ones included), read
  * inside the attempt: the latest and the one before are among them (they are
  * ordered by occurrence), so `deriveCourseState` over them is the course's
- * state. Any other online dose write changes the course, so a conflicting
+ * state, and so is the most recently administered dose (read by given-at
+ * time: a dose given just now for an older occurrence than the newest six is
+ * still the one the recent-dose check measures from). Any other online dose write changes the course, so a conflicting
  * change retries the transaction with a fresh read.
  */
 async function readCourseDoses(db: Firestore, householdId: string, petId: string, courseId: string, excludeId?: string): Promise<DoseRead> {
-  const newest = await getDocs(newestCourseDoses(db, householdId, petId, courseId));
+  const [newest, given] = await Promise.all([
+    getDocs(newestCourseDoses(db, householdId, petId, courseId)),
+    getDocs(lastGivenDose(db, householdId, petId, courseId)),
+  ]);
   const docs = [...newest.docs];
+  const seen = new Set(docs.map((entry) => entry.id));
   const cutoff = docs.length >= LATEST_DOSES ? docs[docs.length - 1].get('occurrenceAt') : undefined;
   if (cutoff !== undefined && cutoff !== null) {
-    const seen = new Set(docs.map((entry) => entry.id));
     const tied = await getDocs(courseDosesAt(db, householdId, petId, courseId, cutoff));
-    for (const entry of tied.docs) if (!seen.has(entry.id)) docs.push(entry);
+    for (const entry of tied.docs) if (!seen.has(entry.id)) { seen.add(entry.id); docs.push(entry); }
   }
+  for (const entry of given.docs) if (!seen.has(entry.id)) docs.push(entry);
   const stored = new Map<string, DocumentData>();
   const logs = docs.filter((entry) => entry.id !== excludeId).map((entry) => {
     stored.set(entry.id, entry.data());

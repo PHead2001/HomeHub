@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, doc, getDoc, getDocFromServer, getDocs, onSnapshot, query, setDoc, Timestamp, where, type Firestore } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocFromServer, getDocs, onSnapshot, query, serverTimestamp, setDoc, Timestamp, where, type Firestore } from 'firebase/firestore';
 import {
   runConfirmLegacy,
   runFinishCourse,
@@ -278,6 +278,68 @@ describe('Give dose on the emulator with the real rules', () => {
     assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, input.opId);
     const confirmed = saved(await runGiveDose(session(people.sam), { ...samPress, confirm: asked.status === 'needsConfirm' ? doseConfirmOf(asked.check) : null }));
     assert.equal((await readCourseNow()).lastDose?.logId, confirmed.logId);
+  });
+
+  test('the recent-dose warning measures from the most recent administration, not the latest occurrence (Codex round 5)', async () => {
+    const course = await readCourseNow();
+    // Every 2 hours: "10:00" is the next occurrence, "12:00" the one after, "14:00" the third.
+    const [ten, noon, two] = occurrencesAfter({ schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay }, Date.now(), TZ, 3);
+    const base = { householdId: household, petId: 'rex', courseId: 'apoquel', givenAt: null, timeZone: TZ };
+    // The 12:00 dose recorded early, given two hours ago (outside the one-hour window).
+    const givenAt = new Date(Date.now() - 2 * 3_600_000);
+    givenAt.setMilliseconds(0);
+    const early = saved(await runGiveDose(session(people.sam), { ...base, opId: newDoseOpId(), occurrenceKey: noon.key, givenAt, user: actor(people.sam) }));
+    // The 10:00 dose confirmed just now (12:00 covers it, so it asks first).
+    const recent = await giveAnyway(session(people.kim), { ...base, opId: newDoseOpId(), occurrenceKey: ten.key, user: actor(people.kim) });
+    assert.equal((await readCourseNow()).lastDose?.logId, early.logId, 'the pointer still names the latest occurrence');
+    // Selecting 14:00 asks, naming the dose given moments ago (not the 12:00 dose given two hours ago).
+    const ownerPress = { ...base, opId: newDoseOpId(), occurrenceKey: two.key, user: actor(people.owner) };
+    const asked = await runGiveDose(session(people.owner), ownerPress);
+    assert.equal(asked.status, 'needsConfirm', `expected a question, got ${JSON.stringify(asked)}`);
+    if (asked.status !== 'needsConfirm') return;
+    assert.equal(asked.check.reason, 'recent');
+    assert.equal(asked.check.last?.logId, recent.logId);
+    // An answer naming the 12:00 dose is stale: it asks again, naming the recent one.
+    const stale = await runGiveDose(session(people.owner), { ...ownerPress, confirm: { lastLogId: early.logId } });
+    assert.equal(stale.status === 'needsConfirm' && stale.staleConfirm && stale.check.last?.logId, recent.logId);
+    const confirmed = saved(await runGiveDose(session(people.owner), { ...ownerPress, confirm: doseConfirmOf(asked.check) }));
+    const log = (await doses()).find((entry) => entry.id === confirmed.logId)!;
+    assert.deepEqual([log.repeat, log.confirmOf], ['confirmed', recent.logId]);
+  });
+
+  test('an offline dose newer than the stored pointer makes an answer naming the pointer stale (Codex round 5)', async () => {
+    const first = await press(people.sam);
+    const a = saved(await runGiveDose(session(people.sam), first));
+    const kimPress = { ...first, opId: newDoseOpId(), user: actor(people.kim) };
+    const asked = await runGiveDose(session(people.kim), kimPress);
+    assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, a.logId);
+    const answer = asked.status === 'needsConfirm' ? doseConfirmOf(asked.check) : null;
+    // Meanwhile Olive's offline dose for the same time, given after Sam's, syncs (the pointer still names Sam's).
+    const aLog = (await doses()).find((entry) => entry.id === a.logId)!;
+    const owner = session(people.owner);
+    await setDoc(doc(owner, 'households', household, 'pets', 'rex', 'medication-logs', 'offline-b'), {
+      courseId: 'apoquel', occurrence: first.occurrenceKey, occurrenceAt: aLog.occurrenceAt,
+      date: Timestamp.fromMillis((aLog.date as Timestamp).toMillis() + 1_000), loggedAt: serverTimestamp(),
+      medication: 'Apoquel', dosage: '1 tablet', notes: '', loggedByUid: people.owner.uid, loggedByName: 'Olive',
+      repeat: 'offline', clockSource: 'device',
+    });
+    assert.equal((await readCourseNow()).lastDose?.logId, a.logId);
+    // Kim's answer named Sam's dose: stale, asked again naming Olive's newer one.
+    const again = await runGiveDose(session(people.kim), { ...kimPress, confirm: answer });
+    assert.equal(again.status, 'needsConfirm', `expected a question, got ${JSON.stringify(again)}`);
+    if (again.status !== 'needsConfirm') return;
+    assert.equal(again.staleConfirm, true);
+    assert.equal(again.check.last?.logId, 'offline-b');
+    assert.equal(again.check.reason, 'given');
+    // The current answer records once, bound to the offline dose (the rules accept a dose no older than the pointer's).
+    const confirmed = saved(await runGiveDose(session(people.kim), { ...kimPress, confirm: doseConfirmOf(again.check) }));
+    const log = (await doses()).find((entry) => entry.id === confirmed.logId)!;
+    assert.deepEqual([log.repeat, log.confirmOf], ['confirmed', 'offline-b']);
+    // The pointer is the derived latest: the same time, given last (Kim's, or Olive's when its device clock is ahead).
+    const list = await doses();
+    assert.equal(list.length, 3);
+    const givenLast = [log, list.find((entry) => entry.id === 'offline-b')!].sort((x, y) => (y.date as Timestamp).toMillis() - (x.date as Timestamp).toMillis())[0];
+    assert.equal((await readCourseNow()).lastDose?.logId, givenLast.id);
   });
 
   test('Undo derives the latest from the surviving doses (D): 8:00, 12:00 early, a confirmed 10:00, remove 12:00 → 10:00', async () => {

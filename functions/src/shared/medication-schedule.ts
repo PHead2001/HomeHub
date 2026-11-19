@@ -70,6 +70,13 @@ export type CourseView = {
    * its occurrence like `lastDose` does.
    */
   offlineDose?: DosePointer | null;
+  /**
+   * The surviving dose records this reader combined with the pointer
+   * (`withRecords`; the stored pointers when absent). The recent-dose check
+   * and the "already given?" question read them (`courseDoses`,
+   * `lastAdministered`, `newestDoseCovering`); coverage does not need them.
+   */
+  doses?: DosePointer[];
   /** Legacy (name-keyed) medications this course took over (D-P8). */
   legacyKeys: string[];
 };
@@ -554,6 +561,12 @@ export const doseRecordsOf = (
 export type CourseState = {
   /** The latest surviving dose (latest occurrence, latest given, id). */
   latest: DosePointer | null;
+  /**
+   * The most recent administration: the surviving dose with the latest
+   * given-at time (an offline-synced or out-of-order dose included), which is
+   * not necessarily the one with the latest occurrence (`lastAdministered`).
+   */
+  lastGiven: DosePointer | null;
   /** The surviving dose before it, in the same order. */
   prev: DosePointer | null;
   /** Occurrences up to here count as given (`latest`, `coveredUntil`). */
@@ -563,6 +576,62 @@ export type CourseState = {
 const doseOrder = (a: DosePointer, b: DosePointer): number =>
   b.occurrenceAt - a.occurrenceAt || (b.givenAt ?? 0) - (a.givenAt ?? 0) ||
   a.logId.localeCompare(b.logId);
+
+/**
+ * Most recently administered first: given-at time (an unreadable one last),
+ * then the dose order.
+ * @param {DosePointer} a A dose.
+ * @param {DosePointer} b Another dose.
+ * @return {number} Sort order.
+ */
+const givenOrder = (a: DosePointer, b: DosePointer): number =>
+  (b.givenAt ?? -Infinity) - (a.givenAt ?? -Infinity) || doseOrder(a, b);
+
+/**
+ * The most recent administration among these doses: the latest given-at
+ * time, never the latest occurrence (an early dose for 12:00 given at 09:00,
+ * then the 10:00 dose given at 10:59: the 10:00 dose is the most recent).
+ * The recent-dose (early or repeat) check measures from it.
+ * @param {DosePointer[]} records Surviving dose records.
+ * @return {DosePointer | null} The dose, or null.
+ */
+export const lastAdministered = (
+  records: DosePointer[],
+): DosePointer | null => [...records].sort(givenOrder)[0] ?? null;
+
+/**
+ * The most recently administered dose among those covering an occurrence
+ * (that occurrence or a later one): the dose "already given?" names, so a
+ * newer dose for it (an offline one that synced after the pointer was
+ * written) is never hidden behind the stored pointer.
+ * @param {DosePointer[]} records Surviving dose records.
+ * @param {number} occurrenceAt The occurrence's instant (ms).
+ * @return {DosePointer | null} The dose, or null.
+ */
+export const newestDoseCovering = (
+  records: DosePointer[], occurrenceAt: number,
+): DosePointer | null =>
+  lastAdministered(records.filter((dose) => dose.occurrenceAt >= occurrenceAt));
+
+/**
+ * Every dose a reader has for a course: its stored pointers, its offline dose
+ * and the records it combined (`withRecords`), once each.
+ * @param {CourseView} course The course.
+ * @return {DosePointer[]} Dose records.
+ */
+export const courseDoses = (
+  course: Pick<CourseView, "lastDose" | "prevDose" | "offlineDose" | "doses">,
+): DosePointer[] => {
+  const byId = new Map<string, DosePointer>();
+  const all = [
+    course.prevDose, course.lastDose, course.offlineDose,
+    ...(course.doses ?? []),
+  ];
+  for (const dose of all) {
+    if (dose) byId.set(dose.logId, dose);
+  }
+  return [...byId.values()];
+};
 
 /**
  * The one course state (mirrors the feeding state's `deriveFeedingState`):
@@ -588,6 +657,7 @@ export const deriveCourseState = (
     .filter((value): value is number => typeof value === "number");
   return {
     latest,
+    lastGiven: lastAdministered(ordered),
     prev: ordered[1] ?? null,
     coveredThrough: covered.length > 0 ? Math.max(...covered) : null,
   };
@@ -620,13 +690,15 @@ export const withOfflineDoses = (
 export const withRecords = (
   course: CourseView, records: DosePointer[],
 ): CourseView => {
-  const {latest} = deriveCourseState(course, [
-    ...(course.lastDose ? [course.lastDose] : []),
-    ...(course.offlineDose ? [course.offlineDose] : []),
-    ...records,
-  ]);
-  if (!latest || latest.logId === course.lastDose?.logId) return course;
-  return {...course, offlineDose: latest};
+  if (records.length === 0) return course;
+  const doses = courseDoses({
+    ...course, doses: [...(course.doses ?? []), ...records],
+  });
+  const {latest} = deriveCourseState(course, doses);
+  if (!latest || latest.logId === course.lastDose?.logId) {
+    return {...course, doses};
+  }
+  return {...course, offlineDose: latest, doses};
 };
 
 /**
