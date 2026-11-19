@@ -1,11 +1,11 @@
 import 'server-only';
 
 import { adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
-import { authorizeDeviceAction } from '@/lib/server/device-gate';
+import { authorizeDeviceAction, QUEUED_MAX_AGE_MS } from '@/lib/server/device-gate';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { deviceOperationContext } from '@/lib/server/operation-context';
 import { withoutEmails } from '@/lib/server/device-chores';
-import { backdatedCapability, type DeviceCapability } from '@/lib/devices/action-policy';
+import { FEED_CAPABILITIES, backdatedCapability, feedCapability, type DeviceCapability } from '@/lib/devices/action-policy';
 import {
   PetFeedingError,
   addCareAs,
@@ -63,7 +63,7 @@ export type DevicePetsRequest = {
 /** `clock`: the server clock (the real time unless a test injects one); read again at every precheck. */
 export type DevicePetsOptions = { clock?: () => Date; clientAddress?: string };
 
-const authorize = (capability: DeviceCapability, input: DevicePetsRequest, options: DevicePetsOptions) => authorizeDeviceAction({
+const authorize = (capability: DeviceCapability, input: DevicePetsRequest, options: DevicePetsOptions, replayFamily?: readonly DeviceCapability[]) => authorizeDeviceAction({
   idToken: input.idToken as string,
   householdId: input.householdId as string,
   capability,
@@ -72,7 +72,7 @@ const authorize = (capability: DeviceCapability, input: DevicePetsRequest, optio
   opId: input.opId as string,
   // The gate refuses a queued entry whose generation is missing or not the token's.
   ...(input.queued && typeof input.queued.createdAt === 'string' ? { queued: { createdAt: input.queued.createdAt, generation: input.queued.generation as number } } : {}),
-}, { clientAddress: options.clientAddress, clock: options.clock });
+}, { clientAddress: options.clientAddress, clock: options.clock, ...(replayFamily ? { replayFamily } : {}) });
 
 /** Pets module errors as device refusals (a missing pet or bad input is invalid input). */
 const asDeviceError = (error: unknown): never => {
@@ -84,6 +84,17 @@ const asDeviceError = (error: unknown): never => {
 
 /** The device's clock for a queued replay (the gate has already bounded it, JC-18). */
 const queuedAtOf = (createdAt: string | null): Date | null => (createdAt ? new Date(createdAt) : null);
+
+/**
+ * A queued entry's time for deciding the 12-hour line: no later than the server clock, and
+ * only within the gate's 24-hour limit (an older or malformed one is left to the gate, which
+ * refuses it as `stale_intent`, the queue's notice).
+ */
+const queuedLineTime = (queued: DevicePetsRequest['queued'], now: Date): Date | null => {
+  const at = queued && typeof queued.createdAt === 'string' ? Date.parse(queued.createdAt) : NaN;
+  if (!Number.isFinite(at) || now.getTime() - at > QUEUED_MAX_AGE_MS) return null;
+  return new Date(Math.min(at, now.getTime()));
+};
 
 export type DeviceFeedResult = { result: FeedAsResult; level: 'face' | 'pin'; capability: DeviceCapability };
 
@@ -99,25 +110,27 @@ export type DeviceFeedRequest = DevicePetsRequest & {
 
 /**
  * `pets.feed` (Feed, hold, quick add, dashboard Fed on a tablet) and the detailed form's
- * backdated feed: the server picks `pets.feed.backdated` (within 12 hours, face) or
- * `pets.feed.backdated.old` (PIN) from the chosen time, never from the client.
+ * backdated feed: the server picks the capability from the feeding's effective time, never
+ * from the client (`feedCapability`): the chosen time, or a queued replay's queue time; more
+ * than 12 hours old is `pets.feed.backdated.old` (PIN, not queueable). A retry or replay of
+ * an opId already applied keeps the capability it was recorded under (the gate's
+ * `replayFamily`), so an attempt on the other side of the line gets the stored answer.
  */
 export async function feedPetFromTablet(input: DeviceFeedRequest, options: DevicePetsOptions = {}): Promise<DeviceFeedResult> {
   const now = (options.clock ?? (() => new Date()))();
   let capability: DeviceCapability = 'pets.feed';
   try {
-    const backdatedAt = backdatedTimeOf(input.backdatedAt, now);
-    if (backdatedAt) capability = backdatedCapability('feed', backdatedAt, now);
+    capability = feedCapability({ backdatedAt: backdatedTimeOf(input.backdatedAt, now), queuedAt: queuedLineTime(input.queued, now) }, now);
   } catch (error) {
     asDeviceError(error);
   }
-  const authority = await authorize(capability, input, options);
+  const authority = await authorize(capability, input, options, FEED_CAPABILITIES);
   const ctx = deviceOperationContext(authority);
   const result = await feedPetAs(adminDb, authority.householdId, {
     petId: input.petId, portion: input.portion, portionFromSlot: input.portionFromSlot, food: input.food,
     comments: input.comments, confirm: input.confirm, backdatedAt: input.backdatedAt,
   }, ctx, { queuedAt: queuedAtOf(authority.queuedCreatedAt) }).catch(asDeviceError);
-  return { result: withoutEmails(result), level: authority.level === 'pin' ? 'pin' : 'face', capability };
+  return { result: withoutEmails(result), level: authority.level === 'pin' ? 'pin' : 'face', capability: authority.capability };
 }
 
 /** `pets.feed.undo`: by the original's opId only. */

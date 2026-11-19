@@ -175,6 +175,8 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
         capability,
         label: `Fed ${petName}`,
         subject: petName,
+        // Each pet keeps its own Undo (PE-8i), as on the personal path.
+        toastGroup: petFeedToastGroup(petId),
         intent: {
           petId,
           portion: request.portion,

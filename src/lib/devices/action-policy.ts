@@ -266,6 +266,28 @@ export const backdatedCapability = (
   return old ? 'pets.dose.give.old' : 'pets.dose.give';
 };
 
+/**
+ * The capability of one tablet feed press, decided by the server from the feeding's
+ * effective time (JC-27, review S1): the chosen time of a backdated feed; else, for a
+ * replay from the offline queue, the queue entry's time (`queuedAt`, already bounded by the
+ * caller to the gate's 24-hour limit and to the server clock); else it is live
+ * (`pets.feed`). More than 12 hours before the server clock is `pets.feed.backdated.old`
+ * (PIN, not queueable), so a queued entry older than 12 hours is refused at face level.
+ * A retry whose opId is already applied keeps its recorded capability (FEED_CAPABILITIES,
+ * the gate's `replayFamily`), so crossing the line between attempts never changes the answer.
+ */
+export const feedCapability = (
+  input: { backdatedAt: Date | null; queuedAt: Date | null },
+  now: Date,
+): 'pets.feed' | 'pets.feed.backdated' | 'pets.feed.backdated.old' => {
+  if (input.backdatedAt) return backdatedCapability('feed', input.backdatedAt, now) as 'pets.feed.backdated' | 'pets.feed.backdated.old';
+  if (input.queuedAt && now.getTime() - input.queuedAt.getTime() > BACKDATED_FACE_WINDOW_MS) return 'pets.feed.backdated.old';
+  return 'pets.feed';
+};
+
+/** One feed press under any of its capabilities (a replay of an applied opId keeps the recorded one). */
+export const FEED_CAPABILITIES: readonly DeviceCapability[] = UNDO_OF['pets.feed.undo'];
+
 export type RequiredLevel = 'device' | 'face' | 'pin' | 'admin-pin' | 'not_on_tablets' | 'never';
 
 /**

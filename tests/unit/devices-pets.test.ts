@@ -8,7 +8,7 @@ import {
   SENDABLE_CAPABILITIES,
   UNDO_CAPABILITY_OF,
 } from '../../src/lib/devices/device-action-answers';
-import { DEVICE_ACTION_POLICY, backdatedCapability, policyOf, requiredLevel } from '../../src/lib/devices/action-policy';
+import { DEVICE_ACTION_POLICY, FEED_CAPABILITIES, backdatedCapability, feedCapability, policyOf, requiredLevel } from '../../src/lib/devices/action-policy';
 import { queueAllowed } from '../../src/lib/devices/offline-queue';
 import { personMay, rosterFrom } from '../../src/lib/devices/roster';
 import { PET_PERMISSIONS } from '../../src/lib/permissions';
@@ -79,6 +79,27 @@ describe('reading pets answers', () => {
   });
 });
 
+describe('JC-27: the 12-hour line of a feed press (review S1/S2)', () => {
+  const now = new Date('2026-11-19T18:00:00Z');
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+  const H12 = 12 * 60 * 60_000;
+  it('a backdated time decides; else the queue time of a queued replay; a live feed is pets.feed', () => {
+    assert.equal(feedCapability({ backdatedAt: null, queuedAt: null }, now), 'pets.feed');
+    assert.equal(feedCapability({ backdatedAt: ago(H12), queuedAt: null }, now), 'pets.feed.backdated');
+    assert.equal(feedCapability({ backdatedAt: ago(H12 + 1), queuedAt: null }, now), 'pets.feed.backdated.old');
+    assert.equal(feedCapability({ backdatedAt: null, queuedAt: ago(H12) }, now), 'pets.feed');
+    assert.equal(feedCapability({ backdatedAt: null, queuedAt: ago(23 * 60 * 60_000) }, now), 'pets.feed.backdated.old');
+    // A queued backdated feed: the chosen time, against the server clock.
+    assert.equal(feedCapability({ backdatedAt: ago(H12 + 60_000), queuedAt: ago(60_000) }, now), 'pets.feed.backdated.old');
+    assert.equal(feedCapability({ backdatedAt: ago(60_000), queuedAt: ago(13 * 60 * 60_000) }, now), 'pets.feed.backdated');
+  });
+  it('one press under any of its capabilities is one replay family; .old stays PIN and not queueable', () => {
+    assert.deepEqual([...FEED_CAPABILITIES].sort(), ['pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old']);
+    assert.equal(policyOf('pets.feed.backdated.old').levelClass, 'pin');
+    assert.equal(policyOf('pets.feed.backdated.old').queueable, undefined);
+  });
+});
+
 describe('R5: the tablet uses the same permission names as the personal paths', () => {
   it('the policy names PET_PERMISSIONS; the rules gate pet logs with the same names', () => {
     assert.deepEqual(DEVICE_ACTION_POLICY['pets.feed'].permissions, [PET_PERMISSIONS.addLogs]);
@@ -89,7 +110,9 @@ describe('R5: the tablet uses the same permission names as the personal paths', 
     const careStart = rules.indexOf('match /care-logs/{logId}');
     const careBlock = rules.slice(careStart, rules.indexOf('\n        }', careStart));
     assert.match(careBlock, new RegExp(`allow create: if hasHouseholdPermission\\(householdId, '${PET_PERMISSIONS.addLogs.replace('.', '\\.')}'\\)`));
-    assert.match(careBlock, new RegExp(`allow delete: if hasHouseholdPermission\\(householdId, '${PET_PERMISSIONS.deleteLogs.replace('.', '\\.')}'\\)`));
+    assert.match(careBlock, new RegExp(`allow delete: if hasHouseholdPermission\\(householdId, '${PET_PERMISSIONS.deleteLogs.replace('.', '\\.')}'\\) \\|\\|\\s+feedingAuthorWithinUndoWindow\\(householdId\\)`));
+    // Review B1: care entries carry a server-time loggedAt, so the tablet's care Undo is what the author may do on a phone.
+    assert.ok(careBlock.includes('feedingLoggedAtOnCreate()') && careBlock.includes('feedingLoggedAtUnchanged()'));
     const feedBlock = rules.slice(rules.indexOf('match /feeding-logs/{logId}'), rules.indexOf('match /feeding-logs/{logId}') + 1500);
     assert.ok(feedBlock.includes(`'${PET_PERMISSIONS.addLogs}'`) && feedBlock.includes(`'${PET_PERMISSIONS.deleteLogs}'`));
   });

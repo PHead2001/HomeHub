@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { serverTimestamp } from 'firebase/firestore';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { format } from 'date-fns';
@@ -59,6 +60,8 @@ export function CareLogClient({ petId }: CareLogProps) {
         notes: values.notes || '',
         loggedByUid: currentUser.uid,
         loggedByName: loggerName(currentUser),
+        // Server time: opens the author's 10-minute delete window (the rules' care-log Undo).
+        loggedAt: serverTimestamp(),
       });
       playFeedback('complete');
       form.reset({ activity: '', notes: '' });

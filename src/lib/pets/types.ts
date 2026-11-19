@@ -146,4 +146,7 @@ export type MedicationCourseDoc = {
   finishedByName?: string | null;
 };
 
-export type PetCareLog = CareLog & LoggedBy;
+export type PetCareLog = CareLog & LoggedBy & {
+  /** Server time the entry was written (absent on older entries); the author may delete it for 10 minutes after. */
+  loggedAt?: unknown;
+};
