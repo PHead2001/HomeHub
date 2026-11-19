@@ -95,7 +95,39 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
           }));
           expect(sizes.line).toBeGreaterThanOrEqual(20);
           expect(sizes.line).toBeGreaterThan(sizes.name);
+          // The status line is never clipped by its card: it sits wholly inside the
+          // card body's visible box, above the name (Codex P2 on PR #187).
+          const body = (await card.getByTestId('pet-card-body').boundingBox())!;
+          expect(lineBox.y, 'status line starts inside the card body').toBeGreaterThanOrEqual(body.y - 0.5);
+          expect(lineBox.y + lineBox.height, 'status line ends inside the card body').toBeLessThanOrEqual(body.y + body.height + 0.5);
+          const nameBox = (await card.locator('h2').boundingBox())!;
+          expect(lineBox.y).toBeLessThan(nameBox.y);
+          // Feed (and a legacy pet's Set meal times beside it) are 48 px and do not overlap.
+          const controls = [card.getByRole('button', { name: /^Feed / }), card.getByTestId('set-meal-times')];
+          const boxes = [];
+          for (const control of controls) if (await control.count()) boxes.push((await control.boundingBox())!);
+          for (const box of boxes) expect(box.height).toBeGreaterThanOrEqual(48);
+          if (boxes.length === 2) {
+            const [a, b] = boxes;
+            expect(a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5).toBe(false);
+          }
         }
+        // The extra pets have only a legacy schedule, so the owner sees Set meal times on them.
+        expect(await board.getByTestId('set-meal-times').count()).toBeGreaterThanOrEqual(EXTRA.length);
+        // Maple's medication chip is reachable: the card body scrolls (never the page) and the chip takes the tap.
+        const chip = page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('link').first();
+        await chip.scrollIntoViewIfNeeded();
+        await expect(chip).toBeInViewport();
+        const chipBox = (await chip.boundingBox())!;
+        expect(chipBox.height).toBeGreaterThanOrEqual(48);
+        const mapleBody = (await page.getByTestId('pet-card-maple').getByTestId('pet-card-body').boundingBox())!;
+        expect(chipBox.y).toBeGreaterThanOrEqual(mapleBody.y - 0.5);
+        expect(chipBox.y + chipBox.height).toBeLessThanOrEqual(mapleBody.y + mapleBody.height + 0.5);
+        expect(await chip.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          return Boolean(hit && element.contains(hit));
+        }), 'the medication chip receives the tap').toBe(true);
         // Red band with its text label for an overdue medication (PE-9b).
         await expect(page.getByTestId('pet-card-maple').getByTestId('pet-status-band')).toHaveAttribute('data-band', 'overdue');
         await expect(page.getByTestId('pet-card-maple').getByTestId('pet-status-band')).toContainText('Medication overdue');
@@ -302,6 +334,30 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
           expect(overlap, `${boxes[i].name} overlaps ${boxes[j].name}`).toBe(false);
         }
       }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('phone (390 x 844): Log with details with a chosen time keeps AM/PM inside the form, 48 px, no sideways scroll (PE-14e)', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    const { context, page } = await touchContext(browser, { width: 390, height: 844 });
+    try {
+      await page.goto('/pets/maple?tab=feeding');
+      await page.getByRole('tab', { name: /Feeding/ }).click();
+      await page.getByRole('button', { name: 'Log with details' }).click();
+      await page.getByText('Use current time').click();
+      const form = page.getByRole('form', { name: 'Log a feeding with details' });
+      const formBox = (await form.boundingBox())!;
+      for (const name of ['AM', 'PM']) {
+        const label = page.locator('label', { hasText: new RegExp(`^${name}$`) }).first();
+        const option = (await label.locator('xpath=..').boundingBox())!;
+        expect((await label.boundingBox())!.height, name).toBeGreaterThanOrEqual(48);
+        expect(option.x, `${name} starts inside the form`).toBeGreaterThanOrEqual(formBox.x - 0.5);
+        expect(option.x + option.width, `${name} ends inside the form`).toBeLessThanOrEqual(formBox.x + formBox.width + 0.5);
+      }
+      expect(await form.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), 'the form does not overflow sideways').toBe(true);
+      expect((await noPageScroll(page)).sideways).toBeLessThanOrEqual(0);
     } finally {
       await context.close();
     }

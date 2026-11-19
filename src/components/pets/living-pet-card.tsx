@@ -279,15 +279,19 @@ function StatusBand({ status, children }: { status: BoardStatus; children?: Reac
   );
 }
 
-/** Feed (and Set meal times for a legacy pet), on the board and the phone rows. */
-function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, compact }: {
-  pet: PetProfile; model: CardModel; statusId: string; hintId: string; canEdit: boolean; onEdit: (pet: PetProfile) => void; className?: string; compact?: boolean;
+/**
+ * Feed (and Set meal times for a legacy pet), on the board and the phone rows.
+ * `inline` (the board) puts the two side by side, so a legacy pet's card spends
+ * one 48 px row on its controls and the status above keeps its space (PE-9e).
+ */
+function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, compact, inline }: {
+  pet: PetProfile; model: CardModel; statusId: string; hintId: string; canEdit: boolean; onEdit: (pet: PetProfile) => void; className?: string; compact?: boolean; inline?: boolean;
 }) {
   const { care, feed } = model;
   const { meal, status } = care;
   return (
-    <div className={cn('flex flex-col gap-2', className)}>
-      {!compact && meal?.kind === 'legacy' && canEdit && <SetMealTimesButton petName={pet.name} onClick={() => onEdit(pet)} />}
+    <div className={cn('flex gap-2', inline ? 'flex-row items-stretch' : 'flex-col', className)} data-testid="pet-feed-area">
+      {!compact && meal?.kind === 'legacy' && canEdit && <SetMealTimesButton petName={pet.name} onClick={() => onEdit(pet)} className={inline ? 'min-w-0 flex-1' : undefined} />}
       <QuickFeedButton
         petId={pet.id}
         petName={pet.name}
@@ -299,7 +303,7 @@ function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, co
         controller={feed}
         describedBy={care.feedings.loading ? (model.holdEnabled ? hintId : undefined) : [statusId, model.holdEnabled ? hintId : null].filter(Boolean).join(' ')}
         variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
-        className="w-full"
+        className={inline ? 'min-w-0 flex-1' : 'w-full'}
         compact={compact}
       />
     </div>
@@ -325,7 +329,10 @@ function LinkedChips({ pet, care, max = 2 }: { pet: PetProfile; care: PetCare; m
  * pet without confirmed meal times), then the feeding status as the card's
  * biggest text (24 px), an 80 px avatar (160 px when one or two pets share the
  * screen), the name with a details chevron, medication chips, the pinned note
- * and Feed.
+ * and Feed. The status comes first in the text column, so it is the last thing a
+ * short card gives up; the column scrolls inside the card (never the page), so
+ * the chips and the note stay reachable on a six-pet board at 1263 x 722 even
+ * with a legacy pet's Set meal times beside Feed.
  */
 function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0, roomy, model, photoRef }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
   const statusId = `pet-status-${pet.id}`;
@@ -341,7 +348,7 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
       <StatusBand status={board}>
         {canEdit && <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} className="h-8 w-8 bg-background/90 text-foreground" />}
       </StatusBand>
-      <div className="flex min-h-0 flex-1 gap-4 overflow-hidden p-4">
+      <div className="flex min-h-0 flex-1 gap-4 overflow-y-auto overscroll-contain p-4" data-testid="pet-card-body">
         <HoldPhoto
           pet={pet}
           model={model}
@@ -352,10 +359,6 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
           index={index}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex min-w-0 items-start gap-1">
-            <NameLink pet={pet} model={model} className="text-lg" />
-            <DetailsLink pet={pet} model={model} />
-          </div>
           <div id={statusId} className="min-w-0">
             <p className="break-words text-2xl font-bold leading-tight text-foreground [overflow-wrap:anywhere]" data-testid="pet-status-line">{board.line}</p>
             {board.detail && <p className="mt-0.5 text-sm text-muted-foreground">{board.detail}</p>}
@@ -363,12 +366,16 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
             {care.meal?.kind === 'legacy' && care.meal.nextMealHint && <p className="text-sm text-muted-foreground" data-testid="next-meal-hint">{care.meal.nextMealHint}</p>}
             {board.medication && <p className="mt-0.5 text-sm font-medium text-destructive">{board.medication}</p>}
           </div>
+          <div className="flex min-w-0 items-start gap-1">
+            <NameLink pet={pet} model={model} className="text-lg" />
+            <DetailsLink pet={pet} model={model} />
+          </div>
           <LinkedChips pet={pet} care={care} />
           <PinnedNoteLine householdId={householdId} petId={pet.id} className="text-sm" />
         </div>
       </div>
       {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={canEdit} onEdit={onEdit} className="relative z-10 mt-auto px-4 pb-4" />
+      <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={canEdit} onEdit={onEdit} className="relative z-10 mt-auto shrink-0 px-4 pb-4" inline />
     </Card>
   );
 }
