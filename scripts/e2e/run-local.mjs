@@ -8,7 +8,7 @@ import {
   E2E_STORAGE_HOST,
   e2eEnvironment,
 } from "./environment.mjs";
-import { specSets } from "./spec-sets.mjs";
+import { shardArgs, specSets } from "./spec-sets.mjs";
 
 const updateSnapshots = process.argv.includes("--visual-update");
 const smokeOnly = process.argv.includes("--smoke-only");
@@ -18,6 +18,13 @@ const extendedOnly = process.argv.includes("--extended-only");
 
 if ([updateSnapshots, smokeOnly, featureOnly, aiOnly, extendedOnly].filter(Boolean).length > 1) {
   throw new Error("Choose only one focused E2E run mode.");
+}
+
+// CI splits the smoke list across parallel jobs with E2E_SHARD="i/N" (passed to Playwright as
+// --shard=i/N). Unset, nothing changes. Validated here, before the emulators start.
+const smokeShardArgs = shardArgs(process.env.E2E_SHARD);
+if (smokeShardArgs.length > 0 && !smokeOnly) {
+  throw new Error("E2E_SHARD applies only to --smoke-only (npm run test:e2e:ci).");
 }
 
 // Smoke list and extended set (every other non-local, non-visual spec), see spec-sets.mjs.
@@ -33,8 +40,9 @@ const firebaseCli = resolve("node_modules/firebase-tools/lib/bin/firebase.js");
 const playwrightCli = resolve("node_modules/@playwright/test/cli.js");
 const seedScript = resolve("scripts/e2e/seed.mjs");
 const emulatorTimeoutMs = 60_000;
-// The whole E2E suite runs as one Playwright invocation. It grows with every module spec,
-// so the budget sits below the 45-minute CI job limit and can be raised per run.
+// Each run mode is one Playwright invocation. It grows with every module spec, so the budget
+// sits below the CI job limits (40-minute smoke shards, 45-minute extended job) and can be
+// raised per run.
 const suiteTimeoutMs = Number(process.env.E2E_SUITE_TIMEOUT_MS) || (process.env.CI === "true" ? 2_100_000 : 900_000);
 
 const parseHost = (value) => {
@@ -188,8 +196,8 @@ try {
     await runChild(process.execPath, [seedScript], "Firebase emulator seed", 60_000);
     await runChild(
       process.execPath,
-      [playwrightCli, "test", ...smokeSpecs],
-      "Playwright smoke suite",
+      [playwrightCli, "test", ...smokeSpecs, ...smokeShardArgs],
+      smokeShardArgs.length > 0 ? `Playwright smoke suite (${smokeShardArgs[0]})` : "Playwright smoke suite",
       suiteTimeoutMs
     );
   } else if (updateSnapshots) {
