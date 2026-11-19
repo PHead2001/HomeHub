@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { E2E_SPEC_DIR, SMOKE_SPECS, partitionSpecs, specSets } from '../../scripts/e2e/spec-sets.mjs';
+import { E2E_SPEC_DIR, SMOKE_SPECS, partitionSpecs, shardArgs, specSets } from '../../scripts/e2e/spec-sets.mjs';
 
 describe('e2e spec sets (scripts/e2e/spec-sets.mjs)', () => {
   it('puts every non-local, non-visual spec of tests/e2e in exactly one set', () => {
@@ -56,5 +56,23 @@ describe('e2e spec sets (scripts/e2e/spec-sets.mjs)', () => {
 
   it('has a smoke list whose every entry exists today', () => {
     assert.doesNotThrow(() => specSets());
+  });
+
+  it('passes no shard argument when E2E_SHARD is unset or empty (local runs unchanged)', () => {
+    assert.deepEqual(shardArgs(undefined), []);
+    assert.deepEqual(shardArgs(''), []);
+    assert.deepEqual(shardArgs('  '), []);
+  });
+
+  it('turns E2E_SHARD "i/N" into a Playwright --shard argument', () => {
+    assert.deepEqual(shardArgs('1/3'), ['--shard=1/3']);
+    assert.deepEqual(shardArgs(' 3/3 '), ['--shard=3/3']);
+    assert.deepEqual(shardArgs('1/1'), ['--shard=1/1']);
+  });
+
+  it('rejects a malformed or out-of-range E2E_SHARD', () => {
+    for (const bad of ['0/3', '4/3', '1/0', '3', '1/3/2', 'a/b', '-1/3', '1 / 3']) {
+      assert.throws(() => shardArgs(bad), /E2E_SHARD must look like/, bad);
+    }
   });
 });

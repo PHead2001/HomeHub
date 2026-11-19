@@ -14,12 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate-and-smoke:
-    name: Validate and run authenticated smoke
+  validate:
+    # Everything the old single job ran before the smoke list; runs beside the smoke shards.
+    name: Validate (lint, types, docs, unit, rules, server, Functions, build)
     runs-on: ubuntu-latest
-    # The smoke list (~290 tests across three projects) plus validation takes 28-45 min
-    # on hosted runners; 45 cut off passing runs on slower machines.
-    timeout-minutes: 60
+    timeout-minutes: 30
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"
@@ -43,18 +42,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Install Playwright Chromium
-        shell: bash
-        run: |
-          # The system packages (mostly fonts) come from the Ubuntu archives. When the runner cannot
-          # reach them the install hangs on retries and fails, so it gets five minutes; after that the
-          # browser alone is installed (the runner image already has the libraries Chromium needs).
-          if timeout 300 npx playwright install --with-deps chromium; then
-            exit 0
-          fi
-          echo "::warning::Playwright system packages could not be installed; installing the browser only."
-          npx playwright install chromium
 
       - name: Load demo emulator environment
         shell: bash
@@ -95,14 +82,86 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Run authenticated E2E smoke tests
+  smoke:
+    # The smoke list (scripts/e2e/spec-sets.mjs) split with Playwright --shard. Each shard is a
+    # full, isolated copy of the old smoke phase: its own runner, emulators, seed, dev server and
+    # setup project (auth.setup.ts runs in every shard). Playwright shards by test file per
+    # project when fullyParallel is false, so a serial-mode spec is never split across shards.
+    # To change the shard count, edit the matrix list; the total comes from strategy.job-total.
+    name: Authenticated smoke (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      # Let every shard finish so one run reports all failing shards.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      E2E_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Read Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          # The browser download is skipped when the cache above already holds this Playwright
+          # version's Chromium; the system packages are still installed on every run.
+          # The system packages (mostly fonts) come from the Ubuntu archives. When the runner cannot
+          # reach them the install hangs on retries and fails, so it gets five minutes; after that the
+          # browser alone is installed (the runner image already has the libraries Chromium needs).
+          if timeout 300 npx playwright install --with-deps chromium; then
+            exit 0
+          fi
+          echo "::warning::Playwright system packages could not be installed; installing the browser only."
+          npx playwright install chromium
+
+      - name: Load demo emulator environment
+        shell: bash
+        run: |
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "$line" >> "$GITHUB_ENV"
+            fi
+          done < .env.e2e.example
+
+      - name: Run authenticated E2E smoke tests (shard ${{ env.E2E_SHARD }})
         run: npm run test:e2e:ci
 
       - name: Upload E2E failure artifacts
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: e2e-smoke-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          name: e2e-smoke-failure-shard-${{ matrix.shard }}-of-${{ strategy.job-total }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             playwright-report/
             test-results/
@@ -111,6 +170,28 @@ jobs:
             ui-debug.log
           if-no-files-found: ignore
           retention-days: 10
+
+  validate-and-smoke:
+    # The stable required-check name: passes only when validation and every smoke shard passed.
+    # if: always() so a failed or cancelled dependency still produces a failing check here
+    # instead of a skipped one (a skipped required check would not block the merge).
+    name: Validate and run authenticated smoke
+    needs: [validate, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require validation and every smoke shard to pass
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+        run: |
+          echo "Validate: $VALIDATE_RESULT"
+          echo "Smoke shards: $SMOKE_RESULT"
+          if [ "$VALIDATE_RESULT" != "success" ] || [ "$SMOKE_RESULT" != "success" ]; then
+            echo "::error::Validation and every authenticated smoke shard must succeed."
+            exit 1
+          fi
 
   extended-e2e:
     # Every tests/e2e spec outside the smoke list (scripts/e2e/spec-sets.mjs), so no spec is outside CI.
