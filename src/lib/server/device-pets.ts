@@ -5,7 +5,7 @@ import { authorizeDeviceAction, QUEUED_MAX_AGE_MS } from '@/lib/server/device-ga
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { deviceOperationContext } from '@/lib/server/operation-context';
 import { withoutEmails } from '@/lib/server/device-chores';
-import { FEED_CAPABILITIES, backdatedCapability, feedCapability, type DeviceCapability } from '@/lib/devices/action-policy';
+import { DOSE_CAPABILITIES, FEED_CAPABILITIES, doseCapability, feedCapability, type DeviceCapability } from '@/lib/devices/action-policy';
 import {
   PetFeedingError,
   addCareAs,
@@ -167,23 +167,24 @@ export type DeviceDoseRequest = DevicePetsRequest & {
 
 /**
  * `pets.dose.give` (Give dose from the card chip, the pet's medication list or a reminder's
- * `?dose=` link): the server picks `pets.dose.give` (now, or given within the last 12 hours,
- * face) or `pets.dose.give.old` (PIN, JC-27) from the given-at time, never from the client.
+ * `?dose=` link): the server picks `pets.dose.give` (face) or `pets.dose.give.old` (PIN, not
+ * queueable, JC-27) from the dose's effective time, never from the client (`doseCapability`:
+ * the given-at time, else a queued replay's queue time). A retry of an opId already applied
+ * keeps the capability it was recorded under (the gate's `replayFamily`, DOSE_CAPABILITIES).
  */
 export async function giveDoseFromTablet(input: DeviceDoseRequest, options: DevicePetsOptions = {}): Promise<DeviceDoseResult> {
   const now = (options.clock ?? (() => new Date()))();
   let capability: DeviceCapability = 'pets.dose.give';
   try {
-    const givenAt = doseGivenAtOf(input.givenAt, now);
-    if (givenAt) capability = backdatedCapability('dose', givenAt, now);
+    capability = doseCapability({ givenAt: doseGivenAtOf(input.givenAt, now), queuedAt: queuedLineTime(input.queued, now) }, now);
   } catch (error) {
     asDeviceError(error);
   }
-  const authority = await authorize(capability, input, options);
+  const authority = await authorize(capability, input, options, DOSE_CAPABILITIES);
   const result = await giveDoseAs(adminDb, authority.householdId, {
     petId: input.petId, courseId: input.courseId, occurrenceKey: input.occurrenceKey, givenAt: input.givenAt, notes: input.notes, confirm: input.confirm,
   }, deviceOperationContext(authority), { queuedAt: queuedAtOf(authority.queuedCreatedAt) }).catch(asDeviceError);
-  return { result: withoutEmails(result), level: authority.level === 'pin' ? 'pin' : 'face', capability };
+  return { result: withoutEmails(result), level: authority.level === 'pin' ? 'pin' : 'face', capability: authority.capability };
 }
 
 /** `pets.dose.undo`: by the original's opId only; removes the record and moves the course's pointer off it. */
@@ -271,19 +272,32 @@ export async function deletePetFromTablet(input: DevicePetsRequest & { petId: un
   const petId = input.petId;
   const actor = authority.actor!;
   const targetPath = `households/${authority.householdId}/pets/${petId}`;
+  // A replay answers what the first run answered (review N2); another pet under the same opId is a conflict (S3).
+  let stored: { status?: unknown } | null = null;
   try {
     const outcome = await deletePetCascade(adminDb, adminStorageBucket() as unknown as PetPhotoBucket | null, {
       householdId: authority.householdId,
       petId,
-      actor: { uid: actor.uid, name: publicDisplayName(actor.name, 'Someone'), email: null },
+      actor: {
+        uid: actor.uid, name: publicDisplayName(actor.name, 'Someone'), email: null,
+        device: { deviceId: authority.deviceId, deviceName: authority.deviceName, level: authority.level === 'pin' ? 'pin' : 'face' },
+      },
       now: authority.now,
     }, {
       device: {
-        precheck: (tx) => authority.hooks.precheck(tx),
+        precheck: async (tx) => {
+          const pre = await authority.hooks.precheck(tx);
+          if (pre.replay) {
+            if (pre.replay.targetPath !== targetPath) throw new DeviceActionError('conflict');
+            stored = (pre.replay.summary.result ?? null) as { status?: unknown } | null;
+          }
+          return pre;
+        },
         finalize: (tx, existed, name) => authority.hooks.finalize(tx, { targetPath, summary: { result: { status: existed ? 'deleted' : 'already', petId } }, targetName: name }),
       },
     });
-    return { status: outcome.status, petId };
+    const replayed = (stored as { status?: unknown } | null)?.status;
+    return { status: replayed === 'deleted' || replayed === 'already' ? replayed : outcome.status, petId };
   } catch (error) {
     if (error instanceof PetDeleteIncomplete) throw new DeviceActionError('unavailable');
     throw error;

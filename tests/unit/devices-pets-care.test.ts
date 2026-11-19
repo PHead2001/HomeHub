@@ -10,7 +10,7 @@ import {
   SENDABLE_CAPABILITIES,
   UNDO_CAPABILITY_OF,
 } from '../../src/lib/devices/device-action-answers';
-import { DEVICE_ACTION_POLICY, UNDO_PROVEN, backdatedCapability, policyOf, requiredLevel } from '../../src/lib/devices/action-policy';
+import { DEVICE_ACTION_POLICY, DOSE_CAPABILITIES, UNDO_PROVEN, backdatedCapability, doseCapability, policyOf, requiredLevel } from '../../src/lib/devices/action-policy';
 
 const queuedCapable = (capability: keyof typeof DEVICE_ACTION_POLICY) => (DEVICE_ACTION_POLICY[capability] as { queueable?: true }).queueable === true;
 import { queueAllowed } from '../../src/lib/devices/offline-queue';
@@ -172,5 +172,38 @@ describe('guards: no tablet path writes Pets data with the client SDK', () => {
     assert.match(views, /search\?\.get\('dose'\)/);
     assert.match(views, /<TabletPetSheet petId=\{open\.id\} petName=\{open\.name\} doseCourseId=\{open\.dose\}/);
     assert.match(read('src/components/devices/tablet-pet-sheet.tsx'), /entry\.id === doseCourseId && entry\.status === 'active'/);
+  });
+});
+
+describe('F4b-2 review: the 12-hour line, retries and the request shape', () => {
+  const now = new Date('2026-11-14T20:00:00Z');
+  const ago = (hours: number) => new Date(now.getTime() - hours * 3_600_000);
+  it('S1: a dose is classified by its effective time: the given-at time, else the queue time', () => {
+    assert.equal(doseCapability({ givenAt: null, queuedAt: null }, now), 'pets.dose.give');
+    assert.equal(doseCapability({ givenAt: null, queuedAt: ago(11) }, now), 'pets.dose.give');
+    assert.equal(doseCapability({ givenAt: null, queuedAt: ago(13) }, now), 'pets.dose.give.old');
+    assert.equal(doseCapability({ givenAt: ago(1), queuedAt: ago(23) }, now), 'pets.dose.give', 'a chosen time wins over the queue time');
+    assert.equal(doseCapability({ givenAt: ago(13), queuedAt: null }, now), 'pets.dose.give.old');
+  });
+
+  it('S2: one dose press under either capability (the replay family is the dose Undo\'s list)', () => {
+    assert.deepEqual([...DOSE_CAPABILITIES].sort(), ['pets.dose.give', 'pets.dose.give.old']);
+    const server = read('src/lib/server/device-pets.ts');
+    assert.match(server, /authorize\(capability, input, options, DOSE_CAPABILITIES\)/);
+    assert.match(server, /doseCapability\(\{ givenAt: doseGivenAtOf\(input\.givenAt, now\), queuedAt: queuedLineTime\(input\.queued, now\) \}, now\)/);
+  });
+
+  it('N4: an intent never overrides the request (token, household, person, PIN session, opId, queue)', async () => {
+    const { intentFields } = await import('../../src/lib/devices/device-action-answers');
+    const fields = intentFields({ petId: 'p', opId: 'x', actorUid: 'evil', queued: { createdAt: 'x' }, idToken: 't', householdId: 'h', pinSessionId: 's', text: 'Hi' });
+    assert.deepEqual(fields, { petId: 'p', text: 'Hi' });
+    const runtime = read('src/components/devices/use-device-actions.tsx');
+    assert.doesNotMatch(runtime, /\{ \.\.\.base, \.\.\.\(intent/);
+  });
+
+  it('one helper writes every online dose from a tablet (a course revision field is added in one place)', () => {
+    const records = read('src/lib/server/pet-records.ts');
+    assert.equal((records.match(/tx\.set\(logRef/g) ?? []).length, 0);
+    assert.ok((records.match(/writeDose\(/g) ?? []).length >= 5);
   });
 });

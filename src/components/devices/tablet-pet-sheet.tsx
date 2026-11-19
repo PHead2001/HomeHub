@@ -267,7 +267,7 @@ function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: stri
     if (!text.trim() || text.trim().length > 500 || saving) return;
     setSaving(true);
     try {
-      const outcome = await runAction({ capability: 'pets.note.add', label: `Note for ${petName}`, subject: petName, intent: { petId, text: text.trim(), ...(tag ? { tag } : {}) } });
+      const outcome = await runAction({ capability: 'pets.note.add', label: `Note for ${petName}`, subject: petName, toastGroup: `pet-note:${petId}`, intent: { petId, text: text.trim(), ...(tag ? { tag } : {}) } });
       if (outcome.ok) { setText(''); setTag(''); }
     } finally {
       setSaving(false);
@@ -335,7 +335,7 @@ function WeightPanel({ petId, petName, timeZone }: { petId: string; petName: str
   const add = async () => {
     const number = Number(value);
     if (!value.trim() || !Number.isFinite(number) || number <= 0) return;
-    const outcome = await runAction({ capability: 'pets.weight.add', label: `Weight for ${petName}`, subject: petName, intent: { petId, value: number, unit: chosen ?? unit } });
+    const outcome = await runAction({ capability: 'pets.weight.add', label: `Weight for ${petName}`, subject: petName, toastGroup: `pet-weight:${petId}`, intent: { petId, value: number, unit: chosen ?? unit } });
     if (outcome.ok) setValue('');
   };
   return (

@@ -34,7 +34,13 @@ export const PET_DELETE_PAGE_SIZE = 300;
 export const PET_DELETE_MAX_PASSES = 5;
 const MEDICATION_SOURCE_TYPE = 'pet_medication';
 
-export type PetDeleteActor = { uid: string; email?: string | null; name?: string | null };
+export type PetDeleteActor = {
+  uid: string;
+  email?: string | null;
+  name?: string | null;
+  /** From a registered wall tablet (F4b-2 review N3): the entry says so, as `device.action` entries do. */
+  device?: { deviceId: string; deviceName: string; level: 'face' | 'pin' };
+};
 export type PetDeleteOutcome = {
   /** `deleted`: the pet existed and is now gone with everything under it; `already`: there was no pet to delete (a retry or a race), and anything left under it was swept. */
   status: 'deleted' | 'already';
@@ -154,6 +160,9 @@ export async function deletePetCascade(
   const started = await db.runTransaction(async (transaction) => {
     const replay = hooks.device ? Boolean((await hooks.device.precheck(transaction)).replay) : false;
     const [pet, tombstone] = await Promise.all([transaction.get(petRef), transaction.get(tombstoneRef)]);
+    // A replay whose pet exists again under the same id (re-created on purpose after the first
+    // run, the tombstone gone): nothing of the new pet is swept (review N2).
+    if (replay && pet.exists && !tombstone.exists) return { photoUrl: null, existed: false, skip: true };
     if (!pet.exists || replay) {
       const found = tombstone.exists ? { photoUrl: tombstone.get('photoUrl') as unknown, existed: true } : { photoUrl: null, existed: false };
       if (!replay) hooks.device?.finalize(transaction, found.existed, tombstone.exists ? (tombstone.get('name') as string | null) ?? null : null);
@@ -172,6 +181,7 @@ export async function deletePetCascade(
       actorEmail: input.actor.email ?? null,
       actorName: input.actor.name ?? null,
       action: 'pet.deleted',
+      ...(input.actor.device ? { via: 'device', deviceId: input.actor.device.deviceId, deviceName: input.actor.device.deviceName, level: input.actor.device.level } : {}),
       createdAt: now.toISOString(),
       details: { petId: input.petId, petName: name },
     });
@@ -179,6 +189,7 @@ export async function deletePetCascade(
     hooks.device?.finalize(transaction, true, name);
     return { photoUrl: pet.get('photoUrl') as unknown, existed: true };
   });
+  if ('skip' in started && started.skip) return { status: 'already', documents: 0, photos: 0, reminders: 0 };
   await hooks.afterBarrier?.();
 
   // 2. Everything under the pet, page by page, re-checked.

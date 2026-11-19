@@ -55,10 +55,11 @@ const member: Person = { uid: 'dr-member', email: 'dr.member@example.test', disp
 const child: Person = { uid: 'dr-child', email: 'dr.child@example.test', displayName: 'Cleo', role: 'child' };
 const KID = 'kid_DevPetsRecKid0000000';
 const created = new Set<string>();
-const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra'] as const;
+const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin'] as const;
 const tablets = {} as Record<(typeof NAMES)[number], Tablet>;
 let ownerDb: ClientFirestore;
 let memberDb: ClientFirestore;
+let childDb: ClientFirestore;
 const closers: Array<() => Promise<void>> = [];
 
 const pet = (id: string) => house(H).collection('pets').doc(id);
@@ -148,10 +149,13 @@ before(async () => {
   await seedHousehold(H, [owner, member, child], { timeZone: TZ });
   await seedKid(H, KID, 'Mia');
   for (const name of NAMES) tablets[name] = await pairTablet(H, owner, created, `${name[0].toUpperCase()}${name.slice(1)} tablet`);
-  for (const person of [owner, member]) {
+  for (const person of [owner, member, child]) {
     await adminAuth.deleteUser(person.uid).catch(() => undefined);
     await adminAuth.createUser({ uid: person.uid, email: person.email });
   }
+  const childSession = await clientSession(await adminAuth.createCustomToken(child.uid));
+  childDb = childSession.db;
+  closers.push(childSession.close);
   const ownerSession = await clientSession(await adminAuth.createCustomToken(owner.uid));
   const memberSession = await clientSession(await adminAuth.createCustomToken(member.uid));
   ownerDb = ownerSession.db;
@@ -159,6 +163,7 @@ before(async () => {
   closers.push(ownerSession.close, memberSession.close);
   await setMyPin(owner, { householdId: H, pin: '2580' });
   await setMyPin(member, { householdId: H, pin: '2580' });
+  await setMyPin(child, { householdId: H, pin: '2580' });
 });
 
 after(async () => {
@@ -818,4 +823,231 @@ describe('the server writes exactly what the rules accept from the person (repla
     const rows = [{ id: 'slot-am', name: 'Breakfast', time: '07:00', amount: '1', unit: 'Cups', offDays: [] }];
     await updateParity(pet('parity-pin'), () => saveMealPlanFromTablet({ ...base(), petId: 'parity-pin', rows }), ['mealPlan.confirmedAt']);
   });
+});
+
+describe('F4b-2 review fixes', () => {
+  test('S1: a queued dose is classified by its queue time: 11 h is face, 13 h and a forged 23 h need a PIN (never queued)', async () => {
+    await seedDosePet('line-queued');
+    const key = await prefill('line-queued');
+    const face = await giveDoseFromTablet({ ...doseRequest(tablets.line, member.uid, opId(), 'line-queued', key), ...queued(tablets.line, 11 * 60 * 60_000) });
+    assert.equal(face.capability, 'pets.dose.give');
+    assert.equal(face.result.status, 'saved');
+    for (const hours of [13, 23]) {
+      await refused(giveDoseFromTablet({ ...doseRequest(tablets.line, member.uid, opId(), 'line-queued', key), ...queued(tablets.line, hours * 60 * 60_000) }), 'pin_required');
+    }
+    assert.equal((await doses('line-queued').get()).size, 1);
+  });
+
+  test('S2: a retry crossing the 12-hour line after the commit gets the recorded answer and capability', async () => {
+    await seedDosePet('line-retry');
+    const op = opId();
+    const givenAt = later(-(12 * 60 - 2) * 60_000).toISOString();
+    const first = await give(tablets.line, member.uid, op, 'line-retry', { givenAt });
+    assert.equal(first.capability, 'pets.dose.give');
+    const retry = await give(tablets.line, member.uid, op, 'line-retry', { givenAt }, later(5 * 60_000));
+    assert.equal(retry.capability, 'pets.dose.give');
+    assert.equal(retry.result.status, 'saved');
+    assert.equal((retry.result as { replayed?: true }).replayed, true);
+    assert.equal((await doses('line-retry').get()).size, 1);
+  });
+
+  test('S3: an opId reused for another pet, note or log is a conflict, never the first answer', async () => {
+    await seedDosePet('reuse-a');
+    await seedDosePet('reuse-b');
+    const op = opId();
+    await give(tablets.review, member.uid, op, 'reuse-a');
+    await refused(give(tablets.review, member.uid, op, 'reuse-b'), 'conflict');
+    const noteOp = opId();
+    await addNote(tablets.review, member.uid, noteOp, 'reuse-a');
+    await refused(addNote(tablets.review, member.uid, noteOp, 'reuse-b'), 'conflict');
+    await refused(addWeight(tablets.review, member.uid, noteOp, 'reuse-a'), 'conflict');
+    const ownerPin = await pinOf(tablets.review, owner);
+    const careA = pet('reuse-a').collection('care-logs');
+    await careA.doc('care-a').set({ date: new Date().toISOString(), activity: 'Walk', notes: '', loggedByUid: owner.uid, loggedByName: 'Olive' });
+    await careA.doc('care-b').set({ date: new Date().toISOString(), activity: 'Walk', notes: '', loggedByUid: owner.uid, loggedByName: 'Olive' });
+    const pinOp = opId();
+    assert.equal((await deleteLogFromTablet({ ...pinBase(tablets.review, owner.uid, ownerPin, pinOp), petId: 'reuse-a', kind: 'care-logs', logId: 'care-a' })).status, 'deleted');
+    await refused(deleteLogFromTablet({ ...pinBase(tablets.review, owner.uid, ownerPin, pinOp), petId: 'reuse-a', kind: 'care-logs', logId: 'care-b' }), 'conflict');
+    assert.equal((await careA.doc('care-b').get()).exists, true, 'the other log is untouched');
+  });
+
+  test('S3: an Undo never removes a record recreated under the same id by someone else or for another tablet', async () => {
+    await seedDosePet('recreate');
+    for (const kind of ['note', 'weight', 'dose'] as const) {
+      const op = opId();
+      const ref = kind === 'note' ? notes('recreate').doc(op) : kind === 'weight' ? weights('recreate').doc(op) : doses('recreate').doc(op);
+      if (kind === 'note') await addNote(tablets.review, member.uid, op, 'recreate');
+      else if (kind === 'weight') await addWeight(tablets.review, member.uid, op, 'recreate');
+      else await giveSure(tablets.review, member.uid, op, 'recreate');
+      const data = (await ref.get()).data()!;
+      // Deleted and written again under the same id by the owner (no attribution), then as another tablet's.
+      await ref.delete();
+      await ref.set({ ...data, loggedByUid: owner.uid, loggedByName: 'Olive', deviceAttribution: null });
+      await refused((kind === 'note' ? undoNote : kind === 'weight' ? undoWeight : undoDose)(tablets.review, member.uid, op), 'changed_since');
+      await ref.delete();
+      await ref.set({ ...data, deviceAttribution: { ...data.deviceAttribution, deviceId: tablets.other.deviceId } });
+      await refused((kind === 'note' ? undoNote : kind === 'weight' ? undoWeight : undoDose)(tablets.review, member.uid, op), 'changed_since');
+      assert.equal((await ref.get()).exists, true, kind);
+    }
+  });
+
+  test("N1: the author's window closes a few seconds before the rules' (a commit after the deadline is never attempted)", async () => {
+    await seedPet('margin');
+    const memberPin = await pinOf(tablets.review, member);
+    for (const [ago, outcome] of [[10 * 60_000 - 3_000, 'forbidden'], [9 * 60_000, 'deleted']] as const) {
+      const op = opId();
+      await addNote(tablets.review, member.uid, op, 'margin');
+      await notes('margin').doc(op).update({ loggedAt: Timestamp.fromMillis(Date.now() - ago) });
+      const attempt = deleteNoteFromTablet({ ...pinBase(tablets.review, member.uid, memberPin), petId: 'margin', noteId: op });
+      if (outcome === 'forbidden') await refused(attempt, 'forbidden');
+      else assert.equal((await attempt).status, 'deleted');
+    }
+  });
+
+  test('N5: a care entry may be deleted by its author within 10 minutes of loggedAt, as the rules allow', async () => {
+    await seedPet('care-author');
+    const memberPin = await pinOf(tablets.review, member);
+    const care = pet('care-author').collection('care-logs');
+    await care.doc('mine').set({ date: new Date().toISOString(), loggedAt: Timestamp.now(), activity: 'Walk', notes: '', loggedByUid: member.uid, loggedByName: 'Max' });
+    await care.doc('old').set({ date: new Date().toISOString(), loggedAt: Timestamp.fromMillis(Date.now() - 11 * 60_000), activity: 'Walk', notes: '', loggedByUid: member.uid, loggedByName: 'Max' });
+    assert.equal((await deleteLogFromTablet({ ...pinBase(tablets.review, member.uid, memberPin), petId: 'care-author', kind: 'care-logs', logId: 'mine' })).status, 'deleted');
+    await refused(deleteLogFromTablet({ ...pinBase(tablets.review, member.uid, memberPin), petId: 'care-author', kind: 'care-logs', logId: 'old' }), 'forbidden');
+  });
+
+  test('N2 and N3: a pet-delete replay answers deleted, never sweeps a pet re-created under the same id; the entry says it came from a tablet', async () => {
+    await seedPet('again-pet');
+    const ownerPin = await pinOf(tablets.review, owner);
+    const op = opId();
+    assert.equal((await deletePetFromTablet({ ...pinBase(tablets.review, owner.uid, ownerPin, op), petId: 'again-pet' })).status, 'deleted');
+    const entry = (await house(H).collection('auditLogs').where('action', '==', 'pet.deleted').get()).docs.map((d) => d.data()).find((e) => e.details?.petId === 'again-pet')!;
+    assert.equal(entry.via, 'device');
+    assert.equal(entry.deviceId, tablets.review.deviceId);
+    assert.equal(entry.deviceName, 'Review tablet');
+    assert.equal(entry.level, 'pin');
+    // Someone re-creates a pet under the same id (on purpose); the retry of the old press keeps it whole.
+    await seedPet('again-pet');
+    await pet('again-pet').collection('notes').doc('kept').set({ text: 'Kept', pinned: false, date: Timestamp.now(), loggedAt: Timestamp.now(), loggedByUid: owner.uid });
+    const again = await deletePetFromTablet({ ...pinBase(tablets.review, owner.uid, ownerPin, op), petId: 'again-pet' });
+    assert.equal(again.status, 'deleted', 'the stored answer');
+    assert.equal((await pet('again-pet').get()).exists, true);
+    assert.equal((await pet('again-pet').collection('notes').doc('kept').get()).exists, true);
+    // The same opId for another pet is a conflict.
+    await seedPet('other-pet');
+    await refused(deletePetFromTablet({ ...pinBase(tablets.review, owner.uid, ownerPin, op), petId: 'other-pet' }), 'conflict');
+  });
+});
+
+describe('S4: every PIN-level write kind replayed through the rules as the member and as the child', () => {
+  const asClient = (value: unknown): unknown => {
+    if (value instanceof Timestamp) return new ClientTimestamp(value.seconds, value.nanoseconds);
+    if (Array.isArray(value)) return value.map(asClient);
+    if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, asClient(child)]));
+    }
+    return value;
+  };
+  /** Server times as request.time; deviceAttribution kept when the record had it (the rules keep it unchanged). */
+  const timed = (data: Record<string, unknown>, fields: string[]) => {
+    const out: Record<string, unknown> = { ...data };
+    for (const field of fields) {
+      const [outer, inner] = field.split('.');
+      if (inner) out[outer] = { ...(out[outer] as Record<string, unknown>), [inner]: serverTimestamp() };
+      else out[outer] = serverTimestamp();
+    }
+    return asClient(out) as DocumentData;
+  };
+  type Ref = FirebaseFirestore.DocumentReference;
+  /** An update: run it, put the document back, then the person's client sets the after state. */
+  const updateParity = async (db: ClientFirestore, ref: Ref, run: () => Promise<unknown>, serverTimes: string[], extra: Ref[] = []) => {
+    const refs = [ref, ...extra];
+    const before = await Promise.all(refs.map(async (r) => (await r.get()).data() ?? null));
+    const outcome = await run();
+    assert.ok(['saved', 'deleted'].includes((outcome as { status?: string }).status ?? ''), JSON.stringify(outcome));
+    const after = await Promise.all(refs.map(async (r) => (await r.get()).data() ?? null));
+    for (const [index, r] of refs.entries()) { if (before[index]) await r.set(before[index]!); else await r.delete(); }
+    const batch = writeBatch(db);
+    refs.forEach((r, index) => { if (after[index]) batch.set(doc(db, r.path), timed(after[index]!, index === 0 ? serverTimes : [])); });
+    await batch.commit();
+  };
+  /** A delete: run it, put everything back, then the person's client deletes and writes the derived state or pointer. */
+  const deleteParity = async (db: ClientFirestore, ref: Ref, run: () => Promise<unknown>, extra: Array<{ ref: Ref; fields?: string[] }> = []) => {
+    const before = (await ref.get()).data()!;
+    const extraBefore = await Promise.all(extra.map(async (e) => (await e.ref.get()).data() ?? null));
+    assert.equal(((await run()) as { status?: string }).status, 'deleted');
+    const extraAfter = await Promise.all(extra.map(async (e) => (await e.ref.get()).data() ?? null));
+    await ref.set(before);
+    for (const [index, e] of extra.entries()) if (extraBefore[index]) await e.ref.set(extraBefore[index]!);
+    const batch = writeBatch(db);
+    batch.delete(doc(db, ref.path));
+    extra.forEach((e, index) => {
+      const after = extraAfter[index];
+      if (!after) return;
+      if (e.fields) batch.update(doc(db, e.ref.path), timed(Object.fromEntries(e.fields.map((field) => [field, after[field] ?? null])), []));
+      else batch.set(doc(db, e.ref.path), timed(after, []));
+    });
+    await batch.commit();
+    assert.equal((await ref.get()).exists, false);
+  };
+  /** A create: run it, remove it, then the person's client creates it. */
+  const createParity = async (db: ClientFirestore, ref: Ref, run: () => Promise<unknown>, serverTimes: string[]) => {
+    assert.equal(((await run()) as { status?: string }).status, 'saved');
+    const data = (await ref.get()).data()!;
+    await ref.delete();
+    const batch = writeBatch(db);
+    batch.set(doc(db, ref.path), timed(data, serverTimes));
+    await batch.commit();
+  };
+
+  for (const who of ['member', 'child'] as const) {
+    test(`as the ${who}: note pin, unpin, edit and delete; the four log deletes; the time correction; course create, edit, finish, resume and a legacy confirmation`, async () => {
+      const person = who === 'member' ? member : child;
+      const db = who === 'member' ? memberDb : childDb;
+      const face = who === 'member' ? tablets.mFace : tablets.cFace;
+      const t = who === 'member' ? tablets.mPin : tablets.cPin;
+      const id = `s4-${who}`;
+      await seedDosePet(id);
+      const pinId = await pinOf(t, person);
+      const base = () => pinBase(t, person.uid, pinId);
+
+      // Notes: their own note.
+      const note = opId();
+      await addNote(face, person.uid, note, id, { text: 'Likes the window' });
+      const noteRef = notes(id).doc(note);
+      await updateParity(db, noteRef, () => setNotePinnedFromTablet({ ...base(), petId: id, noteId: note, pinned: true }), ['pinnedAt']);
+      await updateParity(db, noteRef, () => setNotePinnedFromTablet({ ...base(), petId: id, noteId: note, pinned: false }), []);
+      await updateParity(db, noteRef, () => editNoteFromTablet({ ...base(), petId: id, noteId: note, expected: { text: 'Likes the window', tag: 'behaviour' }, text: 'Likes the sunny window', tag: null }), ['editedAt']);
+      await deleteParity(db, noteRef, () => deleteNoteFromTablet({ ...base(), petId: id, noteId: note }));
+
+      // Feedings: their own, within 10 minutes (state derived again); then a time correction.
+      const stateRef = pet(id).collection('feeding-state').doc('current');
+      const fed1 = opId();
+      const fed2 = opId();
+      await feedPetFromTablet({ idToken: face.idToken, householdId: H, actorUid: person.uid, opId: fed1, petId: id, portion: { amount: 1, unit: 'Cups' }, food: 'Dry', backdatedAt: later(-3 * 60 * 60_000).toISOString() });
+      await feedPetFromTablet({ idToken: face.idToken, householdId: H, actorUid: person.uid, opId: fed2, petId: id, portion: { amount: 1, unit: 'Cups' }, food: 'Dry', backdatedAt: later(-60 * 60_000).toISOString() });
+      await updateParity(db, pet(id).collection('feeding-logs').doc(fed1), () => correctFeedTimeFromTablet({ ...base(), petId: id, logId: fed1, date: later(-2 * 60 * 60_000).toISOString() }), ['dateCorrectedAt'], [stateRef]);
+      await deleteParity(db, pet(id).collection('feeding-logs').doc(fed2), () => deleteLogFromTablet({ ...base(), petId: id, kind: 'feeding-logs', logId: fed2 }), [{ ref: stateRef }]);
+
+      // A care entry with loggedAt (the author window), a weighing, and a dose with its pointer.
+      const careRef = pet(id).collection('care-logs').doc(`care-${who}`);
+      await careRef.set({ date: new Date().toISOString(), loggedAt: Timestamp.now(), activity: 'Walk', notes: '', loggedByUid: person.uid, loggedByName: person.displayName ?? who });
+      await deleteParity(db, careRef, () => deleteLogFromTablet({ ...base(), petId: id, kind: 'care-logs', logId: careRef.id }));
+      const weighed = opId();
+      await addWeight(face, person.uid, weighed, id);
+      await deleteParity(db, weights(id).doc(weighed), () => deleteLogFromTablet({ ...base(), petId: id, kind: 'weights', logId: weighed }));
+      const dosed = opId();
+      await giveSure(face, person.uid, dosed, id);
+      await deleteParity(db, doses(id).doc(dosed), () => deleteLogFromTablet({ ...base(), petId: id, kind: 'medication-logs', logId: dosed }), [{ ref: course(id), fields: ['lastDose', 'prevDose'] }]);
+
+      // Courses (pets.addLogs): create, edit, finish, resume; a legacy medication confirmed.
+      const values = { name: `Gaba ${who}`, dosage: '100 mg', kind: 'days', everyDays: '1', times: ['08:00', '20:00'], everyHours: '12', firstTime: '08:00', startDay: householdDay(new Date(), TZ), endDay: '' };
+      const newCourse = course(id, `course-${who}`);
+      await createParity(db, newCourse, () => saveCourseFromTablet({ ...base(), petId: id, courseId: newCourse.id, create: true, values }), ['createdAt', 'updatedAt']);
+      await updateParity(db, newCourse, () => saveCourseFromTablet({ ...base(), petId: id, courseId: newCourse.id, create: false, values: { ...values, times: ['09:00', '21:00'] } }), ['updatedAt']);
+      await updateParity(db, newCourse, () => setCourseFinishedFromTablet({ ...base(), petId: id, courseId: newCourse.id, finished: true }), ['finishedAt']);
+      await setCourseFinishedFromTablet({ ...base(), petId: id, courseId: newCourse.id, finished: true });
+      await updateParity(db, newCourse, () => setCourseFinishedFromTablet({ ...base(), petId: id, courseId: newCourse.id, finished: false }), []);
+      const legacy = course(id, legacyCourseId(`legacy-${who}`));
+      await createParity(db, legacy, () => saveCourseFromTablet({ ...base(), petId: id, legacyKey: `legacy-${who}`, values: { ...values, name: `Legacy ${who}`, times: ['07:00'] } }), ['createdAt', 'updatedAt']);
+    });
+  }
 });

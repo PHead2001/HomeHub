@@ -253,3 +253,11 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
   // A capability without a known outcome shape is never assumed to have applied.
   return { ok: false, code: 'unclassified' };
 }
+
+/**
+ * An intent's own fields: never the request's identity (token, household, person, PIN
+ * session, opId or queue fields), which come from the shell alone (F4b-2 review N4).
+ */
+const RESERVED_REQUEST_KEYS = new Set(['idToken', 'householdId', 'actorUid', 'pinSessionId', 'opId', 'queued']);
+export const intentFields = (intent: Readonly<Record<string, unknown>>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(intent).filter(([key]) => !RESERVED_REQUEST_KEYS.has(key)));

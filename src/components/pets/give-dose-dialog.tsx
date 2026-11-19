@@ -216,6 +216,8 @@ export function GiveDoseDialog({
           capability: chosen ? backdatedCapability('dose', chosen, new Date()) : 'pets.dose.give',
           label: `${course.name} for ${petName}`,
           subject: petName,
+          // Each course keeps its own Undo toast (as the personal dialog's group).
+          toastGroup: petDoseToastGroup(petId, course.id),
           intent: { petId, courseId: course.id, occurrenceKey: selected.key, givenAt: chosen ? chosen.toISOString() : null, notes: notes.trim() },
         });
         const result = (outcome.data as { result?: { status?: string; reason?: string } } | undefined)?.result;

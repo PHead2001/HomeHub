@@ -17,7 +17,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
-import { choreAnswerMeaning, confirmCheckOf, queuedSendResult, UNDO_CAPABILITY_OF, type ConfirmCheck } from '@/lib/devices/device-action-answers';
+import { choreAnswerMeaning, confirmCheckOf, intentFields, queuedSendResult, UNDO_CAPABILITY_OF, type ConfirmCheck } from '@/lib/devices/device-action-answers';
 import { createRevertRegistry, performAction, QUEUE_REFUSAL_COPY, queueRefusal, runUndo, undoReoffer } from '@/lib/devices/undo-flow';
 import { deviceStore } from '@/lib/devices/device-store';
 import {
@@ -86,34 +86,34 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
   'chores.take.undo': (base) => undoTakeChoreFromTabletAction(base),
   // Pets (F4b-1): every feeding entry point on a tablet (Feed, hold, quick add, dashboard Fed,
   // the detailed form) and care entries; the server picks a backdated feed's capability.
-  'pets.feed': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
-  'pets.feed.backdated': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
-  'pets.feed.backdated.old': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
+  'pets.feed': (base, intent) => feedPetFromTabletAction({ ...(intentFields(intent) as unknown as FeedIntent), ...base }),
+  'pets.feed.backdated': (base, intent) => feedPetFromTabletAction({ ...(intentFields(intent) as unknown as FeedIntent), ...base }),
+  'pets.feed.backdated.old': (base, intent) => feedPetFromTabletAction({ ...(intentFields(intent) as unknown as FeedIntent), ...base }),
   'pets.feed.undo': (base) => undoFeedFromTabletAction(base),
   'pets.care.add': (base, intent) => addCareFromTabletAction({ ...base, petId: String(intent.petId ?? ''), activity: String(intent.activity ?? ''), notes: typeof intent.notes === 'string' ? intent.notes : '' }),
   'pets.care.undo': (base) => undoCareFromTabletAction(base),
   // Pets (F4b-2): Give dose (the server picks a dose given more than 12 hours ago as .old),
   // behaviour notes and weights with their Undo, and the PIN-level actions. The intent is
   // passed as the tablet made it; the server validates every field.
-  'pets.dose.give': (base, intent) => giveDoseFromTabletAction({ ...base, ...(intent as unknown as DoseIntent) }),
-  'pets.dose.give.old': (base, intent) => giveDoseFromTabletAction({ ...base, ...(intent as unknown as DoseIntent) }),
+  'pets.dose.give': (base, intent) => giveDoseFromTabletAction({ ...(intentFields(intent) as unknown as DoseIntent), ...base }),
+  'pets.dose.give.old': (base, intent) => giveDoseFromTabletAction({ ...(intentFields(intent) as unknown as DoseIntent), ...base }),
   'pets.dose.undo': (base) => undoDoseFromTabletAction(base),
-  'pets.note.add': (base, intent) => addNoteFromTabletAction({ ...base, ...(intent as unknown as { petId: string; text: string; tag?: string; day?: string }) }),
+  'pets.note.add': (base, intent) => addNoteFromTabletAction({ ...(intentFields(intent) as unknown as { petId: string; text: string; tag?: string; day?: string }), ...base }),
   'pets.note.undo': (base) => undoNoteFromTabletAction(base),
-  'pets.weight.add': (base, intent) => addWeightFromTabletAction({ ...base, ...(intent as unknown as { petId: string; value: number; unit: string; day?: string }) }),
+  'pets.weight.add': (base, intent) => addWeightFromTabletAction({ ...(intentFields(intent) as unknown as { petId: string; value: number; unit: string; day?: string }), ...base }),
   'pets.weight.undo': (base) => undoWeightFromTabletAction(base),
   'pets.note.pin': (base, intent) => setNotePinnedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), noteId: String(intent.noteId ?? ''), pinned: true }),
   'pets.note.unpin': (base, intent) => setNotePinnedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), noteId: String(intent.noteId ?? ''), pinned: false }),
-  'pets.note.editPinned': (base, intent) => editNoteFromTabletAction({ ...base, ...(intent as unknown as Parameters<typeof editNoteFromTabletAction>[0]) }),
+  'pets.note.editPinned': (base, intent) => editNoteFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editNoteFromTabletAction>[0]), ...base }),
   'pets.note.delete': (base, intent) => deleteNoteFromTabletAction({ ...base, petId: String(intent.petId ?? ''), noteId: String(intent.noteId ?? '') }),
   'pets.log.delete': (base, intent) => deleteLogFromTabletAction({ ...base, petId: String(intent.petId ?? ''), kind: String(intent.kind ?? ''), logId: String(intent.logId ?? '') }),
   'pets.log.correctTime': (base, intent) => correctFeedTimeFromTabletAction({ ...base, petId: String(intent.petId ?? ''), logId: String(intent.logId ?? ''), date: String(intent.date ?? '') }),
   'pets.course.finish': (base, intent) => setCourseFinishedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), courseId: String(intent.courseId ?? ''), finished: true }),
   'pets.course.resume': (base, intent) => setCourseFinishedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), courseId: String(intent.courseId ?? ''), finished: false }),
-  'pets.course.edit': (base, intent) => saveCourseFromTabletAction({ ...base, ...(intent as unknown as Parameters<typeof saveCourseFromTabletAction>[0]), legacyKey: null }),
-  'pets.medication.confirmLegacy': (base, intent) => saveCourseFromTabletAction({ ...base, ...(intent as unknown as Parameters<typeof saveCourseFromTabletAction>[0]) }),
+  'pets.course.edit': (base, intent) => saveCourseFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof saveCourseFromTabletAction>[0]), ...base, legacyKey: null }),
+  'pets.medication.confirmLegacy': (base, intent) => saveCourseFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof saveCourseFromTabletAction>[0]), ...base }),
   'pets.slots.edit': (base, intent) => saveMealPlanFromTabletAction({ ...base, petId: String(intent.petId ?? ''), rows: Array.isArray(intent.rows) ? intent.rows : [] }),
-  'pets.profile.edit': (base, intent) => editPetProfileFromTabletAction({ ...base, ...(intent as unknown as Parameters<typeof editPetProfileFromTabletAction>[0]) }),
+  'pets.profile.edit': (base, intent) => editPetProfileFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editPetProfileFromTabletAction>[0]), ...base }),
   'pets.pet.delete': (base, intent) => deletePetFromTabletAction({ ...base, petId: String(intent.petId ?? '') }),
 };
 

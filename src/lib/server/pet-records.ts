@@ -40,7 +40,7 @@ import { noteCreateFields, noteDate, recordDocId, validateNoteDraft, NOTE_TAGS, 
 import { validateWeightDraft, isWeightUnit, type WeightUnit } from '@/lib/pets/weights';
 import { mayDeleteNote, mayDeleteWeight, mayEditNote, AUTHOR_DELETE_WINDOW_MS, type ActorPermissions } from '@/lib/pets/pet-actions';
 import { mayMedication } from '@/lib/pets/medication-permissions';
-import { checkFeedCorrection, planFeedCorrection, planFeedDelete, type StateLog } from '@/lib/pets/feed-plan';
+import { checkFeedCorrection, mayCorrectFeedTime, planFeedCorrection, planFeedDelete, type StateLog } from '@/lib/pets/feed-plan';
 import { FEEDING_STATE_ID, householdDay, householdDayStart, readFeedingState } from '@/lib/pets/feed-decision';
 import { feedStateDocument } from '@/lib/pets/feed-documents';
 import { confirmMealPlan, slotsFromDraft, validateMealDraft, type MealSlotDraft } from '@/lib/pets/meal-plan';
@@ -150,6 +150,20 @@ function storedPointer(pointer: DosePointer | null, stored: Map<string, Document
   };
 }
 
+/**
+ * Every online dose write from a tablet goes through here (a dose created, an Undo, an older
+ * dose deleted): the log, and the course's pointer when it moves. One place, so a course
+ * field every dose write must also touch (P3's planned course revision) is added once.
+ */
+function writeDose(
+  tx: Transaction,
+  write: { log: { ref: DocumentReference; data: Record<string, unknown> } | { ref: DocumentReference; delete: true }; course?: { ref: DocumentReference; pointer: DocumentData | null } | null },
+) {
+  if ('delete' in write.log) tx.delete(write.log.ref);
+  else tx.set(write.log.ref, write.log.data);
+  if (write.course?.pointer) tx.update(write.course.ref, write.course.pointer);
+}
+
 const plainOccurrence = (occurrence: Occurrence | null) =>
   (occurrence ? { key: occurrence.key, day: occurrence.day, time: occurrence.time ?? null, at: occurrence.at } : null);
 
@@ -231,7 +245,11 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
   const courseRef = pet.collection('medication-courses').doc(courseId);
   return db.runTransaction(async (tx) => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return { ...(replay.summary.result as DoseAsResult), replayed: true } as DoseAsResult;
+    if (replay) {
+      // The same opId for another pet or course is a different action: never its answer (review S3).
+      if (replay.targetPath !== logRef.path) throw new PetFeedingError('conflict');
+      return { ...(replay.summary.result as DoseAsResult), replayed: true } as DoseAsResult;
+    }
     const timeZone = await readHousehold(tx, house);
     const [existing, petSnap, courseSnap] = await Promise.all([tx.get(logRef), tx.get(pet), tx.get(courseRef)]);
     if (!petSnap.exists) throw new PetFeedingError('not-found');
@@ -257,7 +275,8 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
       if (!occurrence) return { status: 'refused', reason: 'occurrence' };
       const at = givenAt ?? options.queuedAt;
       if (at.getTime() < now.getTime() - DOSE_BACKDATE_MAX_MS) return { status: 'refused', reason: 'too-old' };
-      tx.set(logRef, {
+      // An offline dose: the log alone (readers combine it with the course), as the personal offline path.
+      writeDose(tx, { log: { ref: logRef, data: {
         courseId,
         occurrence: occurrence.key,
         occurrenceAt: Timestamp.fromMillis(occurrence.at),
@@ -272,7 +291,7 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
         clockSource: 'device',
         ...(givenAt ? { backdated: true } : {}),
         ...deviceExtra(ctx),
-      });
+      } } });
       return finalize({ status: 'saved', petId, courseId, logId, occurrence: plainOccurrence(occurrence), nextAfter: null, offline: true });
     }
 
@@ -298,7 +317,7 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
     }
     const given = plan.live ? FieldValue.serverTimestamp() : Timestamp.fromDate(plan.givenAt);
     const occurrenceAt = Timestamp.fromMillis(plan.occurrence.at);
-    tx.set(logRef, {
+    const logData = {
       courseId,
       occurrence: plan.occurrence.key,
       occurrenceAt,
@@ -313,17 +332,20 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
       ...(plan.repeat === 'confirmed' ? { confirmOf: plan.confirmOf } : {}),
       ...(plan.live ? {} : { backdated: true }),
       ...deviceExtra(ctx),
-    });
+    };
     // The pointer is the derived state after this dose, exactly as the personal path writes it.
     const fresh: DosePointer = { logId, occurrence: plan.occurrence.key, occurrenceAt: plan.occurrence.at, givenAt: plan.givenAt.getTime(), byUid: actor.uid, byName };
     const next = pointerAfter(course!, [...doses!.records, fresh]);
-    if (next.write) {
-      const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: actor.uid, byName };
-      tx.update(courseRef, {
-        lastDose: storedPointer(next.latest, doses!.stored, { logId, value: freshValue }),
-        prevDose: storedPointer(next.prev, doses!.stored, { logId, value: freshValue }),
-      });
-    }
+    const freshValue = { logId, occurrence: plan.occurrence.key, occurrenceAt, givenAt: given, byUid: actor.uid, byName };
+    writeDose(tx, {
+      log: { ref: logRef, data: logData },
+      course: {
+        ref: courseRef,
+        pointer: next.write
+          ? { lastDose: storedPointer(next.latest, doses!.stored, { logId, value: freshValue }), prevDose: storedPointer(next.prev, doses!.stored, { logId, value: freshValue }) }
+          : null,
+      },
+    });
     return finalize({ status: 'saved', petId, courseId, logId, occurrence: plainOccurrence(plan.occurrence), nextAfter: plainOccurrence(plan.nextAfter) });
   });
 }
@@ -353,7 +375,10 @@ async function createRecordOnce(
   const ref = pet.collection(collection).doc(recordId);
   return db.runTransaction(async (tx) => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return { ...(replay.summary.result as RecordAsResult), replayed: true } as RecordAsResult;
+    if (replay) {
+      if (replay.targetPath !== ref.path) throw new PetFeedingError('conflict');
+      return { ...(replay.summary.result as RecordAsResult), replayed: true } as RecordAsResult;
+    }
     const timeZone = await readHousehold(tx, house);
     const [existing, petSnap] = await Promise.all([tx.get(ref), tx.get(pet)]);
     if (!petSnap.exists) throw new PetFeedingError('not-found');
@@ -469,6 +494,9 @@ async function undoCreatedRecord(db: Firestore, householdId: string, input: { pe
     const { pet, record } = recordOfEntry(house, original, collection, petId);
     const [snap, petSnap] = await Promise.all([tx.get(record), tx.get(pet)]);
     if (!createdRecordUnchanged(snap)) throw new DeviceActionError('changed_since');
+    // The record this tablet wrote for this person, not another one recreated under the same id (review S3).
+    const attribution = snap.get('deviceAttribution') as { deviceId?: unknown } | undefined;
+    if (snap.get('loggedByUid') !== original.actorUid || attribution?.deviceId !== authority.deviceId) throw new DeviceActionError('changed_since');
     let pointer: { ref: DocumentReference; value: DocumentData } | null = null;
     const courseId = collection === 'medication-logs' ? snap.get('courseId') : null;
     if (typeof courseId === 'string' && isDocId(courseId)) {
@@ -481,8 +509,8 @@ async function undoCreatedRecord(db: Firestore, householdId: string, input: { pe
         if (next.write) pointer = { ref: courseRef, value: { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } };
       }
     }
-    tx.delete(record);
-    if (pointer) tx.update(pointer.ref, pointer.value);
+    if (collection === 'medication-logs') writeDose(tx, { log: { ref: record, delete: true }, course: pointer ? { ref: pointer.ref, pointer: pointer.value } : null });
+    else tx.delete(record);
     ctx.hooks!.finalize(tx, { targetPath: record.path, summary: { petId: pet.id, logId: record.id }, undo: 'reversed', targetName: nameOf(petSnap) });
     return { status: 'undone', petId: pet.id, logId: record.id };
   });
@@ -516,21 +544,26 @@ type PinBody = {
  * finalize, which also writes the `device.action` activity entry for the PIN-level actor.
  * A refusal writes nothing (no ledger entry: the same press may be tried again).
  */
-async function pinPetAction(db: Firestore, householdId: string, petIdInput: unknown, ctx: DeviceCtx, body: (tx: Transaction, scope: { pet: DocumentReference; petSnap: DocumentSnapshot; timeZone: string; actor: ActorFacts; now: Date }) => Promise<PinBody>): Promise<PetPinResult> {
+async function pinPetAction(db: Firestore, householdId: string, petIdInput: unknown, ctx: DeviceCtx, targetOf: (pet: DocumentReference) => DocumentReference, body: (tx: Transaction, scope: { pet: DocumentReference; petSnap: DocumentSnapshot; timeZone: string; actor: ActorFacts; now: Date }) => Promise<PinBody>): Promise<PetPinResult> {
   const house = householdRef(db, householdId);
   undoContext(ctx);
   const petId = petIdOf(petIdInput);
   const pet = house.collection('pets').doc(petId);
+  // The record this request acts on, known before any read: a replay of the same opId for another record is a conflict (review S3).
+  const target = targetOf(pet).path;
   return db.runTransaction(async (tx) => {
     const { replay } = (await ctx.hooks!.precheck(tx)) ?? {};
-    if (replay) return { ...(replay.summary.result as PetPinResult), replayed: true } as PetPinResult;
+    if (replay) {
+      if (replay.targetPath !== target) throw new PetFeedingError('conflict');
+      return { ...(replay.summary.result as PetPinResult), replayed: true } as PetPinResult;
+    }
     const timeZone = await readHousehold(tx, house);
     const petSnap = await tx.get(pet);
     if (!petSnap.exists) throw new PetFeedingError('not-found');
     const outcome = await body(tx, { pet, petSnap, timeZone, actor: actorFacts(ctx), now: ctx.now });
     if (outcome.result.status === 'refused') return outcome.result;
     outcome.write?.(tx);
-    ctx.hooks!.finalize(tx, { targetPath: outcome.targetPath, summary: { result: outcome.result }, targetName: nameOf(petSnap) });
+    ctx.hooks!.finalize(tx, { targetPath: target, summary: { result: outcome.result }, targetName: nameOf(petSnap) });
     return outcome.result;
   });
 }
@@ -544,7 +577,7 @@ const authored = (snap: DocumentSnapshot) => ({
 /** `pets.note.pin` / `pets.note.unpin`: as `runSetNotePinned` (pinning a pinned note moves it first). */
 export function setNotePinnedAs(db: Firestore, householdId: string, input: { petId: unknown; noteId: unknown; pinned: boolean }, ctx: DeviceCtx) {
   const noteId = docIdOf(input?.noteId);
-  return pinPetAction(db, householdId, input?.petId, ctx, async (tx, { pet, actor }) => {
+  return pinPetAction(db, householdId, input?.petId, ctx, (pet) => pet.collection('notes').doc(noteId), async (tx, { pet, actor }) => {
     const ref = pet.collection('notes').doc(noteId);
     const snap = await tx.get(ref);
     if (!snap.exists) return refused('gone');
@@ -568,7 +601,7 @@ export function editNoteAs(db: Firestore, householdId: string, input: { petId: u
   const tag = tagOf(input.tag) || null;
   const expectedTag = expected.tag === null || expected.tag === undefined || expected.tag === '' ? null : tagOf(expected.tag);
   if (!text || text.length > 500) throw new PetFeedingError('invalid');
-  return pinPetAction(db, householdId, input.petId, ctx, async (tx, { pet, actor }) => {
+  return pinPetAction(db, householdId, input.petId, ctx, (pet) => pet.collection('notes').doc(noteId), async (tx, { pet, actor }) => {
     const ref = pet.collection('notes').doc(noteId);
     const snap = await tx.get(ref);
     if (!snap.exists) return refused('gone');
@@ -591,11 +624,11 @@ export function editNoteAs(db: Firestore, householdId: string, input: { petId: u
 /** `pets.note.delete`: pets.deleteLogs; a pinned note also pets.editProfiles; the author within 10 minutes (`mayDeleteNote`). */
 export function deleteNoteAs(db: Firestore, householdId: string, input: { petId: unknown; noteId: unknown }, ctx: DeviceCtx) {
   const noteId = docIdOf(input?.noteId);
-  return pinPetAction(db, householdId, input?.petId, ctx, async (tx, { pet, actor, now }) => {
+  return pinPetAction(db, householdId, input?.petId, ctx, (pet) => pet.collection('notes').doc(noteId), async (tx, { pet, actor, now }) => {
     const ref = pet.collection('notes').doc(noteId);
     const snap = await tx.get(ref);
     if (!snap.exists) return { targetPath: ref.path, result: { status: 'already', petId: pet.id } };
-    if (!mayDeleteNote({ ...authored(snap), pinned: snap.get('pinned') === true }, actor, now)) throw new DeviceActionError('forbidden');
+    if (!mayDeleteNote({ ...authored(snap), pinned: snap.get('pinned') === true }, actor, marginNow(now))) throw new DeviceActionError('forbidden');
     return { targetPath: ref.path, result: { status: 'deleted', petId: pet.id }, write: (t) => t.delete(ref) };
   });
 }
@@ -603,10 +636,18 @@ export function deleteNoteAs(db: Firestore, householdId: string, input: { petId:
 export const DELETABLE_LOGS = ['feeding-logs', 'care-logs', 'medication-logs', 'weights'] as const;
 export type DeletableLog = (typeof DELETABLE_LOGS)[number];
 
-/** Within the author's 10 minutes, measured from the server's `loggedAt` (the rules' window). */
+/**
+ * The rules measure the author's 10 minutes at commit (`request.time`); the server checks
+ * at precheck, so it closes the window this much earlier (review N1): a check that passes
+ * here still holds when the transaction commits.
+ */
+export const AUTHOR_WINDOW_MARGIN_MS = 5_000;
+const marginNow = (now: Date) => new Date(now.getTime() + AUTHOR_WINDOW_MARGIN_MS);
+
+/** Within the author's 10 minutes, measured from the server's `loggedAt` (the rules' window, minus the margin). */
 const authorWithin = (snap: DocumentSnapshot, actor: ActorFacts, now: Date) => {
   const at = toMillis(snap.get('loggedAt'));
-  return actor.permissions['pets.addLogs'] === true && snap.get('loggedByUid') === actor.uid && at !== null && now.getTime() < at + AUTHOR_DELETE_WINDOW_MS;
+  return actor.permissions['pets.addLogs'] === true && snap.get('loggedByUid') === actor.uid && at !== null && marginNow(now).getTime() < at + AUTHOR_DELETE_WINDOW_MS;
 };
 
 /**
@@ -620,16 +661,16 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
   const kind = input?.kind as DeletableLog;
   if (!(DELETABLE_LOGS as readonly unknown[]).includes(kind)) throw new PetFeedingError('invalid');
   const logId = docIdOf(input.logId);
-  return pinPetAction(db, householdId, input.petId, ctx, async (tx, { pet, timeZone, actor, now }) => {
+  return pinPetAction(db, householdId, input.petId, ctx, (pet) => pet.collection(kind).doc(logId), async (tx, { pet, timeZone, actor, now }) => {
     const ref = pet.collection(kind).doc(logId);
     const snap = await tx.get(ref);
     if (!snap.exists) return { targetPath: ref.path, result: { status: 'already', petId: pet.id } };
     const deleteLogs = actor.permissions['pets.deleteLogs'] === true;
-    const allowed = kind === 'care-logs' ? deleteLogs
-      : kind === 'weights' ? mayDeleteWeight(authored(snap), actor, now)
-        : deleteLogs || authorWithin(snap, actor, now);
+    // Care entries: pets.deleteLogs or the author within 10 minutes of `loggedAt`, as feedings (rules after the F4b-1 review; review N5).
+    const allowed = kind === 'weights' ? mayDeleteWeight(authored(snap), actor, marginNow(now)) : deleteLogs || authorWithin(snap, actor, now);
     if (!allowed) throw new DeviceActionError('forbidden');
     let derived: ((t: Transaction) => void) | null = null;
+    let dosePointer: { ref: DocumentReference; pointer: DocumentData | null } | null = null;
     if (kind === 'feeding-logs') {
       const stateRef = pet.collection('feeding-state').doc(FEEDING_STATE_ID);
       const stateSnap = await tx.get(stateRef);
@@ -645,7 +686,7 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
         if (course) {
           const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, logId);
           const next = pointerAfter(course, doses.records);
-          if (next.write) derived = (t) => t.update(courseRef, { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) });
+          dosePointer = { ref: courseRef, pointer: next.write ? { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } : null };
         }
       }
     }
@@ -653,7 +694,8 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
       targetPath: ref.path,
       result: { status: 'deleted', petId: pet.id },
       write: (t) => {
-        t.delete(ref);
+        if (kind === 'medication-logs') writeDose(t, { log: { ref, delete: true }, course: dosePointer });
+        else t.delete(ref);
         derived?.(t);
       },
     };
@@ -673,13 +715,16 @@ export function correctFeedTimeAs(db: Firestore, householdId: string, input: { p
   const logId = docIdOf(input?.logId);
   const date = typeof input?.date === 'string' ? new Date(input.date) : null;
   if (!date || Number.isNaN(date.getTime())) throw new PetFeedingError('invalid');
-  return pinPetAction(db, householdId, input.petId, ctx, async (tx, { pet, timeZone, actor, now }) => {
+  return pinPetAction(db, householdId, input.petId, ctx, (pet) => pet.collection('feeding-logs').doc(logId), async (tx, { pet, timeZone, actor, now }) => {
     const ref = pet.collection('feeding-logs').doc(logId);
     const stateRef = pet.collection('feeding-state').doc(FEEDING_STATE_ID);
     const [snap, stateSnap] = await Promise.all([tx.get(ref), tx.get(stateRef)]);
     if (!snap.exists) return refused('gone');
     const data = snap.data() ?? {};
-    const check = checkFeedCorrection({ log: data, viewerUid: actor.uid, canDeleteLogs: actor.permissions['pets.deleteLogs'] === true, newDate: date, now, futureMarginMs: 60_000 });
+    const canDeleteLogs = actor.permissions['pets.deleteLogs'] === true;
+    // The author's window with the commit margin (review N1); the rest of the check at the server's time.
+    if (!canDeleteLogs && !mayCorrectFeedTime(data, actor.uid, false, marginNow(now))) throw new DeviceActionError('forbidden');
+    const check = checkFeedCorrection({ log: data, viewerUid: actor.uid, canDeleteLogs, newDate: date, now, futureMarginMs: 60_000 });
     if (!check.ok) {
       if (check.reason === 'not-allowed') throw new DeviceActionError('forbidden');
       return refused(check.reason);
@@ -711,7 +756,7 @@ export function correctFeedTimeAs(db: Firestore, householdId: string, input: { p
 /** `pets.course.finish` and `pets.course.resume`: as `runFinishCourse` / `runResumeCourse` (idempotent). */
 export function setCourseFinishedAs(db: Firestore, householdId: string, input: { petId: unknown; courseId: unknown; finished: boolean }, ctx: DeviceCtx) {
   const courseId = docIdOf(input?.courseId);
-  return pinPetAction(db, householdId, input?.petId, ctx, async (tx, { pet, actor }) => {
+  return pinPetAction(db, householdId, input?.petId, ctx, (pet) => pet.collection('medication-courses').doc(courseId), async (tx, { pet, actor }) => {
     if (!mayMedication('pets.course.finish', actor.permissions)) throw new DeviceActionError('forbidden');
     const ref = pet.collection('medication-courses').doc(courseId);
     const snap = await tx.get(ref);
@@ -759,7 +804,7 @@ export function saveCourseAs(db: Firestore, householdId: string, input: { petId:
     throw new PetFeedingError('invalid');
   }
   const create = legacyKey ? true : input.create === true;
-  return pinPetAction(db, householdId, input.petId, ctx, async (tx, { pet, timeZone, actor }) => {
+  return pinPetAction(db, householdId, input.petId, ctx, (pet) => pet.collection('medication-courses').doc(courseId), async (tx, { pet, timeZone, actor }) => {
     if (!mayMedication(legacyKey ? 'pets.medication.confirmLegacy' : 'pets.course.edit', actor.permissions)) throw new DeviceActionError('forbidden');
     const ref = pet.collection('medication-courses').doc(courseId);
     const [snap, active] = await Promise.all([tx.get(ref), tx.get(pet.collection('medication-courses').where('status', '==', 'active'))]);
@@ -846,7 +891,7 @@ export function editProfileAs(db: Firestore, householdId: string, input: Profile
     update.weightUnit = input.weightUnit;
   }
   if (Object.keys(update).length === 0) throw new PetFeedingError('invalid');
-  return pinPetAction(db, householdId, input.petId, ctx, async (tx, { pet, petSnap }) => {
+  return pinPetAction(db, householdId, input.petId, ctx, (pet) => pet, async (tx, { pet, petSnap }) => {
     if (rename !== null && rename.toLocaleLowerCase('en-US') !== String(petSnap.get('name') ?? '').trim().toLocaleLowerCase('en-US')) {
       const pets = await tx.get(pet.parent);
       if (duplicatePetName(rename, pets.docs.map((entry) => ({ id: entry.id, name: entry.get('name') as unknown })), pet.id)) return refused('duplicate-name');
@@ -877,7 +922,7 @@ const slotRowsOf = (value: unknown): MealSlotDraft[] => {
  */
 export function saveMealPlanAs(db: Firestore, householdId: string, input: { petId: unknown; rows: unknown }, ctx: DeviceCtx) {
   const rows = slotRowsOf(input?.rows);
-  return pinPetAction(db, householdId, input.petId, ctx, async (_tx, { pet, petSnap, timeZone, actor, now }) => {
+  return pinPetAction(db, householdId, input.petId, ctx, (pet) => pet, async (_tx, { pet, petSnap, timeZone, actor, now }) => {
     const checked = validateMealDraft(rows);
     const rowErrors = checked.rows.map((errors, index) => Object.entries(errors).map(([field, message]) => [`${index}.${field}`, message] as const)).flat();
     if (checked.plan || rowErrors.length > 0) return refused('invalid', Object.fromEntries([...rowErrors, ...(checked.plan ? [['plan', checked.plan] as const] : [])]));

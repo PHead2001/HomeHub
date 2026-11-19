@@ -288,6 +288,23 @@ export const feedCapability = (
 /** One feed press under any of its capabilities (a replay of an applied opId keeps the recorded one). */
 export const FEED_CAPABILITIES: readonly DeviceCapability[] = UNDO_OF['pets.feed.undo'];
 
+/**
+ * The capability of one tablet Give dose press, as `feedCapability` (F4b-2 review S1): the
+ * dose's effective time decides, the chosen given-at time, else a queued replay's queue time
+ * (bounded by the caller to the gate's 24 hours and the server clock); more than 12 hours
+ * before the server clock is `pets.dose.give.old` (PIN, not queueable).
+ */
+export const doseCapability = (
+  input: { givenAt: Date | null; queuedAt: Date | null },
+  now: Date,
+): 'pets.dose.give' | 'pets.dose.give.old' => {
+  const at = input.givenAt ?? input.queuedAt;
+  return at ? (backdatedCapability('dose', at, now) as 'pets.dose.give' | 'pets.dose.give.old') : 'pets.dose.give';
+};
+
+/** One dose press under either capability (review S2: a retry across the 12-hour line keeps the recorded one). */
+export const DOSE_CAPABILITIES: readonly DeviceCapability[] = UNDO_OF['pets.dose.undo'];
+
 export type RequiredLevel = 'device' | 'face' | 'pin' | 'admin-pin' | 'not_on_tablets' | 'never';
 
 /**
