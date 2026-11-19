@@ -1,21 +1,22 @@
 'use client';
 
-import { useEffect, useRef, useState, use } from 'react';
+import { useCallback, useEffect, useRef, useState, use } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { doc, onSnapshot, type DocumentSnapshot } from 'firebase/firestore';
-import { ArrowLeft, CalendarDays, Edit, MoreVertical, Pill, Sparkles, Trash2, Utensils } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Edit, MoreVertical, NotebookPen, Pill, Sparkles, Trash2, Utensils } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
 import { liveAnswer, liveFailure, liveNotice, petListenerKey, petSnapshotListener, staleNoticeText, type LiveState } from '@/lib/pets/live-listener';
+import { useSettledPetAccess } from '@/components/pets/pet-access';
 import { petTabFromParam, PET_TABS, type PetTab } from '@/lib/pets/care';
 import { feedingPlan, formatPortion, loggerName, petPhotoMorphName } from '@/lib/pets/care';
 import { readMealPlan } from '@/lib/pets/meal-plan';
 import { morphStyle } from '@/lib/motion';
 import type { PetProfile } from '@/lib/pets/types';
-import { Skeleton } from '@/components/ui/skeleton';
+import { DuplicatePetNameError } from '@/lib/pets/profile';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -37,6 +38,12 @@ import { PetCareSummary } from '@/components/pets/pet-care-summary';
 import { MealPlanList, SetMealTimesButton } from '@/components/pets/meal-status';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
 import type { PetFields } from '@/components/pets/pet-form';
+import type { PetPhotoChoice } from '@/components/pets/pet-photo-draft';
+import { NotesTab } from '@/components/pets/notes-tab';
+import { PinnedNoteLine } from '@/components/pets/pinned-note-line';
+import { VetContact } from '@/components/pets/vet-contact';
+import { WeightCard } from '@/components/pets/weight-card';
+import { PetDetailSkeletonBody } from '@/components/pets/pets-skeleton';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { returnFocusToPet } from '@/components/pets/focus';
 
@@ -62,6 +69,17 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
     setSeenTabParam(requestedTab);
     if (requestedTab !== null) setTab(petTabFromParam(requestedTab));
   }
+  // A medication reminder's link (`?tab=medication&dose=<courseId>`) opens Give
+  // dose for that course (PE-24i); the param is removed once handled. Arriving
+  // on the Medication tab from a link brings the tabs on screen on a phone (PE-13d).
+  const doseParam = searchParams.get('dose');
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const clearDoseParam = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('dose')) return;
+    params.delete('dose');
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [pathname, router]);
   const chooseTab = (next: PetTab) => {
     setTab(next);
     const params = new URLSearchParams(searchParams.toString());
@@ -75,7 +93,10 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   // listener (PE-8g): a failed read resubscribes on its own (backoff, `online`,
   // page visible); a refused one is reported as no access, without "Try again" (PE-18c).
   // Keyed by member and pets.view too, so a page refused for lack of access recovers when access returns.
-  const docKey = petListenerKey(householdId ? `${householdId}/${petId}` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  // On the settled access (`useSettledPetAccess`): no second subscription, and no flash of
+  // "unavailable", while permissions settle after the first render.
+  const access = useSettledPetAccess();
+  const docKey = access ? petListenerKey(householdId ? `${householdId}/${petId}` : null, access) : null;
   const [loaded, setLoaded] = useState<LiveState<PetProfile>>({ key: null, value: null, loaded: false, failed: false });
   const petHandle = useRef<ResilientHandle | null>(null);
   useEffect(() => {
@@ -103,23 +124,31 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   }, [householdId, petId, docKey]);
 
   const ready = loaded.key === docKey;
-  const loading = authLoading || (Boolean(docKey) && !ready);
+  const petShown = ready && Boolean(loaded.value);
+  useEffect(() => {
+    if (!petShown || (requestedTab !== 'medication' && !doseParam)) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'reduce';
+    tabsRef.current?.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+  }, [petShown, requestedTab, doseParam]);
+  const loading = authLoading || (Boolean(householdId) && !access) || (Boolean(docKey) && !ready);
   const pet = ready ? loaded.value : null;
   // With nothing loaded the failure is the page's state; with a pet on screen it is a notice beside it.
   const loadFailed = ready && !loaded.loaded ? loaded.failed : false;
   const missing = ready && loaded.loaded && !loaded.value;
   const notice = ready && pet ? liveNotice(loaded) : null;
 
-  const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
+  const handleUpdatePet = async (fields: PetFields, photo: PetPhotoChoice): Promise<boolean | 'name-taken'> => {
     if (!householdId || !pet) return false;
     try {
       // Meal times are confirmed by the signed-in member, on the household's day (PE-22k).
       const confirmer = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser), timeZone: household?.timeZone ?? null } : undefined;
-      await updatePet(householdId, pet.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: pet.photoUrl }, confirmer);
+      // A rename keeps this page's id and every history under it (PE-30b); the duplicate check reads the other pets fresh.
+      await updatePet(householdId, pet.id, fields, photo, pet.name, confirmer);
       setPetToEdit(null);
-      toast({ title: 'Pet updated', description: `${pet.name}'s details are saved.` });
+      toast({ title: 'Pet updated', description: `${fields.name}'s details are saved.` });
       return true;
     } catch (error) {
+      if (error instanceof DuplicatePetNameError) return 'name-taken';
       console.error('Error updating pet:', error);
       toastError(error, "Couldn't update the pet");
       return false;
@@ -130,8 +159,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
     setConfirmDelete(false);
     if (!householdId || !pet) return;
     try {
+      // On the server: the pet, its histories, notes, weights, photos and open reminders (D-P12).
       await deletePet(householdId, pet.id);
-      toast({ title: 'Pet deleted', description: `${pet.name} has been removed.` });
+      toast({ title: 'Pet deleted', description: `${pet.name} and everything logged for them have been removed.` });
       router.push('/pets');
     } catch (error) {
       console.error('Error deleting pet:', error);
@@ -152,19 +182,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
 
   if (loading) {
     return (
-      <div className="container mx-auto px-4 py-8" role="status" aria-label="Loading pet details">
-        <Skeleton className="mb-4 h-10 w-44" />
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
-          <div className="space-y-6 md:col-span-1">
-            {/* Lands the /pets card → hero morph (H12) while the pet loads. */}
-            <Skeleton className="h-80 w-full rounded-lg" style={morphStyle(petPhotoMorphName(petId))} />
-            <Skeleton className="h-32 w-full rounded-lg" />
-          </div>
-          <div className="space-y-4 md:col-span-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-80 w-full rounded-lg" />
-          </div>
-        </div>
+      // The route's own skeleton (PE-21g); its photo placeholder lands the /pets card → hero morph (H12).
+      <div className="container mx-auto px-4 py-8" role="status" aria-busy="true" aria-label="Loading pet details">
+        <PetDetailSkeletonBody />
       </div>
     );
   }
@@ -208,6 +228,12 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
         </p>
       )}
 
+      {/* Phones (PE-13c): the name first, then the tabs, then the photo and Info cards below them. */}
+      <div className="mb-4 md:hidden" data-testid="pet-phone-header">
+        <h1 tabIndex={-1} data-pets-heading className="break-words font-headline text-2xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none">{pet.name}</h1>
+        <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
+      </div>
+
       <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
         <div className="space-y-6 md:col-span-1">
           <Card className="overflow-hidden">
@@ -247,8 +273,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
             </CardHeader>
             <CardContent className="space-y-4 p-4">
               <div>
-                <h1 tabIndex={-1} data-pets-heading className="break-words font-headline text-3xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none">{pet.name}</h1>
-                <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
+                <h1 tabIndex={-1} data-pets-heading className="hidden break-words font-headline text-3xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none md:block">{pet.name}</h1>
+                <p className="hidden text-sm text-muted-foreground md:block">{petTypeLabel(pet)}</p>
+                <PinnedNoteLine householdId={householdId} petId={pet.id} className="mt-2" />
               </div>
               <div className="flex flex-col gap-3">
                 <PetCareSummary pet={pet} householdId={householdId} maxMedicationChips={4} showWeek onSetMealTimes={canEdit ? () => setPetToEdit(pet) : undefined} />
@@ -297,25 +324,32 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                   </div>
                 </div>
               ) : null}
+              <VetContact pet={pet} onEdit={canEdit ? () => setPetToEdit(pet) : undefined} />
             </CardContent>
           </Card>
+
+          <WeightCard pet={pet} />
         </div>
 
-        <div className="md:col-span-2">
+        <div className="order-first scroll-mt-20 md:order-none md:col-span-2" ref={tabsRef} data-testid="pet-tabs-column">
           <Tabs value={tab} onValueChange={(value) => { if ((PET_TABS as readonly string[]).includes(value)) chooseTab(value as PetTab); }}>
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 md:grid-cols-2 lg:grid-cols-4">
               <TabsTrigger value="feeding"><Utensils className="mr-2" /> Feeding</TabsTrigger>
               <TabsTrigger value="medication"><Pill className="mr-2" /> Medication</TabsTrigger>
               <TabsTrigger value="care"><Sparkles className="mr-2" /> Care</TabsTrigger>
+              <TabsTrigger value="notes"><NotebookPen className="mr-2" /> Notes</TabsTrigger>
             </TabsList>
             <TabsContent value="feeding">
               <FeedingLogClient petId={pet.id} petName={pet.name} plan={plan} pet={pet} />
             </TabsContent>
             <TabsContent value="medication">
-              <MedicationLogClient petId={pet.id} />
+              <MedicationLogClient petId={pet.id} petName={pet.name} doseCourseId={doseParam} onDoseHandled={clearDoseParam} />
             </TabsContent>
             <TabsContent value="care">
               <CareLogClient petId={pet.id} />
+            </TabsContent>
+            <TabsContent value="notes">
+              <NotesTab petId={pet.id} petName={pet.name} />
             </TabsContent>
           </Tabs>
         </div>

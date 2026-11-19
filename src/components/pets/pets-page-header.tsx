@@ -1,15 +1,19 @@
 import type { ReactNode } from 'react';
 
-/** Pets page header: title left, page actions in the same row (as Shopping and Maintenance). */
-export function PetsPageHeader({ action }: { action?: ReactNode }) {
+/**
+ * Pets page header: title left, page actions in the same row on every screen
+ * (as Shopping and Maintenance; on phones too, PE-13b). The board hides the
+ * subtitle (PE-9f).
+ */
+export function PetsPageHeader({ action, subtitle = true }: { action?: ReactNode; subtitle?: boolean }) {
   return (
-    <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-      <div className="w-full min-w-0">
+    <div className={subtitle ? 'mb-8 flex flex-row items-start justify-between gap-4' : 'mb-4 flex flex-row items-center justify-between gap-4'}>
+      <div className="min-w-0 flex-1">
         {/* Focusable by script only: focus lands here when a dialog's pet is gone (PE-20e). */}
         <h1 tabIndex={-1} data-pets-heading className="font-headline text-3xl font-bold tracking-tight focus:outline-none">Your Pets</h1>
-        <p className="text-muted-foreground">Feedings, medication and care for every pet, at a glance.</p>
+        {subtitle && <p className="text-muted-foreground">Feedings, medication and care for every pet, at a glance.</p>}
       </div>
-      {action ? <div className="w-full shrink-0 sm:w-auto">{action}</div> : null}
+      {action ? <div className="shrink-0">{action}</div> : null}
     </div>
   );
 }

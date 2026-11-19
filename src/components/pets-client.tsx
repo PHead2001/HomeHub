@@ -1,15 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { collection, onSnapshot, type QuerySnapshot } from 'firebase/firestore';
-import { PlusCircle } from 'lucide-react';
+import { Hand, PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
 import { petListenerKey, petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
+import { useSettledPetAccess } from './pets/pet-access';
 import type { PetProfile } from '@/lib/pets/types';
 import { FEED_SHORTCUT_PARAM, loggerName, petHref, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
@@ -19,14 +20,64 @@ import { DeletePetAlert } from './delete-pet-alert';
 import { EditPetDialog } from './edit-pet-dialog';
 import { EmptyState } from './empty-state';
 import { Button } from './ui/button';
-import { Skeleton } from './ui/skeleton';
 import { LivingPetCard, type PetAttention } from './pets/living-pet-card';
+import { PETS_GRID, PetsGridSkeleton } from './pets/pets-skeleton';
 import { PetsPageHeader } from './pets/pets-page-header';
 import { createPet, deletePet, updatePet } from './pets/pet-profile-api';
 import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
+import type { PetPhotoChoice } from './pets/pet-photo-draft';
+import { DuplicatePetNameError, otherPetNames } from '@/lib/pets/profile';
+import { boardGrid, showHoldCaption } from '@/lib/pets/board';
+import { useHoldCaptionDone, usePetsLayout, usePointerFine } from './pets/use-pets-layout';
 
-const GRID = 'grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
+const GRID = PETS_GRID;
+/** Space kept under the board (the page's bottom padding), so the page itself never scrolls. */
+const BOARD_BOTTOM_PX = 32;
+
+/**
+ * The status-first board (PE-9, D-P1, D-P14): it fills the screen from its top to
+ * the bottom of the viewport. One to three pets share one row (one or two grow
+ * to use it, PE-9d), four are two by two, five or six three by two, so every
+ * status is on screen without scrolling (PE-9e); past six the board keeps
+ * the six-up row height and scrolls inside itself, never clipping a card.
+ */
+function PetsBoard({ count, children }: { count: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  // Measured after every render (the attention notice or the hold caption above it may come and go) and on resize.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const element = ref.current;
+      if (!element) return;
+      const top = element.getBoundingClientRect().top + window.scrollY;
+      const next = Math.max(280, Math.floor(window.innerHeight - top - BOARD_BOTTOM_PX));
+      setHeight((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  });
+  const grid = boardGrid(count);
+  const gap = 16;
+  const rowHeight = height ? Math.floor((height - gap) / 2) : null;
+  return (
+    <div
+      ref={ref}
+      className="grid gap-4"
+      data-testid="pets-board"
+      data-board-scroll={grid.scroll ? 'true' : 'false'}
+      style={{
+        gridTemplateColumns: `repeat(${grid.columns}, minmax(0, 1fr))`,
+        gridTemplateRows: grid.scroll && rowHeight ? `repeat(${grid.rows}, ${rowHeight}px)` : `repeat(${grid.rows}, minmax(0, 1fr))`,
+        height: height ?? undefined,
+        overflowY: grid.scroll ? 'auto' : 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 /**
  * Needs-attention strip (PE-26): pets with a meal past its slot time (due, or
@@ -61,23 +112,6 @@ function AttentionStrip({ pets, attention }: { pets: PetProfile[]; attention: Re
   );
 }
 
-function PetSkeleton() {
-  return (
-    <div className="overflow-hidden rounded-lg border bg-card shadow-raised" aria-hidden>
-      <Skeleton className="aspect-[4/3] w-full rounded-none" />
-      <div className="space-y-3 p-4">
-        <Skeleton className="h-6 w-1/2" />
-        <Skeleton className="h-4 w-1/4" />
-        <div className="flex items-center gap-3">
-          <Skeleton className="h-12 w-12 rounded-full" />
-          <Skeleton className="h-4 flex-1" />
-        </div>
-        <Skeleton className="h-10 w-full" />
-      </div>
-    </div>
-  );
-}
-
 export function PetsClient() {
   const { currentUser, currentMember, permissions, household, loading: authLoading, householdLoading } = useAuth();
   const { toast, toastError } = useToast();
@@ -88,7 +122,11 @@ export function PetsClient() {
   // `failed`: the list could not be read (`retrying`: it resubscribes on its own;
   // `unauthorized`: access was refused, so no "Try again" is offered, PE-18c).
   // Keyed by the listener (household, member, pets.view), so access returning starts a fresh read.
-  const listKey = petListenerKey(householdId ? `${householdId}/pets` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  // On the settled access (`useSettledPetAccess`): nothing subscribes until membership has
+  // loaded, so permissions settling after the first render never re-key the list (which
+  // would drop the loaded grid back to the skeleton and remount every card).
+  const access = useSettledPetAccess();
+  const listKey = access ? petListenerKey(householdId ? `${householdId}/pets` : null, access) : null;
   const [snapshot, setSnapshot] = useState<{ key: string | null; pets: PetProfile[]; loaded: boolean; failed: false | 'retrying' | 'unauthorized' }>({
     key: null,
     pets: [],
@@ -183,27 +221,30 @@ export function PetsClient() {
   // Meal times are confirmed by the signed-in member, on the household's day (PE-22k).
   const confirmer = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser), timeZone: household?.timeZone ?? null } : undefined;
 
-  const handleAddPet = async (fields: PetFields, photoFile: File | null): Promise<boolean> => {
+  const handleAddPet = async (petId: string, fields: PetFields, photoFile: File | null): Promise<boolean | 'name-taken'> => {
     if (!householdId) return false;
     try {
-      await createPet(householdId, fields, photoFile, confirmer);
+      await createPet(householdId, petId, fields, photoFile, confirmer);
       toast({ title: 'Pet added', description: `${fields.name} has joined the household.` });
       return true;
     } catch (error) {
+      if (error instanceof DuplicatePetNameError) return 'name-taken';
       console.error('Error adding pet:', error);
       toastError(error, "Couldn't add the pet");
       return false;
     }
   };
 
-  const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
+  const handleUpdatePet = async (fields: PetFields, photo: PetPhotoChoice): Promise<boolean | 'name-taken'> => {
     if (!householdId || !petToEdit) return false;
     try {
-      await updatePet(householdId, petToEdit.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: petToEdit.photoUrl }, confirmer);
-      toast({ title: 'Pet updated', description: `${petToEdit.name}'s details are saved.` });
+      // A rename keeps the pet's id and every history under it (PE-30b).
+      await updatePet(householdId, petToEdit.id, fields, photo, petToEdit.name, confirmer);
+      toast({ title: 'Pet updated', description: `${fields.name}'s details are saved.` });
       setPetToEdit(null);
       return true;
     } catch (error) {
+      if (error instanceof DuplicatePetNameError) return 'name-taken';
       console.error('Error updating pet:', error);
       toastError(error, "Couldn't update the pet");
       return false;
@@ -215,23 +256,47 @@ export function PetsClient() {
     setPetToDelete(null);
     if (!householdId || !target) return;
     try {
+      // On the server: the pet, its histories, notes, weights, photos and open reminders (D-P12).
       await deletePet(householdId, target.id);
-      toast({ title: 'Pet deleted', description: `${target.name} has been removed.` });
+      toast({ title: 'Pet deleted', description: `${target.name} and everything logged for them have been removed.` });
     } catch (error) {
       console.error('Error deleting pet:', error);
       toastError(error, "Couldn't delete the pet");
     }
   };
 
+  // PE-13b: Add Pet sits in the header row on every screen, never a full-width button above the cards.
   const addButton = canEdit ? (
-    <Button onClick={() => setAddOpen(true)} className="w-full sm:w-auto">
+    <Button onClick={() => setAddOpen(true)} className="w-auto">
       <PlusCircle className="mr-2" /> Add Pet
     </Button>
   ) : null;
 
+  // The view for this screen (D-P1, PE-13a) and the one-time hold caption (PE-12a, D-P17).
+  const layout = usePetsLayout();
+  const fine = usePointerFine();
+  const [captionDone, dismissCaption] = useHoldCaptionDone();
+  const captionShown = showHoldCaption({ coarse: !fine, canFeed, done: captionDone, hasPets: pets.length > 0 });
+
+  const card = (pet: PetProfile, index: number) => (
+    <LivingPetCard
+      pet={pet}
+      householdId={householdId!}
+      canEdit={canEdit}
+      onEdit={(target) => { menuPet.current = target.id; setPetToEdit(target); }}
+      onDelete={(target) => { menuPet.current = target.id; setPetToDelete(target); }}
+      priority={index === 0}
+      index={index}
+      layout={layout}
+      roomy={layout === 'board' && pets.length <= 2}
+      onAttention={reportAttention}
+    />
+  );
+
   return (
     <div>
-      <PetsPageHeader action={addButton} />
+      {/* The board drops the subtitle (PE-9f): the space goes to the pets. */}
+      <PetsPageHeader action={addButton} subtitle={layout !== 'board'} />
       {ready && snapshot.loaded && snapshot.failed && (
         <p role="status" className="-mt-4 mb-4 text-sm text-muted-foreground" data-testid="pets-list-stale">
           {staleNoticeText(snapshot.failed === 'unauthorized' ? 'access-changed' : 'reconnecting', 'the pet list')}
@@ -244,7 +309,7 @@ export function PetsClient() {
       {canFeed && householdId && (
         <FeedPickerDialog open={feedPickerOpen} onOpenChange={setFeedPickerOpen} pets={pets} householdId={householdId} />
       )}
-      <EditPetDialog pet={petToEdit} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} onCloseAutoFocus={backToMenu} />
+      <EditPetDialog pet={petToEdit} otherNames={petToEdit ? otherPetNames(pets, petToEdit.id) : undefined} onUpdatePet={handleUpdatePet} onOpenChange={(isOpen) => !isOpen && setPetToEdit(null)} onCloseAutoFocus={backToMenu} />
       <DeletePetAlert
         isOpen={!!petToDelete}
         petName={petToDelete?.name}
@@ -254,30 +319,35 @@ export function PetsClient() {
       />
 
       {loading ? (
-        <div className={GRID} role="status" aria-label="Loading pets">
-          <PetSkeleton />
-          <PetSkeleton />
-          <PetSkeleton />
+        <div role="status" aria-busy="true" aria-label="Loading pets">
+          <PetsGridSkeleton />
         </div>
       ) : pets.length > 0 && householdId ? (
         <>
-        <AttentionStrip pets={pets} attention={attentionByPet} />
-        <Stagger className={GRID}>
-          {pets.map((pet, index) => (
-            <StaggerItem key={pet.id} className="min-w-0">
-              <LivingPetCard
-                pet={pet}
-                householdId={householdId}
-                canEdit={canEdit}
-                onEdit={(target) => { menuPet.current = target.id; setPetToEdit(target); }}
-                onDelete={(target) => { menuPet.current = target.id; setPetToDelete(target); }}
-                priority={index === 0}
-                index={index}
-                onAttention={reportAttention}
-              />
-            </StaggerItem>
-          ))}
-        </Stagger>
+        {captionShown && (
+          <p className="mb-3 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm text-foreground" data-testid="hold-caption">
+            <Hand aria-hidden className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1">Hold the photo to feed</span>
+            <Button type="button" variant="ghost" size="sm" onClick={dismissCaption} aria-label="Dismiss the tip: hold the photo to feed">
+              Got it
+            </Button>
+          </p>
+        )}
+        {/* On the board each card's band already says what needs attention. */}
+        {layout !== 'board' && <AttentionStrip pets={pets} attention={attentionByPet} />}
+        {layout === 'board' ? (
+          <PetsBoard count={pets.length}>
+            {pets.map((pet, index) => <div key={pet.id} className="min-h-0 min-w-0">{card(pet, index)}</div>)}
+          </PetsBoard>
+        ) : layout === 'rows' ? (
+          <Stagger className="flex flex-col gap-3" data-testid="pets-rows">
+            {pets.map((pet, index) => <StaggerItem key={pet.id} className="min-w-0">{card(pet, index)}</StaggerItem>)}
+          </Stagger>
+        ) : (
+          <Stagger className={GRID}>
+            {pets.map((pet, index) => <StaggerItem key={pet.id} className="min-w-0">{card(pet, index)}</StaggerItem>)}
+          </Stagger>
+        )}
         </>
       ) : loadFailed === 'unauthorized' ? (
         <EmptyState

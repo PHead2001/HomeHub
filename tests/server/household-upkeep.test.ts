@@ -620,4 +620,107 @@ describe('household upkeep', () => {
       assert.equal(open[0].data().stateKey, 'due|2026-12-06');
     });
   });
+
+  describe('pet medication courses (P3)', () => {
+    // America/Chicago is UTC-6 from Nov 1, 2026: 8:00 PM on Nov 6 is 02:00 UTC Nov 7.
+    const meds = () => house().collection('notifications').where('sourceType', '==', 'pet_medication').get();
+    const courses = () => house().collection('pets').doc('maple').collection('medication-courses');
+    const logs = () => house().collection('pets').doc('maple').collection('medication-logs');
+    const open = async () => (await meds()).docs.filter(d => !d.data().resolvedAt);
+    const given = (logId: string, occurrence: string, occurrenceAt: string) => ({
+      logId, occurrence, occurrenceAt: Timestamp.fromDate(new Date(occurrenceAt)), givenAt: Timestamp.fromDate(new Date(occurrenceAt)), byUid: 'o1', byName: 'Owner',
+    });
+    const giveDose = async (logId: string, occurrence: string, occurrenceAt: string) => {
+      await logs().doc(logId).set({ courseId: 'apoquel', occurrence, occurrenceAt: Timestamp.fromDate(new Date(occurrenceAt)), date: Timestamp.fromDate(new Date(occurrenceAt)), loggedAt: Timestamp.now(), medication: 'Apoquel', dosage: '1 tablet', loggedByUid: 'o1', loggedByName: 'Owner', repeat: 'none' });
+      await courses().doc('apoquel').update({ lastDose: given(logId, occurrence, occurrenceAt) });
+    };
+    beforeEach(async () => {
+      await house().collection('pets').doc('maple').set({ name: 'Maple', type: 'Dog', photoUrl: 'https://placehold.co/300x300.png' });
+      await courses().doc('apoquel').set({
+        name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'days', everyDays: 1, times: ['08:00', '20:00'] },
+        startDay: '2026-11-06', endDay: null, status: 'active', legacyKeys: [],
+        lastDose: given('morning', '2026-11-06T08:00', '2026-11-06T14:00:00Z'), prevDose: null, coveredUntil: null,
+      });
+    });
+
+    test('one reminder per occurrence, once its time has come (twice daily), with the Give dose link', async () => {
+      await run(new Date('2026-11-07T01:00:00Z')); // 7:00 PM
+      assert.equal((await meds()).size, 0, 'the 8:00 PM dose is not due yet');
+      await run(new Date('2026-11-07T02:30:00Z')); // 8:30 PM
+      const [note] = (await meds()).docs;
+      assert.equal(note.data().title, "Maple's Apoquel 8:00 PM dose is due");
+      assert.equal(note.data().message, "Planned dose: 1 tablet. Tap to record it once it's given.");
+      assert.equal(note.data().sourceId, 'maple:course:apoquel');
+      assert.equal(note.data().stateKey, 'due|2026-11-06T20:00');
+      assert.equal(note.data().deepLink, '/pets/maple?tab=medication&dose=apoquel');
+      assert.equal(note.id, deterministicNotificationId('pet_medication', 'maple:course:apoquel', 'due|2026-11-06T20:00'));
+      // The dose is given: the reminder resolves; the next morning's dose reminds on its own.
+      await giveDose('evening', '2026-11-06T20:00', '2026-11-07T02:00:00Z');
+      assert.equal((await run(new Date('2026-11-07T03:00:00Z'))).resolvedNotifications, 1);
+      await run(new Date('2026-11-07T14:30:00Z')); // 8:30 AM Nov 7
+      const reminders = await open();
+      assert.equal(reminders.length, 1);
+      assert.equal(reminders[0].data().stateKey, 'due|2026-11-07T08:00');
+    });
+
+    test('a missed dose turns overdue after household midnight; later times add no duplicate', async () => {
+      await run(new Date('2026-11-07T02:30:00Z'));
+      await run(new Date('2026-11-07T15:00:00Z')); // 9:00 AM Nov 7: the 8:00 PM dose of Nov 6 is still the next one
+      const reminders = await open();
+      assert.deepEqual(reminders.map(d => d.data().stateKey).sort(), ['due|2026-11-06T20:00', 'overdue|2026-11-06T20:00']);
+      assert.equal(reminders.find(d => d.data().stateKey.startsWith('overdue'))!.data().title, "Maple's Apoquel dose is overdue");
+    });
+
+    test('Finish course resolves its open reminder and no new one is created (PE-24g)', async () => {
+      await run(new Date('2026-11-07T02:30:00Z'));
+      assert.equal((await open()).length, 1);
+      await courses().doc('apoquel').update({ status: 'finished', finishedAt: Timestamp.now(), finishedByUid: 'o1', finishedByName: 'Owner' });
+      assert.equal((await run(new Date('2026-11-07T03:00:00Z'))).resolvedNotifications, 1);
+      await run(new Date('2026-11-08T15:00:00Z'));
+      await run(new Date('2026-11-09T15:00:00Z'));
+      assert.equal((await open()).length, 0);
+      assert.equal((await meds()).size, 1, 'no further reminder');
+    });
+
+    test('a course dose carries no next-due field, so nothing blank can end reminders (PE-24e)', async () => {
+      await giveDose('evening', '2026-11-06T20:00', '2026-11-07T02:00:00Z');
+      await run(new Date('2026-11-08T15:00:00Z'));
+      assert.deepEqual((await open()).map(d => d.data().stateKey), ['overdue|2026-11-07T08:00']);
+    });
+
+    test('renaming the pet or the course updates the open reminder in place (PE-30d), without a new one', async () => {
+      await run(new Date('2026-11-07T02:30:00Z'));
+      await house().collection('pets').doc('maple').update({ name: 'Maple Leaf' });
+      await courses().doc('apoquel').update({ name: 'Apoquel 16 mg' });
+      const result = await run(new Date('2026-11-07T03:00:00Z'));
+      assert.equal(result.createdNotifications, 0);
+      const [note] = await open();
+      assert.equal(note.data().title, "Maple Leaf's Apoquel 16 mg 8:00 PM dose is due");
+      assert.equal((await meds()).size, 1);
+    });
+
+    test('a schedule edit moves the reminder to the new next occurrence (no phantom, no duplicate)', async () => {
+      await run(new Date('2026-11-07T02:30:00Z'));
+      await courses().doc('apoquel').update({ schedule: { kind: 'days', everyDays: 1, times: ['08:00', '21:00'] } });
+      const result = await run(new Date('2026-11-07T02:40:00Z')); // 8:40 PM: 9:00 PM not reached yet
+      assert.equal(result.resolvedNotifications, 1);
+      assert.equal((await open()).length, 0);
+      await run(new Date('2026-11-07T03:10:00Z')); // 9:10 PM
+      assert.deepEqual((await open()).map(d => d.data().stateKey), ['due|2026-11-06T21:00']);
+    });
+
+    test('a legacy medication keeps its reminder until a course takes it over (D-P8)', async () => {
+      await logs().doc('legacy').set({ date: '2026-10-07T14:00:00.000Z', medication: 'Heartworm', dosage: '1 chew', notes: '', nextDueDate: '2026-11-06' });
+      await courses().doc('apoquel').update({ status: 'finished' });
+      await run(new Date('2026-11-06T15:00:00Z'));
+      assert.deepEqual((await open()).map(d => d.data().sourceId), ['maple:heartworm']);
+      // A member confirms its schedule: the legacy reminder resolves and the course reminds instead.
+      await courses().doc('legacy-heartworm').set({
+        name: 'Heartworm', dosage: '1 chew', schedule: { kind: 'days', everyDays: 30, times: [] },
+        startDay: '2026-11-06', endDay: null, status: 'active', legacyKeys: ['heartworm'], lastDose: null, prevDose: null, coveredUntil: null,
+      });
+      await run(new Date('2026-11-06T16:00:00Z'));
+      assert.deepEqual((await open()).map(d => [d.data().sourceId, d.data().stateKey]), [['maple:course:legacy-heartworm', 'due|2026-11-06']]);
+    });
+  });
 });

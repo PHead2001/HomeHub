@@ -1,109 +1,102 @@
 'use client';
 
-import { collection, deleteDoc, deleteField, doc, runTransaction, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
+import { collection } from 'firebase/firestore';
+import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
+import { deletePetAction } from '@/app/pets/actions';
+import { getAiActionContext } from '@/ai/client';
 import { db } from '@/lib/firebase';
-import { householdToday } from '@/lib/household-day';
-import { confirmMealPlan } from '@/lib/pets/meal-plan';
-import type { PetProfile } from '@/lib/pets/types';
-import { slugify } from '@/lib/utils';
-import type { PetFields } from './pet-form';
+import { getDocsOfflineAware } from '@/lib/firestore-offline';
+import { ownedPhotoPath, petPhotoFolder } from '@/lib/pets/profile';
+import { runCreatePet, runUpdatePet, type MealConfirmer, type PetProfileFields } from '@/lib/pets/profile-transaction';
+import type { PetPhotoChoice } from './pet-photo-draft';
 
-/** Legacy "no photo" value; readers treat it (and empty) as no photo. */
-export const NO_PHOTO_URL = 'https://placehold.co/300x300.png';
+export type { MealConfirmer } from '@/lib/pets/profile-transaction';
+export { newPetId } from '@/lib/pets/profile';
 
-/** Who confirms a meal plan (the signed-in member, rules: the writer) and the household zone ("today"). */
-export type MealConfirmer = { uid: string; name: string; timeZone?: string | null };
+const EXTENSIONS: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
 
-async function uploadPetPhoto(householdId: string, photoFile: File): Promise<string> {
-  const extension = photoFile.name.split('.').pop();
-  const storageRef = ref(getStorage(), `households/${householdId}/pets/${crypto.randomUUID()}.${extension}`);
-  await uploadBytes(storageRef, photoFile);
-  return getDownloadURL(storageRef);
+/**
+ * Uploads an already shrunk photo (`usePetPhotoDraft`, PE-21e) into the pet's own
+ * folder (`households/{h}/pets/{petId}/<uuid>.<ext>`), so it can later be
+ * deleted as that pet's photo and never as another's.
+ */
+async function uploadPetPhoto(householdId: string, petId: string, file: File): Promise<{ url: string; path: string }> {
+  const extension = EXTENSIONS[file.type] ?? file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? 'jpg';
+  const path = `${petPhotoFolder(householdId, petId)}${crypto.randomUUID()}.${extension || 'jpg'}`;
+  const storageRef = ref(getStorage(), path);
+  await uploadBytes(storageRef, file, file.type ? { contentType: file.type } : undefined);
+  return { url: await getDownloadURL(storageRef), path };
 }
 
-/** The confirmation stamp of a plan: server time and the confirming member (rules check both). */
-const confirmation = (by: MealConfirmer) => ({ confirmedAt: serverTimestamp(), confirmedByUid: by.uid, confirmedByName: by.name });
-
-/** Creates a pet. Optional numbers are omitted when blank. With meal times the plan starts today (household day). Returns the new id. */
-export async function createPet(householdId: string, fields: PetFields, photoFile: File | null, confirmer?: MealConfirmer): Promise<string> {
-  if (fields.slots && !confirmer) throw new Error('meal-plan-confirmer-missing');
-  const petsCollection = collection(db, 'households', householdId, 'pets');
-  const petId = slugify(fields.name);
-  const photoUrl = photoFile ? await uploadPetPhoto(householdId, photoFile) : NO_PHOTO_URL;
-  const data: Record<string, unknown> = {
-    name: fields.name,
-    type: fields.type,
-    dataAiHint: fields.dataAiHint,
-    foodSchedule: fields.foodSchedule,
-    photoUrl,
-  };
-  if (fields.slots && confirmer) {
-    // A new pet has no earlier plan to keep; the count and portion follow the plan for older clients.
-    data.mealPlan = { slots: fields.slots, effectiveFrom: householdToday(confirmer.timeZone), ...confirmation(confirmer) };
-    data.feedingsPerDay = fields.slots.length;
-    data.portionAmount = fields.slots[0].amount;
-    data.portionUnit = fields.slots[0].unit;
-  } else {
-    if (fields.feedingsPerDay) data.feedingsPerDay = fields.feedingsPerDay;
-    if (fields.portionAmount) {
-      data.portionAmount = fields.portionAmount;
-      data.portionUnit = fields.portionUnit;
-    }
+/** Removes a Storage object, ignoring one that is already gone; other failures are logged (the pet is saved either way). */
+async function removeObject(path: string): Promise<void> {
+  try {
+    await deleteObject(ref(getStorage(), path));
+  } catch (error) {
+    if ((error as { code?: string })?.code !== 'storage/object-not-found') console.warn('Could not remove an unused pet photo', error);
   }
-  await setDoc(doc(petsCollection, petId), data);
-  return petId;
 }
 
 /**
- * Updates a pet; cleared optional numbers are removed from the document. With
- * meal times (PE-22k) the plan is confirmed in a transaction over the stored
- * pet, so the plan it replaces is kept in `mealPlanHistory` exactly as stored
- * even when someone else edited it meanwhile (`confirmMealPlan`, PE-22g); an
- * unchanged plan is left alone. Online only for a plan change (a transaction).
+ * Deletes the photo a save replaced or removed (PE-21f), only after the pet
+ * document no longer references it, and only when it is this pet's own: in its
+ * folder, or a legacy photo in the household's pets folder that no other pet
+ * references (a fresh read of the pets). Never a placeholder or another pet's.
+ */
+async function deleteReplacedPhoto(householdId: string, petId: string, url: string): Promise<void> {
+  const bucket = getStorage().app.options.storageBucket ?? null;
+  const own = ownedPhotoPath(url, { householdId, petId, bucket });
+  if (!own) return;
+  if (!own.startsWith(petPhotoFolder(householdId, petId))) {
+    const pets = await getDocsOfflineAware(collection(db, 'households', householdId, 'pets'));
+    const others = pets.docs.filter((pet) => pet.id !== petId).map((pet) => pet.get('photoUrl') as unknown);
+    if (!ownedPhotoPath(url, { householdId, petId, bucket, otherPetPhotoUrls: others })) return;
+  }
+  await removeObject(own);
+}
+
+/**
+ * Creates a pet under `petId` (`newPetId`, one per Add dialog). A photo is
+ * uploaded first; if the pet then cannot be saved the upload is removed again.
+ */
+export async function createPet(householdId: string, petId: string, fields: PetProfileFields, photoFile: File | null, confirmer?: MealConfirmer): Promise<void> {
+  const uploaded = photoFile ? await uploadPetPhoto(householdId, petId, photoFile) : null;
+  try {
+    await runCreatePet(db, { householdId, petId, fields, photoUrl: uploaded?.url ?? '', confirmer });
+  } catch (error) {
+    if (uploaded) await removeObject(uploaded.path);
+    throw error;
+  }
+}
+
+/**
+ * Updates a pet (rename, vet, weight unit, schedule, photo). A replaced or
+ * removed photo is deleted only after the new document is saved; a new upload
+ * whose save failed is removed.
  */
 export async function updatePet(
   householdId: string,
   petId: string,
-  fields: PetFields,
-  photo: { file: File | null; removed: boolean; currentUrl: string },
+  fields: PetProfileFields,
+  photo: PetPhotoChoice,
+  originalName: string,
   confirmer?: MealConfirmer,
 ): Promise<void> {
-  if (fields.slots && !confirmer) throw new Error('meal-plan-confirmer-missing');
-  let photoUrl = photo.currentUrl || NO_PHOTO_URL;
-  if (photo.file) photoUrl = await uploadPetPhoto(householdId, photo.file);
-  else if (photo.removed) photoUrl = NO_PHOTO_URL;
-  const petRef = doc(db, 'households', householdId, 'pets', petId);
-  const base = { type: fields.type, dataAiHint: fields.dataAiHint, foodSchedule: fields.foodSchedule, photoUrl };
-  if (!fields.slots || !confirmer) {
-    await updateDoc(petRef, {
-      ...base,
-      feedingsPerDay: fields.feedingsPerDay ?? deleteField(),
-      portionAmount: fields.portionAmount ?? deleteField(),
-      portionUnit: fields.portionAmount ? fields.portionUnit : deleteField(),
-    });
-    return;
+  const uploaded = photo.kind === 'replace' ? await uploadPetPhoto(householdId, petId, photo.file) : null;
+  const photoUrl = uploaded ? uploaded.url : photo.kind === 'remove' ? '' : null;
+  let replaced: string | null;
+  try {
+    ({ replacedPhotoUrl: replaced } = await runUpdatePet(db, { householdId, petId, fields, photoUrl, originalName, confirmer }));
+  } catch (error) {
+    if (uploaded) await removeObject(uploaded.path);
+    throw error;
   }
-  const slots = fields.slots;
-  await runTransaction(db, async (tx) => {
-    const snapshot = await tx.get(petRef);
-    if (!snapshot.exists()) throw new Error('pet-not-found');
-    const confirmed = confirmMealPlan(snapshot.data() as PetProfile, slots, householdToday(confirmer.timeZone));
-    tx.update(petRef, {
-      ...base,
-      ...(confirmed
-        ? {
-            mealPlan: { ...confirmed.mealPlan, ...confirmation(confirmer) },
-            mealPlanHistory: confirmed.mealPlanHistory,
-            feedingsPerDay: confirmed.feedingsPerDay,
-            portionAmount: confirmed.portionAmount,
-            portionUnit: confirmed.portionUnit,
-          }
-        : {}),
-    });
-  });
+  if (replaced) await deleteReplacedPhoto(householdId, petId, replaced);
 }
 
-export async function deletePet(householdId: string, petId: string): Promise<void> {
-  await deleteDoc(doc(db, 'households', householdId, 'pets', petId));
+/** Deletes a pet and everything that belongs to it, on the server (D-P12). */
+export async function deletePet(householdId: string, petId: string): Promise<'deleted' | 'already'> {
+  const result = await deletePetAction({ ...(await getAiActionContext(householdId)), petId });
+  if (!result.ok) throw new Error(result.message);
+  return result.status;
 }

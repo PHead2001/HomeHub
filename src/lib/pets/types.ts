@@ -30,6 +30,12 @@ export type PetProfile = Omit<Pet, 'type'> & {
   mealPlan?: MealPlan;
   /** Plans that applied before the current one, oldest first (PE-22g; at most `MEAL_PLAN_HISTORY_MAX`). */
   mealPlanHistory?: MealPlanHistoryEntry[];
+  /** Optional vet contact (P5, PE-28a): name and clinic up to 80 characters, the phone digits and separators (up to 30). */
+  vetName?: string;
+  vetClinic?: string;
+  vetPhone?: string;
+  /** The unit the pet's weights are shown in (P5, PE-28c); kg when absent. */
+  weightUnit?: 'kg' | 'lb';
 };
 
 /** One meal of the day (PE-22a). `id` never changes when the meal is renamed or moved. */
@@ -100,8 +106,44 @@ export type PetFeedingLog = FeedingLog & LoggedBy & {
 };
 
 export type PetMedicationLog = MedicationLog & LoggedBy & {
-  /** Next dose due, as a local calendar date `yyyy-MM-dd`. */
+  /** Legacy entries only: next dose due, as a household calendar date `yyyy-MM-dd`. */
   nextDueDate?: string;
+  /** A course dose (P3): the course document id (`medication-courses/{courseId}`). */
+  courseId?: string;
+  /** The scheduled occurrence the dose covered (key) and its instant. */
+  occurrence?: string;
+  occurrenceAt?: unknown;
+  /** Server time the dose was recorded; `date` is when it was given (the effective time). */
+  loggedAt?: unknown;
+  /** `confirmed`: recorded after "already given" was asked, bound to `confirmOf` (the dose it named). */
+  repeat?: 'none' | 'confirmed';
+  confirmOf?: string | null;
+  /** A chosen earlier given-at time. */
+  backdated?: boolean;
+  /** A dose outside any course (no schedule, no reminders). */
+  oneOff?: boolean;
+};
+
+/** A medication course document (`households/{h}/pets/{p}/medication-courses/{courseId}`). */
+export type MedicationCourseDoc = {
+  name: string;
+  dosage: string;
+  schedule: unknown;
+  startDay: string;
+  endDay?: string | null;
+  status: 'active' | 'finished';
+  legacyKeys?: string[];
+  lastDose?: unknown;
+  prevDose?: unknown;
+  createdAt?: unknown;
+  createdByUid?: string;
+  createdByName?: string;
+  updatedAt?: unknown;
+  updatedByUid?: string;
+  updatedByName?: string;
+  finishedAt?: unknown;
+  finishedByUid?: string | null;
+  finishedByName?: string | null;
 };
 
 export type PetCareLog = CareLog & LoggedBy;

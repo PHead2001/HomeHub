@@ -81,3 +81,27 @@ export function petListenerKey(scope: string | null, access: { uid?: string | nu
   if (!scope) return null;
   return `${scope}|${access.uid ?? ''}|${access.canView ? 'view' : 'no-view'}`;
 }
+
+/* ------------------------------------------------------------------------- */
+/* A settled access key (no second subscription while membership settles)     */
+/* ------------------------------------------------------------------------- */
+
+/** Who reads a Pets listener: the member and whether they hold `pets.view`. */
+export type PetAccess = { uid: string | null; canView: boolean };
+
+/**
+ * The access Pets listeners are keyed on, given the one kept so far, the
+ * current one and whether auth and household membership have settled
+ * (neither is loading). Before the first settle there is none (null: no
+ * listener starts, readers show loading), so a key that would change once
+ * after the first render (permissions arriving with the membership) never
+ * subscribes twice or drops a loaded view back to a skeleton. While a later
+ * membership snapshot is loading (a transient empty member), the kept access
+ * stays. Once settled, a real change (pets.view granted or revoked, another
+ * member) is taken, so the listener is recreated, as `petListenerKey` intends.
+ */
+export function settledPetAccess(kept: PetAccess | null, current: PetAccess, settled: boolean): PetAccess | null {
+  if (!settled) return kept;
+  if (kept && kept.uid === current.uid && kept.canView === current.canView) return kept;
+  return { uid: current.uid, canView: current.canView };
+}

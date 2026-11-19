@@ -108,7 +108,7 @@ test.describe('pets: hold to feed (H09)', () => {
   test('a quick tap on the photo still opens the pet', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openPets(page);
-    // The photo sits under the card's stretched name link, so click by position.
+    // With a mouse the photo is a link to the pet (on touch it only responds to a hold, PE-11a).
     const box = await page.getByTestId('pet-photo-pixel').boundingBox();
     await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(page).toHaveURL(/\/pets\/pixel$/);
