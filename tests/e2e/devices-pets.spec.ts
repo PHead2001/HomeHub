@@ -170,7 +170,8 @@ test('a care entry for the chosen person, and its Undo', async ({}, testInfo) =>
   const entries = () => pet('tab-care').collection('care-logs').get();
   await expect.poll(async () => (await entries()).size, { timeout: 15_000 }).toBe(1);
   expect((await entries()).docs[0].get('loggedByUid')).toBe(KID.uid);
-  await page.getByTestId('tablet-undo').first().click();
+  // Toasts are grouped per pet, so an earlier pet's Undo can still be on screen: use this entry's.
+  await page.getByRole('status').filter({ hasText: 'Brushing' }).getByTestId('tablet-undo').click();
   await expect.poll(async () => (await entries()).size, { timeout: 15_000 }).toBe(0);
 });
 
