@@ -404,7 +404,11 @@ export function doseRepeatReason(check: DoseCheck, now: Date, timeZone?: string 
     const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
     const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;
     const forTime = occurrenceLabel({ day: check.last.occurrence.slice(0, 10), time: check.last.occurrence.slice(11) || null }, now, timeZone);
-    return `${whom} recorded a dose${when} (the ${forTime} dose). The ${occurrenceLabel(check.occurrence, now, timeZone)} dose would be early.`;
+    const chosen = occurrenceLabel(check.occurrence, now, timeZone);
+    // "Early" only for a time still ahead; a past time recorded now would just follow the last dose closely.
+    return check.occurrence.at > now.getTime()
+      ? `${whom} recorded a dose${when} (the ${forTime} dose). The ${chosen} dose would be early.`
+      : `${whom} recorded a dose${when} (the ${forTime} dose). Recording the ${chosen} dose now would be soon after it.`;
   }
   const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
   const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;

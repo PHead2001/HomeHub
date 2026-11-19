@@ -548,6 +548,9 @@ describe('an early dose right after a dose asks first (the duplicate check reads
     if (asked.kind !== 'needsConfirm') return;
     assert.equal(asked.check.reason, 'recent');
     assert.match(doseRepeatReason(asked.check, now, CHI, 'kim'), /^Sam recorded a dose 1 min ago \(the Today 8:00 AM dose\)\. The Today 10:00 AM dose would be early\.$/);
+    // A time already past is not "early": recorded now it would just follow the last dose closely.
+    const past = { ...asked.check, occurrence: { ...asked.check.occurrence, key: '2026-11-14T06:00', day: '2026-11-14', time: '06:00', at: at('2026-11-14T12:00:00Z').getTime() } };
+    assert.match(doseRepeatReason(past, now, CHI, 'kim'), /^Sam recorded a dose 1 min ago \(the Today 8:00 AM dose\)\. Recording the Today 6:00 AM dose now would be soon after it\.$/);
     const written = planDose({ now, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: prefill!.key, givenAt: null, confirm: doseConfirmOf(asked.check) });
     assert.equal(written.kind === 'write' && written.repeat, 'confirmed');
     // The same with the 8:00 dose recorded offline (not in the pointer): the derived latest decides.
