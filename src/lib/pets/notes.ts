@@ -108,8 +108,21 @@ export function validateNoteDraft(draft: NoteDraft, today: string, pinnedCount =
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.day)) errors.day = 'Pick a date.';
     else if (draft.day > today) errors.day = 'Pick a day that has already started.';
   }
-  if (draft.pinned && pinnedCount >= PINNED_NOTES_MAX) errors.pinned = `Up to ${PINNED_NOTES_MAX} pinned notes. Unpin or remove one first.`;
+  const refusal = draft.pinned ? pinRefusal(pinnedCount) : null;
+  if (refusal) errors.pinned = refusal;
   return errors;
+}
+
+/**
+ * Why another note may not be pinned, or null when it may (PE-29b): the same
+ * cap for a new pinned note and for pinning an existing entry. `pinnedCount`
+ * is null while the pinned list is loading or unavailable (the count is unknown,
+ * so nothing is pinned past the cap by mistake).
+ */
+export function pinRefusal(pinnedCount: number | null): string | null {
+  if (pinnedCount === null) return 'Pinned notes are still loading. Try again in a moment.';
+  if (pinnedCount >= PINNED_NOTES_MAX) return `Up to ${PINNED_NOTES_MAX} pinned notes. Unpin or remove one first.`;
+  return null;
 }
 
 /**

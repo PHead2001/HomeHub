@@ -18,6 +18,7 @@ import {
   newRecordOpId,
   noteCreateFields,
   noteDate,
+  pinRefusal,
   pinnedNotes,
   readNote,
   recordDocId,
@@ -47,13 +48,14 @@ import {
   newPetId,
   otherPetNames,
   ownedPhotoPath,
+  petDeletedMessage,
   storagePathOfUrl,
   telHref,
   validateVet,
   vetFields,
 } from '../../src/lib/pets/profile';
 import { newPetData } from '../../src/lib/pets/profile-transaction';
-import { PET_TABS, petTabFromParam, validatePetForm } from '../../src/lib/pets/care';
+import { PET_TABS, householdDateLabel, petTabFromParam, validatePetForm } from '../../src/lib/pets/care';
 import { parseQuickAdd, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { computePetFacts } from '../../src/lib/dashboard/facts';
 import { DEFAULT_MAX_EDGE, planDownscale } from '../../src/lib/images/downscale';
@@ -360,5 +362,56 @@ describe('pet page tabs and ambient work', () => {
     assert.match(read('src/components/pets-client.tsx'), /<PetsGridSkeleton \/>/);
     assert.match(read('src/app/pets/[petId]/loading.tsx'), /PetDetailSkeletonBody/);
     assert.match(read('src/app/pets/[petId]/page.tsx'), /<PetDetailSkeletonBody \/>/);
+  });
+});
+
+describe('Codex P2 follow-ups on P5 (#186)', () => {
+  it('every pin operation is held to the cap: a new pinned note and pinning an entry alike', () => {
+    assert.equal(pinRefusal(0), null);
+    assert.equal(pinRefusal(PINNED_NOTES_MAX - 1), null);
+    assert.match(String(pinRefusal(PINNED_NOTES_MAX)), /Up to 12 pinned notes/);
+    assert.match(String(pinRefusal(null)), /still loading/, 'an unknown count never lets a pin past the cap');
+    assert.equal(validateNoteDraft({ text: 'Microchip 123', tag: '', pinned: true, day: '' }, '2026-11-10', PINNED_NOTES_MAX).pinned, pinRefusal(PINNED_NOTES_MAX));
+    const tab = read('src/components/pets/notes-tab.tsx');
+    const pinChange = tab.slice(tab.indexOf('const pinChange'), tab.indexOf('const remove'));
+    assert.match(pinChange, /pinRefusal\(/, 'pinning an existing entry checks the cap');
+  });
+
+  it('the pinned read is complete: ordered by pinnedAt (newest pin first) and paged, never cut', () => {
+    const api = read('src/components/pets/records-api.ts');
+    const hook = api.slice(api.indexOf('export function usePinnedNotes'), api.indexOf('export function useBehaviourEntries'));
+    assert.match(hook, /orderBy\('pinnedAt', 'desc'\)/);
+    assert.doesNotMatch(hook, /hasMore: false/, 'more pinned notes than a page report hasMore');
+    assert.match(read('src/components/pets/notes-tab.tsx'), /what="pinned notes"/, 'the Notes tab can load the rest');
+    // The rules keep pinnedAt on exactly the pinned notes, which is what makes the order-by query complete.
+    const rules = read('firestore.rules');
+    assert.match(rules, /data\.pinned \? data\.get\('pinnedAt', null\) == request\.time : !\('pinnedAt' in data\)/);
+    assert.match(rules, /after\.pinned \? after\.get\('pinnedAt', null\) == request\.time : !\('pinnedAt' in after\)/);
+  });
+
+  it('dated records show the household day, whatever the device zone', () => {
+    // 23:30 on Nov 19 in Los Angeles is Nov 20 in UTC.
+    const lateEvening = new Date('2026-11-20T07:30:00Z');
+    assert.equal(householdDateLabel(lateEvening, 'America/Los_Angeles'), 'November 19, 2026');
+    assert.equal(householdDateLabel(lateEvening, 'UTC'), 'November 20, 2026');
+    assert.equal(householdDateLabel(lateEvening, 'Asia/Tokyo'), 'November 20, 2026');
+    // An earlier day's entry is stored at household noon (noteDate) and reads as that day.
+    const earlier = noteDate({ pinned: false, day: '2026-03-08' }, new Date('2026-03-10T12:00:00Z'), 'America/Los_Angeles');
+    assert.equal(householdDateLabel(earlier, 'America/Los_Angeles'), 'March 8, 2026', 'across the spring DST change');
+    assert.equal(householdDateLabel(new Date('2026-11-01T06:30:00Z'), 'America/Chicago'), 'November 1, 2026', 'just after midnight on the fall-back day');
+    assert.equal(householdDateLabel(new Date('2026-11-20T05:30:00Z'), null), 'November 19, 2026', 'no zone: the server default (Chicago)');
+    for (const path of ['src/components/pets/notes-tab.tsx', 'src/components/pets/weight-card.tsx']) {
+      const source = read(path);
+      assert.doesNotMatch(source, /format\([^)]*'PPP'\)/, `${path} formats no date in the device zone`);
+      assert.match(source, /householdDateLabel\([^)]*timeZone\)/, path);
+    }
+  });
+
+  it('a delete the server could not finish says the rest clears on its own, never asks for a retry', () => {
+    assert.equal(petDeletedMessage('Rex', 'deleted'), 'Rex and everything logged for them have been removed.');
+    assert.equal(petDeletedMessage('Rex', 'already'), 'Rex and everything logged for them have been removed.');
+    assert.match(petDeletedMessage('Rex', 'finishing'), /Rex has been removed\. Their history and photos finish clearing on their own within the hour\./);
+    const upkeep = read('functions/src/index.ts');
+    assert.match(upkeep, /resumePetDeletions\(/, 'the hourly upkeep resumes tombstones');
   });
 });

@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { format } from 'date-fns';
 import { ArrowUpToLine, Loader2, Pencil, Pin, PinOff, PlusCircle, Trash2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
@@ -16,7 +15,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { PetLogDeleteAlert } from '@/components/pet-log-delete-alert';
 import { householdToday } from '@/lib/household-day';
-import { loggerName } from '@/lib/pets/care';
+import { householdDateLabel, loggerName } from '@/lib/pets/care';
 import { unavailableText } from '@/lib/pets/live-listener';
 import {
   NOTE_TAGS,
@@ -25,6 +24,7 @@ import {
   newRecordOpId,
   noteDate,
   noteTagLabel,
+  pinRefusal,
   validateNoteDraft,
   type NoteDraft,
   type NoteDraftErrors,
@@ -36,7 +36,7 @@ import { NoteChangedError } from '@/lib/pets/record-transaction';
 import { LoggedBy } from './logged-by';
 import { LoadMoreHistory } from './load-more';
 import { useHistoryWindow } from './pet-log-api';
-import { createNote, deleteNote, editNote, setNotePinned, useBehaviourEntries, usePinnedNotes } from './records-api';
+import { createNote, deleteNote, editNote, PINNED_PAGE, setNotePinned, useBehaviourEntries, usePinnedNotes } from './records-api';
 import { useNow } from './use-now';
 
 const NO_TAG = 'none';
@@ -75,7 +75,9 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
   const householdId = currentUser?.householdId ?? null;
   const actor = { uid: currentUser?.uid, permissions };
   const canAdd = mayPet('pets.note.add', permissions);
-  const pinned = usePinnedNotes(householdId, petId);
+  // Every pinned note, newest pin first, paged (none is ever dropped from both lists).
+  const [pinnedMax, setPinnedMax] = useState(PINNED_PAGE);
+  const pinned = usePinnedNotes(householdId, petId, pinnedMax);
   const history = useHistoryWindow(petId);
   const entries = useBehaviourEntries(householdId, petId, history.max);
 
@@ -135,6 +137,12 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
 
   const pinChange = async (note: PetNote, pin: boolean) => {
     if (!householdId) return;
+    // Pinning an entry is held to the same cap as pinning a new note.
+    const refusal = pin && !note.pinned ? pinRefusal(pinned.loading || pinned.error ? null : pinned.items.length) : null;
+    if (refusal) {
+      toast({ variant: 'destructive', title: "Couldn't pin the note", description: refusal });
+      return;
+    }
     try {
       await setNotePinned({ householdId, petId, noteId: note.id, pinned: pin, onLateError: lateError });
       toast({ title: pin ? (note.pinned ? 'Shown first' : 'Note pinned') : 'Note unpinned' });
@@ -187,7 +195,7 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
   const meta = (note: PetNote, showDate: boolean) => (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
       {note.tag && <span className="rounded-full border border-border px-2 py-0.5 text-foreground">{noteTagLabel(note.tag)}</span>}
-      {showDate && <span>{note.date ? format(note.date, 'PPP') : 'Unknown date'}</span>}
+      {showDate && <span>{note.date ? householdDateLabel(note.date, timeZone) : 'Unknown date'}</span>}
       <LoggedBy entry={{ loggedByUid: note.loggedByUid ?? undefined, loggedByName: note.loggedByName ?? undefined }} />
       {note.editedAt && <span>· edited{note.editedByName ? ` by ${note.editedByName}` : ''}</span>}
     </p>
@@ -312,6 +320,9 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
                   </li>
                 ))}
               </ul>
+            )}
+            {!pinned.loading && !pinned.error && (
+              <LoadMoreHistory hasMore={pinned.hasMore} loadingMore={pinned.loadingMore} onLoadMore={() => setPinnedMax((max) => max + PINNED_PAGE)} what="pinned notes" />
             )}
           </section>
 

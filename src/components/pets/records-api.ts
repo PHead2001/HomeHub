@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { collection, limit as limitTo, onSnapshot, orderBy, query, where, type Query, type QuerySnapshot } from 'firebase/firestore';
+import { collection, limit as limitTo, onSnapshot, orderBy, query, type Query, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useSettledPetAccess } from './pet-access';
 import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
@@ -111,20 +111,24 @@ function useLiveDocs<T>(scope: string | null, max: number, build: (() => Query) 
 const notesRef = (householdId: string, petId: string) => collection(db, 'households', householdId, 'pets', petId, 'notes');
 const weightsRef = (householdId: string, petId: string) => collection(db, 'households', householdId, 'pets', petId, 'weights');
 
-/** How many pinned notes are read (more than the form allows, so a race past the cap still shows). */
-const PINNED_READ = PINNED_NOTES_MAX * 2;
+/** One page of pinned notes (more than the cap, so a race past it still shows on the first page). */
+export const PINNED_PAGE = PINNED_NOTES_MAX * 2;
 
 /**
- * A pet's pinned notes, live (PE-29b/c): one small query (`pinned == true`,
- * single-field index), sorted newest pin first on the client. The card's
- * headline line and the Notes tab use the same query, which Firestore serves
- * from one listener target.
+ * A pet's pinned notes, live (PE-29b/c), newest pin first: ordered by
+ * `pinnedAt` (single-field index). The rules keep `pinnedAt` on exactly the
+ * pinned notes (stamped on pin, removed on unpin), so this query returns every
+ * pinned note and nothing else, and the newest pin (the card's headline) is
+ * always on the first page. More than a page is paged (`hasMore`, "Load
+ * more"), never silently cut: the behaviour list leaves pinned notes out, so a
+ * dropped one would be in neither list. The card line and the Notes tab's
+ * first page are the same query (one listener target).
  */
-export function usePinnedNotes(householdId: string | null | undefined, petId: string): LiveList<PetNote> & { headline: PetNote | null } {
+export function usePinnedNotes(householdId: string | null | undefined, petId: string, max: number = PINNED_PAGE): LiveList<PetNote> & { headline: PetNote | null } {
   const base = householdId ? `${householdId}/${petId}/pinned` : null;
-  const list = useLiveDocs(base, PINNED_READ, householdId ? () => query(notesRef(householdId, petId), where('pinned', '==', true), limitTo(PINNED_READ)) : null, readNote);
+  const list = useLiveDocs(base, max, householdId ? () => query(notesRef(householdId, petId), orderBy('pinnedAt', 'desc'), limitTo(max)) : null, readNote);
   const items = pinnedNotes(list.items);
-  return { ...list, items, hasMore: false, headline: headlineNote(items) };
+  return { ...list, items, headline: headlineNote(items) };
 }
 
 /** A pet's behaviour entries (unpinned notes), newest first, live, paginated (PE-29d, PE-21h). */
