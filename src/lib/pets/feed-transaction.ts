@@ -42,6 +42,7 @@ import {
   type Transaction,
 } from 'firebase/firestore';
 import { format } from 'date-fns';
+import { feedLogDocument, feedStateDocument, withStampFor, type FeedTimes } from './feed-documents';
 import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline';
 import { planForDay } from './meal-plan';
 import {
@@ -60,7 +61,6 @@ import {
   planFeedCorrection,
   planFeedDelete,
   planOfflineFeed,
-  type DerivedFeed,
   type DerivedFeedingState,
   type FeedConfirm,
   type FeedPlan,
@@ -122,28 +122,18 @@ export type FeedWritten = {
 
 type WritePlan = Extract<FeedPlan, { kind: 'write' }>;
 
+/** The client SDK's two time values for the shared document builders (`feed-documents.ts`). */
+const CLIENT_TIMES: FeedTimes = { serverTime: () => serverTimestamp(), timestamp: (at) => Timestamp.fromDate(at) };
+
+const logInput = (input: FeedPetInput) => ({ portion: input.portion, food: input.food, comments: input.comments, backdatedAt: input.backdatedAt, user: input.user });
+
 function logData(
   input: FeedPetInput,
   plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null; slotId?: string | null },
   stamp?: Timestamp,
   portion: { amount: number; unit: PortionUnit } = input.portion,
 ): DocumentData {
-  return {
-    date: plan.live ? serverTimestamp() : stamp ?? Timestamp.fromDate(plan.fedAt),
-    loggedAt: serverTimestamp(),
-    cups: portion.amount,
-    foodAmountType: portion.unit,
-    foodType: input.food,
-    comments: input.comments ?? '',
-    ampm: format(plan.fedAt, 'a').toUpperCase(),
-    loggedByUid: input.user.uid,
-    loggedByName: input.user.name,
-    repeat: plan.repeat,
-    ...(plan.repeat === 'confirmed' ? { confirmOf: plan.confirmOf ?? null } : {}),
-    ...(plan.repeat === 'offline' ? { clockSource: 'device' } : {}),
-    ...(input.backdatedAt ? { backdated: true } : {}),
-    ...(plan.slotId ? { slotId: plan.slotId } : {}),
-  };
+  return feedLogDocument(logInput(input), plan, CLIENT_TIMES, { stamp, portion });
 }
 
 /** The portion a write logs: the assigned slot's when the caller asked for the planned portion. */
@@ -151,31 +141,9 @@ function portionFor(input: FeedPetInput, plan: WritePlan): { amount: number; uni
   return input.portionFromSlot && plan.slot ? { amount: plan.slot.amount, unit: plan.slot.unit } : input.portion;
 }
 
-/** A stored time as read (a Timestamp, kept exactly), else the Date as a Timestamp. */
-function storedTime(raw: unknown, at: Date): unknown {
-  return raw && typeof raw === 'object' && typeof (raw as { toMillis?: unknown }).toMillis === 'function' ? raw : Timestamp.fromDate(at);
-}
-
-/**
- * The state document for a derived state (`deriveFeedingState`): each named
- * feeding at its log's stored time (server time for this press's live log), so
- * the rules can compare them exactly (feedingStateHonest).
- */
+/** The state document for a derived state (shared builder, client times). */
 function stateDocument(derived: DerivedFeedingState, liveLogId: string | null): DocumentData {
-  const at = (feed: DerivedFeed) => (feed.logId === liveLogId ? serverTimestamp() : storedTime(feed.rawDate, feed.at));
-  const latest = derived.latest;
-  const prev = derived.prev;
-  return {
-    lastLogId: latest?.logId ?? null,
-    lastFedAt: latest ? at(latest) : null,
-    lastFedByUid: latest?.byUid ?? null,
-    lastFedByName: latest?.byName ?? null,
-    day: derived.day,
-    countOnDay: Math.min(derived.countOnDay, 1000),
-    prev: prev ? { lastLogId: prev.logId, lastFedAt: at(prev), lastFedByUid: prev.byUid, lastFedByName: prev.byName } : null,
-    // Today's fed meal slots (P2), only for a pet that tracks them (the rules check a plain slot feed against them).
-    ...(derived.slotsFed ? { slotsFed: derived.slotsFed } : {}),
-  };
+  return feedStateDocument(derived, liveLogId, CLIENT_TIMES);
 }
 
 /** More feedings than this on one day are not counted beyond it (the state's count is bounded too). */
@@ -303,9 +271,7 @@ function writeFeed(
   // A backdated entry's log and state carry the same Timestamp, so the rules see one time.
   const stamp = Timestamp.fromDate(plan.fedAt);
   tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, { ...plan, slotId: plan.slot?.id ?? null }, stamp, portionFor(input, plan)));
-  const state = plan.live
-    ? plan.state
-    : { ...plan.state, latest: plan.state.latest?.logId === logId ? { ...plan.state.latest, rawDate: stamp } : plan.state.latest, prev: plan.state.prev?.logId === logId ? { ...plan.state.prev, rawDate: stamp } : plan.state.prev };
+  const state = plan.live ? plan.state : withStampFor(plan.state, logId, stamp);
   tx.set(stateRef(db, householdId, petId), stateDocument(state, plan.live ? logId : null));
 }
 

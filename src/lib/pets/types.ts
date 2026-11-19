@@ -80,6 +80,8 @@ export type MealPlanHistoryEntry = {
 export type LoggedBy = {
   loggedByUid?: string;
   loggedByName?: string;
+  /** Written by a wall tablet (server only): which tablet, which person, face or PIN (PE-17c). */
+  deviceAttribution?: { deviceName?: unknown; level?: unknown } | null;
 };
 
 export type PetFeedingLog = FeedingLog & LoggedBy & {
@@ -144,4 +146,7 @@ export type MedicationCourseDoc = {
   finishedByName?: string | null;
 };
 
-export type PetCareLog = CareLog & LoggedBy;
+export type PetCareLog = CareLog & LoggedBy & {
+  /** Server time the entry was written (absent on older entries); the author may delete it for 10 minutes after. */
+  loggedAt?: unknown;
+};

@@ -103,7 +103,10 @@ export function CourseFormDialog({
     } else setValues(courseFormValues({}, today));
   }
 
-  const editing = mode?.kind === 'edit' ? mode.course : null;
+  // The course as it is now (doses recorded or offline doses synced while the form is
+  // open move the preview's coverage); the save is bound to the fields it opened with.
+  const opened = mode?.kind === 'edit' ? mode.course : null;
+  const editing = opened ? courses.find((course) => course.id === opened.id) ?? opened : null;
   const activeNames = courses.filter((course) => course.status === 'active' && course.id !== editing?.id).map((course) => legacyMedicationKey(course.name));
   const names = [...new Set(courses.map((course) => course.name))];
   const { fields } = validateCourseForm(values, activeNames);
@@ -136,7 +139,10 @@ export function CourseFormDialog({
         await confirmLegacy({ householdId, petId, key: mode.group.key, fields: result.fields, user });
         toast({ title: `${result.fields.name} schedule confirmed`, description: `${scheduleSummary(result.fields.schedule)}. Reminders now follow this schedule.` });
       } else {
-        await saveCourse({ householdId, petId, courseId: editing?.id ?? courseId, create: !editing, fields: result.fields, user, timeZone });
+        await saveCourse({
+          householdId, petId, courseId: editing?.id ?? courseId, create: !editing, fields: result.fields, user, timeZone,
+          ...(opened && opened.schedule ? { base: { name: opened.name, dosage: opened.dosage, schedule: opened.schedule, startDay: opened.startDay, endDay: opened.endDay } } : {}),
+        });
         toast({ title: editing ? `${result.fields.name} updated` : `${result.fields.name} added`, description: scheduleSummary(result.fields.schedule) });
       }
       onOpenChange(false);

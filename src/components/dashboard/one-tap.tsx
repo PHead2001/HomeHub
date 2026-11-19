@@ -17,7 +17,8 @@
  * and 48 px on coarse pointers (`styles.target`), with a saving and a failed state, and
  * pressed from the keyboard it leaves focus in its tile when it goes.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { TabletContext } from '@/components/devices/tablet-context';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { Check, Loader2, RotateCcw } from 'lucide-react';
@@ -63,6 +64,9 @@ export function useChoreDone(liveIds?: readonly string[]) {
   const busy = useRef(new Set<string>());
   const { states, set, settle } = useDoneTracking<ActionState>(liveIds, CHORE_DONE_STATES);
   const householdId = currentUser?.householdId ?? null;
+  // On a registered wall tablet Done is the device action for the person chosen in "Who's
+  // here?" (HP-33e): the tablet's runtime shows the result and the Undo toast.
+  const tablet = useContext(TabletContext);
 
   const undo = useCallback(async (chore: Pick<ChoreEntry, 'id' | 'task'>, ticket: UndoTicket) => {
     if (!householdId) return;
@@ -79,6 +83,20 @@ export function useChoreDone(liveIds?: readonly string[]) {
   }, [householdId, set, toast]);
 
   const complete = useCallback(async (chore: Pick<ChoreEntry, 'id' | 'task'>, origin: HTMLElement | null) => {
+    if (tablet) {
+      if (busy.current.has(chore.id)) return;
+      busy.current.add(chore.id);
+      set(chore.id, 'saving');
+      try {
+        // Undone later (or a queued Done dropped at sync): the button works again.
+        const result = await tablet.runAction({ capability: 'chores.complete', label: chore.task, intent: { choreId: chore.id }, onReverted: () => set(chore.id, null) });
+        if (result.ok) settle(chore.id);
+        else set(chore.id, null);
+      } finally {
+        busy.current.delete(chore.id);
+      }
+      return;
+    }
     if (!householdId || busy.current.has(chore.id)) return;
     busy.current.add(chore.id);
     // Measured now: the row leaves the list once the server's change arrives.
@@ -126,7 +144,7 @@ export function useChoreDone(liveIds?: readonly string[]) {
     } finally {
       busy.current.delete(chore.id);
     }
-  }, [householdId, set, settle, toast, burst, undo]);
+  }, [householdId, set, settle, toast, burst, undo, tablet]);
 
   return { states, complete, layer };
 }
@@ -272,13 +290,15 @@ export function PetFedButton({ pet, className }: { pet: PetState; className?: st
     }),
   });
   const [failed, setFailed] = useState(false);
+  // On a wall tablet the device runtime says what happened (refused, cancelled, saved offline).
+  const tablet = useContext(TabletContext);
   // D-P22: a due meal slot (as the bowl and the card show it), or a legacy pet not fed to its count today.
   if (!feed || !action.allowed || !oneTapFedVisible(pet)) return null;
   const run = async () => {
     setFailed(false);
     const result = await action.run({ portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: feed.portionFromSlot, food: feed.foodType, known: feed.known });
     // Null after a real attempt: the operation failed (its toast offers Retry too).
-    if (result === null) setFailed(true);
+    if (result === null && !tablet) setFailed(true);
   };
   return (
     <>

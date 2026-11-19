@@ -22,8 +22,13 @@ import {
   medicationAttention,
   medicationDues,
   newDoseOpId,
+  occurrenceByKey,
+  occurrenceId,
   occurrenceLabel,
+  occurrencesAfter,
+  doseQuestionApplies,
   pendingLegacyGroups,
+  pointersName,
   planDose,
   pointerAfter,
   nextDueOccurrence,
@@ -548,6 +553,9 @@ describe('an early dose right after a dose asks first (the duplicate check reads
     if (asked.kind !== 'needsConfirm') return;
     assert.equal(asked.check.reason, 'recent');
     assert.match(doseRepeatReason(asked.check, now, CHI, 'kim'), /^Sam recorded a dose 1 min ago \(the Today 8:00 AM dose\)\. The Today 10:00 AM dose would be early\.$/);
+    // A time already past is not "early": recorded now it would just follow the last dose closely.
+    const past = { ...asked.check, occurrence: { ...asked.check.occurrence, key: '2026-11-14T06:00', day: '2026-11-14', time: '06:00', at: at('2026-11-14T12:00:00Z').getTime() } };
+    assert.match(doseRepeatReason(past, now, CHI, 'kim'), /^Sam recorded a dose 1 min ago \(the Today 8:00 AM dose\)\. Recording the Today 6:00 AM dose now would be soon after it\.$/);
     const written = planDose({ now, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: prefill!.key, givenAt: null, confirm: doseConfirmOf(asked.check) });
     assert.equal(written.kind === 'write' && written.repeat, 'confirmed');
     // The same with the 8:00 dose recorded offline (not in the pointer): the derived latest decides.
@@ -557,5 +565,96 @@ describe('an early dose right after a dose asks first (the duplicate check reads
     // Once the window has passed (half the interval: 1 h), an early dose no longer asks.
     const later = planDose({ now: at('2026-11-14T16:55:00Z'), timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T10:00', givenAt: null });
     assert.equal(later.kind, 'write');
+  });
+});
+
+describe('an occurrence keeps its identity when its wall-time key repeats (Codex round 6)', () => {
+  const TROLL = 'Antarctica/Troll';
+  const hourly = (firstTime: string, startDay: string) => readCourse('t', {
+    name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 2, firstTime }, startDay, status: 'active',
+  })!;
+  const windowOf = (c: CourseView) => ({ schedule: c.schedule!, startDay: c.startDay, endDay: c.endDay });
+
+  test('Antarctica/Troll turns back two hours: both 02:30 doses are distinct, selectable and found again', () => {
+    const c = hourly('00:30', '2026-10-25');
+    const list = occurrencesAfter(windowOf(c), null, TROLL, 4);
+    assert.deepEqual(list.map((o) => [o.key, new Date(o.at).toISOString(), o.fold ?? 0]), [
+      ['2026-10-25T00:30', '2026-10-24T22:30:00.000Z', 0],
+      ['2026-10-25T02:30', '2026-10-25T00:30:00.000Z', 0],
+      ['2026-10-25T02:30', '2026-10-25T02:30:00.000Z', 1],
+      ['2026-10-25T04:30', '2026-10-25T04:30:00.000Z', 0],
+    ]);
+    assert.deepEqual(list.map(occurrenceId), ['2026-10-25T00:30', '2026-10-25T02:30', '2026-10-25T02:30~1', '2026-10-25T04:30']);
+    for (const occurrence of list) assert.equal(occurrenceByKey(windowOf(c), occurrenceId(occurrence), TROLL)?.at, occurrence.at);
+    // A stored plain key (a dose log's `occurrence`) still means the first one.
+    assert.equal(occurrenceByKey(windowOf(c), '2026-10-25T02:30', TROLL)?.at, list[1].at);
+    assert.match(occurrenceLabel(list[2], at('2026-10-25T02:40:00Z'), TROLL), /2:30 AM \(again, after the clock change\)$/);
+    assert.doesNotMatch(occurrenceLabel(list[1], at('2026-10-25T02:40:00Z'), TROLL), /again/);
+  });
+
+  test('after the first 02:30 dose, Give dose prefills the second and records it (no "already given?")', () => {
+    const first = Date.parse('2026-10-25T00:30:00Z');
+    const given = readCourse('t', {
+      name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 2, firstTime: '00:30' }, startDay: '2026-10-25', status: 'active',
+      lastDose: { logId: 'a', occurrence: '2026-10-25T02:30', occurrenceAt: new Date(first), givenAt: at('2026-10-25T00:35:00Z'), byUid: 'sam', byName: 'Sam' },
+    })!;
+    const now = at('2026-10-25T02:40:00Z');
+    const { prefill } = doseChoices(given, now, TROLL);
+    assert.equal(prefill?.at, Date.parse('2026-10-25T02:30:00Z'));
+    assert.equal(prefill?.covered, false);
+    const plan = planDose({ now, timeZone: TROLL, course: given, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: occurrenceId(prefill!), givenAt: null });
+    assert.equal(plan.kind, 'write', JSON.stringify(plan));
+    if (plan.kind !== 'write') return;
+    // The log keeps the plain key (the rules' shape) and the second instant.
+    assert.deepEqual([plan.occurrence.key, plan.occurrence.at], ['2026-10-25T02:30', Date.parse('2026-10-25T02:30:00Z')]);
+    assert.equal(plan.nextAfter?.at, Date.parse('2026-10-25T04:30:00Z'));
+    // Recording the first one again still asks (it is covered).
+    const again = planDose({ now, timeZone: TROLL, course: given, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-10-25T02:30', givenAt: null });
+    assert.equal(again.kind, 'needsConfirm');
+  });
+
+  test('America/Chicago fall-back: every hourly occurrence has its own identity and round-trips', () => {
+    for (const firstTime of ['00:00', '01:00', '01:30']) {
+      const c = hourly(firstTime, '2026-10-31');
+      const list = occurrencesAfter(windowOf(c), null, CHI, 30);
+      const ids = list.map(occurrenceId);
+      assert.equal(new Set(ids).size, ids.length, `${firstTime}: identities are unique`);
+      for (const occurrence of list) assert.equal(occurrenceByKey(windowOf(c), occurrenceId(occurrence), CHI)?.at, occurrence.at);
+      assert.ok(list.every((o) => !o.fold), 'a one-hour rollback never repeats a key every two hours');
+    }
+  });
+});
+
+describe('an answer to "already given?" is bound to the occurrence it was asked for (Codex round 7)', () => {
+  test('the minute clock moving the selection from 08:00 to 10:00 makes the open answer stale', () => {
+    const every2 = { name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 2, firstTime: '00:00' }, startDay: '2026-11-13', status: 'active' };
+    // The 08:00 dose (14:00Z) recorded at 09:59.
+    const c = readCourse('c', { ...every2, lastDose: { logId: 'eight', occurrence: '2026-11-14T08:00', occurrenceAt: at('2026-11-14T14:00:00Z'), givenAt: at('2026-11-14T15:59:00Z'), byUid: 'sam', byName: 'Sam' } })!;
+    const at959 = at('2026-11-14T15:59:30Z');
+    const asked = planDose({ now: at959, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T08:00', givenAt: null });
+    assert.equal(asked.kind, 'needsConfirm');
+    if (asked.kind !== 'needsConfirm') return;
+    const answer = doseConfirmOf(asked.check);
+    assert.equal(answer.occurrence, '2026-11-14T08:00');
+    // At 10:00 the dialog's selection becomes 10:00; the old answer must not record it.
+    const at1000 = at('2026-11-14T16:00:10Z');
+    const ten = planDose({ now: at1000, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T10:00', givenAt: null, confirm: answer });
+    assert.equal(ten.kind, 'needsConfirm', JSON.stringify(ten));
+    assert.equal(ten.kind === 'needsConfirm' && ten.staleConfirm, true);
+    // The answer still records the occurrence it was asked about.
+    const eight = planDose({ now: at1000, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T08:00', givenAt: null, confirm: answer });
+    assert.equal(eight.kind === 'write' && eight.occurrence.key, '2026-11-14T08:00');
+    // The dialog hides the question once the selection is another occurrence.
+    assert.equal(doseQuestionApplies(asked.check, asked.check.occurrence), true);
+    assert.equal(doseQuestionApplies(asked.check, { key: '2026-11-14T10:00' }), false);
+    assert.equal(doseQuestionApplies(asked.check, null), false);
+  });
+
+  test('an offline removal is refused while either pointer names the dose', () => {
+    const p = (logId: string) => ({ logId, occurrence: '2026-11-14T08:00', occurrenceAt: at('2026-11-14T14:00:00Z'), givenAt: null, byUid: null, byName: null });
+    assert.equal(pointersName({ lastDose: p('a'), prevDose: p('b') }, 'a'), true);
+    assert.equal(pointersName({ lastDose: p('a'), prevDose: p('b') }, 'b'), true);
+    assert.equal(pointersName({ lastDose: p('a'), prevDose: null }, 'c'), false);
+    assert.equal(pointersName(null, 'a'), false);
   });
 });

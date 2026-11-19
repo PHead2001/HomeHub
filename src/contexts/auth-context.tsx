@@ -597,7 +597,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // A wall tablet whose session ended while its shell was not running (removed while
         // switched off): finish its clearing, then reload the setup screen.
         // A setup link's code is read now, before anything can strip it, and kept through the reload.
-        if (hasTabletMarker()) {
+        // Only while nobody is signed in; recovery checks again before every step.
+        if (hasTabletMarker() && auth.currentUser === null) {
           const setupCode = codeFromSetupFragment(window.location.hash);
           void import('@/lib/devices/former-tablet').then((mod) => mod.recoverFormerTabletHere(setupCode));
         }

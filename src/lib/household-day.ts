@@ -14,41 +14,17 @@
 // A namespace import keeps this file importable from server code (server actions need the
 // same day; the react-server build has no useState), while the hook runs only on the client.
 import * as React from 'react';
-import { DEFAULT_TIME_ZONE, addDays, localDay, zonedMidnightIso } from '../../functions/src/shared/calendar';
+import { addDays, localDay, zonedMidnightIso } from '../../functions/src/shared/calendar';
 
 /** Re-check at least this often, so a clock change or a throttled timer cannot strand the day. */
 const MAX_TIMER_MS = 60 * 60 * 1000;
 /** Fire just after midnight, never a moment before it. */
 const MIDNIGHT_SLACK_MS = 250;
 
-const validZone = (timeZone: unknown): timeZone is string => {
-  if (typeof timeZone !== 'string' || !timeZone) return false;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone }).format(0);
-    return true;
-  } catch {
-    return false;
-  }
-};
+import { householdDayZone } from './household-zone';
 
-/** The device's IANA zone (UTC where the runtime cannot say). */
-export function deviceTimeZone(): string {
-  try {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    return validZone(zone) ? zone : 'UTC';
-  } catch {
-    return 'UTC';
-  }
-}
-
-/**
- * The zone "today" is computed in: the household's, else the same default the server
- * uses for reminders and recurring chores (`DEFAULT_TIME_ZONE`), so the dashboard and
- * the server never disagree about the day.
- */
-export function householdDayZone(timeZone?: string | null): string {
-  return validZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
-}
+// The zone rule lives in household-zone.ts (no React, importable from server code).
+export { deviceTimeZone, householdDayZone } from './household-zone';
 
 /** `yyyy-MM-dd` of the household's current calendar day. */
 export function householdToday(timeZone: string | null | undefined, now: Date = new Date()): string {

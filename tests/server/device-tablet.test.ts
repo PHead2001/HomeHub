@@ -12,6 +12,10 @@ import { updateQuietHoursAction } from '../../src/app/household/quiet-hours-acti
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, userState, type Person } from './device-test-helpers';
 import { clock, house, pairTablet, type Tablet } from './device-actor-helpers';
 
+
+/** A clock fixed at `at` (the gate reads it at authorization and again at every precheck). */
+const fixedClock = (at: Date) => ({ clock: () => at });
+
 // F3 server actions (docs/modules/devices/README.md, "Protected exit and Tablet
 // settings", "Night dimming"): tablet settings and the three protected exits behind a
 // fresh owner/admin PIN (WT-16, D-T5, S9), and household quiet hours (D-T1, JC-20).
@@ -69,7 +73,7 @@ describe('tablet settings behind a fresh owner/admin PIN (WT-16e, S9)', () => {
     const result = await updateDeviceSettingsFromTablet({
       idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session,
       patch: { room: 'Hallway', name: 'Hall tablet', sections: { shopping: false }, startPage: { kind: 'pets' } },
-    }, new Date(at.getTime() + 5_000));
+    }, { clock: () => new Date(at.getTime() + 5_000) });
     assert.deepEqual(result.changed.sort(), ['name', 'room', 'sections', 'startPage']);
     const stored = await record(tablet.deviceId);
     assert.equal(stored.room, 'Hallway');
@@ -87,23 +91,23 @@ describe('tablet settings behind a fresh owner/admin PIN (WT-16e, S9)', () => {
 
   test('an admin works too; a member\'s PIN is never enough', async () => {
     const adminUnlock = await unlock(tablet, admin.uid, PIN.admin);
-    await updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: adminUnlock.session, patch: { room: 'Kitchen' } }, adminUnlock.at);
+    await updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: adminUnlock.session, patch: { room: 'Kitchen' } }, { clock: () => adminUnlock.at });
     assert.equal((await record(tablet.deviceId)).room, 'Kitchen');
     const memberUnlock = await unlock(tablet, member.uid, PIN.member);
-    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: member.uid, pinSessionId: memberUnlock.session, patch: { room: 'Den' } }, memberUnlock.at), 'admin_pin_required');
+    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: member.uid, pinSessionId: memberUnlock.session, patch: { room: 'Den' } }, { clock: () => memberUnlock.at }), 'admin_pin_required');
   });
 
   test('without a session, with an old session, or with another person\'s session it is refused', async () => {
-    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: '', patch: { room: 'Den' } }, time.advance(60_000)), 'pin_required');
+    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: '', patch: { room: 'Den' } }, fixedClock(time.advance(60_000))), 'pin_required');
     const { at, session } = await unlock(tablet, owner.uid, PIN.owner);
-    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, patch: { room: 'Den' } }, new Date(at.getTime() + 31_000)), 'pin_fresh_required');
-    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: session, patch: { room: 'Den' } }, at), 'pin_session_invalid');
+    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, patch: { room: 'Den' } }, { clock: () => new Date(at.getTime() + 31_000) }), 'pin_fresh_required');
+    await refused(updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: session, patch: { room: 'Den' } }, { clock: () => at }), 'pin_session_invalid');
     assert.equal((await record(tablet.deviceId)).room, 'Kitchen');
   });
 
   test('an invalid patch, a start page in a switched-off section, and a forged updatedVia are refused', async () => {
     const { at, session } = await unlock(tablet, owner.uid, PIN.owner);
-    const call = (patch: Record<string, unknown>) => updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, patch }, at);
+    const call = (patch: Record<string, unknown>) => updateDeviceSettingsFromTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, patch }, { clock: () => at });
     await refused(call({ room: '' }), 'invalid_input');
     await refused(call({ startPage: { kind: 'shopping' } }), 'invalid_input');
     await refused(call({ updatedVia: 'devices-list' }), 'invalid_input');
@@ -118,7 +122,7 @@ describe('tablet settings behind a fresh owner/admin PIN (WT-16e, S9)', () => {
 
   test('a personal token is refused', async () => {
     const personal = await personToken(owner);
-    await refused(updateDeviceSettingsFromTablet({ idToken: personal, householdId: H, actorUid: owner.uid, pinSessionId: 'x', patch: { room: 'Den' } }, time.advance(60_000)), 'not_a_device');
+    await refused(updateDeviceSettingsFromTablet({ idToken: personal, householdId: H, actorUid: owner.uid, pinSessionId: 'x', patch: { room: 'Den' } }, fixedClock(time.advance(60_000))), 'not_a_device');
   });
 });
 
@@ -127,7 +131,7 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     const tablet = await pairTablet(H, owner, created, 'Remove me');
     const before = (await record(tablet.deviceId)).generation as number;
     const { at, session } = await unlock(tablet, admin.uid, PIN.admin);
-    const result = await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: session, exit: 'remove' }, at);
+    const result = await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: session, exit: 'remove' }, { clock: () => at });
     assert.deepEqual(result, { status: 'removed', authCleanup: 'done' });
     const stored = await record(tablet.deviceId);
     assert.equal(stored.status, 'removed');
@@ -148,7 +152,7 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
   test('"Sign in with a personal account": unpaired, record kept, credential disabled, needs a re-pair', async () => {
     const tablet = await pairTablet(H, owner, created, 'Personal');
     const { at, session } = await unlock(tablet, owner.uid, PIN.owner);
-    const result = await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'personal-sign-in' }, at);
+    const result = await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'personal-sign-in' }, { clock: () => at });
     assert.equal(result.status, 'unpaired');
     const stored = await record(tablet.deviceId);
     assert.equal(stored.status, 'unpaired');
@@ -171,7 +175,7 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     // The real clock: the code's 15 minutes count from when Firestore stored it.
     const at = new Date();
     const session = (await verifyDevicePin({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pin: PIN.owner }, { now: at })).pinSessionId;
-    await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'new-code' }, at);
+    await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'new-code' }, { clock: () => at });
     const stored = await record(tablet.deviceId);
     assert.equal(stored.status, 'unpaired');
     assert.equal(stored.endedReason, 'new-code');
@@ -182,12 +186,12 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     const tablet = await pairTablet(H, owner, created, 'Guarded');
     const memberUnlock = await unlock(tablet, member.uid, PIN.member);
     for (const exit of ['remove', 'personal-sign-in', 'new-code'] as const) {
-      await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: member.uid, pinSessionId: memberUnlock.session, exit }, memberUnlock.at), 'admin_pin_required');
-      await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, exit, pinSessionId: '' }, memberUnlock.at), 'pin_required');
+      await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: member.uid, pinSessionId: memberUnlock.session, exit }, { clock: () => memberUnlock.at }), 'admin_pin_required');
+      await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, exit, pinSessionId: '' }, { clock: () => memberUnlock.at }), 'pin_required');
     }
     const { at, session } = await unlock(tablet, owner.uid, PIN.owner);
-    await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'remove' }, new Date(at.getTime() + 31_000)), 'pin_fresh_required');
-    await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'somewhere' }, at), 'invalid_input');
+    await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'remove' }, { clock: () => new Date(at.getTime() + 31_000) }), 'pin_fresh_required');
+    await refused(exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'somewhere' }, { clock: () => at }), 'invalid_input');
     assert.equal((await record(tablet.deviceId)).status, 'active');
     const viaAction = await exitTabletAction({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: 'nope', exit: 'remove' });
     assert.equal(viaAction.ok, false);
@@ -200,8 +204,8 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     const bAt = new Date(a.at.getTime() + 1_000);
     const b = { at: bAt, session: (await verifyDevicePin({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pin: PIN.admin }, { now: bAt })).pinSessionId };
     const results = await Promise.allSettled([
-      exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: a.session, exit: 'remove' }, b.at),
-      exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: b.session, exit: 'new-code' }, b.at),
+      exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: a.session, exit: 'remove' }, { clock: () => b.at }),
+      exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: admin.uid, pinSessionId: b.session, exit: 'new-code' }, { clock: () => b.at }),
     ]);
     assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
     const loser = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
