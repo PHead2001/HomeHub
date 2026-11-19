@@ -4,16 +4,27 @@
 // shell"). Home is the household resting view: the dashboard drawn for the household
 // (the house, the household brief with household totals and no greeting by name, the
 // tiles of the sections that are on; HP-3b, HP-21, HP-32b, WT-5a). The section views are
-// read-only (Shopping, Maintenance and Calendar stay read-only on tablets, JC-24; Chores
-// and Pets become actionable with the device actions in F4), built from the same live
+// read-only (Shopping, Maintenance and Calendar stay read-only on tablets, JC-24) except
+// Chores, whose rows have Done and Take (device actions, F4a), and Pets, whose rows have Feed
+// (and hold) and Care (F4b-1), built from the same live
 // household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { tabletListener } from '@/lib/devices/tablet-listener';
 import type { QuerySnapshot } from 'firebase/firestore';
-import { Bell, CalendarDays, CheckSquare, PawPrint, ShoppingCart, Wrench } from 'lucide-react';
+import { Bell, CalendarDays, Check, CheckSquare, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed, Wrench } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { useFeedAction } from '@/components/pets/use-feed-action';
+import { HoldToFeedOverlay, useHoldToFeed } from '@/components/pets/hold-to-feed';
+import type { QuickFeedController } from '@/components/pets/quick-feed-button';
+import { useUnsavedInput } from '@/hooks/use-shell-busy';
+import { playFeedback } from '@/lib/feedback';
+import { formatPortion } from '@/lib/pets/care';
+import type { PetState } from '@/lib/dashboard/facts';
 import { DashboardLoading } from '@/components/dashboard/dashboard-loading';
 import { cn } from '@/lib/utils';
 import {
@@ -55,6 +66,46 @@ const Row = ({ title, detail, tone, testId }: { title: string; detail?: string |
 const loadingOr = (ready: boolean, failed: boolean): string | null =>
   failed ? "This couldn't be loaded right now. It tries again on its own." : ready ? null : 'Loading…';
 
+/** Done and Take for one chore on the tablet ("Who's here?" first, a PIN when the points-PIN setting asks). */
+function ChoreActions({ chore }: { chore: { id: string; task: string; assigneeKey?: string } }) {
+  const { runAction } = useTablet();
+  const [busy, setBusy] = useState<'complete' | 'take' | null>(null);
+  const run = async (kind: 'complete' | 'take') => {
+    if (busy) return;
+    setBusy(kind);
+    try {
+      await runAction(kind === 'complete'
+        ? { capability: 'chores.complete', label: chore.task, intent: { choreId: chore.id } }
+        : { capability: 'chores.take', label: chore.task, intent: { choreId: chore.id } });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const button = 'inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-lg border border-border px-4 text-base font-medium disabled:opacity-60';
+  return (
+    <span className="flex shrink-0 gap-2">
+      {chore.assigneeKey === '' && (
+        <button type="button" className={button} disabled={busy !== null} onClick={() => void run('take')} aria-label={`Take ${chore.task}`} data-testid={`tablet-chore-take-${chore.id}`}>
+          <Hand aria-hidden className="h-5 w-5" /> Take
+        </button>
+      )}
+      <button type="button" className={cn(button, 'border-primary/40 text-primary')} disabled={busy !== null} onClick={() => void run('complete')} aria-label={`Mark ${chore.task} done`} data-testid={`tablet-chore-done-${chore.id}`}>
+        <Check aria-hidden className="h-5 w-5" /> Done
+      </button>
+    </span>
+  );
+}
+
+const ChoreRow = ({ chore, detail }: { chore: { id: string; task: string; overdue: boolean; assigneeKey?: string }; detail: string }) => (
+  <li className="flex min-h-14 items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3" data-testid={`tablet-chore-${chore.id}`}>
+    <span className="min-w-0">
+      <span className="block text-lg font-medium">{chore.task}</span>
+      {detail && <span className={cn('block text-sm', chore.overdue ? 'font-semibold text-destructive' : 'text-muted-foreground')}>{detail}</span>}
+    </span>
+    <ChoreActions chore={chore} />
+  </li>
+);
+
 function ChoresView({ roomId }: { roomId?: string }) {
   const { data } = useTablet();
   const section = choresSection(data.sectionFacts ?? {}, roomId);
@@ -67,7 +118,7 @@ function ChoresView({ roomId }: { roomId?: string }) {
       {room ? (
         room.chores.length === 0 ? <p className="text-lg text-muted-foreground">Nothing due in {room.name}.</p> : (
           <ul className="space-y-2">
-            {room.chores.map((chore) => <Row key={chore.id} title={chore.task} detail={chore.dueLabel} tone={chore.overdue ? 'warn' : null} />)}
+            {room.chores.map((chore) => <ChoreRow key={chore.id} chore={chore} detail={[chore.assignee ?? (chore.assigneeKey ? null : 'Unassigned'), chore.dueLabel].filter(Boolean).join(' · ')} />)}
           </ul>
         )
       ) : work.length === 0 ? (
@@ -75,7 +126,7 @@ function ChoresView({ roomId }: { roomId?: string }) {
       ) : (
         <ul className="space-y-2">
           {work.map((chore) => (
-            <Row key={chore.id} title={chore.task} detail={[chore.room, chore.assignee, chore.dueLabel].filter(Boolean).join(' · ')} tone={chore.overdue ? 'warn' : null} />
+            <ChoreRow key={chore.id} chore={chore} detail={[chore.room, chore.assignee ?? (chore.assigneeKey ? null : 'Unassigned'), chore.dueLabel].filter(Boolean).join(' · ')} />
           ))}
         </ul>
       )}
@@ -83,17 +134,115 @@ function ChoresView({ roomId }: { roomId?: string }) {
   );
 }
 
+/**
+ * One pet on the tablet: its feeding status, **Feed** (or hold the picture for 800 ms), and
+ * **Care**. Both are device actions for the person chosen in "Who's here?" (PE-17a/b): the
+ * feed goes through the shared feed hook, which on a tablet sends `pets.feed` (the server
+ * picks the meal slot and its portion, and asks "Feed again?" when the shared check does);
+ * care sends `pets.care.add`. Each offers Undo for 10 s.
+ */
+function TabletPetRow({ pet, onCare }: { pet: PetState; onCare: (pet: PetState) => void }) {
+  const action = useFeedAction(pet.id, pet.name, { onFed: () => playFeedback('complete') });
+  const feed = pet.feed;
+  const { run: runFeed } = action;
+  const run = useCallback(async () => (feed
+    ? runFeed({ portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: feed.portionFromSlot, food: feed.foodType, known: feed.known })
+    : null), [runFeed, feed]);
+  const avatar = useRef<HTMLSpanElement>(null);
+  const portion = feed ? formatPortion(feed.amount, feed.unit) : '';
+  // The hold gesture's controller: the same feed as the button.
+  const controller: QuickFeedController = {
+    allowed: action.allowed && Boolean(feed), saving: action.saving, portion, label: portion, slotName: null,
+    foodType: feed?.foodType ?? 'Dry', ready: Boolean(feed), foodFallback: false, burst: null, action,
+    returnFocus: () => undefined, feed: () => run(),
+  };
+  const { hold, handlers } = useHoldToFeed(controller, avatar);
+  const button = 'inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-lg border border-border px-4 text-base font-medium disabled:opacity-60';
+  return (
+    <li className="flex min-h-14 items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3" data-testid={`tablet-pet-${pet.id}`}>
+      <span className="flex min-w-0 items-center gap-3" {...handlers}>
+        <span ref={avatar} className="relative flex h-14 w-14 shrink-0 touch-none items-center justify-center rounded-full bg-primary/10" data-testid={`tablet-pet-hold-${pet.id}`}>
+          <PawPrint aria-hidden className="h-7 w-7 text-primary" />
+          <HoldToFeedOverlay hold={hold} feed={controller} />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-lg font-medium">{pet.name}</span>
+          <span className={cn('block text-sm', pet.fed === false ? 'font-semibold text-destructive' : pet.fed ? 'text-primary' : 'text-muted-foreground')}>
+            {[pet.mealLine ?? pet.countLabel, pet.headline].filter(Boolean).join(' · ')}
+          </span>
+        </span>
+      </span>
+      {action.allowed && (
+        <span className="flex shrink-0 gap-2">
+          <button type="button" className={button} onClick={() => onCare(pet)} aria-label={`Log care for ${pet.name}`} data-testid={`tablet-pet-care-${pet.id}`}>
+            <HeartPulse aria-hidden className="h-5 w-5" /> Care
+          </button>
+          <button
+            type="button"
+            className={cn(button, 'border-primary/40 text-primary')}
+            disabled={!feed || action.saving}
+            onClick={() => void run()}
+            aria-label={feed ? `Feed ${pet.name} ${portion}` : `Feed ${pet.name} (feeding status unavailable)`}
+            title={`Or press and hold the picture of ${pet.name} to feed.`}
+            data-testid={`tablet-pet-feed-${pet.id}`}
+          >
+            <UtensilsCrossed aria-hidden className="h-5 w-5" /> Feed
+          </button>
+        </span>
+      )}
+    </li>
+  );
+}
+
+/** "Log care" on the tablet: an activity and optional notes, sent as `pets.care.add`. */
+function TabletCareDialog({ pet, onClose }: { pet: PetState; onClose: () => void }) {
+  const { runAction } = useTablet();
+  const [activity, setActivity] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  useUnsavedInput(activity.trim().length > 0 || notes.trim().length > 0);
+  const valid = activity.trim().length >= 3 && activity.trim().length <= 80 && notes.length <= 2000;
+  const save = async () => {
+    if (!valid || saving) return;
+    setSaving(true);
+    try {
+      const outcome = await runAction({ capability: 'pets.care.add', label: `${pet.name}: ${activity.trim()}`, subject: pet.name, intent: { petId: pet.id, activity: activity.trim(), notes: notes.trim() } });
+      if (outcome.ok) onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-xl" data-testid="tablet-care-dialog">
+        <DialogHeader>
+          <DialogTitle className="font-headline text-2xl">Log care for {pet.name}</DialogTitle>
+          <DialogDescription>A walk, a brushing, a vet visit. It is saved for the person you choose next.</DialogDescription>
+        </DialogHeader>
+        <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+          <Input value={activity} onChange={(event) => setActivity(event.target.value)} placeholder="Walk, brushing" aria-label="Activity" maxLength={80} className="min-h-12 text-lg" data-testid="tablet-care-activity" autoFocus />
+          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Notes (optional)" aria-label="Notes" maxLength={2000} className="min-h-24 text-base" data-testid="tablet-care-notes" />
+          <div className="flex justify-end gap-2">
+            <button type="button" className="min-h-12 rounded-lg border border-border px-4 text-base" onClick={onClose}>Cancel</button>
+            <button type="submit" className="min-h-12 rounded-lg bg-primary px-4 text-base font-medium text-primary-foreground disabled:opacity-60" disabled={!valid || saving} data-testid="tablet-care-save">Save</button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function PetsView() {
   const { data } = useTablet();
   const pets = petsSection(data.sectionFacts ?? {});
   const status = loadingOr(Boolean(pets), data.failed.has('pets'));
+  const [caring, setCaring] = useState<PetState | null>(null);
   return (
     <Section title="Pets" icon={PawPrint} testId="tablet-view-pets" empty={status ?? (pets && pets.length === 0 ? 'No pets yet.' : null)}>
       <ul className="space-y-2">
-        {pets?.map((pet) => (
-          <Row key={pet.id} title={pet.name} detail={`${pet.countLabel} · ${pet.headline}`} tone={pet.fed === false ? 'warn' : pet.fed ? 'ok' : null} testId={`tablet-pet-${pet.id}`} />
-        ))}
+        {pets?.map((pet) => <TabletPetRow key={pet.id} pet={pet} onCare={setCaring} />)}
       </ul>
+      {caring && <TabletCareDialog pet={caring} onClose={() => setCaring(null)} />}
     </Section>
   );
 }

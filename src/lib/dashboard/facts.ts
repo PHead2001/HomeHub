@@ -57,7 +57,16 @@ export type RoomState = {
    * overdue first), then today's, then the soonest within the upcoming window; undated
    * chores last; anything beyond `UPCOMING_DAYS` is left out.
    */
-  chores: Array<{ id: string; task: string; dueLabel: string; overdue: boolean }>;
+  chores: Array<{
+    id: string;
+    task: string;
+    dueLabel: string;
+    overdue: boolean;
+    /** Who it is assigned to, as in `ChoreEntry.assigneeKey` ('' unassigned). Never shown. */
+    assigneeKey?: string;
+    /** The assignee's name (never an email), as in `ChoreEntry.assignee`. */
+    assignee?: string | null;
+  }>;
 };
 
 /** An open chore as the dashboard lists it (next up, today's work). */
@@ -429,6 +438,8 @@ export function computeChoreFacts(
     }
 
     const dueLabel = days === null ? 'no date' : `due ${relativeDays(days)}`;
+    // The same assignment identity in a room's list as in today's work (a tablet's Take needs it).
+    const assignee = assigneeOf(chore);
     for (const roomId of roomIds) {
       const room = roomMap.get(roomId)
         ?? (roomId === GENERAL_ROOM_ID ? ensureRoom(GENERAL_ROOM_ID, 'Around the house') : ensureRoom(UNKNOWN_ROOM_ID, UNKNOWN_ROOM_NAME));
@@ -444,7 +455,7 @@ export function computeChoreFacts(
       // HP-10b: generated occurrences beyond the upcoming window are not listed.
       if (days !== null && days > UPCOMING_DAYS) continue;
       const entries = roomOrder.get(room.id) ?? [];
-      entries.push({ chore: { id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0 }, days: days ?? Number.MAX_SAFE_INTEGER });
+      entries.push({ chore: { id: chore.id, task: text(chore.task, 'Chore'), dueLabel, overdue: days !== null && days < 0, assigneeKey: assignee.key, assignee: assignee.name }, days: days ?? Number.MAX_SAFE_INTEGER });
       roomOrder.set(room.id, entries);
     }
 
@@ -456,7 +467,6 @@ export function computeChoreFacts(
       if (days === 0) mineDueToday += 1;
     }
     if (days !== null && days < 0) overdueTotal += 1;
-    const assignee = assigneeOf(chore);
     const firstRoom = roomMap.get(roomIds[0]);
     openWithDays.push({
       entry: {

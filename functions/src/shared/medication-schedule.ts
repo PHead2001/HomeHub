@@ -70,6 +70,13 @@ export type CourseView = {
    * its occurrence like `lastDose` does.
    */
   offlineDose?: DosePointer | null;
+  /**
+   * The surviving dose records this reader combined with the pointer
+   * (`withRecords`; the stored pointers when absent). The recent-dose check
+   * and the "already given?" question read them (`courseDoses`,
+   * `lastAdministered`, `newestDoseCovering`); coverage does not need them.
+   */
+  doses?: DosePointer[];
   /** Legacy (name-keyed) medications this course took over (D-P8). */
   legacyKeys: string[];
 };
@@ -77,6 +84,13 @@ export type CourseView = {
 export type Occurrence = {
   /** `yyyy-MM-dd` (no set time) or `yyyy-MM-ddTHH:mm` (household wall time). */
   key: string;
+  /**
+   * 1 on the later of two occurrences with the same wall-time key (an hours
+   * schedule across a clock rollback as long as its interval: Antarctica/Troll
+   * turns back two hours, so every-two-hours doses at 00:30 and 02:30 UTC
+   * both read 02:30); absent otherwise. `occurrenceId` includes it.
+   */
+  fold?: 1;
   /** Household day of the occurrence. */
   day: string;
   /** Wall time `HH:mm`, or null when due all day. */
@@ -202,6 +216,36 @@ export const readDosePointer = (value: unknown): DosePointer | null => {
  */
 export const legacyMedicationKey = (name: unknown): string =>
   typeof name === "string" ? name.trim().toLowerCase() : "";
+
+/**
+ * Whether the course's stored pointers (`lastDose` or `prevDose`) name this
+ * dose log: such a log can only be removed online, in a commit that moves the
+ * pointers off it (the rules require the same), never by an offline delete.
+ * @param {Record<string, unknown>} data The course document as read.
+ * @param {string} logId The dose log.
+ * @return {boolean} True when a pointer names it.
+ */
+export const pointersName = (
+  data: Record<string, unknown> | undefined | null, logId: string,
+): boolean => [data?.lastDose, data?.prevDose].some((pointer) =>
+  readDosePointer(pointer)?.logId === logId);
+
+/**
+ * The course's dose revision after one more dose write: every online dose
+ * write (Give dose, Undo, a history delete; a device writer's Admin SDK
+ * transaction too) stores it on the course in the same commit, even when the
+ * pointers stay the same, so two writers that read the course serialize on it
+ * (the second retries on a fresh read and asks again). The rules require it.
+ * @param {Record<string, unknown>} data The course document as read.
+ * @return {number} The next revision.
+ */
+export const nextDoseRevision = (
+  data: Record<string, unknown> | undefined | null,
+): number => {
+  const current = data?.doseRevision;
+  return (typeof current === "number" && Number.isInteger(current) &&
+    current >= 0 ? current : 0) + 1;
+};
 
 /**
  * A stored course document as a view, or null when it is not a course.
@@ -355,8 +399,14 @@ const walkOccurrences = (
     if (after !== null && at <= after) continue;
     const day = localDay(new Date(at), timeZone);
     if (endDay && day > endDay) return;
-    if (!more({key: `${day}T${wallTime(at, timeZone)}`, day,
-      time: wallTime(at, timeZone), at})) return;
+    const key = `${day}T${wallTime(at, timeZone)}`;
+    // The same wall time as the previous occurrence: the clock turned back.
+    const prev = at - stepMs;
+    const fold = index > 0 &&
+      `${localDay(new Date(prev), timeZone)}T${wallTime(prev, timeZone)}` ===
+        key;
+    if (!more({key, day, time: wallTime(at, timeZone), at,
+      ...(fold ? {fold: 1 as const} : {})})) return;
   }
 };
 
@@ -459,24 +509,40 @@ export const latestOccurrencesUpTo = (
   return out;
 };
 
+const FOLD_SUFFIX = "~1";
+
 /**
- * The scheduled occurrence with this key, or null when the schedule has none
- * (for example after a schedule edit).
+ * An occurrence's identity: its wall-time key, with `~1` on the later of two
+ * occurrences sharing that key (`fold`). Selection and lookup use it; a
+ * dose log still stores the plain key (the rules' key shape) and the
+ * occurrence's instant, which tells the two apart.
+ * @param {Occurrence} occurrence The occurrence.
+ * @return {string} The identity.
+ */
+export const occurrenceId = (
+  occurrence: Pick<Occurrence, "key" | "fold">,
+): string => occurrence.fold ? `${occurrence.key}${FOLD_SUFFIX}` :
+  occurrence.key;
+
+/**
+ * The scheduled occurrence with this identity (`occurrenceId`; a plain
+ * stored key is the first occurrence with it), or null when the schedule has
+ * none (for example after a schedule edit).
  * @param {CourseWindow} course Schedule, start and end day.
- * @param {string} key Occurrence key.
+ * @param {string} id Occurrence identity or key.
  * @param {string} zone Household zone.
  * @return {Occurrence | null} The occurrence.
  */
 export const occurrenceByKey = (
-  course: CourseWindow, key: string, zone: string,
+  course: CourseWindow, id: string, zone: string,
 ): Occurrence | null => {
-  const day = key.slice(0, 10);
+  const day = id.slice(0, 10);
   if (!isCalendarDay(day)) return null;
   const timeZone = safeTimeZone(zone);
   // From two days before the key's day (an hours schedule's wall time moves).
   const from = zonedInstant(addDays(day, -2), 0, timeZone);
   return occurrencesAfter(course, from, timeZone, 200)
-    .find((occurrence) => occurrence.key === key) ?? null;
+    .find((occurrence) => occurrenceId(occurrence) === id) ?? null;
 };
 
 /**
@@ -554,6 +620,12 @@ export const doseRecordsOf = (
 export type CourseState = {
   /** The latest surviving dose (latest occurrence, latest given, id). */
   latest: DosePointer | null;
+  /**
+   * The most recent administration: the surviving dose with the latest
+   * given-at time (an offline-synced or out-of-order dose included), which is
+   * not necessarily the one with the latest occurrence (`lastAdministered`).
+   */
+  lastGiven: DosePointer | null;
   /** The surviving dose before it, in the same order. */
   prev: DosePointer | null;
   /** Occurrences up to here count as given (`latest`, `coveredUntil`). */
@@ -563,6 +635,62 @@ export type CourseState = {
 const doseOrder = (a: DosePointer, b: DosePointer): number =>
   b.occurrenceAt - a.occurrenceAt || (b.givenAt ?? 0) - (a.givenAt ?? 0) ||
   a.logId.localeCompare(b.logId);
+
+/**
+ * Most recently administered first: given-at time (an unreadable one last),
+ * then the dose order.
+ * @param {DosePointer} a A dose.
+ * @param {DosePointer} b Another dose.
+ * @return {number} Sort order.
+ */
+const givenOrder = (a: DosePointer, b: DosePointer): number =>
+  (b.givenAt ?? -Infinity) - (a.givenAt ?? -Infinity) || doseOrder(a, b);
+
+/**
+ * The most recent administration among these doses: the latest given-at
+ * time, never the latest occurrence (an early dose for 12:00 given at 09:00,
+ * then the 10:00 dose given at 10:59: the 10:00 dose is the most recent).
+ * The recent-dose (early or repeat) check measures from it.
+ * @param {DosePointer[]} records Surviving dose records.
+ * @return {DosePointer | null} The dose, or null.
+ */
+export const lastAdministered = (
+  records: DosePointer[],
+): DosePointer | null => [...records].sort(givenOrder)[0] ?? null;
+
+/**
+ * The most recently administered dose among those covering an occurrence
+ * (that occurrence or a later one): the dose "already given?" names, so a
+ * newer dose for it (an offline one that synced after the pointer was
+ * written) is never hidden behind the stored pointer.
+ * @param {DosePointer[]} records Surviving dose records.
+ * @param {number} occurrenceAt The occurrence's instant (ms).
+ * @return {DosePointer | null} The dose, or null.
+ */
+export const newestDoseCovering = (
+  records: DosePointer[], occurrenceAt: number,
+): DosePointer | null =>
+  lastAdministered(records.filter((dose) => dose.occurrenceAt >= occurrenceAt));
+
+/**
+ * Every dose a reader has for a course: its stored pointers, its offline dose
+ * and the records it combined (`withRecords`), once each.
+ * @param {CourseView} course The course.
+ * @return {DosePointer[]} Dose records.
+ */
+export const courseDoses = (
+  course: Pick<CourseView, "lastDose" | "prevDose" | "offlineDose" | "doses">,
+): DosePointer[] => {
+  const byId = new Map<string, DosePointer>();
+  const all = [
+    course.prevDose, course.lastDose, course.offlineDose,
+    ...(course.doses ?? []),
+  ];
+  for (const dose of all) {
+    if (dose) byId.set(dose.logId, dose);
+  }
+  return [...byId.values()];
+};
 
 /**
  * The one course state (mirrors the feeding state's `deriveFeedingState`):
@@ -588,6 +716,7 @@ export const deriveCourseState = (
     .filter((value): value is number => typeof value === "number");
   return {
     latest,
+    lastGiven: lastAdministered(ordered),
     prev: ordered[1] ?? null,
     coveredThrough: covered.length > 0 ? Math.max(...covered) : null,
   };
@@ -620,13 +749,15 @@ export const withOfflineDoses = (
 export const withRecords = (
   course: CourseView, records: DosePointer[],
 ): CourseView => {
-  const {latest} = deriveCourseState(course, [
-    ...(course.lastDose ? [course.lastDose] : []),
-    ...(course.offlineDose ? [course.offlineDose] : []),
-    ...records,
-  ]);
-  if (!latest || latest.logId === course.lastDose?.logId) return course;
-  return {...course, offlineDose: latest};
+  if (records.length === 0) return course;
+  const doses = courseDoses({
+    ...course, doses: [...(course.doses ?? []), ...records],
+  });
+  const {latest} = deriveCourseState(course, doses);
+  if (!latest || latest.logId === course.lastDose?.logId) {
+    return {...course, doses};
+  }
+  return {...course, offlineDose: latest, doses};
 };
 
 /**

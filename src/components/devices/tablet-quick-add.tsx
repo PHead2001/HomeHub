@@ -4,32 +4,59 @@
 // offers "Feed Maple" (or a dose), typing a chore's title offers "Mark … done"; nothing
 // is sent to the AI reader and there is no Speak button on a tablet. Every intent goes
 // through the shell's action pipeline ("Who's here?", the PIN when needed, the device
-// action). Until the device actions exist (F4) the tablet refuses every write.
+// action): a feed is `pets.feed` with the pet's planned portion and latest food type (the
+// server picks the meal slot and its portion), a chore is `chores.complete`. While a person
+// is remembered, only what they may do is offered (a child's face gets a child's options,
+// PE-17e); doses stay refused until their device action exists.
 
 import { useMemo, useState } from 'react';
 import { CheckSquare, PawPrint, Pill } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { matchLocalIntents, type LocalIntent } from '@/lib/devices/quick-add-local';
-import { quickAddTargets } from '@/lib/devices/tablet-sections';
+import { petsSection, quickAddTargets } from '@/lib/devices/tablet-sections';
+import { personMay } from '@/lib/devices/roster';
+import { policyOf } from '@/lib/devices/action-policy';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { useTablet } from './tablet-context';
 
 const ICON = { feed: PawPrint, dose: Pill, complete: CheckSquare } as const;
 
 export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
-  const { data, settings, runAction } = useTablet();
+  const { data, settings, runAction, shell, person } = useTablet();
   const [text, setText] = useState('');
   useUnsavedInput(text.trim().length > 0);
 
   // Every pet and every open chore of the week (uncapped section facts, never a preview).
   const { pets, chores } = useMemo(() => quickAddTargets(data.sectionFacts ?? {}), [data.sectionFacts]);
-  const intents = matchLocalIntents(text, { pets, chores, sections: settings.sections });
+  const remembered = person(shell.face?.memberUid);
+  const petStates = useMemo(() => new Map((petsSection(data.sectionFacts ?? {}) ?? []).map((pet) => [pet.id, pet])), [data.sectionFacts]);
+  const intents = matchLocalIntents(text, { pets, chores, sections: settings.sections })
+    .filter((intent) => !remembered || personMay(remembered, policyOf(intent.capability).permissions))
+    // A feed needs the pet's feeding history (its portion and food), as the Feed button does.
+    .filter((intent) => intent.kind !== 'feed' || Boolean(petStates.get(intent.petId)?.feed));
 
   const choose = (intent: LocalIntent) => {
     setText('');
     onClose();
-    void runAction({ capability: intent.capability, label: intent.label });
+    if (intent.kind === 'feed') {
+      // The same request as the Feed button: the planned portion (the server uses the meal slot's) and the latest food type.
+      const pet = petStates.get(intent.petId);
+      const feed = pet?.feed;
+      if (!pet || !feed) return;
+      void runAction({
+        capability: 'pets.feed',
+        label: `Fed ${pet.name}`,
+        subject: pet.name,
+        intent: { petId: intent.petId, portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: Boolean(feed.portionFromSlot), food: feed.foodType },
+      });
+      return;
+    }
+    void runAction({
+      capability: intent.capability,
+      label: intent.label,
+      intent: intent.kind === 'complete' ? { choreId: intent.choreId } : { petId: intent.petId },
+    });
   };
 
   return (

@@ -30,7 +30,7 @@ import {
 import { FEEDING_CLOCK_SKEW_MS, toDate, type FeedingEntry } from './care';
 import { feedsOnDay, slotDay, slotsFedOn, targetSlot, type DayPlan } from './meal-plan';
 import { localMinutes } from '../../../functions/src/shared/calendar';
-import { householdDayZone } from '../household-day';
+import { householdDayZone } from '../household-zone';
 import type { PortionUnit } from './types';
 
 /* ------------------------------------------------------------------------- */

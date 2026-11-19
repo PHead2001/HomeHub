@@ -2271,6 +2271,58 @@ describe('content shapes: pet logs', () => {
     await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), activity: 5 }));
     await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), notes: 'x'.repeat(2001) }));
   });
+
+  describe('care entries: the author may delete their own for 10 minutes after loggedAt (review B1)', () => {
+    const minutesAgo = (minutes: number) => Timestamp.fromMillis(Date.now() - minutes * 60_000);
+    beforeEach(async () => {
+      await environment.withSecurityRulesDisabled(async context => {
+        const db = context.firestore();
+        const entry = (id: string, data: Record<string, unknown>) => setDoc(doc(db, 'households', householdA, 'pets', 'maple', 'care-logs', id), data);
+        await entry('mine-recent', { ...care(users.member), loggedAt: minutesAgo(2) });
+        await entry('mine-stale', { ...care(users.member), loggedAt: minutesAgo(11) });
+        await entry('mine-legacy', care(users.member));
+        await entry('child-recent', { ...care(users.child), loggedAt: minutesAgo(1) });
+      });
+    });
+
+    test('a new entry carries loggedAt at server time; its author (member or child) may delete it', async () => {
+      const mine = await addDoc(logs(users.member, 'care-logs'), { ...care(users.member), loggedAt: serverTimestamp() });
+      await assertSucceeds(deleteDoc(log(users.member, 'care-logs', mine.id)));
+      const childs = await addDoc(logs(users.child, 'care-logs'), { ...care(users.child), loggedAt: serverTimestamp() });
+      await assertSucceeds(deleteDoc(log(users.child, 'care-logs', childs.id)));
+      await assertSucceeds(deleteDoc(log(users.member, 'care-logs', 'mine-recent')));
+      await assertSucceeds(deleteDoc(log(users.child, 'care-logs', 'child-recent')));
+    });
+
+    test('after 10 minutes, without loggedAt, or someone else\'s entry: pets.deleteLogs only', async () => {
+      await assertFails(deleteDoc(log(users.member, 'care-logs', 'mine-stale')));
+      await assertFails(deleteDoc(log(users.member, 'care-logs', 'mine-legacy')));
+      // Another member's entry inside its window: refused to a member and to a child.
+      await assertFails(deleteDoc(log(users.child, 'care-logs', 'mine-recent')));
+      await assertFails(deleteDoc(log(users.member, 'care-logs', 'child-recent')));
+      // A guest, another household's owner, a stranger: refused.
+      await assertFails(deleteDoc(log(users.guest, 'care-logs', 'mine-recent')));
+      await assertFails(deleteDoc(log(users.ownerB, 'care-logs', 'mine-recent')));
+      await assertFails(deleteDoc(log(users.stranger, 'care-logs', 'mine-recent')));
+      // pets.deleteLogs (owner) deletes any entry.
+      await assertSucceeds(deleteDoc(log(users.owner, 'care-logs', 'mine-stale')));
+      await assertSucceeds(deleteDoc(log(users.owner, 'care-logs', 'mine-legacy')));
+    });
+
+    test('loggedAt cannot be chosen on create or changed afterwards (it would stretch the window)', async () => {
+      await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), loggedAt: inMinutes(5) }));
+      await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), loggedAt: minutesAgo(1) }));
+      await assertFails(addDoc(logs(users.member, 'care-logs'), { ...care(users.member), loggedAt: new Date().toISOString() }));
+      await assertFails(updateDoc(log(users.member, 'care-logs', 'mine-stale'), { loggedAt: serverTimestamp() }));
+      await assertFails(updateDoc(log(users.member, 'care-logs', 'mine-stale'), { loggedAt: inMinutes(60) }));
+      await assertFails(updateDoc(log(users.member, 'care-logs', 'mine-recent'), { loggedAt: deleteField() }));
+      await assertFails(updateDoc(log(users.member, 'care-logs', 'mine-legacy'), { loggedAt: serverTimestamp() }));
+      // Other edits keep it.
+      await assertSucceeds(updateDoc(log(users.member, 'care-logs', 'mine-stale'), { notes: 'Long walk' }));
+      // A cached older client (no loggedAt) still adds entries.
+      await assertSucceeds(addDoc(logs(users.member, 'care-logs'), care(users.member)));
+    });
+  });
 });
 
 describe('feeding state and the shared feed operation (PE-23, PE-2)', () => {

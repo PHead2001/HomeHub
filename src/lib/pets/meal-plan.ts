@@ -39,7 +39,7 @@
  * today's count complete).
  */
 import { addDays, dayOfWeek, diffDays, localMinutes, parseTimeOfDay } from '../../../functions/src/shared/calendar';
-import { householdDayZone } from '../household-day';
+import { householdDayZone } from '../household-zone';
 import {
   feedingPlan,
   feedingStatus,

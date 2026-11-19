@@ -26,6 +26,7 @@ let environment: RulesTestEnvironment;
 const owner = { uid: 'ar-owner', email: 'ar.owner@example.test' };
 const admin = { uid: 'ar-admin', email: 'ar.admin@example.test' };
 const member = { uid: 'ar-member', email: 'ar.member@example.test' };
+const child = { uid: 'ar-child', email: 'ar.child@example.test' };
 const ownerB = { uid: 'ar-owner-b', email: 'ar.ownerb@example.test' };
 
 const personDb = (person: { uid: string; email: string }): Firestore =>
@@ -53,6 +54,7 @@ before(async () => {
     await setDoc(doc(db, 'households', H, 'members', owner.uid), { uid: owner.uid, role: 'owner', status: 'active' });
     await setDoc(doc(db, 'households', H, 'members', admin.uid), { uid: admin.uid, role: 'admin', status: 'active' });
     await setDoc(doc(db, 'households', H, 'members', member.uid), { uid: member.uid, role: 'member', status: 'active' });
+    await setDoc(doc(db, 'households', H, 'members', child.uid), { uid: child.uid, role: 'child', status: 'active' });
     await setDoc(doc(db, 'households', H, 'members', KID), { uid: KID, kind: 'identity', role: 'child', status: 'active', displayName: 'Mia' });
     await setDoc(doc(db, 'households', HB, 'members', ownerB.uid), { uid: ownerB.uid, role: 'owner', status: 'active' });
     await setDoc(doc(db, 'households', H, 'devices', DEV), {
@@ -82,6 +84,12 @@ before(async () => {
       completedByUid: member.uid, completionId: 'op1', deviceAttribution: attribution,
     });
     await setDoc(doc(db, 'households', H, 'chores', 'plain'), { task: 'Bins', isCompleted: false });
+    for (const id of ['devdone-child', 'devdone-child-keep']) {
+      await setDoc(doc(db, 'households', H, 'chores', id), {
+        task: 'Dishes', isCompleted: true, completedAt: '2026-11-14T10:00:00.000Z', completedAtServer: Timestamp.now(),
+        completedByUid: member.uid, completionId: 'op2', deviceAttribution: attribution,
+      });
+    }
     await setDoc(doc(db, 'households', H, 'pets', 'p1', 'medication-logs', 'plain'), { date: '2026-11-14', medication: 'X', loggedByUid: member.uid });
     await uploadBytes(ref(context.storage(), `households/${H}/members/${KID}/avatar/a.png`), png, { contentType: 'image/png' });
   });
@@ -197,6 +205,18 @@ describe('deviceAttribution: personal clients never add, change or remove it (S1
     }));
     // A completion can never bring a forged one back.
     await assertFails(updateDoc(chore, { isCompleted: true, completedAtServer: serverTimestamp(), deviceAttribution: attribution }));
+  });
+
+  test('chores: a chores.complete holder (no chores.edit) reopens a tablet completion only together with its attribution', async () => {
+    const kid = personDb(child);
+    const reopen = { isCompleted: false, completedAt: null, completedAtServer: null };
+    // Removing it without clearing the completion, or changing it while reopening: refused.
+    await assertFails(updateDoc(doc(kid, 'households', H, 'chores', 'devdone-child'), { deviceAttribution: deleteField() }));
+    await assertFails(updateDoc(doc(kid, 'households', H, 'chores', 'devdone-child'), { ...reopen, deviceAttribution: { ...attribution, level: 'pin' } }));
+    // Reopening and removing it together: allowed.
+    await assertSucceeds(updateDoc(doc(kid, 'households', H, 'chores', 'devdone-child'), { ...reopen, deviceAttribution: deleteField() }));
+    // Reopening without touching it is allowed too (an older client): the attribution is unchanged.
+    await assertSucceeds(updateDoc(doc(kid, 'households', H, 'chores', 'devdone-child-keep'), reopen));
   });
 });
 

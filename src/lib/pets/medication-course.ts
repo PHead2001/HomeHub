@@ -17,7 +17,10 @@ import {
   COURSE_DOSAGE_MAX,
   courseDue,
   coverageAfterEdit,
+  courseDoses,
   coveredThrough,
+  lastAdministered,
+  newestDoseCovering,
   deriveCourseState,
   latestOccurrencesUpTo,
   periodMs,
@@ -33,6 +36,7 @@ import {
   legacyMedicationKey,
   occurrenceAtOrBefore,
   occurrenceByKey,
+  occurrenceId,
   occurrencesAfter,
   readSchedule,
   type CourseSchedule,
@@ -99,7 +103,7 @@ export function medicationDues(courses: CourseView[], legacyLogs: PetMedicationL
       state: due.state,
       label: due.label,
       courseId: course.id,
-      occurrenceKey: due.occurrence.key,
+      occurrenceKey: occurrenceId(due.occurrence),
       time: due.occurrence.time ?? '',
     }];
   });
@@ -166,10 +170,10 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
   const upcoming = occurrencesAfter(window, Math.max(at, coveredThrough(course) ?? -Infinity), zone, 1)[0] ?? null;
   const byKey = new Map<string, DoseChoice>();
   for (const occurrence of [...missed, latestPassed, upcoming]) {
-    if (occurrence) byKey.set(occurrence.key, covered(occurrence));
+    if (occurrence) byKey.set(occurrenceId(occurrence), covered(occurrence));
   }
   let prefill: DoseChoice | null = null;
-  if (missed.length > 0) prefill = byKey.get(missed[missed.length - 1].key) ?? null;
+  if (missed.length > 0) prefill = byKey.get(occurrenceId(missed[missed.length - 1])) ?? null;
   else {
     // The nearest scheduled occurrence, given or not (a repeat then asks first).
     const nearest = [latestPassed, occurrencesAfter(window, at, zone, 1)[0] ?? null]
@@ -177,7 +181,7 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
       .sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at))[0];
     if (nearest) {
       prefill = covered(nearest);
-      byKey.set(prefill.key, prefill);
+      byKey.set(occurrenceId(prefill), prefill);
     }
   }
   return { prefill, choices: [...byKey.values()].sort((a, b) => a.at - b.at) };
@@ -185,16 +189,19 @@ export function doseChoices(course: CourseView, now: Date, timeZone?: string | n
 
 /**
  * "Today 8:00 AM", "Tomorrow 8:00 PM", "Yesterday", "Nov 14, 8:00 AM" for an
- * occurrence, in the household's day (labels the Give dose choices).
+ * occurrence, in the household's day (labels the Give dose choices); the
+ * later of two occurrences at the same clock time says so.
  */
-export function occurrenceLabel(occurrence: Pick<Occurrence, 'day' | 'time'>, now: Date, timeZone?: string | null): string {
+export function occurrenceLabel(occurrence: Pick<Occurrence, 'day' | 'time' | 'fold'>, now: Date, timeZone?: string | null): string {
   const today = localDay(now, householdDayZone(timeZone));
   const time = occurrence.time ? formatDoseTime(occurrence.time) : null;
   const diff = Math.round((Date.parse(`${occurrence.day}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
   const day = diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday'
     : new Date(`${occurrence.day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   if (!time) return day;
-  return diff >= -1 && diff <= 1 ? `${day} ${time}` : `${day}, ${time}`;
+  // The later of two doses at the same clock time (the clock turned back).
+  const again = occurrence.fold ? ' (again, after the clock change)' : '';
+  return diff >= -1 && diff <= 1 ? `${day} ${time}${again}` : `${day}, ${time}${again}`;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -206,8 +213,13 @@ export const DOSE_BACKDATE_MAX_MS = 7 * 24 * 3_600_000;
 /** A chosen given-at time may be this far ahead of the device clock (a slightly fast clock). */
 export const DOSE_FUTURE_SLACK_MS = 60_000;
 
-/** The answer to "already given?": the latest dose it named. */
-export type DoseConfirm = { lastLogId: string | null };
+/**
+ * The answer to "already given?": the dose it named and the occurrence it was
+ * asked for (`occurrenceId`). An answer is only good for that occurrence: when
+ * the selection changes under an open question (the minute clock drops the
+ * occurrence, a schedule edit), the answer is stale and the press asks again.
+ */
+export type DoseConfirm = { lastLogId: string | null; occurrence?: string };
 
 /** What the writer read, all from the same attempt. */
 export type DoseSnapshot = {
@@ -235,7 +247,7 @@ export type DoseIntent = {
 export type DoseRefusal = 'missing' | 'finished' | 'occurrence' | 'future' | 'too-old' | 'conflict';
 
 export type DoseCheck = {
-  /** The latest dose (it covers this occurrence when `reason` is `given`). */
+  /** The dose it names (`doseCheck`; it covers this occurrence when `reason` is `given`). */
   last: DosePointer | null;
   occurrence: Occurrence;
   /**
@@ -274,6 +286,37 @@ export type DosePlan =
     };
 
 /**
+ * Whether a dose for this occurrence asks first, and the dose it names (the
+ * one definition behind "already given?" and the recent-dose warning, read by
+ * `planDose` and mirrored by the rules' `confirmOf` check):
+ * 1. A dose was administered within `doseRepeatWindowMs`: it names the most
+ *    recently administered surviving dose (`lastAdministered`: the latest
+ *    given-at time, offline-synced doses included, never the dose with the
+ *    latest occurrence), `given` when that dose covers the occurrence, else
+ *    `recent`.
+ * 2. Otherwise, when a dose covers the occurrence (that one or a later one):
+ *    `given`, naming the most recently administered of those doses
+ *    (`newestDoseCovering`), so a newer offline-synced dose than the stored
+ *    pointer is the one named and a confirmation naming an older one is stale.
+ * 3. Otherwise, when a schedule edit counted it as given: `moved`, naming no
+ *    dose (`moved` with a dose named: a recent dose, and the edit counted it).
+ * Coverage itself (what is due) still follows the latest occurrence.
+ */
+export function doseCheck(course: CourseView, occurrence: Occurrence, now: Date, lastDoseSurvives = true): DoseCheck | null {
+  if (!course.schedule) return null;
+  const doses = courseDoses(course).filter((dose) => lastDoseSurvives || dose.logId !== course.lastDose?.logId);
+  const administered = lastAdministered(doses);
+  const recent = administered !== null && administered.givenAt !== null &&
+    now.getTime() - administered.givenAt < doseRepeatWindowMs(course.schedule) ? administered : null;
+  const covering = newestDoseCovering(doses, occurrence.at);
+  const moved = course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
+  const shown = recent ?? covering;
+  if (shown) return { last: shown, occurrence, reason: shown.occurrenceAt >= occurrence.at ? 'given' : moved ? 'moved' : 'recent' };
+  // Counted as given by a schedule edit only: no dose to bind the answer to.
+  return moved ? { last: null, occurrence, reason: 'moved' } : null;
+}
+
+/**
  * Decides one Give dose press from what the writer read: the press was
  * already recorded (idempotent replay), refuse it, ask first because that
  * occurrence (or a later one) was already given (bound to the dose it names,
@@ -296,28 +339,19 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
     if (intent.givenAt.getTime() < now.getTime() - DOSE_BACKDATE_MAX_MS) return { kind: 'refused', reason: 'too-old' };
   }
   const last = snapshot.lastDoseSurvives ? course.lastDose : null;
-  // A dose recorded offline (not in `lastDose`) covers its occurrence too.
-  const offlineDose = course.offlineDose ?? null;
-  const givenStored = Boolean(last) && occurrence.at <= last!.occurrenceAt;
-  const givenOffline = !givenStored && Boolean(offlineDose) && occurrence.at <= offlineDose!.occurrenceAt;
-  const named = givenStored ? last : givenOffline ? offlineDose : null;
-  const moved = !named && course.coveredUntil !== null && occurrence.at <= course.coveredUntil;
-  // The latest surviving dose (the derived state: the cache or a later record).
-  const latest = [last, offlineDose].filter((dose): dose is DosePointer => Boolean(dose))
-    .sort((a, b) => b.occurrenceAt - a.occurrenceAt || (b.givenAt ?? 0) - (a.givenAt ?? 0))[0] ?? null;
-  const recent = !named && !moved && latest !== null && latest.givenAt !== null &&
-    now.getTime() - latest.givenAt < doseRepeatWindowMs(course.schedule);
+  const check = doseCheck(course, occurrence, now, snapshot.lastDoseSurvives);
   let repeat: 'none' | 'confirmed' | 'offline' = 'none';
   let confirmOf: string | null = null;
-  if (named || moved || recent) {
+  if (check) {
     const confirm = intent.confirm;
-    const shown = named ?? (recent ? latest : last);
-    if (!confirm || confirm.lastLogId !== (shown?.logId ?? null)) {
-      return { kind: 'needsConfirm', check: { last: shown, occurrence, reason: named ? 'given' : moved ? 'moved' : 'recent' }, staleConfirm: Boolean(confirm) };
+    // Bound to the dose it named, and to the occurrence it was asked for.
+    const boundElsewhere = confirm?.occurrence !== undefined && confirm.occurrence !== occurrenceId(occurrence);
+    if (!confirm || confirm.lastLogId !== (check.last?.logId ?? null) || boundElsewhere) {
+      return { kind: 'needsConfirm', check, staleConfirm: Boolean(confirm) };
     }
-    if (named || recent) {
+    if (check.last) {
       repeat = 'confirmed';
-      confirmOf = shown!.logId;
+      confirmOf = check.last.logId;
     }
   }
   const after = Math.max(occurrence.at, coveredThrough({ ...course, lastDose: last }) ?? -Infinity);
@@ -335,7 +369,18 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
 
 /** The answer to the "already given?" question it was shown for. */
 export function doseConfirmOf(check: DoseCheck): DoseConfirm {
-  return { lastLogId: check.last?.logId ?? null };
+  return { lastLogId: check.last?.logId ?? null, occurrence: occurrenceId(check.occurrence) };
+}
+
+/**
+ * Whether an open "already given?" question still applies: only for the
+ * occurrence it was asked about (`check.occurrence`) and while that occurrence
+ * is the one selected; otherwise the dialog hides it and the next press asks
+ * afresh. The dialog derives the shown question from this, so no
+ * automatic change of the selection can carry an old answer to a new dose.
+ */
+export function doseQuestionApplies(check: Pick<DoseCheck, 'occurrence'> | null, selected: Pick<Occurrence, 'key' | 'fold'> | null): boolean {
+  return Boolean(check && selected) && occurrenceId(check!.occurrence) === occurrenceId(selected!);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -364,8 +409,9 @@ const byWhom = (pointer: Pick<DosePointer, 'byUid' | 'byName'>, viewerUid?: stri
   pointer.byUid && pointer.byUid === viewerUid ? 'you' : pointer.byName || 'someone';
 
 /** "Last given 2 h ago by Sam" (the current last-dose context, PE-24k). */
-export function lastDoseLine(course: Pick<CourseView, 'lastDose'>, now: Date, timeZone?: string | null, viewerUid?: string | null): string | null {
-  const last = course.lastDose;
+export function lastDoseLine(course: Pick<CourseView, 'lastDose' | 'prevDose' | 'offlineDose' | 'doses'>, now: Date, timeZone?: string | null, viewerUid?: string | null): string | null {
+  // The most recent administration (not the dose with the latest occurrence).
+  const last = lastAdministered(courseDoses(course));
   if (!last || last.givenAt === null) return null;
   return `Last given ${formatAgo(new Date(last.givenAt), now, timeZone)} by ${byWhom(last, viewerUid)}`;
 }
@@ -380,11 +426,15 @@ export function doseRepeatReason(check: DoseCheck, now: Date, timeZone?: string 
     const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
     const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;
     const forTime = occurrenceLabel({ day: check.last.occurrence.slice(0, 10), time: check.last.occurrence.slice(11) || null }, now, timeZone);
-    return `${whom} recorded a dose${when} (the ${forTime} dose). The ${occurrenceLabel(check.occurrence, now, timeZone)} dose would be early.`;
+    const chosen = occurrenceLabel(check.occurrence, now, timeZone);
+    // "Early" only for a time still ahead; a past time recorded now would just follow the last dose closely.
+    return check.occurrence.at > now.getTime()
+      ? `${whom} recorded a dose${when} (the ${forTime} dose). The ${chosen} dose would be early.`
+      : `${whom} recorded a dose${when} (the ${forTime} dose). Recording the ${chosen} dose now would be soon after it.`;
   }
   const whom = who === 'you' ? 'You' : who.charAt(0).toUpperCase() + who.slice(1);
   const when = check.last.givenAt === null ? '' : ` ${formatAgo(new Date(check.last.givenAt), now, timeZone)}`;
-  const same = check.last.occurrence === check.occurrence.key;
+  const same = check.last.occurrenceAt === check.occurrence.at;
   const what = same
     ? `the ${occurrenceLabel(check.occurrence, now, timeZone)} dose`
     : `a dose for a later time (${occurrenceLabel({ day: check.last.occurrence.slice(0, 10), time: check.last.occurrence.slice(11) || null }, now, timeZone)})`;

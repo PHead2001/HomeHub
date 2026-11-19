@@ -22,8 +22,7 @@ import { writeDeviceAudit } from '@/lib/server/device-audit';
 /** Room, name, sections, start page and every other record setting, from the tablet. */
 export const updateDeviceSettingsFromTablet = async (
   input: { idToken: unknown; householdId: unknown; actorUid: unknown; pinSessionId: unknown; patch: unknown },
-  nowInput?: Date,
-  options: { clientAddress?: string } = {},
+  options: { clientAddress?: string; clock?: () => Date } = {},
 ): Promise<{ changed: string[]; settings: DeviceSettings }> => {
   const authority = await authorizeDeviceAction({
     idToken: input?.idToken as string,
@@ -31,7 +30,7 @@ export const updateDeviceSettingsFromTablet = async (
     capability: 'device.settings',
     actorUid: input?.actorUid as string,
     pinSessionId: input?.pinSessionId as string,
-  }, nowInput, { clientAddress: options.clientAddress });
+  }, { clientAddress: options.clientAddress, clock: options.clock });
   const householdRef = householdRefOf(authority.householdId);
   const recordRef = deviceRecordRef(householdRef, authority.deviceId);
   return adminDb.runTransaction(async tx => {
@@ -83,8 +82,7 @@ const NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const exitTablet = async (
   input: { idToken: unknown; householdId: unknown; actorUid: unknown; pinSessionId: unknown; exit: unknown },
-  nowInput?: Date,
-  options: { clientAddress?: string } = {},
+  options: { clientAddress?: string; clock?: () => Date } = {},
 ): Promise<{ status: 'removed' | 'unpaired'; authCleanup: 'done' | 'pending' }> => {
   const exit = input?.exit;
   if (exit !== 'remove' && exit !== 'personal-sign-in' && exit !== 'new-code') throw new DeviceActionError('invalid_input');
@@ -94,7 +92,7 @@ export const exitTablet = async (
     capability: EXIT_CAPABILITY[exit],
     actorUid: input?.actorUid as string,
     pinSessionId: input?.pinSessionId as string,
-  }, nowInput, { clientAddress: options.clientAddress });
+  }, { clientAddress: options.clientAddress, clock: options.clock });
   const householdRef = householdRefOf(authority.householdId);
   const recordRef = deviceRecordRef(householdRef, authority.deviceId);
   const status = exit === 'remove' ? 'removed' as const : 'unpaired' as const;
