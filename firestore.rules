@@ -919,8 +919,10 @@ service cloud.firestore {
       return request.resource.data.get('loggedAt', null) == resource.data.get('loggedAt', null);
     }
 
-    // PE-2: whoever logged a feeding may delete it for 10 minutes (Undo for
-    // everyone who can log), besides members with pets.deleteLogs.
+    // PE-2: whoever logged a feeding or a care entry may delete it for 10 minutes
+    // after its server-time loggedAt (Undo for everyone who can log, on a phone or a
+    // tablet), besides members with pets.deleteLogs. Entries without loggedAt (older
+    // care entries, legacy feedings) need pets.deleteLogs.
     function feedingAuthorWithinUndoWindow(householdId) {
       return hasHouseholdPermission(householdId, 'pets.addLogs') &&
         resource.data.get('loggedByUid', null) == request.auth.uid &&
@@ -1277,8 +1279,9 @@ service cloud.firestore {
     }
 
     function validCareLogFields(data, keys) {
-      return keys.hasOnly(['date', 'activity', 'notes', 'loggedByUid', 'loggedByName']) &&
+      return keys.hasOnly(['date', 'activity', 'notes', 'loggedByUid', 'loggedByName', 'loggedAt']) &&
         (!('date' in keys) || dateValue(data.date)) &&
+        (!('loggedAt' in keys) || data.loggedAt is timestamp) &&
         (!('activity' in keys) || boundedString(data.activity, 200)) &&
         (!('notes' in keys) || optionalString(data.notes, 2000));
     }
@@ -1736,14 +1739,18 @@ service cloud.firestore {
           allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
         }
 
+        // loggedAt (server time, optional for older clients) opens the author's
+        // 10-minute Undo window, as for feedings (docs/modules/pets/README.md).
         match /care-logs/{logId} {
           allow read: if hasHouseholdPermission(householdId, 'pets.view') || sectionEnabled(householdId, 'pets');
           allow create: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
-            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate();
+            validCareLogFields(request.resource.data, writtenKeys()) && petLoggerOnCreate() &&
+            feedingLoggedAtOnCreate();
           allow update: if hasHouseholdPermission(householdId, 'pets.addLogs') &&
             validCareLogFields(request.resource.data, writtenKeys()) && petLoggerUnchanged() &&
-            deviceAttributionKept();
-          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs');
+            feedingLoggedAtUnchanged() && deviceAttributionKept();
+          allow delete: if hasHouseholdPermission(householdId, 'pets.deleteLogs') ||
+            feedingAuthorWithinUndoWindow(householdId);
         }
       }
 

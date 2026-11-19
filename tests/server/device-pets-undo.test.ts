@@ -44,7 +44,7 @@ const member: Person = { uid: 'dp-member', email: 'dp.member@example.test', disp
 const child: Person = { uid: 'dp-child', email: 'dp.child@example.test', displayName: 'Cleo', role: 'child' };
 const KID = 'kid_DevPetsKid000000000';
 const created = new Set<string>();
-const tablets: Record<'feed' | 'backdated' | 'care' | 'extra' | 'parity' | 'other', Tablet> = {} as never;
+const tablets: Record<'feed' | 'backdated' | 'care' | 'extra' | 'parity' | 'other' | 'line' | 'reuse', Tablet> = {} as never;
 let ownerDb: ClientFirestore;
 let memberDb: ClientFirestore;
 const closers: Array<() => Promise<void>> = [];
@@ -115,6 +115,8 @@ before(async () => {
   tablets.extra = await pairTablet(H, owner, created, 'Den tablet');
   tablets.parity = await pairTablet(H, owner, created, 'Office tablet');
   tablets.other = await pairTablet(H, owner, created, 'Hall tablet');
+  tablets.line = await pairTablet(H, owner, created, 'Porch tablet');
+  tablets.reuse = await pairTablet(H, owner, created, 'Garage tablet');
   for (const person of [owner, member]) {
     await adminAuth.deleteUser(person.uid).catch(() => undefined);
     await adminAuth.createUser({ uid: person.uid, email: person.email });
@@ -391,6 +393,9 @@ describe('pets.care.add', () => {
     assert.equal(entry.activity, 'Brushing');
     assert.equal(entry.deviceAttribution.deviceName, 'Mudroom tablet');
     assert.equal(typeof entry.date, 'string');
+    // Server time of the write: the author's 10-minute delete window in the rules (review B1).
+    assert.ok(entry.loggedAt instanceof Timestamp);
+    assert.ok(Math.abs(entry.loggedAt.toMillis() - Date.now()) < 60_000);
   });
 
   test('case 1: another tablet adds an entry meanwhile (kept); an entry edited since is never undone', async () => {
@@ -502,7 +507,7 @@ describe('the server writes exactly what the rules accept from the person (repla
       else await state(petId).delete();
     }
     const live = kind === 'feed' && log.repeat !== 'offline' && log.backdated !== true;
-    const writes = [{ path: logRef.path, data: log, serverTimes: kind === 'feed' ? (live ? ['date', 'loggedAt'] : ['loggedAt']) : [] }];
+    const writes = [{ path: logRef.path, data: log, serverTimes: kind === 'feed' ? (live ? ['date', 'loggedAt'] : ['loggedAt']) : ['loggedAt'] }];
     if (after) {
       const stateTimes = after.lastLogId === op && live ? ['lastFedAt'] : [];
       writes.push({ path: state(petId).path, data: after, serverTimes: stateTimes });
@@ -550,6 +555,122 @@ describe('the server writes exactly what the rules accept from the person (repla
     batch.set(doc(memberDb, state('parity-undo').path), asClientValues(afterUndo) as Record<string, unknown>);
     await batch.commit();
     assert.equal((await logs('parity-undo').doc(op).get()).exists, false);
+  });
+
+  test('the care Undo: the same delete the person may make (author within 10 minutes of loggedAt, review B1)', async () => {
+    await seedPet('parity-care-undo');
+    const op = opId();
+    await addCare(tablets.parity, member.uid, op, 'parity-care-undo');
+    const entry = care('parity-care-undo').doc(op);
+    const log = (await entry.get()).data()!;
+    assert.equal((await undoCare(tablets.parity, member.uid, op)).status, 'undone');
+    assert.equal((await entry.get()).exists, false);
+    // Put the entry back as the server wrote it, then the person (a member without
+    // pets.deleteLogs) deletes it from their own client: the rules accept it.
+    await entry.set(log);
+    const batch = writeBatch(memberDb);
+    batch.delete(doc(memberDb, entry.path));
+    await batch.commit();
+    assert.equal((await entry.get()).exists, false);
+  });
+});
+
+describe('review F4b-1: the 12-hour line once per press, opId reuse, the log the Undo deletes', () => {
+  const H11 = 11 * 60 * 60_000 + 59 * 60_000 + 30_000;
+  const queuedAt = (t: Tablet, at: Date) => ({ queued: { createdAt: at.toISOString(), generation: tokenGeneration(t.idToken) } });
+
+  test('S1: a queued feed is classified by its queue time: within 12 hours face, older needs a PIN (a forged createdAt 23 hours back is refused)', async () => {
+    await seedPet('line-queued');
+    await setMyPin(member, { householdId: H, pin: '1470' });
+    const recent = opId();
+    const ok = await feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, recent, 'line-queued'), ...queued(tablets.line, 11 * 60 * 60_000) });
+    assert.equal(ok.result.status, 'saved');
+    assert.equal(ok.capability, 'pets.feed');
+    assert.equal(ok.level, 'face');
+    for (const hours of [13, 23]) {
+      const forged = opId();
+      await refused(feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, forged, 'line-queued'), ...queued(tablets.line, hours * 60 * 60_000) }), 'pin_required');
+      assert.equal((await logs('line-queued').doc(forged).get()).exists, false, `${hours} h`);
+    }
+    // Even with a PIN session: .old is never queueable (a queued intent is never upgraded).
+    const { pinSessionId } = await verifyDevicePin({ idToken: tablets.line.idToken, householdId: H, actorUid: member.uid, pin: '1470' });
+    await refused(feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, opId(), 'line-queued', { pinSessionId }), ...queued(tablets.line, 23 * 60 * 60_000) }), 'invalid_input');
+    // Past the gate's 24 hours: still the queue's stale notice.
+    await refused(feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, opId(), 'line-queued'), ...queued(tablets.line, 25 * 60 * 60_000) }), 'stale_intent');
+    assert.equal(await countLogs('line-queued'), 1);
+  });
+
+  test('S2: a retry that crosses the 12-hour line after a commit gets the stored answer (live, queued, backdated and queued plain)', async () => {
+    await seedPet('line-retry');
+    const start = new Date();
+    const crossed = new Date(start.getTime() + 90_000);
+    // A live backdated feed at 11 h 59 min 30 s, its answer lost, retried 90 s later (12 h 01 min).
+    const live = opId();
+    const backdatedAt = new Date(start.getTime() - H11).toISOString();
+    const first = await feed(tablets.line, member.uid, live, 'line-retry', { backdatedAt }, start);
+    assert.equal(first.capability, 'pets.feed.backdated');
+    const retry = await feed(tablets.line, member.uid, live, 'line-retry', { backdatedAt }, crossed);
+    assert.equal(retry.capability, 'pets.feed.backdated', 'the recorded capability, not the clock\'s');
+    assert.equal(retry.level, 'face');
+    assert.equal(retry.result.status === 'saved' && retry.result.replayed, true);
+    // The same retry with a PIN session open: still the stored answer, never a conflict.
+    const { pinSessionId } = await verifyDevicePin({ idToken: tablets.line.idToken, householdId: H, actorUid: member.uid, pin: '1470' });
+    const withPin = await feed(tablets.line, member.uid, live, 'line-retry', { backdatedAt, pinSessionId }, crossed);
+    assert.equal(withPin.result.status === 'saved' && withPin.result.replayed, true);
+    // A queued backdated feed, then its queued retry after the line.
+    const queuedBack = opId();
+    await feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, queuedBack, 'line-retry', { backdatedAt }), ...queuedAt(tablets.line, new Date(start.getTime() - 30_000)) }, { clock: () => start });
+    const queuedRetry = await feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, queuedBack, 'line-retry', { backdatedAt }), ...queuedAt(tablets.line, new Date(start.getTime() - 30_000)) }, { clock: () => crossed });
+    assert.equal(queuedRetry.result.status === 'saved' && queuedRetry.result.replayed, true);
+    // A queued plain feed made 11 h 59 min 30 s ago, retried after the line.
+    const queuedPlain = opId();
+    const madeAt = new Date(start.getTime() - H11);
+    const plain = await feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, queuedPlain, 'line-retry'), ...queuedAt(tablets.line, madeAt) }, { clock: () => start });
+    assert.equal(plain.capability, 'pets.feed');
+    const plainRetry = await feedPetFromTablet({ ...feedRequest(tablets.line, member.uid, queuedPlain, 'line-retry'), ...queuedAt(tablets.line, madeAt) }, { clock: () => crossed });
+    assert.equal(plainRetry.capability, 'pets.feed');
+    assert.equal(plainRetry.result.status === 'saved' && plainRetry.result.replayed, true);
+    assert.equal(await countLogs('line-retry'), 3, 'one log per press');
+    // A new press at the same times is on the other side of the line: a PIN, never face.
+    await refused(feed(tablets.line, member.uid, opId(), 'line-retry', { backdatedAt }, crossed), 'pin_required');
+    // The recorded feed is still undone by its own Undo.
+    assert.equal((await undoFeed(tablets.line, member.uid, live, {}, new Date(start.getTime() + 5000))).status, 'undone');
+  });
+
+  test('N1: an opId reused for another pet is a conflict, never the other pet\'s answer', async () => {
+    await seedPet('reuse-a');
+    await seedPet('reuse-b');
+    const op = opId();
+    await feed(tablets.reuse, member.uid, op, 'reuse-a');
+    await refused(feed(tablets.reuse, member.uid, op, 'reuse-b'), 'conflict');
+    assert.equal(await countLogs('reuse-b'), 0);
+    const careOp = opId();
+    await addCare(tablets.reuse, member.uid, careOp, 'reuse-a');
+    await refused(addCare(tablets.reuse, member.uid, careOp, 'reuse-b'), 'conflict');
+    assert.equal((await care('reuse-b').get()).size, 0);
+    // The same pet still replays.
+    const again = await feed(tablets.reuse, member.uid, op, 'reuse-a');
+    assert.equal(again.result.status === 'saved' && again.result.replayed, true);
+  });
+
+  test('N2: a log deleted and recreated under the same id by someone else (or another tablet) is never undone', async () => {
+    await seedPet('recreated');
+    const op = opId();
+    await feed(tablets.reuse, member.uid, op, 'recreated');
+    const original = (await logs('recreated').doc(op).get()).data()!;
+    // Someone with pets.deleteLogs deletes it and writes their own feeding with the same id.
+    await logs('recreated').doc(op).delete();
+    await logs('recreated').doc(op).set({ ...original, loggedByUid: owner.uid, loggedByName: 'Olive', deviceAttribution: null });
+    await refused(undoFeed(tablets.reuse, member.uid, op), 'changed_since');
+    assert.equal((await logs('recreated').doc(op).get()).get('loggedByUid'), owner.uid);
+    // Same author, but written by another tablet.
+    const careOp = opId();
+    await addCare(tablets.reuse, member.uid, careOp, 'recreated');
+    const entry = (await care('recreated').doc(careOp).get()).data()!;
+    await care('recreated').doc(careOp).delete();
+    await care('recreated').doc(careOp).set({ ...entry, deviceAttribution: { ...entry.deviceAttribution, deviceId: tablets.other.deviceId } });
+    await refused(undoCare(tablets.reuse, member.uid, careOp), 'changed_since');
+    assert.equal((await care('recreated').doc(careOp).get()).exists, true);
   });
 });
 

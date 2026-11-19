@@ -201,7 +201,11 @@ export async function feedPetAs(db: Firestore, householdId: string, input: FeedA
   const stateRef = pet.collection('feeding-state').doc(FEEDING_STATE_ID);
   return db.runTransaction(async (tx) => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return { ...(replay.summary.result as FeedAsResult), replayed: true } as FeedAsResult;
+    // The same opId for another pet (or another kind of log) is a different action: never its answer.
+    if (replay) {
+      if (replay.targetPath !== logRef.path) throw new PetFeedingError('conflict');
+      return { ...(replay.summary.result as FeedAsResult), replayed: true } as FeedAsResult;
+    }
     const timeZone = await readHousehold(tx, house);
     const [existing, petSnap, stateSnap] = await Promise.all([tx.get(logRef), tx.get(pet), tx.get(stateRef)]);
     if (!petSnap.exists) throw new PetFeedingError('not-found');
@@ -307,8 +311,9 @@ const optionalPetId = (value: unknown): string | null => (value === undefined ||
  * The Undo of a tablet's feed (`pets.feed.undo`), by the original's opId (design 10.1-10.2):
  * no ledger entry yet → a tombstone, `not_applied`; already undone → `already`; applied →
  * the same tablet generation, the original person (or a PIN holder with pets.deleteLogs),
- * inside the window, and the log unchanged since it was created (`changed_since` after a
- * time correction or a delete by anyone). It deletes the log and stores the state derived
+ * inside the window, and the log unchanged since it was created and still this tablet's log for
+ * that person (`changed_since` after a time correction, a delete by anyone, or a log recreated
+ * under the same id by someone else). It deletes the log and stores the state derived
  * from the surviving logs, so a later feed (by anyone, on any device) stays the latest.
  */
 export async function undoFeedAs(db: Firestore, householdId: string, input: { petId?: unknown; opId?: unknown }, ctx: OperationContext & { authority?: DeviceAuthority }): Promise<PetUndoOutcome> {
@@ -358,6 +363,12 @@ async function undoCreatedLog(
     ]);
     // Changed since the action (a time correction, a delete): never reverted here.
     if (!createdRecordUnchanged(logSnap)) throw new DeviceActionError('changed_since');
+    // The log is the one this tablet wrote for this person (not a different log recreated
+    // under the same id after a delete): its author and tablet match the ledger.
+    const attribution = logSnap.get('deviceAttribution') as { deviceId?: unknown } | undefined;
+    if (logSnap.get('loggedByUid') !== original.actorUid || attribution?.deviceId !== authority.deviceId) {
+      throw new DeviceActionError('changed_since');
+    }
     let derived = null;
     if (collection === 'feeding-logs' && stateSnap) {
       const now = authority.now;
@@ -380,7 +391,8 @@ export type CareAsResult = { status: 'added'; petId: string; logId: string; repl
 
 /**
  * Adds a care entry as the actor (`pets.care.add`): the entry's id is the opId, its date the
- * server's time (a queued replay: the device's time), its author the actor; the shape the
+ * server's time (a queued replay: the device's time), `loggedAt` the server time of the write
+ * (the author's 10-minute delete window in the rules), its author the actor; the shape the
  * rules accept from a member (`validCareLogFields`), plus `deviceAttribution`.
  */
 export async function addCareAs(db: Firestore, householdId: string, input: CareAsInput, ctx: OperationContext, options: FeedAsOptions = {}): Promise<CareAsResult> {
@@ -394,7 +406,10 @@ export async function addCareAs(db: Firestore, householdId: string, input: CareA
   const logRef = pet.collection('care-logs').doc(logId);
   return db.runTransaction(async (tx) => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return { ...(replay.summary.result as CareAsResult), replayed: true };
+    if (replay) {
+      if (replay.targetPath !== logRef.path) throw new PetFeedingError('conflict');
+      return { ...(replay.summary.result as CareAsResult), replayed: true };
+    }
     await readHousehold(tx, house);
     const [existing, petSnap] = await Promise.all([tx.get(logRef), tx.get(pet)]);
     if (!petSnap.exists) throw new PetFeedingError('not-found');
@@ -404,6 +419,7 @@ export async function addCareAs(db: Firestore, householdId: string, input: CareA
     if (!existing.exists) {
       tx.set(logRef, {
         date: (options.queuedAt ?? ctx.now).toISOString(),
+        loggedAt: FieldValue.serverTimestamp(),
         activity,
         notes: notes.trim(),
         loggedByUid: actor.uid,

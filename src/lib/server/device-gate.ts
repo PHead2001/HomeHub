@@ -415,6 +415,13 @@ export async function authorizeDeviceAction(
     clientAddress?: string;
     /** The server clock; the real time unless a test injects one. */
     clock?: () => Date;
+    /**
+     * Capabilities that are one action for replay purposes (a feed press under any of its
+     * time-derived capabilities): when this opId is already applied under one of them, the
+     * attempt is evaluated, replayed and recorded as that capability, so a retry the clock
+     * now classifies differently gets the stored answer instead of a refusal or a conflict.
+     */
+    replayFamily?: readonly DeviceCapability[];
   } = {},
 ): Promise<DeviceAuthority> {
   const undoProven = options.undoProven ?? UNDO_PROVEN;
@@ -427,8 +434,10 @@ export async function authorizeDeviceAction(
     throw new DeviceActionError('invalid_input');
   }
   if (!isDeviceCapability(request.capability)) throw new DeviceActionError('unclassified');
-  const capability = request.capability;
-  const policy = policyOf(capability);
+  const requested = request.capability;
+  // The capability in force: the requested one, or the one a replayed opId was recorded under.
+  let capability: DeviceCapability = requested;
+  let policy = policyOf(capability);
   // Permanent: not offered on tablets. Distinct from `unavailable` (flag off, outage: retry).
   if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never') throw new DeviceActionError('not_on_tablets');
   if (!devicesEnabled()) throw new DeviceActionError('unavailable');
@@ -456,7 +465,19 @@ export async function authorizeDeviceAction(
   const memberRef = needsActor && actorUid ? householdRef.collection('members').doc(actorUid) : null;
   const pinRef = memberRef && actorUid ? pinRecordRef(householdRef, actorUid) : null;
   const sessionRef = memberRef && secret ? pinSessionRef(householdRef, claims.hh_device, secret) : null;
-  const evaluationRequest = { capability, actorUid: rawActor, pinSessionId: presented ? request.pinSessionId : undefined };
+  const evaluationRequest = () => ({ capability, actorUid: rawActor, pinSessionId: presented ? request.pinSessionId : undefined });
+  const ledgerRef = opId ? opRef(householdRef, claims.hh_device, opId) : null;
+  const undo = isUndoCapability(requested);
+  const family = !undo && options.replayFamily?.includes(requested) ? options.replayFamily : null;
+  /** The family capability this opId is already applied under, if any. */
+  const recordedInFamily = (entry: DeviceOp | null): DeviceCapability | null =>
+    family && entry && !entry.tombstone && entry.state === 'applied' && isDeviceCapability(entry.capability) && family.includes(entry.capability)
+      ? entry.capability
+      : null;
+  const switchCapability = (next: DeviceCapability) => {
+    capability = next;
+    policy = policyOf(next);
+  };
 
   const read = async (get: (ref: DocRef) => Promise<FirebaseFirestore.DocumentSnapshot>): Promise<GateSnapshots> => {
     const [household, record, member, pin, session] = await Promise.all([
@@ -469,12 +490,12 @@ export async function authorizeDeviceAction(
     return { household, record, member, pin, session };
   };
 
-  const first = evaluate(await read(ref => ref.get()), claims, evaluationRequest, policy, now, undoProven);
+  // A replay family: look up the opId first, so the level and queue checks are the recorded action's.
+  if (family && ledgerRef) switchCapability(recordedInFamily(readDeviceOp(await ledgerRef.get())) ?? requested);
+  const first = evaluate(await read(ref => ref.get()), claims, evaluationRequest(), policy, now, undoProven);
   // Step 11: queued replay.
   checkQueued(request.queued, policy, first.required, now, claims.hh_gen);
 
-  const ledgerRef = opId ? opRef(householdRef, claims.hh_device, opId) : null;
-  const undo = isUndoCapability(capability);
   const deviceCreatedAt = request.queued && typeof request.queued.createdAt === 'string' ? request.queued.createdAt : null;
 
   const attributionOf = (evaluation: Evaluation): DeviceAttribution | null => evaluation.actor && evaluation.level !== 'device'
@@ -512,14 +533,17 @@ export async function authorizeDeviceAction(
       ]);
       checkedAt = clock();
       authority.now = checkedAt;
-      current = evaluate(snaps, claims, evaluationRequest, policy, checkedAt, undoProven);
+      const entry = ledger ? readDeviceOp(ledger) : null;
+      // Re-decided inside the transaction: the entry as it is now (applied meanwhile, or not).
+      if (family) switchCapability(recordedInFamily(entry) ?? requested);
+      authority.capability = capability;
+      current = evaluate(snaps, claims, evaluationRequest(), policy, checkedAt, undoProven);
       checkQueued(request.queued, policy, current.required, checkedAt, claims.hh_gen);
       authority.actor = current.actor;
       authority.level = current.level;
       authority.deviceName = current.deviceName;
       authority.attribution = attributionOf(current);
       if (!ledger || !current.actor) return {};
-      const entry = readDeviceOp(ledger);
       if (undo) {
         const plan = classifyUndoAttempt(entry, capability);
         return plan.kind === 'applied' ? { undo: 'applied', original: plan.entry } : { undo: plan.kind, original: entry };
