@@ -10,6 +10,14 @@
  * - after every step a reader (the stored pointer combined with the offline
  *   doses it has, `withOfflineDoses`) sees the derived coverage;
  * - nothing that has a surviving record is ever due again;
+ * - a dose given within the repeat window always asks, naming the most
+ *   recently administered surviving dose (latest given-at, offline-synced and
+ *   out-of-order doses included, never the dose with the latest occurrence);
+ *   otherwise a covered occurrence asks naming the most recently administered
+ *   dose covering it, and an answer naming any other dose is stale (Codex
+ *   round 5); the transaction's read (`readCourseDoses`: the six newest by
+ *   occurrence, the ties at the cutoff, the latest by given-at) is mirrored as
+ *   `transactionRead`;
  * - every pointer write and every dose is one the rules accept (mirrored here
  *   as `pointerWriteAllowed` / `doseCreateAllowed` of firestore.rules'
  *   coursePointerWritten and courseDoseCreate; the emulator suites check the
@@ -24,10 +32,14 @@ import {
   coverageAfterEdit,
   coveredThrough,
   coveredUntilAfterSave,
+  courseDoses,
   deriveCourseState,
+  doseRepeatWindowMs,
   doseChoices,
   doseConfirmOf,
   doseRecordsOf,
+  lastAdministered,
+  newestDoseCovering,
   nextDueOccurrence,
   occurrencesAfter,
   planDose,
@@ -64,6 +76,24 @@ const view = (course: Course): CourseView => readCourse('c1', {
 })!;
 const records = (logs: Map<string, Log>) => doseRecordsOf('c1', [...logs.values()]);
 
+/**
+ * What `readCourseDoses` reads inside a Give dose attempt: the six newest by
+ * occurrence (Firestore breaks a descending tie by id, descending), every dose
+ * tied at the oldest occurrence read, and the newest by given-at time.
+ */
+function transactionRead(logs: Map<string, Log>): Map<string, Log> {
+  const all = [...logs.values()];
+  const byOccurrence = [...all].sort((a, b) => b.occurrenceAt - a.occurrenceAt || b.id.localeCompare(a.id));
+  const read = byOccurrence.slice(0, 6);
+  if (read.length >= 6) {
+    const cutoff = read[read.length - 1].occurrenceAt;
+    for (const log of all) if (log.occurrenceAt === cutoff && !read.includes(log)) read.push(log);
+  }
+  const newestGiven = [...all].sort((a, b) => b.date - a.date || b.id.localeCompare(a.id))[0];
+  if (newestGiven && !read.includes(newestGiven)) read.push(newestGiven);
+  return new Map(read.map((log) => [log.id, log]));
+}
+
 /** firestore.rules coursePointerWritten: real doses of the course, never back while the old latest survives. */
 function pointerWriteAllowed(before: Course, after: { latest: DosePointer | null; prev: DosePointer | null }, logsAfter: Map<string, Log>): boolean {
   const real = (pointer: DosePointer | null) => pointer === null || (() => {
@@ -78,7 +108,10 @@ function pointerWriteAllowed(before: Course, after: { latest: DosePointer | null
 /** firestore.rules courseDoseCreate (online): a covered occurrence is confirmed against the stored latest; the pointer covers a new latest. */
 function doseCreateAllowed(before: Course, logsBefore: Map<string, Log>, log: Log, confirmOf: string | null, pointerAfterWrite: DosePointer | null): boolean {
   const last = before.lastDose && logsBefore.has(before.lastDose.logId) ? before.lastDose : null;
-  if (last && last.occurrenceAt >= log.occurrenceAt && !(log.repeat === 'confirmed' && confirmOf === last.logId)) return false;
+  // confirmsNewerDose: the pointer's dose, or a dose of the course given no earlier than it.
+  const named = confirmOf ? logsBefore.get(confirmOf) : undefined;
+  const bound = log.repeat === 'confirmed' && (confirmOf === last?.logId || (last !== null && last.givenAt !== null && named !== undefined && named.date >= last.givenAt));
+  if (last && last.occurrenceAt >= log.occurrenceAt && !bound) return false;
   if (last && log.occurrenceAt < last.occurrenceAt) return true;
   return pointerAfterWrite !== null && pointerAfterWrite.occurrenceAt >= log.occurrenceAt;
 }
@@ -122,7 +155,8 @@ function run(seed: number, steps: number, start: { day: string; startDay: string
   };
 
   for (let step = 0; step < steps; step++) {
-    now += Math.floor(rand() * 5 * HOUR);
+    // Often minutes apart, so doses land inside the repeat window.
+    now += rand() < 0.3 ? Math.floor(rand() * 40 * MIN) : Math.floor(rand() * 5 * HOUR);
     const roll = rand();
     const user = pick(users);
     const label = `seed ${seed} step ${step}`;
@@ -137,17 +171,40 @@ function run(seed: number, steps: number, start: { day: string; startDay: string
       const offlineGive = roll >= 0.9;
       const reader = withOfflineDoses(view(course), [...logs.values()].filter((log) => log.repeat === 'offline'));
       const choices = doseChoices(reader, new Date(now), TZ);
-      const chosen = rand() < 0.7 ? choices.prefill : pick(choices.choices);
+      // The prefill, another offered time, or an early dose a few occurrences ahead (out of order).
+      const ahead = occurrencesAfter({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, now, TZ, 3);
+      const mode = rand();
+      const chosen = mode < 0.55 ? choices.prefill : mode < 0.85 ? pick(choices.choices) : (ahead.length > 0 ? pick(ahead) : null);
       if (!chosen) continue;
       const givenAt = rand() < 0.25 ? new Date(now - Math.floor(rand() * 3 * HOUR)) : null;
-      const snapshotCourse = offlineGive ? reader : withRecords(view(course), records(logs));
+      const snapshotCourse = offlineGive ? reader : withRecords(view(course), records(transactionRead(logs)));
       const lastSurvives = Boolean(course.lastDose && logs.has(course.lastDose.logId));
-      let plan = planDose({ now: new Date(now), timeZone: TZ, course: snapshotCourse, lastDoseSurvives: offlineGive ? Boolean(course.lastDose) : lastSurvives, existing: null, offline: offlineGive },
-        { userUid: user, occurrenceKey: chosen.key, givenAt });
+      const snapshot = { now: new Date(now), timeZone: TZ, course: snapshotCourse, lastDoseSurvives: offlineGive ? Boolean(course.lastDose) : lastSurvives, existing: null, offline: offlineGive };
+      let plan = planDose(snapshot, { userUid: user, occurrenceKey: chosen.key, givenAt });
+      // What the writer knows: every surviving dose online; this device's doses offline.
+      const known = offlineGive ? courseDoses(reader) : records(logs);
+      const administered = lastAdministered(known);
+      const recent = administered && administered.givenAt !== null && now - administered.givenAt < doseRepeatWindowMs(course.schedule) ? administered : null;
+      const covering = newestDoseCovering(known, chosen.at);
+      const expected = recent ?? covering;
+      if (recent) stats.recent++;
+      // The Codex round 5 shapes: the most recent administration is not the dose with the latest occurrence.
+      if (recent && deriveCourseState({ coveredUntil: null }, known).latest?.logId !== recent.logId) stats.outOfOrder++;
+      if (expected) {
+        assert.equal(plan.kind, 'needsConfirm', `${label}: a dose within the window or for a covered time asks (${recent ? 'recent' : 'covered'})`);
+        if (plan.kind === 'needsConfirm') {
+          assert.equal(plan.check.last?.logId, expected.logId, `${label}: it names the most recently administered ${recent ? '' : 'covering '}dose`);
+          // An answer naming any other surviving dose is stale: it asks again.
+          const other = known.find((dose) => dose.logId !== expected.logId);
+          if (other) {
+            const stale = planDose(snapshot, { userUid: user, occurrenceKey: chosen.key, givenAt, confirm: { lastLogId: other.logId } });
+            assert.equal(stale.kind === 'needsConfirm' && stale.staleConfirm && stale.check.last?.logId, expected.logId, `${label}: an answer naming another dose is stale`);
+          }
+        }
+      }
       if (plan.kind === 'needsConfirm') {
         if (rand() < 0.4) { check(`${label} declined`, false); continue; }
-        plan = planDose({ now: new Date(now), timeZone: TZ, course: snapshotCourse, lastDoseSurvives: offlineGive ? Boolean(course.lastDose) : lastSurvives, existing: null, offline: offlineGive },
-          { userUid: user, occurrenceKey: chosen.key, givenAt, confirm: doseConfirmOf(plan.check) });
+        plan = planDose(snapshot, { userUid: user, occurrenceKey: chosen.key, givenAt, confirm: doseConfirmOf(plan.check) });
       }
       assert.equal(plan.kind, 'write', `${label}: an answered question writes`);
       if (plan.kind !== 'write') continue;
@@ -221,6 +278,8 @@ function run(seed: number, steps: number, start: { day: string; startDay: string
   return logs.size;
 }
 
+const stats = { recent: 0, outOfOrder: 0 };
+
 describe('the course pointer always agrees with the surviving dose records', () => {
   it('60 random sequences of 40 steps', () => {
     let written = 0;
@@ -228,6 +287,9 @@ describe('the course pointer always agrees with the surviving dose records', () 
     // The same around the spring-forward day.
     for (let seed = 41; seed <= 60; seed++) written += run(seed, 40, { day: '2026-03-06', startDay: '2026-03-04' });
     assert.ok(written > 250, 'the runs record plenty of doses');
+    // The recent-dose property is exercised, including out-of-order administrations.
+    assert.ok(stats.recent > 20, `recent-dose asks: ${stats.recent}`);
+    assert.ok(stats.outOfOrder > 0, `out-of-order recent doses: ${stats.outOfOrder}`);
   });
 
   it('a schedule edit counts an offline-synced dose (C): the saved coverage matches the preview', () => {

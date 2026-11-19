@@ -30,7 +30,7 @@ import { setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { UNDO_PROVEN } from '../../src/lib/devices/action-policy';
 import { runGiveDose, runUndoDose } from '../../src/lib/pets/medication-transaction';
 import { runSetNotePinned } from '../../src/lib/pets/record-transaction';
-import { doseChoices, doseConfirmOf, legacyCourseId, readCourse } from '../../src/lib/pets/medication-course';
+import { doseChoices, doseConfirmOf, legacyCourseId, occurrenceId, readCourse } from '../../src/lib/pets/medication-course';
 import { householdDay } from '../../src/lib/pets/feed-decision';
 import { clientSession, deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
 import { house, opId, pairTablet, seedKid, tokenGeneration, type Tablet } from './device-actor-helpers';
@@ -98,7 +98,7 @@ const seedDosePet = async (id: string) => {
 /** The occurrence Give dose is prefilled with now (from the course as stored). */
 const prefill = async (petId: string, courseId = 'course-a') => {
   const view = readCourse(courseId, (await course(petId, courseId).get()).data() ?? {})!;
-  return doseChoices(view, new Date(), TZ).prefill!.key;
+  return occurrenceId(doseChoices(view, new Date(), TZ).prefill!);
 };
 
 type Variant = 'live' | 'backdated';
@@ -113,7 +113,8 @@ const giveSure = async (t: Tablet, actorUid: string, op: string, petId: string, 
   const occurrenceKey = (extra.occurrenceKey as string | undefined) ?? await prefill(petId);
   let answer = await give(t, actorUid, op, petId, { ...extra, occurrenceKey });
   for (let i = 0; answer.result.status === 'needsConfirm' && i < 3; i += 1) {
-    answer = await give(t, actorUid, op, petId, { ...extra, occurrenceKey, confirm: { lastLogId: answer.result.check.last?.logId ?? null } });
+    // Bound to the dose it named and to the occurrence it was asked for (P3 round 7).
+    answer = await give(t, actorUid, op, petId, { ...extra, occurrenceKey, confirm: { lastLogId: answer.result.check.last?.logId ?? null, occurrence: occurrenceKey } });
   }
   assert.equal(answer.result.status, 'saved', JSON.stringify(answer.result));
   return answer;
@@ -727,12 +728,14 @@ describe('the server writes exactly what the rules accept from the person (repla
     const after = (await course(petId).get()).data()!;
     assert.ok(log.deviceAttribution, 'the server stores the attribution');
     await logRef.delete();
-    await course(petId).update({ lastDose: pointerBefore.lastDose ?? null, prevDose: pointerBefore.prevDose ?? null });
+    await course(petId).update({ lastDose: pointerBefore.lastDose ?? null, prevDose: pointerBefore.prevDose ?? null, doseRevision: pointerBefore.doseRevision ?? 0 });
     const live = log.repeat !== 'offline' && log.backdated !== true;
     const batch = writeBatch(memberDb);
     batch.set(doc(memberDb, logRef.path), asClient(withServerTimes(log, live ? ['date', 'loggedAt'] : ['loggedAt'])) as Record<string, unknown>);
     if (log.repeat !== 'offline') {
-      const pointer = { lastDose: after.lastDose ?? null, prevDose: after.prevDose ?? null };
+      // Every online dose moves the course's dose revision on (P3 round 6), pointers moved or not.
+      assert.equal(after.doseRevision, (pointerBefore.doseRevision ?? 0) + 1);
+      const pointer = { lastDose: after.lastDose ?? null, prevDose: after.prevDose ?? null, doseRevision: after.doseRevision };
       const times = live && after.lastDose?.logId === op ? ['lastDose.givenAt'] : [];
       batch.update(doc(memberDb, course(petId).path), asClient(withServerTimes(pointer, times)) as DocumentData);
     }
@@ -764,10 +767,11 @@ describe('the server writes exactly what the rules accept from the person (repla
     const afterUndo = (await course('parity-dose-undo').get()).data()!;
     assert.equal(afterUndo.lastDose.logId, first);
     await doses('parity-dose-undo').doc(op).set(log);
-    await course('parity-dose-undo').update({ lastDose: before.lastDose, prevDose: before.prevDose });
+    await course('parity-dose-undo').update({ lastDose: before.lastDose, prevDose: before.prevDose, doseRevision: before.doseRevision });
+    assert.equal(afterUndo.doseRevision, before.doseRevision + 1, 'the Undo moves the dose revision on');
     const batch = writeBatch(memberDb);
     batch.delete(doc(memberDb, doses('parity-dose-undo').doc(op).path));
-    batch.update(doc(memberDb, course('parity-dose-undo').path), asClient({ lastDose: afterUndo.lastDose, prevDose: afterUndo.prevDose ?? null }) as DocumentData);
+    batch.update(doc(memberDb, course('parity-dose-undo').path), asClient({ lastDose: afterUndo.lastDose, prevDose: afterUndo.prevDose ?? null, doseRevision: afterUndo.doseRevision }) as DocumentData);
     await batch.commit();
     assert.equal((await doses('parity-dose-undo').doc(op).get()).exists, false);
   });
@@ -1036,7 +1040,7 @@ describe('S4: every PIN-level write kind replayed through the rules as the membe
       await deleteParity(db, weights(id).doc(weighed), () => deleteLogFromTablet({ ...base(), petId: id, kind: 'weights', logId: weighed }));
       const dosed = opId();
       await giveSure(face, person.uid, dosed, id);
-      await deleteParity(db, doses(id).doc(dosed), () => deleteLogFromTablet({ ...base(), petId: id, kind: 'medication-logs', logId: dosed }), [{ ref: course(id), fields: ['lastDose', 'prevDose'] }]);
+      await deleteParity(db, doses(id).doc(dosed), () => deleteLogFromTablet({ ...base(), petId: id, kind: 'medication-logs', logId: dosed }), [{ ref: course(id), fields: ['lastDose', 'prevDose', 'doseRevision'] }]);
 
       // Courses (pets.addLogs): create, edit, finish, resume; a legacy medication confirmed.
       const values = { name: `Gaba ${who}`, dosage: '100 mg', kind: 'days', everyDays: '1', times: ['08:00', '20:00'], everyHours: '12', firstTime: '08:00', startDay: householdDay(new Date(), TZ), endDay: '' };
@@ -1050,4 +1054,99 @@ describe('S4: every PIN-level write kind replayed through the rules as the membe
       await createParity(db, legacy, () => saveCourseFromTablet({ ...base(), petId: id, legacyKey: `legacy-${who}`, values: { ...values, name: `Legacy ${who}`, times: ['07:00'] } }), ['createdAt', 'updatedAt']);
     });
   }
+});
+
+describe('P3 rounds 5-7 on the tablet: dose revision, the confirm binding, the occurrence identity, the course-edit check', () => {
+  test('every online dose write moves doseRevision on: give, Undo and an older delete', async () => {
+    await seedDosePet('rev');
+    const rev = async () => (await course('rev').get()).get('doseRevision') ?? 0;
+    const op = opId();
+    await give(tablets.line, member.uid, op, 'rev');
+    assert.equal(await rev(), 1);
+    await undoDose(tablets.line, member.uid, op);
+    assert.equal(await rev(), 2);
+    const kept = opId();
+    await giveSure(tablets.line, member.uid, kept, 'rev');
+    assert.equal(await rev(), 3);
+    const ownerPin = await pinOf(tablets.line, owner);
+    await deleteLogFromTablet({ ...pinBase(tablets.line, owner.uid, ownerPin), petId: 'rev', kind: 'medication-logs', logId: kept });
+    assert.equal(await rev(), 4);
+  });
+
+  test('a tablet and a phone confirming the same dose at once serialize: one records, the other is asked again', async () => {
+    await seedDosePet('race-confirm');
+    const first = opId();
+    await give(tablets.line, owner.uid, first, 'race-confirm');
+    const key = await prefill('race-confirm');
+    const tabletOp = opId();
+    const phoneOp = opId();
+    const confirm = { lastLogId: first, occurrence: key };
+    const [onTablet, onPhone] = await Promise.all([
+      give(tablets.line, member.uid, tabletOp, 'race-confirm', { occurrenceKey: key, confirm }),
+      runGiveDose(memberDb, { householdId: H, petId: 'race-confirm', courseId: 'course-a', opId: phoneOp, occurrenceKey: key, givenAt: null, timeZone: TZ, user: { uid: member.uid, name: 'Max' }, confirm }),
+    ]);
+    const saved = [onTablet.result.status === 'saved', onPhone.status === 'saved'].filter(Boolean).length;
+    assert.equal(saved, 1, JSON.stringify({ onTablet: onTablet.result.status, onPhone: onPhone.status }));
+    assert.equal((await doses('race-confirm').get()).size, 2);
+  });
+
+  test('a confirmation bound to another occurrence is stale: asked again', async () => {
+    await seedDosePet('bound');
+    const first = opId();
+    await give(tablets.line, owner.uid, first, 'bound');
+    const key = await prefill('bound');
+    const op = opId();
+    const asked = await give(tablets.line, member.uid, op, 'bound', { occurrenceKey: key, confirm: { lastLogId: first, occurrence: '2026-01-01T00:00' } });
+    assert.equal(asked.result.status, 'needsConfirm');
+    if (asked.result.status === 'needsConfirm') assert.equal(asked.result.staleConfirm, true);
+    assert.equal((await doses('bound').get()).size, 1);
+  });
+
+  test('Antarctica/Troll: the later of two doses at the same clock time (the ~1 occurrence) is given and kept apart', async () => {
+    // The most recent October rollback (last Sunday of October, 01:00 UTC: 03:00 becomes 01:00).
+    const lastSundayOct = (year: number) => { const d = new Date(Date.UTC(year, 9, 31, 1)); d.setUTCDate(31 - d.getUTCDay()); return d; };
+    const nowYear = new Date().getUTCFullYear();
+    const rollback = lastSundayOct(nowYear) < new Date() ? lastSundayOct(nowYear) : lastSundayOct(nowYear - 1);
+    const day = rollback.toISOString().slice(0, 10);
+    const startDay = new Date(rollback.getTime() - 86_400_000).toISOString().slice(0, 10);
+    await house(H).update({ timeZone: 'Antarctica/Troll' });
+    try {
+      await seedPet('troll');
+      await course('troll').set({
+        name: 'Troll drops', dosage: '1 drop', schedule: { kind: 'hours', everyHours: 2, firstTime: '00:30' }, startDay, endDay: null, status: 'active', legacyKeys: [],
+        lastDose: null, prevDose: null, coveredUntil: null, createdAt: Timestamp.now(), createdByUid: owner.uid, createdByName: 'Olive', updatedAt: Timestamp.now(), updatedByUid: owner.uid, updatedByName: 'Olive',
+      });
+      const later1 = opId();
+      const folded = await give(tablets.review, member.uid, later1, 'troll', { occurrenceKey: `${day}T02:30~1` });
+      assert.equal(folded.result.status, 'saved', JSON.stringify(folded.result));
+      const first = opId();
+      // The earlier 02:30 is covered by the later one: asked, naming it; an answer bound to ~1 is stale.
+      const asked = await give(tablets.review, member.uid, first, 'troll', { occurrenceKey: `${day}T02:30` });
+      assert.equal(asked.result.status, 'needsConfirm');
+      const stale = await give(tablets.review, member.uid, first, 'troll', { occurrenceKey: `${day}T02:30`, confirm: { lastLogId: later1, occurrence: `${day}T02:30~1` } });
+      assert.equal(stale.result.status, 'needsConfirm');
+      const saved = await give(tablets.review, member.uid, first, 'troll', { occurrenceKey: `${day}T02:30`, confirm: { lastLogId: later1, occurrence: `${day}T02:30` } });
+      assert.equal(saved.result.status, 'saved', JSON.stringify(saved.result));
+      const logged = (await doses('troll').get()).docs.map((d) => d.data());
+      assert.deepEqual(logged.map((d) => d.occurrence).sort(), [`${day}T02:30`, `${day}T02:30`], 'both store the plain key (the rules\' shape)');
+      const instants = logged.map((d) => d.occurrenceAt.toMillis()).sort((a, b) => a - b);
+      assert.equal(instants[1] - instants[0], 2 * 60 * 60_000, 'two hours apart: the instant tells them apart');
+      assert.equal((await course('troll').get()).get('lastDose').logId, later1, 'the later occurrence stays the latest');
+    } finally {
+      await house(H).update({ timeZone: TZ });
+    }
+  });
+
+  test('a tablet course edit is refused when someone changed the course since the form opened', async () => {
+    await seedDosePet('edit-conflict');
+    const memberPin = await pinOf(tablets.line, member);
+    const opened = { name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 6, firstTime: '00:00' }, startDay: householdDay(later(-3 * 86_400_000), TZ), endDay: null };
+    const values = { name: 'Apoquel', dosage: '2 tablets', kind: 'hours', everyDays: '1', times: [], everyHours: '6', firstTime: '00:00', startDay: opened.startDay, endDay: '' };
+    await course('edit-conflict').update({ dosage: 'Half a tablet' });
+    const refusedEdit = await saveCourseFromTablet({ ...pinBase(tablets.line, member.uid, memberPin), petId: 'edit-conflict', courseId: 'course-a', create: false, values, base: opened });
+    assert.deepEqual(refusedEdit, { status: 'refused', reason: 'changed' });
+    assert.equal((await course('edit-conflict').get()).get('dosage'), 'Half a tablet');
+    const ok = await saveCourseFromTablet({ ...pinBase(tablets.line, member.uid, memberPin), petId: 'edit-conflict', courseId: 'course-a', create: false, values, base: { ...opened, dosage: 'Half a tablet' } });
+    assert.equal(ok.status, 'saved');
+  });
 });

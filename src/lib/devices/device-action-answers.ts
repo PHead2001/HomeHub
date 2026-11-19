@@ -49,7 +49,7 @@ type PlainPointer = { logId: string; occurrence: string; occurrenceAt: number; g
 export type DoseAgainCheck = {
   kind: 'dose';
   staleConfirm: boolean;
-  check: { last: PlainPointer | null; occurrence: { key: string; day: string; time: string | null; at: number }; reason: 'given' | 'moved' | 'recent' };
+  check: { last: PlainPointer | null; occurrence: { key: string; fold?: 1; day: string; time: string | null; at: number }; reason: 'given' | 'moved' | 'recent' };
 };
 
 /** The "Already given?" question in a dose answer, or null (names only: an email is never shown). */
@@ -68,7 +68,8 @@ export function doseAgainCheck(capability: DeviceCapability, data: unknown): Dos
       last: last && str(last.logId)
         ? { logId: str(last.logId), occurrence: str(last.occurrence), occurrenceAt: num(last.occurrenceAt) ?? 0, givenAt: num(last.givenAt), byUid: str(last.byUid) || null, byName: publicDisplayName(str(last.byName), '') || null }
         : null,
-      occurrence: { key: str(occurrence.key), day: str(occurrence.day), time: str(occurrence.time) || null, at: num(occurrence.at) ?? 0 },
+      // `fold` keeps the later of two same-clock occurrences apart (P3: the answer is bound to `occurrenceId`).
+      occurrence: { key: str(occurrence.key), ...(occurrence.fold === 1 ? { fold: 1 as const } : {}), day: str(occurrence.day), time: str(occurrence.time) || null, at: num(occurrence.at) ?? 0 },
       reason: check.reason === 'moved' ? 'moved' : check.reason === 'recent' ? 'recent' : 'given',
     },
   };

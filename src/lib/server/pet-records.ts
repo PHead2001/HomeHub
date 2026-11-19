@@ -18,6 +18,9 @@ import {
   coveredUntilAfterSave,
   doseLogId,
   doseRecordsOf,
+  nextDoseRevision,
+  readSchedule,
+  type CourseView,
   legacyCourseId,
   legacyMedicationKey,
   occurrenceByKey,
@@ -80,7 +83,8 @@ type DeviceCtx = OperationContext & { authority?: DeviceAuthority };
 type ActorFacts = { uid: string; permissions: ActorPermissions };
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const OCCURRENCE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(T([01][0-9]|2[0-3]):[0-5][0-9])?$/;
+/** An occurrence identity (`occurrenceId`): the wall-time key, `~1` on the later of two with the same key (a clock rollback). */
+const OCCURRENCE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(T([01][0-9]|2[0-3]):[0-5][0-9])?(~1)?$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const LATEST_DOSES = 6;
 
@@ -119,14 +123,20 @@ export const doseGivenAtOf = chosenTime;
 
 /** The Admin twin of `readCourseDoses` (medication-transaction.ts): the newest doses and every one tied at the cutoff occurrence. */
 async function courseDoses(tx: Transaction, logs: CollectionReference, courseId: string, excludeId?: string) {
-  const newest = await tx.get(logs.where('courseId', '==', courseId).orderBy('occurrenceAt', 'desc').limit(LATEST_DOSES));
+  // The newest by occurrence (with ties at the cutoff) and the most recently administered
+  // (by given-at time, which the recent-dose check measures from), as readCourseDoses.
+  const [newest, given] = await Promise.all([
+    tx.get(logs.where('courseId', '==', courseId).orderBy('occurrenceAt', 'desc').limit(LATEST_DOSES)),
+    tx.get(logs.where('courseId', '==', courseId).orderBy('date', 'desc').limit(1)),
+  ]);
   const docs = [...newest.docs];
+  const seen = new Set(docs.map((entry) => entry.id));
   const cutoff = docs.length >= LATEST_DOSES ? docs[docs.length - 1].get('occurrenceAt') : undefined;
   if (cutoff !== undefined && cutoff !== null) {
-    const seen = new Set(docs.map((entry) => entry.id));
     const tied = await tx.get(logs.where('courseId', '==', courseId).where('occurrenceAt', '==', cutoff));
-    for (const entry of tied.docs) if (!seen.has(entry.id)) docs.push(entry);
+    for (const entry of tied.docs) if (!seen.has(entry.id)) { seen.add(entry.id); docs.push(entry); }
   }
+  for (const entry of given.docs) if (!seen.has(entry.id)) docs.push(entry);
   const stored = new Map<string, DocumentData>();
   const list = docs.filter((entry) => entry.id !== excludeId).map((entry) => {
     stored.set(entry.id, entry.data());
@@ -157,15 +167,29 @@ function storedPointer(pointer: DosePointer | null, stored: Map<string, Document
  */
 function writeDose(
   tx: Transaction,
-  write: { log: { ref: DocumentReference; data: Record<string, unknown> } | { ref: DocumentReference; delete: true }; course?: { ref: DocumentReference; pointer: DocumentData | null } | null },
+  write: {
+    log: { ref: DocumentReference; data: Record<string, unknown> } | { ref: DocumentReference; delete: true };
+    /** The course as read (`data`) and its new pointers when they move; null: no course write (an offline dose, or no course). */
+    course?: { ref: DocumentReference; data: Record<string, unknown> | undefined; pointer: DocumentData | null } | null;
+  },
 ) {
   if ('delete' in write.log) tx.delete(write.log.ref);
   else tx.set(write.log.ref, write.log.data);
-  if (write.course?.pointer) tx.update(write.course.ref, write.course.pointer);
+  // Every online dose write moves the course's dose revision on by one (P3 round 6; the
+  // rules require it), even when the pointers stay, so a phone and a tablet confirming at
+  // once serialize on the course: the second retries on a fresh read and asks again.
+  if (write.course) tx.update(write.course.ref, { doseRevision: nextDoseRevision(write.course.data), ...(write.course.pointer ?? {}) });
 }
 
+/**
+ * The course without a previous pointer whose dose no longer survives (the Admin twin of
+ * `withoutRemovedPrev` in medication-transaction.ts): it is never named by "Already given?".
+ */
+const withoutRemovedPrev = (course: CourseView, records: DosePointer[]): CourseView =>
+  course.prevDose && !records.some((record) => record.logId === course.prevDose!.logId) ? { ...course, prevDose: null } : course;
+
 const plainOccurrence = (occurrence: Occurrence | null) =>
-  (occurrence ? { key: occurrence.key, day: occurrence.day, time: occurrence.time ?? null, at: occurrence.at } : null);
+  (occurrence ? { key: occurrence.key, ...(occurrence.fold ? { fold: occurrence.fold } : {}), day: occurrence.day, time: occurrence.time ?? null, at: occurrence.at } : null);
 
 export type DoseAsInput = {
   petId: unknown;
@@ -204,10 +228,13 @@ export type DoseAsResult =
 const confirmOf = (value: unknown): DoseConfirm | null => {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object') throw new PetFeedingError('invalid');
-  const raw = (value as { lastLogId?: unknown }).lastLogId;
-  if (raw === null) return { lastLogId: null };
+  const { lastLogId: raw, occurrence } = value as { lastLogId?: unknown; occurrence?: unknown };
+  // The occurrence the question was asked for (P3 round 7): an answer is good only for it.
+  if (occurrence !== undefined && (typeof occurrence !== 'string' || !OCCURRENCE.test(occurrence))) throw new PetFeedingError('invalid');
+  const bound = typeof occurrence === 'string' ? { occurrence } : {};
+  if (raw === null) return { lastLogId: null, ...bound };
   if (typeof raw !== 'string' || !ID.test(raw)) throw new PetFeedingError('invalid');
-  return { lastLogId: raw };
+  return { lastLogId: raw, ...bound };
 };
 
 const notesOf = (value: unknown, max = 2000): string => {
@@ -300,7 +327,7 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
     const doses = course ? await courseDoses(tx, logs, courseId) : null;
     const plan = planDose(
       {
-        now, timeZone, course: course && doses ? withRecords(course, doses.records) : course, lastDoseSurvives,
+        now, timeZone, course: course && doses ? withRecords(withoutRemovedPrev(course, doses.records), doses.records) : course, lastDoseSurvives,
         existing: existing.exists ? { loggedByUid: (existing.get('loggedByUid') as string | undefined) ?? null, courseId: (existing.get('courseId') as string | undefined) ?? null } : null,
       },
       { userUid: actor.uid, occurrenceKey, givenAt, confirm },
@@ -341,6 +368,7 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
       log: { ref: logRef, data: logData },
       course: {
         ref: courseRef,
+        data: courseSnap.data(),
         pointer: next.write
           ? { lastDose: storedPointer(next.latest, doses!.stored, { logId, value: freshValue }), prevDose: storedPointer(next.prev, doses!.stored, { logId, value: freshValue }) }
           : null,
@@ -497,7 +525,7 @@ async function undoCreatedRecord(db: Firestore, householdId: string, input: { pe
     // The record this tablet wrote for this person, not another one recreated under the same id (review S3).
     const attribution = snap.get('deviceAttribution') as { deviceId?: unknown } | undefined;
     if (snap.get('loggedByUid') !== original.actorUid || attribution?.deviceId !== authority.deviceId) throw new DeviceActionError('changed_since');
-    let pointer: { ref: DocumentReference; value: DocumentData } | null = null;
+    let pointer: { ref: DocumentReference; data: Record<string, unknown> | undefined; value: DocumentData | null } | null = null;
     const courseId = collection === 'medication-logs' ? snap.get('courseId') : null;
     if (typeof courseId === 'string' && isDocId(courseId)) {
       const courseRef = pet.collection('medication-courses').doc(courseId);
@@ -506,10 +534,10 @@ async function undoCreatedRecord(db: Firestore, householdId: string, input: { pe
       if (course) {
         const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, record.id);
         const next = pointerAfter(course, doses.records);
-        if (next.write) pointer = { ref: courseRef, value: { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } };
+        pointer = { ref: courseRef, data: courseSnap.data(), value: next.write ? { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } : null };
       }
     }
-    if (collection === 'medication-logs') writeDose(tx, { log: { ref: record, delete: true }, course: pointer ? { ref: pointer.ref, pointer: pointer.value } : null });
+    if (collection === 'medication-logs') writeDose(tx, { log: { ref: record, delete: true }, course: pointer ? { ref: pointer.ref, data: pointer.data, pointer: pointer.value } : null });
     else tx.delete(record);
     ctx.hooks!.finalize(tx, { targetPath: record.path, summary: { petId: pet.id, logId: record.id }, undo: 'reversed', targetName: nameOf(petSnap) });
     return { status: 'undone', petId: pet.id, logId: record.id };
@@ -670,7 +698,7 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
     const allowed = kind === 'weights' ? mayDeleteWeight(authored(snap), actor, marginNow(now)) : deleteLogs || authorWithin(snap, actor, now);
     if (!allowed) throw new DeviceActionError('forbidden');
     let derived: ((t: Transaction) => void) | null = null;
-    let dosePointer: { ref: DocumentReference; pointer: DocumentData | null } | null = null;
+    let dosePointer: { ref: DocumentReference; data: Record<string, unknown> | undefined; pointer: DocumentData | null } | null = null;
     if (kind === 'feeding-logs') {
       const stateRef = pet.collection('feeding-state').doc(FEEDING_STATE_ID);
       const stateSnap = await tx.get(stateRef);
@@ -686,7 +714,7 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
         if (course) {
           const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, logId);
           const next = pointerAfter(course, doses.records);
-          dosePointer = { ref: courseRef, pointer: next.write ? { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } : null };
+          dosePointer = { ref: courseRef, data: courseSnap.data(), pointer: next.write ? { lastDose: storedPointer(next.latest, doses.stored), prevDose: storedPointer(next.prev, doses.stored) } : null };
         }
       }
     }
@@ -790,8 +818,21 @@ const scheduleData = (fields: CourseFields) => ({ name: fields.name, dosage: fie
  * then written as `runSaveCourse` does (create once under the form's id; an edit keeps the
  * id and history and recomputes `coveredUntil` from the surviving doses).
  */
-export function saveCourseAs(db: Firestore, householdId: string, input: { petId: unknown; courseId?: unknown; create: boolean; values: unknown; legacyKey?: unknown }, ctx: DeviceCtx) {
+/**
+ * The course's fields as the edit form opened with them (P3 round 7's conflict check): the
+ * same shape `runSaveCourse` compares, read leniently (anything malformed is refused).
+ */
+const baseFieldsOf = (value: unknown): Pick<CourseFields, 'name' | 'dosage' | 'schedule' | 'startDay' | 'endDay'> | null => {
+  if (value === undefined || value === null) return null;
+  const raw = (typeof value === 'object' ? value : null) as Record<string, unknown> | null;
+  const schedule = raw ? readSchedule(raw.schedule) : null;
+  if (!raw || typeof raw.name !== 'string' || typeof raw.dosage !== 'string' || !schedule || typeof raw.startDay !== 'string' || (raw.endDay !== null && typeof raw.endDay !== 'string')) throw new PetFeedingError('invalid');
+  return { name: raw.name, dosage: raw.dosage, schedule, startDay: raw.startDay, endDay: (raw.endDay as string | null) ?? null };
+};
+
+export function saveCourseAs(db: Firestore, householdId: string, input: { petId: unknown; courseId?: unknown; create: boolean; values: unknown; legacyKey?: unknown; base?: unknown }, ctx: DeviceCtx) {
   const values = formValuesOf(input?.values);
+  const opened = baseFieldsOf(input?.base);
   let legacyKey: string | null = null;
   if (input.legacyKey !== undefined && input.legacyKey !== null) {
     if (typeof input.legacyKey !== 'string' || !input.legacyKey.trim() || input.legacyKey.length > 200) throw new PetFeedingError('invalid');
@@ -837,6 +878,8 @@ export function saveCourseAs(db: Firestore, householdId: string, input: { petId:
     if (!snap.exists) return refused('missing');
     if (snap.get('status') !== 'active') return refused('not-active');
     const read = readCourse(courseId, snap.data() ?? {});
+    // Someone changed the course since the form opened: never overwrite their edit (as runSaveCourse).
+    if (read && opened && (read.name !== opened.name || read.dosage !== opened.dosage || scheduleChanged(read, opened))) return refused('changed');
     const doses = read ? await courseDoses(tx, pet.collection('medication-logs'), courseId) : null;
     const stored = read && doses ? withRecords(read, doses.records) : read;
     const moved = Boolean(stored && scheduleChanged(stored, fields));

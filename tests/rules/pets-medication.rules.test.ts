@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { assertFails, assertSucceeds, initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { deleteDoc, doc, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch, type Firestore } from 'firebase/firestore';
+import { deleteDoc, doc, increment, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch, type Firestore } from 'firebase/firestore';
 
 const projectId = 'demo-homehub-e2e';
 const house = 'household-meds';
@@ -52,13 +52,16 @@ const pointerOf = (person: Person, logId: string, at: Timestamp) => ({
   logId, occurrence: occurrenceKey(at), occurrenceAt: at, givenAt: serverTimestamp(), byUid: person.uid, byName: 'Name',
 });
 
+/** Every online dose write moves the course's dose revision on by one. */
+const bump = { doseRevision: increment(1) };
+
 /** The paired write the client transaction makes: the log and the course's new latest dose. */
 async function giveDose(person: Person, logId: string, at: Timestamp, logOverrides: Record<string, unknown> = {}, prevDose: unknown = null) {
   const db = session(person);
   const batch = writeBatch(db);
   batch.set(logRef(db, logId), doseLog(person, at, logOverrides));
   // The pointer carries the log's given-at time (server time, or the chosen one).
-  batch.update(courseRef(db), { lastDose: { ...pointerOf(person, logId, at), ...('date' in logOverrides ? { givenAt: logOverrides.date } : {}) }, prevDose });
+  batch.update(courseRef(db), { lastDose: { ...pointerOf(person, logId, at), ...('date' in logOverrides ? { givenAt: logOverrides.date } : {}) }, prevDose, ...bump });
   return batch.commit();
 }
 
@@ -212,7 +215,77 @@ describe('dose logs', () => {
     const batch = writeBatch(db);
     batch.set(logRef(db, 'press-0033'), doseLog(people.child, at, { repeat: 'confirmed', confirmOf: 'press-0030' }));
     // prevDose must be exactly the replaced pointer as stored (givenAt resolved), or null.
-    batch.update(courseRef(db), { lastDose: pointerOf(people.child, 'press-0033', at), prevDose: null });
+    batch.update(courseRef(db), { lastDose: pointerOf(people.child, 'press-0033', at), prevDose: null, ...bump });
+    await assertSucceeds(batch.commit());
+  });
+
+  test('a confirmation may name a dose of the course given no earlier than the stored latest (an offline-synced one), never an older one', async () => {
+    const at = occurrenceAt(-1);
+    const minutesAgo = (minutes: number) => Timestamp.fromMillis(Date.now() - minutes * 60_000);
+    const stored = (by: Person, date: Timestamp, overrides: Record<string, unknown> = {}) => ({ ...doseLog(by, at), date, loggedAt: date, ...overrides });
+    await seed(async (db) => {
+      await setDoc(logRef(db, 'dose-a'), stored(people.member, minutesAgo(10)));
+      await setDoc(logRef(db, 'dose-newer'), stored(people.owner, minutesAgo(5), { repeat: 'offline', clockSource: 'device' }));
+      await setDoc(logRef(db, 'dose-older'), stored(people.owner, minutesAgo(20), { repeat: 'offline', clockSource: 'device' }));
+      await setDoc(logRef(db, 'dose-other-course'), stored(people.owner, minutesAgo(1), { courseId: 'other' }));
+      await updateDoc(courseRef(db), { lastDose: { logId: 'dose-a', occurrence: occurrenceKey(at), occurrenceAt: at, givenAt: minutesAgo(10), byUid: people.member.uid, byName: 'Name' } });
+    });
+    const confirmed = (logId: string, confirmOf: string) => giveDose(people.child, logId, at, { repeat: 'confirmed', confirmOf }, null);
+    await assertFails(confirmed('press-0061', 'dose-older'));
+    await assertFails(confirmed('press-0062', 'dose-other-course'));
+    await assertFails(confirmed('press-0063', 'no-such-dose'));
+    await assertSucceeds(confirmed('press-0064', 'dose-newer'));
+  });
+
+  test('every online dose write moves the dose revision on by one in the same commit (Codex round 6)', async () => {
+    const at = occurrenceAt(-1);
+    await assertSucceeds(giveDose(people.member, 'press-0070', at));
+    // A dose before the latest leaves the pointers alone, yet must still move the revision.
+    const earlier = occurrenceAt(-13);
+    const db = session(people.member);
+    const without = writeBatch(db);
+    without.set(logRef(db, 'press-0071'), doseLog(people.member, earlier, { repeat: 'confirmed', confirmOf: 'press-0070' }));
+    await assertFails(without.commit());
+    const wrongStep = writeBatch(db);
+    wrongStep.set(logRef(db, 'press-0072'), doseLog(people.member, earlier, { repeat: 'confirmed', confirmOf: 'press-0070' }));
+    wrongStep.update(courseRef(db), { doseRevision: 5 });
+    await assertFails(wrongStep.commit());
+    const bumped = writeBatch(db);
+    bumped.set(logRef(db, 'press-0073'), doseLog(people.member, earlier, { repeat: 'confirmed', confirmOf: 'press-0070' }));
+    bumped.update(courseRef(db), bump);
+    await assertSucceeds(bumped.commit());
+    // Removing a dose (the pointer does not name it): the revision must move too.
+    await assertFails(deleteDoc(logRef(db, 'press-0073')));
+    const removal = writeBatch(db);
+    removal.delete(logRef(db, 'press-0073'));
+    removal.update(courseRef(db), bump);
+    await assertSucceeds(removal.commit());
+    // A pointer write that does not move it, or an edit that sets it, is refused; a new course starts at 0.
+    await assertFails(updateDoc(courseRef(db), { prevDose: null }));
+    await assertFails(updateDoc(courseRef(db), { name: 'Renamed', doseRevision: 9, updatedAt: serverTimestamp(), updatedByUid: people.member.uid, updatedByName: 'Name' }));
+    await assertFails(setDoc(courseRef(session(people.owner), 'rev-course'), newCourse(people.owner, { doseRevision: 3 })));
+    await assertSucceeds(setDoc(courseRef(session(people.owner), 'rev-course-0'), newCourse(people.owner, { doseRevision: 0 })));
+  });
+
+  test('an offline dose the previous pointer names cannot be removed without moving the pointer (Codex round 7)', async () => {
+    const at = occurrenceAt(-1);
+    const earlier = occurrenceAt(-13);
+    const stamp = Timestamp.fromMillis(Date.now() - 60_000);
+    await seed(async (db) => {
+      await setDoc(logRef(db, 'off-prev'), { ...doseLog(people.child, earlier), date: stamp, loggedAt: Timestamp.now(), repeat: 'offline', clockSource: 'device' });
+      await setDoc(logRef(db, 'latest'), { ...doseLog(people.member, at), date: stamp, loggedAt: stamp });
+      await updateDoc(courseRef(db), {
+        lastDose: { logId: 'latest', occurrence: occurrenceKey(at), occurrenceAt: at, givenAt: stamp, byUid: people.member.uid, byName: 'Name' },
+        prevDose: { logId: 'off-prev', occurrence: occurrenceKey(earlier), occurrenceAt: earlier, givenAt: stamp, byUid: people.child.uid, byName: 'Name' },
+      });
+    });
+    const db = session(people.child);
+    // Its author, offline-style (no course write): refused while prevDose names it.
+    await assertFails(deleteDoc(logRef(db, 'off-prev')));
+    // With the previous pointer moved off it (and the revision): accepted.
+    const batch = writeBatch(db);
+    batch.delete(logRef(db, 'off-prev'));
+    batch.update(courseRef(db), { prevDose: null, ...bump });
     await assertSucceeds(batch.commit());
   });
 
@@ -230,13 +303,13 @@ describe('dose logs', () => {
     const other = session(people.member);
     const otherBatch = writeBatch(other);
     otherBatch.delete(logRef(other, 'press-0050'));
-    otherBatch.update(courseRef(other), { lastDose: null, prevDose: null });
+    otherBatch.update(courseRef(other), { lastDose: null, prevDose: null, ...bump });
     await assertFails(otherBatch.commit());
     // The author, pointer cleared in the same commit: accepted.
     const db = session(people.child);
     const batch = writeBatch(db);
     batch.delete(logRef(db, 'press-0050'));
-    batch.update(courseRef(db), { lastDose: null, prevDose: null });
+    batch.update(courseRef(db), { lastDose: null, prevDose: null, ...bump });
     await assertSucceeds(batch.commit());
   });
 
@@ -253,14 +326,14 @@ describe('dose logs', () => {
     });
     const db = session(people.member);
     // A pointer that does not match its log's fields (a planted or made-up dose) is refused.
-    await assertFails(updateDoc(courseRef(db), { lastDose: { ...exact('dose-late', late), givenAt: Timestamp.now() } }));
-    await assertFails(updateDoc(courseRef(db), { lastDose: exact('no-such-dose', late) }));
+    await assertFails(updateDoc(courseRef(db), { lastDose: { ...exact('dose-late', late), givenAt: Timestamp.now() }, ...bump }));
+    await assertFails(updateDoc(courseRef(db), { lastDose: exact('no-such-dose', late), ...bump }));
     // Clearing it while the dose it names survives is refused.
-    await assertFails(updateDoc(courseRef(db), { lastDose: null }));
+    await assertFails(updateDoc(courseRef(db), { lastDose: null, ...bump }));
     // Reconciling to a later surviving dose (an offline-synced one), with the previous one: accepted.
-    await assertSucceeds(updateDoc(courseRef(db), { lastDose: exact('dose-late', late), prevDose: exact('dose-early', early) }));
+    await assertSucceeds(updateDoc(courseRef(db), { lastDose: exact('dose-late', late), prevDose: exact('dose-early', early), ...bump }));
     // Moving back to the earlier dose while the later one survives: refused.
-    await assertFails(updateDoc(courseRef(db), { lastDose: exact('dose-early', early), prevDose: null }));
+    await assertFails(updateDoc(courseRef(db), { lastDose: exact('dose-early', early), prevDose: null, ...bump }));
     // A guest may not write it.
     await assertFails(updateDoc(courseRef(session(people.guest)), { prevDose: null }));
   });

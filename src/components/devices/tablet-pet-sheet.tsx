@@ -214,7 +214,7 @@ function CourseForm({ petId, course, activeNames, onDone }: { petId: string; cou
     if (Object.keys(errors).length > 0 || saving) return;
     setSaving(true);
     try {
-      const outcome = await runAction({ capability: 'pets.course.edit', label: course ? `Saved ${values.name.trim()}` : `Added ${values.name.trim()}`, intent: { petId, courseId, create: !course, values } });
+      const outcome = await runAction({ capability: 'pets.course.edit', label: course ? `Saved ${values.name.trim()}` : `Added ${values.name.trim()}`, intent: { petId, courseId, create: !course, values, ...(course ? { base: { name: course.name, dosage: course.dosage, schedule: course.schedule, startDay: course.startDay, endDay: course.endDay } } : {}) } });
       const status = (outcome.data as { status?: string } | undefined)?.status;
       if (outcome.ok && (status === 'saved' || status === 'already')) onDone();
     } finally {

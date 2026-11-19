@@ -16,7 +16,8 @@
 import {DEFAULT_TIME_ZONE, isDayString} from "./calendar";
 import {
   courseDue, formatDoseTime, isLegacyLog, legacyMedicationKey,
-  nextDueOccurrence, readCourse, takenLegacyKeys, toMillis, withOfflineDoses,
+  nextDueOccurrence, occurrenceId, readCourse, takenLegacyKeys, toMillis,
+  withOfflineDoses,
   type CourseView, type DoseLogInput,
 } from "./medication-schedule";
 
@@ -179,7 +180,7 @@ const courseReminders = (pet: PetInput, clock: ReminderClock):
   return [{
     sourceType: MEDICATION_SOURCE_TYPE,
     sourceId: courseSourceId(pet.id, course.id),
-    stateKey: `${state}|${due.occurrence.key}`,
+    stateKey: `${state}|${occurrenceId(due.occurrence)}`,
     state,
     title: state === "due" ?
       `${name}'s ${medication}${time} dose is due` :
@@ -242,7 +243,7 @@ export const pendingCycles = (
     const scheduled = courses.flatMap((course) => {
       const next = nextDueOccurrence(course, timeZone);
       return next ?
-        [`${courseSourceId(pet.id, course.id)}|${next.key}`] : [];
+        [`${courseSourceId(pet.id, course.id)}|${occurrenceId(next)}`] : [];
     });
     return [...scheduled, ...legacy];
   }));
