@@ -101,7 +101,7 @@ test('sections: a switched-off section leaves the rail and its deep link lands o
   await expect(page.getByTestId('tablet-pet-maple')).toBeVisible();
 });
 
-test('quick add matches locally; Pets stays refused on tablets until its device actions exist (F4b)', async ({}, testInfo) => {
+test('quick add matches locally; a Pets intent asks "Who\'s here?" first and Cancel writes nothing (F4b)', async ({}, testInfo) => {
   desktopOnly(testInfo);
   const page = tabletPage();
   await page.getByTestId('tablet-add').click();
@@ -109,8 +109,11 @@ test('quick add matches locally; Pets stays refused on tablets until its device 
   const intent = page.getByTestId('tablet-quick-add-intent').filter({ hasText: 'Feed Maple' });
   await expect(intent).toBeVisible();
   await intent.click();
-  await expect(page.getByText("That isn't available on wall tablets yet. Use your phone.").first()).toBeVisible();
-  await expect(page.getByTestId('who-is-here')).toHaveCount(0);
+  const who = page.getByTestId('who-is-here');
+  await expect(who).toBeVisible();
+  await who.getByRole('button', { name: 'Cancel' }).click();
+  await expect(who).toHaveCount(0);
+  await expect(page.getByText("That isn't available on wall tablets yet. Use your phone.")).toHaveCount(0);
 });
 
 test('"Who\'s here?" and the PIN pad: eligible people only, wrong then right PIN, admin settings applied live', async ({}, testInfo) => {

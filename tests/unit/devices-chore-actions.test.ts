@@ -9,10 +9,14 @@ import { queueAllowed } from '../../src/lib/devices/offline-queue';
 // and queue decisions that follow from the proven Undo and the points-PIN setting.
 
 describe('what the tablet sends', () => {
-  it('sends the four chore capabilities and nothing else (Pets and the rest stay refused)', () => {
-    assert.deepEqual([...SENDABLE_CAPABILITIES].sort(), ['chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo']);
+  it('sends the chore capabilities and pets feeding and care, nothing else (doses, notes, weight, deletes, profile edits stay refused)', () => {
+    assert.deepEqual([...SENDABLE_CAPABILITIES].sort(), [
+      'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
+      'pets.care.add', 'pets.care.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old', 'pets.feed.undo',
+    ]);
+    const pets = new Set(['pets.care.add', 'pets.care.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old', 'pets.feed.undo']);
     for (const capability of DEVICE_CAPABILITIES) {
-      if (capability.startsWith('pets.')) assert.equal(SENDABLE_CAPABILITIES.has(capability), false, capability);
+      if (capability.startsWith('pets.') && !pets.has(capability)) assert.equal(SENDABLE_CAPABILITIES.has(capability), false, capability);
     }
   });
 
@@ -35,9 +39,12 @@ describe('levels and the queue with the chore Undo proven', () => {
       // A PIN-level action never waits in the queue.
       assert.equal(queueAllowed(capability, { pointsPin: 'everyone', actorRole: 'member' }), false);
     }
-    // Pets are not proven yet: still PIN, never queued.
-    assert.equal(requiredLevel('pets.feed', { pointsPin: 'off', actorRole: 'member' }), 'pin');
-    assert.equal(queueAllowed('pets.feed', { pointsPin: 'off', actorRole: 'member' }), false);
+    // Pets feeding is proven (F4b-1): face, queueable, and never raised by the points PIN (D-P6).
+    assert.equal(requiredLevel('pets.feed', { pointsPin: 'everyone', actorRole: 'member' }), 'face');
+    assert.equal(queueAllowed('pets.feed', { pointsPin: 'everyone', actorRole: 'child' }), true);
+    // Doses are not proven yet: still PIN, never queued.
+    assert.equal(requiredLevel('pets.dose.give', { pointsPin: 'off', actorRole: 'member' }), 'pin');
+    assert.equal(queueAllowed('pets.dose.give', { pointsPin: 'off', actorRole: 'member' }), false);
   });
 });
 

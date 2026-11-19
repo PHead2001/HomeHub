@@ -253,10 +253,13 @@ describe('feed operation: every entry point uses it', () => {
 
   it('online feeds use server time; offline ones are marked and say so', () => {
     const op = read('src/lib/pets/feed-transaction.ts');
-    assert.match(op, /date: plan\.live \? serverTimestamp\(\) : stamp \?\? Timestamp\.fromDate\(plan\.fedAt\)/);
-    assert.match(op, /loggedAt: serverTimestamp\(\)/);
-    assert.match(op, /clockSource: 'device'/);
+    // The documents come from the shared builder (also used by the server for wall tablets), with the client's times.
+    assert.match(op, /const CLIENT_TIMES: FeedTimes = \{ serverTime: \(\) => serverTimestamp\(\), timestamp: \(at\) => Timestamp\.fromDate\(at\) \};/);
     assert.match(op, /runTransaction/);
+    const docs = read('src/lib/pets/feed-documents.ts');
+    assert.match(docs, /date: plan\.live \? times\.serverTime\(\) : options\.stamp \?\? times\.timestamp\(plan\.fedAt\)/);
+    assert.match(docs, /loggedAt: times\.serverTime\(\)/);
+    assert.match(docs, /clockSource: 'device'/);
     const ui = read('src/components/pets/use-feed-action.tsx');
     assert.match(ui, /Saved on this device/);
     assert.match(ui, /Couldn't check whether someone else fed/);
