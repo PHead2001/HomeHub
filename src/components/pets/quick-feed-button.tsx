@@ -157,7 +157,7 @@ export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickF
         const when = `${day === 'yesterday' ? 'yesterday ' : ''}at ${formatClock(earlier.at, timeZone)}`;
         return {
           title: `${petName} fed ${when}`,
-          description: `${earlier.slotName ? `${earlier.slotName}: ` : ''}${formatPortion(earlier.portion.amount, earlier.portion.unit)} logged.`,
+          description: `${earlier.slotName ? `${earlier.slotName}: ` : earlier.extra ? 'Extra feeding: ' : ''}${formatPortion(earlier.portion.amount, earlier.portion.unit)} logged.`,
         };
       }
       // What was actually written: the slot and portion the operation chose.

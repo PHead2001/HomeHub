@@ -370,3 +370,78 @@ describe('the feed transaction with slots, on the emulator with the real rules',
     assert.equal(asked.status === 'needsConfirm' && asked.reason, 'recent');
   });
 });
+
+describe('Feed earlier: a backdated feeding counts for the meal whose window holds its time, else it is an extra', () => {
+  // An override of `undefined` leaves the field out. A backdated entry needs no state write.
+  const backdatedLog = (person: Person, overrides: Record<string, unknown> = {}) => Object.fromEntries(Object.entries({
+    date: Timestamp.fromMillis(Date.now() - 3 * 3_600_000), loggedAt: serverTimestamp(), cups: 1, foodAmountType: 'Cups', foodType: 'Dry', comments: '', ampm: 'AM',
+    loggedByUid: person.uid, loggedByName: 'Someone', repeat: 'none', backdated: true, ...overrides,
+  }).filter(([, value]) => value !== undefined));
+  const write = (person: Person, data: Record<string, unknown>, home = household) => setDoc(doc(logsOf(session(person), 'rex', home)), data);
+
+  beforeEach(async () => {
+    await seedPet({ mealPlan: storedPlan([BREAKFAST, DINNER]), feedingsPerDay: 2 });
+    await seedPet({ mealPlan: storedPlan([BREAKFAST, DINNER]), feedingsPerDay: 2 }, 'rex', otherHousehold);
+  });
+
+  test('a member or child may write a backdated extra, and a backdated feeding for a meal of the current plan', async () => {
+    await assertSucceeds(write(people.sam, backdatedLog(people.sam, { extra: true })));
+    await assertSucceeds(write(people.alex, backdatedLog(people.alex, { extra: true })));
+    await assertSucceeds(write(people.sam, backdatedLog(people.sam, { slotId: 'breakfast' })));
+  });
+
+  test('forged extras are refused: with a slot, not true, on a live feed, or a slot outside the current plan', async () => {
+    await assertFails(write(people.sam, backdatedLog(people.sam, { extra: true, slotId: 'breakfast' })));
+    await assertFails(write(people.sam, backdatedLog(people.sam, { extra: false })));
+    await assertFails(write(people.sam, backdatedLog(people.sam, { extra: 'yes' })));
+    await assertFails(write(people.sam, backdatedLog(people.sam, { slotId: 'supper' })));
+    // A live feed (server time, not backdated) is never an extra, even with its state.
+    const db = session(people.sam);
+    const ref = doc(logsOf(db));
+    const batch = writeBatch(db);
+    batch.set(ref, backdatedLog(people.sam, { date: serverTimestamp(), backdated: undefined, extra: true }));
+    batch.set(stateOf(db), { lastLogId: ref.id, lastFedAt: serverTimestamp(), lastFedByUid: people.sam.uid, lastFedByName: 'Someone', day: localDay(new Date(), TZ), countOnDay: 1, prev: null });
+    await assertFails(batch.commit());
+  });
+
+  test('unauthenticated, a guest and another household are refused', async () => {
+    const anonymous = environment.unauthenticatedContext().firestore() as unknown as Firestore;
+    await assertFails(setDoc(doc(logsOf(anonymous)), backdatedLog(people.sam, { extra: true })));
+    await assertFails(write(people.guest, backdatedLog(people.guest, { extra: true })));
+    await assertFails(write(people.ownerB, backdatedLog(people.ownerB, { extra: true })));
+    await assertSucceeds(write(people.ownerB, backdatedLog(people.ownerB, { extra: true }), otherHousehold));
+  });
+
+  test('the real feed transaction: an earlier time in an unfed meal\'s window records that meal; in a fed one, an extra', async (t) => {
+    const minutes = localMinutes(new Date(), TZ);
+    if (minutes < 130) {
+      t.skip('needs two hours of today behind the current Chicago time');
+      return;
+    }
+    // A meal 20 minutes ago (its window opened two hours before) and one six hours away.
+    const meal = slot('meal', timeOfMinutes(minutes - 20), { name: 'Supper', amount: 0.5, unit: 'Cans' });
+    const later = slot('later', timeOfMinutes(minutes + 6 * 60 < 24 * 60 ? minutes + 6 * 60 : Math.max(0, minutes - 9 * 60)), { name: 'Snack' });
+    await seedPet({ mealPlan: storedPlan([meal, later], localDay(new Date(), TZ)) });
+    const base = (backdatedAt: Date): FeedPetInput => ({
+      householdId: household, petId: 'rex', opId: newFeedOpId(), portion: { amount: 1, unit: 'Cups' }, portionFromSlot: true, food: 'Dry',
+      user: { uid: people.sam.uid, name: 'Sam' }, timeZone: TZ, backdatedAt,
+    });
+    const first = await runFeed(session(people.sam), base(new Date(Date.now() - 30 * 60_000)));
+    assert.equal(first.status, 'saved');
+    const second = await runFeed(session(people.sam), base(new Date(Date.now() - 10 * 60_000)));
+    assert.equal(second.status, 'saved');
+    let docs: Record<string, unknown>[] = [];
+    await environment.withSecurityRulesDisabled(async (context) => {
+      docs = (await getDocs(logsOf(context.firestore() as unknown as Firestore))).docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+    });
+    const byId = new Map(docs.map((entry) => [entry.id, entry]));
+    const one = byId.get((first as { logId: string }).logId)!;
+    const two = byId.get((second as { logId: string }).logId)!;
+    assert.equal(one.slotId, 'meal');
+    assert.equal(one.cups, 0.5);
+    assert.equal(one.extra, undefined);
+    assert.equal(two.extra, true);
+    assert.equal(two.slotId, undefined);
+    assert.equal(two.backdated, true);
+  });
+});

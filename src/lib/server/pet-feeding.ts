@@ -10,7 +10,7 @@ import { isValidPortion } from '@/lib/pets/schedule-parser';
 import { planForDay } from '@/lib/pets/meal-plan';
 import {
   FEEDING_STATE_ID,
-  feedReadStart,
+  feedReadStartFor,
   householdDay,
   householdDayStart,
   readFeedingState,
@@ -241,12 +241,14 @@ export async function feedPetAs(db: Firestore, householdId: string, input: FeedA
 
     const stored = readFeedingState(stateSnap.exists ? stateSnap.data() : null);
     const latestSurvives = stored?.lastLogId ? (await tx.get(logs.doc(stored.lastLogId))).exists : false;
-    const recent = await stateFeedings(tx, logs, feedReadStart(today, now, timeZone));
+    // A backdated feed's own day is read too: its meal is judged with that day's feedings.
+    const recent = await stateFeedings(tx, logs, feedReadStartFor(today, now, timeZone, feed.backdatedAt));
     let plan;
     try {
       plan = planFeed(
         {
           now, timeZone, perDay: dayPlan.kind === 'legacy' ? dayPlan.plan.perDay : null, dayPlan, stored, latestSurvives, recent, known: null,
+          pet: petSnap.data() as PetProfile,
           existing: existing.exists ? { loggedByUid: (existing.get('loggedByUid') as string | undefined) ?? null } : null,
         },
         { userUid: actor.uid, userName: user.name, logId, confirm: feed.confirm, backdatedAt: feed.backdatedAt },
@@ -273,7 +275,7 @@ export async function feedPetAs(db: Firestore, householdId: string, input: FeedA
     const portion = feed.portionFromSlot && plan.slot ? { amount: plan.slot.amount, unit: plan.slot.unit } : feed.portion;
     // A backdated entry's log and state carry the same stored time.
     const stamp = Timestamp.fromDate(plan.fedAt);
-    tx.set(logRef, feedLogDocument(logInput, { fedAt: plan.fedAt, live: plan.live, repeat: plan.repeat, confirmOf: plan.confirmOf, slotId: plan.slot?.id ?? null }, ADMIN_TIMES, { stamp, portion, extra }));
+    tx.set(logRef, feedLogDocument(logInput, { fedAt: plan.fedAt, live: plan.live, repeat: plan.repeat, confirmOf: plan.confirmOf, slotId: plan.slotId, extra: plan.extra }, ADMIN_TIMES, { stamp, portion, extra }));
     const state = plan.live ? plan.state : withStampFor(plan.state, logId, stamp);
     tx.set(stateRef, feedStateDocument(state, plan.live ? logId : null, ADMIN_TIMES));
     const result: FeedAsResult = {

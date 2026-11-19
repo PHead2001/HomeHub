@@ -39,6 +39,8 @@ export type FeedEarlierChoice = {
   backdatedAt?: Date;
   portion: { amount: number; unit: PortionUnit };
   slotName: string | null;
+  /** It counts as an extra feeding of its day (its meal was already fed, or none is planned then). */
+  extra: boolean;
 };
 
 export type FeedEarlierDialogProps = {
@@ -133,6 +135,7 @@ export function FeedEarlierDialog({
       ...(result.backdatedAt ? { backdatedAt: result.backdatedAt } : {}),
       portion: { amount: counted.amount, unit: counted.unit },
       slotName: counted.kind === 'slot' ? counted.slotName : null,
+      extra: counted.kind === 'extra',
     });
     if (done) onOpenChange(false);
   };

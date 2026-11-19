@@ -254,7 +254,7 @@ export function parseLocalDate(value?: string | null): Date | null {
 /* Feeding status                                                             */
 /* ------------------------------------------------------------------------- */
 
-export type FeedingEntry = { date: unknown; id?: string; slotId?: unknown } & LoggedBy;
+export type FeedingEntry = { date: unknown; id?: string; slotId?: unknown; extra?: unknown } & LoggedBy;
 
 export type FeedingStatus = {
   fedToday: number;

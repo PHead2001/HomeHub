@@ -383,7 +383,8 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
             const recorded = times.recorded ? format(times.recorded, recordedSameDay ? 'p' : 'PPP p') : null;
             const canCorrect = mayCorrectFeedTime(log, currentUser?.uid, canDelete, now);
             // The meal this feeding recorded, named by the plan of its own day (PE-22g).
-            const mealName = pet ? slotNameOf(pet, log, now, household?.timeZone) : null;
+            // An earlier feeding whose meal was already fed is an extra of its day, never a meal.
+            const mealName = log.extra ? 'Extra feeding' : pet ? slotNameOf(pet, log, now, household?.timeZone) : null;
             return (
               <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
                 <div className="min-w-0 space-y-0.5">

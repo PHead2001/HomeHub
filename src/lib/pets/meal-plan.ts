@@ -152,7 +152,7 @@ export type DayPlan =
   /** No confirmed slots that day: the legacy daily target (structured fields or the parsed schedule). */
   | { kind: 'legacy'; day: string; plan: FeedingPlan };
 
-type PlanSource = Pick<PetProfile, 'foodSchedule' | 'feedingsPerDay' | 'portionAmount' | 'portionUnit'> & { mealPlan?: unknown; mealPlanHistory?: unknown };
+export type PlanSource = Pick<PetProfile, 'foodSchedule' | 'feedingsPerDay' | 'portionAmount' | 'portionUnit'> & { mealPlan?: unknown; mealPlanHistory?: unknown };
 
 function slotsDay(slots: MealSlot[], day: string): DayPlan {
   const weekday = dayOfWeek(day);
@@ -199,7 +199,7 @@ export function slotWindows(slots: Pick<MealSlot, 'time'>[]): { open: number; cl
 }
 
 /** A feeding as the status reads it: when (as this device should read it), for which slot, by whom. */
-export type FeedObservation = { id: string | null; at: Date; minutes: number; slotId: string | null; by: string | null; byUid: string | null };
+export type FeedObservation = { id: string | null; at: Date; minutes: number; slotId: string | null; by: string | null; byUid: string | null; extra?: boolean };
 
 /** The feedings on one household day, oldest first. */
 export function feedsOnDay(logs: FeedingEntry[], day: string, now: Date, timeZone?: string | null): FeedObservation[] {
@@ -221,6 +221,7 @@ export function feedsOnDay(logs: FeedingEntry[], day: string, now: Date, timeZon
       slotId: typeof log.slotId === 'string' && log.slotId ? log.slotId : null,
       by: log.loggedByName?.trim() || null,
       byUid: typeof log.loggedByUid === 'string' ? log.loggedByUid : null,
+      ...(log.extra === true ? { extra: true } : {}),
     });
   }
   return feeds.sort((a, b) => a.at.getTime() - b.at.getTime());
@@ -267,6 +268,11 @@ export function attributeFeeds(slots: MealSlot[], feeds: FeedObservation[]): { b
   const extras: FeedObservation[] = [];
   // In time order, so a feeding without a slot sees only the slots fed before it.
   for (const feed of [...feeds].sort((a, b) => a.at.getTime() - b.at.getTime())) {
+    // An earlier feeding recorded as an extra (its meal was already fed) never takes a meal.
+    if (feed.extra) {
+      extras.push(feed);
+      continue;
+    }
     const named = feed.slotId ? slots.findIndex((slot) => slot.id === feed.slotId) : -1;
     if (named >= 0) {
       bySlot[named].push(feed);
@@ -277,6 +283,43 @@ export function attributeFeeds(slots: MealSlot[], feeds: FeedObservation[]): { b
     else extras.push(feed);
   }
   return { bySlot, extras };
+}
+
+/** What an earlier (backdated) feeding counts for (lead decision for "Feed earlier"). */
+export type EarlierSlot =
+  /** No confirmed meal times that day. */
+  | { kind: 'legacy' }
+  /** The meal whose window (D-P21) holds the chosen time, not yet fed that day. */
+  | { kind: 'slot'; slot: MealSlot }
+  /**
+   * An extra of its day, never another meal: that meal was already fed (`fed`, with its
+   * first feeding), no window holds the time (`no-window`, before the first one opens), or
+   * no meal is served that day (`off-day`). `slot`: the meal whose portion it logs.
+   */
+  | { kind: 'extra'; reason: 'fed' | 'no-window' | 'off-day'; slot: MealSlot | null; fedBy: FeedObservation | null };
+
+/**
+ * The meal a feeding at a chosen earlier time `at` counts for: the plan in force on its
+ * household day, the meal whose D-P21 window contains `at` (household-local minutes),
+ * and that day's feedings as the status attributes them (`logs`, without this one). If
+ * that meal is already fed the feeding is an extra (no slot), never the next unfed meal;
+ * a live feed keeps D-P5 (`targetSlot`). The personal feed operation, the tablet's server
+ * operation (both through `planFeed`) and the "When did <pet> eat?" preview all use this.
+ */
+export function earlierFeedSlot(pet: PlanSource, logs: FeedingEntry[], at: Date, now: Date, timeZone?: string | null): EarlierSlot {
+  const zone = householdDayZone(timeZone);
+  const day = petDay(at, timeZone);
+  const plan = planForDay(pet, day);
+  if (plan.kind === 'legacy') return { kind: 'legacy' };
+  if (plan.slots.length === 0) return { kind: 'extra', reason: 'off-day', slot: plan.off[0] ?? null, fedBy: null };
+  const minutes = localMinutes(at, zone);
+  const index = slotWindows(plan.slots).findIndex((window) => minutes >= window.open && minutes < window.close);
+  if (index < 0) return { kind: 'extra', reason: 'no-window', slot: plan.slots[0], fedBy: null };
+  const { bySlot } = attributeFeeds(plan.slots, feedsOnDay(logs, day, now, timeZone));
+  const first = bySlot[index][0];
+  return first
+    ? { kind: 'extra', reason: 'fed', slot: plan.slots[index], fedBy: first }
+    : { kind: 'slot', slot: plan.slots[index] };
 }
 
 /** The name of the meal a feeding recorded (`slotId`), from the plan in force on its household day; null without one. */

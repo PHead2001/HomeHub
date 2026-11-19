@@ -11,6 +11,7 @@ import {
   feedAgainPrompt,
   feedConfirmDecision,
   feedReadStart,
+  feedReadStartFor,
   householdDay,
   knownFromLogs,
   lastFedPreview,
@@ -120,7 +121,14 @@ describe('feed operation: the "Feed again?" check (PE-23)', () => {
 
   it('the online feed reads from feedReadStart; Undo counts from the day start', () => {
     const op = readFileSync(resolve(process.cwd(), 'src/lib/pets/feed-transaction.ts'), 'utf8');
-    assert.match(op, /stateFeedings\(db, householdId, petId, feedReadStart\(today, now, timeZone\)\)/);
+    assert.match(op, /stateFeedings\(db, householdId, petId, feedReadStartFor\(today, now, timeZone, input\.backdatedAt\)\)/);
+    const server = readFileSync(resolve(process.cwd(), 'src/lib/server/pet-feeding.ts'), 'utf8');
+    assert.match(server, /stateFeedings\(tx, logs, feedReadStartFor\(today, now, timeZone, feed\.backdatedAt\)\)/);
+    // A live feed reads from feedReadStart; a backdated one also from its own household day's start (Feed earlier).
+    const now = at('2026-11-19T20:00:00Z');
+    assert.equal(feedReadStartFor('2026-11-19', now, CHI).getTime(), feedReadStart('2026-11-19', now, CHI).getTime());
+    assert.equal(feedReadStartFor('2026-11-19', now, CHI, at('2026-11-19T15:00:00Z')).getTime(), feedReadStart('2026-11-19', now, CHI).getTime());
+    assert.equal(feedReadStartFor('2026-11-19', now, CHI, at('2026-11-19T01:00:00Z')).toISOString(), '2026-11-18T06:00:00.000Z');
     assert.match(op, /stateFeedings\(db, householdId, petId, householdDayStart\(today, timeZone\)\)/);
   });
 

@@ -47,7 +47,7 @@ import { awaitWriteUnlessOffline, isBrowserOffline } from '../firestore-offline'
 import { planForDay } from './meal-plan';
 import {
   FEEDING_STATE_ID,
-  feedReadStart,
+  feedReadStartFor,
   householdDay,
   householdDayStart,
   readFeedingState,
@@ -129,7 +129,7 @@ const logInput = (input: FeedPetInput) => ({ portion: input.portion, food: input
 
 function logData(
   input: FeedPetInput,
-  plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null; slotId?: string | null },
+  plan: { fedAt: Date; live: boolean; repeat: 'none' | 'confirmed' | 'offline'; confirmOf?: string | null; slotId?: string | null; extra?: boolean },
   stamp?: Timestamp,
   portion: { amount: number; unit: PortionUnit } = input.portion,
 ): DocumentData {
@@ -230,7 +230,7 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string, ser
     // earlier, plus the newest ones, read on every attempt (a feeding just before
     // household midnight still counts as recent; today's count comes from today's
     // logs only; the state is derived from them).
-    const recent = await stateFeedings(db, householdId, petId, feedReadStart(today, now, timeZone));
+    const recent = await stateFeedings(db, householdId, petId, feedReadStartFor(today, now, timeZone, input.backdatedAt));
     const plan = planFeed(
       {
         now,
@@ -241,6 +241,7 @@ async function feedOnline(db: Firestore, input: FeedPetInput, logId: string, ser
         latestSurvives,
         recent,
         known,
+        pet: petSnapshot.exists() ? (petSnapshot.data() as PetProfile) : null,
         existing: existingSnapshot.exists() ? { loggedByUid: (existingSnapshot.get('loggedByUid') as string | undefined) ?? null } : null,
       },
       { userUid: input.user.uid, userName: input.user.name, logId, confirm: input.confirm, backdatedAt: input.backdatedAt, serverRefusedPlain },
@@ -270,7 +271,7 @@ function writeFeed(
   const { householdId, petId } = input;
   // A backdated entry's log and state carry the same Timestamp, so the rules see one time.
   const stamp = Timestamp.fromDate(plan.fedAt);
-  tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, { ...plan, slotId: plan.slot?.id ?? null }, stamp, portionFor(input, plan)));
+  tx.set(doc(logsRef(db, householdId, petId), logId), logData(input, { ...plan, slotId: plan.slotId, extra: plan.extra }, stamp, portionFor(input, plan)));
   const state = plan.live ? plan.state : withStampFor(plan.state, logId, stamp);
   tx.set(stateRef(db, householdId, petId), stateDocument(state, plan.live ? logId : null));
 }

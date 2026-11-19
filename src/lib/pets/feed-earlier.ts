@@ -12,16 +12,15 @@
  * `date` = the chosen time, no repeat check). The dialog offers today and
  * yesterday only (household days), so nothing older can be chosen.
  *
- * What it counts for: the plan in force on the chosen time's household day
- * (`planForDay`, D-P5 planning). A backdated entry carries no `slotId`, so the
- * status attributes it by its own time among that day's feedings
- * (`attributeFeeds`); this module runs the same attribution with the new
- * feeding added, so the dialog names the meal the status will show.
+ * What it counts for (lead decision): the meal whose D-P21 window holds the chosen
+ * time on the plan in force that household day; if that meal is already fed it is
+ * an extra feeding (no slot), never the next unfed meal. The rule is
+ * `earlierFeedSlot` (meal-plan.ts), which the feed operation applies when it writes.
  */
 import { addDays, localDay, localMinutes, parseTimeOfDay, zonedWallInstant } from '../../../functions/src/shared/calendar';
 import { householdDayZone } from '../household-zone';
 import { formatPortion, type FeedingEntry } from './care';
-import { attributeFeeds, feedsOnDay, formatClock, planForDay, type FeedObservation } from './meal-plan';
+import { earlierFeedSlot, formatClock, planForDay, type PlanSource } from './meal-plan';
 import type { PortionUnit } from './types';
 
 /** The quick choices, in minutes before now. */
@@ -101,49 +100,40 @@ export function checkEarlierTime(at: Date | null, now: Date, timeZone?: string |
   return at.getTime() < now.getTime() - EARLIER_MARGIN_MS ? { ok: true, at, backdatedAt: at } : { ok: true, at };
 }
 
-type PlanSource = Parameters<typeof planForDay>[0];
-
 /** What a feeding at the chosen time counts for, and the portion it logs. */
 export type EarlierPlan =
-  /** A confirmed meal; `alreadyFed`: the meal already had a feeding before this time, so this one is an extra of it. */
-  | { kind: 'slot'; slotName: string; amount: number; unit: PortionUnit; alreadyFed: { at: Date; by: string | null } | null }
-  /** Confirmed meal times, but none served that day (all off): an extra of the day. */
-  | { kind: 'off-day'; amount: number; unit: PortionUnit }
+  /** The meal whose window (D-P21) holds the time, unfed that day: its portion. */
+  | { kind: 'slot'; slotName: string; amount: number; unit: PortionUnit }
+  /**
+   * An extra feeding of its day, never another meal (lead decision): the meal whose window
+   * holds the time was already fed (`fed`, with when and by whom), no window holds it
+   * (`no-window`), or no meal is served that day (`off-day`). The portion is that meal's
+   * (else the day's first meal's).
+   */
+  | { kind: 'extra'; reason: 'fed' | 'no-window' | 'off-day'; slotName: string | null; alreadyFed: { at: Date; by: string | null } | null; amount: number; unit: PortionUnit }
   /** No confirmed meal times that day: the usual portion. */
   | { kind: 'legacy'; amount: number; unit: PortionUnit };
 
 /**
- * The meal a feeding at `at` counts for, judged with the plan in force on its
- * household day and that day's feedings (`logs`; null while unknown: then as
- * if none), exactly as the shared status will attribute it. Its portion is
- * that meal's portion (the usual portion without meal times; an off-day logs
- * the plan's first meal portion, as Feed does).
+ * What a feeding at `at` counts for: the shared rule (`earlierFeedSlot`, which the feed
+ * operation and the tablet's server operation also apply), with the day's feedings
+ * (`logs`; null while unknown: then as if none).
  */
 export function earlierFeedPlan(pet: PlanSource, logs: FeedingEntry[] | null, at: Date, now: Date, timeZone?: string | null): EarlierPlan {
-  const zone = householdDayZone(timeZone);
-  const day = localDay(at, zone);
-  const plan = planForDay(pet, day);
-  if (plan.kind === 'legacy') return { kind: 'legacy', amount: plan.plan.amount, unit: plan.plan.unit };
-  if (plan.slots.length === 0) {
-    const first = plan.off[0];
-    return { kind: 'off-day', amount: first?.amount ?? 1, unit: first?.unit ?? 'Cups' };
+  const decision = earlierFeedSlot(pet, logs ?? [], at, now, timeZone);
+  if (decision.kind === 'legacy') {
+    const plan = planForDay(pet, localDay(at, householdDayZone(timeZone)));
+    const legacy = plan.kind === 'legacy' ? plan.plan : { amount: 1, unit: 'Cups' as PortionUnit };
+    return { kind: 'legacy', amount: legacy.amount, unit: legacy.unit };
   }
-  const mine: FeedObservation = { id: null, at, minutes: localMinutes(at, zone), slotId: null, by: null, byUid: null };
-  const { bySlot } = attributeFeeds(plan.slots, [...feedsOnDay(logs ?? [], day, now, timeZone), mine]);
-  const index = bySlot.findIndex((feeds) => feeds.includes(mine));
-  if (index < 0) {
-    // Not attributable (cannot happen with served slots); the first served meal's portion, no claim.
-    const first = plan.slots[0];
-    return { kind: 'off-day', amount: first.amount, unit: first.unit };
-  }
-  const slot = plan.slots[index];
-  const first = bySlot[index][0];
+  if (decision.kind === 'slot') return { kind: 'slot', slotName: decision.slot.name, amount: decision.slot.amount, unit: decision.slot.unit };
   return {
-    kind: 'slot',
-    slotName: slot.name,
-    amount: slot.amount,
-    unit: slot.unit,
-    alreadyFed: first === mine ? null : { at: first.at, by: first.by },
+    kind: 'extra',
+    reason: decision.reason,
+    slotName: decision.slot?.name ?? null,
+    alreadyFed: decision.fedBy ? { at: decision.fedBy.at, by: decision.fedBy.by } : null,
+    amount: decision.slot?.amount ?? 1,
+    unit: decision.slot?.unit ?? 'Cups',
   };
 }
 
@@ -158,10 +148,9 @@ export function earlierWhenLabel(at: Date, now: Date, timeZone?: string | null):
 export function earlierPlanLine(plan: EarlierPlan, timeZone?: string | null): string {
   const portion = formatPortion(plan.amount, plan.unit);
   if (plan.kind === 'legacy') return `Logs ${portion}.`;
-  if (plan.kind === 'off-day') return `No meals were planned that day, so this is an extra feeding: ${portion}.`;
-  if (plan.alreadyFed) {
-    const by = plan.alreadyFed.by ? ` by ${plan.alreadyFed.by}` : '';
-    return `${plan.slotName} was already logged at ${formatClock(plan.alreadyFed.at, timeZone)}${by}, so this is an extra feeding: ${portion}.`;
-  }
-  return `Counts for ${plan.slotName.toLowerCase()}: ${portion}.`;
+  if (plan.kind === 'slot') return `Counts for ${plan.slotName.toLowerCase()}: ${portion}.`;
+  if (plan.reason === 'off-day') return `No meals were planned that day, so this is an extra feeding: ${portion}.`;
+  if (plan.reason === 'no-window' || !plan.alreadyFed) return `No meal is planned around then, so this is an extra feeding: ${portion}.`;
+  const by = plan.alreadyFed.by ? ` by ${plan.alreadyFed.by}` : '';
+  return `${plan.slotName} was already logged at ${formatClock(plan.alreadyFed.at, timeZone)}${by}, so this is an extra feeding, not another meal: ${portion}.`;
 }

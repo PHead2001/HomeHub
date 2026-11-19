@@ -25,6 +25,8 @@ import {
   earlierWhenLabel,
   householdWallTime,
 } from '../../src/lib/pets/feed-earlier';
+import { attributeFeeds, earlierFeedSlot, feedsOnDay, planForDay } from '../../src/lib/pets/meal-plan';
+import { planFeed } from '../../src/lib/pets/feed-plan';
 
 // "Feed earlier" (owner request): press and hold Feed opens "When did <pet> eat?"; the
 // dialog's times are household wall times, and it names the meal the time counts for.
@@ -181,7 +183,7 @@ describe('earlier times in the household zone', () => {
   });
 });
 
-describe('the meal an earlier time counts for', () => {
+describe('the meal an earlier time counts for (lead decision: the window holding the chosen time)', () => {
   const slots = [
     { id: 'breakfast', name: 'Breakfast', time: '07:00', amount: 1, unit: 'Cups' },
     { id: 'dinner', name: 'Dinner', time: '18:00', amount: 0.5, unit: 'Cans', offDays: [0] },
@@ -192,52 +194,96 @@ describe('the meal an earlier time counts for', () => {
     // The plan before today: one supper at 5:00 pm.
     mealPlanHistory: [{ until: '2026-11-19', slots: [{ id: 'supper', name: 'Supper', time: '17:00', amount: 2, unit: 'Cups' }] }],
   };
-  const now = new Date('2026-11-19T20:00:00Z'); // Thursday 2:00 pm in Chicago
+  const now = new Date('2026-11-20T02:00:00Z'); // Thursday Nov 19, 8:00 pm in Chicago
   const at = (iso: string) => new Date(iso);
+  const breakfastLog = { id: 'a', date: at('2026-11-19T13:10:00Z'), slotId: 'breakfast', loggedByName: 'Sam' }; // 7:10 am
 
-  it('names the meal from the plan in force on that household day', () => {
-    const plan = earlierFeedPlan(pet, [], at('2026-11-19T13:30:00Z'), now, CHICAGO); // 7:30 am today
-    assert.deepEqual(plan, { kind: 'slot', slotName: 'Breakfast', amount: 1, unit: 'Cups', alreadyFed: null });
-    assert.equal(earlierPlanLine(plan, CHICAGO), 'Counts for breakfast: 1 cup.');
-    // Yesterday the old plan applied: supper, 2 cups.
-    const yesterday = earlierFeedPlan(pet, [], at('2026-11-18T23:30:00Z'), now, CHICAGO); // 5:30 pm yesterday
-    assert.deepEqual(yesterday, { kind: 'slot', slotName: 'Supper', amount: 2, unit: 'Cups', alreadyFed: null });
+  it('8:00 am after breakfast was logged is an extra feeding, not dinner', () => {
+    const decision = earlierFeedSlot(pet, [breakfastLog], at('2026-11-19T14:00:00Z'), now, CHICAGO);
+    assert.equal(decision.kind, 'extra');
+    assert.equal(decision.kind === 'extra' && decision.reason, 'fed');
+    assert.equal(decision.kind === 'extra' && decision.slot?.id, 'breakfast');
+    const plan = earlierFeedPlan(pet, [breakfastLog], at('2026-11-19T14:00:00Z'), now, CHICAGO);
+    assert.deepEqual(plan, { kind: 'extra', reason: 'fed', slotName: 'Breakfast', alreadyFed: { at: at('2026-11-19T13:10:00Z'), by: 'Sam' }, amount: 1, unit: 'Cups' });
+    assert.equal(earlierPlanLine(plan, CHICAGO), 'Breakfast was already logged at 7:10 am by Sam, so this is an extra feeding, not another meal: 1 cup.');
   });
 
-  it('after a fed breakfast an 8:00 am feeding counts for the next unfed meal (D-P5), as the status will', () => {
-    const logs = [{ id: 'a', date: at('2026-11-19T13:10:00Z'), slotId: 'breakfast', loggedByName: 'Sam' }];
-    const plan = earlierFeedPlan(pet, logs, at('2026-11-19T14:00:00Z'), now, CHICAGO); // 8:00 am
-    assert.deepEqual(plan, { kind: 'slot', slotName: 'Dinner', amount: 0.5, unit: 'Cans', alreadyFed: null });
+  it('7:30 pm with dinner unfed counts for dinner', () => {
+    const plan = earlierFeedPlan(pet, [breakfastLog], at('2026-11-20T01:30:00Z'), now, CHICAGO);
+    assert.deepEqual(plan, { kind: 'slot', slotName: 'Dinner', amount: 0.5, unit: 'Cans' });
+    assert.equal(earlierPlanLine(plan, CHICAGO), 'Counts for dinner: 0.5 cans.');
   });
 
-  it('says when the meal already had a feeding and no unfed meal is left', () => {
-    const logs = [
-      { id: 'a', date: at('2026-11-19T13:10:00Z'), slotId: 'breakfast', loggedByName: 'Sam' },
-      { id: 'b', date: at('2026-11-19T13:20:00Z'), slotId: 'dinner', loggedByName: 'Ana' },
-    ];
-    const plan = earlierFeedPlan(pet, logs, at('2026-11-19T14:00:00Z'), now, CHICAGO); // 8:00 am
-    assert.equal(plan.kind, 'slot');
-    assert.deepEqual(plan.kind === 'slot' && plan.alreadyFed, { at: at('2026-11-19T13:10:00Z'), by: 'Sam' });
-    assert.equal(earlierPlanLine(plan, CHICAGO), 'Breakfast was already logged at 7:10 am by Sam, so this is an extra feeding: 1 cup.');
+  it('7:30 am with breakfast unfed counts for breakfast', () => {
+    assert.deepEqual(earlierFeedPlan(pet, [], at('2026-11-19T13:30:00Z'), now, CHICAGO), { kind: 'slot', slotName: 'Breakfast', amount: 1, unit: 'Cups' });
   });
 
-  it('a time before an unattributed later feeding takes the meal first, as the status will', () => {
-    // A feeding at 7:40 am with no slot (an older entry); the earlier time 7:05 am is breakfast, 7:40 becomes extra.
-    const logs = [{ id: 'b', date: at('2026-11-19T13:40:00Z'), loggedByName: 'Sam' }];
-    const plan = earlierFeedPlan(pet, logs, at('2026-11-19T13:05:00Z'), now, CHICAGO);
-    assert.deepEqual(plan, { kind: 'slot', slotName: 'Breakfast', amount: 1, unit: 'Cups', alreadyFed: null });
+  it('a time yesterday is judged with yesterday\'s plan', () => {
+    const yesterday = earlierFeedPlan(pet, [], at('2026-11-18T23:30:00Z'), now, CHICAGO); // 5:30 pm Nov 18
+    assert.deepEqual(yesterday, { kind: 'slot', slotName: 'Supper', amount: 2, unit: 'Cups' });
+    // Yesterday's supper already logged: extra.
+    const supperLog = { id: 's', date: at('2026-11-18T23:05:00Z'), loggedByName: 'Ana' };
+    assert.equal(earlierFeedPlan(pet, [supperLog], at('2026-11-18T23:30:00Z'), now, CHICAGO).kind, 'extra');
   });
 
-  it('an off-day meal is an extra; a pet without meal times logs its usual portion', () => {
-    // Sunday Nov 22: dinner is off, breakfast is served; with only an off slot left, a Sunday-only pet:
+  it('before the first window opens, and on an off-day, it is an extra', () => {
+    const early = earlierFeedPlan(pet, [], at('2026-11-19T10:00:00Z'), now, CHICAGO); // 4:00 am, breakfast window opens 5:00
+    assert.equal(early.kind === 'extra' && early.reason, 'no-window');
+    assert.match(earlierPlanLine(early, CHICAGO), /No meal is planned around then/);
     const sundayOnly = { ...pet, mealPlan: { slots: [slots[1]], effectiveFrom: '2026-11-01', confirmedAt: null }, mealPlanHistory: [] };
     const sunday = new Date('2026-11-23T02:00:00Z'); // Sunday 8:00 pm in Chicago
     const plan = earlierFeedPlan(sundayOnly, [], new Date('2026-11-23T00:30:00Z'), sunday, CHICAGO);
-    assert.deepEqual(plan, { kind: 'off-day', amount: 0.5, unit: 'Cans' });
+    assert.deepEqual(plan, { kind: 'extra', reason: 'off-day', slotName: 'Dinner', alreadyFed: null, amount: 0.5, unit: 'Cans' });
     assert.match(earlierPlanLine(plan, CHICAGO), /No meals were planned that day/);
+  });
+
+  it('a pet without meal times logs its usual portion', () => {
     const legacy = { name: 'Pixel', foodSchedule: 'One can morning and evening', portionAmount: 1, portionUnit: 'Cans' as const };
     const plain = earlierFeedPlan(legacy, null, at('2026-11-19T13:30:00Z'), now, CHICAGO);
-    assert.equal(plain.kind, 'legacy');
+    assert.deepEqual(plain, { kind: 'legacy', amount: 1, unit: 'Cans' });
     assert.equal(earlierPlanLine(plain, CHICAGO), 'Logs 1 can.');
+  });
+
+  it('an extra stays an extra in the status: it never fills another meal', () => {
+    const extra = { id: 'x', date: at('2026-11-19T14:00:00Z'), extra: true, loggedByName: 'Max' };
+    const day = feedsOnDay([breakfastLog, extra], '2026-11-19', now, CHICAGO);
+    const { bySlot, extras } = attributeFeeds(slots as never, day);
+    assert.deepEqual(bySlot.map((feeds) => feeds.map((feed) => feed.id)), [['a'], []]);
+    assert.deepEqual(extras.map((feed) => feed.id), ['x']);
+  });
+
+  describe('planFeed writes what the dialog showed (the personal and tablet operations share it)', () => {
+    const snapshot = (recent: Array<Record<string, unknown>>) => ({
+      now, timeZone: CHICAGO, perDay: null, dayPlan: planForDay(pet, '2026-11-19'), stored: null, latestSurvives: false,
+      recent: recent as never, known: null, existing: null, pet,
+    });
+    const write = (recent: Array<Record<string, unknown>>, backdatedAt: Date) => {
+      const plan = planFeed(snapshot(recent), { userUid: 'u', userName: 'Max', logId: 'log-earlier', backdatedAt });
+      assert.equal(plan.kind, 'write');
+      return plan as Extract<ReturnType<typeof planFeed>, { kind: 'write' }>;
+    };
+
+    it('8:00 am after breakfast: extra, no slot', () => {
+      const plan = write([breakfastLog], at('2026-11-19T14:00:00Z'));
+      assert.equal(plan.extra, true);
+      assert.equal(plan.slot, null);
+      assert.equal(plan.slotId, null);
+      assert.equal(plan.live, false);
+    });
+
+    it('7:30 pm with dinner unfed: dinner, recorded on the log and in slotsFed', () => {
+      const plan = write([breakfastLog], at('2026-11-20T01:30:00Z'));
+      assert.deepEqual(plan.slot, { id: 'dinner', name: 'Dinner', amount: 0.5, unit: 'Cans' });
+      assert.equal(plan.slotId, 'dinner');
+      assert.equal(plan.extra, false);
+      assert.deepEqual(plan.state.slotsFed, { breakfast: 'a', dinner: 'log-earlier' });
+    });
+
+    it('a meal of an older plan is the slot but not written (the rules know only the current plan)', () => {
+      const plan = write([], at('2026-11-18T23:30:00Z'));
+      assert.equal(plan.slot?.id, 'supper');
+      assert.equal(plan.slotId, null);
+      assert.equal(plan.extra, false);
+    });
   });
 });
