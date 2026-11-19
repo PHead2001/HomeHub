@@ -75,7 +75,7 @@ describe('policy table', () => {
       'pets.weight.add': 'face', 'pets.weight.undo': 'face',
       'pets.note.pin': 'pin', 'pets.note.unpin': 'pin', 'pets.note.editPinned': 'pin', 'pets.note.delete': 'pin',
       'pets.log.delete': 'pin', 'pets.log.correctTime': 'pin', 'pets.medication.confirmLegacy': 'pin',
-      'pets.course.edit': 'pin', 'pets.course.finish': 'pin', 'pets.slots.confirm': 'pin', 'pets.slots.edit': 'pin',
+      'pets.course.edit': 'pin', 'pets.course.finish': 'pin', 'pets.course.resume': 'pin', 'pets.slots.confirm': 'pin', 'pets.slots.edit': 'pin',
       'pets.profile.edit': 'pin', 'pets.pet.create': 'pin', 'pets.pet.delete': 'pin', 'pets.photo.upload': 'not_on_tablets',
     };
     for (const [capability, levelClass] of Object.entries(expected)) {
@@ -128,10 +128,11 @@ describe('policy table', () => {
     assert.equal(isDeviceCapability(undefined), false);
   });
 
-  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care)', () => {
+  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care, F4b-2 doses, notes and weights)', () => {
     assert.deepEqual([...UNDO_PROVEN].sort(), [
       'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
-      'pets.care.add', 'pets.care.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
+      'pets.care.add', 'pets.care.undo', 'pets.dose.give', 'pets.dose.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
+      'pets.note.add', 'pets.note.undo', 'pets.weight.add', 'pets.weight.undo',
     ]);
   });
 

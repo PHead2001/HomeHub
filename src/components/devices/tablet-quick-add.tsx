@@ -7,9 +7,11 @@
 // action): a feed is `pets.feed` with the pet's planned portion and latest food type (the
 // server picks the meal slot and its portion), a chore is `chores.complete`. While a person
 // is remembered, only what they may do is offered (a child's face gets a child's options,
-// PE-17e); doses stay refused until their device action exists.
+// PE-17e). A dose opens the pet's medication list on the Pets board (F4b-2), where the course
+// and the dose time are chosen in Give dose (`pets.dose.give`).
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { CheckSquare, PawPrint, Pill } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -25,6 +27,7 @@ const ICON = { feed: PawPrint, dose: Pill, complete: CheckSquare } as const;
 export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
   const { data, settings, runAction, shell, person } = useTablet();
   const [text, setText] = useState('');
+  const router = useRouter();
   useUnsavedInput(text.trim().length > 0);
 
   // Every pet and every open chore of the week (uncapped section facts, never a preview).
@@ -52,10 +55,15 @@ export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
       });
       return;
     }
+    if (intent.kind === 'dose') {
+      // Which course and which dose are chosen in Give dose, from the pet's medication list.
+      router.push(`/pets/${encodeURIComponent(intent.petId)}?tab=medication`);
+      return;
+    }
     void runAction({
       capability: intent.capability,
       label: intent.label,
-      intent: intent.kind === 'complete' ? { choreId: intent.choreId } : { petId: intent.petId },
+      intent: { choreId: intent.choreId },
     });
   };
 

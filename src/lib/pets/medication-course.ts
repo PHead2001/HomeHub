@@ -41,7 +41,7 @@ import {
   type Occurrence,
 } from '../../../functions/src/shared/medication-schedule';
 import { localDay } from '../../../functions/src/shared/calendar';
-import { householdDayZone } from '../household-day';
+import { householdDayZone } from '../household-zone';
 import { currentMedications, formatAgo, parseLocalDate, type MedicationDue } from './care';
 import type { PetMedicationLog } from './types';
 

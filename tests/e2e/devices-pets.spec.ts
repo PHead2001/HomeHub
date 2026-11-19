@@ -2,7 +2,9 @@ import { expect, test, type BrowserContext, type Page, type TestInfo } from '@pl
 import { Timestamp } from 'firebase-admin/firestore';
 import {
   KID,
+  OWNER_PIN,
   TABLET_VIEWPORTS,
+  enterPin,
   createDeviceCode,
   householdRef,
   openTabletContext,
@@ -18,6 +20,10 @@ import {
 // face-chosen person feeds and is credited, Undo removes the feed; a feed recorded on another
 // device asks "Feed again?" and the answer is written once; a meal-slot pet logs the due
 // slot's portion; offline, then online, one feeding is stored; a care entry and its Undo.
+// F4b-2: Give dose from the pet's medication chip and from a reminder's ?dose= link, credited
+// to the chosen person, and its Undo; a behaviour note and a weighing with Undo (face level);
+// a PIN-level action (pinning a note) asks the PIN pad and nothing else does; the Pets board
+// and the pet sheet at 1263x818, 1263x722 and 1264x843 without page scroll, 48 px controls.
 
 const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'desktop-chromium', 'tablet journeys run once, in their own tablet-sized browser');
 const OWNER_UID = 'e2e-owner-uid';
@@ -80,6 +86,11 @@ test('setup: the owner pairs a tablet at 1263x818', async ({ page, browser }, te
   });
   await seedPet('offline');
   await seedPet('care');
+  await seedPet('meds');
+  await pet('meds').collection('medication-courses').doc('course-e2e').set({
+    name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 6, firstTime: '00:00' }, startDay: chicagoDay(), endDay: null, status: 'active', legacyKeys: [],
+    lastDose: null, prevDose: null, coveredUntil: null, createdAt: Timestamp.now(), createdByUid: OWNER_UID, createdByName: 'Owner', updatedAt: Timestamp.now(), updatedByUid: OWNER_UID, updatedByName: 'Owner',
+  });
   const code = await createDeviceCode(page, 'Pets tablet', 'Kitchen');
   tablet = await openTabletContext(browser, TABLET_VIEWPORTS[0]);
   await pairWithCode(tabletPage(), code);
@@ -178,3 +189,78 @@ test('at 1263x818 the Pets view has no page scroll and 48 px controls', async ({
     expect(box!.width).toBeGreaterThanOrEqual(48);
   }
 });
+
+const doses = (id: string) => pet(id).collection('medication-logs');
+
+test('Give dose from the medication chip, credited to the chosen person; Undo removes the record (F4b-2)', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-meds').getByTestId('medication-chips').getByRole('button').first().click();
+  await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
+  await page.getByTestId('give-dose-dialog').getByRole('button', { name: 'Record dose' }).click();
+  await pick(page, KID.uid);
+  await expect.poll(async () => (await doses('meds').get()).size, { timeout: 15_000 }).toBe(1);
+  const log = (await doses('meds').get()).docs[0].data();
+  expect(log.loggedByUid).toBe(KID.uid);
+  expect(log.courseId).toBe('course-e2e');
+  expect(log.deviceAttribution?.level).toBe('face');
+  await page.getByTestId('tablet-undo').first().click();
+  await expect.poll(async () => (await doses('meds').get()).size, { timeout: 15_000 }).toBe(0);
+  await page.keyboard.press('Escape');
+});
+
+test("a reminder's ?dose= link opens Give dose for that course on the tablet", async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await page.goto('/pets/meds?tab=medication&dose=course-e2e');
+  await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+});
+
+test('a behaviour note and a weighing are face-level with Undo; pinning a note asks the PIN pad', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-meds').click();
+  await page.getByTestId('tablet-pet-tab-notes').click();
+  await page.getByTestId('tablet-note-text').fill('Barked at the mail carrier');
+  await page.getByTestId('tablet-note-save').click();
+  await pick(page, OWNER_UID);
+  await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+  await expect.poll(async () => (await pet('meds').collection('notes').get()).size, { timeout: 15_000 }).toBe(1);
+  const noteId = (await pet('meds').collection('notes').get()).docs[0].id;
+  await page.getByTestId(`tablet-note-${noteId}`).getByRole('button', { name: 'Pin' }).click();
+  await expect(page.getByTestId('pin-pad')).toBeVisible();
+  await enterPin(page, OWNER_PIN);
+  await expect.poll(async () => (await pet('meds').collection('notes').doc(noteId).get()).get('pinned'), { timeout: 15_000 }).toBe(true);
+  await page.getByTestId('tablet-pet-tab-weight').click();
+  await page.getByTestId('tablet-weight-value').fill('12.4');
+  await page.getByTestId('tablet-weight-save').click();
+  await expect.poll(async () => (await pet('meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
+  await page.getByTestId('tablet-undo').first().click();
+  await expect.poll(async () => (await pet('meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(0);
+  await page.keyboard.press('Escape');
+});
+
+for (const viewport of TABLET_VIEWPORTS) {
+  test(`at ${viewport.width}x${viewport.height} the Pets board has no page scroll; the pet sheet keeps 48 px controls`, async ({}, testInfo) => {
+    desktopOnly(testInfo);
+    const page = tabletPage();
+    await page.setViewportSize(viewport);
+    await openPets(page);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight && document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.getByTestId('tablet-pet-more-meds').click();
+    await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible();
+    for (const testId of ['tablet-pet-tab-medication', 'tablet-pet-tab-profile', 'tablet-give-course-e2e']) {
+      const box = await page.getByTestId(testId).boundingBox();
+      expect(box!.height).toBeGreaterThanOrEqual(48);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+    await page.keyboard.press('Escape');
+  });
+}

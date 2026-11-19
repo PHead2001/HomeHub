@@ -91,7 +91,8 @@ import { PinPadDialog } from './pin-pad';
 import { AmbientScreen, NightDim } from './tablet-overlays';
 import { canSend, useDeviceActions } from './use-device-actions';
 import { FeedAgainPrompt } from './feed-again-prompt';
-import type { FeedAgainCheck } from '@/lib/devices/device-action-answers';
+import type { DoseAgainCheck, FeedAgainCheck } from '@/lib/devices/device-action-answers';
+import { doseConfirmOf, doseRepeatReason } from '@/lib/pets/medication-course';
 import { feedAgainReason } from '@/lib/pets/feed-decision';
 import { feedConfirmOf } from '@/lib/pets/feed-plan';
 import { TabletUpdateWatcher } from './tablet-update-watcher';
@@ -431,7 +432,7 @@ function ComfortSync({ settings }: { settings: DeviceSettings }) {
 type Prompt =
   | { kind: 'who'; purpose: 'admin' | 'action'; title: string; resolve: (person: RosterPerson | null) => void }
   | { kind: 'pin'; person: RosterPerson; resolve: (sessionId: string | null) => void }
-  | { kind: 'feed-again'; title: string; body: string; resolve: (yes: boolean) => void };
+  | { kind: 'feed-again'; title: string; body: string; yesLabel?: string; resolve: (yes: boolean) => void };
 
 
 function TabletFrame(props: {
@@ -583,6 +584,19 @@ function TabletFrame(props: {
     });
   }), [household.timeZone]);
 
+  // "Already given?" (PE-24k): the server's check for a dose, bound to the dose it named; the
+  // answer goes back with the same opId (a newer dose since: asked again, naming it).
+  const askDoseAgain = useCallback((check: DoseAgainCheck) => new Promise<Record<string, unknown> | null>((resolve) => {
+    const since = check.staleConfirm ? 'Someone recorded a dose since you were asked. ' : '';
+    setPrompt({
+      kind: 'feed-again',
+      title: 'Already given?',
+      body: `${since}${doseRepeatReason(check.check, new Date(), household.timeZone)} Record another dose anyway?`,
+      yesLabel: 'Record again',
+      resolve: (yes) => { setPrompt(null); resolve(yes ? { confirm: doseConfirmOf(check.check) } : null); },
+    });
+  }), [household.timeZone]);
+
   const message = useCallback((code: DeviceRefusal, who?: RosterPerson | null, retryAfterSec?: number) => {
     const response = deviceRefusalResponse(code, { name: who?.name, kid: who?.role === 'child', retryAfterSec });
     if (response.kind === 'revoked') return endSession(code === 'household_deleting' ? 'household-deleted' : 'removed');
@@ -650,7 +664,7 @@ function TabletFrame(props: {
     const policy = policyOf(request.capability);
     const sendable = canSend(request.capability);
     if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never' || (!request.execute && !sendable)) {
-      // Not offered on tablets (chores, pets feeding and care so far; the rest stays refused, as on the server).
+      // Not offered on tablets (everything but chores and Pets; pet create and photos too), as on the server.
       message('not_on_tablets');
       return { ok: false };
     }
@@ -684,7 +698,7 @@ function TabletFrame(props: {
       const subject = request.subject ?? request.label;
       const result = await whileBusy('save', deviceActions.perform({
         capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who, onReverted: request.onReverted,
-        confirm: (check) => askFeedAgain(check, subject),
+        confirm: (check) => ('kind' in check ? askDoseAgain(check) : askFeedAgain(check, subject)),
       })).catch((): TabletActionOutcome => ({ ok: false }));
       if (result.ok) credit();
       return result;
@@ -698,7 +712,7 @@ function TabletFrame(props: {
     if (answer.code === 'pin_session_invalid' || answer.code === 'pin_required' || answer.code === 'pin_fresh_required') apply({ type: 'pin-invalid' });
     message(answer.code, who, answer.retryAfterSec);
     return { ok: false };
-  }, [apply, askFeedAgain, askPerson, askPin, deviceActions, household.pointsPin, message, person, requestAdmin]);
+  }, [apply, askDoseAgain, askFeedAgain, askPerson, askPin, deviceActions, household.pointsPin, message, person, requestAdmin]);
 
   const done = useCallback(() => apply({ type: 'done' }), [apply]);
   const goStart = useCallback(() => router.push(startPath()), [router, startPath]);
@@ -765,7 +779,7 @@ function TabletFrame(props: {
         <WhoIsHereDialog purpose={prompt.purpose} title={prompt.title} people={roster} onPick={prompt.resolve} />
       )}
       {prompt?.kind === 'feed-again' && (
-        <FeedAgainPrompt title={prompt.title} body={prompt.body} onAnswer={prompt.resolve} />
+        <FeedAgainPrompt title={prompt.title} body={prompt.body} yesLabel={prompt.yesLabel} onAnswer={prompt.resolve} />
       )}
       {prompt?.kind === 'pin' && (
         <PinPadDialog

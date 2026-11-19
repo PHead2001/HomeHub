@@ -35,6 +35,8 @@ import {
   shoppingListsSection,
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
+import { TabletMedicationChips, TabletPetSheet } from './tablet-pet-sheet';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 // Every section view reads the UNCAPPED section facts (`data.sectionFacts`, SECTION_LIMITS)
 // through the selectors of src/lib/devices/tablet-sections.ts, a list's own live items, or the
@@ -141,7 +143,7 @@ function ChoresView({ roomId }: { roomId?: string }) {
  * picks the meal slot and its portion, and asks "Feed again?" when the shared check does);
  * care sends `pets.care.add`. Each offers Undo for 10 s.
  */
-function TabletPetRow({ pet, onCare }: { pet: PetState; onCare: (pet: PetState) => void }) {
+function TabletPetRow({ pet, onCare, onOpen }: { pet: PetState; onCare: (pet: PetState) => void; onOpen: (pet: PetState, doseCourseId?: string) => void }) {
   const action = useFeedAction(pet.id, pet.name, { onFed: () => playFeedback('complete') });
   const feed = pet.feed;
   const { run: runFeed } = action;
@@ -170,10 +172,14 @@ function TabletPetRow({ pet, onCare }: { pet: PetState; onCare: (pet: PetState) 
           <span className={cn('block text-sm', pet.fed === false ? 'font-semibold text-destructive' : pet.fed ? 'text-primary' : 'text-muted-foreground')}>
             {[pet.mealLine ?? pet.countLabel, pet.headline].filter(Boolean).join(' · ')}
           </span>
+          {action.allowed && <TabletMedicationChips petId={pet.id} onGive={(courseId) => onOpen(pet, courseId)} />}
         </span>
       </span>
       {action.allowed && (
         <span className="flex shrink-0 gap-2">
+          <button type="button" className={button} onClick={() => onOpen(pet)} aria-label={`More for ${pet.name}: medication, notes, weight, history, profile`} data-testid={`tablet-pet-more-${pet.id}`}>
+            More
+          </button>
           <button type="button" className={button} onClick={() => onCare(pet)} aria-label={`Log care for ${pet.name}`} data-testid={`tablet-pet-care-${pet.id}`}>
             <HeartPulse aria-hidden className="h-5 w-5" /> Care
           </button>
@@ -233,16 +239,38 @@ function TabletCareDialog({ pet, onClose }: { pet: PetState; onClose: () => void
 }
 
 function PetsView() {
-  const { data } = useTablet();
+  const { data, settings } = useTablet();
   const pets = petsSection(data.sectionFacts ?? {});
   const status = loadingOr(Boolean(pets), data.failed.has('pets'));
   const [caring, setCaring] = useState<PetState | null>(null);
+  const [open, setOpen] = useState<{ id: string; name: string; dose?: string | null } | null>(null);
+  // A reminder's (or Calendar's) link, `/pets/<id>?tab=medication&dose=<courseId>`: the pet's
+  // sheet opens on Medication with Give dose for that course; the link then leaves the address.
+  const pathname = usePathname();
+  const search = useSearchParams();
+  const router = useRouter();
+  const linkedPet = pathname?.split('/')[2] ? decodeURIComponent(pathname.split('/')[2]) : null;
+  const linkedDose = search?.get('dose') ?? null;
+  const linkKey = linkedPet ? `${linkedPet}|${linkedDose ?? ''}` : null;
+  const [handledLink, setHandledLink] = useState<string | null>(null);
+  // Handled once the pets have loaded (state adjusted during render); a link that left the address can open again.
+  if (linkKey && linkKey !== handledLink && pets) {
+    setHandledLink(linkKey);
+    const pet = settings.sections.pets ? pets.find((entry) => entry.id === linkedPet) : undefined;
+    if (pet) setOpen({ id: pet.id, name: pet.name, dose: linkedDose });
+  } else if (!linkKey && handledLink) {
+    setHandledLink(null);
+  }
+  useEffect(() => {
+    if (linkKey && handledLink === linkKey) router.replace('/pets');
+  }, [handledLink, linkKey, router]);
   return (
     <Section title="Pets" icon={PawPrint} testId="tablet-view-pets" empty={status ?? (pets && pets.length === 0 ? 'No pets yet.' : null)}>
       <ul className="space-y-2">
-        {pets?.map((pet) => <TabletPetRow key={pet.id} pet={pet} onCare={setCaring} />)}
+        {pets?.map((pet) => <TabletPetRow key={pet.id} pet={pet} onCare={setCaring} onOpen={(target, dose) => setOpen({ id: target.id, name: target.name, dose })} />)}
       </ul>
       {caring && <TabletCareDialog pet={caring} onClose={() => setCaring(null)} />}
+      {open && <TabletPetSheet petId={open.id} petName={open.name} doseCourseId={open.dose} onClose={() => setOpen(null)} />}
     </Section>
   );
 }

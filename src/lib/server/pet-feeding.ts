@@ -43,7 +43,7 @@ export class PetFeedingError extends Error {
 }
 
 /** The Admin SDK's two time values for the shared document builders. */
-const ADMIN_TIMES: FeedTimes = { serverTime: () => FieldValue.serverTimestamp(), timestamp: (at) => Timestamp.fromDate(at) };
+export const ADMIN_TIMES: FeedTimes = { serverTime: () => FieldValue.serverTimestamp(), timestamp: (at) => Timestamp.fromDate(at) };
 
 /** A backdated time may be at most this far ahead of the server clock (the detailed form's margin). */
 const BACKDATED_FUTURE_MS = 60_000;
@@ -51,18 +51,18 @@ const DAY_READ_LIMIT = 100;
 const MIN_TIMESTAMP = Timestamp.fromMillis(-62135596800000);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-const householdRef = (db: Firestore, householdId: string) => {
+export const householdRef = (db: Firestore, householdId: string) => {
   if (!isDocId(householdId)) throw new PetFeedingError('invalid');
   return db.collection('households').doc(householdId);
 };
 
-const petIdOf = (value: unknown): string => {
+export const petIdOf = (value: unknown): string => {
   if (!isDocId(value)) throw new PetFeedingError('invalid');
   return value;
 };
 
 /** The household (must exist and not be deleting) and its time zone. */
-const readHousehold = async (tx: Transaction, ref: DocumentReference) => {
+export const readHousehold = async (tx: Transaction, ref: DocumentReference) => {
   const snap = await tx.get(ref);
   if (!snap.exists || snap.get('deletingAt')) throw new PetFeedingError('not-found');
   return safeTimeZone(snap.get('timeZone'));
@@ -73,7 +73,7 @@ const readHousehold = async (tx: Transaction, ref: DocumentReference) => {
  * Timestamp-dated ones, read inside the transaction: what the state is derived from (the
  * Admin twin of `stateFeedings` in feed-transaction.ts).
  */
-async function stateFeedings(tx: Transaction, logs: FirebaseFirestore.CollectionReference, start: Date): Promise<StateLog[]> {
+export async function stateFeedings(tx: Transaction, logs: FirebaseFirestore.CollectionReference, start: Date): Promise<StateLog[]> {
   const stringFloor = new Date(start.getTime() - 24 * 3_600_000).toISOString().slice(0, 10);
   const [stamped, strings, newest] = await Promise.all([
     tx.get(logs.where('date', '>=', Timestamp.fromDate(start)).orderBy('date', 'desc').limit(DAY_READ_LIMIT)),
@@ -286,7 +286,7 @@ export type PetUndoOutcome =
   | { status: 'undone'; petId: string; logId: string }
   | { status: 'not_applied' | 'already'; petId: null; logId: null };
 
-const undoContext = (ctx: OperationContext & { authority?: DeviceAuthority }) => {
+export const undoContext = (ctx: OperationContext & { authority?: DeviceAuthority }) => {
   if (!ctx.authority || !ctx.opId || !ctx.hooks) throw new DeviceActionError('invalid_input');
   return ctx.authority;
 };
@@ -301,7 +301,7 @@ const logOfEntry = (house: DocumentReference, entry: DeviceOp, collection: 'feed
   return { pet, log: pet.collection(collection).doc(rest[2]) };
 };
 
-const optionalPetId = (value: unknown): string | null => (value === undefined || value === null ? null : petIdOf(value));
+export const optionalPetId = (value: unknown): string | null => (value === undefined || value === null ? null : petIdOf(value));
 
 /**
  * The Undo of a tablet's feed (`pets.feed.undo`), by the original's opId (design 10.1-10.2):

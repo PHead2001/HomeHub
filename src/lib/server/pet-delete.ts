@@ -60,6 +60,16 @@ export type PetPhotoBucket = {
 type Hooks = {
   /** Runs after the pet document is gone (step 1), before the sweep. Tests use it to simulate a crash or a late write. */
   afterBarrier?: () => Promise<void>;
+  /**
+   * A registered tablet's gate hooks (F4b-2, `pets.pet.delete`): `precheck` is the barrier
+   * transaction's first statement (a replay of the same opId writes nothing there, and the
+   * sweep below still finishes whatever is left), `finalize` its last (op ledger entry and
+   * the `device.action` activity entry).
+   */
+  device?: {
+    precheck(transaction: FirebaseFirestore.Transaction): Promise<{ replay?: unknown }>;
+    finalize(transaction: FirebaseFirestore.Transaction, existed: boolean, name: string | null): void;
+  };
 };
 
 /**
@@ -142,8 +152,13 @@ export async function deletePetCascade(
 
   // 1. Barrier: tombstone + activity entry + pet document, in one transaction.
   const started = await db.runTransaction(async (transaction) => {
+    const replay = hooks.device ? Boolean((await hooks.device.precheck(transaction)).replay) : false;
     const [pet, tombstone] = await Promise.all([transaction.get(petRef), transaction.get(tombstoneRef)]);
-    if (!pet.exists) return tombstone.exists ? { photoUrl: tombstone.get('photoUrl') as unknown, existed: true } : { photoUrl: null, existed: false };
+    if (!pet.exists || replay) {
+      const found = tombstone.exists ? { photoUrl: tombstone.get('photoUrl') as unknown, existed: true } : { photoUrl: null, existed: false };
+      if (!replay) hooks.device?.finalize(transaction, found.existed, tombstone.exists ? (tombstone.get('name') as string | null) ?? null : null);
+      return found;
+    }
     const name = typeof pet.get('name') === 'string' ? (pet.get('name') as string) : 'Pet';
     transaction.set(tombstoneRef, {
       petId: input.petId,
@@ -161,6 +176,7 @@ export async function deletePetCascade(
       details: { petId: input.petId, petName: name },
     });
     transaction.delete(petRef);
+    hooks.device?.finalize(transaction, true, name);
     return { photoUrl: pet.get('photoUrl') as unknown, existed: true };
   });
   await hooks.afterBarrier?.();

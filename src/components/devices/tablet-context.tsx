@@ -31,7 +31,7 @@ export type TabletActionAnswer = { ok: true } | { ok: false; code: DeviceRefusal
 
 /**
  * A request to do something on the tablet. A capability the tablet can send to the server
- * (F4a: chores; F4b-1: pets feeding and care) goes through the device action runtime with `intent` as its payload
+ * (F4a: chores; F4b-1 and F4b-2: Pets) goes through the device action runtime with `intent` as its payload
  * (`use-device-actions.tsx`: opId, Undo journal, offline queue). `execute` runs a custom
  * call instead (tablet settings, exits). Anything else is refused at once.
  */
