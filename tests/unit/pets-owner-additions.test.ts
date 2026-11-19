@@ -415,3 +415,35 @@ describe('Codex P2 follow-ups on P5 (#186)', () => {
     assert.match(upkeep, /resumePetDeletions\(/, 'the hourly upkeep resumes tombstones');
   });
 });
+
+describe('Notes and weight icon buttons meet the touch target rule (D-2)', () => {
+  const button = read('src/components/ui/button.tsx');
+  it('the shared icon size grows to 48 px on coarse pointers and has a 44 px hit area on fine pointers', () => {
+    assert.match(button, /icon: "touch-target h-10 w-10"/);
+    assert.match(button, /"hit-slop relative /);
+    const css = read('src/app/globals.css');
+    assert.match(css, /--target-min: 2\.75rem;/, '44 px floor');
+    assert.match(css, /@media \(pointer: coarse\) \{\s*:root \{\s*--target-min: 3rem;/, '48 px on touch');
+    assert.match(css, /\.touch-target \{\s*min-width: var\(--target-min\);\s*min-height: var\(--target-min\);/);
+  });
+
+  for (const path of ['src/components/pets/notes-tab.tsx', 'src/components/pets/weight-card.tsx']) {
+    it(`${path}: icon buttons keep the shared size (never shrunk below 40 px)`, () => {
+      const source = read(path);
+      const icons = source.match(/<Button[^>]*size="icon"[^>]*>/g) ?? [];
+      assert.ok(icons.length > 0);
+      for (const tag of icons) {
+        assert.doesNotMatch(tag, /\b(h|w|size)-(\d|1[01]|\[)/, `no h-/w-/size- override: ${tag}`);
+      }
+    });
+  }
+
+  it('neighbouring note actions are 40 px with a 4 px gap, so 44 px hit areas never overlap, and wrap under the text when narrow', () => {
+    const tab = read('src/components/pets/notes-tab.tsx');
+    assert.match(tab, /className="ml-auto flex flex-shrink-0 items-center gap-1" data-testid="note-actions"/);
+    // 40 + 4 = 44: centres of neighbours are at least --target-min apart on a fine pointer;
+    // on touch each grows to 48 and the 4 px gap stays.
+    assert.equal((tab.match(/flex flex-wrap items-start justify-between gap-x-3 gap-y-1/g) ?? []).length, 2, 'pinned and behaviour rows wrap');
+    assert.equal((tab.match(/min-w-0 flex-1 basis-48/g) ?? []).length, 2, 'the text keeps at least 12rem before the actions wrap (no sideways scroll at 390 px)');
+  });
+});

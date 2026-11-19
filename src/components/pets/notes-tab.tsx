@@ -167,24 +167,24 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
     if (!canEdit && !canDelete) return null;
     const label = note.text.slice(0, 40);
     return (
-      <div className="flex flex-shrink-0 items-center gap-1">
+      <div className="ml-auto flex flex-shrink-0 items-center gap-1" data-testid="note-actions">
         {canEdit && note.pinned && !first && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Show "${label}" first`} onClick={() => void pinChange(note, true)}>
+          <Button variant="ghost" size="icon" aria-label={`Show "${label}" first`} onClick={() => void pinChange(note, true)}>
             <ArrowUpToLine className="h-4 w-4" />
           </Button>
         )}
         {canEdit && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={note.pinned ? `Unpin "${label}"` : `Pin "${label}"`} onClick={() => void pinChange(note, !note.pinned)}>
+          <Button variant="ghost" size="icon" aria-label={note.pinned ? `Unpin "${label}"` : `Pin "${label}"`} onClick={() => void pinChange(note, !note.pinned)}>
             {note.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
           </Button>
         )}
         {canEdit && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setEditing(note); }}>
+          <Button variant="ghost" size="icon" aria-label={`Edit "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setEditing(note); }}>
             <Pencil className="h-4 w-4" />
           </Button>
         )}
         {canDelete && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Delete "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setToDelete(note); }}>
+          <Button variant="ghost" size="icon" aria-label={`Delete "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setToDelete(note); }}>
             <Trash2 className="h-4 w-4" />
           </Button>
         )}
@@ -308,8 +308,8 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
             {!pinned.loading && !pinned.error && pinned.items.length > 0 && (
               <ul className="space-y-2" data-testid="pinned-notes">
                 {pinned.items.map((note, index) => (
-                  <li key={note.id} className="flex items-start justify-between gap-3 rounded-md border border-border bg-secondary/40 p-3 text-sm">
-                    <div className="min-w-0 space-y-1">
+                  <li key={note.id} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-secondary/40 p-3 text-sm">
+                    <div className="min-w-0 flex-1 basis-48 space-y-1">
                       <p className="flex items-start gap-2 break-words font-medium text-foreground [overflow-wrap:anywhere]">
                         <Pin aria-hidden className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
                         <span>{note.text}</span>
@@ -341,8 +341,8 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
               <p className="py-4 text-center text-sm text-muted-foreground">No entries yet.</p>
             )}
             {!entries.loading && !entries.error && entries.items.map((note) => (
-              <div key={note.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
-                <div className="min-w-0 space-y-1">
+              <div key={note.id} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-md bg-secondary/50 p-3 text-sm">
+                <div className="min-w-0 flex-1 basis-48 space-y-1">
                   <p className="break-words text-foreground [overflow-wrap:anywhere]">{note.text}</p>
                   {meta(note, true)}
                 </div>

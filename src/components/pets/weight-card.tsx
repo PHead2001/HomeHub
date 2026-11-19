@@ -238,7 +238,7 @@ export function WeightCard({ pet }: { pet: PetProfile }) {
                       </p>
                     </div>
                     {mayDeleteWeight(entry, actor, now) && (
-                      <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" aria-label={`Delete the weight from ${when}`} onClick={() => setToDelete(entry)}>
+                      <Button variant="ghost" size="icon" className="flex-shrink-0" aria-label={`Delete the weight from ${when}`} onClick={() => setToDelete(entry)}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
