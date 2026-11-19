@@ -10,6 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import type { ResilientHandle } from '@/lib/dashboard/resilient-listener';
 import { petListenerKey, petSnapshotListener, staleNoticeText } from '@/lib/pets/live-listener';
+import { useSettledPetAccess } from './pets/pet-access';
 import type { PetProfile } from '@/lib/pets/types';
 import { FEED_SHORTCUT_PARAM, loggerName, petHref, quickFeedDecision, wantsQuickFeed } from '@/lib/pets/care';
 import { Stagger, StaggerItem } from './motion/stagger';
@@ -88,7 +89,11 @@ export function PetsClient() {
   // `failed`: the list could not be read (`retrying`: it resubscribes on its own;
   // `unauthorized`: access was refused, so no "Try again" is offered, PE-18c).
   // Keyed by the listener (household, member, pets.view), so access returning starts a fresh read.
-  const listKey = petListenerKey(householdId ? `${householdId}/pets` : null, { uid: currentUser?.uid, canView: Boolean(permissions['pets.view']) });
+  // On the settled access (`useSettledPetAccess`): nothing subscribes until membership has
+  // loaded, so permissions settling after the first render never re-key the list (which
+  // would drop the loaded grid back to the skeleton and remount every card).
+  const access = useSettledPetAccess();
+  const listKey = access ? petListenerKey(householdId ? `${householdId}/pets` : null, access) : null;
   const [snapshot, setSnapshot] = useState<{ key: string | null; pets: PetProfile[]; loaded: boolean; failed: false | 'retrying' | 'unauthorized' }>({
     key: null,
     pets: [],

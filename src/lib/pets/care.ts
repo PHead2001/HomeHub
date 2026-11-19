@@ -330,9 +330,17 @@ export type MedicationDue = {
   days: number;
   state: 'overdue' | 'due' | 'soon' | 'upcoming';
   label: string;
+  /** A course's next dose (P3): the course and the scheduled occurrence. Absent on legacy countdowns. */
+  courseId?: string;
+  occurrenceKey?: string;
+  /** A legacy countdown's grouping key (trimmed, lower-cased name). */
+  legacyKey?: string;
 };
 
-type MedicationCountdownInput = Pick<PetMedicationLog, 'date' | 'medication' | 'dosage' | 'nextDueDate'>;
+type MedicationCountdownInput = Pick<PetMedicationLog, 'date' | 'medication' | 'dosage' | 'nextDueDate' | 'courseId' | 'oneOff'>;
+
+/** An entry of the legacy, name-keyed model: no course and not a one-off dose (D-P8). */
+const isLegacyEntry = (log: Pick<PetMedicationLog, 'courseId' | 'oneOff'>) => !log.courseId && log.oneOff !== true;
 
 /**
  * Every current medication countdown, most urgent first (earliest due date, then
@@ -341,8 +349,8 @@ type MedicationCountdownInput = Pick<PetMedicationLog, 'date' | 'medication' | '
  * countdown. This is the one countdown rule: the pet card chips, the Medication
  * tab, the calendar's upcoming doses and (mirrored) the server reminders use it.
  */
-export function currentMedications(logs: MedicationCountdownInput[], now: Date, timeZone?: string | null): MedicationDue[] {
-  return currentMedicationsOn(logs, petDay(now, timeZone));
+export function currentMedications(logs: MedicationCountdownInput[], now: Date, timeZone?: string | null, taken?: ReadonlySet<string>): MedicationDue[] {
+  return currentMedicationsOn(logs, petDay(now, timeZone), taken);
 }
 
 /**
@@ -351,11 +359,14 @@ export function currentMedications(logs: MedicationCountdownInput[], now: Date, 
  * the Medication tab and the Calendar agree with it on "Due today" across
  * midnight and daylight-saving changes.
  */
-export function currentMedicationsOn(logs: MedicationCountdownInput[], today: string): MedicationDue[] {
+export function currentMedicationsOn(logs: MedicationCountdownInput[], today: string, taken?: ReadonlySet<string>): MedicationDue[] {
   const latest = new Map<string, { at: number; log: MedicationCountdownInput }>();
   for (const log of logs) {
+    // Course doses and one-off doses are not legacy countdowns; a name a course
+    // took over (confirmed, merged or finished, D-P8) no longer counts down.
+    if (!isLegacyEntry(log)) continue;
     const key = (log.medication ?? '').trim().toLowerCase();
-    if (!key) continue;
+    if (!key || taken?.has(key)) continue;
     const at = toDate(log.date)?.getTime() ?? 0;
     const current = latest.get(key);
     if (!current || at > current.at) latest.set(key, { at, log });
@@ -365,7 +376,7 @@ export function currentMedicationsOn(logs: MedicationCountdownInput[], today: st
     const due = parseLocalDate(log.nextDueDate);
     if (!due || !log.nextDueDate) continue;
     const days = diffDays(log.nextDueDate, today);
-    dues.push({ medication: log.medication, dosage: log.dosage, due, dueDay: log.nextDueDate, days, ...medicationState(days) });
+    dues.push({ medication: log.medication, dosage: log.dosage, due, dueDay: log.nextDueDate, days, ...medicationState(days), legacyKey: (log.medication ?? '').trim().toLowerCase() });
   }
   return dues.sort((a, b) => a.dueDay.localeCompare(b.dueDay) || a.medication.localeCompare(b.medication));
 }
@@ -391,10 +402,11 @@ export function chipOverflow<T>(items: readonly T[], max: number): { shown: T[];
  * pending. Dates may be ISO strings or Firestore timestamps (legacy shapes).
  */
 export function pendingWindowStart(
-  datedLogs: { date: unknown; medication?: string; nextDueDate?: string }[],
+  datedLogs: { date: unknown; medication?: string; nextDueDate?: string; courseId?: string; oneOff?: boolean }[],
 ): Date | null {
   const latest = new Map<string, Date>();
   for (const log of datedLogs) {
+    if (!isLegacyEntry(log)) continue;
     const key = (log.medication ?? '').trim().toLowerCase();
     const date = toDate(log.date);
     if (!key || !date || !parseLocalDate(log.nextDueDate)) continue;

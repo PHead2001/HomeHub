@@ -97,7 +97,9 @@ describe('calendar events', () => {
     assert.match(source, /addDaysToKey\(selectedDay, direction\)/);
     // Medication days are the household's (PE-7b), not the device's.
     assert.match(source, /medicationEvents\(medication, timeZone\)/);
-    assert.match(source, /medicationDueEvents\(medication, householdToday\)/);
+    assert.match(source, /medicationDueEvents\(medication, householdToday, courses\)/);
+    // Course occurrences (P3) come from the shared schedule model, in the household zone.
+    assert.match(source, /courseDueEvents\(courses, new Date\(\), timeZone,/);
     assert.match(source, /<Stagger as="ol"/);
     assert.match(source, /<PeekCard/);
   });

@@ -19,13 +19,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
-import { useAuth } from '@/hooks/use-auth';
-
-/** Who reads: listeners are recreated when the member or their pets.view changes (access returning recovers). */
-function usePetAccess() {
-  const { currentUser, permissions } = useAuth();
-  return { uid: currentUser?.uid ?? null, canView: Boolean(permissions['pets.view']) };
-}
+import { useSettledPetAccess } from './pet-access';
 import { mergeById, newestFirst, pendingWindowStart, toDate } from '@/lib/pets/care';
 import type { PetCareLog, PetFeedingLog, PetMedicationLog } from '@/lib/pets/types';
 
@@ -158,9 +152,13 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
   kind: PetLogKind,
   max = 50,
 ): LiveLogs<T> {
-  const key = petListenerKey(householdId ? `${householdId}/${petId}/${kind}/${max}` : null, usePetAccess());
+  // Keyed on the settled access (`useSettledPetAccess`): until membership has
+  // loaded nothing subscribes and the logs read as loading, never as empty.
+  const access = useSettledPetAccess();
+  const key = access ? petListenerKey(householdId ? `${householdId}/${petId}/${kind}/${max}` : null, access) : null;
   const state = useLiveUnion({ key, householdId, petId, kind, mode: 'shapes', max });
 
+  if (householdId && !access) return { logs: [], loading: true, error: null };
   if (!key) return { logs: [], loading: false, error: null };
   // Until the current subscriptions answer, show loading (never another pet's logs).
   if (state.key !== key) return { logs: [], loading: true, error: null };
@@ -178,7 +176,8 @@ export function usePetLogs<T extends PetFeedingLog | PetMedicationLog | PetCareL
  * single-field indexes.
  */
 export function useMedicationCountdownLogs(householdId: string | null | undefined, petId: string): LiveLogs<PetMedicationLog> {
-  const key = petListenerKey(householdId ? `${householdId}/${petId}` : null, usePetAccess());
+  const access = useSettledPetAccess();
+  const key = access ? petListenerKey(householdId ? `${householdId}/${petId}` : null, access) : null;
   const dated = useLiveUnion({ key, householdId, petId, kind: 'medication-logs', mode: 'dated' });
 
   const datedReady = dated.key === key && !dated.error;
@@ -187,6 +186,7 @@ export function useMedicationCountdownLogs(householdId: string | null | undefine
   const sinceKey = key && since ? `${key}@${since.toISOString()}` : null;
   const recent = useLiveUnion({ key: sinceKey, householdId, petId, kind: 'medication-logs', mode: 'shapes', sinceMs: since?.getTime() ?? null });
 
+  if (householdId && !access) return { logs: [], loading: true, error: null };
   if (!key) return { logs: [], loading: false, error: null };
   if (dated.key !== key) return { logs: [], loading: true, error: null };
   if (dated.error) return { logs: [], loading: false, error: dated.error, failure: dated.failure };

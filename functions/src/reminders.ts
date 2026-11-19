@@ -461,7 +461,13 @@ export const runHouseholdReminders = async (
 
   // Returns false when the household disappeared or started deleting,
   // otherwise what was written.
-  const ensure = async (id: string, fields: Record<string, unknown>) => {
+  // `refreshCopy`: an open reminder whose title, message or link no longer
+  // match (a pet or course renamed) is updated in place, without a new push
+  // (PE-30d: no stale name stays in the bell).
+  const ensure = async (
+    id: string, fields: Record<string, unknown>,
+    options: {refreshCopy?: boolean} = {},
+  ) => {
     const ref = house.collection("notifications").doc(id);
     const created = await db.runTransaction(async (tx) => {
       const [home, snap] = await Promise.all([tx.get(house), tx.get(ref)]);
@@ -516,6 +522,15 @@ export const runHouseholdReminders = async (
         });
         return "refreshed";
       }
+      if (options.refreshCopy && (snap.get("title") !== fields.title ||
+          snap.get("message") !== fields.message ||
+          snap.get("deepLink") !== fields.deepLink)) {
+        tx.update(ref, {
+          title: fields.title, message: fields.message,
+          deepLink: fields.deepLink,
+        });
+        return "unchanged";
+      }
       return "unchanged";
     });
     if (created === "created") result.createdNotifications++;
@@ -544,17 +559,27 @@ export const runHouseholdReminders = async (
   }
 
   // Pet medication reminders (household-wide, like maintenance): one per
-  // countdown state, in the household's day. Every entry of each pet is read
-  // so a later dose without a next due date cancels the countdown, exactly
-  // as on the pet's page.
+  // countdown state, in the household's day. Courses remind per scheduled
+  // occurrence (their next due one, once reached); legacy medications (no
+  // course yet, D-P8) keep the name-keyed countdown, so every entry of each
+  // pet is read and a later legacy dose without a next due date cancels it,
+  // exactly as on the pet's page.
   const petsSnap = await house.collection("pets").get();
-  const pets: PetInput[] = await Promise.all(petsSnap.docs.map(async (pet) => ({
-    id: pet.id,
-    name: pet.get("name"),
-    logs: (await pet.ref.collection("medication-logs").get()).docs
-      .map((log) => log.data()),
-  })));
-  for (const r of buildMedicationReminders(pets, today)) {
+  const pets: PetInput[] = await Promise.all(petsSnap.docs.map(async (pet) => {
+    const [logs, courses] = await Promise.all([
+      pet.ref.collection("medication-logs").get(),
+      pet.ref.collection("medication-courses").get(),
+    ]);
+    return {
+      id: pet.id,
+      name: pet.get("name"),
+      logs: logs.docs.map((log) => ({id: log.id, ...log.data()})),
+      courses: courses.docs.map((course) =>
+        ({id: course.id, data: course.data()})),
+    };
+  }));
+  const clock = {now, timeZone};
+  for (const r of buildMedicationReminders(pets, today, clock)) {
     const kept = await ensure(
       deterministicNotificationId(r.sourceType, r.sourceId, r.stateKey), {
         category: "pets",
@@ -564,12 +589,13 @@ export const runHouseholdReminders = async (
         sourceType: r.sourceType,
         sourceId: r.sourceId,
         stateKey: r.stateKey,
-      });
+      }, {refreshCopy: true});
     if (!kept) return result;
   }
   // A reminder resolves once its countdown is no longer pending: a newer
-  // dose was logged (with a later due date, or none), or the pet is gone.
-  const pending = pendingCycles(pets);
+  // dose was logged (with a later due date, or none), the course was
+  // finished, ended or rescheduled past it, or the pet is gone.
+  const pending = pendingCycles(pets, timeZone);
   const openMedication = (await house.collection("notifications")
     .where("sourceType", "==", MEDICATION_SOURCE_TYPE).get()).docs
     .filter((note) => !note.get("resolvedAt") &&
@@ -583,22 +609,27 @@ export const runHouseholdReminders = async (
     const status = await db.runTransaction(async (tx) => {
       const petRef = isDocId(petId) ?
         house.collection("pets").doc(petId) : null;
-      const [home, snap, pet, logs] = await Promise.all([
+      const [home, snap, pet, logs, courses] = await Promise.all([
         tx.get(house), tx.get(note.ref),
         petRef ? tx.get(petRef) : Promise.resolve(null),
         petRef ? tx.get(petRef.collection("medication-logs")) :
+          Promise.resolve(null),
+        petRef ? tx.get(petRef.collection("medication-courses")) :
           Promise.resolve(null),
       ]);
       if (!home.exists || home.get("deletingAt")) return "stopped";
       if (!snap.exists || snap.get("resolvedAt")) return "skipped";
       // Revalidate inside the transaction: this run's countdowns may be stale
       // (an overlapping run may have seen the dose deleted and reopened the
-      // reminder). The pet and its entries are read here, so a concurrent
-      // change retries this transaction rather than slipping past it.
-      const stillPending = Boolean(pet?.exists && logs) && pendingCycles([{
-        id: petId,
-        logs: logs!.docs.map((log) => log.data()),
-      }]).has(medicationCycle(sourceId, snap.get("stateKey")));
+      // reminder). The pet, its entries and its courses are read here, so a
+      // concurrent change retries this transaction rather than slipping past.
+      const stillPending = Boolean(pet?.exists && logs && courses) &&
+        pendingCycles([{
+          id: petId,
+          logs: logs!.docs.map((log) => ({id: log.id, ...log.data()})),
+          courses: courses!.docs.map((course) =>
+            ({id: course.id, data: course.data()})),
+        }], timeZone).has(medicationCycle(sourceId, snap.get("stateKey")));
       if (stillPending) return "skipped";
       tx.update(note.ref, {resolvedAt: ts(now)});
       return "resolved";
