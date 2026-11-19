@@ -267,6 +267,28 @@ describe('dose logs', () => {
     await assertSucceeds(setDoc(courseRef(session(people.owner), 'rev-course-0'), newCourse(people.owner, { doseRevision: 0 })));
   });
 
+  test('an offline dose the previous pointer names cannot be removed without moving the pointer (Codex round 7)', async () => {
+    const at = occurrenceAt(-1);
+    const earlier = occurrenceAt(-13);
+    const stamp = Timestamp.fromMillis(Date.now() - 60_000);
+    await seed(async (db) => {
+      await setDoc(logRef(db, 'off-prev'), { ...doseLog(people.child, earlier), date: stamp, loggedAt: Timestamp.now(), repeat: 'offline', clockSource: 'device' });
+      await setDoc(logRef(db, 'latest'), { ...doseLog(people.member, at), date: stamp, loggedAt: stamp });
+      await updateDoc(courseRef(db), {
+        lastDose: { logId: 'latest', occurrence: occurrenceKey(at), occurrenceAt: at, givenAt: stamp, byUid: people.member.uid, byName: 'Name' },
+        prevDose: { logId: 'off-prev', occurrence: occurrenceKey(earlier), occurrenceAt: earlier, givenAt: stamp, byUid: people.child.uid, byName: 'Name' },
+      });
+    });
+    const db = session(people.child);
+    // Its author, offline-style (no course write): refused while prevDose names it.
+    await assertFails(deleteDoc(logRef(db, 'off-prev')));
+    // With the previous pointer moved off it (and the revision): accepted.
+    const batch = writeBatch(db);
+    batch.delete(logRef(db, 'off-prev'));
+    batch.update(courseRef(db), { prevDose: null, ...bump });
+    await assertSucceeds(batch.commit());
+  });
+
   test('no dose for a finished course', async () => {
     await seed((db) => updateDoc(courseRef(db), { status: 'finished', finishedAt: Timestamp.now(), finishedByUid: people.owner.uid, finishedByName: 'Owner' }));
     await assertFails(giveDose(people.member, 'press-0040', occurrenceAt(-1)));

@@ -218,6 +218,19 @@ export const legacyMedicationKey = (name: unknown): string =>
   typeof name === "string" ? name.trim().toLowerCase() : "";
 
 /**
+ * Whether the course's stored pointers (`lastDose` or `prevDose`) name this
+ * dose log: such a log can only be removed online, in a commit that moves the
+ * pointers off it (the rules require the same), never by an offline delete.
+ * @param {Record<string, unknown>} data The course document as read.
+ * @param {string} logId The dose log.
+ * @return {boolean} True when a pointer names it.
+ */
+export const pointersName = (
+  data: Record<string, unknown> | undefined | null, logId: string,
+): boolean => [data?.lastDose, data?.prevDose].some((pointer) =>
+  readDosePointer(pointer)?.logId === logId);
+
+/**
  * The course's dose revision after one more dose write: every online dose
  * write (Give dose, Undo, a history delete; a device writer's Admin SDK
  * transaction too) stores it on the course in the same commit, even when the

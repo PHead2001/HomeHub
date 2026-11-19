@@ -213,8 +213,13 @@ export const DOSE_BACKDATE_MAX_MS = 7 * 24 * 3_600_000;
 /** A chosen given-at time may be this far ahead of the device clock (a slightly fast clock). */
 export const DOSE_FUTURE_SLACK_MS = 60_000;
 
-/** The answer to "already given?": the latest dose it named. */
-export type DoseConfirm = { lastLogId: string | null };
+/**
+ * The answer to "already given?": the dose it named and the occurrence it was
+ * asked for (`occurrenceId`). An answer is only good for that occurrence: when
+ * the selection changes under an open question (the minute clock drops the
+ * occurrence, a schedule edit), the answer is stale and the press asks again.
+ */
+export type DoseConfirm = { lastLogId: string | null; occurrence?: string };
 
 /** What the writer read, all from the same attempt. */
 export type DoseSnapshot = {
@@ -339,7 +344,9 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
   let confirmOf: string | null = null;
   if (check) {
     const confirm = intent.confirm;
-    if (!confirm || confirm.lastLogId !== (check.last?.logId ?? null)) {
+    // Bound to the dose it named, and to the occurrence it was asked for.
+    const boundElsewhere = confirm?.occurrence !== undefined && confirm.occurrence !== occurrenceId(occurrence);
+    if (!confirm || confirm.lastLogId !== (check.last?.logId ?? null) || boundElsewhere) {
       return { kind: 'needsConfirm', check, staleConfirm: Boolean(confirm) };
     }
     if (check.last) {
@@ -362,7 +369,18 @@ export function planDose(snapshot: DoseSnapshot, intent: DoseIntent): DosePlan {
 
 /** The answer to the "already given?" question it was shown for. */
 export function doseConfirmOf(check: DoseCheck): DoseConfirm {
-  return { lastLogId: check.last?.logId ?? null };
+  return { lastLogId: check.last?.logId ?? null, occurrence: occurrenceId(check.occurrence) };
+}
+
+/**
+ * Whether an open "already given?" question still applies: only for the
+ * occurrence it was asked about (`check.occurrence`) and while that occurrence
+ * is the one selected; otherwise the dialog hides it and the next press asks
+ * afresh. The dialog derives the shown question from this, so no
+ * automatic change of the selection can carry an old answer to a new dose.
+ */
+export function doseQuestionApplies(check: Pick<DoseCheck, 'occurrence'> | null, selected: Pick<Occurrence, 'key' | 'fold'> | null): boolean {
+  return Boolean(check && selected) && occurrenceId(check!.occurrence) === occurrenceId(selected!);
 }
 
 /* ------------------------------------------------------------------------- */

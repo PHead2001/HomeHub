@@ -29,6 +29,7 @@ import {
   coveredThrough,
   doseChoices,
   doseConfirmOf,
+  doseQuestionApplies,
   doseRepeatReason,
   lastDoseLine,
   newDoseOpId,
@@ -51,6 +52,7 @@ const REFUSALS: Record<MedicationActionError['reason'], string> = {
   missing: 'This course was removed meanwhile.',
   finished: 'This course was finished meanwhile.',
   'not-active': 'This course was finished meanwhile.',
+  changed: 'Someone else changed this course while you were editing. Close the form and open it again to see their changes.',
   occurrence: 'The schedule changed meanwhile. Pick the dose time again.',
   future: 'Pick a time that has already passed.',
   'too-old': 'Pick a time within the last 7 days.',
@@ -169,7 +171,9 @@ export function GiveDoseDialog({
     setAsked(null);
     setConfirmFinish(false);
   }
-  // The prefill can arrive a moment after the course (or change when the schedule changes).
+  // The prefill can arrive a moment after the course (or change when the schedule changes,
+  // or the minute clock drops the selected time). An open "already given?" question is
+  // bound to the occurrence it asked about (`doseQuestionApplies`), so such a change hides it.
   if (course && occurrenceKey && !choices.choices.some((choice) => occurrenceId(choice) === occurrenceKey) && choices.prefill && !saving) {
     setOccurrenceKey(occurrenceId(choices.prefill));
   } else if (course && !occurrenceKey && choices.prefill) {
@@ -181,6 +185,8 @@ export function GiveDoseDialog({
     ? occurrencesAfter({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, Math.max(selected.at, coveredThrough(course) ?? -Infinity), timeZone ?? '', 1)[0] ?? null
     : null;
   const last = course ? lastDoseLine(course, now, timeZone, currentUser?.uid) : null;
+  const question = asked && doseQuestionApplies(asked.check, selected) ? asked : null;
+  const inactive = course !== null && course.status !== 'active';
 
   const record = async (confirm: DoseConfirm | null) => {
     const householdId = currentUser?.householdId;
@@ -338,12 +344,13 @@ export function GiveDoseDialog({
 
               {nextAfter && <p className="text-muted-foreground" data-testid="next-after">Next dose after this: {occurrenceLabel(nextAfter, now, timeZone)} (from the schedule)</p>}
 
-              {asked && (
+              {inactive && <p role="status" className="text-muted-foreground" data-testid="course-inactive">This course was finished, so no dose can be recorded for it.</p>}
+              {question && (
                 <div role="alert" className="rounded-md border border-warning/60 bg-warning/10 p-3 text-foreground" data-testid="dose-again">
-                  <p className="font-medium">{asked.stale ? 'Someone recorded a dose since you were asked. ' : ''}Already given?</p>
-                  <p>{doseRepeatReason(asked.check, now, timeZone, currentUser?.uid)} Record another dose anyway?</p>
+                  <p className="font-medium">{question.stale ? 'Someone recorded a dose since you were asked. ' : ''}Already given?</p>
+                  <p>{doseRepeatReason(question.check, now, timeZone, currentUser?.uid)} Record another dose anyway?</p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <Button type="button" size="sm" disabled={saving} onClick={() => void record(asked.confirm)}>Record again</Button>
+                    <Button type="button" size="sm" disabled={saving} onClick={() => void record(question.confirm)}>Record again</Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => onOpenChange(false)}>Don&apos;t record</Button>
                   </div>
                 </div>
@@ -357,7 +364,7 @@ export function GiveDoseDialog({
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button>
                 {canGive && (
-                  <Button type="submit" disabled={saving || !selected || Boolean(asked)}>
+                  <Button type="submit" disabled={saving || !selected || inactive || Boolean(question)}>
                     {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
                     Record dose
                   </Button>

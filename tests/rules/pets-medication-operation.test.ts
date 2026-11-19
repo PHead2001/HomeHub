@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { initializeTestEnvironment, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, doc, getDoc, getDocFromServer, getDocs, onSnapshot, query, serverTimestamp, setDoc, Timestamp, where, type Firestore } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocFromServer, getDocs, onSnapshot, query, serverTimestamp, setDoc, Timestamp, where, type Firestore } from 'firebase/firestore';
 import {
   runConfirmLegacy,
   runFinishCourse,
@@ -353,6 +353,83 @@ describe('Give dose on the emulator with the real rules', () => {
     await runUndoDose(session(people.sam), { householdId: household, petId: 'rex', logId: first.opId });
     assert.equal((await readCourseNow()).lastDose?.logId, later.logId);
     assert.equal(await revision(), 3);
+  });
+
+  test('an offline dose that became the previous dose is never removed without moving the pointer (Codex round 7)', async () => {
+    const course = await readCourseNow();
+    const [ten, noon] = occurrencesAfter({ schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay }, Date.now(), TZ, 2);
+    const db = session(people.kim);
+    const logDoc = (id: string) => doc(db, 'households', household, 'pets', 'rex', 'medication-logs', id);
+    // Kim's 10:00 dose, recorded offline (synced; the pointer untouched).
+    await setDoc(logDoc('off-ten'), {
+      courseId: 'apoquel', occurrence: ten.key, occurrenceAt: Timestamp.fromMillis(ten.at), date: Timestamp.now(), loggedAt: serverTimestamp(),
+      medication: 'Apoquel', dosage: '1 tablet', notes: '', loggedByUid: people.kim.uid, loggedByName: 'Kim', repeat: 'offline', clockSource: 'device',
+    });
+    // Online, the 12:00 dose with a backdated given-at time: the pointers become 12:00 and 10:00.
+    const givenAt = new Date(Date.now() - 3 * 3_600_000);
+    givenAt.setMilliseconds(0);
+    const twelve = await giveAnyway(session(people.sam), { householdId: household, petId: 'rex', courseId: 'apoquel', opId: newDoseOpId(), occurrenceKey: noon.key, givenAt, user: actor(people.sam), timeZone: TZ });
+    const pointers = await readCourseNow();
+    assert.deepEqual([pointers.lastDose?.logId, pointers.prevDose?.logId], [twelve.logId, 'off-ten']);
+    // The rules refuse removing it while the previous pointer names it.
+    await assert.rejects(deleteDoc(logDoc('off-ten')));
+    // Offline, the client refuses too (the cached course names it as the previous dose).
+    const stopCourse = onSnapshot(courseDoc(db), () => undefined);
+    const stopLog = onSnapshot(logDoc('off-ten'), () => undefined);
+    await getDocFromServer(courseDoc(db));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const navigatorRef = globalThis.navigator as unknown as Record<string, unknown>;
+    Object.defineProperty(navigatorRef, 'onLine', { value: false, configurable: true });
+    try {
+      await assert.rejects(runUndoDose(db, { householdId: household, petId: 'rex', logId: 'off-ten' }), (error: unknown) => (error as { reason?: string }).reason === 'offline');
+    } finally {
+      delete navigatorRef.onLine;
+      stopCourse();
+      stopLog();
+    }
+    // Online it is removed with the pointer moved off it.
+    assert.equal(await runUndoDose(db, { householdId: household, petId: 'rex', logId: 'off-ten' }), 'saved');
+    const after = await readCourseNow();
+    assert.deepEqual([after.lastDose?.logId, after.prevDose ?? null], [twelve.logId, null]);
+    // Recording 10:00 (covered by 12:00) names a surviving dose, and the answer records.
+    const press10 = { householdId: household, petId: 'rex', courseId: 'apoquel', opId: newDoseOpId(), occurrenceKey: ten.key, givenAt: null, user: actor(people.owner), timeZone: TZ };
+    const asked = await runGiveDose(session(people.owner), press10);
+    assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, twelve.logId);
+    saved(await runGiveDose(session(people.owner), { ...press10, confirm: asked.status === 'needsConfirm' ? doseConfirmOf(asked.check) : null }));
+  });
+
+  test('a previous pointer naming a removed dose (data from before the rule) is never named, and the next dose repairs it (Codex round 7)', async () => {
+    const first = await press(people.sam);
+    const one = saved(await runGiveDose(session(people.sam), first));
+    const next = nextDueOccurrence(await readCourseNow(), TZ)!;
+    // The later occurrence with a backdated given-at time: the previous dose is the most recently given one.
+    const backdated = new Date(Date.now() - 3 * 3_600_000);
+    backdated.setMilliseconds(0);
+    const two = await giveAnyway(session(people.sam), { ...first, opId: newDoseOpId(), occurrenceKey: next.key, givenAt: backdated });
+    // A removed previous dose the pointer still names (as an old offline delete could leave).
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await deleteDoc(doc(context.firestore(), 'households', household, 'pets', 'rex', 'medication-logs', one.logId));
+    });
+    assert.equal((await readCourseNow()).prevDose?.logId, one.logId);
+    const press1 = { ...first, opId: newDoseOpId(), user: actor(people.kim) };
+    const asked = await runGiveDose(session(people.kim), press1);
+    assert.equal(asked.status === 'needsConfirm' && asked.check.last?.logId, two.logId, 'the removed dose is not named');
+    saved(await runGiveDose(session(people.kim), { ...press1, confirm: asked.status === 'needsConfirm' ? doseConfirmOf(asked.check) : null }));
+    const repaired = await readCourseNow();
+    assert.notEqual(repaired.prevDose?.logId, one.logId);
+  });
+
+  test('a course edit opened before someone else changed the course is refused, not silently overwritten (sweep)', async () => {
+    const course = await readCourseNow();
+    const opened = { name: course.name, dosage: course.dosage, schedule: course.schedule!, startDay: course.startDay, endDay: course.endDay };
+    await runSaveCourse(session(people.owner), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, user: actor(people.owner), timeZone: TZ, fields: { ...opened, dosage: '2 tablets' }, base: opened });
+    await assert.rejects(
+      runSaveCourse(session(people.sam), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, user: actor(people.sam), timeZone: TZ, fields: { ...opened, name: 'Apoquel 16 mg' }, base: opened }),
+      (error: unknown) => (error as { reason?: string }).reason === 'changed',
+    );
+    assert.equal((await readCourseNow()).dosage, '2 tablets');
+    const fresh = { ...opened, dosage: '2 tablets' };
+    assert.equal(await runSaveCourse(session(people.sam), { householdId: household, petId: 'rex', courseId: 'apoquel', create: false, user: actor(people.sam), timeZone: TZ, fields: { ...fresh, name: 'Apoquel 16 mg' }, base: fresh }), 'saved');
   });
 
   test('an offline dose newer than the stored pointer makes an answer naming the pointer stale (Codex round 5)', async () => {

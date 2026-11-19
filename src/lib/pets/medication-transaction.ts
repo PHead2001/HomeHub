@@ -44,6 +44,7 @@ import {
   coveredUntilAfterSave,
   doseLogId,
   nextDoseRevision,
+  pointersName,
   doseRecordsOf,
   pointerAfter,
   withRecords,
@@ -67,7 +68,7 @@ const logsRef = (db: Firestore, householdId: string, petId: string) => collectio
 
 /** Why a medication action was refused (shown in the dialog). */
 export class MedicationActionError extends Error {
-  constructor(readonly reason: DoseRefusal | 'offline' | 'not-active' | 'exists') {
+  constructor(readonly reason: DoseRefusal | 'offline' | 'not-active' | 'exists' | 'changed') {
     super(`medication-${reason}`);
     this.name = 'MedicationActionError';
   }
@@ -227,6 +228,16 @@ export async function runGiveDose(db: Firestore, input: GiveDoseInput): Promise<
   }
 }
 
+/**
+ * The course with its previous pointer dropped when that dose no longer
+ * survives (the previous dose is always among the newest doses read, so its
+ * absence means it was removed): a stale pointer is never named by "already
+ * given?" (the rules would refuse a confirmation of a removed dose); the write
+ * then stores the derived pointer, which repairs it.
+ */
+const withoutRemovedPrev = (course: CourseView, records: DosePointer[]): CourseView =>
+  course.prevDose && !records.some((record) => record.logId === course.prevDose!.logId) ? { ...course, prevDose: null } : course;
+
 async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string): Promise<GiveDoseResult> {
   const { householdId, petId, courseId } = input;
   return runTransaction(db, async (tx) => {
@@ -246,7 +257,7 @@ async function giveDoseOnce(db: Firestore, input: GiveDoseInput, logId: string):
       {
         now,
         timeZone: input.timeZone,
-        course: course && doses ? withRecords(course, doses.records) : course,
+        course: course && doses ? withRecords(withoutRemovedPrev(course, doses.records), doses.records) : course,
         lastDoseSurvives,
         existing: existing.exists()
           ? { loggedByUid: (existing.get('loggedByUid') as string | undefined) ?? null, courseId: (existing.get('courseId') as string | undefined) ?? null }
@@ -343,10 +354,11 @@ export async function runUndoDose(db: Firestore, input: { householdId: string; p
     const courseDose = typeof courseId === 'string';
     if (!cached?.exists() || (courseDose && cached.get('repeat') !== 'offline')) throw new MedicationActionError('offline');
     if (courseDose) {
-      // An online write may have made this offline dose the course's latest: then its pointer must move (online).
+      // An online write may have made this offline dose the course's latest or
+      // previous dose: then a pointer must move (online). The rules refuse the
+      // same when this device's cache is behind (reported as "didn't sync").
       const cachedCourse = await getDocFromCache(courseRef(db, householdId, petId, courseId)).catch(() => null);
-      const pointer = cachedCourse?.exists() ? readDosePointer(cachedCourse.get('lastDose')) : null;
-      if (!cachedCourse?.exists() || pointer?.logId === logId) throw new MedicationActionError('offline');
+      if (!cachedCourse?.exists() || pointersName(cachedCourse.data(), logId)) throw new MedicationActionError('offline');
     }
     const batch = writeBatch(db);
     batch.delete(logRef);
@@ -476,6 +488,12 @@ export async function runSaveCourse(db: Firestore, input: {
   /** Legacy names this new course takes over (D-P8 confirmation). */
   legacyKeys?: string[];
   timeZone?: string | null;
+  /**
+   * Editing: the course's fields as the form opened with them. When someone
+   * else changed them meanwhile, the save is refused (`changed`) instead of
+   * silently overwriting their edit.
+   */
+  base?: CourseFields;
 }): Promise<'saved' | 'already'> {
   if (isBrowserOffline()) throw new MedicationActionError('offline');
   const ref = courseRef(db, input.householdId, input.petId, input.courseId);
@@ -502,6 +520,9 @@ export async function runSaveCourse(db: Firestore, input: {
     if (!snapshot.exists()) throw new MedicationActionError('missing');
     if (snapshot.get('status') !== 'active') throw new MedicationActionError('not-active');
     const read = readCourse(input.courseId, snapshot.data());
+    if (read && input.base && (read.name !== input.base.name || read.dosage !== input.base.dosage || scheduleChanged(read, input.base))) {
+      throw new MedicationActionError('changed');
+    }
     // The coverage comes from the surviving doses (an offline-synced dose
     // included), the same derived state the form's preview shows.
     const doses = read ? await readCourseDoses(db, input.householdId, input.petId, input.courseId) : null;

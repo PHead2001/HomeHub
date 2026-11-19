@@ -26,7 +26,9 @@ import {
   occurrenceId,
   occurrenceLabel,
   occurrencesAfter,
+  doseQuestionApplies,
   pendingLegacyGroups,
+  pointersName,
   planDose,
   pointerAfter,
   nextDueOccurrence,
@@ -620,5 +622,39 @@ describe('an occurrence keeps its identity when its wall-time key repeats (Codex
       for (const occurrence of list) assert.equal(occurrenceByKey(windowOf(c), occurrenceId(occurrence), CHI)?.at, occurrence.at);
       assert.ok(list.every((o) => !o.fold), 'a one-hour rollback never repeats a key every two hours');
     }
+  });
+});
+
+describe('an answer to "already given?" is bound to the occurrence it was asked for (Codex round 7)', () => {
+  test('the minute clock moving the selection from 08:00 to 10:00 makes the open answer stale', () => {
+    const every2 = { name: 'Apoquel', dosage: '1 tablet', schedule: { kind: 'hours', everyHours: 2, firstTime: '00:00' }, startDay: '2026-11-13', status: 'active' };
+    // The 08:00 dose (14:00Z) recorded at 09:59.
+    const c = readCourse('c', { ...every2, lastDose: { logId: 'eight', occurrence: '2026-11-14T08:00', occurrenceAt: at('2026-11-14T14:00:00Z'), givenAt: at('2026-11-14T15:59:00Z'), byUid: 'sam', byName: 'Sam' } })!;
+    const at959 = at('2026-11-14T15:59:30Z');
+    const asked = planDose({ now: at959, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T08:00', givenAt: null });
+    assert.equal(asked.kind, 'needsConfirm');
+    if (asked.kind !== 'needsConfirm') return;
+    const answer = doseConfirmOf(asked.check);
+    assert.equal(answer.occurrence, '2026-11-14T08:00');
+    // At 10:00 the dialog's selection becomes 10:00; the old answer must not record it.
+    const at1000 = at('2026-11-14T16:00:10Z');
+    const ten = planDose({ now: at1000, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T10:00', givenAt: null, confirm: answer });
+    assert.equal(ten.kind, 'needsConfirm', JSON.stringify(ten));
+    assert.equal(ten.kind === 'needsConfirm' && ten.staleConfirm, true);
+    // The answer still records the occurrence it was asked about.
+    const eight = planDose({ now: at1000, timeZone: CHI, course: c, lastDoseSurvives: true, existing: null }, { userUid: 'kim', occurrenceKey: '2026-11-14T08:00', givenAt: null, confirm: answer });
+    assert.equal(eight.kind === 'write' && eight.occurrence.key, '2026-11-14T08:00');
+    // The dialog hides the question once the selection is another occurrence.
+    assert.equal(doseQuestionApplies(asked.check, asked.check.occurrence), true);
+    assert.equal(doseQuestionApplies(asked.check, { key: '2026-11-14T10:00' }), false);
+    assert.equal(doseQuestionApplies(asked.check, null), false);
+  });
+
+  test('an offline removal is refused while either pointer names the dose', () => {
+    const p = (logId: string) => ({ logId, occurrence: '2026-11-14T08:00', occurrenceAt: at('2026-11-14T14:00:00Z'), givenAt: null, byUid: null, byName: null });
+    assert.equal(pointersName({ lastDose: p('a'), prevDose: p('b') }, 'a'), true);
+    assert.equal(pointersName({ lastDose: p('a'), prevDose: p('b') }, 'b'), true);
+    assert.equal(pointersName({ lastDose: p('a'), prevDose: null }, 'c'), false);
+    assert.equal(pointersName(null, 'a'), false);
   });
 });

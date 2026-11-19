@@ -1573,8 +1573,8 @@ service cloud.firestore {
       return getAfter(coursePath).data.get('doseRevision', 0) == get(coursePath).data.get('doseRevision', 0) + 1;
     }
 
-    // Removing a course dose must move the course's pointer off it in the same
-    // commit, and the dose revision on (except an offline dose removed without
+    // Removing a course dose must move the course's pointers (latest and
+    // previous) off it in the same commit, and the dose revision on (except an offline dose removed without
     // a connection: no course write can be queued for it).
     function courseDoseRemovable(householdId, petId, logId) {
       let courseId = resource.data.get('courseId', null);
@@ -1585,6 +1585,8 @@ service cloud.firestore {
       return !existsAfter(coursePath) ||
         ((getAfter(coursePath).data.get('lastDose', null) == null ||
             getAfter(coursePath).data.lastDose.logId != logId) &&
+          (getAfter(coursePath).data.get('prevDose', null) == null ||
+            getAfter(coursePath).data.prevDose.logId != logId) &&
           (resource.data.get('repeat', null) == 'offline' || doseRevisionBumped(coursePath)));
     }
 
