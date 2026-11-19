@@ -5,13 +5,26 @@
 // Adults by name, then children by name. The server applies the same rule to every
 // action, so a stale roster can never credit an ineligible person.
 
+import { effectivePermissions } from '@/lib/household-policy';
+import type { HouseholdPermission, PermissionOverrides } from '@/lib/types';
+
 export type RosterPerson = {
   uid: string;
   name: string;
   role: 'owner' | 'admin' | 'member' | 'child';
   kind: 'account' | 'identity';
   avatarUrl: string | null;
+  /**
+   * Their effective permissions (role preset plus overrides, as the gate computes them), so a
+   * face is offered only what that person may do (a child's face gets a child's options,
+   * PE-17e). The server decides again for every action.
+   */
+  permissions?: Record<HouseholdPermission, boolean>;
 };
+
+/** Whether this person may use a capability (one of its permissions), as far as the tablet knows. */
+export const personMay = (person: RosterPerson, permissions: readonly HouseholdPermission[] | null): boolean =>
+  !permissions || !person.permissions || permissions.some((permission) => person.permissions![permission]);
 
 const ELIGIBLE = new Set(['owner', 'admin', 'member', 'child']);
 
@@ -38,6 +51,10 @@ export function rosterFrom(docs: ReadonlyArray<{ id: string; data: Record<string
       role: role as RosterPerson['role'],
       kind: data.kind === 'identity' ? 'identity' : 'account',
       avatarUrl: avatar,
+      permissions: effectivePermissions({
+        uid: id, role: role as RosterPerson['role'], status: 'active',
+        permissions: data.permissions && typeof data.permissions === 'object' ? data.permissions as PermissionOverrides : {},
+      }),
     });
   }
   const rank = (person: RosterPerson) => (person.role === 'child' ? 1 : 0);

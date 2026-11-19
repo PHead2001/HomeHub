@@ -14,7 +14,7 @@
 // tablet is refused until the device actions exist (F4): the action pipeline and the
 // offline queue are in place for them.
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { signOut } from 'firebase/auth';
@@ -47,7 +47,7 @@ import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
 import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
 import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, type DeviceRefusal } from '@/lib/devices/action-policy';
-import { rosterFrom, isOwnerOrAdmin, type RosterPerson } from '@/lib/devices/roster';
+import { rosterFrom, isOwnerOrAdmin, personMay, type RosterPerson } from '@/lib/devices/roster';
 import {
   currentActor,
   initialShellState,
@@ -90,6 +90,11 @@ import { WhoIsHereDialog } from './who-is-here';
 import { PinPadDialog } from './pin-pad';
 import { AmbientScreen, NightDim } from './tablet-overlays';
 import { canSend, useDeviceActions } from './use-device-actions';
+import { FeedAgainPrompt } from './feed-again-prompt';
+import { createPromptQueue } from '@/lib/devices/prompt-queue';
+import type { FeedAgainCheck } from '@/lib/devices/device-action-answers';
+import { feedAgainReason } from '@/lib/pets/feed-decision';
+import { feedConfirmOf } from '@/lib/pets/feed-plan';
 import { TabletUpdateWatcher } from './tablet-update-watcher';
 
 const TabletSettingsDialog = dynamic(() => import('./tablet-settings').then((mod) => mod.TabletSettingsDialog), { ssr: false });
@@ -426,7 +431,8 @@ function ComfortSync({ settings }: { settings: DeviceSettings }) {
 
 type Prompt =
   | { kind: 'who'; purpose: 'admin' | 'action'; title: string; resolve: (person: RosterPerson | null) => void }
-  | { kind: 'pin'; person: RosterPerson; resolve: (sessionId: string | null) => void };
+  | { kind: 'pin'; person: RosterPerson; resolve: (sessionId: string | null) => void }
+  | { kind: 'feed-again'; title: string; body: string; resolve: (yes: boolean) => void };
 
 
 function TabletFrame(props: {
@@ -455,9 +461,11 @@ function TabletFrame(props: {
   const timers = useMemo<ShellTimers>(() => shellTimersFrom(settings.idle), [settings.idle]);
   const timersRef = useRef(timers);
   useEffect(() => { timersRef.current = timers; }, [timers]);
-  const [prompt, setPrompt] = useState<Prompt | null>(null);
-  const promptRef = useRef<Prompt | null>(null);
-  useEffect(() => { promptRef.current = prompt; }, [prompt]);
+  // One dialog at a time, every question answered or cancelled (`prompt-queue.ts`): two
+  // actions asking at once (two pets fed before the first answer) each wait their turn.
+  const [prompts] = useState(() => createPromptQueue<Prompt>());
+  const shown = useSyncExternalStore(prompts.subscribe, prompts.current, prompts.current);
+  const prompt = shown?.prompt ?? null;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
@@ -469,13 +477,10 @@ function TabletFrame(props: {
   const startPath = useCallback(() => pathOfView(startView(settings.startPage, settings.sections, known).view), [known, settings.sections, settings.startPage]);
 
   const closePrompts = useCallback(() => {
-    const open = promptRef.current;
-    if (open?.kind === 'who') open.resolve(null);
-    if (open?.kind === 'pin') open.resolve(null);
-    setPrompt(null);
+    prompts.cancelAll();
     setSettingsOpen(false);
     setQuickAddOpen(false);
-  }, []);
+  }, [prompts]);
 
   const idToken = useCallback(async () => {
     const user = auth.currentUser;
@@ -557,13 +562,24 @@ function TabletFrame(props: {
   // --- People, PINs and the action pipeline ---------------------------------
   const person = useCallback((uid: string | null | undefined) => roster.find((p) => p.uid === uid) ?? null, [roster]);
 
-  const askPerson = useCallback((purpose: 'admin' | 'action', title: string) => new Promise<RosterPerson | null>((resolve) => {
-    setPrompt({ kind: 'who', purpose, title, resolve: (picked) => { setPrompt(null); resolve(picked); } });
-  }), []);
+  const askPerson = useCallback((purpose: 'admin' | 'action', title: string) =>
+    prompts.ask<RosterPerson | null>((finish) => ({ kind: 'who', purpose, title, resolve: finish }), null), [prompts]);
 
-  const askPin = useCallback((who: RosterPerson) => new Promise<string | null>((resolve) => {
-    setPrompt({ kind: 'pin', person: who, resolve: (sessionId) => { setPrompt(null); resolve(sessionId); } });
-  }), []);
+  const askPin = useCallback((who: RosterPerson) =>
+    prompts.ask<string | null>((finish) => ({ kind: 'pin', person: who, resolve: finish }), null), [prompts]);
+
+  // "Feed again?" (PE-23g, D-P5): the server's check, bound to the state it was shown for; the
+  // answer goes back with the same opId. Asked on the tablet for every feeding entry point.
+  const askFeedAgain = useCallback(async (check: FeedAgainCheck, petName: string): Promise<Record<string, unknown> | null> => {
+    const since = check.staleConfirm ? 'Someone fed since you were asked. ' : '';
+    const yes = await prompts.ask<boolean>((finish) => ({
+      kind: 'feed-again',
+      title: `Feed ${petName} again?`,
+      body: `${since}${feedAgainReason(check, petName, new Date(), null, household.timeZone)}`,
+      resolve: finish,
+    }), false);
+    return yes ? { confirm: feedConfirmOf(check) } : null;
+  }, [household.timeZone, prompts]);
 
   const message = useCallback((code: DeviceRefusal, who?: RosterPerson | null, retryAfterSec?: number) => {
     const response = deviceRefusalResponse(code, { name: who?.name, kid: who?.role === 'child', retryAfterSec });
@@ -632,7 +648,7 @@ function TabletFrame(props: {
     const policy = policyOf(request.capability);
     const sendable = canSend(request.capability);
     if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never' || (!request.execute && !sendable)) {
-      // Not offered on tablets (F4a sends chores only; Pets and the rest stay refused, as on the server).
+      // Not offered on tablets (chores, pets feeding and care so far; the rest stays refused, as on the server).
       message('not_on_tablets');
       return { ok: false };
     }
@@ -644,6 +660,11 @@ function TabletFrame(props: {
       const who = person(remembered?.memberUid) ?? await askPerson('action', request.label);
       if (!who) return { ok: false };
       apply({ type: 'pick', memberUid: who.uid, now: Date.now() });
+      // A face gets only that person's options (a child's face a child's, PE-17e); the server decides again.
+      if (!personMay(who, policy.permissions)) {
+        message('forbidden', who);
+        return { ok: false };
+      }
       const required = requiredLevel(request.capability, { pointsPin: household.pointsPin, actorRole: who.role });
       const unlock = shellRef.current.pin?.memberUid === who.uid ? shellRef.current.pin.sessionId : undefined;
       const sessionId = required === 'pin' && !unlock ? await askPin(who) : unlock;
@@ -658,8 +679,11 @@ function TabletFrame(props: {
     };
     if (!request.execute && who) {
       // The device action runtime: opId, Undo journal, offline queue, Undo toast.
-      const result = await whileBusy('save', deviceActions.perform({ capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who, onReverted: request.onReverted }))
-        .catch(() => ({ ok: false }));
+      const subject = request.subject ?? request.label;
+      const result = await whileBusy('save', deviceActions.perform({
+        capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who, onReverted: request.onReverted, toastGroup: request.toastGroup,
+        confirm: (check) => askFeedAgain(check, subject),
+      })).catch((): TabletActionOutcome => ({ ok: false }));
       if (result.ok) credit();
       return result;
     }
@@ -672,7 +696,7 @@ function TabletFrame(props: {
     if (answer.code === 'pin_session_invalid' || answer.code === 'pin_required' || answer.code === 'pin_fresh_required') apply({ type: 'pin-invalid' });
     message(answer.code, who, answer.retryAfterSec);
     return { ok: false };
-  }, [apply, askPerson, askPin, deviceActions, household.pointsPin, message, person, requestAdmin]);
+  }, [apply, askFeedAgain, askPerson, askPin, deviceActions, household.pointsPin, message, person, requestAdmin]);
 
   const done = useCallback(() => apply({ type: 'done' }), [apply]);
   const goStart = useCallback(() => router.push(startPath()), [router, startPath]);
@@ -736,10 +760,14 @@ function TabletFrame(props: {
         </div>
       </div>
       {prompt?.kind === 'who' && (
-        <WhoIsHereDialog purpose={prompt.purpose} title={prompt.title} people={roster} onPick={prompt.resolve} />
+        <WhoIsHereDialog key={shown?.id} purpose={prompt.purpose} title={prompt.title} people={roster} onPick={prompt.resolve} />
+      )}
+      {prompt?.kind === 'feed-again' && (
+        <FeedAgainPrompt key={shown?.id} title={prompt.title} body={prompt.body} onAnswer={prompt.resolve} />
       )}
       {prompt?.kind === 'pin' && (
         <PinPadDialog
+          key={shown?.id}
           person={prompt.person}
           onVerified={(sessionId) => {
             apply({ type: 'pin-verified', memberUid: prompt.person.uid, sessionId, now: Date.now() });

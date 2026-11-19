@@ -63,6 +63,11 @@ export type UndoJournalEntry = {
   actorUid: string;
   /** Short description for the restored toast ("Fed Maple"); no PII beyond names shown on the tablet. */
   label: string;
+  /**
+   * The Undo toast's group (`undoToastGroup`): a feed's is its pet's (`pet-feed:<petId>`), so
+   * feeding another pet or a chore never displaces it; absent: the shared device-action group.
+   */
+  toastGroup?: string;
   state: JournalState;
   /** Device clock when the action was first attempted or queued. */
   createdAt: number;
@@ -105,10 +110,16 @@ export type JournalEvent =
 
 /** Undo refusals that end the Undo for good; any other refusal sends the entry back to where it was. */
 const FINAL_UNDO_REFUSALS: ReadonlySet<DeviceRefusal> = new Set(['undo_expired', 'changed_since', 'not_undoable', 'forbidden', 'conflict']);
+/** The toast group of device actions without their own (chores, care): a newer one replaces the older Undo. */
+export const DEVICE_ACTION_TOAST_GROUP = 'device-action';
+
+/** The group an entry's Undo toast is shown in, live and after a reload. */
+export const undoToastGroup = (entry: Pick<UndoJournalEntry, 'toastGroup'>): string => entry.toastGroup || DEVICE_ACTION_TOAST_GROUP;
+
 export const undoRefusalEvent = (code: DeviceRefusal, at: number): JournalEvent =>
   FINAL_UNDO_REFUSALS.has(code) ? { type: 'undo-refused', at } : { type: 'undo-back', at };
 
-export const journalEntry = (input: Pick<UndoJournalEntry, 'opId' | 'householdId' | 'deviceId' | 'generation' | 'capability' | 'actorUid' | 'label'> & { at: number; queued?: boolean }): UndoJournalEntry => ({
+export const journalEntry = (input: Pick<UndoJournalEntry, 'opId' | 'householdId' | 'deviceId' | 'generation' | 'capability' | 'actorUid' | 'label' | 'toastGroup'> & { at: number; queued?: boolean }): UndoJournalEntry => ({
   opId: input.opId.toLowerCase(),
   householdId: input.householdId,
   deviceId: input.deviceId,
@@ -116,6 +127,7 @@ export const journalEntry = (input: Pick<UndoJournalEntry, 'opId' | 'householdId
   capability: input.capability,
   actorUid: input.actorUid,
   label: input.label,
+  ...(input.toastGroup ? { toastGroup: input.toastGroup } : {}),
   state: input.queued ? 'queued-unsent' : 'attempting',
   createdAt: input.at,
   windowFrom: input.queued ? input.at : null,

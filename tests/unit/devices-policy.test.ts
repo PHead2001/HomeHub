@@ -128,8 +128,11 @@ describe('policy table', () => {
     assert.equal(isDeviceCapability(undefined), false);
   });
 
-  it('UNDO_PROVEN holds exactly the chore capabilities whose 10.4 proof is recorded (F4a); Pets still needs its own', () => {
-    assert.deepEqual([...UNDO_PROVEN].sort(), ['chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo']);
+  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care)', () => {
+    assert.deepEqual([...UNDO_PROVEN].sort(), [
+      'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
+      'pets.care.add', 'pets.care.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
+    ]);
   });
 
   it('opIds are required for face and PIN capabilities only', () => {
@@ -193,7 +196,7 @@ describe('required level', () => {
   const proven = new Set<DeviceCapability>(['pets.feed', 'chores.complete']);
 
   it('face* is PIN until its Undo is proven, then face', () => {
-    assert.equal(requiredLevel('pets.feed', adult), 'pin');
+    assert.equal(requiredLevel('pets.feed', adult, new Set()), 'pin');
     assert.equal(requiredLevel('pets.feed', adult, proven), 'face');
     assert.equal(requiredLevel('pets.pet.delete', adult, proven), 'pin');
     assert.equal(requiredLevel('device.settings', adult), 'admin-pin');

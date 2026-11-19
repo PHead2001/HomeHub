@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { UNDO_PROVEN, type DeviceCapability } from '../../src/lib/devices/action-policy';
 import { after, before, beforeEach, describe, mock, test } from 'node:test';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
@@ -36,7 +37,12 @@ import { TEST_PEPPER_ID, clock, house, opId, pairTablet, seedKid, sessionsOf, in
  * for every precheck (production passes no clock and reads the real time each time).
  */
 const authorize = (request: Parameters<typeof authorizeDeviceAction>[0], at?: Date, options: Parameters<typeof authorizeDeviceAction>[1] = {}) =>
-  authorizeDeviceAction(request, { ...options, ...(at ? { clock: () => at } : {}) });
+  authorizeDeviceAction(request, { undoProven: PIN_SUITE_PROVEN, ...options, ...(at ? { clock: () => at } : {}) });
+/**
+ * This suite uses `pets.feed` as a capability that needs the PIN session it tests (its Undo
+ * unproven); Pets feeding is face-level since F4b-1, so the suite's default leaves Pets out.
+ */
+const PIN_SUITE_PROVEN: ReadonlySet<DeviceCapability> = new Set([...UNDO_PROVEN].filter((capability) => !capability.startsWith('pets.')));
 
 // Tablet PINs (docs/modules/devices/README.md, "PINs"; design 7, re-review R2): the
 // WT-17 authority matrix (including forbidden known-value resets), format, storage

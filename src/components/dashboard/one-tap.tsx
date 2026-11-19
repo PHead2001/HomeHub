@@ -290,13 +290,15 @@ export function PetFedButton({ pet, className }: { pet: PetState; className?: st
     }),
   });
   const [failed, setFailed] = useState(false);
+  // On a wall tablet the device runtime says what happened (refused, cancelled, saved offline).
+  const tablet = useContext(TabletContext);
   // D-P22: a due meal slot (as the bowl and the card show it), or a legacy pet not fed to its count today.
   if (!feed || !action.allowed || !oneTapFedVisible(pet)) return null;
   const run = async () => {
     setFailed(false);
     const result = await action.run({ portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: feed.portionFromSlot, food: feed.foodType, known: feed.known });
     // Null after a real attempt: the operation failed (its toast offers Retry too).
-    if (result === null) setFailed(true);
+    if (result === null && !tablet) setFailed(true);
   };
   return (
     <>

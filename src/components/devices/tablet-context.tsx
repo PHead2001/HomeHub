@@ -31,7 +31,7 @@ export type TabletActionAnswer = { ok: true } | { ok: false; code: DeviceRefusal
 
 /**
  * A request to do something on the tablet. A capability the tablet can send to the server
- * (F4a: chores) goes through the device action runtime with `intent` as its payload
+ * (F4a: chores; F4b-1: pets feeding and care) goes through the device action runtime with `intent` as its payload
  * (`use-device-actions.tsx`: opId, Undo journal, offline queue). `execute` runs a custom
  * call instead (tablet settings, exits). Anything else is refused at once.
  */
@@ -45,13 +45,20 @@ export type TabletActionRequest = {
    * entry removed on the tablet) or its queued replay is dropped at sync.
    */
   onReverted?: () => void;
+  /**
+   * Feeds: who is fed ("Maple"), for the "Feed again?" question the shell asks when the
+   * server answers that the feed needs a confirmation (PE-23g).
+   */
+  subject?: string;
+  /** The Undo toast's group (feeds: `petFeedToastGroup(petId)`, so each pet keeps its own Undo). */
+  toastGroup?: string;
 };
 
 /**
  * Whether the action went through (false: refused, cancelled or nothing changed).
  * `queued`: saved on this tablet and not applied yet (it syncs when the connection is back).
  */
-export type TabletActionOutcome = { ok: boolean; queued?: boolean };
+export type TabletActionOutcome = { ok: boolean; queued?: boolean; uncertain?: boolean; data?: unknown };
 
 export type TabletContextValue = {
   householdId: string;
