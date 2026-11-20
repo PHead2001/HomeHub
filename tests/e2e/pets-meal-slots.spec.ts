@@ -341,15 +341,17 @@ test.describe('pets: meal slots (P2)', () => {
         const limit = document.documentElement.clientHeight;
         // What reaches past the bottom, for the failure message.
         const bottomOf = (element: Element) => element.getBoundingClientRect().bottom + window.scrollY;
-        // The outermost elements that reach past the bottom (their parent does not), with where they sit.
-        const below = [...document.querySelectorAll('body *')]
-          .filter((element) => bottomOf(element) > limit + 1 && (!element.parentElement || bottomOf(element.parentElement) <= limit + 1))
-          .slice(0, 4)
-          .map((element) => {
-            const owner = element.closest('[data-testid]');
-            const style = getComputedStyle(element);
-            return `${element.tagName.toLowerCase()} .${String(element.getAttribute('class') ?? '').slice(0, 50)} pos ${style.position} → ${Math.round(bottomOf(element))} in [${owner?.getAttribute('data-testid') ?? 'none'}] parent .${String(element.parentElement?.getAttribute('class') ?? '').slice(0, 40)}`;
-          });
+        // The chain from body to what sets the page height: at each level the child that reaches lowest.
+        const below: string[] = [];
+        let node: Element | null = document.body;
+        for (let depth = 0; node && depth < 14; depth += 1) {
+          const children: Element[] = [...node.children].filter((child) => getComputedStyle(child).position !== 'fixed');
+          const lowest: Element | undefined = children.sort((a, b) => bottomOf(b) - bottomOf(a))[0];
+          if (!lowest || bottomOf(lowest) <= limit + 1) break;
+          const style = getComputedStyle(lowest);
+          below.push(`${lowest.tagName.toLowerCase()}.${String(lowest.getAttribute('class') ?? '').slice(0, 40)}[${lowest.getAttribute('data-testid') ?? ''}] ${style.position} ${Math.round(lowest.getBoundingClientRect().top + window.scrollY)}-${Math.round(bottomOf(lowest))} ov ${style.overflowY}`);
+          node = lowest;
+        }
         const board = document.querySelector<HTMLElement>('[data-testid="pets-board"]');
         const strip = document.querySelector('[data-testid="pets-attention"]');
         if (board) below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`);
