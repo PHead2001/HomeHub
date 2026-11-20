@@ -293,7 +293,7 @@ test.describe('pets: meal slots (P2)', () => {
       // rows are compact (PE-13a: Edit lives on the pet page), so Set meal times is opened there.
       await expect(card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' })).toHaveCount(0);
       await page.goto('/pets/pixel');
-      await page.getByRole('button', { name: 'Set meal times for Pixel' }).click();
+      await page.getByRole('button', { name: 'Set meal times for Pixel' }).first().click();
       const dialog = page.getByRole('dialog', { name: 'Edit Pixel' });
       // Measured before it is pressed: once the rows are filled it may leave the dialog.
       // The dialog opens with a 95% zoom; measure only after its animations finish.
@@ -337,12 +337,22 @@ test.describe('pets: meal slots (P2)', () => {
       await openPets(page, chicago('18:20'));
       await expect(card(page, SLOT_PET)).toContainText('Dinner due 6:00 pm');
       await expect(page.getByTestId('pets-attention')).toBeVisible();
-      const scroll = await page.evaluate(() => ({
-        sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
-      }));
+      const scroll = await page.evaluate(() => {
+        const limit = document.documentElement.clientHeight;
+        // What reaches past the bottom, for the failure message.
+        const below = [...document.querySelectorAll('body *')]
+          .map((element) => ({ element, bottom: element.getBoundingClientRect().bottom + window.scrollY }))
+          .filter(({ bottom }) => bottom > limit + 1)
+          .slice(-4)
+          .map(({ element, bottom }) => `${element.tagName.toLowerCase()}[${element.getAttribute('data-testid') ?? ''}] .${String(element.className).slice(0, 60)} → ${Math.round(bottom)}`);
+        return {
+          sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+          below,
+        };
+      });
       expect(scroll.sideways).toBeLessThanOrEqual(0);
-      expect(scroll.down, 'the pets page scrolls at 1263 x 818').toBeLessThanOrEqual(0);
+      expect(scroll.down, `the pets page scrolls at 1263 x 818: ${scroll.below.join(' | ')}`).toBeLessThanOrEqual(0);
       // Every pet's Feed button is on screen.
       for (const petId of ['maple', 'pixel', SLOT_PET]) {
         const feed = card(page, petId).getByRole('button', { name: /^Feed / });

@@ -20,6 +20,7 @@ import { DeletePetAlert } from './delete-pet-alert';
 import { EditPetDialog } from './edit-pet-dialog';
 import { EmptyState } from './empty-state';
 import { Button } from './ui/button';
+import { cn } from '@/lib/utils';
 import { LivingPetCard, type PetAttention } from './pets/living-pet-card';
 import { PETS_GRID, PetsGridSkeleton } from './pets/pets-skeleton';
 import { PetsPageHeader } from './pets/pets-page-header';
@@ -28,7 +29,7 @@ import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
 import type { PetPhotoChoice } from './pets/pet-photo-draft';
 import { DuplicatePetNameError, otherPetNames, petDeletedMessage } from '@/lib/pets/profile';
-import { boardGrid, showHoldCaption } from '@/lib/pets/board';
+import { boardRowPlan, showHoldCaption } from '@/lib/pets/board';
 import { useHoldCaptionDone, usePetsLayout, usePointerFine } from './pets/use-pets-layout';
 
 const GRID = PETS_GRID;
@@ -67,9 +68,8 @@ function PetsBoard({ count, children }: { count: number; children: ReactNode }) 
       observer?.disconnect();
     };
   });
-  const grid = boardGrid(count);
-  const gap = 16;
-  const rowHeight = height ? Math.floor((height - gap) / 2) : null;
+  const grid = boardRowPlan(count, height);
+  const rowHeight = grid.rowHeight;
   return (
     <div
       ref={ref}
@@ -94,13 +94,18 @@ function PetsBoard({ count, children }: { count: number; children: ReactNode }) 
  * the cards show (PE-22h). Hidden when nothing needs attention; a pet whose data
  * is loading or failed is never listed. The cards below keep their order.
  */
-function AttentionStrip({ pets, attention }: { pets: PetProfile[]; attention: Record<string, PetAttention> }) {
+function AttentionStrip({ pets, attention, compact }: { pets: PetProfile[]; attention: Record<string, PetAttention>; compact?: boolean }) {
   const listed = pets.filter((pet) => attention[pet.id]);
   if (listed.length === 0) return null;
   return (
-    <section aria-labelledby="pets-attention-title" className="mb-4 rounded-lg border border-warning/60 bg-warning/10 p-3" data-testid="pets-attention">
+    // On the board (`compact`) the title and the pets share one line, so the cards keep their height.
+    <section
+      aria-labelledby="pets-attention-title"
+      className={cn('rounded-lg border border-warning/60 bg-warning/10', compact ? 'mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2' : 'mb-4 p-3')}
+      data-testid="pets-attention"
+    >
       <h2 id="pets-attention-title" className="text-sm font-semibold text-foreground">Needs attention</h2>
-      <ul className="mt-2 flex flex-wrap gap-2">
+      <ul className={cn('flex min-w-0 flex-wrap gap-2', !compact && 'mt-2')}>
         {listed.map((pet) => {
           const item = attention[pet.id];
           return (
@@ -343,7 +348,7 @@ export function PetsClient() {
           </p>
         )}
         {/* PE-26a: the strip heads /pets in every view, the board included (the board measures its height below it). */}
-        <AttentionStrip pets={pets} attention={attentionByPet} />
+        <AttentionStrip pets={pets} attention={attentionByPet} compact={layout === 'board'} />
         {layout === 'board' ? (
           <PetsBoard count={pets.length}>
             {pets.map((pet, index) => <div key={pet.id} className="min-h-0 min-w-0">{card(pet, index)}</div>)}
