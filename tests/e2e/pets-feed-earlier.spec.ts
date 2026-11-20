@@ -7,6 +7,7 @@ import {
   openTabletContext,
   pairWithCode,
   prepareHousehold,
+  promptReady,
   removeEveryTablet,
   restoreHousehold,
   TABLET_VIEWPORTS,
@@ -250,6 +251,8 @@ test.describe('pets: feed earlier on a registered wall tablet', () => {
     if (slots) await expect(dialog.getByTestId('feed-earlier-counts')).toHaveText('Counts for dinner: 0.5 cans.');
     await dialog.getByTestId('feed-earlier-save').click();
     await expect(page.getByTestId('who-is-here')).toBeVisible();
+    // The prompt takes taps once its tap guard has passed (F4b-2).
+    await promptReady(page, 'who-is-here');
     await page.getByTestId(`who-person-${OWNER_UID}`).click();
 
     const log = await onlyLog('early');
