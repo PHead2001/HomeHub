@@ -67,8 +67,8 @@ describe('D4: Back closes the topmost dialog', () => {
   it('Back closes only the topmost of nested dialogs; nothing navigates', () => {
     const { stack, back, history } = env();
     const closed: string[] = [];
-    stack.open(() => closed.push('sheet'));
-    stack.open(() => closed.push('give dose'));
+    stack.open(() => { closed.push('sheet'); });
+    stack.open(() => { closed.push('give dose'); });
     back();
     assert.deepEqual(closed, ['give dose']);
     back();
@@ -79,8 +79,8 @@ describe('D4: Back closes the topmost dialog', () => {
   it('a dialog closed by its own button takes its entry back once; that popstate never closes another dialog', () => {
     const { stack, flush, history } = env();
     const closed: string[] = [];
-    stack.open(() => closed.push('sheet'));
-    const inner = stack.open(() => closed.push('pin pad'));
+    stack.open(() => { closed.push('sheet'); });
+    const inner = stack.open(() => { closed.push('pin pad'); });
     inner.release();
     flush();
     assert.deepEqual(closed, []);

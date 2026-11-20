@@ -99,7 +99,7 @@ export function PinPadDialog({
   const keyClass = 'flex min-h-16 items-center justify-center rounded-2xl border border-border bg-card font-headline text-2xl font-semibold disabled:opacity-50';
 
   // Android Back closes this first (emulator evidence D4).
-  useBackCloses(true, () => { if (!checking) onCancel(); });
+  useBackCloses(true, () => { if (checking) return false; onCancel(); return true; });
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !checking) onCancel(); }}>

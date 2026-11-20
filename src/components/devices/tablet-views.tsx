@@ -36,6 +36,7 @@ import {
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
 import { TabletMedicationChips, TabletPetSheet } from './tablet-pet-sheet';
+import { useTabletSubmit } from './use-tablet-submit';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useBackCloses } from '@/hooks/use-back-closes';
 
@@ -206,18 +207,18 @@ function TabletCareDialog({ pet, onClose }: { pet: PetState; onClose: () => void
   const { runAction } = useTablet();
   const [activity, setActivity] = useState('');
   const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
+  // One entry per submit (a ref, not only state, holds a double tap), one opId across retries.
+  const form = useTabletSubmit();
+  const saving = form.busy;
   useUnsavedInput(activity.trim().length > 0 || notes.trim().length > 0);
   const valid = activity.trim().length >= 3 && activity.trim().length <= 80 && notes.length <= 2000;
   const save = async () => {
-    if (!valid || saving) return;
-    setSaving(true);
-    try {
-      const outcome = await runAction({ capability: 'pets.care.add', label: `${pet.name}: ${activity.trim()}`, subject: pet.name, intent: { petId: pet.id, activity: activity.trim(), notes: notes.trim() } });
+    if (!valid) return;
+    await form.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.care.add', opId, label: `${pet.name}: ${activity.trim()}`, subject: pet.name, intent: { petId: pet.id, activity: activity.trim(), notes: notes.trim() } });
       if (outcome.ok) onClose();
-    } finally {
-      setSaving(false);
-    }
+      return outcome;
+    });
   };
   // Android Back closes this first (emulator evidence D4).
   useBackCloses(true, onClose);

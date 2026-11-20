@@ -329,3 +329,43 @@ test('D6: a PIN-level action for someone with no tablet PIN says so at once (no 
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
 });
+
+test('Codex #190: a legacy medication shows on the tablet and its schedule is confirmed (PIN level)', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await pet('tab-meds').collection('medication-logs').doc('legacy-heartgard').set({ date: '2026-11-01', medication: 'Heartgard', dosage: '1 chew', nextDueDate: '2026-12-01', notes: '', loggedByUid: OWNER_UID, loggedByName: 'Owner' });
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await expect(page.getByTestId('tablet-legacy-heartgard')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('tablet-legacy-confirm-heartgard').click();
+  await expect(page.getByTestId('tablet-course-form')).toBeVisible();
+  await page.getByLabel('Every how many days').fill('30');
+  await page.getByTestId('tablet-course-save').click();
+  await pick(page, OWNER_UID);
+  await expect(page.getByTestId('pin-pad')).toBeVisible();
+  await enterPin(page, OWNER_PIN);
+  await expect.poll(async () => (await pet('tab-meds').collection('medication-courses').where('legacyKeys', 'array-contains', 'heartgard').get()).size, { timeout: 15_000 }).toBe(1);
+  await page.keyboard.press('Escape');
+});
+
+test('Codex #190: history merges both date shapes; Log weight tapped twice saves one weighing', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  const care = pet('tab-care').collection('care-logs');
+  for (let index = 0; index < 13; index += 1) await care.doc(`old-${index}`).set({ date: `2025-01-${String(index + 1).padStart(2, '0')}`, activity: `Old walk ${index}`, notes: '', loggedByUid: OWNER_UID, loggedByName: 'Owner' });
+  await care.doc('new-stamped').set({ date: Timestamp.now(), activity: 'Brushed today', notes: '', loggedByUid: OWNER_UID, loggedByName: 'Owner' });
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-care').click();
+  await page.getByTestId('tablet-pet-tab-history').click();
+  await expect(page.getByTestId('tablet-log-new-stamped')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('tablet-pet-tab-weight').click();
+  await page.getByTestId('tablet-weight-value').fill('7.5');
+  await page.getByTestId('tablet-weight-save').dblclick();
+  await pick(page, KID.uid);
+  await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
+  await page.waitForTimeout(1500);
+  expect((await pet('tab-care').collection('weights').get()).size).toBe(1);
+  await page.keyboard.press('Escape');
+});

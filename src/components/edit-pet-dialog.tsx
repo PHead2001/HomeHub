@@ -114,7 +114,7 @@ export function EditPetDialog({ pet, otherNames = NO_NAMES, onUpdatePet, onOpenC
   };
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(!!pet, () => { if (!saving) onOpenChange(false); });
+  useBackCloses(!!pet, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={!!pet} onOpenChange={(isOpen) => { if (!saving) onOpenChange(isOpen); }}>

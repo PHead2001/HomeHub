@@ -221,6 +221,8 @@ export function GiveDoseDialog({
       try {
         // The server picks a dose given more than 12 hours ago as the PIN-level .old capability (JC-27).
         const outcome = await tablet.runAction({
+          // This opening's opId (one press): a retry after a lost answer replays on the server.
+          opId,
           capability: chosen ? backdatedCapability('dose', chosen, new Date()) : 'pets.dose.give',
           label: `${course.name} for ${petName}`,
           subject: petName,
@@ -229,7 +231,8 @@ export function GiveDoseDialog({
           intent: { petId, courseId: course.id, occurrenceKey: occurrenceId(selected), givenAt: chosen ? chosen.toISOString() : null, notes: notes.trim() },
         });
         const result = (outcome.data as { result?: { status?: string; reason?: string } } | undefined)?.result;
-        if (outcome.ok && result?.status === 'refused') {
+        // A refusal is shown whatever the runtime made of it (it reports a domain refusal as not ok, Codex 2).
+        if (result?.status === 'refused') {
           setError(REFUSALS[result.reason as MedicationActionError['reason']] ?? "Couldn't record the dose. Try again.");
           return;
         }
@@ -300,7 +303,7 @@ export function GiveDoseDialog({
   };
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(course !== null, () => { if (!saving) onOpenChange(false); });
+  useBackCloses(course !== null, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={course !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>

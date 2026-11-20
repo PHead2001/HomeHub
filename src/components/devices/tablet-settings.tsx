@@ -158,7 +158,7 @@ export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
   // Android Back closes the topmost layer first (emulator evidence D4): an exit's confirmation,
   // the admin settings, then Tablet settings itself (never while a save or an exit runs).
   const idle = saving === null && !exiting;
-  useBackCloses(layer !== 'hidden', () => { if (idle && !admin) onClose(); });
+  useBackCloses(layer !== 'hidden', () => { if (!idle) return false; if (!admin) onClose(); return true; });
   useBackCloses(layer === 'confirm' && confirming !== null, () => setConfirming(null));
   useBackCloses(admin !== null, () => { setAdmin(null); onClose(); });
   if (layer === 'hidden') return null;

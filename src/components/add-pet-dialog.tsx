@@ -98,7 +98,7 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
   };
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(open, () => { if (saving) return; onOpenChange(false); reset(); });
+  useBackCloses(open, () => { if (saving) return false; onOpenChange(false); reset(); return true; });
 
   return (
     <Dialog

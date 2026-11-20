@@ -22,6 +22,7 @@ import {
   MAX_DOSE_TIMES,
   courseFormValues,
   coveredUntilAfterSave,
+  legacyCourseFormValues,
   coveredThrough,
   legacyMedicationKey,
   newCourseId,
@@ -95,12 +96,8 @@ export function CourseFormDialog({
     setCourseId(newCourseId());
     if (mode?.kind === 'edit') setValues(courseFormValues(mode.course, today));
     else if (mode?.kind === 'legacy') {
-      const { group } = mode;
       // Only a consistent history fills the schedule (as a suggestion); otherwise it starts empty.
-      setValues({
-        ...courseFormValues({ name: group.name, dosage: group.dosage, schedule: group.suggestion, startDay: group.dueDay }, today),
-        ...(group.suggestion ? {} : { everyDays: '', times: [] }),
-      });
+      setValues(legacyCourseFormValues(mode.group, today));
     } else setValues(courseFormValues({}, today));
   }
 
@@ -159,7 +156,7 @@ export function CourseFormDialog({
   const title = mode?.kind === 'edit' ? `Edit ${mode.course.name}` : mode?.kind === 'legacy' ? `Confirm ${mode.group.name}'s schedule` : 'New medication course';
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(mode !== null, () => { if (!saving) onOpenChange(false); });
+  useBackCloses(mode !== null, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={mode !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>

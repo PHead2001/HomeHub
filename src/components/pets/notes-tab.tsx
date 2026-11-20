@@ -405,7 +405,7 @@ function EditNoteDialog({ note, petId, onClose, onCloseAutoFocus, onSave }: {
   };
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(!!note, () => { if (!saving) onClose(); });
+  useBackCloses(!!note, () => { if (saving) return false; onClose(); return true; });
 
   return (
     <Dialog open={!!note} onOpenChange={(open) => { if (!open && !saving) onClose(); }}>

@@ -387,7 +387,7 @@ function OneOffDoseDialog({ petId, petName, open, courses, onOpenChange }: { pet
   };
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(open, () => { if (!saving) onOpenChange(false); });
+  useBackCloses(open, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>

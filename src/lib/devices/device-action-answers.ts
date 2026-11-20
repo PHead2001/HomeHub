@@ -267,3 +267,11 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
 const RESERVED_REQUEST_KEYS = new Set(['idToken', 'householdId', 'actorUid', 'pinSessionId', 'opId', 'queued']);
 export const intentFields = (intent: Readonly<Record<string, unknown>>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(intent).filter(([key]) => !RESERVED_REQUEST_KEYS.has(key)));
+
+/**
+ * A tablet form's opId after an attempt (Codex review 6): kept while the attempt may still be
+ * on its way or was refused (a retry then replays or is decided again), renewed once it was
+ * applied or saved on the tablet (the next submit is a new intent).
+ */
+export const formOpAfter = (outcome: { ok: boolean; queued?: boolean; uncertain?: boolean }): 'keep' | 'renew' =>
+  outcome.ok || outcome.queued ? 'renew' : 'keep';

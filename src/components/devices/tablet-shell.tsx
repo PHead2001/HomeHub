@@ -42,7 +42,8 @@ import {
   type SessionSignal,
 } from '@/lib/devices/device-session';
 import { deleteDeviceDatabase } from '@/lib/devices/device-store';
-import { tabletListener } from '@/lib/devices/tablet-listener';
+import { tabletListener, TABLET_DENIED_RECOVERY_MS } from '@/lib/devices/tablet-listener';
+import { setPetListenerRecovery } from '@/lib/pets/live-listener';
 import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
 import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
@@ -451,6 +452,12 @@ function TabletFrame(props: {
   const { householdId, deviceId, generation, settings, household, roster, notices, noticesComplete, endSession, runExit } = props;
   // Section views need the uncapped facts (never the dashboard's previews).
   const data = useDashboardData(true, { sections: true });
+  // The Pets readers the pet sheet shares with the personal app keep recovering a refused
+  // listener here, as the tablet's own listeners do (TABLET_DENIED_RECOVERY_MS).
+  useEffect(() => {
+    setPetListenerRecovery(TABLET_DENIED_RECOVERY_MS);
+    return () => setPetListenerRecovery(null);
+  }, []);
   const sectionFacts = data.sectionFacts ?? {};
   const router = useRouter();
   const pathname = usePathname();
@@ -721,7 +728,7 @@ function TabletFrame(props: {
       // The device action runtime: opId, Undo journal, offline queue, Undo toast.
       const subject = request.subject ?? request.label;
       const result = await whileBusy('save', deviceActions.perform({
-        capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who, onReverted: request.onReverted, toastGroup: request.toastGroup,
+        capability: request.capability, label: request.label, intent: request.intent ?? {}, actor, who, onReverted: request.onReverted, toastGroup: request.toastGroup, opId: request.opId,
         confirm: (check) => ('kind' in check ? askDoseAgain(check) : askFeedAgain(check, subject)),
       })).catch((): TabletActionOutcome => ({ ok: false }));
       if (result.ok) credit();

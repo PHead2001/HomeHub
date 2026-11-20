@@ -12,14 +12,20 @@
 //   from its journal entry: one whose window has passed is removed, another is offered again
 //   for the time it really has left.
 
+import { capToasts } from '@/lib/shell/toast-queue';
+
 export const TABLET_TOAST_LIMIT = 2;
 export const TABLET_INFO_TOAST_MS = 4_000;
 
-type ShownToast = { id: string; open?: boolean; action?: unknown; duration?: number };
+type ShownToast = { id: string; open?: boolean; action?: unknown; duration?: number; holdsAction?: boolean };
 
-/** The toasts the tablet shows: open ones, newest first (the store keeps newest first), at most the limit. */
+/**
+ * The toasts the tablet shows: open ones, newest first, at most the limit, chosen by the
+ * shared store's own policy (`capToasts`, src/lib/shell/toast-queue.ts): a notice or refusal
+ * never pushes an Undo off screen while its window is open (Codex review 4).
+ */
 export function tabletToasts<T extends ShownToast>(newestFirst: readonly T[]): T[] {
-  return newestFirst.filter((toast) => toast.open !== false).slice(0, TABLET_TOAST_LIMIT);
+  return capToasts(newestFirst.filter((toast) => toast.open !== false), TABLET_TOAST_LIMIT);
 }
 
 /** How long a toast stays on the tablet: an informational one at most 4 s; an Undo its own (remaining-window) duration. */

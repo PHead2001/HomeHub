@@ -8,11 +8,16 @@
 // Give dose dialog, which sends `pets.dose.give` on a tablet), a behaviour note and a weighing
 // (face level with Undo), and the PIN-level actions (JC-14: course finish, resume, create and
 // edit; note pin, unpin, edit and delete; deleting older entries; a feeding's time; the
-// profile and meal times; deleting the pet). The shell asks "Who's here?" and, for PIN-level
-// actions only, the PIN pad. Reads go through `tabletListener` (the device read rules).
+// profile and meal times; deleting the pet; a legacy medication's schedule). The shell asks
+// "Who's here?" and, for PIN-level actions only, the PIN pad. Reads are the personal Pets
+// readers (`useMedicationState` with offline doses and legacy countdowns, `usePinnedNotes`,
+// `useBehaviourEntries`, `usePetWeights`, `usePetLogs` across both date shapes) and the shared
+// `useNow` clock, keyed on the tablet's own access (`useSettledPetAccess`); only the pet
+// document itself goes through `tabletListener`. Every form and button holds one pending
+// action at a time (`useTabletSubmit`), and a form keeps one opId across its retries.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { DocumentSnapshot } from 'firebase/firestore';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -22,17 +27,22 @@ import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { tabletListener } from '@/lib/devices/tablet-listener';
 import {
   courseFormValues,
-  medicationDues,
+  legacyCourseFormValues,
   newCourseId,
-  readCourse,
   validateCourseForm,
   type CourseFormValues,
   type CourseView,
+  type LegacyGroup,
 } from '@/lib/pets/medication-course';
-import { behaviourEntries, pinnedNotes, pinRefusal, readNote, NOTE_TAGS, NOTE_TAG_LABELS, PINNED_NOTES_MAX, type NoteTag, type PetNote } from '@/lib/pets/notes';
+import { pinRefusal, NOTE_TAGS, NOTE_TAG_LABELS, type NoteTag, type PetNote } from '@/lib/pets/notes';
+import { useMedicationState } from '@/components/pets/medication-api';
+import { useBehaviourEntries, usePetWeights, usePinnedNotes } from '@/components/pets/records-api';
+import { usePetLogs, type PetLogKind } from '@/components/pets/pet-log-api';
+import { useNow } from '@/components/pets/use-now';
+import { useTabletSubmit } from './use-tablet-submit';
 import { householdDateLabel } from '@/lib/pets/care';
 import { toast } from '@/hooks/use-toast';
-import { formatWeight, petWeightUnit, readWeight, weightHistory, WEIGHT_UNITS, type WeightUnit } from '@/lib/pets/weights';
+import { formatWeight, petWeightUnit, weightHistory, WEIGHT_UNITS, type WeightUnit } from '@/lib/pets/weights';
 import { draftFromPlan, newMealSlotId, readMealPlan, validateMealDraft, type MealSlotDraft } from '@/lib/pets/meal-plan';
 import { householdToday } from '@/lib/household-zone';
 import { PORTION_UNITS } from '@/lib/pets/types';
@@ -54,37 +64,30 @@ export const button = 'inline-flex min-h-12 min-w-12 items-center justify-center
 const primary = 'inline-flex min-h-12 items-center justify-center rounded-lg bg-primary px-4 text-base font-medium text-primary-foreground disabled:opacity-60';
 const field = 'min-h-12 text-base';
 
-/** One live collection or document under the pet, through the tablet's listener (null: loading; 'failed': unreadable). */
-function usePetLive<T>(householdId: string, path: string[], build: 'collection' | 'doc', read: (snapshot: QuerySnapshot | DocumentSnapshot) => T, order?: { field: string; max: number }, equal?: { field: string; value: unknown; max: number }) {
-  const key = `${path.join('/')}${equal ? `?${equal.field}=${String(equal.value)}` : ''}`;
-  const [state, setState] = useState<{ key: string; value: T | null; failed: boolean } | null>(null);
+/** The pet document itself, live, through the tablet's listener (null: loading). */
+function usePetDocument(householdId: string, petId: string) {
+  const key = `${householdId}/${petId}`;
+  const [state, setState] = useState<{ key: string; value: Record<string, unknown> | null; failed: boolean } | null>(null);
   useEffect(() => {
     let stop: (() => void) | null = null;
     let stopped = false;
-    void Promise.all([import('@/lib/firebase'), import('firebase/firestore')]).then(([{ db }, fs]) => {
+    void Promise.all([import('@/lib/firebase'), import('firebase/firestore')]).then(([{ db }, { doc, onSnapshot }]) => {
       if (stopped) return;
-      const segments = ['households', householdId, ...path] as [string, ...string[]];
-      const { onSnapshot } = fs;
-      const docRef = build === 'doc' ? fs.doc(db, ...segments) : null;
-      const listRef = build === 'doc' ? null : fs.collection(db, ...segments);
-      const queryRef = listRef && equal ? fs.query(listRef, fs.where(equal.field, '==', equal.value), fs.limit(equal.max))
-        : listRef && order ? fs.query(listRef, fs.orderBy(order.field, 'desc'), fs.limit(order.max)) : listRef;
-      const subscribe: Parameters<typeof tabletListener<QuerySnapshot | DocumentSnapshot>>[0] = docRef
-        ? (next, error) => onSnapshot(docRef, { includeMetadataChanges: true }, next, error)
-        : (next, error) => onSnapshot(queryRef!, { includeMetadataChanges: true }, next, error);
-      stop = tabletListener<QuerySnapshot | DocumentSnapshot>(subscribe, {
-        confirmed: (snapshot) => !snapshot.metadata.fromCache,
-        next: (snapshot) => setState({ key, value: read(snapshot), failed: false }),
-        onDenied: () => setState((previous) => ({ key, value: previous?.key === key ? previous.value : null, failed: true })),
-      }).stop;
+      const ref = doc(db, 'households', householdId, 'pets', petId);
+      stop = tabletListener<DocumentSnapshot>(
+        (next, error) => onSnapshot(ref, { includeMetadataChanges: true }, next, error),
+        {
+          confirmed: (snapshot) => !snapshot.metadata.fromCache,
+          next: (snapshot) => setState({ key, value: (snapshot.data() ?? null) as Record<string, unknown> | null, failed: false }),
+          onDenied: () => setState((previous) => ({ key, value: previous?.key === key ? previous.value : null, failed: true })),
+        },
+      ).stop;
     });
     return () => {
       stopped = true;
       stop?.();
     };
-    // `read`, `build` and `order` are fixed per call site; the key identifies the query.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [householdId, key]);
+  }, [householdId, petId, key]);
   return state && state.key === key ? state : null;
 }
 
@@ -94,7 +97,6 @@ export const byLine = (name: unknown): string | null => {
   return shown ? `by ${shown}` : null;
 };
 
-const docsOf = (snapshot: QuerySnapshot | DocumentSnapshot) => ('docs' in snapshot ? snapshot.docs.map((entry) => ({ id: entry.id, data: entry.data({ serverTimestamps: 'estimate' }) as Record<string, unknown> })) : []);
 const toDate = (value: unknown): Date | null => {
   if (value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function') return (value as { toDate: () => Date }).toDate();
   if (typeof value === 'string') {
@@ -119,14 +121,18 @@ export function TabletPetSheet({ petId, petName, initialTab = 'medication', dose
   const { householdId, household } = useTablet();
   const timeZone = household?.timeZone ?? 'America/Chicago';
   const [tab, setTab] = useState<Tab>(initialTab);
-  const courses = usePetLive(householdId, ['pets', petId, 'medication-courses'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readCourse(entry.id, entry.data)).filter((course): course is CourseView => Boolean(course)));
-  const [giving, setGiving] = useState<CourseView | null>(null);
+  // The personal medication reader: courses with their offline doses, the legacy countdowns,
+  // on the shared minute clock (Codex review 1, 7, 8).
+  const now = useNow();
+  const medication = useMedicationState(householdId, petId, now, timeZone);
+  const [givingId, setGivingId] = useState<string | null>(null);
+  const giving = givingId ? medication.courses.find((course) => course.id === givingId) ?? null : null;
   const [linkHandled, setLinkHandled] = useState(false);
   // A reminder's link: Give dose opens once the courses have loaded (an inactive course just shows the list).
-  if (!linkHandled && doseCourseId && courses?.value) {
+  if (!linkHandled && doseCourseId && !medication.loading && !medication.error) {
     setLinkHandled(true);
-    const course = courses.value.find((entry) => entry.id === doseCourseId && entry.status === 'active');
-    if (course) setGiving(course);
+    const course = medication.courses.find((entry) => entry.id === doseCourseId && entry.status === 'active');
+    if (course) setGivingId(course.id);
   }
   // Android Back closes this first (emulator evidence D4).
   useBackCloses(true, onClose);
@@ -146,13 +152,13 @@ export function TabletPetSheet({ petId, petName, initialTab = 'medication', dose
           ))}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1" role="tabpanel">
-          {tab === 'medication' && <MedicationPanel petId={petId} courses={courses} timeZone={timeZone} onGive={setGiving} />}
+          {tab === 'medication' && <MedicationPanel petId={petId} medication={medication} onGive={(course) => setGivingId(course.id)} />}
           {tab === 'notes' && <NotesPanel petId={petId} petName={petName} timeZone={timeZone} />}
           {tab === 'weight' && <WeightPanel petId={petId} petName={petName} timeZone={timeZone} />}
           {tab === 'history' && <HistoryPanel petId={petId} petName={petName} timeZone={timeZone} />}
           {tab === 'profile' && <ProfilePanel petId={petId} petName={petName} onDeleted={onClose} />}
         </div>
-        <GiveDoseDialog petId={petId} petName={petName} course={giving} onOpenChange={(open) => { if (!open) setGiving(null); }} />
+        <GiveDoseDialog petId={petId} petName={petName} course={giving} onOpenChange={(open) => { if (!open) setGivingId(null); }} />
       </DialogContent>
     </Dialog>
   );
@@ -164,29 +170,38 @@ function Empty({ children }: { children: ReactNode }) {
 
 /* --- Medication --------------------------------------------------------------------- */
 
-function MedicationPanel({ petId, courses, timeZone, onGive }: {
+function MedicationPanel({ petId, medication, onGive }: {
   petId: string;
-  courses: { value: CourseView[] | null; failed: boolean } | null;
-  timeZone: string;
+  medication: ReturnType<typeof useMedicationState>;
   onGive: (course: CourseView) => void;
 }) {
   const { runAction } = useTablet();
-  const [editing, setEditing] = useState<{ course: CourseView | null } | null>(null);
-  const list = courses?.value ?? null;
-  const dues = useMemo(() => (list ? medicationDues(list.filter((course) => course.status === 'active'), [], new Date(), timeZone) : []), [list, timeZone]);
-  if (!list) return <Empty>{courses?.failed ? "Medication couldn't be loaded right now. It tries again on its own." : 'Loading…'}</Empty>;
+  const buttons = useTabletSubmit();
+  const [editing, setEditing] = useState<{ course: CourseView | null; legacy?: LegacyGroup } | null>(null);
+  if (medication.loading) return <Empty>Loading…</Empty>;
+  if (medication.error) return <Empty>Medication couldn&apos;t be loaded right now. It tries again on its own.</Empty>;
+  const list = medication.courses;
   const active = list.filter((course) => course.status === 'active');
   const finished = list.filter((course) => course.status !== 'active');
-  const set = (course: CourseView, finish: boolean) => runAction({
+  const set = (course: CourseView, finish: boolean) => buttons.run(() => runAction({
     capability: finish ? 'pets.course.finish' : 'pets.course.resume',
     label: finish ? `Finished ${course.name}` : `${course.name} is active again`,
     intent: { petId, courseId: course.id },
-  });
-  if (editing) return <CourseForm petId={petId} course={editing.course} activeNames={active.filter((course) => course.id !== editing.course?.id).map((course) => course.name.trim().toLowerCase())} onDone={() => setEditing(null)} />;
+  }));
+  if (editing) {
+    return <CourseForm petId={petId} course={editing.course} legacy={editing.legacy} activeNames={active.filter((course) => course.id !== editing.course?.id).map((course) => course.name.trim().toLowerCase())} onDone={() => setEditing(null)} />;
+  }
   return (
     <div className="space-y-3">
-      <MedicationChips dues={dues} max={4} onSelect={(due) => { const course = active.find((entry) => entry.id === due.courseId); if (course) onGive(course); }} />
-      {active.length === 0 && <Empty>No active medication courses.</Empty>}
+      <MedicationChips dues={medication.dues} max={4} onSelect={(due) => {
+        const course = active.find((entry) => entry.id === due.courseId);
+        if (course) onGive(course);
+        else {
+          const group = medication.legacy.find((entry) => entry.key === due.legacyKey);
+          if (group) setEditing({ course: null, legacy: group });
+        }
+      }} />
+      {active.length === 0 && medication.legacy.length === 0 && <Empty>No active medication courses.</Empty>}
       <ul className="space-y-2">
         {active.map((course) => (
           <li key={course.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border p-3" data-testid={`tablet-course-${course.id}`}>
@@ -194,18 +209,31 @@ function MedicationPanel({ petId, courses, timeZone, onGive }: {
             <span className="flex flex-wrap gap-2">
               <button type="button" className={cn(button, 'border-primary/40 text-primary')} onClick={() => onGive(course)} data-testid={`tablet-give-${course.id}`}>Give dose</button>
               <button type="button" className={button} onClick={() => setEditing({ course })}>Edit</button>
-              <button type="button" className={button} onClick={() => void set(course, true)}>Finish</button>
+              <button type="button" className={button} disabled={buttons.busy} onClick={() => void set(course, true)}>Finish</button>
             </span>
           </li>
         ))}
       </ul>
+      {medication.legacy.length > 0 && (
+        <ul className="space-y-2" aria-label="Medications without a schedule">
+          {medication.legacy.map((group) => (
+            <li key={group.key} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-warning/50 p-3" data-testid={`tablet-legacy-${group.key}`}>
+              <span className="min-w-0">
+                <span className="block text-lg font-medium">{group.name || group.key}{group.dosage ? ` · ${group.dosage}` : ''}</span>
+                <span className="block text-sm text-muted-foreground">Logged without a schedule. It keeps reminding until its schedule is confirmed. Finishing or merging it is done from a phone.</span>
+              </span>
+              <button type="button" className={button} onClick={() => setEditing({ course: null, legacy: group })} data-testid={`tablet-legacy-confirm-${group.key}`}>Confirm schedule</button>
+            </li>
+          ))}
+        </ul>
+      )}
       <button type="button" className={button} onClick={() => setEditing({ course: null })} data-testid="tablet-course-add">Add a course</button>
       {finished.length > 0 && (
         <ul className="space-y-2" aria-label="Finished courses">
           {finished.map((course) => (
             <li key={course.id} className="flex items-center justify-between gap-2 rounded-xl border border-dashed border-border p-3">
               <span className="text-base text-muted-foreground">{course.name} · finished</span>
-              {course.schedule && <button type="button" className={button} onClick={() => void set(course, false)}>Resume</button>}
+              {course.schedule && <button type="button" className={button} disabled={buttons.busy} onClick={() => void set(course, false)}>Resume</button>}
             </li>
           ))}
         </ul>
@@ -214,26 +242,28 @@ function MedicationPanel({ petId, courses, timeZone, onGive }: {
   );
 }
 
-function CourseForm({ petId, course, activeNames, onDone }: { petId: string; course: CourseView | null; activeNames: string[]; onDone: () => void }) {
+function CourseForm({ petId, course, legacy, activeNames, onDone }: { petId: string; course: CourseView | null; legacy?: LegacyGroup; activeNames: string[]; onDone: () => void }) {
   const { runAction, household } = useTablet();
   const [courseId] = useState(() => course?.id ?? newCourseId());
-  const [values, setValues] = useState<CourseFormValues>(() => courseFormValues(course ?? {}, householdToday(household?.timeZone)));
+  const today = householdToday(household?.timeZone);
+  // A legacy medication's form: the shared prefill (its history's interval only when it agrees, D-P8).
+  const [values, setValues] = useState<CourseFormValues>(() => (legacy ? legacyCourseFormValues(legacy, today) : courseFormValues(course ?? {}, today)));
   const [submitted, setSubmitted] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const form = useTabletSubmit();
   useUnsavedInput(true);
   const { errors } = validateCourseForm(values, activeNames);
   const change = (patch: Partial<CourseFormValues>) => setValues((previous) => ({ ...previous, ...patch }));
   const save = async () => {
     setSubmitted(true);
-    if (Object.keys(errors).length > 0 || saving) return;
-    setSaving(true);
-    try {
-      const outcome = await runAction({ capability: 'pets.course.edit', label: course ? `Saved ${values.name.trim()}` : `Added ${values.name.trim()}`, intent: { petId, courseId, create: !course, values, ...(course ? { base: { name: course.name, dosage: course.dosage, schedule: course.schedule, startDay: course.startDay, endDay: course.endDay } } : {}) } });
+    if (Object.keys(errors).length > 0) return;
+    await form.submit(async (opId) => {
+      const outcome = legacy
+        ? await runAction({ capability: 'pets.medication.confirmLegacy', opId, label: `${values.name.trim()}'s schedule confirmed`, intent: { petId, legacyKey: legacy.key, values } })
+        : await runAction({ capability: 'pets.course.edit', opId, label: course ? `Saved ${values.name.trim()}` : `Added ${values.name.trim()}`, intent: { petId, courseId, create: !course, values, ...(course ? { base: { name: course.name, dosage: course.dosage, schedule: course.schedule, startDay: course.startDay, endDay: course.endDay } } : {}) } });
       const status = (outcome.data as { status?: string } | undefined)?.status;
       if (outcome.ok && (status === 'saved' || status === 'already')) onDone();
-    } finally {
-      setSaving(false);
-    }
+      return outcome;
+    });
   };
   const err = (key: keyof typeof errors) => (submitted && errors[key] ? <span className="text-sm text-destructive">{errors[key]}</span> : null);
   return (
@@ -260,7 +290,7 @@ function CourseForm({ petId, course, activeNames, onDone }: { petId: string; cou
       <label className="grid gap-1 text-base">Last day (optional)<Input className={field} type="date" value={values.endDay} onChange={(event) => change({ endDay: event.target.value })} />{err('endDay')}</label>
       <div className="flex justify-end gap-2">
         <button type="button" className={button} onClick={onDone}>Cancel</button>
-        <button type="submit" className={primary} disabled={saving} data-testid="tablet-course-save">Save</button>
+        <button type="submit" className={primary} disabled={form.busy} data-testid="tablet-course-save">{legacy ? 'Confirm schedule' : 'Save'}</button>
       </div>
     </form>
   );
@@ -270,60 +300,65 @@ function CourseForm({ petId, course, activeNames, onDone }: { petId: string; cou
 
 function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: string; timeZone: string }) {
   const { householdId, runAction } = useTablet();
-  const live = usePetLive(householdId, ['pets', petId, 'notes'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readNote(entry.id, entry.data)), { field: 'date', max: 40 });
-  // Every pinned note (the shared cap, P5's `pinRefusal`, counts them all, not the newest 40 entries).
-  const pinnedLive = usePetLive(householdId, ['pets', petId, 'notes'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readNote(entry.id, entry.data)), undefined, { field: 'pinned', value: true, max: PINNED_NOTES_MAX * 2 });
+  // The personal readers: every pinned note (displayed and counted for the shared cap, Codex 3)
+  // and the newest behaviour entries.
+  const pinned = usePinnedNotes(householdId, petId);
+  const entries = useBehaviourEntries(householdId, petId, 40);
   const [text, setText] = useState('');
   const [tag, setTag] = useState<NoteTag | ''>('');
   const [editing, setEditing] = useState<{ note: PetNote; text: string } | null>(null);
-  const [saving, setSaving] = useState(false);
+  const addForm = useTabletSubmit();
+  const editForm = useTabletSubmit();
+  const buttons = useTabletSubmit();
   useUnsavedInput(text.trim().length > 0 || Boolean(editing));
-  const notes = live?.value ?? null;
   const add = async () => {
-    if (!text.trim() || text.trim().length > 500 || saving) return;
-    setSaving(true);
-    try {
-      const outcome = await runAction({ capability: 'pets.note.add', label: `Note for ${petName}`, subject: petName, toastGroup: `pet-note:${petId}`, intent: { petId, text: text.trim(), ...(tag ? { tag } : {}) } });
+    if (!text.trim() || text.trim().length > 500) return;
+    await addForm.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.note.add', opId, label: `Note for ${petName}`, subject: petName, toastGroup: `pet-note:${petId}`, intent: { petId, text: text.trim(), ...(tag ? { tag } : {}) } });
       if (outcome.ok) { setText(''); setTag(''); }
-    } finally {
-      setSaving(false);
-    }
+      return outcome;
+    });
   };
-  const pin = (note: PetNote) => {
+  const pin = (note: PetNote) => buttons.run(async () => {
     // The same cap as a phone (the server checks it again): nothing is asked of anyone past it.
-    const refusal = note.pinned ? null : pinRefusal(pinnedLive?.value ? pinnedLive.value.length : null);
+    const refusal = note.pinned ? null : pinRefusal(pinned.loading || pinned.error ? null : pinned.items.length);
     if (refusal) {
       toast({ variant: 'destructive', description: refusal });
       return;
     }
     return runAction({ capability: note.pinned ? 'pets.note.unpin' : 'pets.note.pin', label: note.pinned ? 'Note unpinned' : 'Note pinned', intent: { petId, noteId: note.id } });
-  };
-  const remove = (note: PetNote) => runAction({ capability: 'pets.note.delete', label: 'Note removed', intent: { petId, noteId: note.id } });
+  });
+  const remove = (note: PetNote) => buttons.run(() => runAction({ capability: 'pets.note.delete', label: 'Note removed', intent: { petId, noteId: note.id } }));
+  const startEdit = (note: PetNote) => { editForm.renew(); setEditing({ note, text: note.text }); };
   const saveEdit = async () => {
     if (!editing || !editing.text.trim()) return;
-    const outcome = await runAction({ capability: 'pets.note.editPinned', label: 'Note saved', intent: { petId, noteId: editing.note.id, expected: { text: editing.note.text, tag: editing.note.tag }, text: editing.text.trim(), tag: editing.note.tag } });
-    if (outcome.ok) setEditing(null);
+    await editForm.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.note.editPinned', opId, label: 'Note saved', intent: { petId, noteId: editing.note.id, expected: { text: editing.note.text, tag: editing.note.tag }, text: editing.text.trim(), tag: editing.note.tag } });
+      if (outcome.ok) setEditing(null);
+      return outcome;
+    });
   };
   const row = (note: PetNote) => (
     <li key={note.id} className="space-y-2 rounded-xl border border-border p-3" data-testid={`tablet-note-${note.id}`}>
       {editing?.note.id === note.id ? (
         <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void saveEdit(); }}>
           <Textarea className="min-h-20 text-base" value={editing.text} maxLength={500} aria-label="Note" onChange={(event) => setEditing({ ...editing, text: event.target.value })} />
-          <span className="flex justify-end gap-2"><button type="button" className={button} onClick={() => setEditing(null)}>Cancel</button><button type="submit" className={primary}>Save</button></span>
+          <span className="flex justify-end gap-2"><button type="button" className={button} onClick={() => setEditing(null)}>Cancel</button><button type="submit" className={primary} disabled={editForm.busy}>Save</button></span>
         </form>
       ) : (
         <>
           <p className="text-base">{note.text}</p>
           <p className="text-sm text-muted-foreground">{[note.tag ? NOTE_TAG_LABELS[note.tag] : null, note.date ? householdDateLabel(note.date, timeZone) : null, byLine(note.loggedByName)].filter(Boolean).join(' · ')}</p>
           <span className="flex flex-wrap gap-2">
-            <button type="button" className={button} onClick={() => void pin(note)}>{note.pinned ? 'Unpin' : 'Pin'}</button>
-            <button type="button" className={button} onClick={() => setEditing({ note, text: note.text })}>Edit</button>
-            <button type="button" className={button} onClick={() => void remove(note)}>Delete</button>
+            <button type="button" className={button} disabled={buttons.busy} onClick={() => void pin(note)}>{note.pinned ? 'Unpin' : 'Pin'}</button>
+            <button type="button" className={button} onClick={() => startEdit(note)}>Edit</button>
+            <button type="button" className={button} disabled={buttons.busy} onClick={() => void remove(note)}>Delete</button>
           </span>
         </>
       )}
     </li>
   );
+  const failed = pinned.error || entries.error;
   return (
     <div className="space-y-3">
       <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void add(); }}>
@@ -332,13 +367,13 @@ function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: stri
           {NOTE_TAGS.map((entry) => (
             <button key={entry} type="button" role="radio" aria-checked={tag === entry} className={cn(button, tag === entry && 'border-primary text-primary')} onClick={() => setTag(tag === entry ? '' : entry)}>{NOTE_TAG_LABELS[entry]}</button>
           ))}
-          <button type="submit" className={primary} disabled={!text.trim() || saving} data-testid="tablet-note-save">Add note</button>
+          <button type="submit" className={primary} disabled={!text.trim() || addForm.busy} data-testid="tablet-note-save">Add note</button>
         </div>
       </form>
-      {!notes ? <Empty>{live?.failed ? "Notes couldn't be loaded right now." : 'Loading…'}</Empty> : (
+      {failed ? <Empty>Notes couldn&apos;t be loaded right now.</Empty> : pinned.loading || entries.loading ? <Empty>Loading…</Empty> : (
         <>
-          {pinnedNotes(notes).length > 0 && <ul className="space-y-2" aria-label="Pinned notes">{pinnedNotes(notes).map(row)}</ul>}
-          {behaviourEntries(notes).length === 0 ? <Empty>No notes yet.</Empty> : <ul className="space-y-2" aria-label="Notes">{behaviourEntries(notes).map(row)}</ul>}
+          {pinned.items.length > 0 && <ul className="space-y-2" aria-label="Pinned notes" data-testid="tablet-pinned-notes">{pinned.items.map(row)}</ul>}
+          {entries.items.length === 0 ? <Empty>No notes yet.</Empty> : <ul className="space-y-2" aria-label="Notes">{entries.items.map(row)}</ul>}
         </>
       )}
     </div>
@@ -349,18 +384,24 @@ function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: stri
 
 function WeightPanel({ petId, petName, timeZone }: { petId: string; petName: string; timeZone: string }) {
   const { householdId, runAction } = useTablet();
-  const live = usePetLive(householdId, ['pets', petId, 'weights'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readWeight(entry.id, entry.data)), { field: 'date', max: 20 });
-  const profile = usePetLive(householdId, ['pets', petId], 'doc', (snapshot) => ('data' in snapshot && typeof snapshot.data === 'function' ? (snapshot as DocumentSnapshot).data() ?? null : null));
+  const live = usePetWeights(householdId, petId, 20);
+  const profile = usePetDocument(householdId, petId);
   const unit: WeightUnit = petWeightUnit(profile?.value);
   const [value, setValue] = useState('');
   const [chosen, setChosen] = useState<WeightUnit | null>(null);
+  // One weighing per submit, however often Log weight is tapped (Codex 6).
+  const form = useTabletSubmit();
+  const buttons = useTabletSubmit();
   useUnsavedInput(value.trim().length > 0);
-  const entries = live?.value ? weightHistory(live.value) : null;
+  const entries = live.loading || live.error ? null : weightHistory(live.items);
   const add = async () => {
     const number = Number(value);
     if (!value.trim() || !Number.isFinite(number) || number <= 0) return;
-    const outcome = await runAction({ capability: 'pets.weight.add', label: `Weight for ${petName}`, subject: petName, toastGroup: `pet-weight:${petId}`, intent: { petId, value: number, unit: chosen ?? unit } });
-    if (outcome.ok) setValue('');
+    await form.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.weight.add', opId, label: `Weight for ${petName}`, subject: petName, toastGroup: `pet-weight:${petId}`, intent: { petId, value: number, unit: chosen ?? unit } });
+      if (outcome.ok) setValue('');
+      return outcome;
+    });
   };
   return (
     <div className="space-y-3">
@@ -369,14 +410,14 @@ function WeightPanel({ petId, petName, timeZone }: { petId: string; petName: str
         {WEIGHT_UNITS.map((entry) => (
           <button key={entry} type="button" aria-pressed={(chosen ?? unit) === entry} className={cn(button, (chosen ?? unit) === entry && 'border-primary text-primary')} onClick={() => setChosen(entry)}>{entry}</button>
         ))}
-        <button type="submit" className={primary} disabled={!value.trim()} data-testid="tablet-weight-save">Log weight</button>
+        <button type="submit" className={primary} disabled={!value.trim() || form.busy} data-testid="tablet-weight-save">Log weight</button>
       </form>
-      {!entries ? <Empty>{live?.failed ? "Weights couldn't be loaded right now." : 'Loading…'}</Empty> : entries.length === 0 ? <Empty>No weighings yet.</Empty> : (
+      {!entries ? <Empty>{live.error ? "Weights couldn't be loaded right now." : 'Loading…'}</Empty> : entries.length === 0 ? <Empty>No weighings yet.</Empty> : (
         <ul className="space-y-2">
           {entries.map((entry) => (
             <li key={entry.id} className="flex items-center justify-between gap-2 rounded-xl border border-border p-3">
               <span className="text-base">{formatWeight(entry.value, entry.unit)} <span className="text-sm text-muted-foreground">· {entry.date ? householdDateLabel(entry.date, timeZone) : 'Unknown date'}{byLine(entry.loggedByName) ? ` · ${byLine(entry.loggedByName)}` : ''}</span></span>
-              <button type="button" className={button} onClick={() => void runAction({ capability: 'pets.log.delete', label: 'Weighing removed', intent: { petId, kind: 'weights', logId: entry.id } })}>Delete</button>
+              <button type="button" className={button} disabled={buttons.busy} onClick={() => void buttons.run(() => runAction({ capability: 'pets.log.delete', label: 'Weighing removed', intent: { petId, kind: 'weights', logId: entry.id } }))}>Delete</button>
             </li>
           ))}
         </ul>
@@ -393,47 +434,60 @@ const LOG_KINDS = [
   { kind: 'care-logs', label: 'Care' },
 ] as const;
 
+type HistoryEntry = { id: string; date: unknown; activity?: unknown; medication?: unknown; loggedByName?: unknown };
+
+/** One kind's newest entries across both date shapes, merged chronologically (the personal history's reader, Codex 9). */
+function useHistory(householdId: string, petId: string, kind: PetLogKind) {
+  return usePetLogs(householdId, petId, kind, 12) as unknown as { logs: HistoryEntry[]; loading: boolean; error: unknown };
+}
+
 function HistoryPanel({ petId, petName, timeZone }: { petId: string; petName: string; timeZone: string }) {
   const { householdId, runAction } = useTablet();
-  const feedings = usePetLive(householdId, ['pets', petId, 'feeding-logs'], 'collection', docsOf, { field: 'date', max: 12 });
-  const medication = usePetLive(householdId, ['pets', petId, 'medication-logs'], 'collection', docsOf, { field: 'date', max: 12 });
-  const care = usePetLive(householdId, ['pets', petId, 'care-logs'], 'collection', docsOf, { field: 'date', max: 12 });
+  const sources = {
+    'feeding-logs': useHistory(householdId, petId, 'feeding-logs'),
+    'medication-logs': useHistory(householdId, petId, 'medication-logs'),
+    'care-logs': useHistory(householdId, petId, 'care-logs'),
+  };
   const [fixing, setFixing] = useState<{ logId: string; value: string } | null>(null);
+  const fixForm = useTabletSubmit();
+  const buttons = useTabletSubmit();
   useUnsavedInput(Boolean(fixing));
-  const sources = { 'feeding-logs': feedings, 'medication-logs': medication, 'care-logs': care };
   const fix = async () => {
     if (!fixing) return;
     const at = new Date(fixing.value);
     if (Number.isNaN(at.getTime())) return;
-    const outcome = await runAction({ capability: 'pets.log.correctTime', label: `${petName}'s feeding time corrected`, intent: { petId, logId: fixing.logId, date: at.toISOString() } });
-    if (outcome.ok) setFixing(null);
+    await fixForm.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.log.correctTime', opId, label: `${petName}'s feeding time corrected`, intent: { petId, logId: fixing.logId, date: at.toISOString() } });
+      if (outcome.ok) setFixing(null);
+      return outcome;
+    });
   };
   return (
     <div className="space-y-4">
       {LOG_KINDS.map(({ kind, label }) => {
         const source = sources[kind];
-        const entries = source?.value ?? null;
+        const entries = source.loading || source.error ? null : source.logs;
         return (
           <section key={kind} aria-label={label} className="space-y-2">
             <h3 className="text-lg font-medium">{label}</h3>
-            {!entries ? <Empty>{source?.failed ? "This history couldn't be loaded right now." : 'Loading…'}</Empty> : entries.length === 0 ? <Empty>Nothing yet.</Empty> : (
+            {!entries ? <Empty>{source.error ? "This history couldn't be loaded right now." : 'Loading…'}</Empty> : entries.length === 0 ? <Empty>Nothing yet.</Empty> : (
               <ul className="space-y-2">
                 {entries.map((entry) => (
                   <li key={entry.id} className="space-y-2 rounded-xl border border-border p-3" data-testid={`tablet-log-${entry.id}`}>
                     <p className="text-base">
-                      {kind === 'care-logs' ? String(entry.data.activity ?? 'Care') : kind === 'medication-logs' ? String(entry.data.medication ?? 'Dose') : 'Fed'}
-                      <span className="text-sm text-muted-foreground"> · {when(entry.data.date, timeZone)}{byLine(entry.data.loggedByName) ? ` · ${byLine(entry.data.loggedByName)}` : ''}</span>
+                      {kind === 'care-logs' ? String(entry.activity ?? 'Care') : kind === 'medication-logs' ? String(entry.medication ?? 'Dose') : 'Fed'}
+                      <span className="text-sm text-muted-foreground"> · {when(entry.date, timeZone)}{byLine(entry.loggedByName) ? ` · ${byLine(entry.loggedByName)}` : ''}</span>
                     </p>
                     {fixing?.logId === entry.id ? (
                       <form className="flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void fix(); }}>
                         <label className="grid gap-1 text-base">Fed at<Input className={field} type="datetime-local" value={fixing.value} onChange={(event) => setFixing({ ...fixing, value: event.target.value })} /></label>
                         <button type="button" className={button} onClick={() => setFixing(null)}>Cancel</button>
-                        <button type="submit" className={primary}>Save time</button>
+                        <button type="submit" className={primary} disabled={fixForm.busy}>Save time</button>
                       </form>
                     ) : (
                       <span className="flex flex-wrap gap-2">
-                        {kind === 'feeding-logs' && <button type="button" className={button} onClick={() => setFixing({ logId: entry.id, value: '' })}>Fix time</button>}
-                        <button type="button" className={button} onClick={() => void runAction({ capability: 'pets.log.delete', label: `${label === 'Feedings' ? 'Feeding' : label === 'Doses' ? 'Dose record' : 'Care entry'} removed`, intent: { petId, kind, logId: entry.id } })}>Delete</button>
+                        {kind === 'feeding-logs' && <button type="button" className={button} onClick={() => { fixForm.renew(); setFixing({ logId: entry.id, value: '' }); }}>Fix time</button>}
+                        <button type="button" className={button} disabled={buttons.busy} onClick={() => void buttons.run(() => runAction({ capability: 'pets.log.delete', label: `${label === 'Feedings' ? 'Feeding' : label === 'Doses' ? 'Dose record' : 'Care entry'} removed`, intent: { petId, kind, logId: entry.id } }))}>Delete</button>
                       </span>
                     )}
                   </li>
@@ -451,8 +505,11 @@ function HistoryPanel({ petId, petName, timeZone }: { petId: string; petName: st
 
 function ProfilePanel({ petId, petName, onDeleted }: { petId: string; petName: string; onDeleted: () => void }) {
   const { householdId, runAction } = useTablet();
-  const live = usePetLive(householdId, ['pets', petId], 'doc', (snapshot) => ((snapshot as DocumentSnapshot).data?.() ?? null) as Record<string, unknown> | null);
+  const live = usePetDocument(householdId, petId);
   const stored = live?.value ?? null;
+  const profileForm = useTabletSubmit();
+  const planForm = useTabletSubmit();
+  const deleteForm = useTabletSubmit();
   const [form, setForm] = useState<{ name: string; vetName: string; vetClinic: string; vetPhone: string; weightUnit: WeightUnit } | null>(null);
   const [rows, setRows] = useState<MealSlotDraft[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -466,20 +523,29 @@ function ProfilePanel({ petId, petName, onDeleted }: { petId: string; petName: s
     for (const key of ['vetName', 'vetClinic', 'vetPhone'] as const) if (current[key].trim() !== text(key)) changed[key] = current[key].trim() || null;
     if (current.weightUnit !== petWeightUnit(stored)) changed.weightUnit = current.weightUnit;
     if (Object.keys(changed).length === 0) { setForm(null); return; }
-    const outcome = await runAction({ capability: 'pets.profile.edit', label: `${current.name.trim() || petName} saved`, intent: { petId, ...changed } });
-    if (outcome.ok && (outcome.data as { status?: string } | undefined)?.status === 'saved') setForm(null);
+    await profileForm.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.profile.edit', opId, label: `${current.name.trim() || petName} saved`, intent: { petId, ...changed } });
+      if (outcome.ok && (outcome.data as { status?: string } | undefined)?.status === 'saved') setForm(null);
+      return outcome;
+    });
   };
   const plan = rows ?? draftFromPlan(readMealPlan(stored as never));
   const planErrors = validateMealDraft(plan);
   const savePlan = async () => {
     if (plan.length === 0 || planErrors.plan || planErrors.rows.some((errors) => Object.keys(errors).length > 0)) return;
-    const outcome = await runAction({ capability: 'pets.slots.edit', label: `${petName}'s meal times saved`, intent: { petId, rows: plan } });
-    if (outcome.ok) setRows(null);
+    await planForm.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.slots.edit', opId, label: `${petName}'s meal times saved`, intent: { petId, rows: plan } });
+      if (outcome.ok) setRows(null);
+      return outcome;
+    });
   };
   const editRow = (index: number, patch: Partial<MealSlotDraft>) => setRows(plan.map((row, at) => (at === index ? { ...row, ...patch } : row)));
   const remove = async () => {
-    const outcome = await runAction({ capability: 'pets.pet.delete', label: `${petName} deleted`, intent: { petId } });
-    if (outcome.ok) onDeleted();
+    await deleteForm.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.pet.delete', opId, label: `${petName} deleted`, intent: { petId } });
+      if (outcome.ok) onDeleted();
+      return outcome;
+    });
   };
   return (
     <div className="space-y-5">
@@ -490,7 +556,7 @@ function ProfilePanel({ petId, petName, onDeleted }: { petId: string; petName: s
         <label className="grid gap-1 text-base">Vet phone<Input className={field} type="tel" value={current.vetPhone} maxLength={30} onChange={(event) => setForm({ ...current, vetPhone: event.target.value })} /></label>
         <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Weight unit">
           {WEIGHT_UNITS.map((entry) => <button key={entry} type="button" role="radio" aria-checked={current.weightUnit === entry} className={cn(button, current.weightUnit === entry && 'border-primary text-primary')} onClick={() => setForm({ ...current, weightUnit: entry })}>{entry}</button>)}
-          <button type="submit" className={primary} disabled={!form}>Save profile</button>
+          <button type="submit" className={primary} disabled={!form || profileForm.busy}>Save profile</button>
         </div>
         <p className="text-sm text-muted-foreground">Photos are changed from a phone.</p>
       </form>
@@ -509,14 +575,14 @@ function ProfilePanel({ petId, petName, onDeleted }: { petId: string; petName: s
         ))}
         <span className="flex flex-wrap gap-2">
           <button type="button" className={button} onClick={() => setRows([...plan, { id: newMealSlotId(), name: '', time: '', amount: '1', unit: plan[0]?.unit ?? 'Cups', offDays: [] }])}>Add a meal</button>
-          <button type="button" className={primary} disabled={!rows || plan.length === 0} onClick={() => void savePlan()}>Save meal times</button>
+          <button type="button" className={primary} disabled={!rows || plan.length === 0 || planForm.busy} onClick={() => void savePlan()}>Save meal times</button>
         </span>
       </section>
       <section className="space-y-2" aria-label="Delete pet">
         {confirmDelete ? (
           <div className="space-y-2 rounded-xl border border-destructive/50 p-3">
             <p className="text-base">Delete {petName} and everything recorded for them? This cannot be undone.</p>
-            <span className="flex gap-2"><button type="button" className={button} onClick={() => setConfirmDelete(false)}>Keep</button><button type="button" className={cn(button, 'border-destructive text-destructive')} onClick={() => void remove()} data-testid="tablet-pet-delete-confirm">Delete {petName}</button></span>
+            <span className="flex gap-2"><button type="button" className={button} onClick={() => setConfirmDelete(false)}>Keep</button><button type="button" className={cn(button, 'border-destructive text-destructive')} disabled={deleteForm.busy} onClick={() => void remove()} data-testid="tablet-pet-delete-confirm">Delete {petName}</button></span>
           </div>
         ) : (
           <button type="button" className={cn(button, 'text-destructive')} onClick={() => setConfirmDelete(true)}>Delete pet</button>
@@ -526,11 +592,12 @@ function ProfilePanel({ petId, petName, onDeleted }: { petId: string; petName: s
   );
 }
 
-/** A pet's active courses on the tablet board (live), for its medication chips. */
-export function TabletMedicationChips({ petId, onGive }: { petId: string; onGive: (courseId: string) => void }) {
+/** A pet's current medication on the tablet board: the personal reader (courses with offline doses, legacy countdowns) on the shared clock. */
+export function TabletMedicationChips({ petId, onGive }: { petId: string; onGive: (courseId?: string) => void }) {
   const { householdId, household } = useTablet();
-  const courses = usePetLive(householdId, ['pets', petId, 'medication-courses'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readCourse(entry.id, entry.data)).filter((course): course is CourseView => Boolean(course) && course!.status === 'active'));
-  const dues = courses?.value ? medicationDues(courses.value, [], new Date(), household?.timeZone) : [];
-  if (dues.length === 0) return null;
-  return <MedicationChips dues={dues} max={2} onSelect={(due) => { if (due.courseId) onGive(due.courseId); }} />;
+  const now = useNow();
+  const medication = useMedicationState(householdId, petId, now, household?.timeZone ?? null);
+  // Unreadable or still loading: no chips (the board's row still shows the pet).
+  if (medication.error || medication.dues.length === 0) return null;
+  return <MedicationChips dues={medication.dues} max={2} onSelect={(due) => onGive(due.courseId ?? undefined)} />;
 }

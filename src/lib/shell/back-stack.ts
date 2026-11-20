@@ -22,12 +22,16 @@ export type BackEnvironment = {
 export type BackHandle = { release: () => void };
 
 export function createBackStack(env: BackEnvironment) {
-  const open: { depth: number; close: () => void }[] = [];
+  const open: { depth: number; close: () => boolean | void }[] = [];
   let ignore = 0;
 
   return {
-    /** A dialog opened: its entry is pushed; `close` runs if Back is pressed while it is the topmost. */
-    open(close: () => void): BackHandle {
+    /**
+     * A dialog opened: its entry is pushed; `close` runs if Back is pressed while it is the
+     * topmost. `close` returns false when the dialog refuses to close (a save in flight): its
+     * entry is pushed again and it stays registered, so the next Back still closes it (Codex 5).
+     */
+    open(close: () => boolean | void): BackHandle {
       const depth = (open[open.length - 1]?.depth ?? 0) + 1;
       const entry = { depth, close };
       open.push(entry);
@@ -53,7 +57,11 @@ export function createBackStack(env: BackEnvironment) {
         return;
       }
       const top = open.pop();
-      top?.close();
+      if (!top) return;
+      if (top.close() === false) {
+        open.push(top);
+        env.push(top.depth);
+      }
     },
     /** For tests: how many dialogs hold an entry. */
     size: () => open.length,

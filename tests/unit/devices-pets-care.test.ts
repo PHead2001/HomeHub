@@ -144,21 +144,26 @@ describe('reading the answers', () => {
 });
 
 describe('guards: no tablet path writes Pets data with the client SDK', () => {
-  const CLIENT_WRITES = /\b(setDoc|addDoc|updateDoc|deleteDoc|writeBatch|runTransaction)\b|records-api|medication-operation|pet-profile-api|pet-log-api|feed-operation/;
+  const CLIENT_WRITES = /\b(setDoc|addDoc|updateDoc|deleteDoc|writeBatch|runTransaction)\b|medication-operation|pet-profile-api|feed-operation/;
+  // The personal Pets readers are shared (Codex review: one derivation for both); their write helpers never are.
+  const importsOf = (text: string, module: string) => [...text.matchAll(new RegExp(`import \\{([^}]*)\\} from '[^']*${module}';`, 'g'))].flatMap((match) => match[1].split(',').map((name) => name.trim()).filter(Boolean));
   it('the tablet\'s Pets views and sheet import no client write and no personal write module', () => {
     for (const path of ['src/components/devices/tablet-pet-sheet.tsx', 'src/components/devices/tablet-views.tsx', 'src/components/devices/use-device-actions.tsx', 'src/components/devices/tablet-shell.tsx']) {
-      assert.doesNotMatch(read(path), CLIENT_WRITES, path);
+      const text = read(path);
+      assert.doesNotMatch(text, CLIENT_WRITES, path);
+      for (const name of [...importsOf(text, 'records-api'), ...importsOf(text, 'pet-log-api'), ...importsOf(text, 'medication-api')]) {
+        assert.match(name, /^(use[A-Z]\w*|type \w+)$/, `${path} imports only readers from the Pets API modules: ${name}`);
+      }
     }
   });
 
-  it('every write in the sheet is a runAction with a sendable capability', () => {
+  it('every write in the sheet is a runAction with a sendable capability; only the pet document goes through its own listener', () => {
     const sheet = read('src/components/devices/tablet-pet-sheet.tsx');
     const capabilities = [...sheet.matchAll(/capability: (?:[^'\n]*?)'(pets\.[a-zA-Z.]+)'/g)].map((match) => match[1]);
     assert.ok(capabilities.length >= 12, capabilities.join(','));
     for (const capability of capabilities) assert.ok(SENDABLE_CAPABILITIES.has(capability as never), capability);
-    // Its two subscriptions (a collection, a document) are the one `subscribe` handed to tabletListener.
-    assert.equal((sheet.match(/onSnapshot\(/g) ?? []).length, 2);
-    assert.match(sheet, /stop = tabletListener<QuerySnapshot \| DocumentSnapshot>\(subscribe, \{/);
+    assert.equal((sheet.match(/onSnapshot\(/g) ?? []).length, 1);
+    assert.match(sheet, /stop = tabletListener<DocumentSnapshot>\(/);
   });
 
   it('Give dose and Finish course go through the shell on a tablet before any client transaction', () => {
@@ -216,7 +221,7 @@ describe('F4b-2 review: the 12-hour line, retries and the request shape', () => 
 describe('P5 final on the tablet: the pinned-note cap, household dates, the shared cascade', () => {
   it('the tablet sheet uses the shared pin cap and household dates; the server answers pin-limit', () => {
     const sheet = read('src/components/devices/tablet-pet-sheet.tsx');
-    assert.match(sheet, /pinRefusal\(pinnedLive\?\.value \? pinnedLive\.value\.length : null\)/);
+    assert.match(sheet, /pinRefusal\(pinned\.loading \|\| pinned\.error \? null : pinned\.items\.length\)/);
     assert.match(sheet, /householdDateLabel\(note\.date, timeZone\)/);
     assert.match(sheet, /householdDateLabel\(entry\.date, timeZone\)/);
     assert.match(read('src/lib/server/pet-records.ts'), /if \(pinRefusal\(pinnedNow\.size\)\) return refused\('pin-limit'\);/);

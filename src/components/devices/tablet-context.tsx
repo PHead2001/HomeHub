@@ -52,6 +52,12 @@ export type TabletActionRequest = {
   subject?: string;
   /** The Undo toast's group (feeds: `petFeedToastGroup(petId)`, so each pet keeps its own Undo). */
   toastGroup?: string;
+  /**
+   * The form's opId, made once when the form opens and kept across its retries, so a second
+   * submit after a lost answer replays on the server instead of adding a second record
+   * (`useTabletSubmit`). Default: a new opId per press.
+   */
+  opId?: string;
 };
 
 /**

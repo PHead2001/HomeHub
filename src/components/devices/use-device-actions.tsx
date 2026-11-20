@@ -121,6 +121,7 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);
 
 const SYNC_EVERY_MS = 30_000;
+const UUID_OP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A sent action with no answer, which can't wait in the queue: the server may hold it. */
 export const UNKNOWN_OUTCOME_COPY = "No answer from HomeHub. It may have been saved; Undo takes it back if it was.";
@@ -144,6 +145,8 @@ export type DeviceActionRuntime = {
     onReverted?: () => void;
     /** The Undo toast's group (a feed: its pet's, `petFeedToastGroup`), kept in the journal for a reload; default: the shared device-action group. */
     toastGroup?: string;
+    /** The form's own opId (one per open form, kept across its retries); default: a new one per press. */
+    opId?: string;
     /**
      * "Feed again?" (PE-23g) or "Already given?" (a dose, PE-24k): asked when the server answers that it needs a confirmation;
      * resolves with the answer to send back with the same opId, or null (Cancel: nothing is written).
@@ -400,10 +403,12 @@ export function useDeviceActions(deps: {
   }, [offerUndo, storesOf]);
 
   // --- Actions ------------------------------------------------------------------
-  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup }) => {
+  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup, opId: formOpId }) => {
     // A "Feed again?" answer is added to the intent, and goes with it into the queue if the send then gets no answer.
     let intent = firstIntent;
-    const opId = crypto.randomUUID();
+    // One opId per open form (its retries replay on the server instead of adding a second record);
+    // otherwise one per press.
+    const opId = formOpId && UUID_OP.test(formOpId) ? formOpId.toLowerCase() : crypto.randomUUID();
     reverts.current.register(opId, onReverted);
     const { queue } = storesOf();
     const undoCapability = UNDO_CAPABILITY_OF[capability];

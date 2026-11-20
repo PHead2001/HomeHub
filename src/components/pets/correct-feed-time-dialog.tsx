@@ -120,7 +120,7 @@ export function CorrectFeedTimeDialog({
   };
 
   // Android Back closes this dialog first (emulator evidence D4).
-  useBackCloses(log !== null, () => { if (!saving) onOpenChange(false); });
+  useBackCloses(log !== null, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={log !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>
