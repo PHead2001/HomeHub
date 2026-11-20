@@ -373,11 +373,17 @@ test('Codex #190: history merges both date shapes; Log weight tapped twice saves
   await page.getByTestId('tablet-pet-tab-history').click();
   await expect(page.getByTestId('tablet-log-new-stamped')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('tablet-pet-tab-weight').click();
+  // The first weighing chooses the person ("Who's here?" opens on the first tap, under the
+  // pointer, so the double tap is made once someone is remembered and goes straight to Save).
   await page.getByTestId('tablet-weight-value').fill('7.5');
-  await page.getByTestId('tablet-weight-save').dblclick();
+  await page.getByTestId('tablet-weight-save').click();
   await pick(page, KID.uid);
   await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
+  await expect(page.getByTestId('tablet-acting')).toBeVisible();
+  await page.getByTestId('tablet-weight-value').fill('7.6');
+  await page.getByTestId('tablet-weight-save').dblclick();
+  await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(2);
   await page.waitForTimeout(1500);
-  expect((await pet('tab-care').collection('weights').get()).size).toBe(1);
+  expect((await pet('tab-care').collection('weights').get()).size).toBe(2);
   await closeDialogs(page);
 });
