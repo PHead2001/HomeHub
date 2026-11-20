@@ -197,6 +197,27 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
       const feed = (await rows.first().getByRole('button', { name: /^Feed / }).boundingBox())!;
       expect(feed.y + feed.height).toBeLessThanOrEqual(844);
       expect(feed.height).toBeGreaterThanOrEqual(48);
+      // Each row keeps the actions menu (Edit, Delete) as a 48 px button that overlaps nothing in the row.
+      for (const row of await rows.all()) {
+        const menu = row.getByRole('button', { name: /^Open actions for / });
+        await expect(menu).toBeVisible();
+        const boxes = [
+          (await menu.boundingBox())!,
+          (await row.getByRole('button', { name: /^Feed / }).boundingBox())!,
+          (await row.locator('[data-testid^="pet-details-"]').boundingBox())!,
+          (await row.locator('[data-testid^="pet-name-"]').boundingBox())!,
+        ];
+        expect(boxes[0].width).toBeGreaterThanOrEqual(48);
+        expect(boxes[0].height).toBeGreaterThanOrEqual(48);
+        for (const other of boxes.slice(1)) {
+          const [a, b] = [boxes[0], other];
+          expect(a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5).toBe(false);
+        }
+      }
+      await page.getByRole('button', { name: 'Open actions for Maple' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeVisible();
+      await page.keyboard.press('Escape');
       const title = (await page.getByRole('heading', { name: 'Your Pets', exact: true }).boundingBox())!;
       const add = (await page.getByRole('button', { name: 'Add Pet' }).boundingBox())!;
       expect(add.y).toBeLessThan(title.y + title.height);

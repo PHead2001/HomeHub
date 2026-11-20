@@ -405,10 +405,11 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
 
 /**
  * Phone row card (PE-13a): a 64 px round avatar (hold to feed), the name with a
- * details chevron, the status as a short label and line, and Feed, so several
- * pets fit one screen and the first Feed is above the fold.
+ * details chevron, the status as a short label and line, and Feed with the
+ * actions menu above it (for editors), so several pets fit one screen and the
+ * first Feed is above the fold.
  */
-function RowCard({ pet, model, photoRef, priority, index = 0 }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
+function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, onDelete }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
   const statusId = `pet-status-${pet.id}`;
   const hintId = `feed-hint-${pet.id}`;
   const { board, attention, care } = model;
@@ -436,8 +437,10 @@ function RowCard({ pet, model, photoRef, priority, index = 0 }: LivingPetCardPro
         </div>
       </div>
       {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      <div className="relative z-10 w-24 shrink-0">
-        <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={false} onEdit={() => undefined} compact />
+      {/* The actions menu (the grid's and the board's: Edit, Delete) sits above Feed, so the text column keeps its width at 390 px. */}
+      <div className="relative z-10 flex w-24 shrink-0 flex-col items-end gap-1">
+        {canEdit && <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} className="bg-transparent shadow-none" />}
+        <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={false} onEdit={() => undefined} compact className="w-full" />
       </div>
     </Card>
   );
