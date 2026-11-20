@@ -289,8 +289,11 @@ test.describe('pets: meal slots (P2)', () => {
       }).toBeLessThanOrEqual(1);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
 
-      // The editor on a legacy pet: the suggestion, then the rows with their weekday toggles.
-      await card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' }).click();
+      // The editor on a legacy pet: the suggestion, then the rows with their weekday toggles. The phone
+      // rows are compact (PE-13a: Edit lives on the pet page), so Set meal times is opened there.
+      await expect(card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' })).toHaveCount(0);
+      await page.goto('/pets/pixel');
+      await page.getByRole('button', { name: 'Set meal times for Pixel' }).click();
       const dialog = page.getByRole('dialog', { name: 'Edit Pixel' });
       // Measured before it is pressed: once the rows are filled it may leave the dialog.
       // The dialog opens with a 95% zoom; measure only after its animations finish.

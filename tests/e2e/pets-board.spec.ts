@@ -88,6 +88,10 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
         await expect(page.getByText('Feedings, medication and care for every pet, at a glance.')).toHaveCount(0);
         const cards = board.locator('[data-layout="board"]');
         await expect(cards).toHaveCount(6);
+        // Maple's overdue dose puts the needs-attention strip above the board (PE-26a); measure once it is there.
+        await expect(page.getByTestId('pets-attention')).toBeVisible();
+        // The extra pets have only a legacy schedule, so the owner sees Set meal times on them once their feedings load.
+        await expect.poll(() => board.getByTestId('set-meal-times').count()).toBeGreaterThanOrEqual(EXTRA.length);
         for (const card of await cards.all()) {
           const band = card.getByTestId('pet-status-band');
           const line = card.getByTestId('pet-status-line');
@@ -104,11 +108,16 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
           expect(sizes.line).toBeGreaterThan(sizes.name);
           // The status line is never clipped by its card: it sits wholly inside the
           // card body's visible box, above the name (Codex P2 on PR #187).
-          const body = (await card.getByTestId('pet-card-body').boundingBox())!;
-          expect(lineBox.y, 'status line starts inside the card body').toBeGreaterThanOrEqual(body.y - 0.5);
-          expect(lineBox.y + lineBox.height, 'status line ends inside the card body').toBeLessThanOrEqual(body.y + body.height + 0.5);
-          const nameBox = (await card.locator('h2').boundingBox())!;
-          expect(lineBox.y).toBeLessThan(nameBox.y);
+          // Measured together in one read, so nothing can move between them.
+          const placed = await card.evaluate((element) => {
+            const line = element.querySelector('[data-testid="pet-status-line"]')!.getBoundingClientRect();
+            const body = element.querySelector('[data-testid="pet-card-body"]')!.getBoundingClientRect();
+            const name = element.querySelector('h2')!.getBoundingClientRect();
+            return { top: line.top - body.top, bottom: body.bottom - line.bottom, aboveName: line.top < name.top };
+          });
+          expect(placed.top, 'status line starts inside the card body').toBeGreaterThanOrEqual(-0.5);
+          expect(placed.bottom, 'status line ends inside the card body').toBeGreaterThanOrEqual(-0.5);
+          expect(placed.aboveName).toBe(true);
           // Feed (and a legacy pet's Set meal times beside it) are 48 px and do not overlap.
           const controls = [card.getByRole('button', { name: /^Feed / }), card.getByTestId('set-meal-times')];
           const boxes = [];
@@ -119,8 +128,6 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
             expect(a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5).toBe(false);
           }
         }
-        // The extra pets have only a legacy schedule, so the owner sees Set meal times on them.
-        expect(await board.getByTestId('set-meal-times').count()).toBeGreaterThanOrEqual(EXTRA.length);
         // Maple's medication chip is reachable: the card body scrolls (never the page) and the chip takes the tap.
         const chip = page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('button').first();
         await chip.scrollIntoViewIfNeeded();

@@ -56,7 +56,16 @@ function PetsBoard({ count, children }: { count: number; children: ReactNode }) 
     };
     measure();
     window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    // Content above the board that comes and goes without re-rendering it (the
+    // needs-attention strip once the cards report, the hold caption) resizes its
+    // parent: measure again then, so the page never scrolls in between (PE-9e).
+    const parent = ref.current?.parentElement;
+    const observer = parent && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (parent) observer?.observe(parent);
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
   });
   const grid = boardGrid(count);
   const gap = 16;
@@ -333,7 +342,6 @@ export function PetsClient() {
             </Button>
           </p>
         )}
-        {/* On the board each card's band already says what needs attention. */}
         {/* PE-26a: the strip heads /pets in every view, the board included (the board measures its height below it). */}
         <AttentionStrip pets={pets} attention={attentionByPet} />
         {layout === 'board' ? (
