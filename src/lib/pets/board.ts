@@ -118,10 +118,10 @@ export function boardGrid(count: number): { columns: number; rows: number; scrol
 
 /**
  * The smallest board row that still shows a card's band, its status (two lines
- * of the 24 px line) and Feed (PE-9e): below it the board keeps this height and
+ * of the 24 px line, with a little room for its detail line) and Feed (PE-9e): below it the board keeps this height and
  * scrolls inside itself instead of squeezing the status out of the card.
  */
-export const BOARD_ROW_MIN = 200;
+export const BOARD_ROW_MIN = 216;
 
 /**
  * The board's rows for a measured height: they share the height while each row

@@ -233,18 +233,18 @@ describe('the household care store (PE-21a)', () => {
 
 describe('chips, phone header, pet page order, form targets (PE-16, PE-13b/c, PE-14e)', () => {
   it('keeps board rows at least BOARD_ROW_MIN tall, scrolling inside the board when the space above leaves less (PE-9e)', () => {
-    assert.equal(BOARD_ROW_MIN, 200);
+    assert.equal(BOARD_ROW_MIN, 216);
     // Unmeasured: the plain grid.
     assert.deepEqual(boardRowPlan(6, null), { columns: 3, rows: 2, scroll: false, rowHeight: null });
-    // Room for two rows of 200: they share the height, no inner scroll.
-    assert.deepEqual(boardRowPlan(6, 416), { columns: 3, rows: 2, scroll: false, rowHeight: null });
-    // Less (the strip and the caption above at 1263 x 722): rows keep 200 px and the board scrolls.
-    assert.deepEqual(boardRowPlan(6, 415), { columns: 3, rows: 2, scroll: true, rowHeight: 200 });
-    assert.deepEqual(boardRowPlan(3, 199), { columns: 3, rows: 1, scroll: true, rowHeight: 200 });
-    assert.deepEqual(boardRowPlan(3, 200), { columns: 3, rows: 1, scroll: false, rowHeight: null });
+    // Room for two rows of 216: they share the height, no inner scroll.
+    assert.deepEqual(boardRowPlan(6, 448), { columns: 3, rows: 2, scroll: false, rowHeight: null });
+    // Less (the strip and the caption above at 1263 x 722): rows keep 216 px and the board scrolls.
+    assert.deepEqual(boardRowPlan(6, 447), { columns: 3, rows: 2, scroll: true, rowHeight: 216 });
+    assert.deepEqual(boardRowPlan(3, 215), { columns: 3, rows: 1, scroll: true, rowHeight: 216 });
+    assert.deepEqual(boardRowPlan(3, 216), { columns: 3, rows: 1, scroll: false, rowHeight: null });
     // Past six: the six-up row height, never under the minimum.
     assert.deepEqual(boardRowPlan(7, 616), { columns: 3, rows: 3, scroll: true, rowHeight: 300 });
-    assert.deepEqual(boardRowPlan(7, 300), { columns: 3, rows: 3, scroll: true, rowHeight: 200 });
+    assert.deepEqual(boardRowPlan(7, 300), { columns: 3, rows: 3, scroll: true, rowHeight: 216 });
   });
 
   it('keeps P2/P3 behaviour on the board and rows: Give dose from a course chip, the slot status, the attention strip (PE-24b, PE-22b, PE-26a)', () => {

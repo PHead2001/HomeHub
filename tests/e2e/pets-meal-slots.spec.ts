@@ -345,6 +345,9 @@ test.describe('pets: meal slots (P2)', () => {
           .filter(({ bottom }) => bottom > limit + 1)
           .slice(-4)
           .map(({ element, bottom }) => `${element.tagName.toLowerCase()}[${element.getAttribute('data-testid') ?? ''}] .${String(element.className).slice(0, 60)} → ${Math.round(bottom)}`);
+        const board = document.querySelector<HTMLElement>('[data-testid="pets-board"]');
+        const strip = document.querySelector('[data-testid="pets-attention"]');
+        if (board) below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`);
         return {
           sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
