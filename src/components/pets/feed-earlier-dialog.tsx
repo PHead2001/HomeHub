@@ -21,7 +21,7 @@ import {
   checkEarlierTime,
   earlierChipLabel,
   earlierChoice,
-  earlierFeedPlan,
+  chosenFeedPlan,
   earlierInstant,
   earlierPlanLine,
   earlierWhenLabel,
@@ -117,9 +117,8 @@ export function FeedEarlierDialog({
   const check = at ? checkEarlierTime(at, now, timeZone) : null;
   // A future time is refused as soon as it is typed; a blank one only once Save was tried.
   const error = check && !check.ok ? EARLIER_REFUSALS[check.reason] : submitted && !at ? EARLIER_REFUSALS.invalid : null;
-  const plan: EarlierPlan | null = at && check?.ok
-    ? (pet ? earlierFeedPlan(pet, logs, at, now, timeZone) : { kind: 'legacy', ...fallbackPortion })
-    : null;
+  // Within a minute of now the save is a live feed: the preview follows the live rule then.
+  const plan: EarlierPlan | null = at && check?.ok && pet ? chosenFeedPlan(pet, logs, check, now, timeZone) : null;
 
   const choose = (minutes: number) => {
     const choice = earlierChoice(minutes, new Date(), timeZone);
@@ -136,7 +135,9 @@ export function FeedEarlierDialog({
     const chosen = chip ? chip.at : time ? earlierInstant(day, time, current, timeZone) : null;
     const result = checkEarlierTime(chosen, current, timeZone);
     if (!result.ok || !chosen) return;
-    const counted = pet ? earlierFeedPlan(pet, logs, chosen, current, timeZone) : { kind: 'legacy' as const, ...fallbackPortion };
+    // The same rule as the preview; without the pet's plan (still loading) the operation resolves
+    // the meal and its portion from the plan in force when it writes (`portionFromSlot`).
+    const counted: EarlierPlan = pet ? chosenFeedPlan(pet, logs, result, current, timeZone) : { kind: 'legacy', ...fallbackPortion };
     const done = await onSave({
       at: chosen,
       ...(result.backdatedAt ? { backdatedAt: result.backdatedAt } : {}),
@@ -204,10 +205,12 @@ export function FeedEarlierDialog({
               <FieldError id={timeId}>{error}</FieldError>
             </div>
             <div role="status" aria-live="polite" className="min-h-16 rounded-md bg-muted px-3 py-2 text-sm" data-testid="feed-earlier-summary">
-              {at && plan ? (
+              {at && check?.ok ? (
                 <>
                   <p className="font-medium text-foreground" data-testid="feed-earlier-when">{earlierWhenLabel(at, now, timeZone)}</p>
-                  <p className="text-muted-foreground" data-testid="feed-earlier-counts">{earlierPlanLine(plan, timeZone)}</p>
+                  <p className="text-muted-foreground" data-testid="feed-earlier-counts">
+                    {plan ? earlierPlanLine(plan, timeZone) : 'The meal and portion follow the plan in force then; they are checked when it is saved.'}
+                  </p>
                 </>
               ) : (
                 <p className="text-muted-foreground">Choose when {petName} ate.</p>

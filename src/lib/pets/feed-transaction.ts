@@ -136,9 +136,12 @@ function logData(
   return feedLogDocument(logInput(input), plan, CLIENT_TIMES, { stamp, portion });
 }
 
-/** The portion a write logs: the assigned slot's when the caller asked for the planned portion. */
+/**
+ * The portion a write logs: with `portionFromSlot`, the planned one (`plan.planned`: a live feed's
+ * slot, a backdated feed's plan in force that day), else the caller's.
+ */
 function portionFor(input: FeedPetInput, plan: WritePlan): { amount: number; unit: PortionUnit } {
-  return input.portionFromSlot && plan.slot ? { amount: plan.slot.amount, unit: plan.slot.unit } : input.portion;
+  return input.portionFromSlot && plan.planned ? plan.planned : input.portion;
 }
 
 /** The state document for a derived state (shared builder, client times). */

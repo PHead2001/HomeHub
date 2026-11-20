@@ -272,7 +272,8 @@ export async function feedPetAs(db: Firestore, householdId: string, input: FeedA
       ctx.hooks?.finalize(tx, { targetPath: logRef.path, summary: { result }, targetName: petName });
       return result;
     }
-    const portion = feed.portionFromSlot && plan.slot ? { amount: plan.slot.amount, unit: plan.slot.unit } : feed.portion;
+    // The planned portion (a live slot's, or a backdated feed's plan in force that day), as the personal path.
+    const portion = feed.portionFromSlot && plan.planned ? plan.planned : feed.portion;
     // A backdated entry's log and state carry the same stored time.
     const stamp = Timestamp.fromDate(plan.fedAt);
     tx.set(logRef, feedLogDocument(logInput, { fedAt: plan.fedAt, live: plan.live, repeat: plan.repeat, confirmOf: plan.confirmOf, slotId: plan.slotId, extra: plan.extra }, ADMIN_TIMES, { stamp, portion, extra }));

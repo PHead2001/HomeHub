@@ -261,7 +261,8 @@ function TabletFeedEarlier({ pet, action, onClose }: { pet: PetState; action: Fe
         await form.submit(async (opId) => {
           const result = await action.run({
             portion: choice.portion,
-            portionFromSlot: !choice.backdatedAt,
+            // The server logs the portion of the plan in force at the chosen time (never this board's target).
+            portionFromSlot: true,
             food: feed.foodType,
             known: feed.known,
             ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}),

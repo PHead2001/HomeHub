@@ -20,7 +20,7 @@
 import { addDays, localDay, localMinutes, parseTimeOfDay, zonedWallInstant } from '../../../functions/src/shared/calendar';
 import { householdDayZone } from '../household-zone';
 import { formatPortion, type FeedingEntry } from './care';
-import { earlierFeedSlot, formatClock, planForDay, type PlanSource } from './meal-plan';
+import { earlierFeedSlot, formatClock, mealStatus, planForDay, type PlanSource } from './meal-plan';
 import type { PortionUnit } from './types';
 
 /** The quick choices, in minutes before now. */
@@ -135,6 +135,34 @@ export function earlierFeedPlan(pet: PlanSource, logs: FeedingEntry[] | null, at
     amount: decision.slot?.amount ?? 1,
     unit: decision.slot?.unit ?? 'Cups',
   };
+}
+
+/**
+ * What a choice within a minute of now records: it is saved as a live feed, so the live rule
+ * applies (D-P5, `mealStatus` → the target Feed would pick), not the earlier-time rule. The
+ * preview and the submitted meal follow it, so the dialog describes the feeding it records.
+ * An already-fed target is an extra (the save then asks "Feed again?"); an off-day is an extra.
+ */
+export function liveFeedPlan(pet: PlanSource, logs: FeedingEntry[] | null, now: Date, timeZone?: string | null): EarlierPlan {
+  const status = mealStatus(pet, logs ?? [], now, timeZone);
+  if (status.kind === 'legacy') return { kind: 'legacy', amount: status.plan.amount, unit: status.plan.unit };
+  if (!status.target) {
+    const first = status.day.off[0] ?? status.day.slots[0];
+    return { kind: 'extra', reason: 'off-day', slotName: first?.name ?? null, alreadyFed: null, amount: first?.amount ?? 1, unit: first?.unit ?? 'Cups' };
+  }
+  const { slot, fed } = status.target.state;
+  if (status.target.alreadyFed) {
+    return { kind: 'extra', reason: 'fed', slotName: slot.name, alreadyFed: fed ? { at: fed.at, by: fed.by } : null, amount: slot.amount, unit: slot.unit };
+  }
+  return { kind: 'slot', slotName: slot.name, amount: slot.amount, unit: slot.unit };
+}
+
+/**
+ * What a checked choice records: the live rule within a minute of now (no `backdatedAt`), else
+ * the earlier-time rule at the chosen time.
+ */
+export function chosenFeedPlan(pet: PlanSource, logs: FeedingEntry[] | null, check: { at: Date; backdatedAt?: Date }, now: Date, timeZone?: string | null): EarlierPlan {
+  return check.backdatedAt ? earlierFeedPlan(pet, logs, check.backdatedAt, now, timeZone) : liveFeedPlan(pet, logs, now, timeZone);
 }
 
 /** "Today 7:30 am", "Yesterday 11:40 pm" (household zone). */

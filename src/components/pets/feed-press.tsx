@@ -6,7 +6,7 @@ import { canVibrate, getFeedbackSettings } from '@/lib/feedback';
 import {
   FEED_PRESS_IDLE,
   feedPressIndicator,
-  feedPressIsDeliberate,
+  feedPressSwallowsClick,
   feedPressJustCompleted,
   feedPressMoved,
   feedPressReducer,
@@ -59,7 +59,8 @@ export function useFeedPress({ enabled, onHold }: { enabled: boolean; onHold: ()
 
   const end = React.useCallback((type: 'release' | 'cancel') => {
     pointer.current = null;
-    if (feedPressIsDeliberate(machine.current)) swallowClick.current = true;
+    // A cancelled press never feeds (also before the tap threshold); a release feeds only as a tap.
+    if (feedPressSwallowsClick(machine.current, type)) swallowClick.current = true;
     send({ type });
   }, [send]);
   const cancel = React.useCallback(() => end('cancel'), [end]);

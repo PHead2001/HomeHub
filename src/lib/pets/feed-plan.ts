@@ -28,7 +28,7 @@ import {
   type KnownFeedings,
 } from './feed-decision';
 import { FEEDING_CLOCK_SKEW_MS, toDate, type FeedingEntry } from './care';
-import { earlierFeedSlot, feedsOnDay, readMealPlan, slotDay, slotsFedOn, targetSlot, type DayPlan, type PlanSource } from './meal-plan';
+import { earlierFeedSlot, feedsOnDay, planForDay, readMealPlan, slotDay, slotsFedOn, targetSlot, type DayPlan, type PlanSource } from './meal-plan';
 import { localMinutes } from '../../../functions/src/shared/calendar';
 import { householdDayZone } from '../household-zone';
 import type { PortionUnit } from './types';
@@ -264,6 +264,13 @@ export type FeedPlan =
       slotId: string | null;
       /** A backdated feed whose meal was already fed (or no window holds its time): `extra: true`, no slot. */
       extra: boolean;
+      /**
+       * The planned portion a quick feed logs (`portionFromSlot`): a live feed's slot portion; a
+       * backdated feed's from the plan in force on its day (its meal; for an extra, the meal it
+       * repeats, else the day's first meal; without meal times that day, the usual portion).
+       * Null when the plan says nothing (a live feed without a slot): the caller's portion is used.
+       */
+      planned: { amount: number; unit: PortionUnit } | null;
       /** With slots: every meal of today is fed after this feed (the celebration). */
       mealsComplete: boolean;
     };
@@ -303,6 +310,7 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
   let slot: FeedSlot | null = null;
   let slotId: string | null = null;
   let extra = false;
+  let planned: { amount: number; unit: PortionUnit } | null = null;
   let mealsComplete = false;
   if (backdatedAt && snapshot.pet) {
     // An earlier feeding counts for the meal whose window holds its time on that day, or is an extra.
@@ -314,6 +322,14 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
     } else if (decision.kind === 'extra') {
       extra = true;
     }
+    // The portion comes from the plan in force that day, never from what the caller's screen targets now.
+    if (decision.kind === 'legacy') {
+      const dayPlan = planForDay(snapshot.pet, householdDay(backdatedAt, timeZone));
+      if (dayPlan.kind === 'legacy') planned = { amount: dayPlan.plan.amount, unit: dayPlan.plan.unit };
+    } else {
+      const source = decision.slot;
+      if (source) planned = { amount: source.amount, unit: source.unit };
+    }
   }
   if (!backdatedAt) {
     let decided = feedConfirmDecision({ state, known: latestKnown, now, timeZone, perDay: slotPlan ? null : perDay, countToday });
@@ -323,6 +339,7 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
       decided = slots.check;
       slot = slots.slot;
       slotId = slot?.id ?? null;
+      planned = slot ? { amount: slot.amount, unit: slot.unit } : null;
       mealsComplete = slots.completesDay;
     }
     // The rules refused this press as plain (their clock saw a recent feed): ask instead of retrying it.
@@ -346,7 +363,7 @@ export function planFeed(snapshot: FeedSnapshot, intent: FeedIntent): FeedPlan {
     [...recent, { id: logId, date: fedAt, loggedByUid: intent.userUid, loggedByName: intent.userName ?? undefined, ...(slotId ? { slotId } : {}), ...(extra ? { extra: true } : {}) }],
     { now, timeZone, latestId: backdatedAt ? null : logId, slots: Boolean(slotPlan) || Boolean(stored?.slotsFed) },
   );
-  return { kind: 'write', live: !backdatedAt, repeat, confirmOf, fedAt, state: derived, countToday: derived.countOnDay, perDay, slot, slotId, extra, mealsComplete };
+  return { kind: 'write', live: !backdatedAt, repeat, confirmOf, fedAt, state: derived, countToday: derived.countOnDay, perDay, slot, slotId, extra, planned, mealsComplete };
 }
 
 /**

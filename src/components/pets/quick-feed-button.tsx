@@ -157,7 +157,7 @@ export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickF
         const when = `${day === 'yesterday' ? 'yesterday ' : ''}at ${formatClock(earlier.at, timeZone)}`;
         return {
           title: `${petName} fed ${when}`,
-          description: `${earlier.slotName ? `${earlier.slotName}: ` : earlier.extra ? 'Extra feeding: ' : ''}${formatPortion(earlier.portion.amount, earlier.portion.unit)} logged.`,
+          description: `${earlier.slotName ? `${earlier.slotName}: ` : earlier.extra ? 'Extra feeding: ' : ''}${formatPortion((result.portion ?? earlier.portion).amount, (result.portion ?? earlier.portion).unit)} logged.`,
         };
       }
       // What was actually written: the slot and portion the operation chose.
@@ -190,10 +190,11 @@ export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickF
     if (!allowed || !ready || saving) return null;
     sourceRef.current = 'tap';
     earlierRef.current = choice;
-    // A backdated entry logs the portion of the meal its time counts for; within a minute of
-    // now it is a live feed (the operation picks the meal, as for Feed).
+    // The operation logs the planned portion (portionFromSlot): for a backdated entry the plan in
+    // force at the chosen time, for a live one (within a minute of now) the meal Feed would pick;
+    // `choice.portion` is only the fallback when the plan says nothing.
     return run(
-      { portion: choice.portion, portionFromSlot: !choice.backdatedAt, food: foodType, known, ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}) },
+      { portion: choice.portion, portionFromSlot: true, food: foodType, known, ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}) },
       opId ? { opId } : undefined,
     );
   }, [allowed, ready, saving, run, foodType, known]);

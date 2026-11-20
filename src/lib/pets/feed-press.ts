@@ -49,6 +49,17 @@ export function feedPressRelease(state: FeedPressState): 'tap' | 'none' {
   return state.phase === 'holding' && !feedPressIsDeliberate(state) ? 'tap' : 'none';
 }
 
+/**
+ * Whether the click that follows the end of a press must be swallowed (it must not feed now).
+ * A cancelled press (moved, scrolled, left the button, Escape) never feeds, even before the tap
+ * threshold; a release feeds only as a tap (before the threshold, still holding). An idle
+ * machine (no press began here, a mouse click) lets its click through.
+ */
+export function feedPressSwallowsClick(state: FeedPressState, ending: 'release' | 'cancel'): boolean {
+  if (state.phase === 'idle') return false;
+  return ending === 'cancel' ? true : feedPressRelease(state) === 'none';
+}
+
 /** True when the pointer has moved far enough from where it went down to cancel. */
 export function feedPressMoved(start: { x: number; y: number }, point: { x: number; y: number }): boolean {
   return Math.hypot(point.x - start.x, point.y - start.y) > FEED_PRESS_MOVE_PX;

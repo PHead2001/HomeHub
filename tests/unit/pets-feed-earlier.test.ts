@@ -10,12 +10,15 @@ import {
   feedPressMoved,
   feedPressReducer,
   feedPressRelease,
+  feedPressSwallowsClick,
   opensEarlierFromKey,
   type FeedPressEvent,
   type FeedPressState,
 } from '../../src/lib/pets/feed-press';
 import {
   checkEarlierTime,
+  chosenFeedPlan,
+  liveFeedPlan,
   earlierChipLabel,
   earlierChoice,
   earlierDayOf,
@@ -27,6 +30,8 @@ import {
 } from '../../src/lib/pets/feed-earlier';
 import { attributeFeeds, earlierFeedSlot, feedsOnDay, planForDay } from '../../src/lib/pets/meal-plan';
 import { planFeed } from '../../src/lib/pets/feed-plan';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // "Feed earlier" (owner request): press and hold Feed opens "When did <pet> eat?"; the
 // dialog's times are household wall times, and it names the meal the time counts for.
@@ -102,6 +107,24 @@ describe('feed press: tap, hold, cancel', () => {
     assert.deepEqual(feedPressIndicator(state, true), { shown: true, fill: 0, still: true });
     assert.deepEqual(feedPressIndicator({ phase: 'complete' }, true), { shown: true, fill: 1, still: true });
     assert.equal(feedPressIndicator(run([{ type: 'press', at: 0 }, { type: 'tick', at: 150 }]).state, true).shown, false);
+  });
+
+  it('a cancelled press never feeds, even before the tap threshold; only an early release is a tap (Codex P2)', () => {
+    const early = run([{ type: 'press', at: 0 }, { type: 'tick', at: 80 }]).state;
+    assert.equal(feedPressIsDeliberate(early), false);
+    // Moved more than 10 px (or scrolled, left the button, Escape) at 80 ms: its click is swallowed.
+    assert.equal(feedPressSwallowsClick(early, 'cancel'), true);
+    // Let go at 80 ms without moving: a tap, its click feeds now.
+    assert.equal(feedPressSwallowsClick(early, 'release'), false);
+    const held = run([{ type: 'press', at: 0 }, { type: 'tick', at: 300 }]).state;
+    assert.equal(feedPressSwallowsClick(held, 'release'), true);
+    assert.equal(feedPressSwallowsClick(held, 'cancel'), true);
+    assert.equal(feedPressSwallowsClick({ phase: 'complete' }, 'release'), true);
+    // No press began here (a mouse click): the click goes through.
+    assert.equal(feedPressSwallowsClick(FEED_PRESS_IDLE, 'cancel'), false);
+    // The hook asks this at every end of a press.
+    const hook = readFileSync(resolve(process.cwd(), 'src/components/pets/feed-press.tsx'), 'utf8');
+    assert.match(hook, /if \(feedPressSwallowsClick\(machine\.current, type\)\) swallowClick\.current = true;/);
   });
 
   it('cancels a press that moves more than 10 px', () => {
@@ -284,6 +307,56 @@ describe('the meal an earlier time counts for (lead decision: the window holding
       assert.equal(plan.slot?.id, 'supper');
       assert.equal(plan.slotId, null);
       assert.equal(plan.extra, false);
+    });
+
+    it('a backdated feed\'s planned portion comes from the plan in force that day, never the screen\'s target (Codex P2)', () => {
+      // Yesterday's supper (2 cups) while today's target is dinner (0.5 cans).
+      assert.deepEqual(write([], at('2026-11-18T23:30:00Z')).planned, { amount: 2, unit: 'Cups' });
+      // An extra after breakfast logs breakfast's portion.
+      assert.deepEqual(write([breakfastLog], at('2026-11-19T14:00:00Z')).planned, { amount: 1, unit: 'Cups' });
+      // 7:30 pm with dinner unfed: dinner's.
+      assert.deepEqual(write([breakfastLog], at('2026-11-20T01:30:00Z')).planned, { amount: 0.5, unit: 'Cans' });
+      // A day before meal times were confirmed: the usual portion.
+      const confirmedToday = { ...pet, mealPlanHistory: [{ until: '2026-11-19', perDay: 2 }] };
+      const legacy = planFeed({ ...snapshot([]), pet: confirmedToday }, { userUid: 'u', logId: 'log-legacy', backdatedAt: at('2026-11-18T23:30:00Z') });
+      assert.equal(legacy.kind, 'write');
+      assert.deepEqual(legacy.kind === 'write' && legacy.planned, { amount: 1.5, unit: 'Cups' });
+    });
+
+    it('both Feed earlier paths ask for the planned portion (personal feedAt and the tablet)', () => {
+      const personal = readFileSync(resolve(process.cwd(), 'src/components/pets/quick-feed-button.tsx'), 'utf8');
+      assert.match(personal, /portion: choice\.portion, portionFromSlot: true, food: foodType/);
+      const tablet = readFileSync(resolve(process.cwd(), 'src/components/devices/tablet-views.tsx'), 'utf8');
+      assert.doesNotMatch(tablet, /portionFromSlot: !choice\.backdatedAt/);
+      assert.match(tablet, /portionFromSlot: true,/);
+      for (const writer of ['src/lib/pets/feed-transaction.ts', 'src/lib/server/pet-feeding.ts']) {
+        assert.match(readFileSync(resolve(process.cwd(), writer), 'utf8'), /portionFromSlot && plan\.planned \? plan\.planned :/, writer);
+      }
+    });
+  });
+
+  describe('a choice within a minute of now is previewed with the live rule (Codex P2)', () => {
+    const eight = new Date('2026-11-19T14:00:00Z'); // 8:00 am, breakfast's window, breakfast logged, dinner unfed
+    it('the live rule targets dinner (D-P5), the earlier-time rule would say an extra breakfast', () => {
+      assert.deepEqual(liveFeedPlan(pet, [breakfastLog], eight, CHICAGO), { kind: 'slot', slotName: 'Dinner', amount: 0.5, unit: 'Cans' });
+      // Within a minute of now (no backdatedAt): the live rule.
+      assert.deepEqual(chosenFeedPlan(pet, [breakfastLog], { at: eight }, eight, CHICAGO), { kind: 'slot', slotName: 'Dinner', amount: 0.5, unit: 'Cans' });
+      // A real earlier time at 8:00 (backdated): the window rule, an extra breakfast.
+      const backdated = chosenFeedPlan(pet, [breakfastLog], { at: eight, backdatedAt: eight }, new Date('2026-11-19T15:00:00Z'), CHICAGO);
+      assert.equal(backdated.kind === 'extra' && backdated.slotName, 'Breakfast');
+    });
+    it('every meal fed: an extra (the save asks "Feed again?"); a pet without meal times: its usual portion', () => {
+      const dinnerLog = { id: 'd', date: at('2026-11-19T13:20:00Z'), slotId: 'dinner', loggedByName: 'Ana' };
+      const done = liveFeedPlan(pet, [breakfastLog, dinnerLog], eight, CHICAGO);
+      assert.equal(done.kind, 'extra');
+      const legacy = { name: 'Pixel', foodSchedule: 'One can morning and evening', portionAmount: 1, portionUnit: 'Cans' as const };
+      assert.deepEqual(liveFeedPlan(legacy, [], eight, CHICAGO), { kind: 'legacy', amount: 1, unit: 'Cans' });
+    });
+    it('the dialog previews and submits the chosen plan', () => {
+      const dialog = readFileSync(resolve(process.cwd(), 'src/components/pets/feed-earlier-dialog.tsx'), 'utf8');
+      assert.match(dialog, /chosenFeedPlan\(pet, logs, check, now, timeZone\)/);
+      assert.match(dialog, /chosenFeedPlan\(pet, logs, result, current, timeZone\)/);
+      assert.doesNotMatch(dialog, /earlierFeedPlan\(/);
     });
   });
 });
