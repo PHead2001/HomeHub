@@ -30,9 +30,7 @@ import { MedicationChips } from './medication-chip';
 import { MealSlotList, mealStateOf, SetMealTimesButton } from './meal-status';
 import { GiveDoseDialog } from './give-dose-dialog';
 import { PetPhoto } from './pet-photo';
-import { HoldToFeedOverlay, useHoldToFeed } from './hold-to-feed';
 import { QuickFeedButton, useQuickFeed } from './quick-feed-button';
-import { usePointerFine } from './use-pets-layout';
 
 export type PetAttention = NonNullable<ReturnType<typeof petAttention>>;
 
@@ -87,8 +85,8 @@ function PetPeek({ pet, care }: { pet: PetProfile; care: PetCare }) {
 /**
  * What every view of a pet card shares: the live care data (from the
  * household's care store, PE-21a), attention reporting (PE-26), the feed
- * controller shared by the Feed button and hold to feed, the hold gesture on the
- * photo, the board status, and the morph navigation to the pet page (H12).
+ * controller behind the Feed button (tap: feed now; press and hold: Feed
+ * earlier), the board status, and the morph navigation to the pet page (H12).
  */
 function usePetCardModel({ pet, householdId, onAttention }: Pick<LivingPetCardProps, 'pet' | 'householdId' | 'onAttention'>) {
   const href = petHref(pet.id);
@@ -113,16 +111,13 @@ function usePetCardModel({ pet, householdId, onAttention }: Pick<LivingPetCardPr
     return () => window.clearTimeout(timer);
   }, [morphing]);
   const openPet = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    // Plain navigation under reduced motion and for modified clicks (new tab, etc.);
-    // a click swallowed by hold to feed is already prevented.
+    // Plain navigation under reduced motion and for modified clicks (new tab, etc.).
     if (reduced || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     flushSync(() => setMorphing(true));
     navigate(href);
   };
   const feed = useQuickFeed({ petId: pet.id, petName: pet.name, plan: care.plan, meal: care.meal, status: care.status, food: care.food, known: care.known });
-  const photoRef = React.useRef<HTMLDivElement>(null);
-  const { hold, enabled: holdEnabled, handlers } = useHoldToFeed(feed, photoRef);
   const board: BoardStatus = boardStatus({
     meal: care.meal,
     status: care.status,
@@ -133,65 +128,52 @@ function usePetCardModel({ pet, householdId, onAttention }: Pick<LivingPetCardPr
     now: care.now,
     timeZone: care.timeZone,
   });
-  // The photo's ref travels on its own (never inside the model the views read during render).
-  return { model: { href, care, attention, morphing, openPet, feed, hold, holdEnabled, handlers, board }, photoRef };
+  return { href, care, attention, morphing, openPet, feed, board };
 }
 
-type CardModel = ReturnType<typeof usePetCardModel>['model'];
+type CardModel = ReturnType<typeof usePetCardModel>;
 
 /** The menu's "Log an earlier feeding…", for members who may log once the history has loaded. */
 const feedEarlierOf = (model: CardModel) => (model.feed.allowed && model.feed.earlier
   ? () => model.feed.earlier?.setOpen(true)
   : undefined);
-type PhotoRef = React.RefObject<HTMLDivElement>;
-
 /**
- * The photo with hold to feed (H09). On a touch screen it only responds to a
- * hold, a tap never navigates (PE-11a, D-P2); with a mouse a click still opens
- * the pet. Details always have an explicit control (the name, and the chevron
- * on the board and phone rows, PE-11b). `select-none` and `touch-action:
- * manipulation` keep text selection, double-tap zoom and a long-press menu from
- * cancelling a hold (PE-12b), while a vertical pan still scrolls (and cancels it).
+ * The pet's picture on a card: a plain picture, never a link or a gesture (the
+ * name and the Details chevron are the explicit ways to the pet page, PE-11b).
+ * It used to feed on a long press (H09), but Android Chrome answers a long press
+ * on an image with its copy/save menu, so the gesture moved to the Feed button
+ * (press and hold Feed: Feed earlier). The image takes no pointer events, is not
+ * draggable, has no touch callout and the wrapper suppresses the context menu,
+ * so a long press on it does nothing.
  */
-function HoldPhoto({ pet, model, photoRef, className, sizes, priority, index, round }: {
+function CardPhoto({ pet, model, className, sizes, priority, index, round }: {
   pet: PetProfile;
   model: CardModel;
-  photoRef: PhotoRef;
   className: string;
   sizes: string;
   priority?: boolean;
   index?: number;
   round?: boolean;
 }) {
-  const fine = usePointerFine();
-  const photo = (
-    <PetPhoto
-      name={pet.name}
-      type={pet.type}
-      hint={pet.dataAiHint}
-      photoUrl={pet.photoUrl}
-      priority={priority}
-      sizes={sizes}
-      className={cn('h-full w-full', round && 'rounded-full')}
-      blinkOffset={index}
-      frameStyle={model.morphing ? morphStyle(petPhotoMorphName(pet.id)) : undefined}
-    />
-  );
   return (
     <div
-      ref={photoRef}
-      className={cn('relative shrink-0 select-none [-webkit-touch-callout:none] [touch-action:manipulation]', className)}
+      className={cn('relative shrink-0 select-none [-webkit-touch-callout:none] [&_img]:pointer-events-none', className)}
       data-testid={`pet-photo-${pet.id}`}
-      data-hold-phase={model.hold.phase}
-      {...(model.holdEnabled ? model.handlers : {})}
+      onContextMenu={(event) => event.preventDefault()}
+      onDragStart={(event) => event.preventDefault()}
+      draggable={false}
     >
-      {fine ? (
-        // With a mouse the photo still opens the pet (a duplicate of the name link, so out of the tab order).
-        <Link href={model.href} onClick={model.openPet} draggable={false} tabIndex={-1} data-hold-to-feed="" className="block h-full w-full">
-          {photo}
-        </Link>
-      ) : photo}
-      {model.holdEnabled && <HoldToFeedOverlay hold={model.hold} feed={model.feed} />}
+      <PetPhoto
+        name={pet.name}
+        type={pet.type}
+        hint={pet.dataAiHint}
+        photoUrl={pet.photoUrl}
+        priority={priority}
+        sizes={sizes}
+        className={cn('h-full w-full', round && 'rounded-full')}
+        blinkOffset={index}
+        frameStyle={model.morphing ? morphStyle(petPhotoMorphName(pet.id)) : undefined}
+      />
     </div>
   );
 }
@@ -218,7 +200,7 @@ function ActionsMenu({ pet, canEdit, onEdit, onDelete, onFeedEarlier, className 
           size="icon"
           aria-label={`Open actions for ${pet.name}`}
           data-pet-actions={pet.id}
-          className={cn('h-9 w-9 rounded-full bg-background/80 shadow-raised hover:bg-background', className)}
+          className={cn('h-[var(--target-min)] w-[var(--target-min)] rounded-full bg-background/80 shadow-raised hover:bg-background', className)}
         >
           <MoreVertical className="h-4 w-4" />
         </Button>
@@ -250,12 +232,15 @@ function ActionsMenu({ pet, canEdit, onEdit, onDelete, onFeedEarlier, className 
 
 /**
  * The pet's name as its explicit details link (PE-11b), with the peek card on
- * hover or focus. The link is a block as wide as the name's column and at least
- * the target height (44 px, 48 px on touch, WT-28), so a short name is still a
- * full-size target; it never overlaps the chevron or the menu beside it. The
- * name inside wraps and clamps at two lines (PE-20d).
+ * hover or focus. It is the card's title (owner request): the first and biggest
+ * text on every card, so pets are told apart at a glance. The link is a block as
+ * wide as the name's column and at least the target height (44 px, 48 px on
+ * touch, WT-28), so a short name is still a full-size target; it never overlaps
+ * the chevron or the menu beside it. The name wraps between words (a word is
+ * only split when it is wider than the column) and clamps at two lines (PE-20d),
+ * except on the phone rows (`clamp={false}`), where the whole name always shows.
  */
-function NameLink({ pet, model, className }: { pet: PetProfile; model: CardModel; className?: string }) {
+function NameLink({ pet, model, className, clamp = true }: { pet: PetProfile; model: CardModel; className?: string; clamp?: boolean }) {
   return (
     <PeekCard peek={<PetPeek pet={pet} care={model.care} />} className="min-w-0 flex-1">
       <h2 className={cn('min-w-0 font-headline font-semibold leading-tight', className)} title={pet.name}>
@@ -266,7 +251,7 @@ function NameLink({ pet, model, className }: { pet: PetProfile; model: CardModel
           className="flex min-h-[var(--target-min)] min-w-[var(--target-min)] items-center rounded-sm [-webkit-touch-callout:none]"
           data-testid={`pet-name-${pet.id}`}
         >
-          <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]">{pet.name}</span>
+          <span className={cn('min-w-0 break-words', clamp && 'line-clamp-2')}>{pet.name}</span>
         </Link>
       </h2>
     </PeekCard>
@@ -276,7 +261,7 @@ function NameLink({ pet, model, className }: { pet: PetProfile; model: CardModel
 /** A chevron "Details" control: an explicit way to the pet page besides the name (PE-11b). */
 function DetailsLink({ pet, model }: { pet: PetProfile; model: CardModel }) {
   return (
-    <Button asChild variant="ghost" size="icon" className="h-9 w-9 shrink-0 rounded-full">
+    <Button asChild variant="ghost" size="icon" className="h-[var(--target-min)] w-[var(--target-min)] shrink-0 rounded-full">
       <Link href={model.href} onClick={model.openPet} aria-label={`Details for ${pet.name}`} data-testid={`pet-details-${pet.id}`}>
         <ChevronRight aria-hidden className="h-5 w-5" />
       </Link>
@@ -300,14 +285,13 @@ const BAND_ICONS: Record<BoardTone, typeof Check> = {
   unknown: HelpCircle,
 };
 
-/** The board's full-width status band: colour, an icon and a text label (PE-9b). */
-function StatusBand({ status, children }: { status: BoardStatus; children?: React.ReactNode }) {
+/** The board's full-width status band under the name: colour, an icon and a text label (PE-9b). */
+function StatusBand({ status }: { status: BoardStatus }) {
   const Icon = BAND_ICONS[status.tone];
   return (
-    <div className={cn('flex min-h-11 items-center gap-2 px-4 py-1.5 text-base font-semibold', BAND_CLASSES[status.tone])} data-band={status.tone} data-testid="pet-status-band">
+    <div className={cn('flex min-h-9 items-center gap-2 px-3 py-1 text-base font-semibold', BAND_CLASSES[status.tone])} data-band={status.tone} data-testid="pet-status-band">
       <Icon aria-hidden className="h-5 w-5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{status.label}</span>
-      {children}
+      <span className="min-w-0 flex-1 break-words">{status.label}</span>
     </div>
   );
 }
@@ -317,8 +301,8 @@ function StatusBand({ status, children }: { status: BoardStatus; children?: Reac
  * `inline` (the board) puts the two side by side, so a legacy pet's card spends
  * one 48 px row on its controls and the status above keeps its space (PE-9e).
  */
-function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, compact, inline }: {
-  pet: PetProfile; model: CardModel; statusId: string; hintId: string; canEdit: boolean; onEdit: (pet: PetProfile) => void; className?: string; compact?: boolean; inline?: boolean;
+function FeedArea({ pet, model, statusId, canEdit, onEdit, className, compact, inline }: {
+  pet: PetProfile; model: CardModel; statusId: string; canEdit: boolean; onEdit: (pet: PetProfile) => void; className?: string; compact?: boolean; inline?: boolean;
 }) {
   const { care, feed } = model;
   const { meal, status } = care;
@@ -336,7 +320,7 @@ function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, co
         pet={pet}
         logs={care.feedings.loading || care.feedings.error ? null : care.feedings.logs}
         controller={feed}
-        describedBy={care.feedings.loading ? (model.holdEnabled ? hintId : undefined) : [statusId, model.holdEnabled ? hintId : null].filter(Boolean).join(' ')}
+        describedBy={care.feedings.loading ? undefined : statusId}
         variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
         className={inline ? 'min-w-0 flex-1' : 'w-full'}
         compact={compact}
@@ -386,108 +370,112 @@ function loadedSlots(care: PetCare) {
 }
 
 /**
- * Board card (PE-9): a full-width status band with a text label (green fed,
- * amber meal due, red overdue medication; neutral otherwise, never amber for a
- * pet without confirmed meal times), then the feeding status as the card's
- * biggest text (24 px), an 80 px avatar (160 px when one or two pets share the
- * screen), the name with a details chevron, medication chips, the pinned note
- * and Feed. The status comes first in the text column, so it is the last thing a
- * short card gives up; the column scrolls inside the card (never the page), so
- * the chips and the note stay reachable on a six-pet board at 1263 x 722 even
- * with a legacy pet's Set meal times beside Feed.
+ * Board card (PE-9; owner request). The pet's name is the card's title: the
+ * first and biggest text (24 px, 30 px when one or two pets share the screen),
+ * beside a small avatar (48 px; 112 px for one or two pets) with the Details
+ * chevron and the actions menu. Under it a full-width status band with a text
+ * label (green fed, amber meal due, red overdue medication; neutral otherwise,
+ * never amber for a pet without confirmed meal times), then the feeding status
+ * (18 px, 20 px roomy) with one compact line of detail, today's meals on one
+ * wrapping line, medication chips, the pinned note (one line) and Feed. The card
+ * never scrolls inside itself: its row is at least as tall as its content
+ * (`PetsBoard`), and when the screen cannot hold every card the page scrolls.
  */
-function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0, roomy, model, photoRef }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
+function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0, roomy, model }: LivingPetCardProps & { model: CardModel }) {
   const statusId = `pet-status-${pet.id}`;
-  const hintId = `feed-hint-${pet.id}`;
   const { attention, board, care } = model;
   const slots = loadedSlots(care);
+  const hint = care.meal?.kind === 'legacy' ? care.meal.nextMealHint : null;
   return (
     <Card
-      className="glow-card relative flex h-full min-h-0 flex-col overflow-hidden select-none [touch-action:manipulation]"
+      className="glow-card relative flex h-full flex-col overflow-hidden select-none [touch-action:manipulation]"
       data-attention={attention ? (attention.medication ? 'medication' : 'meal') : undefined}
       data-testid={`pet-card-${pet.id}`}
       data-layout="board"
     >
-      <StatusBand status={board}>
-        <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} className="h-8 w-8 bg-background/90 text-foreground" />
-      </StatusBand>
-      <div className="flex min-h-0 flex-1 gap-4 overflow-y-auto overscroll-contain p-4" data-testid="pet-card-body">
-        <HoldPhoto
+      <div className="flex min-w-0 items-center gap-3 px-3 pb-2 pt-3" data-testid="pet-card-header">
+        <CardPhoto
           pet={pet}
           model={model}
-          photoRef={photoRef}
-          className={cn('overflow-hidden rounded-xl', roomy ? 'h-40 w-40' : 'h-20 w-20')}
-          sizes={roomy ? '160px' : '80px'}
+          className={cn('overflow-hidden rounded-xl', roomy ? 'h-28 w-28' : 'h-12 w-12')}
+          sizes={roomy ? '112px' : '48px'}
           priority={priority}
           index={index}
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          {/* With meal times the block is the card's slot status (P2's `meal-slots-status`, `data-meal-state`, one line per meal). */}
-          <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
-            <p className="break-words text-2xl font-bold leading-tight text-foreground [overflow-wrap:anywhere]" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>{board.line}</p>
-            {board.detail && <p className="mt-0.5 text-sm text-muted-foreground">{board.detail}</p>}
-            {/* PE-10b (D-P18): a neutral hint from the parsed schedule, never a "due" claim. */}
-            {care.meal?.kind === 'legacy' && care.meal.nextMealHint && <p className="text-sm text-muted-foreground" data-testid="next-meal-hint">{care.meal.nextMealHint}</p>}
-            {board.medication && <p className="mt-0.5 text-sm font-medium text-destructive">{board.medication}</p>}
-            {board.medicationUnavailable && <MedicationUnavailable care={care} className="mt-0.5 text-sm" />}
-            {slots && <MealSlotList status={slots} timeZone={care.timeZone} className="mt-1 text-sm" />}
-          </div>
-          <div className="flex min-w-0 items-start gap-1">
-            <NameLink pet={pet} model={model} className="text-lg" />
-            <DetailsLink pet={pet} model={model} />
-          </div>
-          <CardChips pet={pet} care={care} />
-          <PinnedNoteLine householdId={householdId} petId={pet.id} className="text-sm" />
+        <NameLink pet={pet} model={model} className={roomy ? 'text-3xl font-bold' : 'text-2xl font-bold'} />
+        <div className="flex shrink-0 items-center gap-1">
+          <DetailsLink pet={pet} model={model} />
+          <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} className="bg-transparent shadow-none" />
         </div>
       </div>
-      {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={canEdit} onEdit={onEdit} className="relative z-10 mt-auto shrink-0 px-4 pb-4" inline />
+      <StatusBand status={board} />
+      <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3 pt-2" data-testid="pet-card-body">
+        {/* With meal times the block is the card's slot status (P2's `meal-slots-status`, `data-meal-state`, today's meals on one line). */}
+        <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
+          <p className={cn('break-words font-semibold leading-snug text-foreground', roomy ? 'text-xl' : 'text-lg')} data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>{board.line}</p>
+          {(board.detail || hint) && (
+            <p className="break-words text-sm text-muted-foreground">
+              {board.detail}
+              {board.detail && hint ? <> <span aria-hidden>·</span> </> : null}
+              {/* PE-10b (D-P18): a neutral hint from the parsed schedule, never a "due" claim. */}
+              {hint && <span data-testid="next-meal-hint">{hint}</span>}
+            </p>
+          )}
+          {board.medication && <p className="break-words text-sm font-medium text-destructive">{board.medication}</p>}
+          {board.medicationUnavailable && <MedicationUnavailable care={care} className="text-sm" />}
+          {slots && <MealSlotList status={slots} timeZone={care.timeZone} inline className="mt-0.5 text-sm" />}
+        </div>
+        <CardChips pet={pet} care={care} />
+        <PinnedNoteLine householdId={householdId} petId={pet.id} className="text-sm" lines={1} />
+        <FeedArea pet={pet} model={model} statusId={statusId} canEdit={canEdit} onEdit={onEdit} className="relative z-10 mt-auto shrink-0 pt-1" inline />
+      </div>
     </Card>
   );
 }
 
 /**
- * Phone row card (PE-13a): a 64 px round avatar (hold to feed), the name with a
- * details chevron, the status as a short label and line, and Feed with the
- * actions menu above it (for editors), so several pets fit one screen and the
- * first Feed is above the fold.
+ * Phone row card (PE-13a; owner request). The name is the row's title (20 px,
+ * the biggest text) beside a 64 px round avatar, with the details chevron; the
+ * status (the band's label as a small pill, the feeding headline, today's
+ * meals) sits under it. Feed takes its own full-width line under the info, with
+ * the actions menu beside it, so at 390 px and 130% text nothing is truncated:
+ * the name and the status wrap between words, never mid-word, and Feed keeps
+ * its whole label.
  */
-function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, onDelete }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
-  // With a mouse the row's Feed is a split button (Feed and its clock); on touch Feed alone (hold it).
-  const fine = usePointerFine();
+function RowCard({ pet, model, priority, index = 0, canEdit, onEdit, onDelete }: LivingPetCardProps & { model: CardModel }) {
   const statusId = `pet-status-${pet.id}`;
-  const hintId = `feed-hint-${pet.id}`;
   const { board, attention, care } = model;
   const slots = loadedSlots(care);
   return (
     <Card
-      className={cn('glow-card relative flex items-center gap-3 overflow-hidden p-3 select-none [touch-action:manipulation]', attention && (attention.medication ? 'ring-2 ring-destructive/60' : 'ring-2 ring-warning/80'))}
+      className={cn('glow-card relative flex flex-col gap-2 overflow-hidden p-3 select-none [touch-action:manipulation]', attention && (attention.medication ? 'ring-2 ring-destructive/60' : 'ring-2 ring-warning/80'))}
       data-attention={attention ? (attention.medication ? 'medication' : 'meal') : undefined}
       data-testid={`pet-card-${pet.id}`}
       data-layout="rows"
     >
-      <HoldPhoto pet={pet} model={model} photoRef={photoRef} className="h-16 w-16 overflow-hidden rounded-full" sizes="64px" priority={priority} index={index} round />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-1">
-          <NameLink pet={pet} model={model} className="text-base" />
-          <DetailsLink pet={pet} model={model} />
-        </div>
-        <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
-          {/* The pill on its own line and the feeding headline under it (up to two lines), so a long pill never hides when the pet was fed. */}
-          <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
-            <span className={cn('inline-block max-w-full truncate rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
-            <span className="line-clamp-2 min-w-0 basis-full break-words [overflow-wrap:anywhere]" data-testid="pet-status-headline">{board.line}</span>
-          </p>
-          {board.medication && <p className="truncate text-xs font-medium text-destructive">{board.medication}</p>}
-          {board.medicationUnavailable && <MedicationUnavailable care={care} className="truncate text-xs" />}
-          {slots && <MealSlotList status={slots} timeZone={care.timeZone} inline className="mt-0.5" />}
+      <div className="flex min-w-0 items-start gap-3">
+        <CardPhoto pet={pet} model={model} className="h-16 w-16 overflow-hidden rounded-full" sizes="64px" priority={priority} index={index} round />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-start gap-1">
+            <NameLink pet={pet} model={model} className="text-xl font-bold" clamp={false} />
+            <DetailsLink pet={pet} model={model} />
+          </div>
+          <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
+            {/* The pill on its own line and the feeding headline under it, so a long pill never hides when the pet was fed. */}
+            <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
+              <span className={cn('inline-block max-w-full break-words rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
+              <span className="min-w-0 basis-full break-words" data-testid="pet-status-headline">{board.line}</span>
+            </p>
+            {board.medication && <p className="break-words text-xs font-medium text-destructive">{board.medication}</p>}
+            {board.medicationUnavailable && <MedicationUnavailable care={care} className="break-words text-xs" />}
+            {slots && <MealSlotList status={slots} timeZone={care.timeZone} inline className="mt-0.5" />}
+          </div>
         </div>
       </div>
-      {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      {/* The actions menu (Log an earlier feeding…, Edit, Delete) sits above Feed, so the text column keeps its width at 390 px. */}
-      <div className={cn('relative z-10 flex shrink-0 flex-col items-end gap-1', fine ? 'w-36' : 'w-24')}>
-        <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} className="bg-transparent shadow-none" />
-        <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={false} onEdit={() => undefined} compact className="w-full" />
+      {/* Feed on its own full-width line, the actions menu (Log an earlier feeding…, Edit, Delete) beside it. */}
+      <div className="relative z-10 flex min-w-0 items-center gap-2" data-testid="pet-row-actions">
+        <FeedArea pet={pet} model={model} statusId={statusId} canEdit={false} onEdit={() => undefined} compact className="min-w-0 flex-1" />
+        <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} className="shrink-0 bg-transparent shadow-none" />
       </div>
     </Card>
   );
@@ -495,20 +483,19 @@ function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, o
 
 /**
  * Living pet card (H09). In the default grid: photo with a face-safe crop or
- * species art (D17), the feeding ring, "Fed 2 h ago by Sam", the medication
- * chips, one-tap feeding and hold to feed. The name is an explicit link to the
- * pet page (PE-11b); the card itself is not a link, and on touch the photo only
- * responds to a hold (PE-11a). One feed controller serves the button and the
- * hold, so both go through the shared feed operation (`feedPet`). `layout`
- * draws the same model as a board card or a phone row (P4).
+ * species art (D17), the name as the card's title, the feeding ring, "Fed 2 h
+ * ago by Sam", the medication chips and one-tap feeding (press and hold Feed:
+ * Feed earlier). The name is an explicit link to the pet page (PE-11b); the
+ * card and the photo are not links. Feeding goes through the shared feed
+ * operation (`feedPet`). `layout` draws the same model as a board card or a
+ * phone row (P4).
  */
 export function LivingPetCard(props: LivingPetCardProps) {
   const { pet, householdId, canEdit, onEdit, onDelete, priority, index = 0, layout = 'grid' } = props;
-  const { model, photoRef } = usePetCardModel(props);
-  if (layout === 'board') return <BoardCard {...props} model={model} photoRef={photoRef} />;
-  if (layout === 'rows') return <RowCard {...props} model={model} photoRef={photoRef} />;
+  const model = usePetCardModel(props);
+  if (layout === 'board') return <BoardCard {...props} model={model} />;
+  if (layout === 'rows') return <RowCard {...props} model={model} />;
   const { attention, care, feed } = model;
-  const hintId = `feed-hint-${pet.id}`;
 
   return (
     <Card
@@ -521,20 +508,14 @@ export function LivingPetCard(props: LivingPetCardProps) {
       data-testid={`pet-card-${pet.id}`}
       data-layout="grid"
     >
-      <HoldPhoto
+      <CardPhoto
         pet={pet}
         model={model}
-        photoRef={photoRef}
         className="aspect-[4/3] w-full"
         sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
         priority={priority}
         index={index}
       />
-      {model.holdEnabled && (
-        <span id={hintId} className="sr-only">
-          Or press and hold the photo of {pet.name} to log {feed.portion}.
-        </span>
-      )}
 
       {(canEdit || feed.allowed) && (
         <div className="absolute right-2 top-2 z-20">
@@ -545,7 +526,7 @@ export function LivingPetCard(props: LivingPetCardProps) {
       <div className="flex flex-1 flex-col gap-3 p-4">
         <div className="min-w-0">
           {/* Long names without spaces wrap and clamp at two lines instead of being clipped (PE-20d). */}
-          <NameLink pet={pet} model={model} className="text-xl" />
+          <NameLink pet={pet} model={model} className="text-2xl font-bold" />
           <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
         </div>
         {/* The most important pinned note as one small line (PE-29c). */}
@@ -556,7 +537,6 @@ export function LivingPetCard(props: LivingPetCardProps) {
           householdId={householdId}
           care={care}
           feed={feed}
-          feedHintId={model.holdEnabled ? hintId : undefined}
           feedClassName="relative z-20 mt-auto pt-1"
           onSetMealTimes={canEdit ? () => onEdit(pet) : undefined}
         />

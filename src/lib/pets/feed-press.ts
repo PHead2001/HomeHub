@@ -5,7 +5,7 @@
  * Pure (time is passed in), so it is unit tested; the hook is
  * `useFeedPress` in src/components/pets/feed-press.tsx.
  *
- * It is the hold-to-feed machine (`holdReducer` in ./hold.ts) with a shorter
+ * It is the press-and-hold machine (`holdReducer` in ./hold.ts) with a shorter
  * duration and a longer tap threshold:
  *
  *   idle --press--> holding --tick (elapsed >= FEED_PRESS_MS)--> complete (opens the dialog, once)

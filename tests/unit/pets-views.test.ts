@@ -1,27 +1,24 @@
 /**
  * P4 Pets views, pure parts and source checks: the board status band (PE-9a/b,
  * D-P3), the layouts (D-P1, PE-13a) and the board grid (PE-9d/e, D-P14), the
- * hold caption (PE-12a, D-P17), the reduced-motion ring steps (PE-20a), the
- * household care store (PE-21a), chips (PE-16), touch and detail navigation
+ * name-first card header and the plain photo (owner request, replacing hold to
+ * feed and its caption), the household care store (PE-21a), chips (PE-16),
+ * 44/48 px targets, touch and detail navigation
  * (PE-11, PE-12b/d), the phone header and pet page order (PE-13b/c) and 48 px
  * form targets (PE-14e).
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   BOARD_FIT,
-  BOARD_ROW_MIN,
   BOARD_QUERY,
-  HOLD_CAPTION_KEY,
   ROWS_QUERY,
   boardGrid,
   boardRowPlan,
   boardStatus,
   petsLayoutFor,
-  showHoldCaption,
-  steppedHoldProgress,
 } from '../../src/lib/pets/board';
 import type { MedicationDue } from '../../src/lib/pets/care';
 import { mealStatus } from '../../src/lib/pets/meal-plan';
@@ -123,7 +120,7 @@ describe('layouts and the board grid (D-P1, PE-9d/e, D-P14, PE-13a)', () => {
     assert.equal(ROWS_QUERY, '(max-width: 639px)');
   });
 
-  it('lets one or two pets fill the screen, fits up to six without scrolling, scrolls inside past six', () => {
+  it('lets one or two pets fill the screen, shares the screen up to six, grows past the screen after six', () => {
     assert.deepEqual(boardGrid(1), { columns: 1, rows: 1, scroll: false });
     assert.deepEqual(boardGrid(2), { columns: 2, rows: 1, scroll: false });
     assert.deepEqual(boardGrid(4), { columns: 2, rows: 2, scroll: false });
@@ -132,43 +129,58 @@ describe('layouts and the board grid (D-P1, PE-9d/e, D-P14, PE-13a)', () => {
     assert.deepEqual(boardGrid(9), { columns: 3, rows: 3, scroll: true });
   });
 
-  it('hides the subtitle on the board and sizes the status text above the name (PE-9a, PE-9f)', () => {
+  it('hides the subtitle on the board and makes the name the card header, bigger than the status (owner request, PE-9f)', () => {
     const card = read('src/components/pets/living-pet-card.tsx');
-    assert.match(card, /text-2xl font-bold[^"]*" data-testid="pet-status-line"/);
-    assert.match(card, /<NameLink pet=\{pet\} model=\{model\} className="text-lg" \/>/);
-    assert.match(card, /'h-40 w-40' : 'h-20 w-20'/, 'an 80 px avatar, larger for one or two pets');
+    // Board: the name (24 px, 30 px roomy) heads the card; the status line under the band is 18 px (20 px roomy).
+    assert.match(card, /<NameLink pet=\{pet\} model=\{model\} className=\{roomy \? 'text-3xl font-bold' : 'text-2xl font-bold'\} \/>/);
+    assert.match(card, /roomy \? 'text-xl' : 'text-lg'\)\} data-testid="pet-status-line"/);
+    const board = card.slice(card.indexOf('function BoardCard('), card.indexOf('function RowCard('));
+    assert.ok(board.indexOf('<NameLink') < board.indexOf('<StatusBand'), 'the name comes before the status band');
+    assert.ok(board.indexOf('<StatusBand') < board.indexOf('data-testid="pet-status-line"'), 'the band, then the status line');
+    assert.match(card, /roomy \? 'h-28 w-28' : 'h-12 w-12'/, 'a 48 px avatar in the header, larger for one or two pets');
+    // Rows and grid: the name is the biggest text too.
+    assert.match(card, /<NameLink pet=\{pet\} model=\{model\} className="text-xl font-bold" clamp=\{false\} \/>/, 'phone rows: the whole name');
+    assert.match(card, /<NameLink pet=\{pet\} model=\{model\} className="text-2xl font-bold" \/>/);
     assert.match(read('src/components/pets-client.tsx'), /<PetsPageHeader action=\{addButton\} subtitle=\{layout !== 'board'\} \/>/);
   });
 });
 
-describe('touch: hold caption, hold ring, detail navigation (PE-11, PE-12, PE-20a)', () => {
-  it('shows the caption on touch screens to members who may feed until it is done, remembered per browser', () => {
-    assert.equal(showHoldCaption({ coarse: true, canFeed: true, done: false, hasPets: true }), true);
-    assert.equal(showHoldCaption({ coarse: false, canFeed: true, done: false, hasPets: true }), false);
-    assert.equal(showHoldCaption({ coarse: true, canFeed: false, done: false, hasPets: true }), false);
-    assert.equal(showHoldCaption({ coarse: true, canFeed: true, done: true, hasPets: true }), false);
-    assert.equal(HOLD_CAPTION_KEY, 'homehub.pets.holdCaptionDone');
-    const store = read('src/components/pets/use-pets-layout.ts');
-    assert.match(store, /localStorage\.setItem\(HOLD_CAPTION_KEY, '1'\)/);
-    assert.match(store, /catch \{/);
-    assert.match(read('src/components/pets/hold-to-feed.tsx'), /markHoldCaptionDone\(\);/, 'the first successful hold marks it done');
-    assert.match(read('src/components/pets-client.tsx'), />Hold the photo to feed</);
+describe('touch: a plain photo, Feed holds, detail navigation (owner request, PE-11, PE-12)', () => {
+  it('has no hold to feed on the photo, no caption and no hold ring anywhere', () => {
+    assert.equal(existsSync(resolve(process.cwd(), 'src/components/pets/hold-to-feed.tsx')), false);
+    for (const file of ['src/components/pets/living-pet-card.tsx', 'src/components/pets-client.tsx', 'src/components/devices/tablet-views.tsx', 'src/components/pets/use-pets-layout.ts', 'src/lib/pets/board.ts']) {
+      const source = read(file);
+      assert.doesNotMatch(source, /useHoldToFeed|HoldToFeedOverlay|holdCaption|HoldCaption|steppedHoldProgress|press and hold the (photo|picture)/i, file);
+    }
+    assert.doesNotMatch(read('src/components/pets-client.tsx'), /Hold the photo to feed/);
   });
 
-  it('fills the reduced-motion ring in three discrete steps', () => {
-    assert.deepEqual([0, 0.2, 0.34, 0.5, 0.67, 0.99, 1].map((value) => steppedHoldProgress(value)), [0, 0, 1 / 3, 1 / 3, 2 / 3, 2 / 3, 1]);
-    assert.match(read('src/components/pets/hold-to-feed.tsx'), /reduced \? steppedHoldProgress\(progress\) : progress/);
+  it('makes the photo a plain picture: no link, no drag, no callout, no context menu (Android long press)', () => {
+    const card = read('src/components/pets/living-pet-card.tsx');
+    const photo = card.slice(card.indexOf('function CardPhoto('), card.indexOf('function ActionsMenu('));
+    assert.doesNotMatch(photo, /<Link/);
+    assert.match(photo, /select-none \[-webkit-touch-callout:none\] \[&_img\]:pointer-events-none/);
+    assert.match(photo, /onContextMenu=\{\(event\) => event\.preventDefault\(\)\}/);
+    assert.match(photo, /draggable=\{false\}/);
   });
 
-  it('keeps holds from being cancelled by selection or zoom, and never makes the whole card a link (PE-11, PE-12b)', () => {
+  it('keeps selection and double-tap zoom off the cards (the Feed hold), and never makes the whole card a link (PE-11, PE-12b)', () => {
     const card = read('src/components/pets/living-pet-card.tsx');
     assert.doesNotMatch(card, /after:absolute after:inset-0/, 'no stretched link over the card');
-    assert.match(card, /select-none \[-webkit-touch-callout:none\] \[touch-action:manipulation\]/);
-    for (const layout of ['board', 'rows', 'grid']) assert.match(card, new RegExp(`select-none \\[touch-action:manipulation\\]['"]?[^\\n]*\\n?[^\\n]*data-layout="${layout}"|data-layout="${layout}"`));
-    // On touch the photo is not a link (a hold only); with a mouse it is; details have explicit controls.
-    assert.match(card, /\{fine \? \(/);
+    for (const layout of ['board', 'rows', 'grid']) assert.match(card, new RegExp(`select-none \\[touch-action:manipulation\\]['"]?[^\\n]*\\n?[^\\n]*\\n?[^\\n]*data-layout="${layout}"|data-layout="${layout}"`));
+    assert.match(read('src/components/pets/quick-feed-button.tsx'), /select-none \[-webkit-touch-callout:none\] \[touch-action:manipulation\]/, 'Feed: the hold target');
     assert.match(card, /aria-label=\{`Details for \$\{pet\.name\}`\}/);
     assert.match(card, /data-testid=\{`pet-name-\$\{pet\.id\}`\}/);
+  });
+
+  it('sizes the menu, the chevron and the chips to the real target (44 px, 48 px on touch), not only their hit-slop', () => {
+    const card = read('src/components/pets/living-pet-card.tsx');
+    assert.doesNotMatch(card, /h-8 w-8|h-9 w-9/);
+    assert.equal((card.match(/h-\[var\(--target-min\)\] w-\[var\(--target-min\)\]/g) ?? []).length, 2, 'actions menu and Details chevron');
+    const chip = read('src/components/pets/medication-chip.tsx');
+    assert.match(chip, /const interactive = 'relative z-10 min-h-\[var\(--target-min\)\]/);
+    assert.match(chip, /min-w-\[var\(--target-min\)\] items-center justify-center/, '"+N"');
+    assert.doesNotMatch(read('src/components/pets/meal-status.tsx'), /size="sm"[^\n]*set-meal-times/);
   });
 
   it('shows the keyboard hint only with a fine pointer (PE-12d)', () => {
@@ -255,19 +267,21 @@ describe('the household care store (PE-21a)', () => {
 });
 
 describe('chips, phone header, pet page order, form targets (PE-16, PE-13b/c, PE-14e)', () => {
-  it('keeps board rows at least BOARD_ROW_MIN tall, scrolling inside the board when the space above leaves less (PE-9e)', () => {
-    assert.equal(BOARD_ROW_MIN, 216);
+  it('fills the screen up to six pets and grows past it after six; rows never shrink below their cards (owner request)', () => {
     // Unmeasured: the plain grid.
-    assert.deepEqual(boardRowPlan(6, null), { columns: 3, rows: 2, scroll: false, rowHeight: null });
-    // Room for two rows of 216: they share the height, no inner scroll.
-    assert.deepEqual(boardRowPlan(6, 448), { columns: 3, rows: 2, scroll: false, rowHeight: null });
-    // Less (the strip and the caption above at 1263 x 722): rows keep 216 px and the board scrolls.
-    assert.deepEqual(boardRowPlan(6, 447), { columns: 3, rows: 2, scroll: true, rowHeight: 216 });
-    assert.deepEqual(boardRowPlan(3, 215), { columns: 3, rows: 1, scroll: true, rowHeight: 216 });
-    assert.deepEqual(boardRowPlan(3, 216), { columns: 3, rows: 1, scroll: false, rowHeight: null });
-    // Past six: the six-up row height, never under the minimum.
-    assert.deepEqual(boardRowPlan(7, 616), { columns: 3, rows: 3, scroll: true, rowHeight: 300 });
-    assert.deepEqual(boardRowPlan(7, 300), { columns: 3, rows: 3, scroll: true, rowHeight: 216 });
+    assert.deepEqual(boardRowPlan(6, null), { columns: 3, rows: 2, minHeight: null });
+    // Up to six the board is at least the measured height (rows share it).
+    assert.deepEqual(boardRowPlan(6, 448), { columns: 3, rows: 2, minHeight: 448 });
+    assert.deepEqual(boardRowPlan(3, 215), { columns: 3, rows: 1, minHeight: 215 });
+    // Past six: each row keeps the six-up height, so the page scrolls.
+    assert.deepEqual(boardRowPlan(7, 616), { columns: 3, rows: 3, minHeight: 3 * 300 + 2 * 16 });
+    // Rows are at least as tall as their content: no card scrolls or clips inside itself.
+    const client = read('src/components/pets-client.tsx');
+    assert.match(client, /gridTemplateRows: `repeat\(\$\{grid\.rows\}, minmax\(min-content, 1fr\)\)`/);
+    assert.doesNotMatch(client, /overflowY/);
+    const card = read('src/components/pets/living-pet-card.tsx');
+    assert.doesNotMatch(card, /overflow-y-auto|overscroll-contain/);
+    assert.match(card, /<PinnedNoteLine householdId=\{householdId\} petId=\{pet\.id\} className="text-sm" lines=\{1\} \/>/);
   });
 
   it('keeps P2/P3 behaviour on the board and rows: Give dose from a course chip, the slot status, the attention strip (PE-24b, PE-22b, PE-26a)', () => {

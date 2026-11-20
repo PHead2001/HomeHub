@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { collection, onSnapshot, type QuerySnapshot } from 'firebase/firestore';
-import { Hand, PlusCircle } from 'lucide-react';
+import { PlusCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
@@ -29,24 +29,27 @@ import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
 import type { PetPhotoChoice } from './pets/pet-photo-draft';
 import { DuplicatePetNameError, otherPetNames, petDeletedMessage } from '@/lib/pets/profile';
-import { boardRowPlan, showHoldCaption } from '@/lib/pets/board';
-import { useHoldCaptionDone, usePetsLayout, usePointerFine } from './pets/use-pets-layout';
+import { boardRowPlan } from '@/lib/pets/board';
+import { usePetsLayout } from './pets/use-pets-layout';
 
 const GRID = PETS_GRID;
-/** Space kept under the board (the page's bottom padding), so the page itself never scrolls. */
+/** Space kept under the board (the page's bottom padding), so a board that fits leaves the page unscrolled. */
 const BOARD_BOTTOM_PX = 32;
 
 /**
- * The status-first board (PE-9, D-P1, D-P14): it fills the screen from its top to
- * the bottom of the viewport. One to three pets share one row (one or two grow
- * to use it, PE-9d), four are two by two, five or six three by two, so every
- * status is on screen without scrolling (PE-9e); past six the board keeps
- * the six-up row height and scrolls inside itself, never clipping a card.
+ * The board (PE-9, D-P1, D-P14): at least as tall as the screen
+ * from its top to the bottom of the viewport. One to three pets share one row
+ * (one or two grow to use it, PE-9d), four are two by two, five or six three by
+ * two. Every row is at least as tall as its tallest card's content
+ * (`minmax(min-content, 1fr)`), so a card never scrolls inside itself and
+ * nothing is clipped: when the cards need more than the screen (many pets, a
+ * short window, large text) the board grows and the page scrolls as a whole.
+ * Past six pets each row keeps the six-up height.
  */
 function PetsBoard({ count, children }: { count: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | null>(null);
-  // Measured after every render (the attention notice or the hold caption above it may come and go) and on resize.
+  // Measured after every render (the attention strip above it may come and go) and on resize.
   useLayoutEffect(() => {
     const measure = () => {
       const element = ref.current;
@@ -58,8 +61,7 @@ function PetsBoard({ count, children }: { count: number; children: ReactNode }) 
     measure();
     window.addEventListener('resize', measure);
     // Content above the board that comes and goes without re-rendering it (the
-    // needs-attention strip once the cards report, the hold caption) resizes its
-    // parent: measure again then, so the page never scrolls in between (PE-9e).
+    // needs-attention strip once the cards report) resizes its parent: measure again then.
     const parent = ref.current?.parentElement;
     const observer = parent && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
     if (parent) observer?.observe(parent);
@@ -69,18 +71,15 @@ function PetsBoard({ count, children }: { count: number; children: ReactNode }) 
     };
   });
   const grid = boardRowPlan(count, height);
-  const rowHeight = grid.rowHeight;
   return (
     <div
       ref={ref}
       className="grid gap-4"
       data-testid="pets-board"
-      data-board-scroll={grid.scroll ? 'true' : 'false'}
       style={{
         gridTemplateColumns: `repeat(${grid.columns}, minmax(0, 1fr))`,
-        gridTemplateRows: grid.scroll && rowHeight ? `repeat(${grid.rows}, ${rowHeight}px)` : `repeat(${grid.rows}, minmax(0, 1fr))`,
-        height: height ?? undefined,
-        overflowY: grid.scroll ? 'auto' : 'hidden',
+        gridTemplateRows: `repeat(${grid.rows}, minmax(min-content, 1fr))`,
+        minHeight: grid.minHeight ?? undefined,
       }}
     >
       {children}
@@ -112,11 +111,13 @@ function AttentionStrip({ pets, attention, compact }: { pets: PetProfile[]; atte
             <li key={pet.id} className="min-w-0 max-w-full">
               <Link
                 href={petHref(pet.id)}
-                className="inline-flex min-h-[var(--target-min)] max-w-full items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-sm text-foreground transition-ui hover:bg-muted"
+                className="inline-flex min-h-[var(--target-min)] max-w-full items-center rounded-full border border-border bg-card px-3 py-1 text-left text-sm text-foreground transition-ui hover:bg-muted"
                 data-testid={`pets-attention-${pet.id}`}
               >
-                <span className="truncate font-semibold">{pet.name}</span>
-                <span className="min-w-0 break-words">: {[item.meal, item.medication].filter(Boolean).join(' · ')}</span>
+                {/* The whole name, wrapping between words (PE-26; never cut to "A…" at 130% text). */}
+                <span className="min-w-0 break-words">
+                  <span className="font-semibold">{pet.name}</span>: {[item.meal, item.medication].filter(Boolean).join(' · ')}
+                </span>
               </Link>
             </li>
           );
@@ -286,11 +287,8 @@ export function PetsClient() {
     </Button>
   ) : null;
 
-  // The view for this screen (D-P1, PE-13a) and the one-time hold caption (PE-12a, D-P17).
+  // The view for this screen (D-P1, PE-13a).
   const layout = usePetsLayout();
-  const fine = usePointerFine();
-  const [captionDone, dismissCaption] = useHoldCaptionDone();
-  const captionShown = showHoldCaption({ coarse: !fine, canFeed, done: captionDone, hasPets: pets.length > 0 });
 
   const card = (pet: PetProfile, index: number) => (
     <LivingPetCard
@@ -338,20 +336,11 @@ export function PetsClient() {
         </div>
       ) : pets.length > 0 && householdId ? (
         <>
-        {captionShown && (
-          <p className="mb-3 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm text-foreground" data-testid="hold-caption">
-            <Hand aria-hidden className="h-4 w-4 shrink-0" />
-            <span className="min-w-0 flex-1">Hold the photo to feed</span>
-            <Button type="button" variant="ghost" size="sm" onClick={dismissCaption} aria-label="Dismiss the tip: hold the photo to feed">
-              Got it
-            </Button>
-          </p>
-        )}
         {/* PE-26a: the strip heads /pets in every view, the board included (the board measures its height below it). */}
         <AttentionStrip pets={pets} attention={attentionByPet} compact={layout === 'board'} />
         {layout === 'board' ? (
           <PetsBoard count={pets.length}>
-            {pets.map((pet, index) => <div key={pet.id} className="min-h-0 min-w-0">{card(pet, index)}</div>)}
+            {pets.map((pet, index) => <div key={pet.id} className="min-w-0">{card(pet, index)}</div>)}
           </PetsBoard>
         ) : layout === 'rows' ? (
           <Stagger className="flex flex-col gap-3" data-testid="pets-rows">

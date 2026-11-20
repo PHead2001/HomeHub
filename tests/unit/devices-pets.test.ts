@@ -186,10 +186,10 @@ describe('every feeding entry point on a tablet is a device action (PE-17a), and
     assert.match(hook, /await tablet\.runAction\(\{\s*capability,/);
   });
 
-  it('Feed, hold, quick add and dashboard Fed all reach it', () => {
+  it('Feed, quick add and dashboard Fed all reach it (the picture has no hold)', () => {
     const views = read('src/components/devices/tablet-views.tsx');
     assert.match(views, /useFeedAction\(pet\.id, pet\.name/);
-    assert.match(views, /useHoldToFeed\(controller, avatar\)/);
+    assert.doesNotMatch(views, /useHoldToFeed|HoldToFeedOverlay/);
     assert.match(read('src/components/devices/tablet-quick-add.tsx'), /capability: 'pets\.feed',/);
     // Dashboard Fed uses the same hook (and on a tablet shows no failed state of its own).
     assert.match(read('src/components/dashboard/one-tap.tsx'), /if \(result === null && !tablet\) setFailed\(true\);/);

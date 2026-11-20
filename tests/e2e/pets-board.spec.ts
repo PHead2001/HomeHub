@@ -1,13 +1,16 @@
-import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 
 /*
- * P4 Pets views on the seeded e2e household: the status-first board at the wall
- * tablet's sizes (PE-9, D-P14), phone row cards (PE-13a/b), the touch hold with
- * real touch events (PE-12c) and its caption (PE-12a), touch-only due dates and
- * "+N" chips (PE-16), and 48 px hit areas on the pet page (PE-14). Every test
- * removes the pets and entries it adds.
+ * P4 Pets views on the seeded e2e household: the board at the wall tablet's
+ * sizes (PE-9, D-P14) and phone row cards (PE-13a/b) with the owner's layout
+ * (the pet's name is each card's header, above and bigger than the status; no
+ * card scrolls inside itself, the page scrolls when the cards need more than
+ * the screen), at 100% and 130% text (the app's own Appearance setting),
+ * touch-only due dates and "+N" chips (PE-16), 44 px (mouse) and 48 px (touch)
+ * hit areas on the cards and the pet page (PE-14). Hold to feed on the photo is
+ * gone (pets-hold-to-feed.spec.ts). Every test removes the pets and entries it adds.
  */
 
 const projectId = 'demo-homehub-e2e';
@@ -21,9 +24,19 @@ const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 
 const EXTRA = ['pet-e2eBoardA', 'pet-e2eBoardB', 'pet-e2eBoardC', 'pet-e2eBoardD'];
 const LONG_NAME = 'Bartholomew-Fluffington-the-Magnificent-of-Maple-Street';
 
-async function seedExtraPets(count = EXTRA.length) {
+/** Board pets: the first has a very long name without spaces; with `slots` the second has confirmed meal times (Breakfast, Dinner). */
+async function seedExtraPets(count = EXTRA.length, { slots = false } = {}) {
   await Promise.all(EXTRA.slice(0, count).map((id, index) => household.collection('pets').doc(id).set({
     name: index === 0 ? LONG_NAME : `Board pet ${index + 1}`, type: 'Cat', photoUrl: '', dataAiHint: 'cat', foodSchedule: 'twice daily', feedingsPerDay: 2,
+    ...(slots && index === 1 ? {
+      mealPlan: {
+        slots: [
+          { id: 'breakfast', name: 'Breakfast', time: '07:00', amount: 1, unit: 'Cups' },
+          { id: 'dinner', name: 'Dinner', time: '18:00', amount: 0.5, unit: 'Cans' },
+        ],
+        effectiveFrom: '2026-01-01', confirmedAt: Timestamp.now(), confirmedByUid: 'e2e-owner-uid', confirmedByName: 'Alex',
+      },
+    } : {}),
   })));
 }
 
@@ -54,14 +67,109 @@ async function seedMedication(petId: string, name: string, days: number) {
   });
 }
 
-async function touchContext(browser: Browser, viewport: { width: number; height: number }, extra: { reducedMotion?: 'reduce'; colorScheme?: 'dark' | 'light' } = {}) {
-  const context = await browser.newContext({ baseURL, viewport, hasTouch: true, isMobile: viewport.width < 768, storageState: 'playwright/.auth/e2e-owner.json', ...extra });
-  return { context, page: await context.newPage() };
+type ContextExtra = { reducedMotion?: 'reduce'; colorScheme?: 'dark' | 'light'; textScale?: 115 | 130 };
+
+/** A browser context; `textScale` is the app's own Appearance text size (stored per device, applied before paint). */
+async function makeContext(browser: Browser, viewport: { width: number; height: number }, touch: boolean, { textScale, ...extra }: ContextExtra = {}) {
+  const context = await browser.newContext({
+    baseURL, viewport, storageState: 'playwright/.auth/e2e-owner.json', ...extra,
+    ...(touch ? { hasTouch: true, isMobile: viewport.width < 768 } : {}),
+  });
+  if (textScale) {
+    await context.addInitScript((value) => {
+      const key = 'homehub.appearance';
+      let stored: Record<string, unknown> = {};
+      try { stored = JSON.parse(window.localStorage.getItem(key) ?? '{}') ?? {}; } catch { stored = {}; }
+      window.localStorage.setItem(key, JSON.stringify({ ...stored, textScale: value }));
+    }, textScale);
+  }
+  return { context, page: await context.newPage(), textScale };
 }
 
-async function openPets(page: Page) {
+const touchContext = (browser: Browser, viewport: { width: number; height: number }, extra: ContextExtra = {}) => makeContext(browser, viewport, true, extra);
+const mouseContext = (browser: Browser, viewport: { width: number; height: number }, extra: ContextExtra = {}) => makeContext(browser, viewport, false, extra);
+
+async function openPets(page: Page, textScale?: 115 | 130) {
   await page.goto('/pets');
   await expect(page.getByRole('heading', { name: 'Your Pets', exact: true })).toBeVisible();
+  if (textScale) await expect(page.locator('html')).toHaveAttribute('data-text-scale', String(textScale));
+}
+
+type Box = { x: number; y: number; width: number; height: number };
+const overlaps = (a: Box, b: Box) => a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5;
+
+/**
+ * One card's layout, read in one pass: inner scrolling (the card and its body),
+ * the name against the status line, and every control's box (links and buttons).
+ */
+function auditCard(card: Locator) {
+  return card.evaluate((element) => {
+    const rect = (node: Element) => node.getBoundingClientRect();
+    const box = rect(element);
+    const body = element.querySelector('[data-testid="pet-card-body"]');
+    const name = element.querySelector('h2')!;
+    const line = element.querySelector('[data-testid="pet-status-line"]')!;
+    const controls = [...element.querySelectorAll('a[href], button')]
+      .filter((node) => rect(node).width > 0 && rect(node).height > 0)
+      .map((node) => {
+        const r = rect(node);
+        return {
+          label: node.getAttribute('aria-label') ?? node.textContent?.trim() ?? node.tagName,
+          box: { x: r.x, y: r.y, width: r.width, height: r.height },
+          inside: r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5,
+        };
+      });
+    return {
+      cardOverflow: element.scrollHeight - element.clientHeight,
+      bodyOverflow: body ? body.scrollHeight - body.clientHeight : 0,
+      sideways: element.scrollWidth - element.clientWidth,
+      nameSize: parseFloat(getComputedStyle(name).fontSize),
+      lineSize: parseFloat(getComputedStyle(line).fontSize),
+      nameAboveLine: rect(name).bottom <= rect(line).top + 0.5,
+      controls,
+    };
+  });
+}
+
+/** Checks a card: no inner scrollbar, the name above and bigger than the status, controls inside, apart and at least `min` px. */
+async function expectCardFits(card: Locator, min: number, label: string) {
+  const audit = await auditCard(card);
+  expect(audit.cardOverflow, `${label}: the card does not scroll inside`).toBeLessThanOrEqual(1);
+  expect(audit.bodyOverflow, `${label}: the card body does not scroll inside`).toBeLessThanOrEqual(1);
+  expect(audit.sideways, `${label}: nothing sticks out sideways`).toBeLessThanOrEqual(1);
+  expect(audit.nameSize, `${label}: the name is bigger than the status line`).toBeGreaterThan(audit.lineSize);
+  expect(audit.nameAboveLine, `${label}: the name is above the status line`).toBe(true);
+  for (const control of audit.controls) {
+    expect(control.inside, `${label}: ${control.label} is inside the card`).toBe(true);
+    expect(control.box.height, `${label}: ${control.label} height`).toBeGreaterThanOrEqual(min);
+    expect(control.box.width, `${label}: ${control.label} width`).toBeGreaterThanOrEqual(min);
+  }
+  for (let i = 0; i < audit.controls.length; i += 1) {
+    for (let j = i + 1; j < audit.controls.length; j += 1) {
+      expect(overlaps(audit.controls[i].box, audit.controls[j].box), `${label}: ${audit.controls[i].label} overlaps ${audit.controls[j].label}`).toBe(false);
+    }
+  }
+}
+
+/** Words (3+ letters) that a line break split in two: each word's range must sit on one line. */
+function brokenWords(locator: Locator) {
+  return locator.evaluateAll((elements) => {
+    const broken: string[] = [];
+    for (const element of elements) {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent ?? '';
+        for (const match of text.matchAll(/[A-Za-z]{3,}/g)) {
+          const range = document.createRange();
+          range.setStart(node, match.index!);
+          range.setEnd(node, match.index! + match[0].length);
+          const tops = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top)));
+          if (tops.size > 1) broken.push(match[0]);
+        }
+      }
+    }
+    return broken;
+  });
 }
 
 const noPageScroll = (page: Page) => page.evaluate(() => ({
@@ -75,103 +183,105 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
   });
 
   for (const viewport of [{ width: 1263, height: 818 }, { width: 1263, height: 722 }, { width: 1264, height: 843 }]) {
-    test(`board at ${viewport.width}x${viewport.height}: six pets, every status on screen, no page scroll (PE-9a/b/e/f/g)`, async ({ browser }, testInfo) => {
-      desktopOnly(testInfo);
-      await seedExtraPets();
-      await seedMedication('maple', 'Heartworm', -2);
-      const { context, page } = await touchContext(browser, viewport);
-      try {
-        await openPets(page);
-        const board = page.getByTestId('pets-board');
-        await expect(board).toBeVisible();
-        // The subtitle is gone on the board (PE-9f).
-        await expect(page.getByText('Feedings, medication and care for every pet, at a glance.')).toHaveCount(0);
-        const cards = board.locator('[data-layout="board"]');
-        await expect(cards).toHaveCount(6);
-        // Maple's overdue dose puts the needs-attention strip above the board (PE-26a); measure once it is there.
-        await expect(page.getByTestId('pets-attention')).toBeVisible();
-        // The extra pets have only a legacy schedule, so the owner sees Set meal times on them once their feedings load.
-        await expect.poll(() => board.getByTestId('set-meal-times').count()).toBeGreaterThanOrEqual(EXTRA.length);
-        for (const card of await cards.all()) {
-          const band = card.getByTestId('pet-status-band');
-          const line = card.getByTestId('pet-status-line');
-          await expect(band).not.toHaveText('');
-          await expect(line).toBeVisible();
-          const lineBox = (await line.boundingBox())!;
-          expect(lineBox.y + Math.min(lineBox.height, 24)).toBeLessThanOrEqual(viewport.height);
-          // The status is the most prominent text: 20-24 px and larger than the name.
-          const sizes = await card.evaluate((element) => ({
-            line: parseFloat(getComputedStyle(element.querySelector('[data-testid="pet-status-line"]')!).fontSize),
-            name: parseFloat(getComputedStyle(element.querySelector('h2')!).fontSize),
-          }));
-          expect(sizes.line).toBeGreaterThanOrEqual(20);
-          expect(sizes.line).toBeGreaterThan(sizes.name);
-          // The status line is never clipped by its card: it sits wholly inside the
-          // card body's visible box, above the name (Codex P2 on PR #187).
-          // Measured together in one read, so nothing can move between them.
-          const placed = await card.evaluate((element) => {
-            const line = element.querySelector('[data-testid="pet-status-line"]')!.getBoundingClientRect();
-            const body = element.querySelector('[data-testid="pet-card-body"]')!.getBoundingClientRect();
-            const name = element.querySelector('h2')!.getBoundingClientRect();
-            return { top: line.top - body.top, bottom: body.bottom - line.bottom, aboveName: line.top < name.top };
-          });
-          expect(placed.top, 'status line starts inside the card body').toBeGreaterThanOrEqual(-0.5);
-          expect(placed.bottom, 'status line ends inside the card body').toBeGreaterThanOrEqual(-0.5);
-          expect(placed.aboveName).toBe(true);
-          // Feed (and a legacy pet's Set meal times beside it) are 48 px and do not overlap.
-          const controls = [card.getByRole('button', { name: /^Feed / }), card.getByTestId('set-meal-times')];
-          const boxes = [];
-          for (const control of controls) if (await control.count()) boxes.push((await control.boundingBox())!);
-          for (const box of boxes) expect(box.height).toBeGreaterThanOrEqual(48);
-          if (boxes.length === 2) {
-            const [a, b] = boxes;
-            expect(a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5).toBe(false);
+    for (const textScale of [undefined, 130] as const) {
+      test(`board at ${viewport.width}x${viewport.height}${textScale ? ` at ${textScale}% text` : ''}: six pets, the name heads each card, no card scrolls inside, nothing clipped or overlapping (owner request, PE-9b/g)`, async ({ browser }, testInfo) => {
+        desktopOnly(testInfo);
+        await seedExtraPets(EXTRA.length, { slots: true });
+        await seedMedication('maple', 'Heartworm', -2);
+        const { context, page } = await touchContext(browser, viewport, { textScale });
+        try {
+          await openPets(page, textScale);
+          const board = page.getByTestId('pets-board');
+          await expect(board).toBeVisible();
+          // The subtitle is gone on the board (PE-9f).
+          await expect(page.getByText('Feedings, medication and care for every pet, at a glance.')).toHaveCount(0);
+          const cards = board.locator('[data-layout="board"]');
+          await expect(cards).toHaveCount(6);
+          // Maple's overdue dose puts the needs-attention strip above the board (PE-26a); measure once it is there.
+          await expect(page.getByTestId('pets-attention')).toBeVisible();
+          // The legacy pets show Set meal times to the owner once their feedings load.
+          await expect.poll(() => board.getByTestId('set-meal-times').count()).toBeGreaterThanOrEqual(EXTRA.length - 1);
+          // The slot pet's meals are on the card (one compact line).
+          await expect(page.getByTestId(`pet-card-${EXTRA[1]}`).locator('[data-slot-phase]')).toHaveCount(2);
+          for (const card of await cards.all()) {
+            await expect(card.getByTestId('pet-status-band')).not.toHaveText('');
+            await card.scrollIntoViewIfNeeded();
+            await expect(card.getByTestId('pet-status-line')).toBeInViewport();
+            await expectCardFits(card, 48, (await card.getAttribute('data-testid')) ?? 'card');
           }
+          // The board itself never scrolls inside either: when the cards need more than the screen, the page scrolls.
+          expect(await board.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+          // The cards in one row line up: each grid row is as tall as its tallest card, none overlaps the next row.
+          const boxes = [];
+          for (const card of await cards.all()) boxes.push((await card.boundingBox())!);
+          for (let i = 0; i < boxes.length; i += 1) for (let j = i + 1; j < boxes.length; j += 1) expect(overlaps(boxes[i], boxes[j])).toBe(false);
+          // Maple's medication chip takes the tap (48 px, inside the card).
+          const chip = page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('button').first();
+          await chip.scrollIntoViewIfNeeded();
+          await expect(chip).toBeInViewport();
+          expect(await chip.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            return Boolean(hit && element.contains(hit));
+          }), 'the medication chip receives the tap').toBe(true);
+          // Red band with its text label for an overdue medication (PE-9b).
+          await expect(page.getByTestId('pet-card-maple').getByTestId('pet-status-band')).toHaveAttribute('data-band', 'overdue');
+          await expect(page.getByTestId('pet-card-maple').getByTestId('pet-status-band')).toContainText('Medication overdue');
+          // A long name without spaces wraps and clamps instead of overflowing (PE-20d, PE-9g).
+          const long = page.getByTestId(`pet-card-${EXTRA[0]}`).locator('h2');
+          expect(await long.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+          // Sideways never; vertically the page may scroll when six cards need more than the screen.
+          expect((await noPageScroll(page)).sideways).toBeLessThanOrEqual(0);
+        } finally {
+          await context.close();
         }
-        // Maple's medication chip is reachable: the card body scrolls (never the page) and the chip takes the tap.
-        const chip = page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('button').first();
-        await chip.scrollIntoViewIfNeeded();
-        await expect(chip).toBeInViewport();
-        const chipBox = (await chip.boundingBox())!;
-        expect(chipBox.height).toBeGreaterThanOrEqual(48);
-        const mapleBody = (await page.getByTestId('pet-card-maple').getByTestId('pet-card-body').boundingBox())!;
-        expect(chipBox.y).toBeGreaterThanOrEqual(mapleBody.y - 0.5);
-        expect(chipBox.y + chipBox.height).toBeLessThanOrEqual(mapleBody.y + mapleBody.height + 0.5);
-        expect(await chip.evaluate((element) => {
-          const rect = element.getBoundingClientRect();
-          const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-          return Boolean(hit && element.contains(hit));
-        }), 'the medication chip receives the tap').toBe(true);
-        // Red band with its text label for an overdue medication (PE-9b).
-        await expect(page.getByTestId('pet-card-maple').getByTestId('pet-status-band')).toHaveAttribute('data-band', 'overdue');
-        await expect(page.getByTestId('pet-card-maple').getByTestId('pet-status-band')).toContainText('Medication overdue');
-        // A long name without spaces clamps instead of overflowing (PE-20d, PE-9g).
-        const long = page.getByTestId(`pet-card-${EXTRA[0]}`).locator('h2');
-        expect(await long.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-        const scroll = await noPageScroll(page);
-        expect(scroll.vertical).toBeLessThanOrEqual(1);
-        expect(scroll.sideways).toBeLessThanOrEqual(0);
-      } finally {
-        await context.close();
-      }
-    });
+      });
+    }
   }
 
-  test('board with two pets: cards grow to use the screen (PE-9d); dark theme, reduced motion and 130% text still fit', async ({ browser }, testInfo) => {
+  test('board with two pets: cards grow to use the screen (PE-9d); dark theme, reduced motion and 130% text still fit without page scroll', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);
-    const { context, page } = await touchContext(browser, { width: 1263, height: 818 }, { reducedMotion: 'reduce', colorScheme: 'dark' });
+    const { context, page } = await touchContext(browser, { width: 1263, height: 818 }, { reducedMotion: 'reduce', colorScheme: 'dark', textScale: 130 });
     try {
-      await page.addInitScript(() => { document.documentElement.style.fontSize = '130%'; });
-      await openPets(page);
+      await openPets(page, 130);
       const cards = page.getByTestId('pets-board').locator('[data-layout="board"]');
       await expect(cards).toHaveCount(2);
       const box = (await cards.first().boundingBox())!;
       expect(box.width).toBeGreaterThan(1263 / 2 - 80);
       expect(box.height).toBeGreaterThan(400);
-      for (const card of await cards.all()) await expect(card.getByTestId('pet-status-line')).toBeInViewport();
+      for (const card of await cards.all()) {
+        await expect(card.getByTestId('pet-status-line')).toBeInViewport();
+        await expectCardFits(card, 48, (await card.getAttribute('data-testid')) ?? 'card');
+      }
       const scroll = await noPageScroll(page);
       expect(scroll.vertical).toBeLessThanOrEqual(1);
       expect(scroll.sideways).toBeLessThanOrEqual(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('board with a mouse at 1263 x 818: the actions menu, Details chevron and medication chip are at least 44 x 44 (production matrix)', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    await seedExtraPets(1);
+    await seedMedication('maple', 'Heartworm', 3);
+    const { context, page } = await mouseContext(browser, { width: 1263, height: 818 });
+    try {
+      await openPets(page);
+      const cards = page.getByTestId('pets-board').locator('[data-layout="board"]');
+      await expect(cards).toHaveCount(3);
+      await expect(page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('button').first()).toBeVisible();
+      for (const card of await cards.all()) await expectCardFits(card, 44, (await card.getAttribute('data-testid')) ?? 'card');
+      const maple = page.getByTestId('pet-card-maple');
+      for (const control of [
+        maple.getByRole('button', { name: 'Open actions for Maple' }),
+        maple.getByTestId('pet-details-maple'),
+        maple.getByTestId('medication-chips').getByRole('button').first(),
+      ]) {
+        const box = (await control.boundingBox())!;
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+      }
     } finally {
       await context.close();
     }
@@ -264,61 +374,49 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
     });
   }
 
-  test('touch: one hold logs exactly one feeding, a scroll that starts on the photo logs none, and the caption goes after the first hold (PE-12a/c, PE-11a)', async ({ browser }, testInfo) => {
-    desktopOnly(testInfo);
-    const { context, page } = await touchContext(browser, { width: 1263, height: 818 });
-    try {
-      await page.clock.setFixedTime(new Date());
-      await openPets(page);
-      await expect(page.getByTestId('hold-caption')).toHaveText(/Hold the photo to feed/);
-      const card = page.getByTestId('pet-card-pixel');
-      await expect(card).toContainText('No feedings logged yet');
-      const box = (await page.getByTestId('pet-photo-pixel').boundingBox())!;
-      const x = box.x + box.width / 2;
-      const y = box.y + box.height / 2;
-      const client = await context.newCDPSession(page);
-      const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', points: { x: number; y: number }[]) => client.send('Input.dispatchTouchEvent', { type, touchPoints: points });
-
-      // A tap on the photo never navigates on touch (PE-11a).
-      await touch('touchStart', [{ x, y }]);
-      await touch('touchEnd', []);
-      await page.waitForTimeout(400);
-      await expect(page).toHaveURL(/\/pets$/);
-
-      // A scroll that starts on the photo: the finger moves off it and keeps going past the hold time.
-      await touch('touchStart', [{ x, y }]);
-      for (let step = 1; step <= 12; step += 1) {
-        await touch('touchMove', [{ x, y: y - step * 15 }]);
-        await page.waitForTimeout(80);
+  for (const textScale of [100, 115, 130] as const) {
+    test(`phone (390 x 844) at ${textScale}% text: rows wrap without clipping: whole name, whole Feed label, no mid-word breaks, attention strip names in full`, async ({ browser }, testInfo) => {
+      desktopOnly(testInfo);
+      await seedExtraPets(3, { slots: true });
+      await seedMedication('maple', 'Heartworm', -2);
+      const scale = textScale === 100 ? undefined : textScale;
+      const { context, page } = await touchContext(browser, { width: 390, height: 844 }, { textScale: scale });
+      try {
+        await openPets(page, scale);
+        const rows = page.getByTestId('pets-rows').locator('[data-layout="rows"]');
+        await expect(rows).toHaveCount(5);
+        await expect(page.getByTestId(`pet-card-${EXTRA[1]}`).locator('[data-slot-phase]')).toHaveCount(2);
+        for (const row of await rows.all()) {
+          const label = (await row.getAttribute('data-testid')) ?? 'row';
+          await row.scrollIntoViewIfNeeded();
+          await expectCardFits(row, 48, label);
+          // Feed keeps its whole label (never "Fe…").
+          expect(await row.locator('[data-feed-button] span.truncate').evaluate((element) => element.scrollWidth <= element.clientWidth + 1), `${label}: Feed label`).toBe(true);
+          // The status, today's meals and Feed break between words only.
+          expect(await brokenWords(row.locator('[data-testid="pet-status-line"], [aria-label="Today\'s meals"], [data-feed-button], [data-band]')), `${label}: words split`).toEqual([]);
+          // Feed sits under the info, on its own line.
+          const info = (await row.getByTestId('pet-status-line').boundingBox())!;
+          const feed = (await row.locator('[data-feed-button]').boundingBox())!;
+          expect(feed.y, `${label}: Feed under the status`).toBeGreaterThanOrEqual(info.y + info.height - 0.5);
+        }
+        // The very long name shows in full in its row (wrapped, never clamped or cut).
+        const longName = page.getByTestId(`pet-name-${EXTRA[0]}`).locator('span');
+        expect(await longName.evaluate((element) => element.scrollHeight <= element.clientHeight + 1 && element.scrollWidth <= element.clientWidth + 1), 'long name in full').toBe(true);
+        expect(await longName.evaluate((element) => getComputedStyle(element).webkitLineClamp)).toBe('none');
+        // Short names are never clipped or split in the rows.
+        expect(await brokenWords(page.getByTestId('pet-name-maple'))).toEqual([]);
+        expect(await page.getByTestId('pet-name-maple').evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+        // The needs-attention strip names the pet in full ("Maple", never "M…").
+        const strip = page.getByTestId('pets-attention-maple');
+        await expect(strip).toContainText('Maple');
+        expect(await strip.evaluate((element) => [...element.querySelectorAll('span')].every((span) => span.scrollWidth <= span.clientWidth + 1))).toBe(true);
+        expect(await brokenWords(strip)).toEqual([]);
+        expect((await noPageScroll(page)).sideways).toBeLessThanOrEqual(0);
+      } finally {
+        await context.close();
       }
-      await touch('touchEnd', []);
-      await page.waitForTimeout(500);
-      expect((await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(0);
-
-      // One hold, held past the end: exactly one feeding, still on /pets.
-      await touch('touchStart', [{ x, y }]);
-      await expect(page.getByTestId('pet-photo-pixel')).toHaveAttribute('data-hold-phase', 'complete', { timeout: 3000 });
-      await page.waitForTimeout(700);
-      await touch('touchEnd', []);
-      await expect.poll(async () => (await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(1);
-      await page.waitForTimeout(800);
-      expect((await household.collection('pets').doc('pixel').collection('feeding-logs').get()).size).toBe(1);
-      await expect(page).toHaveURL(/\/pets$/);
-      // The caption is done, and stays done after a reload (remembered per browser, D-P17).
-      await expect(page.getByTestId('hold-caption')).toHaveCount(0);
-      expect(await page.evaluate(() => window.localStorage.getItem('homehub.pets.holdCaptionDone'))).toBe('1');
-      await page.reload();
-      await expect(page.getByRole('heading', { name: 'Your Pets', exact: true })).toBeVisible();
-      await expect(page.getByTestId('pet-card-pixel')).toBeVisible();
-      await expect(page.getByTestId('hold-caption')).toHaveCount(0);
-      // The keyboard hint is never shown on touch (PE-12d).
-      await page.getByTestId('pet-card-pixel').getByRole('button', { name: /^Feed Pixel/ }).focus();
-      await page.waitForTimeout(600);
-      await expect(page.getByTestId('shortcut-hint-log-feeding')).toHaveCount(0);
-    } finally {
-      await context.close();
-    }
-  });
+    });
+  }
 
   test('chips: the whole status shows, the due date shows on touch, "+N" lists the rest on a tap (PE-16a-c)', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);

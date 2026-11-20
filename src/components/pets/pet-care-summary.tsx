@@ -105,8 +105,8 @@ function FeedingCount({ status }: { status: FeedingStatus }) {
  * medication and feeding, shared by the pet card and the pet detail page. A
  * failed load is shown as "unavailable", never as an empty history (which
  * would read as "not fed"). The pet card passes its own `care` and `feed`
- * controller, which hold to feed shares, so both use one data subscription and
- * one writer.
+ * controller (shared with its actions menu), so both use one data subscription
+ * and one writer.
  */
 type SummaryProps = {
   pet: PetProfile;
@@ -114,7 +114,6 @@ type SummaryProps = {
   feedClassName?: string;
   care?: PetCare;
   feed?: QuickFeedController;
-  feedHintId?: string;
   /** Medication chips shown before "+N" (the card is compact; the detail page shows more). */
   maxMedicationChips?: number;
   /** The seven-day strip (PE-25). */
@@ -132,9 +131,9 @@ function OwnCareSummary(props: SummaryProps) {
   return <CareSummaryView {...props} care={care} />;
 }
 
-function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedicationChips = 2, showWeek, onSetMealTimes }: SummaryProps & { care: PetCare }) {
+function CareSummaryView({ pet, feedClassName, care, feed, maxMedicationChips = 2, showWeek, onSetMealTimes }: SummaryProps & { care: PetCare }) {
   const { now, timeZone, feedings, medications, plan, meal, status, dues, food, known } = care;
-  // The Feed button is described by the fed status it acts on (PE-20b), then the hold hint.
+  // The Feed button is described by the fed status it acts on (PE-20b).
   const statusId = useId();
   const router = useRouter();
   // A course chip opens Give dose here (PE-24b); a legacy chip opens the Medication tab, where it is confirmed.
@@ -209,7 +208,7 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           pet={pet}
           logs={feedings.loading || feedings.error ? null : feedings.logs}
           controller={feed}
-          describedBy={feedings.loading ? feedHintId : [statusId, feedHintId].filter(Boolean).join(' ')}
+          describedBy={feedings.loading ? undefined : statusId}
           variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
           className="w-full"
         />

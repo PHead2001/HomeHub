@@ -19,7 +19,8 @@ export function chipDueDate(due: Pick<MedicationDue, 'due'>): string {
   return due.due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-const interactive = 'relative z-10 text-left coarse:min-h-12 [@media(hover:hover)_and_(pointer:fine)]:hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+// A tappable chip's own box is the target size (44 px, 48 px on touch screens, D-2), not just its hit-slop.
+const interactive = 'relative z-10 min-h-[var(--target-min)] text-left [@media(hover:hover)_and_(pointer:fine)]:hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 /**
  * Countdown chip for one medication's next dose; amber when due, red when
@@ -104,7 +105,7 @@ export function MedicationChips({ dues, max = 2, className, onSelect, hrefFor }:
         <li>
           <button
             type="button"
-            className={cn('inline-flex items-center rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs font-medium text-muted-foreground coarse:text-sm', interactive)}
+            className={cn('inline-flex min-w-[var(--target-min)] items-center justify-center rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs font-medium text-muted-foreground coarse:text-sm', interactive)}
             title={rest.map((due) => `${due.medication}: ${due.label}`).join('\n')}
             aria-expanded={false}
             data-testid="medication-chips-more"
