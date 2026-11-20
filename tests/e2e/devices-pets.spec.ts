@@ -233,7 +233,7 @@ test('Give dose from the medication chip, credited to the chosen person; Undo re
 test("a reminder's ?dose= link opens Give dose for that course on the tablet", async ({}, testInfo) => {
   desktopOnly(testInfo);
   const page = tabletPage();
-  await page.goto('/pets/meds?tab=medication&dose=course-e2e');
+  await page.goto('/pets/tab-meds?tab=medication&dose=course-e2e');
   await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
   await page.keyboard.press('Escape');
