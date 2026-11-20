@@ -27,7 +27,6 @@ import {
   validateWeightDraft,
   weightHistory,
   weightIn,
-  weightTrend,
   type WeightDraft,
   type WeightDraftErrors,
   type WeightEntry,
@@ -35,12 +34,12 @@ import {
 import { LoggedBy } from './logged-by';
 import { LoadMoreHistory } from './load-more';
 import { useHistoryWindow } from './pet-log-api';
-import { createWeight, deleteWeight, usePetWeights } from './records-api';
+import { createWeight, deleteWeight, usePetWeights, useWeightTrend } from './records-api';
 import { useNow } from './use-now';
 
 const SPARK_W = 120;
 const SPARK_H = 32;
-/** The trend reads the newest weighings; history pages start here and grow by the same step. */
+/** History pages start here and grow by the same step (the trend has its own window, `useWeightTrend`). */
 const WEIGHT_PAGE = 10;
 
 /** The effective time of a weighing: now for today, noon (household time) of an earlier household day. */
@@ -69,7 +68,9 @@ export function WeightCard({ pet }: { pet: PetProfile }) {
   const history = useHistoryWindow(pet.id, WEIGHT_PAGE);
   const weights = usePetWeights(householdId, pet.id, history.max);
   const entries = weightHistory(weights.items);
-  const trend = weights.loading || weights.error ? null : weightTrend(weights.items, unit, { timeZone });
+  // The trend reads its own bounded window, never the paged history (Load more never changes it).
+  const trendState = useWeightTrend(householdId, pet.id, unit, timeZone);
+  const trend = trendState.trend;
   const canAdd = mayPet('pets.weight.add', permissions);
   const actor = { uid: currentUser?.uid, permissions };
 
@@ -198,11 +199,14 @@ export function WeightCard({ pet }: { pet: PetProfile }) {
             </form>
           )}
 
-          {weights.loading && <Skeleton className="h-16 w-full" />}
+          {trendState.loading && <Skeleton className="h-16 w-full" />}
+          {!trendState.loading && trendState.error ? (
+            <p className="text-muted-foreground">{unavailableText('Weight trend', trendState.failure ?? 'retrying')}</p>
+          ) : null}
           {!weights.loading && weights.error ? (
             <p className="text-muted-foreground">{unavailableText('Weight history', weights.failure ?? 'retrying')}</p>
           ) : null}
-          {!weights.loading && !weights.error && !trend && <p className="text-muted-foreground">No weight logged yet.</p>}
+          {!trendState.loading && !trendState.error && !trend && !weights.loading && !weights.error && entries.length === 0 && <p className="text-muted-foreground">No weight logged yet.</p>}
           {trend && (
             <div className="flex items-center justify-between gap-3" data-testid="weight-trend">
               <div className="min-w-0">
