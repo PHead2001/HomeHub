@@ -29,7 +29,9 @@ import {
   type CourseFormValues,
   type CourseView,
 } from '@/lib/pets/medication-course';
-import { behaviourEntries, pinnedNotes, readNote, NOTE_TAGS, NOTE_TAG_LABELS, type NoteTag, type PetNote } from '@/lib/pets/notes';
+import { behaviourEntries, pinnedNotes, pinRefusal, readNote, NOTE_TAGS, NOTE_TAG_LABELS, PINNED_NOTES_MAX, type NoteTag, type PetNote } from '@/lib/pets/notes';
+import { householdDateLabel } from '@/lib/pets/care';
+import { toast } from '@/hooks/use-toast';
 import { formatWeight, petWeightUnit, readWeight, weightHistory, WEIGHT_UNITS, type WeightUnit } from '@/lib/pets/weights';
 import { draftFromPlan, newMealSlotId, readMealPlan, validateMealDraft, type MealSlotDraft } from '@/lib/pets/meal-plan';
 import { householdToday } from '@/lib/household-zone';
@@ -52,8 +54,8 @@ const primary = 'inline-flex min-h-12 items-center justify-center rounded-lg bg-
 const field = 'min-h-12 text-base';
 
 /** One live collection or document under the pet, through the tablet's listener (null: loading; 'failed': unreadable). */
-function usePetLive<T>(householdId: string, path: string[], build: 'collection' | 'doc', read: (snapshot: QuerySnapshot | DocumentSnapshot) => T, order?: { field: string; max: number }) {
-  const key = path.join('/');
+function usePetLive<T>(householdId: string, path: string[], build: 'collection' | 'doc', read: (snapshot: QuerySnapshot | DocumentSnapshot) => T, order?: { field: string; max: number }, equal?: { field: string; value: unknown; max: number }) {
+  const key = `${path.join('/')}${equal ? `?${equal.field}=${String(equal.value)}` : ''}`;
   const [state, setState] = useState<{ key: string; value: T | null; failed: boolean } | null>(null);
   useEffect(() => {
     let stop: (() => void) | null = null;
@@ -64,7 +66,8 @@ function usePetLive<T>(householdId: string, path: string[], build: 'collection' 
       const { onSnapshot } = fs;
       const docRef = build === 'doc' ? fs.doc(db, ...segments) : null;
       const listRef = build === 'doc' ? null : fs.collection(db, ...segments);
-      const queryRef = listRef && order ? fs.query(listRef, fs.orderBy(order.field, 'desc'), fs.limit(order.max)) : listRef;
+      const queryRef = listRef && equal ? fs.query(listRef, fs.where(equal.field, '==', equal.value), fs.limit(equal.max))
+        : listRef && order ? fs.query(listRef, fs.orderBy(order.field, 'desc'), fs.limit(order.max)) : listRef;
       const subscribe: Parameters<typeof tabletListener<QuerySnapshot | DocumentSnapshot>>[0] = docRef
         ? (next, error) => onSnapshot(docRef, { includeMetadataChanges: true }, next, error)
         : (next, error) => onSnapshot(queryRef!, { includeMetadataChanges: true }, next, error);
@@ -261,6 +264,8 @@ function CourseForm({ petId, course, activeNames, onDone }: { petId: string; cou
 function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: string; timeZone: string }) {
   const { householdId, runAction } = useTablet();
   const live = usePetLive(householdId, ['pets', petId, 'notes'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readNote(entry.id, entry.data)), { field: 'date', max: 40 });
+  // Every pinned note (the shared cap, P5's `pinRefusal`, counts them all, not the newest 40 entries).
+  const pinnedLive = usePetLive(householdId, ['pets', petId, 'notes'], 'collection', (snapshot) => docsOf(snapshot).map((entry) => readNote(entry.id, entry.data)), undefined, { field: 'pinned', value: true, max: PINNED_NOTES_MAX * 2 });
   const [text, setText] = useState('');
   const [tag, setTag] = useState<NoteTag | ''>('');
   const [editing, setEditing] = useState<{ note: PetNote; text: string } | null>(null);
@@ -277,7 +282,15 @@ function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: stri
       setSaving(false);
     }
   };
-  const pin = (note: PetNote) => runAction({ capability: note.pinned ? 'pets.note.unpin' : 'pets.note.pin', label: note.pinned ? 'Note unpinned' : 'Note pinned', intent: { petId, noteId: note.id } });
+  const pin = (note: PetNote) => {
+    // The same cap as a phone (the server checks it again): nothing is asked of anyone past it.
+    const refusal = note.pinned ? null : pinRefusal(pinnedLive?.value ? pinnedLive.value.length : null);
+    if (refusal) {
+      toast({ variant: 'destructive', description: refusal });
+      return;
+    }
+    return runAction({ capability: note.pinned ? 'pets.note.unpin' : 'pets.note.pin', label: note.pinned ? 'Note unpinned' : 'Note pinned', intent: { petId, noteId: note.id } });
+  };
   const remove = (note: PetNote) => runAction({ capability: 'pets.note.delete', label: 'Note removed', intent: { petId, noteId: note.id } });
   const saveEdit = async () => {
     if (!editing || !editing.text.trim()) return;
@@ -294,7 +307,7 @@ function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: stri
       ) : (
         <>
           <p className="text-base">{note.text}</p>
-          <p className="text-sm text-muted-foreground">{[note.tag ? NOTE_TAG_LABELS[note.tag] : null, when(note.date, timeZone), note.loggedByName ? `by ${note.loggedByName}` : null].filter(Boolean).join(' · ')}</p>
+          <p className="text-sm text-muted-foreground">{[note.tag ? NOTE_TAG_LABELS[note.tag] : null, note.date ? householdDateLabel(note.date, timeZone) : null, note.loggedByName ? `by ${note.loggedByName}` : null].filter(Boolean).join(' · ')}</p>
           <span className="flex flex-wrap gap-2">
             <button type="button" className={button} onClick={() => void pin(note)}>{note.pinned ? 'Unpin' : 'Pin'}</button>
             <button type="button" className={button} onClick={() => setEditing({ note, text: note.text })}>Edit</button>
@@ -355,7 +368,7 @@ function WeightPanel({ petId, petName, timeZone }: { petId: string; petName: str
         <ul className="space-y-2">
           {entries.map((entry) => (
             <li key={entry.id} className="flex items-center justify-between gap-2 rounded-xl border border-border p-3">
-              <span className="text-base">{formatWeight(entry.value, entry.unit)} <span className="text-sm text-muted-foreground">· {when(entry.date, timeZone)}{entry.loggedByName ? ` · by ${entry.loggedByName}` : ''}</span></span>
+              <span className="text-base">{formatWeight(entry.value, entry.unit)} <span className="text-sm text-muted-foreground">· {entry.date ? householdDateLabel(entry.date, timeZone) : 'Unknown date'}{entry.loggedByName ? ` · by ${entry.loggedByName}` : ''}</span></span>
               <button type="button" className={button} onClick={() => void runAction({ capability: 'pets.log.delete', label: 'Weighing removed', intent: { petId, kind: 'weights', logId: entry.id } })}>Delete</button>
             </li>
           ))}

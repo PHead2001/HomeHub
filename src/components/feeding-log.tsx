@@ -239,8 +239,9 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
                       </FormItem>
                     )}
                   />
-                  <div className="grid grid-cols-3 items-end gap-2">
-                    <div className="col-span-2">
+                  {/* The time and AM/PM share a row only when both fit: on a phone the bordered 48 px options wrap to their own row (PE-14e). */}
+                  <div className="flex flex-wrap items-end gap-2" data-testid="feeding-time-row">
+                    <div className="min-w-[8rem] flex-1">
                       <FormField
                         control={form.control}
                         name="time"
@@ -259,7 +260,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
                       control={form.control}
                       name="ampm"
                       render={({ field }) => (
-                        <FormItem>
+                        <FormItem className="shrink-0">
                           <FormControl>
                             <RadioGroup onValueChange={field.onChange} value={field.value} className="flex items-center gap-2" aria-label="AM or PM">
                               {/* PE-14e: each option's label is its 48 px (44 px) target; the radio adds no overlapping slop. */}

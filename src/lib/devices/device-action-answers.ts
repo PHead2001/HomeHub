@@ -4,6 +4,7 @@
 import type { DeviceCapability, DeviceRefusal } from './action-policy';
 import type { SendResult } from './offline-queue';
 import { publicDisplayName } from '@/lib/member-directory';
+import { PINNED_NOTES_MAX } from '@/lib/pets/notes';
 
 /** Each action capability and the capability that undoes it (only these offer Undo). */
 export const UNDO_CAPABILITY_OF: Partial<Record<DeviceCapability, DeviceCapability>> = {
@@ -97,6 +98,8 @@ export const PET_PIN_REFUSAL_COPY: Record<string, string> = {
   'not-active': 'That course was finished meanwhile.',
   invalid: 'Check the form and try again.',
   'duplicate-name': 'Another pet already has that name.',
+  // The shared pinned-note cap (P5's pinRefusal).
+  'pin-limit': `Up to ${PINNED_NOTES_MAX} pinned notes. Unpin or remove one first.`,
   future: 'Pick a time that has already passed.',
   unchanged: 'That is already the time.',
 };
@@ -179,6 +182,8 @@ export function choreAnswerMeaning(capability: DeviceCapability, data: unknown, 
   }
   if (PET_PIN_CAPABILITIES.has(capability)) {
     if (value.status === 'saved' || value.status === 'deleted') return { undoable: false, message: `${label}.` };
+    // A pet delete that stopped after the pet left every list: the hourly upkeep finishes it.
+    if (value.status === 'finishing') return { undoable: false, message: `${label}. Its history is still being cleared.` };
     if (value.status === 'already') return { undoable: false, notice: true, message: 'Nothing to change.' };
     return { undoable: false, notice: true, message: PET_PIN_REFUSAL_COPY[str(value.reason)] ?? "Couldn't save. Try again." };
   }

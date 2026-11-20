@@ -26,6 +26,7 @@ import {
 } from '../../src/lib/server/device-pets';
 import { giveDoseFromTabletAction } from '../../src/app/pets/device-actions';
 import { createDeviceRepairCode, redeemDeviceCode } from '../../src/lib/server/device-management';
+import { resumePetDeletions } from '../../src/lib/server/pet-delete';
 import { setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { UNDO_PROVEN } from '../../src/lib/devices/action-policy';
 import { runGiveDose, runUndoDose } from '../../src/lib/pets/medication-transaction';
@@ -1148,5 +1149,35 @@ describe('P3 rounds 5-7 on the tablet: dose revision, the confirm binding, the o
     assert.equal((await course('edit-conflict').get()).get('dosage'), 'Half a tablet');
     const ok = await saveCourseFromTablet({ ...pinBase(tablets.line, member.uid, memberPin), petId: 'edit-conflict', courseId: 'course-a', create: false, values, base: { ...opened, dosage: 'Half a tablet' } });
     assert.equal(ok.status, 'saved');
+  });
+});
+
+describe('P5 final on the tablet: the pinned-note cap and the shared pet-delete cascade', () => {
+  test('pinning a note past the shared cap (PINNED_NOTES_MAX) is refused at PIN level, as on a phone', async () => {
+    await seedPet('pin-cap');
+    for (let index = 0; index < 12; index += 1) {
+      await notes('pin-cap').doc(`pinned-${index}`).set({ text: `Fact ${index}`, pinned: true, pinnedAt: Timestamp.now(), date: Timestamp.now(), loggedAt: Timestamp.now(), loggedByUid: owner.uid, loggedByName: 'Olive' });
+    }
+    const note = opId();
+    await addNote(tablets.pin2, owner.uid, note, 'pin-cap');
+    const ownerPin = await pinOf(tablets.line, owner);
+    const answer = await setNotePinnedFromTablet({ ...pinBase(tablets.line, owner.uid, ownerPin), petId: 'pin-cap', noteId: note, pinned: true });
+    assert.deepEqual(answer, { status: 'refused', reason: 'pin-limit' });
+    assert.equal((await notes('pin-cap').doc(note).get()).get('pinned'), false);
+    // Unpinning one makes room.
+    await notes('pin-cap').doc('pinned-0').update({ pinned: false });
+    assert.equal((await setNotePinnedFromTablet({ ...pinBase(tablets.line, owner.uid, ownerPin), petId: 'pin-cap', noteId: note, pinned: true })).status, 'saved');
+  });
+
+  test("a tablet-started delete that stopped after its barrier is finished by the hourly upkeep's resume", async () => {
+    await seedPet('resume-pet');
+    await notes('resume-pet').doc('left').set({ text: 'Left behind', pinned: false, date: Timestamp.now(), loggedAt: Timestamp.now(), loggedByUid: KID });
+    // What a tablet delete leaves when it stops after step 1: the pet gone, its tombstone (by the kid) and its histories.
+    await house(H).collection('pet-deletions').doc('resume-pet').set({ petId: 'resume-pet', name: 'Pet resume-pet', photoUrl: null, byUid: KID, startedAt: later(-20 * 60_000).toISOString() });
+    await pet('resume-pet').delete();
+    const sweep = await resumePetDeletions(adminDb, null, new Date(), (d) => Timestamp.fromDate(d));
+    assert.ok(sweep.resumed >= 1);
+    assert.equal((await notes('resume-pet').doc('left').get()).exists, false);
+    assert.equal((await house(H).collection('pet-deletions').doc('resume-pet').get()).exists, false);
   });
 });

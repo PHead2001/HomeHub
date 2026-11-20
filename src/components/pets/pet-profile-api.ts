@@ -95,7 +95,7 @@ export async function updatePet(
 }
 
 /** Deletes a pet and everything that belongs to it, on the server (D-P12). */
-export async function deletePet(householdId: string, petId: string): Promise<'deleted' | 'already'> {
+export async function deletePet(householdId: string, petId: string): Promise<'deleted' | 'already' | 'finishing'> {
   const result = await deletePetAction({ ...(await getAiActionContext(householdId)), petId });
   if (!result.ok) throw new Error(result.message);
   return result.status;

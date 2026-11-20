@@ -116,6 +116,28 @@ export function boardGrid(count: number): { columns: number; rows: number; scrol
   return { columns: 3, rows: Math.ceil(count / 3), scroll: true };
 }
 
+/**
+ * The smallest board row that still shows a card's band, its status (two lines
+ * of the 24 px line, with a little room for its detail line) and Feed (PE-9e): below it the board keeps this height and
+ * scrolls inside itself instead of squeezing the status out of the card.
+ */
+export const BOARD_ROW_MIN = 216;
+
+/**
+ * The board's rows for a measured height: they share the height while each row
+ * is at least `BOARD_ROW_MIN`; past six pets, or when the space above the board
+ * (the attention strip, the hold caption) leaves less, rows keep their height
+ * (the six-up height, never under the minimum) and the board scrolls inside
+ * itself. The page never scrolls (PE-9e, D-P14).
+ */
+export function boardRowPlan(count: number, height: number | null, gap = 16): { columns: number; rows: number; scroll: boolean; rowHeight: number | null } {
+  const grid = boardGrid(count);
+  if (height === null) return { ...grid, rowHeight: null };
+  if (grid.scroll) return { ...grid, rowHeight: Math.max(BOARD_ROW_MIN, Math.floor((height - gap) / 2)) };
+  const fit = Math.floor((height - gap * (grid.rows - 1)) / grid.rows);
+  return fit < BOARD_ROW_MIN ? { ...grid, scroll: true, rowHeight: BOARD_ROW_MIN } : { ...grid, rowHeight: null };
+}
+
 /* ------------------------------------------------------------------------- */
 /* Hold caption (PE-12a, D-P17)                                               */
 /* ------------------------------------------------------------------------- */

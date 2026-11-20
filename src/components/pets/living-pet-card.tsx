@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { flushSync } from 'react-dom';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { AlertTriangle, Check, ChevronRight, Clock, Edit, HelpCircle, Minus, MoreVertical, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -24,7 +25,8 @@ import { PinnedNoteLine } from './pinned-note-line';
 import { PetCareSummary, petAttention, usePetCare, type PetCare } from './pet-care-summary';
 import { mealHeadline } from '@/lib/pets/meal-plan';
 import { MedicationChips } from './medication-chip';
-import { SetMealTimesButton } from './meal-status';
+import { MealSlotList, mealStateOf, SetMealTimesButton } from './meal-status';
+import { GiveDoseDialog } from './give-dose-dialog';
 import { PetPhoto } from './pet-photo';
 import { HoldToFeedOverlay, useHoldToFeed } from './hold-to-feed';
 import { QuickFeedButton, useQuickFeed } from './quick-feed-button';
@@ -279,15 +281,19 @@ function StatusBand({ status, children }: { status: BoardStatus; children?: Reac
   );
 }
 
-/** Feed (and Set meal times for a legacy pet), on the board and the phone rows. */
-function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, compact }: {
-  pet: PetProfile; model: CardModel; statusId: string; hintId: string; canEdit: boolean; onEdit: (pet: PetProfile) => void; className?: string; compact?: boolean;
+/**
+ * Feed (and Set meal times for a legacy pet), on the board and the phone rows.
+ * `inline` (the board) puts the two side by side, so a legacy pet's card spends
+ * one 48 px row on its controls and the status above keeps its space (PE-9e).
+ */
+function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, compact, inline }: {
+  pet: PetProfile; model: CardModel; statusId: string; hintId: string; canEdit: boolean; onEdit: (pet: PetProfile) => void; className?: string; compact?: boolean; inline?: boolean;
 }) {
   const { care, feed } = model;
   const { meal, status } = care;
   return (
-    <div className={cn('flex flex-col gap-2', className)}>
-      {!compact && meal?.kind === 'legacy' && canEdit && <SetMealTimesButton petName={pet.name} onClick={() => onEdit(pet)} />}
+    <div className={cn('flex gap-2', inline ? 'flex-row items-stretch' : 'flex-col', className)} data-testid="pet-feed-area">
+      {!compact && meal?.kind === 'legacy' && canEdit && <SetMealTimesButton petName={pet.name} onClick={() => onEdit(pet)} className={inline ? 'min-w-0 flex-1' : undefined} />}
       <QuickFeedButton
         petId={pet.id}
         petName={pet.name}
@@ -299,24 +305,42 @@ function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, co
         controller={feed}
         describedBy={care.feedings.loading ? (model.holdEnabled ? hintId : undefined) : [statusId, model.holdEnabled ? hintId : null].filter(Boolean).join(' ')}
         variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
-        className="w-full"
+        className={inline ? 'min-w-0 flex-1' : 'w-full'}
         compact={compact}
       />
     </div>
   );
 }
 
-/** Medication chips on the board and rows: a chip opens Give dose through the pet page's Medication tab. */
-function LinkedChips({ pet, care, max = 2 }: { pet: PetProfile; care: PetCare; max?: number }) {
+/**
+ * Medication chips on the board and rows, as on the grid card (PE-24b): a
+ * course's chip is a button that opens Give dose right here, a legacy chip opens
+ * the pet's Medication tab, where its schedule is confirmed.
+ */
+function CardChips({ pet, care, max = 2 }: { pet: PetProfile; care: PetCare; max?: number }) {
+  const router = useRouter();
+  const [givingId, setGivingId] = React.useState<string | null>(null);
+  const giving = givingId ? care.medications.courses.find((course) => course.id === givingId && course.status === 'active') ?? null : null;
   if (care.medications.error || care.dues.length === 0) return null;
   return (
-    <MedicationChips
-      dues={care.dues}
-      max={max}
-      className="self-start"
-      hrefFor={(due) => `/pets/${encodeURIComponent(pet.id)}?tab=medication${due.courseId ? `&dose=${encodeURIComponent(due.courseId)}` : ''}`}
-    />
+    <>
+      <MedicationChips
+        dues={care.dues}
+        max={max}
+        className="self-start"
+        onSelect={(due) => {
+          if (due.courseId) setGivingId(due.courseId);
+          else router.push(`/pets/${encodeURIComponent(pet.id)}?tab=medication`);
+        }}
+      />
+      <GiveDoseDialog petId={pet.id} petName={pet.name} course={giving} onOpenChange={(open) => { if (!open) setGivingId(null); }} />
+    </>
   );
+}
+
+/** The slot status of a pet with confirmed meal times, once its feedings have loaded (never claimed while loading or failed). */
+function loadedSlots(care: PetCare) {
+  return care.meal?.kind === 'slots' && !care.feedings.loading && !care.feedings.error ? care.meal : null;
 }
 
 /**
@@ -325,12 +349,16 @@ function LinkedChips({ pet, care, max = 2 }: { pet: PetProfile; care: PetCare; m
  * pet without confirmed meal times), then the feeding status as the card's
  * biggest text (24 px), an 80 px avatar (160 px when one or two pets share the
  * screen), the name with a details chevron, medication chips, the pinned note
- * and Feed.
+ * and Feed. The status comes first in the text column, so it is the last thing a
+ * short card gives up; the column scrolls inside the card (never the page), so
+ * the chips and the note stay reachable on a six-pet board at 1263 x 722 even
+ * with a legacy pet's Set meal times beside Feed.
  */
 function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, index = 0, roomy, model, photoRef }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
   const statusId = `pet-status-${pet.id}`;
   const hintId = `feed-hint-${pet.id}`;
   const { attention, board, care } = model;
+  const slots = loadedSlots(care);
   return (
     <Card
       className="glow-card relative flex h-full min-h-0 flex-col overflow-hidden select-none [touch-action:manipulation]"
@@ -341,7 +369,7 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
       <StatusBand status={board}>
         {canEdit && <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} className="h-8 w-8 bg-background/90 text-foreground" />}
       </StatusBand>
-      <div className="flex min-h-0 flex-1 gap-4 overflow-hidden p-4">
+      <div className="flex min-h-0 flex-1 gap-4 overflow-y-auto overscroll-contain p-4" data-testid="pet-card-body">
         <HoldPhoto
           pet={pet}
           model={model}
@@ -352,23 +380,25 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
           index={index}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex min-w-0 items-start gap-1">
-            <NameLink pet={pet} model={model} className="text-lg" />
-            <DetailsLink pet={pet} model={model} />
-          </div>
-          <div id={statusId} className="min-w-0">
-            <p className="break-words text-2xl font-bold leading-tight text-foreground [overflow-wrap:anywhere]" data-testid="pet-status-line">{board.line}</p>
+          {/* With meal times the block is the card's slot status (P2's `meal-slots-status`, `data-meal-state`, one line per meal). */}
+          <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
+            <p className="break-words text-2xl font-bold leading-tight text-foreground [overflow-wrap:anywhere]" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>{board.line}</p>
             {board.detail && <p className="mt-0.5 text-sm text-muted-foreground">{board.detail}</p>}
             {/* PE-10b (D-P18): a neutral hint from the parsed schedule, never a "due" claim. */}
             {care.meal?.kind === 'legacy' && care.meal.nextMealHint && <p className="text-sm text-muted-foreground" data-testid="next-meal-hint">{care.meal.nextMealHint}</p>}
             {board.medication && <p className="mt-0.5 text-sm font-medium text-destructive">{board.medication}</p>}
+            {slots && <MealSlotList status={slots} timeZone={care.timeZone} className="mt-1 text-sm" />}
           </div>
-          <LinkedChips pet={pet} care={care} />
+          <div className="flex min-w-0 items-start gap-1">
+            <NameLink pet={pet} model={model} className="text-lg" />
+            <DetailsLink pet={pet} model={model} />
+          </div>
+          <CardChips pet={pet} care={care} />
           <PinnedNoteLine householdId={householdId} petId={pet.id} className="text-sm" />
         </div>
       </div>
       {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={canEdit} onEdit={onEdit} className="relative z-10 mt-auto px-4 pb-4" />
+      <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={canEdit} onEdit={onEdit} className="relative z-10 mt-auto shrink-0 px-4 pb-4" inline />
     </Card>
   );
 }
@@ -381,7 +411,8 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
 function RowCard({ pet, model, photoRef, priority, index = 0 }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
   const statusId = `pet-status-${pet.id}`;
   const hintId = `feed-hint-${pet.id}`;
-  const { board, attention } = model;
+  const { board, attention, care } = model;
+  const slots = loadedSlots(care);
   return (
     <Card
       className={cn('glow-card relative flex items-center gap-3 overflow-hidden p-3 select-none [touch-action:manipulation]', attention && (attention.medication ? 'ring-2 ring-destructive/60' : 'ring-2 ring-warning/80'))}
@@ -395,12 +426,13 @@ function RowCard({ pet, model, photoRef, priority, index = 0 }: LivingPetCardPro
           <NameLink pet={pet} model={model} className="text-base" />
           <DetailsLink pet={pet} model={model} />
         </div>
-        <div id={statusId} className="min-w-0">
-          <p className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground" data-testid="pet-status-line">
+        <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
+          <p className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
             <span className={cn('inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
             <span className="min-w-0 truncate">{board.line}</span>
           </p>
           {board.medication && <p className="truncate text-xs font-medium text-destructive">{board.medication}</p>}
+          {slots && <MealSlotList status={slots} timeZone={care.timeZone} inline className="mt-0.5" />}
         </div>
       </div>
       {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}

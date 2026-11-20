@@ -39,7 +39,7 @@ import {
   type DoseRefusal,
   type Occurrence,
 } from '@/lib/pets/medication-course';
-import { noteCreateFields, noteDate, recordDocId, validateNoteDraft, NOTE_TAGS, type NoteTag } from '@/lib/pets/notes';
+import { noteCreateFields, noteDate, pinRefusal, recordDocId, validateNoteDraft, NOTE_TAGS, type NoteTag } from '@/lib/pets/notes';
 import { validateWeightDraft, isWeightUnit, type WeightUnit } from '@/lib/pets/weights';
 import { mayDeleteNote, mayDeleteWeight, mayEditNote, AUTHOR_DELETE_WINDOW_MS, type ActorPermissions } from '@/lib/pets/pet-actions';
 import { mayMedication } from '@/lib/pets/medication-permissions';
@@ -612,6 +612,11 @@ export function setNotePinnedAs(db: Firestore, householdId: string, input: { pet
     // The author with pets.addLogs, or pets.editProfiles (the rules' petNoteUpdate, D-P11).
     if (!mayEditNote(authored(snap), actor)) throw new DeviceActionError('forbidden');
     if (!input.pinned && snap.get('pinned') !== true) return { targetPath: ref.path, result: { status: 'already', petId: pet.id } };
+    // The shared cap on pinned notes (P5's `pinRefusal`): pinning another note past it is refused, as on a phone.
+    if (input.pinned && snap.get('pinned') !== true) {
+      const pinnedNow = await tx.get(pet.collection('notes').where('pinned', '==', true));
+      if (pinRefusal(pinnedNow.size)) return refused('pin-limit');
+    }
     return {
       targetPath: ref.path,
       result: { status: 'saved', petId: pet.id },

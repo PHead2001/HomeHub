@@ -212,3 +212,26 @@ describe('F4b-2 review: the 12-hour line, retries and the request shape', () => 
     assert.match(records, /tx\.update\(write\.course\.ref, \{ doseRevision: nextDoseRevision\(write\.course\.data\)/);
   });
 });
+
+describe('P5 final on the tablet: the pinned-note cap, household dates, the shared cascade', () => {
+  it('the tablet sheet uses the shared pin cap and household dates; the server answers pin-limit', () => {
+    const sheet = read('src/components/devices/tablet-pet-sheet.tsx');
+    assert.match(sheet, /pinRefusal\(pinnedLive\?\.value \? pinnedLive\.value\.length : null\)/);
+    assert.match(sheet, /householdDateLabel\(note\.date, timeZone\)/);
+    assert.match(sheet, /householdDateLabel\(entry\.date, timeZone\)/);
+    assert.match(read('src/lib/server/pet-records.ts'), /if \(pinRefusal\(pinnedNow\.size\)\) return refused\('pin-limit'\);/);
+    assert.equal(choreAnswerMeaning('pets.note.pin', { status: 'refused', reason: 'pin-limit' }, 'x').message, 'Up to 12 pinned notes. Unpin or remove one first.');
+  });
+
+  it('a pet delete from a tablet runs the one shared cascade (functions/src/shared/pet-delete.ts) and may answer finishing', () => {
+    const shared = read('functions/src/shared/pet-delete.ts');
+    assert.match(shared, /const replay = hooks\.device \?\s*Boolean\(\(await hooks\.device\.precheck\(tx\)\)\.replay\) : false;/);
+    assert.match(shared, /hooks\.device\?\.finalize\(tx, true, name\);/);
+    assert.match(shared, /if \(input\.resumeOnly \|\| replay\) \{/);
+    assert.match(shared, /via: "device",/);
+    assert.doesNotMatch(read('src/lib/server/pet-delete.ts'), /runTransaction/, 'the web wrapper does not fork the cascade');
+    assert.match(read('src/lib/server/device-pets.ts'), /return \{ status: 'finishing', petId \};/);
+    assert.equal(choreAnswerMeaning('pets.pet.delete', { status: 'finishing', petId: 'p' }, 'Maple deleted').undoable, false);
+    assert.match(choreAnswerMeaning('pets.pet.delete', { status: 'finishing', petId: 'p' }, 'Maple deleted').message, /still being cleared/);
+  });
+});

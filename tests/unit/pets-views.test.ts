@@ -12,10 +12,12 @@ import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   BOARD_FIT,
+  BOARD_ROW_MIN,
   BOARD_QUERY,
   HOLD_CAPTION_KEY,
   ROWS_QUERY,
   boardGrid,
+  boardRowPlan,
   boardStatus,
   petsLayoutFor,
   showHoldCaption,
@@ -230,6 +232,37 @@ describe('the household care store (PE-21a)', () => {
 });
 
 describe('chips, phone header, pet page order, form targets (PE-16, PE-13b/c, PE-14e)', () => {
+  it('keeps board rows at least BOARD_ROW_MIN tall, scrolling inside the board when the space above leaves less (PE-9e)', () => {
+    assert.equal(BOARD_ROW_MIN, 216);
+    // Unmeasured: the plain grid.
+    assert.deepEqual(boardRowPlan(6, null), { columns: 3, rows: 2, scroll: false, rowHeight: null });
+    // Room for two rows of 216: they share the height, no inner scroll.
+    assert.deepEqual(boardRowPlan(6, 448), { columns: 3, rows: 2, scroll: false, rowHeight: null });
+    // Less (the strip and the caption above at 1263 x 722): rows keep 216 px and the board scrolls.
+    assert.deepEqual(boardRowPlan(6, 447), { columns: 3, rows: 2, scroll: true, rowHeight: 216 });
+    assert.deepEqual(boardRowPlan(3, 215), { columns: 3, rows: 1, scroll: true, rowHeight: 216 });
+    assert.deepEqual(boardRowPlan(3, 216), { columns: 3, rows: 1, scroll: false, rowHeight: null });
+    // Past six: the six-up row height, never under the minimum.
+    assert.deepEqual(boardRowPlan(7, 616), { columns: 3, rows: 3, scroll: true, rowHeight: 300 });
+    assert.deepEqual(boardRowPlan(7, 300), { columns: 3, rows: 3, scroll: true, rowHeight: 216 });
+  });
+
+  it('keeps P2/P3 behaviour on the board and rows: Give dose from a course chip, the slot status, the attention strip (PE-24b, PE-22b, PE-26a)', () => {
+    const card = read('src/components/pets/living-pet-card.tsx');
+    // A course chip opens Give dose in place (a button, never a link to another page).
+    assert.match(card, /onSelect=\{\(due\) => \{\s*if \(due\.courseId\) setGivingId\(due\.courseId\);/);
+    assert.match(card, /<GiveDoseDialog petId=\{pet\.id\}/);
+    assert.doesNotMatch(card, /hrefFor=/);
+    // The board and the rows carry the slot status hooks and one line per meal.
+    assert.equal(card.match(/data-testid=\{slots \? 'meal-slots-status' : undefined\}/g)?.length, 2);
+    assert.equal(card.match(/data-meal-state=\{slots \? mealStateOf\(slots\) : undefined\}/g)?.length, 2);
+    assert.equal(card.match(/<MealSlotList /g)?.length, 2);
+    // The needs-attention strip is in every view.
+    const client = read('src/components/pets-client.tsx');
+    assert.match(client, /\n\s*<AttentionStrip pets=\{pets\} attention=\{attentionByPet\} compact=\{layout === 'board'\} \/>/);
+    assert.doesNotMatch(client, /layout !== 'board' && <AttentionStrip/);
+  });
+
   it('truncates only the name, shows the due date on touch and makes "+N" a button', () => {
     const chip = read('src/components/pets/medication-chip.tsx');
     assert.match(chip, /min-w-0 truncate font-semibold" data-testid="chip-name"/);

@@ -3,7 +3,7 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import { Timestamp, type DocumentReference } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '../../src/lib/server/firebase-admin';
 import { deletePetAction } from '../../src/app/pets/actions';
-import { deletePetCascade, PET_DELETE_PAGE_SIZE, type PetPhotoBucket } from '../../src/lib/server/pet-delete';
+import { deletePetCascade, PET_DELETE_PAGE_SIZE, PET_DELETE_RESUME_AFTER_MS, petDeletePending, resumePetDeletions, type PetPhotoBucket } from '../../src/lib/server/pet-delete';
 import { runHouseholdReminders } from '../../functions/src/reminders';
 
 // D-P12 / PE-21f / PE-30: deleting a pet on the server (`deletePetAction` →
@@ -199,6 +199,82 @@ describe('deletePetAction (D-P12)', () => {
     }, { afterBarrier: async () => { await rex.collection('care-logs').doc('late').set({ activity: 'Late walk' }); } });
     assert.equal(outcome.status, 'deleted');
     assert.equal(await leftUnder(rex), 0);
+  });
+});
+
+describe('an interrupted delete is finished by the hourly upkeep (Codex P2 on #186)', () => {
+  const START = new Date('2026-11-06T18:00:00Z');
+  const later = (ms: number) => new Date(START.getTime() + ms);
+  const ts = (d: Date) => Timestamp.fromDate(d);
+  const crash = (petId: string) => assert.rejects(deletePetCascade(adminDb, bucket() as unknown as PetPhotoBucket, {
+    householdId: HOUSE, petId, actor: { uid: CALLERS.owner.uid, name: 'Olive' }, now: START,
+  }, { afterBarrier: async () => { throw new Error('server stopped'); } }));
+
+  test('a tombstone nobody retried is resumed: histories, photos and reminders go, the tombstone last', async () => {
+    const rex = house.collection('pets').doc('rex');
+    await crash('rex');
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'rex'), true, 'the action reads this back and reports finishing');
+    assert.ok(await leftUnder(rex) > 0);
+    const sweep = await resumePetDeletions(adminDb, bucket() as unknown as PetPhotoBucket, later(PET_DELETE_RESUME_AFTER_MS + 60_000), ts);
+    assert.deepEqual(sweep, { found: 1, resumed: 1, skipped: 0, failed: 0 });
+    assert.equal(await leftUnder(rex), 0);
+    assert.deepEqual(await rex.listCollections(), []);
+    assert.equal(await stored(REX_OWN), false);
+    assert.equal(await stored(REX_OLD), false);
+    assert.equal(await stored(MAPLE_LEGACY), true, 'another pet untouched');
+    assert.ok((await house.collection('notifications').doc('rex-open').get()).get('resolvedAt'));
+    assert.equal((await house.collection('notifications').doc('maple-open').get()).get('resolvedAt'), undefined);
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'rex'), false);
+    assert.equal((await house.collection('auditLogs').get()).size, 1, 'the resume writes no second activity entry');
+    assert.equal(await leftUnder(house.collection('pets').doc('maple')), 9);
+    // Nothing left: the next hour finds nothing.
+    assert.deepEqual(await resumePetDeletions(adminDb, bucket() as unknown as PetPhotoBucket, later(2 * 3_600_000), ts), { found: 0, resumed: 0, skipped: 0, failed: 0 });
+  });
+
+  test('a young tombstone is left to its own run; a household being deleted is left to its own delete', async () => {
+    const rex = house.collection('pets').doc('rex');
+    await crash('rex');
+    const before = await leftUnder(rex);
+    assert.deepEqual(await resumePetDeletions(adminDb, bucket() as unknown as PetPhotoBucket, later(60_000), ts), { found: 1, resumed: 0, skipped: 1, failed: 0 });
+    assert.equal(await leftUnder(rex), before);
+    await house.update({ deletingAt: START.toISOString() });
+    assert.deepEqual(await resumePetDeletions(adminDb, bucket() as unknown as PetPhotoBucket, later(PET_DELETE_RESUME_AFTER_MS + 60_000), ts), { found: 1, resumed: 0, skipped: 1, failed: 0 });
+    assert.equal(await leftUnder(rex), before);
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'rex'), true);
+  });
+
+  test('a pet that exists again under the tombstone id is never deleted by upkeep; the stale tombstone goes', async () => {
+    const rex = house.collection('pets').doc('rex');
+    await crash('rex');
+    await rex.set({ name: 'Rex again', type: 'Dog' });
+    await rex.collection('notes').doc('new').set({ text: 'New note', pinned: false });
+    const sweep = await resumePetDeletions(adminDb, bucket() as unknown as PetPhotoBucket, later(PET_DELETE_RESUME_AFTER_MS + 60_000), ts);
+    assert.deepEqual(sweep, { found: 1, resumed: 1, skipped: 0, failed: 0 });
+    assert.equal((await rex.get()).exists, true);
+    assert.equal((await rex.collection('notes').doc('new').get()).exists, true);
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'rex'), false);
+    assert.equal((await house.collection('auditLogs').get()).size, 1);
+  });
+
+  test('one failing tombstone is counted and retried next hour; the others still finish', async () => {
+    await crash('rex');
+    await crash('maple');
+    const real = bucket();
+    const flaky = {
+      name: real.name,
+      getFiles: (options: { prefix: string }) => options.prefix.endsWith('/rex/') ? Promise.reject(new Error('storage down')) : real.getFiles(options),
+      file: (path: string) => real.file(path),
+    } as unknown as PetPhotoBucket;
+    const failed: string[] = [];
+    const sweep = await resumePetDeletions(adminDb, flaky, later(PET_DELETE_RESUME_AFTER_MS + 60_000), ts, (path) => failed.push(path));
+    assert.deepEqual(sweep, { found: 2, resumed: 1, skipped: 0, failed: 1 });
+    assert.deepEqual(failed, [`households/${HOUSE}/pet-deletions/rex`]);
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'maple'), false);
+    assert.equal(await stored(MAPLE_LEGACY), false);
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'rex'), true, 'kept for the next hour');
+    assert.deepEqual(await resumePetDeletions(adminDb, real as unknown as PetPhotoBucket, later(PET_DELETE_RESUME_AFTER_MS + 3_660_000), ts), { found: 1, resumed: 1, skipped: 0, failed: 0 });
+    assert.equal(await stored(REX_OWN), false);
+    assert.equal(await petDeletePending(adminDb, HOUSE, 'rex'), false);
   });
 });
 
