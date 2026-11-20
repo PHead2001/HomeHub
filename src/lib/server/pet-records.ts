@@ -259,6 +259,16 @@ const shownOf = (value: unknown, required: boolean): string | undefined => {
 };
 
 const DAY_MS = 86_400_000;
+/** How early a queued dose's occurrence may be given (an early dose, as Give dose offers). */
+const QUEUED_DOSE_EARLY_MS = 24 * 3_600_000;
+
+/** A course's last server change: its update or its finish (ms; 0 when neither is stored). */
+const courseChangedAt = (data: Record<string, unknown>): number => Math.max(
+  ...(['updatedAt', 'finishedAt'] as const).map((field) => {
+    const value = data[field] as { toMillis?: () => number } | undefined;
+    return typeof value?.toMillis === 'function' ? value.toMillis() : 0;
+  }),
+);
 
 /**
  * A queued dose's shown occurrence: a whole-ms instant before the rules' bound (92 days
@@ -339,13 +349,33 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
         return finalize({ status: 'saved', petId, courseId, logId, occurrence: null, nextAfter: null, offline: true, replayed: true });
       }
       if (!course) return { status: 'refused', reason: 'missing' };
-      // The occurrence Give dose showed, as shown: a schedule edited (or a course finished)
-      // while the tablet was offline never drops a dose that was given (Codex review of PR 190).
-      const shown = shownOccurrence(input.occurrenceAt, occurrenceKey, timeZone, now.getTime());
-      const occurrence = shown ?? (course.schedule ? occurrenceByKey({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, occurrenceKey, timeZone) : null);
-      if (!occurrence) return { status: 'refused', reason: course.schedule ? 'occurrence' : 'finished' };
       const at = givenAt ?? options.queuedAt;
       if (at.getTime() < now.getTime() - DOSE_BACKDATE_MAX_MS) return { status: 'refused', reason: 'too-old' };
+      // Edited (or finished) after the dose was queued: the course's last server write is later
+      // than the queue entry's createdAt (the device's clock, bounded by the gate). Only then
+      // may what Give dose showed differ from the course as it is now (security review S1, D1).
+      const changedAfterQueue = courseChangedAt(courseSnap.data() ?? {}) > options.queuedAt.getTime();
+      const shown = shownOccurrence(input.occurrenceAt, occurrenceKey, timeZone, now.getTime());
+      const scheduled = course.schedule ? occurrenceByKey({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, occurrenceKey, timeZone) : null;
+      let occurrence: Occurrence;
+      if (scheduled) {
+        // A key the schedule has is its own occurrence (inside the course's days): the shown
+        // instant may not shift it.
+        if (shown && shown.at !== scheduled.at) return { status: 'refused', reason: 'occurrence' };
+        occurrence = scheduled;
+      } else if (shown && changedAfterQueue) {
+        // The schedule (or its days) was edited, or the course finished, while the tablet was
+        // offline: the occurrence as shown, so a dose that was given is never dropped (Codex
+        // review of PR 190), even outside the course's days as they are now.
+        occurrence = shown;
+      } else {
+        return { status: 'refused', reason: course.schedule ? 'occurrence' : 'finished' };
+      }
+      // Within its own given time: at most 24 hours early, at most the backdating limit late, so
+      // a queued dose can never mark later occurrences covered (security review S1).
+      if (occurrence.at > at.getTime() + QUEUED_DOSE_EARLY_MS || occurrence.at < at.getTime() - DOSE_BACKDATE_MAX_MS) {
+        return { status: 'refused', reason: 'occurrence' };
+      }
       // An offline dose: the log alone (readers combine it with the course), as the personal offline path.
       writeDose(tx, { log: { ref: logRef, data: {
         courseId,
@@ -353,8 +383,8 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
         occurrenceAt: Timestamp.fromMillis(occurrence.at),
         date: Timestamp.fromDate(at),
         loggedAt: FieldValue.serverTimestamp(),
-        medication: shownMedication ?? course.name,
-        dosage: shownDosage ?? course.dosage,
+        medication: (changedAfterQueue ? shownMedication : undefined) ?? course.name,
+        dosage: (changedAfterQueue ? shownDosage : undefined) ?? course.dosage,
         notes,
         loggedByUid: actor.uid,
         loggedByName: byName,

@@ -33,6 +33,7 @@ import { runGiveDose, runUndoDose } from '../../src/lib/pets/medication-transact
 import { runSetNotePinned } from '../../src/lib/pets/record-transaction';
 import { doseChoices, doseConfirmOf, legacyCourseId, occurrenceId, readCourse } from '../../src/lib/pets/medication-course';
 import { householdDay } from '../../src/lib/pets/feed-decision';
+import { occurrenceByKey } from '../../functions/src/shared/medication-schedule';
 import { clientSession, deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, type Person } from './device-test-helpers';
 import { house, opId, pairTablet, seedKid, tokenGeneration, type Tablet } from './device-actor-helpers';
 
@@ -56,7 +57,7 @@ const member: Person = { uid: 'dr-member', email: 'dr.member@example.test', disp
 const child: Person = { uid: 'dr-child', email: 'dr.child@example.test', displayName: 'Cleo', role: 'child' };
 const KID = 'kid_DevPetsRecKid0000000';
 const created = new Set<string>();
-const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin', 'shown', 'moved'] as const;
+const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin', 'shown', 'moved', 'forge'] as const;
 const tablets = {} as Record<(typeof NAMES)[number], Tablet>;
 let ownerDb: ClientFirestore;
 let memberDb: ClientFirestore;
@@ -350,8 +351,8 @@ describe('pets.dose.give: generation, the queued path, "Already given?", levels 
   test('Codex #190: a queued dose records the medication and dosage Give dose showed, even after the course was edited', async () => {
     await seedDosePet('dose-shown');
     const key = await prefill('dose-shown');
-    // The course's dosage changes before the tablet reconnects.
-    await course('dose-shown').update({ dosage: '2 tablets', name: 'Apoquel XL' });
+    // The course's dosage changes before the tablet reconnects (an edit stamps updatedAt, as the rules require).
+    await course('dose-shown').update({ dosage: '2 tablets', name: 'Apoquel XL', updatedAt: Timestamp.now() });
     const op = opId();
     const sent = await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, op, 'dose-shown', key, { medication: 'Apoquel', dosage: '1 tablet' }), ...queued(tablets.shown, 60_000) });
     assert.equal(sent.result.status, 'saved');
@@ -372,7 +373,7 @@ describe('pets.dose.give: generation, the queued path, "Already given?", levels 
     await seedDosePet('dose-moved');
     const shown = await shownNow('dose-moved');
     // The schedule moves an hour (08:00 becomes 09:00) before the tablet reconnects: the shown key no longer exists.
-    await course('dose-moved').update({ 'schedule.firstTime': '01:00' });
+    await course('dose-moved').update({ 'schedule.firstTime': '01:00', updatedAt: Timestamp.now() });
     const legacy = await giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, opId(), 'dose-moved', shown.occurrenceKey), ...queued(tablets.moved, 60_000) });
     assert.deepEqual(legacy.result, { status: 'refused', reason: 'occurrence' }, 'without the instant (an older queued entry) it cannot be placed');
     const op = opId();
@@ -384,13 +385,40 @@ describe('pets.dose.give: generation, the queued path, "Already given?", levels 
     assert.equal(logs[0].get('occurrence'), shown.key, 'the plain key (the rules\' shape)');
     assert.equal((logs[0].get('occurrenceAt') as Timestamp).toMillis(), shown.occurrenceAt);
     // A finished course keeps a dose given while the tablet was offline as history.
-    await course('dose-moved').update({ status: 'finished', schedule: null });
+    await course('dose-moved').update({ status: 'finished', schedule: null, finishedAt: Timestamp.now() });
     const late = opId();
     assert.equal((await giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, late, 'dose-moved', shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt }), ...queued(tablets.moved, 30_000) })).result.status, 'saved');
     // The instant must be the key's household wall time, a whole number of ms, before the rules' 92-day bound.
     for (const occurrenceAt of [shown.occurrenceAt + 60_000, shown.occurrenceAt + 0.5, Date.now() + 93 * 86_400_000, '1700000000000', -1]) {
       await refused(giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, opId(), 'dose-moved', shown.occurrenceKey, { occurrenceAt }), ...queued(tablets.moved, 20_000) }), 'invalid_input');
     }
+  });
+
+  test('security review S1 and D1: a queued dose cannot claim another occurrence or label on an unchanged course', async () => {
+    await seedDosePet('dose-forge');
+    const view = readCourse('course-a', (await course('dose-forge').get()).data() ?? {})!;
+    const window = { schedule: view.schedule!, startDay: view.startDay, endDay: view.endDay };
+    const send = (occurrenceKey: string, extra: Partial<DeviceDoseRequest> = {}, op = opId()) =>
+      giveDoseFromTablet({ ...doseRequest(tablets.forge, member.uid, op, 'dose-forge', occurrenceKey, extra), ...queued(tablets.forge, 60_000) });
+    // 80 days ahead, a real occurrence of the schedule: outside the dose's own time (at most 24 h early).
+    const ahead = occurrenceByKey(window, `${householdDay(later(80 * 86_400_000), TZ)}T06:00`, TZ)!;
+    assert.ok(ahead);
+    assert.deepEqual((await send(occurrenceId(ahead), { occurrenceAt: ahead.at })).result, { status: 'refused', reason: 'occurrence' });
+    assert.deepEqual((await send(occurrenceId(ahead))).result, { status: 'refused', reason: 'occurrence' }, 'looked up, the same bound');
+    // Off the schedule, with a matching wall time: the shown instant is used only when the course changed after queueing.
+    const shown = await shownNow('dose-forge');
+    const offSchedule = occurrenceByKey({ ...window, schedule: { ...window.schedule, firstTime: '03:00' } as typeof window.schedule }, `${shown.key.slice(0, 10)}T03:00`, TZ)!;
+    assert.ok(offSchedule);
+    assert.deepEqual((await send(occurrenceId(offSchedule), { occurrenceAt: offSchedule.at })).result, { status: 'refused', reason: 'occurrence' });
+    // A key the unchanged schedule has, with an instant that is not its own.
+    await refused(send(shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt + 60_000 }), 'invalid_input');
+    assert.equal((await doses('dose-forge').get()).size, 0, 'nothing recorded');
+    // The real occurrence is saved, under the course's own labels (the shown ones only after an edit).
+    const op = opId();
+    assert.equal((await send(shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt, medication: 'Rimadyl 100 mg', dosage: '3 tablets' }, op)).result.status, 'saved');
+    const log = (await doses('dose-forge').doc(op).get()).data()!;
+    assert.equal(log.medication, 'Apoquel');
+    assert.equal(log.dosage, '1 tablet');
   });
 
   test('"Already given?" is bound to the dose it named; a dose on another tablet meanwhile asks again naming it', async () => {
@@ -811,7 +839,7 @@ describe('the server writes exactly what the rules accept from the person (repla
     await doseParity('parity-dose', async () => {
       const op = opId();
       const shown = await shownNow('parity-dose');
-      await course('parity-dose').update({ 'schedule.firstTime': '01:00' });
+      await course('parity-dose').update({ 'schedule.firstTime': '01:00', updatedAt: Timestamp.now() });
       try {
         await giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, op, 'parity-dose', shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt }), ...queued(tablets.moved, 60_000) });
       } finally {
