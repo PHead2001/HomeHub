@@ -1,5 +1,7 @@
 "use client"
 
+import * as React from "react"
+
 import { useToast } from "@/hooks/use-toast"
 import {
   Toast,
@@ -14,10 +16,13 @@ import { tabletToastDuration, tabletToasts } from "@/lib/devices/tablet-toasts"
 /**
  * The app's toasts. `tablet` (the registered wall tablet's shell, emulator evidence D2): at
  * most two, newest first, at the bottom right where the shell keeps a scroll clearance;
- * informational toasts leave after 4 s; only a toast card takes a tap.
+ * informational toasts leave after 4 s; only a toast card takes a tap. On the tablet the
+ * shell times each toast itself (`TabletToastTimer`): Radix pauses its own timer while a
+ * pointer rests over or focus sits in the toast region, and after a tap on Undo the pointer
+ * rests exactly where "Undone." appears, which would keep it on screen indefinitely.
  */
 export function Toaster({ tablet = false }: { tablet?: boolean } = {}) {
-  const { toasts } = useToast()
+  const { toasts, dismiss } = useToast()
   const shown = tablet ? tabletToasts(toasts) : toasts
 
   return (
@@ -29,8 +34,9 @@ export function Toaster({ tablet = false }: { tablet?: boolean } = {}) {
           <Toast
             key={id}
             {...props}
-            {...(tablet ? { duration: tabletToastDuration({ action, duration: props.duration }), className: "data-[state=open]:slide-in-from-bottom-full" } : {})}
+            {...(tablet ? { duration: Infinity, className: "data-[state=open]:slide-in-from-bottom-full" } : {})}
           >
+            {tablet && props.open !== false && <TabletToastTimer ms={tabletToastDuration({ action, duration: props.duration })} onElapsed={() => dismiss(id)} />}
             <div className="grid gap-1">
               {title && <ToastTitle>{title}</ToastTitle>}
               {description && (
@@ -53,4 +59,17 @@ export function Toaster({ tablet = false }: { tablet?: boolean } = {}) {
       />
     </ToastProvider>
   )
+}
+
+/** Dismisses a tablet toast after `ms` from when it (or its new duration) appears, whatever the pointer or focus does. */
+function TabletToastTimer({ ms, onElapsed }: { ms: number; onElapsed: () => void }) {
+  const elapsed = React.useRef(onElapsed)
+  React.useEffect(() => {
+    elapsed.current = onElapsed
+  })
+  React.useEffect(() => {
+    const id = window.setTimeout(() => elapsed.current(), ms)
+    return () => window.clearTimeout(id)
+  }, [ms])
+  return null
 }

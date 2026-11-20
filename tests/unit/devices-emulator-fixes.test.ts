@@ -38,6 +38,9 @@ describe('D2: tablet toasts never block controls', () => {
     assert.match(shell, /view\.kind === 'home' \? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : 'min-h-0 flex-1 overflow-y-auto overscroll-contain pb-40'/);
     const toaster = read('src/components/ui/toaster.tsx');
     assert.match(toaster, /top-auto bottom-0 left-auto right-0/);
+    // The shell times tablet toasts itself: Radix's timer pauses under a resting pointer or focus.
+    assert.match(toaster, /duration: Infinity/);
+    assert.match(toaster, /<TabletToastTimer ms=\{tabletToastDuration\(/);
     assert.match(read('src/components/ui/toast.tsx'), /"pointer-events-none fixed/);
     assert.match(read('src/components/ui/toast.tsx'), /group pointer-events-auto relative flex/);
   });
