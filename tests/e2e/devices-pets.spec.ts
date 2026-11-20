@@ -55,6 +55,15 @@ const openPets = async (page: Page) => {
   await expect(page.getByTestId('tablet-view-pets')).toBeVisible();
 };
 
+// Closes every open dialog. An Escape goes to the topmost layer, which is a toast while one
+// is on screen (Radix), so Escape is pressed until no dialog is left.
+const closeDialogs = async (page: Page) => {
+  await expect(async () => {
+    if (await page.getByRole('dialog').count()) await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 750 });
+  }).toPass({ timeout: 15_000 });
+};
+
 const forgetFace = async (page: Page) => {
   await page.getByTestId('tablet-done').click({ timeout: 3_000 }).catch(() => undefined);
 };
@@ -227,7 +236,7 @@ test('Give dose from the medication chip, credited to the chosen person; Undo re
   expect(log.deviceAttribution?.level).toBe('face');
   await page.getByTestId('tablet-undo').last().click();
   await expect.poll(async () => (await doses('tab-meds').get()).size, { timeout: 15_000 }).toBe(0);
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
 
 test("a reminder's ?dose= link opens Give dose for that course on the tablet", async ({}, testInfo) => {
@@ -267,7 +276,7 @@ test('a behaviour note and a weighing are face-level with Undo; pinning a note a
   await expect.poll(async () => (await pet('tab-meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
   await page.getByTestId('tablet-undo').last().click();
   await expect.poll(async () => (await pet('tab-meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(0);
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
 
 for (const viewport of TABLET_VIEWPORTS) {
@@ -284,7 +293,7 @@ for (const viewport of TABLET_VIEWPORTS) {
       expect(box!.height).toBeGreaterThanOrEqual(48);
     }
     expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
-    await page.keyboard.press('Escape');
+    await closeDialogs(page);
   });
 }
 
@@ -330,8 +339,7 @@ test('D6: a PIN-level action for someone with no tablet PIN says so at once (no 
   await expect(page.getByTestId('pin-pad')).toHaveCount(0);
   // Someone else may act: "Who's here?" again.
   await expect(page.getByTestId('who-is-here')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
 
 test('Codex #190: a legacy medication shows on the tablet and its schedule is confirmed (PIN level)', async ({}, testInfo) => {
@@ -350,7 +358,7 @@ test('Codex #190: a legacy medication shows on the tablet and its schedule is co
   await expect(page.getByTestId('pin-pad')).toBeVisible();
   await enterPin(page, OWNER_PIN);
   await expect.poll(async () => (await pet('tab-meds').collection('medication-courses').where('legacyKeys', 'array-contains', 'heartgard').get()).size, { timeout: 15_000 }).toBe(1);
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
 
 test('Codex #190: history merges both date shapes; Log weight tapped twice saves one weighing', async ({}, testInfo) => {
@@ -371,5 +379,5 @@ test('Codex #190: history merges both date shapes; Log weight tapped twice saves
   await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
   await page.waitForTimeout(1500);
   expect((await pet('tab-care').collection('weights').get()).size).toBe(1);
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
