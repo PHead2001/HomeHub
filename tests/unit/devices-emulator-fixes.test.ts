@@ -48,7 +48,7 @@ describe('D2: tablet toasts never block controls', () => {
 
 describe('D3: Done works with a dialog open', () => {
   it('the acting pill sits above the overlay and takes taps through the modal lock', () => {
-    assert.match(read('src/components/devices/tablet-top-bar.tsx'), /className="pointer-events-auto relative z-\[60\][^"]*" data-testid="tablet-acting"/);
+    assert.match(read('src/components/devices/tablet-top-bar.tsx'), /createPortal\(\s*<div className={`pointer-events-auto fixed z-\[60\] \$\{PILL\}`}[^>]*data-testid="tablet-acting"/);
   });
 });
 
