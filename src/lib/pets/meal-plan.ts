@@ -199,7 +199,11 @@ export function slotWindows(slots: Pick<MealSlot, 'time'>[]): { open: number; cl
 }
 
 /** A feeding as the status reads it: when (as this device should read it), for which slot, by whom. */
-export type FeedObservation = { id: string | null; at: Date; minutes: number; slotId: string | null; by: string | null; byUid: string | null; extra?: boolean };
+export type FeedObservation = {
+  id: string | null; at: Date; minutes: number; slotId: string | null; by: string | null; byUid: string | null; extra?: boolean;
+  /** A deliberately chosen earlier time (`backdated: true`): attributed by the earlier-time rule when it names no meal. */
+  backdated?: boolean;
+};
 
 /** The feedings on one household day, oldest first. */
 export function feedsOnDay(logs: FeedingEntry[], day: string, now: Date, timeZone?: string | null): FeedObservation[] {
@@ -222,6 +226,7 @@ export function feedsOnDay(logs: FeedingEntry[], day: string, now: Date, timeZon
       by: log.loggedByName?.trim() || null,
       byUid: typeof log.loggedByUid === 'string' ? log.loggedByUid : null,
       ...(log.extra === true ? { extra: true } : {}),
+      ...((log as { backdated?: unknown }).backdated === true ? { backdated: true } : {}),
     });
   }
   return feeds.sort((a, b) => a.at.getTime() - b.at.getTime());
@@ -278,7 +283,21 @@ export function attributeFeeds(slots: MealSlot[], feeds: FeedObservation[]): { b
       bySlot[named].push(feed);
       continue;
     }
-    const target = feed.slotId ? null : targetSlot(slots, bySlot.map((list) => list.length > 0), feed.minutes);
+    if (feed.slotId) {
+      extras.push(feed);
+      continue;
+    }
+    // An earlier feeding that names neither a meal nor "extra" (an offline save, or a meal of an
+    // older plan) follows the earlier-time rule, as `earlierFeedSlot` decided it when online:
+    // the meal whose window holds its time if that meal is not fed yet, else an extra. It never
+    // takes the next unfed meal (Codex P2 on #191: an offline 8 am extra must not mark dinner fed).
+    if (feed.backdated) {
+      const index = slotWindows(slots).findIndex((window) => feed.minutes >= window.open && feed.minutes < window.close);
+      if (index >= 0 && bySlot[index].length === 0) bySlot[index].push(feed);
+      else extras.push(feed);
+      continue;
+    }
+    const target = targetSlot(slots, bySlot.map((list) => list.length > 0), feed.minutes);
     if (target) bySlot[target.index].push(feed);
     else extras.push(feed);
   }
