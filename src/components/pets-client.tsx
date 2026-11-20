@@ -33,8 +33,19 @@ import { boardRowPlan } from '@/lib/pets/board';
 import { usePetsLayout } from './pets/use-pets-layout';
 
 const GRID = PETS_GRID;
-/** Space kept under the board (the page's bottom padding), so a board that fits leaves the page unscrolled. */
-const BOARD_BOTTOM_PX = 32;
+/**
+ * Space kept under the board: the bottom padding of the board's ancestors (the
+ * page's `py-8`, in rem, so it grows with the text size), so a board that fits
+ * leaves the page unscrolled at every text scale. Read from the layout, never
+ * from the board's own height, so measuring never feeds back into itself.
+ */
+function bottomPaddingBelow(element: HTMLElement): number {
+  let total = 0;
+  for (let node = element.parentElement; node && node !== document.body; node = node.parentElement) {
+    total += parseFloat(getComputedStyle(node).paddingBottom) || 0;
+  }
+  return Math.ceil(total);
+}
 
 /**
  * The board (PE-9, D-P1, D-P14): at least as tall as the screen
@@ -55,7 +66,7 @@ function PetsBoard({ count, children }: { count: number; children: ReactNode }) 
       const element = ref.current;
       if (!element) return;
       const top = element.getBoundingClientRect().top + window.scrollY;
-      const next = Math.max(280, Math.floor(window.innerHeight - top - BOARD_BOTTOM_PX));
+      const next = Math.max(280, Math.floor(window.innerHeight - top - bottomPaddingBelow(element)));
       setHeight((previous) => (previous === next ? previous : next));
     };
     measure();
