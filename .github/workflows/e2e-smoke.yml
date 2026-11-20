@@ -96,6 +96,11 @@ jobs:
         run: npm run build
 
       - name: Run authenticated E2E smoke tests
+        # Validation takes about 10 of the job's 60 minutes; the smoke list itself takes 28-40
+        # on hosted runners and slower runners passed 35 (the runner's CI default) with every
+        # test green, so this job allows 45. The extended job keeps the 35-minute default.
+        env:
+          E2E_SUITE_TIMEOUT_MS: "2700000"
         run: npm run test:e2e:ci
 
       - name: Upload E2E failure artifacts
