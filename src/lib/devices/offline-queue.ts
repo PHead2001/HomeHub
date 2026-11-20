@@ -196,7 +196,6 @@ const ACTION_WORDS: Partial<Record<DeviceCapability, string>> = {
   'pets.weight.add': 'log pet weights',
   'chores.complete': 'tick chores',
   'chores.take': 'take chores',
-  'notifications.dismiss': 'dismiss notices',
 };
 
 /** The one plain notice for dropped entries ("1 change from this tablet couldn't be saved: …"). */

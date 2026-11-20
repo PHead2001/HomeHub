@@ -97,10 +97,16 @@ describe('Codex #190: the tablet\'s History reads feeding times', () => {
 
 describe('Codex #190: a queued dose keeps what Give dose showed', () => {
   it('the tablet intent carries the shown medication and dosage; the server records them for a queued dose', () => {
-    assert.match(read('src/components/pets/give-dose-dialog.tsx'), /notes: notes\.trim\(\), medication: course\.name, dosage: course\.dosage \}/);
+    assert.match(read('src/components/pets/give-dose-dialog.tsx'), /occurrenceKey: occurrenceId\(selected\), occurrenceAt: selected\.at, givenAt: [^\n]*notes: notes\.trim\(\), medication: course\.name, dosage: course\.dosage \}/);
     const server = read('src/lib/server/pet-records.ts');
-    assert.match(server, /medication: shownMedication \?\? course\.name,\s*dosage: shownDosage \?\? course\.dosage,/);
+    // The shown labels only when the course changed after the dose was queued (security review D1).
+    assert.match(server, /medication: \(changedAfterQueue \? shownMedication : undefined\) \?\? course\.name,\s*dosage: \(changedAfterQueue \? shownDosage : undefined\) \?\? course\.dosage,/);
     assert.match(server, /value\.length > 200/);
-    assert.match(read('src/lib/server/device-pets.ts'), /medication: input\.medication, dosage: input\.dosage,/);
+    assert.match(read('src/lib/server/device-pets.ts'), /medication: input\.medication, dosage: input\.dosage, occurrenceAt: input\.occurrenceAt,/);
+    // The schedule's own occurrence when it has the key (the shown instant must equal it); the
+    // shown one only when the course changed after queueing; always within the dose's own time.
+    assert.match(server, /if \(shown && shown\.at !== scheduled\.at\) return \{ status: 'refused', reason: 'occurrence' \};/);
+    assert.match(server, /\} else if \(shown && changedAfterQueue\) \{/);
+    assert.match(server, /occurrence\.at > at\.getTime\(\) \+ QUEUED_DOSE_EARLY_MS \|\| occurrence\.at < at\.getTime\(\) - DOSE_BACKDATE_MAX_MS/);
   });
 });

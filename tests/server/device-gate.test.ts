@@ -58,7 +58,7 @@ const created = new Set<string>();
 let tablet: Tablet;
 let tabletB: Tablet;
 const time = clock();
-const proven = new Set<DeviceCapability>(['pets.feed', 'chores.complete', 'chores.take', 'notifications.dismiss']);
+const proven = new Set<DeviceCapability>(['pets.feed', 'chores.complete', 'chores.take']);
 
 const refused = async (promise: Promise<unknown>, code: string) => {
   await assert.rejects(promise, (error: unknown) => {
@@ -365,7 +365,10 @@ describe('8.4 step 11: queued replays', () => {
     await refused(queued(new Date(at.getTime() - 25 * 3600_000)), 'stale_intent');
     await refused(queued(new Date(at.getTime() + 6 * 60_000)), 'stale_intent');
     await refused(queued(new Date(at.getTime()), { capability: 'pets.feed.backdated.old' }), 'pin_required');
-    await refused(queued(new Date(at.getTime()), { capability: 'notifications.dismiss' }), 'invalid_input');
+    // Household-notice dismissal is not on tablets (WT-10d): refused before anything else, live or queued.
+    await refused(queued(new Date(at.getTime()), { capability: 'notifications.dismiss' }), 'not_on_tablets');
+    await refused(authorize(req({ capability: 'notifications.dismiss' }), at, { undoProven: proven }), 'not_on_tablets');
+    await refused(authorize(req({ capability: 'notifications.dismiss.undo' }), at, { undoProven: proven }), 'not_on_tablets');
     // A points PIN that became required since the intent was queued: refused, never upgraded.
     await house(H).update({ devicePolicy: { pointsPin: 'everyone' } });
     await refused(queued(new Date(at.getTime()), { capability: 'chores.complete' }), 'pin_required');

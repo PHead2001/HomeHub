@@ -124,6 +124,8 @@ export const DEVICE_ACTION_POLICY = {
   'pets.photo.upload': notOnTablets('pets'),
 
   // --- Chores and household notices -----------------------------------------
+  // Household-notice dismissal (and its Undo) is not on tablets (lead decision, WT-10d): the
+  // tablet's notices view is read-only; members dismiss notices in the personal app.
   'chores.complete': faceStar('chores', ['chores.complete'], { points: true }),
   'chores.complete.undo': faceStar('chores', ['chores.complete'], { points: true, actorRule: 'original-actor' }),
   'chores.take': faceStar('chores', ['chores.assign'], { points: true }),
@@ -138,8 +140,8 @@ export const DEVICE_ACTION_POLICY = {
   'chores.leaderboard.hide': notOnTablets('chores'),
   'chores.delete': notOnTablets('chores'),
   'chores.upkeep': notOnTablets('chores'),
-  'notifications.dismiss': { section: 'home', levelClass: 'face', permissions: ['notifications.dismiss'], faceNeedsUndoProof: true },
-  'notifications.dismiss.undo': { section: 'home', levelClass: 'face', permissions: ['notifications.dismiss'], faceNeedsUndoProof: true, actorRule: 'original-actor' },
+  'notifications.dismiss': notOnTablets('home'),
+  'notifications.dismiss.undo': notOnTablets('home'),
 
   // --- Shopping and maintenance: read-only sections in this goal (D-T8, JC-24) ---
   'shopping.add': notOnTablets('shopping'),

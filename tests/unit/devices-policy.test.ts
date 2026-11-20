@@ -150,6 +150,22 @@ describe('policy table', () => {
   });
 });
 
+describe('household-notice dismissal is not on tablets (lead decision, WT-10d)', () => {
+  it('the dismissal and its Undo are class not_on_tablets: the tablet refuses them with the standard copy', () => {
+    const adult = { pointsPin: 'off' as const, actorRole: 'member' as const };
+    for (const capability of ['notifications.dismiss', 'notifications.dismiss.undo'] as const) {
+      assert.equal(DEVICE_ACTION_POLICY[capability].levelClass, 'not_on_tablets', capability);
+      assert.equal(DEVICE_ACTION_POLICY[capability].permissions, null, capability);
+      assert.equal(requiredLevel(capability, adult), 'not_on_tablets', capability);
+      assert.ok(!UNDO_PROVEN.has(capability), capability);
+    }
+    assert.deepEqual(deviceRefusalResponse('not_on_tablets'), { kind: 'message', message: "That isn't available on wall tablets yet. Use your phone." });
+    // No tablet executor sends it; the notices view offers no dismissal.
+    const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
+    assert.doesNotMatch(runtime, /'notifications\.dismiss/);
+  });
+});
+
 describe('Undo targets (Codex P2: explicit map, no prefix matching)', () => {
   const expected: Record<string, string[]> = {
     'pets.feed.undo': ['pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old'],

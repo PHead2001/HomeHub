@@ -228,9 +228,10 @@ export function GiveDoseDialog({
           subject: petName,
           // Each course keeps its own Undo toast (as the personal dialog's group).
           toastGroup: petDoseToastGroup(petId, course.id),
-          // The medication and dosage shown here travel with the intent: a dose queued offline is
-          // recorded as given, even if the course is edited before the tablet reconnects (Codex review of PR 190).
-          intent: { petId, courseId: course.id, occurrenceKey: occurrenceId(selected), givenAt: chosen ? chosen.toISOString() : null, notes: notes.trim(), medication: course.name, dosage: course.dosage },
+          // The occurrence (identity and instant), medication and dosage shown here travel with the
+          // intent: a dose queued offline is recorded as given, even if the course's schedule or
+          // dosage is edited before the tablet reconnects (Codex review of PR 190).
+          intent: { petId, courseId: course.id, occurrenceKey: occurrenceId(selected), occurrenceAt: selected.at, givenAt: chosen ? chosen.toISOString() : null, notes: notes.trim(), medication: course.name, dosage: course.dosage },
         });
         const result = (outcome.data as { result?: { status?: string; reason?: string } } | undefined)?.result;
         // A refusal is shown whatever the runtime made of it (it reports a domain refusal as not ok, Codex 2).

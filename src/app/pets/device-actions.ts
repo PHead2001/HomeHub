@@ -102,6 +102,8 @@ export type DoseIntent = {
   /** The medication and dosage Give dose showed (recorded for a queued dose). */
   medication?: string;
   dosage?: string;
+  /** The instant (ms) of the occurrence it showed (recorded for a queued dose). */
+  occurrenceAt?: number;
 };
 
 export async function giveDoseFromTabletAction(input: Request & DoseIntent) {
