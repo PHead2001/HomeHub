@@ -337,7 +337,7 @@ test.describe('pets: meal slots (P2)', () => {
       await openPets(page, chicago('18:20'));
       await expect(card(page, SLOT_PET)).toContainText('Dinner due 6:00 pm');
       await expect(page.getByTestId('pets-attention')).toBeVisible();
-      const scroll = await page.evaluate(() => {
+      const scroll = await page.evaluate(async () => {
         const limit = document.documentElement.clientHeight;
         // What reaches past the bottom, for the failure message.
         const bottomOf = (element: Element) => element.getBoundingClientRect().bottom + window.scrollY;
@@ -354,7 +354,7 @@ test.describe('pets: meal slots (P2)', () => {
         }
         const board = document.querySelector<HTMLElement>('[data-testid="pets-board"]');
         const strip = document.querySelector('[data-testid="pets-attention"]');
-        if (board) { const cs = getComputedStyle(board); below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} offset ${board.offsetHeight} computed ${cs.height}/${cs.minHeight}/${cs.display}/${cs.gridTemplateRows} attr ${board.getAttribute('style')} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`); }
+        if (board) { const cs = getComputedStyle(board); below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} offset ${board.offsetHeight} computed ${cs.height}/${cs.minHeight}/${cs.display}/${cs.gridTemplateRows} anims ${document.getAnimations().map((a) => `${(a as CSSAnimation).animationName ?? a.constructor.name}:${a.playState}:${(a.effect as KeyframeEffect | null)?.target?.getAttribute?.('class')?.slice(0, 30) ?? ''}`).slice(0, 6).join(',')} later ${await new Promise<number>((done) => setTimeout(() => done(document.documentElement.scrollHeight - document.documentElement.clientHeight), 1500))} attr ${board.getAttribute('style')} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`); }
         return {
           sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
