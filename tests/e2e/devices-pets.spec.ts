@@ -236,8 +236,12 @@ test("a reminder's ?dose= link opens Give dose for that course on the tablet", a
   await page.goto('/pets/tab-meds?tab=medication&dose=course-e2e');
   await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
+  // One dialog per Escape: Give dose first, then the sheet (each waits for the one before to leave).
   await page.keyboard.press('Escape');
+  await expect(page.getByTestId('give-dose-dialog')).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await expect(page.getByTestId('tablet-pet-sheet')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/pets$/);
 });
 
 test('a behaviour note and a weighing are face-level with Undo; pinning a note asks the PIN pad', async ({}, testInfo) => {
